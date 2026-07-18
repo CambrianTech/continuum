@@ -28,6 +28,7 @@ use crate::modules::code_commands::{caller_id, ensure_engine};
 use crate::sdk_codegen::{CommandError, Ctx, DynCommand};
 
 pub mod add;
+pub mod apply;
 pub mod commit;
 pub mod diff;
 pub mod log;
@@ -35,6 +36,7 @@ pub mod push;
 pub mod status;
 
 use add::CodeGitAdd;
+use apply::CodeGitApply;
 use commit::CodeGitCommit;
 use diff::CodeGitDiff;
 use log::CodeGitLog;
@@ -78,7 +80,8 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeGitLog { state: state.clone() }),
         Arc::new(CodeGitAdd { state: state.clone() }),
         Arc::new(CodeGitCommit { state: state.clone() }),
-        Arc::new(CodeGitPush { state }),
+        Arc::new(CodeGitPush { state: state.clone() }),
+        Arc::new(CodeGitApply { state }),
     ]
 }
 

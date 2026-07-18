@@ -197,6 +197,7 @@ mod tests {
             persona_id,
             agent_name: "Paige".to_string(),
             created_at_ms: 1_700_000_000_000,
+            avatar_vrm: None,
         };
         write_seed_file(tmp.path(), "Paige", &seed);
 

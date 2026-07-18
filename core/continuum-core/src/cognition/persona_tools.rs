@@ -297,21 +297,32 @@ pub fn render_tool_menu(
     }
     // Same grouping as render_tool_catalog — stable (BTreeMap) order so the spine is
     // a byte-stable prefix; only the per-category expansion differs. An expanded
-    // category renders its verbs WITH param-name hints (`verb(param, param?)`, see
-    // [`render_param_hint`]) so an expanded surface is byte-identical to the same
-    // slice of [`render_tool_catalog`] — the field-name-guessing fix (measured
-    // 2026-07-01) must not regress just because the verb rides the menu instead of
-    // the catalog. Collapsed categories carry no hints (their verbs aren't shown).
+    // category renders BARE verb names — no param hints. Measured 2026-07-10: the
+    // hinted always-expanded menu was 8.4k chars of a 16.5k live system prompt
+    // (77% instruction boilerplate vs 21% live world — Joel: "prompts that are
+    // more boilerplate than logic"). Verbs stay visible (the she-must-see-her-
+    // hands invariant holds); ARGS are on-demand — `commands/help` is progressive
+    // disclosure's home, and since #1916 a wrong call gets the exact shape
+    // inlined in the SAME error observation, a stronger net at the correction
+    // seam than a hint buried in an 8k wall. (The 2026-07-01 field-name-guessing
+    // fix moved seams: menu-hint → error-manual.)
     let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for t in tools {
         let cat = extract_category(&t.name);
         let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
-        by_cat
-            .entry(cat)
-            .or_default()
-            .push(format!("{verb}{}", render_param_hint(&t.input_schema)));
+        by_cat.entry(cat).or_default().push(verb.to_string());
     }
     let mut out = String::new();
+    // ONE form example at the header — the invocation SHAPE, not per-tool
+    // hints (those measured as 77% prompt boilerplate and moved to the
+    // error-manual seam). 2026-07-12 glass-box: all four personas knew the
+    // real NAMES within hours but kept fumbling the FORM (paren-call vs
+    // CLI-flag vs bare); one canonical example teaches the form for ~20
+    // tokens. PX, not steering: it shows how calls look, never which to make.
+    let _ = writeln!(
+        out,
+        "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
+    );
     for (cat, mut verbs) in by_cat {
         verbs.sort_unstable();
         if expanded.contains(cat) {
@@ -351,10 +362,43 @@ pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
 /// her. Only includes a spec that actually resolves in the registry (fail-closed:
 /// a missing command is omitted, never fabricated — [[fallbacks-are-illegal-fail-loud]]).
 pub fn native_tool_specs() -> Vec<NativeToolSpec> {
-    ["commands/list", TOOL_HELP_NAME]
-        .iter()
-        .filter_map(|n| spec_for_command(n))
-        .collect()
+    // The discovery pair (reaches the long tail by name) PLUS the core agentic-coding arc
+    // as REAL native specs. A model TRAINED to tool-call (Devstral, Qwen-Coder) emits native
+    // tool_calls — given only the discovery pair it loops forever on `commands/help{code/search}`
+    // and never acts (glass-boxed: 14/14 SWE acts were `commands/help`, 0 edits, 0 score). Offering
+    // the working set directly lets it search→read→edit→write→run→verify without the help detour,
+    // while a weak model that can't emit native tool_calls still falls back to the text menu +
+    // narrated-call recovery. Bounded (~11 schemas, ~1-2k tokens) so it never overflows the window
+    // the way a full ~150-tool dump did. Only specs that actually resolve are included (fail-closed).
+    // [[adaptive-tool-surface-meets-you-in-the-middle]] [[local-first-tool-call-robustness-is-the-differentiator]]
+    const NATIVE: &[&str] = &[
+        "commands/list",
+        TOOL_HELP_NAME,
+        "code/search",
+        "code/read",
+        "code/list",
+        "code/tree",
+        "code/edit",
+        "code/write",
+        "code/run",
+        "code/shell",
+        "code/git/diff",
+        // The consolidation rail (2026-07-11): status/commit/apply are how
+        // parallel workspaces converge — diff→post→apply, the loop the Conway
+        // team invented socially before the rails existed.
+        "code/git/status",
+        "code/git/commit",
+        "code/git/apply",
+        // Observation parity (Joel 2026-07-11): seeing the screen is a first-class
+        // work verb, not a special capability — "if they can observe like we do,
+        // they can build like we do." Routed to a client adapter (WireShape::
+        // Provided); fails loud when no UI adapter is connected, never fabricates.
+        "interface/screenshot",
+        // The shared-board lifecycle: claiming work as yourself is core to the
+        // room workflow (rides the wire as `claim_task` via the dialect).
+        "work/claim",
+    ];
+    NATIVE.iter().filter_map(|n| spec_for_command(n)).collect()
 }
 
 /// Look up one command by name and project it to a full tool spec — the on-demand

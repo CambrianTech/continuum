@@ -43,7 +43,8 @@ use ts_rs::TS;
 use super::code::CodeState;
 use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
 use crate::code::types::{
-    ExistsResult, GlobResult, ListResult, ReadResult, SearchMatch, SearchResult, TreeResult,
+    DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
+    SearchResult, TreeResult,
     WriteResult,
 };
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
@@ -57,22 +58,169 @@ pub(crate) fn caller_id(ctx: &Ctx) -> String {
     ctx.caller
         .as_ref()
         .map(|c| c.peer_id.to_string())
-        .unwrap_or_else(|| "local-owner".to_string())
+        .unwrap_or_else(|| LOCAL_OWNER.to_string())
 }
 
-/// Lazily ensure a workspace [`FileEngine`] exists for `who`, rooted at the repo
-/// (the core's current working dir) so a persona reads/edits the project like any
-/// other peer — no separate `create-workspace` step the model must know to call.
-/// Idempotent and defers to an engine a prior call already created (so an explicit
-/// `create-workspace` with a specific root still wins). Per-caller `FileEngine`s
-/// keep each peer's change-DAG isolated while sharing the repo, exactly like
-/// multiple editor tabs.
+/// The caller id assigned when a command arrives with NO peer identity — the
+/// substrate-local operator (cu CLI, boot plumbing). The ONE caller whose
+/// workspace is the core's own cwd; every identified peer gets a layer.
+pub(crate) const LOCAL_OWNER: &str = "local-owner";
+
+/// Resolve (and provision on first use) the citizen LAYER for an identified peer
+/// caller: a copy-on-write clone of the shared base (the core's cwd — the repo)
+/// under `<continuum home>/citizens/peers/<peer>/workspace`.
+///
+/// Joel 2026-07-10: "each persona is only the diff from the shared." On APFS
+/// `cp -c` clones via `clonefile(2)`, so the layer SHARES every block with the
+/// base and physically stores only what the peer later modifies. It is a real
+/// directory (shell, rustc, git all just work), but its marginal disk cost is
+/// the diff — and `git diff` inside it against the base branch IS the
+/// publishable delta the peer shares over the mesh. The layer is durable
+/// citizen state: an existing layer is reused across reboots. Non-CoW
+/// filesystems fail LOUD rather than silently eating a full copy per peer
+/// ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// Why this exists (glass-boxed 2026-07-10): all personas shared the core's cwd
+/// — OUR checkout — and one persona's misdirected `[dependencies]` edit replaced
+/// the root workspace manifest, breaking every build path. Isolation of WRITES
+/// with full collaboration over the mesh (chat, board, diffs) is the airc
+/// model; a shared mutable checkout never was.
+/// The citizen-layer path for a peer — pure path computation, NO provisioning.
+/// The read-only sibling of [`ensure_citizen_layer`]: grounding sources (e.g.
+/// the workspace map) need to know WHERE a peer's workspace is without triggering
+/// a CoW clone — the clone is the hands' job, on first write. `<continuum home>/
+/// citizens/peers/<peer>/workspace`, keyed by the peer's `peer_id.to_string()`
+/// exactly as [`caller_id`] forms it.
+pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+    let home = std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
+        .ok_or_else(|| CommandError::Internal("no home dir for citizen layer".into()))?;
+    Ok(home.join("citizens").join("peers").join(peer).join("workspace"))
+}
+
+pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+    let layer = citizen_layer_path(peer)?;
+    if layer.is_dir() {
+        // Self-heal the stale-clone bug ([[citizen-workspaces-are-stale-one-time-
+        // clones]]): the layer was a ONE-TIME CoW snapshot that never refreshed, so
+        // personas drifted stale (one froze before the workers/→core/ restructure).
+        // Now, on every ensure (≈once per persona per boot), sync it forward from
+        // the current shared checkout — PRESERVING the persona's work (the sync
+        // autocommits + merges, shared wins framework conflicts). Non-fatal: a sync
+        // that fails logs LOUD but still returns the usable (if stale) workspace
+        // rather than denying the persona her hands.
+        if let Ok(base) = std::env::current_dir() {
+            match crate::code::git_bridge::git_sync_from_shared(&layer, &base) {
+                Ok(report) if report.synced => {
+                    write_workspace_sync_note(&layer, &report.summary);
+                    crate::probe!(
+                        class = "workspace.layer.sync",
+                        peer = %peer,
+                        summary = %report.summary,
+                        "citizen workspace refreshed from shared — persona work preserved"
+                    );
+                }
+                Ok(_) => {} // already current — nothing to notify.
+                Err(e) => tracing::warn!(
+                    peer = %peer,
+                    error = %e,
+                    "citizen workspace sync from shared failed — persona continues on existing workspace"
+                ),
+            }
+        }
+        return Ok(layer);
+    }
+    let base = std::env::current_dir()
+        .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
+    let parent = layer
+        .parent()
+        .ok_or_else(|| CommandError::Internal("citizen layer has no parent".into()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| CommandError::Internal(format!("citizen layer mkdir failed: {e}")))?;
+    let started = std::time::Instant::now();
+    let out = std::process::Command::new("cp")
+        .arg("-cR")
+        .arg(&base)
+        .arg(&layer)
+        .output()
+        .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
+    if !out.status.success() {
+        // Never leave a half-materialized layer for the next call to mistake
+        // for a real one.
+        let _ = std::fs::remove_dir_all(&layer);
+        return Err(CommandError::Internal(format!(
+            "citizen layer CoW clone failed for peer {peer} (base {}): {}. \
+             The base and <continuum home> must be on the same APFS volume — \
+             copy-on-write is the contract, a silent full copy per peer is not.",
+            base.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    crate::probe!(
+        class = "workspace.layer.provision",
+        peer = %peer,
+        base = %base.display(),
+        layer = %layer.display(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "citizen layer provisioned — CoW clone of shared base (stores only the diff)"
+    );
+    Ok(layer)
+}
+
+/// Drop a short teaching note at the workspace root after a shared sync — the
+/// "notify + teach" half of the self-heal (Joel 2026-07-13: "preserve and notify…
+/// eventually just learn this"). The persona reads it through her normal code
+/// tools and learns the workflow: her workspace is a live copy of shared,
+/// refreshed each boot, and committing her work is how it survives. Best-effort —
+/// a note we couldn't write never blocks her hands. This is the bootstrap of the
+/// habit; the durable form is an onboarding lesson she internalizes
+/// ([[onboarding-lora-tool-fluency-degree-system]]).
+fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
+    let note = format!(
+        "# Your workspace just synced with the shared codebase\n\n\
+         {summary}.\n\n\
+         This is YOUR copy-on-write workspace — it starts as a clone of the shared \
+         project and is refreshed from it whenever the core restarts, so you always \
+         work against current code. Your own changes live on top and are preserved \
+         across syncs, but they're safest once committed. To keep your work:\n\n\
+         ```\n\
+         code/shell command=\"git add -A && git commit -m 'describe your change'\"\n\
+         ```\n\n\
+         Uncommitted edits are auto-saved before a sync, but committing yourself \
+         (with a real message) keeps your history clean and your work clearly yours.\n"
+    );
+    let _ = std::fs::write(layer.join("WORKSPACE.md"), note);
+}
+
+/// Lazily ensure a workspace [`FileEngine`] exists for `who`. The local operator
+/// (no peer identity) roots at the core's cwd — their own checkout. An
+/// IDENTIFIED peer (persona or remote agent) roots at their citizen LAYER (see
+/// [`ensure_citizen_layer`]): writes land in their own copy-on-write clone, and
+/// the shared checkout is never writable through a peer's hands. Idempotent and
+/// defers to an engine a prior call already created (so an explicit
+/// `create-workspace` with a specific root still wins).
 pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
-    let root = std::env::current_dir()
-        .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?;
+    let root = if who == LOCAL_OWNER {
+        std::env::current_dir()
+            .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?
+    } else {
+        let citizen_root = ensure_citizen_layer(who)?;
+        // Every citizen workspace is git-backed from birth
+        // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
+        // exists; otherwise init + root commit, so diff→share→apply works the
+        // moment a citizen first touches files. Glass-boxed 2026-07-11: three
+        // parallel Conway implementations across un-versioned workspaces had no
+        // consolidation path, and the team asked for one. Loud on failure — a
+        // workspace that silently can't version work is a quiet defect.
+        crate::code::git_bridge::git_init_if_needed(&citizen_root)
+            .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
+        citizen_root
+    };
     let security = PathSecurity::new(&root)
         .map_err(|e| CommandError::Internal(format!("workspace security init failed: {e}")))?;
     state
@@ -82,15 +230,24 @@ pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandE
     Ok(())
 }
 
-/// Lazily ensure a persistent shell session exists for `who`, rooted at the repo
-/// (cwd). Idempotent; one bash session per caller, reused across `code/shell`
-/// calls so `cd`/env persist like a real terminal.
+/// Lazily ensure a persistent shell session exists for `who`, rooted at the
+/// caller's ENGINE root — the one workspace authority per caller (the operator's
+/// cwd, a peer's citizen layer, or whatever `create-workspace` pinned). Never a
+/// second independent cwd fallthrough: before this, a peer's shell rooted at the
+/// core's cwd even when her file engine didn't, which is how narrated shell
+/// commands landed in the shared checkout. Idempotent; one bash session per
+/// caller, reused across `code/shell` calls so `cd`/env persist like a real
+/// terminal.
 fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
     if state.shell_sessions.contains_key(who) {
         return Ok(());
     }
-    let root = std::env::current_dir()
-        .map_err(|e| CommandError::Internal(format!("shell root unavailable: {e}")))?;
+    ensure_engine(state, who)?;
+    let root = state
+        .file_engines
+        .get(&who.to_string())
+        .map(|e| e.workspace_root())
+        .ok_or_else(|| CommandError::Internal("engine vanished after provisioning".into()))?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let shell = ShellSession::new(&session_id, who, &root)
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
@@ -262,13 +419,29 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
     let search = s(&p.search, "search");
     let replace = s(&p.replace, "replace");
     let new_content = s(&p.new_content, "new_content");
+    // Numeric fields, pulled from top-level OR the nested untyped edit_mode object.
+    // Live glass-box (2026-07-14): Devstral emitted `edit_mode:{end_line:65535,
+    // new_content:"…"}` — the line numbers were NESTED, not top-level, so the
+    // top-level-only read missed them and the edit failed. One extractor, both
+    // placements. [[px-persona-experience-tools-as-good-ux]]
+    let n = |top: Option<u32>, key: &str| -> Option<u32> {
+        top.or_else(|| {
+            p.edit_mode
+                .get(key)
+                .and_then(|v| v.as_u64())
+                .map(|x| x.min(u32::MAX as u64) as u32)
+        })
+    };
+    let start_line = n(p.start_line, "start_line");
+    let end_line = n(p.end_line, "end_line");
+    let line = n(p.line, "line");
     // (2) The mode name: a bare string, else inferred from which fields are present.
     let mode = p.edit_mode.as_str().map(str::to_string).or_else(|| {
         if search.is_some() || replace.is_some() {
             Some("search_replace".into())
-        } else if p.start_line.is_some() || p.end_line.is_some() || new_content.is_some() {
+        } else if start_line.is_some() || end_line.is_some() || new_content.is_some() {
             Some("line_range".into())
-        } else if p.line.is_some() {
+        } else if line.is_some() {
             Some("insert_at".into())
         } else if content.is_some() {
             Some("append".into())
@@ -287,12 +460,18 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             content: content.ok_or_else(|| miss("content"))?,
         }),
         Some("insert_at") => Ok(EditMode::InsertAt {
-            line: p.line.ok_or_else(|| miss("line"))?,
+            line: line.ok_or_else(|| miss("line"))?,
             content: content.ok_or_else(|| miss("content"))?,
         }),
         Some("line_range") => Ok(EditMode::LineRange {
-            start_line: p.start_line.ok_or_else(|| miss("start_line"))?,
-            end_line: p.end_line.ok_or_else(|| miss("end_line"))?,
+            // The reflexive "replace the file" shape a model emits is
+            // `{new_content, end_line: 65535}` with NO start_line: it means
+            // "from the top, to the end". Default start_line→1 and end_line→MAX
+            // (apply_edit clamps MAX to EOF) so that intent LANDS instead of
+            // missing a field and looping. new_content is the one truly required
+            // field — without it there is nothing to write. [[fallbacks-are-illegal-fail-loud]]
+            start_line: start_line.unwrap_or(1),
+            end_line: end_line.unwrap_or(u32::MAX),
             new_content: new_content.ok_or_else(|| miss("new_content"))?,
         }),
         _ => Err(CommandError::Invalid(format!(
@@ -369,9 +548,116 @@ impl ActionCommand for CodeList {
 
     async fn run(&self, ctx: &Ctx, p: CodeListParams) -> Result<ListResult, CommandError> {
         let engine = engine!(self, ctx);
-        engine
-            .list_dir(p.path.as_deref().unwrap_or("."), p.include_hidden.unwrap_or(false))
-            .map_err(|e| CommandError::Internal(e.to_string()))
+        let requested = p.path.as_deref().unwrap_or(".");
+        // Ergonomic recovery: models trained on SWE-agent scaffolds reflexively
+        // reach for `list_files("**/*.rs")` — a recursive GLOB where code/list
+        // wants a single directory. list_dir rightly fails that (it's a flat
+        // lister), but a bare NotFound teaches nothing and the model retries the
+        // same glob (mined: 38% of live code/list calls, every failure a glob).
+        // Meet the idiom: when the path IS a glob, resolve it via code/glob and
+        // project the matches back as a listing — honest (they asked to "list"
+        // these files, they get them), and it widens the surface without a new
+        // verb. [[px-persona-experience-tools-as-good-ux]]
+        if looks_like_file_glob(requested) {
+            let glob = engine
+                .glob_match(requested, None)
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            let mut result = list_result_from_glob(requested, glob);
+            // A zero-match glob is the OTHER "empty workspace" confabulation source
+            // (glass-boxed 2026-07-14: a persona ran `code/list(path=**/)` — `**/`
+            // matches no FILES, so the glob returns empty and she concluded the
+            // workspace was empty). Same teach as the miss path, carried in the note
+            // field so the empty listing itself isn't an error: name the real layout +
+            // point at code/tree for a recursive view.
+            if result.entries.is_empty() {
+                if let Some(dirs) = top_level_dir_names(&engine) {
+                    result.error = Some(format!(
+                        "no files matched '{requested}' — this is NOT an empty workspace. \
+                         Top-level directories: {}. For a recursive view use code/tree; to \
+                         list one directory use code/list <dir>; for files by extension try \
+                         a glob like `**/*.rs`.",
+                        dirs.join(", ")
+                    ));
+                }
+            }
+            return Ok(result);
+        }
+        match engine.list_dir(requested, p.include_hidden.unwrap_or(false)) {
+            Ok(listing) => Ok(listing),
+            // A miss on a NON-glob path is the "empty workspace" confabulation source
+            // (glass-boxed 2026-07-13: a persona reached for `src/persona.rs` — no such
+            // top-level `src` here — got a bare NotFound, and concluded "the workspace
+            // is empty", a false belief that then RECALLED and reinforced). A bare error
+            // teaches nothing; enumerate the ACTUAL top-level dirs at the root so the
+            // persona sees the true layout at the point of the miss and self-corrects —
+            // the same teach-on-miss pattern as the glob recovery above and id_resolve.
+            // [[px-persona-experience-tools-as-good-ux]]
+            Err(e) => Err(teach_layout_on_miss(&engine, requested, &e.to_string())),
+        }
+    }
+}
+
+/// Turn a `code/list` path miss into a teaching error that names the real top-level
+/// layout — so a persona that guessed a nonexistent path (`src/persona.rs`) learns
+/// what DOES exist instead of concluding the workspace is empty. Best-effort: if the
+/// root itself can't be listed, fall back to the original error rather than inventing
+/// a layout ([[fallbacks-are-illegal-fail-loud]] — this is enrichment, never a silent
+/// swallow; the miss still fails).
+fn teach_layout_on_miss(engine: &FileEngine, requested: &str, original: &str) -> CommandError {
+    match top_level_dir_names(engine) {
+        Some(dirs) if !dirs.is_empty() => CommandError::Invalid(format!(
+            "'{requested}' not found in this workspace. Top-level directories here: {}. \
+             Paths are relative to the root — don't assume source lives under `src/`; \
+             pick one of these or drill in with code/list <dir>.",
+            dirs.join(", ")
+        )),
+        Some(_) => CommandError::Invalid(format!(
+            "'{requested}' not found and the workspace root has no directories ({original})"
+        )),
+        // Root itself couldn't be listed — never invent a layout, surface the real error.
+        None => CommandError::Internal(original.to_string()),
+    }
+}
+
+/// The sorted top-level directory names at the workspace root — the shared "what
+/// actually exists here" fact behind every teach-on-miss ([`teach_layout_on_miss`]
+/// and the zero-match-glob note). `None` only when the root itself can't be listed
+/// (then the caller surfaces the real error rather than a fabricated layout).
+fn top_level_dir_names(engine: &FileEngine) -> Option<Vec<String>> {
+    let root = engine.list_dir(".", false).ok()?;
+    let mut dirs: Vec<String> = root
+        .entries
+        .iter()
+        .filter(|e| e.kind == FsEntryKind::Directory)
+        .map(|e| e.name.clone())
+        .collect();
+    dirs.sort();
+    Some(dirs)
+}
+
+/// Project a [`GlobResult`] into a [`ListResult`] so a glob passed to `code/list`
+/// returns a listing of the matching files (the reflexive `list_files("**/*.rs")`
+/// idiom). Each match is a File entry — `code/glob` yields files only — with size
+/// left `None` (a glob can match thousands; per-entry stat would defeat the
+/// bounded cost `code/list` promises). `directory_path` records the glob so the
+/// persona sees WHY the listing is cross-directory.
+fn list_result_from_glob(pattern: &str, glob: GlobResult) -> ListResult {
+    let entries: Vec<DirEntry> = glob
+        .matches
+        .iter()
+        .map(|path| DirEntry {
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            path: path.clone(),
+            kind: FsEntryKind::File,
+            size_bytes: None,
+        })
+        .collect();
+    ListResult {
+        success: glob.success,
+        directory_path: format!("glob:{pattern}"),
+        total_count: entries.len() as u32,
+        entries,
+        error: glob.error,
     }
 }
 
@@ -468,17 +754,12 @@ impl ActionCommand for CodeTree {
 
     async fn run(&self, ctx: &Ctx, p: CodeTreeParams) -> Result<TreeResult, CommandError> {
         let engine = engine!(self, ctx);
-        // Resolve the target across searchable roots (workspace + any read roots),
-        // falling back to the workspace root joined with the requested path.
-        let target = match &p.path {
-            Some(rel) => engine
-                .searchable_roots()
-                .into_iter()
-                .map(|r| r.join(rel))
-                .find(|c| c.is_dir())
-                .unwrap_or_else(|| engine.workspace_root().join(rel)),
-            None => engine.workspace_root(),
-        };
+        // ONE resolver for every directory-oriented command (FileEngine::resolve_dir):
+        // idiom-forgiveness (redundant "workspace/" prefix, leading '/') and honest,
+        // actionable errors live there, not hand-rolled here. No path → the whole tree.
+        let target = engine
+            .resolve_dir(p.path.as_deref().unwrap_or("."))
+            .map_err(|e| CommandError::Invalid(e.to_string()))?;
         Ok(tree::generate_tree(
             &target,
             p.max_depth.unwrap_or(10),
@@ -594,6 +875,53 @@ impl ActionCommand for CodeSearch {
         matches.dedup_by(|a, b| a.file_path == b.file_path && a.line_number == b.line_number);
         matches.truncate(max as usize);
 
+        // OVERFLOW SUMMARY: a wall of matches is not an answer. Glass-boxed on
+        // SWE flask-4045 (2026-07-11): `pattern:"blueprint"` returned
+        // total_matches:101 as a truncated line-by-line dump, and the solver —
+        // told the truth but given no next step — re-issued the identical
+        // search 9× instead of advancing to read/edit. No mind, human or model,
+        // picks a next action from 101 raw hits; a human running grep eyeballs
+        // the FILE distribution and opens the hottest file. So above the
+        // threshold the result becomes that eyeball: one representative match
+        // per file (concrete, carryable paths — the next-step affordance), plus
+        // per-file counts and the narrow-or-read guidance in the note field.
+        // Counts stay truthful; only the rendering compresses.
+        // [[px-persona-experience-tools-as-good-ux]] (overflow → filter
+        // suggestions), same forgiveness family as the glob-shaped-pattern and
+        // empty-glob notes above.
+        const OVERFLOW_MATCHES: usize = 25;
+        let mut error = None;
+        if matches.len() > OVERFLOW_MATCHES {
+            let mut per_file: Vec<(String, u32, SearchMatch)> = Vec::new();
+            for m in matches.drain(..) {
+                match per_file.iter_mut().find(|(f, _, _)| *f == m.file_path) {
+                    Some((_, n, _)) => *n += 1,
+                    None => per_file.push((m.file_path.clone(), 1, m)),
+                }
+            }
+            per_file.sort_by(|a, b| b.1.cmp(&a.1));
+            let top: Vec<String> = per_file
+                .iter()
+                .take(10)
+                .map(|(f, n, _)| format!("{f} ({n})"))
+                .collect();
+            let files_total = per_file.len();
+            matches = per_file
+                .into_iter()
+                .take(10)
+                .map(|(_, _, first)| first)
+                .collect();
+            error = Some(format!(
+                "{total_matches} matches across {files_total} file(s) — too many to list \
+                 line-by-line, so this shows ONE representative match per file for the top \
+                 {} file(s) by match count: [{}]. Next: read the most relevant file \
+                 (code/read file_path=...) or narrow the search (more specific `pattern`, \
+                 or `file_glob` limiting which files).",
+                matches.len(),
+                top.join(", "),
+            ));
+        }
+
         // Grounding for an empty search: a glob that matched ZERO files almost
         // always means the caller guessed a wrong path prefix (observed live —
         // globbed "continuum-core/*" when the tree is "core/continuum-core/…",
@@ -602,7 +930,7 @@ impl ActionCommand for CodeSearch {
         // from the real layout instead of inventing one. Pure grounding DATA via
         // the existing `error` field — not a behavior gate, not the answer; the
         // map, not the route. (CLAUDE.md AI-QA: make tool failures recoverable.)
-        let error = if files_searched == 0 && p.file_glob.is_some() {
+        if error.is_none() && files_searched == 0 && p.file_glob.is_some() {
             let root = engine.workspace_root();
             let mut tops: Vec<String> = std::fs::read_dir(&root)
                 .map(|rd| {
@@ -615,17 +943,15 @@ impl ActionCommand for CodeSearch {
                 .unwrap_or_default();
             tops.sort();
             tops.truncate(24);
-            Some(format!(
+            error = Some(format!(
                 "No files matched glob {:?}. Workspace root is {} and all paths are \
                  relative to it; its top-level directories are: [{}]. Re-check the \
                  glob against this actual layout.",
                 p.file_glob.as_deref().unwrap_or(""),
                 root.display(),
                 tops.join(", "),
-            ))
-        } else {
-            None
-        };
+            ));
+        }
 
         Ok(SearchResult {
             success: true,
@@ -1150,6 +1476,87 @@ mod tests {
         assert!(format!("{err}").contains("content"), "names the missing field: {err}");
     }
 
+    // what this catches: THE live edit-stall (2026-07-14). Devstral personas
+    // emitted edit_mode as a NESTED, untyped object with the line numbers inside
+    // it and NO start_line — `{"edit_mode":{"end_line":65535,"new_content":"…"}}`
+    // — their reflexive "replace the whole file" shape. The old normalizer read
+    // start/end only from top-level, missed them, and failed `needs start_line`;
+    // personas re-emitted the identical call forever and never reached run. The
+    // nested numbers must resolve and the missing start_line must default to 1.
+    #[test]
+    fn code_edit_forgives_nested_lines_and_the_reflexive_whole_file_shape() {
+        let mk = |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
+
+        // (a) nested end_line + new_content, no start_line → LineRange{1, 65535, …}
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "src/main.rs",
+            "edit_mode": {"end_line": 65535, "new_content": "fn main() {}"}
+        }))).unwrap();
+        match m {
+            EditMode::LineRange { start_line, end_line, new_content } => {
+                assert_eq!(start_line, 1);
+                assert_eq!(end_line, 65535);
+                assert_eq!(new_content, "fn main() {}");
+            }
+            other => panic!("expected LineRange, got {other:?}"),
+        }
+
+        // (b) ONLY new_content (no lines at all) → whole-file replace: start 1, end MAX
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "src/main.rs", "new_content": "whole new file"
+        }))).unwrap();
+        match m {
+            EditMode::LineRange { start_line, end_line, .. } => {
+                assert_eq!(start_line, 1);
+                assert_eq!(end_line, u32::MAX);
+            }
+            other => panic!("expected LineRange, got {other:?}"),
+        }
+
+        // (c) nested line for insert_at resolves from inside edit_mode too
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"line": 3, "content": "x"}
+        }))).unwrap();
+        assert!(matches!(m, EditMode::InsertAt { line, .. } if line == 3));
+
+        // (d) still loud when there's genuinely nothing to write
+        let err = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"end_line": 10}
+        }))).unwrap_err();
+        assert!(format!("{err}").contains("new_content"), "names missing field: {err}");
+    }
+
+    // what this catches: the code/list glob-recovery (#160). A model that reflexively
+    // passes a recursive glob (`**/*.rs`) to code/list must get the MATCHING FILES back
+    // as a listing, not a bare NotFound it retries forever (mined: 38% of live calls).
+    // Guards both halves: the glob DETECTION that triggers the reroute, and the
+    // GlobResult→ListResult projection (each match a File entry, name = basename,
+    // directory_path records the glob so the persona sees why it's cross-directory).
+    #[test]
+    fn code_list_recovers_a_glob_into_a_listing() {
+        // detection: the reflexive recursive patterns route; a plain dir does not.
+        assert!(looks_like_file_glob("**/*.rs"));
+        assert!(looks_like_file_glob("src/**/*.toml"));
+        assert!(!looks_like_file_glob("src"));
+        assert!(!looks_like_file_glob("."));
+
+        let glob = GlobResult {
+            success: true,
+            pattern: "**/*.rs".to_string(),
+            matches: vec!["core/main.rs".to_string(), "lib.rs".to_string()],
+            total_matches: 2,
+            truncated: false,
+            error: None,
+        };
+        let listing = list_result_from_glob("**/*.rs", glob);
+        assert!(listing.success);
+        assert_eq!(listing.total_count, 2);
+        assert_eq!(listing.directory_path, "glob:**/*.rs", "records the glob provenance");
+        assert_eq!(listing.entries[0].name, "main.rs", "name is the basename");
+        assert_eq!(listing.entries[0].path, "core/main.rs", "path stays workspace-relative");
+        assert!(matches!(listing.entries[0].kind, FsEntryKind::File));
+    }
+
     // what this catches: a placeholder file_path (the 14B echoed `<path_to_blueprints.py>` instead
     // of the real path it had seen) fails LOUD with guidance toward the concrete path — while a real
     // path passes untouched (no false positives on ordinary filenames).
@@ -1176,6 +1583,151 @@ mod tests {
         for r in ["Blueprint", "foo.*bar", "fn .*Params", "self.name = name", "TODO", "raise ValueError"] {
             assert!(!looks_like_file_glob(r), "must NOT be treated as a glob (real content pattern): {r}");
         }
+    }
+
+    // what this catches: the overflow summary (glass-boxed on SWE flask-4045 —
+    // pattern:"blueprint" → 101 raw hits → the solver re-searched 9× instead of
+    // advancing). Above OVERFLOW_MATCHES the result must compress to ONE
+    // representative match per file (concrete carryable paths), name the top
+    // files BY COUNT in the note with read/narrow guidance, and keep
+    // total_matches truthful; a small result stays untouched (no false
+    // compression on ordinary searches). // regression for SWE cell one
+    #[tokio::test]
+    async fn search_overflow_compresses_to_per_file_summary_with_guidance() {
+        let dir = std::env::temp_dir().join(format!("search-overflow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // hot.py: 30 hits; warm.py: 5; cold.py: 2 — 37 total, uneven on purpose.
+        std::fs::write(dir.join("hot.py"), "needle\n".repeat(30)).unwrap();
+        std::fs::write(dir.join("warm.py"), "needle\n".repeat(5)).unwrap();
+        std::fs::write(dir.join("cold.py"), "needle\n".repeat(2)).unwrap();
+
+        let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
+        let file_engines = Arc::new(DashMap::new());
+        file_engines.insert("local-owner".to_string(), FileEngine::new("local-owner", security));
+        let state = Arc::new(CodeState::new(
+            file_engines,
+            Arc::new(DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ));
+        let cmd = CodeSearch { state };
+        let out = cmd
+            .run(
+                &Ctx::default(),
+                CodeSearchParams {
+                    pattern: "needle".to_string(),
+                    file_glob: None,
+                    max_results: None,
+                },
+            )
+            .await
+            .expect("search runs");
+
+        assert_eq!(out.total_matches, 37, "counts stay truthful");
+        assert!(
+            out.matches.len() <= 10,
+            "overflow compresses to per-file representatives: {}",
+            out.matches.len()
+        );
+        let files: Vec<&str> = out.matches.iter().map(|m| m.file_path.as_str()).collect();
+        assert_eq!(
+            files.iter().filter(|f| f.contains("hot.py")).count(),
+            1,
+            "one representative per file: {files:?}"
+        );
+        let note = out.error.expect("overflow note present");
+        assert!(
+            note.contains("too many to list") && note.contains("code/read"),
+            "note carries the read/narrow guidance: {note}"
+        );
+        assert!(
+            note.find("hot.py (30)").unwrap_or(usize::MAX)
+                < note.find("warm.py (5)").unwrap_or(usize::MAX),
+            "top files ordered by match count: {note}"
+        );
+
+        // Small search stays raw — no false compression.
+        let small = cmd
+            .run(
+                &Ctx::default(),
+                CodeSearchParams {
+                    pattern: "needle".to_string(),
+                    file_glob: Some("cold.py".to_string()),
+                    max_results: None,
+                },
+            )
+            .await
+            .expect("small search runs");
+        assert_eq!(small.total_matches, 2);
+        assert_eq!(small.matches.len(), 2, "under threshold keeps every line");
+        assert!(small.error.is_none(), "no note on a small result");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: a code/list miss on a NONEXISTENT path (the "empty workspace"
+    // confabulation source — a persona reached for `src/persona.rs` where no top-level
+    // `src` exists, got a bare NotFound, and concluded the workspace was empty) must
+    // TEACH the real top-level layout instead of a contentless error. The persona then
+    // sees `apps, core, docs` in the very error and self-corrects. // regression: live
+    // 2026-07-13 empty-workspace confabulation
+    #[test]
+    fn list_miss_teaches_the_real_top_level_layout() {
+        let dir = std::env::temp_dir().join(format!("list-miss-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("apps")).unwrap();
+        std::fs::create_dir_all(dir.join("core")).unwrap();
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
+        let engine = FileEngine::new("local-owner", security);
+
+        let err = teach_layout_on_miss(&engine, "src/persona.rs", "no such file or directory");
+        let msg = err.to_string();
+        assert!(msg.contains("apps") && msg.contains("core") && msg.contains("docs"),
+            "enumerates the real top-level dirs so the persona self-corrects: {msg}");
+        assert!(msg.contains("src/persona.rs"), "names what was actually missed: {msg}");
+        assert!(msg.contains("don't assume source lives under `src/`"),
+            "carries the same anti-assumption teaching as the workspace-map: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: a code/list GLOB that matches zero files (the live `**/`
+    // idiom — a persona reaching for "everything") must not read as an empty
+    // workspace. The empty listing carries a note naming the real top-level dirs +
+    // pointing at code/tree, so the persona doesn't confabulate emptiness.
+    // regression: live 2026-07-14 `code/list(path=**/)` → empty
+    #[tokio::test]
+    async fn zero_match_glob_note_names_the_layout_not_emptiness() {
+        let dir = std::env::temp_dir().join(format!("zero-glob-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("apps")).unwrap();
+        std::fs::create_dir_all(dir.join("core")).unwrap();
+        std::fs::write(dir.join("core/main.rs"), "fn main() {}").unwrap();
+        let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
+        let file_engines = Arc::new(DashMap::new());
+        file_engines.insert("local-owner".to_string(), FileEngine::new("local-owner", security));
+        let state = Arc::new(CodeState::new(
+            file_engines,
+            Arc::new(DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ));
+        let cmd = CodeList { state };
+
+        // A glob that matches no files → empty entries + a teaching note.
+        let out = cmd
+            .run(&Ctx::default(), CodeListParams { path: Some("**/*.nonexistent".to_string()), include_hidden: None })
+            .await
+            .expect("a zero-match glob is not an error");
+        assert!(out.entries.is_empty(), "no files match the glob");
+        let note = out.error.expect("zero-match glob carries a teaching note");
+        assert!(note.contains("NOT an empty workspace"), "corrects the confabulation: {note}");
+        assert!(note.contains("apps") && note.contains("core"), "names the real dirs: {note}");
+        assert!(note.contains("code/tree"), "points at the recursive view: {note}");
+
+        // A glob that DOES match keeps working (no false note).
+        let hit = cmd
+            .run(&Ctx::default(), CodeListParams { path: Some("**/*.rs".to_string()), include_hidden: None })
+            .await
+            .expect("glob runs");
+        assert!(!hit.entries.is_empty(), "the .rs glob finds main.rs");
+        assert!(hit.error.is_none(), "a matching glob carries no note");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A `CodeState` whose `local-owner` engine (the `Ctx::default` caller) is rooted
@@ -1256,5 +1808,59 @@ mod tests {
         for n in ["code/delete", "code/diff", "code/undo", "code/history"] {
             assert!(names.contains(&n), "command_objects missing {n}; got {names:?}");
         }
+    }
+
+    // what this catches: the citizen-layer workspace policy (Joel 2026-07-10:
+    // "each persona is only the diff from the shared"). An IDENTIFIED peer's
+    // engine must NEVER root at the core's cwd — the live incident: a persona's
+    // misdirected [dependencies] edit replaced the repo-root Cargo.toml through
+    // the shared-cwd default, breaking every build path. The peer's root is a
+    // CoW clone under <CONTINUUM_HOME>/citizens/peers/<peer>/workspace, seeded
+    // from the base, durable across calls; the anonymous local operator keeps
+    // cwd. regression for commit 3ad97cc2e (the manifest-clobber repair).
+    #[test]
+    fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
+        // Scoped homes so the test never touches the real ~/.continuum. A tiny
+        // base dir keeps the CoW clone instant.
+        let base = tempfile::tempdir().expect("base");
+        std::fs::write(base.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let home = tempfile::tempdir().expect("home");
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(base.path()).unwrap();
+        std::env::set_var("CONTINUUM_HOME", home.path());
+
+        let peer = "test-peer-1234";
+        let layer = ensure_citizen_layer(peer).expect("layer provisions");
+        assert!(
+            layer.starts_with(home.path()),
+            "layer lives under CONTINUUM_HOME: {layer:?}"
+        );
+        assert_ne!(
+            layer.canonicalize().unwrap(),
+            base.path().canonicalize().unwrap(),
+            "peer layer is NOT the shared base"
+        );
+        assert!(
+            layer.join("Cargo.toml").is_file(),
+            "layer is seeded from the base (CoW clone)"
+        );
+        // A peer WRITE lands in the layer, never the base.
+        std::fs::write(layer.join("Cargo.toml"), "[dependencies]\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(base.path().join("Cargo.toml")).unwrap(),
+            "[workspace]\n",
+            "the shared base is untouched by layer writes"
+        );
+        // Idempotent: second call reuses the existing layer (her diff survives).
+        let again = ensure_citizen_layer(peer).expect("layer reused");
+        assert_eq!(again, layer);
+        assert_eq!(
+            std::fs::read_to_string(again.join("Cargo.toml")).unwrap(),
+            "[dependencies]\n",
+            "the peer's divergence is durable"
+        );
+
+        std::env::remove_var("CONTINUUM_HOME");
+        std::env::set_current_dir(old_cwd).unwrap();
     }
 }

@@ -137,7 +137,10 @@ pub mod wall;
 
 pub use broadcast::Broadcast;
 pub use cache::SubstrateStateCache;
-pub use chat::{ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind};
+pub use chat::{
+    ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView, RosterViewState,
+    SenderKind,
+};
 pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
 pub use kanban::{

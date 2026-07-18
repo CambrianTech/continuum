@@ -100,12 +100,34 @@ impl RoomBoardReader for airc_lib::Airc {
 /// Persona-bound source reading the current room's whole work board.
 pub struct RoomBoardSource {
     persona_id: uuid::Uuid,
+    /// The room whose board this source grounds. The reader answers for the
+    /// persona's airc connection's room; this names it explicitly so delivery
+    /// can be scoped to the TURN'S context (the room gate in `deliver`). Bound
+    /// at assembly from the room the persona joined at bootstrap
+    /// (`identity.default_room`). `None` = unscoped (legacy/test construction):
+    /// deliver regardless of turn context, exactly the pre-gate behavior.
+    room_id: Option<uuid::Uuid>,
     reader: Arc<dyn RoomBoardReader>,
 }
 
 impl RoomBoardSource {
     pub fn new(persona_id: uuid::Uuid, reader: Arc<dyn RoomBoardReader>) -> Self {
-        Self { persona_id, reader }
+        Self {
+            persona_id,
+            room_id: None,
+            reader,
+        }
+    }
+
+    /// Bind this source to the room its reader answers for. A context-stamped
+    /// turn (`ctx.airc_room`) in ANY other context — another room, or a synthetic
+    /// context like the eval fork's nil room — then gets an empty delivery
+    /// instead of this room's board (the exam-bleed fix: stale board imperatives
+    /// injected into a coding exam derailed agentically-trained models).
+    /// [[identity-context-session-three-axes]]
+    pub fn for_room(mut self, room_id: uuid::Uuid) -> Self {
+        self.room_id = Some(room_id);
+        self
     }
 
     fn empty() -> RagDelivery {
@@ -122,9 +144,15 @@ impl RoomBoardSource {
     /// and owner (or `unclaimed`) — the shape a teammate reads off the board.
     /// The whole board carries all owners, so owner is always surfaced (unlike
     /// the active-work source, which is implicitly self-owned).
-    fn render(card: &airc_work::WorkCard) -> String {
+    fn render(card: &airc_work::WorkCard, self_id: uuid::Uuid) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let owner = match card.owner {
+            // Her OWN claim must read as HERS — glass-boxed 2026-07-11: cards she
+            // held rendered as `owner 90e758b2`, a hex prefix she cannot recognize
+            // as herself, so claimed work carried zero self-relevance and the room
+            // drifted to chatter over held cards. Identity is a structural fact
+            // the projection must carry (same law as (to you) addressing).
+            Some(o) if o.as_uuid() == self_id => "owner YOU".to_string(),
             Some(o) => {
                 let o8: String = o.as_uuid().to_string().chars().take(8).collect();
                 format!("owner {o8}")
@@ -157,6 +185,15 @@ impl RagSource for RoomBoardSource {
         if ctx.persona_id != self.persona_id {
             return Self::empty();
         }
+        // Room-scoped: a context-stamped turn in a DIFFERENT context than the
+        // room this board belongs to gets nothing — room A's kanban must not
+        // ground a turn in room B, nor a synthetic context (the eval fork's nil
+        // room). The ONE shared gate (`room_scope_allows`) probes every abstain
+        // with both rooms named, so a mis-binding shows in the log instead of a
+        // silent blank grounding block. [[identity-context-session-three-axes]]
+        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
+            return Self::empty();
+        }
 
         // One airc call (the current room's complete board). Failure is
         // non-fatal — empty delivery, cognition stays up (good-citizen doctrine).
@@ -179,17 +216,119 @@ impl RagSource for RoomBoardSource {
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut dropped: usize = 0;
+
+        // YOUR-WORK SALIENCE (2026-07-11, "did they wander off and forget they
+        // can work on things?"): all three personas held claimed cards, zero
+        // completions — a claim was one event, then the card's self-relevance
+        // vanished from perception while fresh chatter arrived every tick. Lead
+        // with the cards SHE holds as a distinct perceived fact (hers, by title,
+        // with state), so her own unfinished work is standing perception, not a
+        // fading memory. A fact she weighs, never an instruction
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        let mine: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            .filter(|c| {
+                c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+                    && !matches!(
+                        c.state,
+                        airc_work::CardState::Merged | airc_work::CardState::Closed
+                    )
+            })
+            .collect();
+        if !mine.is_empty() {
+            let titles = mine
+                .iter()
+                .take(5)
+                .map(|c| {
+                    let id8: String =
+                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    format!("  {id8}: \"{}\" [{:?}]", c.title, c.state)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let lead = format!(
+                "[your work] you HOLD {n} card(s) on this board — claimed by you, not \
+                 yet done:\n{titles}\nThey remain yours until finished (work/state) or \
+                 released (work/release); your tools do the work.",
+                n = mine.len(),
+            );
+            let lead_tokens = estimate_tokens(&lead);
+            if lead_tokens <= budget {
+                tokens_used += lead_tokens;
+                items.push(RagItem {
+                    content: lead,
+                    tokens: lead_tokens,
+                    metadata: serde_json::json!({ "kind": "your-work-lead" }),
+                });
+            }
+        }
+
+        // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
+        // someone to pick up. Glass-boxed live 2026-07-10: with hands proven and an
+        // open card sitting on the board, both personas drifted to identity-monologue
+        // chatter instead of noticing the available work — an unclaimed card, flat in
+        // the list, out-salienced by nothing. Lead the delivery with the open cards
+        // as a distinct perceived FACT (their count + titles + how to pick one up), so
+        // available work is the first thing seen, not buried. A true structural fact
+        // she WEIGHS — it names what's available and how claiming works; it never says
+        // she must ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still
+        // follows verbatim in airc's own order — this adds a salience lead, it does not
+        // re-rank or filter the board itself.
+        let open: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            .filter(|c| c.owner.is_none() && matches!(c.state, airc_work::CardState::Open))
+            .collect();
+        if !open.is_empty() {
+            let titles = open
+                .iter()
+                .take(5)
+                .map(|c| {
+                    let id8: String =
+                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let more = open.len().saturating_sub(5);
+            let tail = if more > 0 {
+                format!("\n  …and {more} more unclaimed")
+            } else {
+                String::new()
+            };
+            let lead = format!(
+                "[available work] {n} card(s) on this board are unclaimed — open work \
+                 no one holds yet:\n{titles}{tail}\nA card is picked up with \
+                 `work/claim` (its id); once claimed it is yours to work with your \
+                 tools. Unclaimed work waits until someone chooses it.",
+                n = open.len(),
+            );
+            let lead_tokens = estimate_tokens(&lead);
+            if lead_tokens <= budget {
+                tokens_used += lead_tokens;
+                items.push(RagItem {
+                    content: lead,
+                    tokens: lead_tokens,
+                    metadata: json!({ "kind": "available-work-lead", "open_count": open.len() }),
+                });
+            }
+        }
+
+        let mut cards_delivered = 0usize;
         for card in &board.cards {
-            let content = Self::render(card);
+            let content = Self::render(card, self.persona_id);
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
                 // Budget exhausted — a truncated board is still truthful for the
                 // cards it names. Count the drops so truncation is visible, not
                 // silent. Atomic unit = one card; no continuation (see module doc).
-                dropped = board.cards.len() - items.len();
+                // Counted over CARDS, excluding the available-work lead item.
+                dropped = board.cards.len() - cards_delivered;
                 break;
             }
             tokens_used += tokens;
+            cards_delivered += 1;
             items.push(RagItem {
                 content,
                 tokens,
@@ -329,15 +468,55 @@ mod tests {
         ])));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 2);
-        assert!(delivery.items[0].content.contains("Wire the projector"));
-        assert!(delivery.items[0].content.contains("[InProgress]"));
+        // With one Open card, an available-work lead precedes the card list.
+        assert_eq!(delivery.items.len(), 3);
+        assert_eq!(delivery.items[0].metadata["kind"], "available-work-lead");
+        let cards: Vec<&RagItem> = delivery
+            .items
+            .iter()
+            .filter(|i| i.metadata.get("card_id").is_some())
+            .collect();
+        assert_eq!(cards.len(), 2);
+        assert!(cards[0].content.contains("Wire the projector"));
+        assert!(cards[0].content.contains("[InProgress]"));
         let owner8: String = holder.as_uuid().to_string().chars().take(8).collect();
-        assert!(delivery.items[0].content.contains(&owner8));
+        assert!(cards[0].content.contains(&owner8));
         // An unclaimed card is surfaced as such — all owners visible on the board.
-        assert!(delivery.items[1].content.contains("unclaimed"));
-        assert_eq!(delivery.items[1].metadata["state"], "Open");
+        assert!(cards[1].content.contains("unclaimed"));
+        assert_eq!(cards[1].metadata["state"], "Open");
         assert!(delivery.continuation.is_none());
+    }
+
+    // what this catches: the available-work salience lead (#122). Unclaimed cards
+    // must be surfaced PROMINENTLY (first item, naming them + how to claim) so a
+    // persona perceives available work instead of drifting to idle chatter with an
+    // open card sitting on the board. A board with NO open cards adds no lead.
+    #[tokio::test]
+    async fn open_cards_get_an_available_work_lead() {
+        let holder = airc_core::PeerId::new();
+        let reader = Arc::new(StubReader::new(snapshot(vec![
+            card("Compile wordstats", CardState::Open, None),
+            card("sha256 exercise", CardState::Open, None),
+            card("Already mine", CardState::InProgress, Some(holder)),
+        ])));
+        let source = RoomBoardSource::new(persona(), reader);
+        let d = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        assert_eq!(d.items[0].metadata["kind"], "available-work-lead");
+        assert_eq!(d.items[0].metadata["open_count"], 2);
+        assert!(d.items[0].content.contains("[available work]"));
+        assert!(d.items[0].content.contains("Compile wordstats"));
+        assert!(d.items[0].content.contains("work/claim"));
+
+        // A board with only claimed cards → no lead, just the card list.
+        let claimed_only = Arc::new(StubReader::new(snapshot(vec![card(
+            "Held",
+            CardState::InProgress,
+            Some(holder),
+        )])));
+        let d2 = RoomBoardSource::new(persona(), claimed_only)
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
+        assert!(d2.items.iter().all(|i| i.metadata.get("kind").is_none()));
     }
 
     // what this catches: a room with NO cards renders no block (backwards-
@@ -389,6 +568,49 @@ mod tests {
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
+    // what this catches: the your-work salience (2026-07-11, "did they wander
+    // off and forget they can work on things?") — a card the perceiving persona
+    // HOLDS must lead the delivery as "[your work] you HOLD…" and render as
+    // "owner YOU", never as her own unrecognizable hex prefix. Another peer's
+    // claim stays hex-attributed and produces no your-work lead.
+    #[tokio::test]
+    async fn held_cards_lead_as_your_work_and_render_owner_you() {
+        let me = persona();
+        let mine = card(
+            "reverse a string",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        );
+        let theirs = card(
+            "sha256 exercise",
+            CardState::Claimed,
+            Some(airc_core::PeerId::new()),
+        );
+        let reader = Arc::new(StubReader::new(snapshot(vec![mine, theirs])));
+        let source = RoomBoardSource::new(me, reader);
+        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let all: String = delivery
+            .items
+            .iter()
+            .map(|i| i.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("[your work] you HOLD 1 card(s)"),
+            "her held card leads as a your-work fact: {all}"
+        );
+        assert!(
+            all.contains("reverse a string"),
+            "the lead names HER card: {all}"
+        );
+        assert!(all.contains("owner YOU"), "her claim renders as YOU: {all}");
+        // The peer's card keeps hex attribution and never enters her lead.
+        assert!(
+            !all.contains("you HOLD 2"),
+            "another peer's claim is not hers: {all}"
+        );
+    }
+
     // what this catches: a board too large for the budget truncates to the
     // cards that fit and NEVER overspends — a truncated board is truthful for
     // what it names, and truncation is bounded (no partial card, no overspend).
@@ -409,5 +631,48 @@ mod tests {
         );
         assert!(delivery.items.len() < 50, "truncated below the full board");
         assert!(delivery.continuation.is_none());
+    }
+
+    // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,
+    // Hermes-8B OURS 38% < RAW 52%) — a room-BOUND board delivering into a turn
+    // in a DIFFERENT context. A turn stamped with another room (or the eval
+    // fork's nil room) must get an empty delivery, never this room's cards +
+    // work/claim invitations; the SAME room still delivers; an UNSTAMPED ctx
+    // (None — background/legacy) keeps pre-gate behavior.
+    #[tokio::test]
+    async fn room_bound_board_abstains_outside_its_room() {
+        let home = uuid::Uuid::new_v4();
+        let p = persona();
+        let reader = Arc::new(StubReader::new(snapshot(vec![card(
+            "write wordstats",
+            CardState::Open,
+            None,
+        )])));
+        let source = RoomBoardSource::new(p, reader).for_room(home);
+
+        // Turn stamped with the SAME room → delivers.
+        let same = RagContext::for_persona_in_room(p, 1_000, home);
+        assert!(
+            !source.deliver(&same, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "same-room turn must still receive the board"
+        );
+        // Turn stamped with a DIFFERENT room → abstains.
+        let other = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::new_v4());
+        assert!(
+            source.deliver(&other, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "another room's turn must NOT receive this room's board"
+        );
+        // The eval fork's synthetic nil context → abstains (the exam-bleed fix).
+        let exam = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::nil());
+        assert!(
+            source.deliver(&exam, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "a synthetic exam context must NOT receive the room board"
+        );
+        // Unstamped ctx (None) → pre-gate behavior (delivers).
+        let unstamped = RagContext::for_persona(p, 1_000);
+        assert!(
+            !source.deliver(&unstamped, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "an unstamped ctx keeps legacy behavior"
+        );
     }
 }

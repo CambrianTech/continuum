@@ -119,6 +119,38 @@ pub fn bus_event_from_envelope(envelope: &AircRealtimeEnvelope) -> Option<BusEve
 /// read surface had the identical structural blindness (human chat lines
 /// reached the transcript but never `ChatViewState`) until it too routed
 /// through this decoder.
+/// Recover `(logical sender, text)` for a ROOM TURN from EITHER on-wire shape —
+/// the ONE place that decides what counts as a spoken room line:
+///
+/// 1. a peer's plain-text `say()` (`Body::Text`) → the transport peer said it;
+/// 2. a human/web `chat/send` (`Body::Json` chat_transcript envelope) → the
+///    envelope's logical sender said it.
+///
+/// Everything else returns a NAMED skip reason (never a bare drop — #177 was
+/// diagnosed blind because a silent `None` collapsed "decode error", "not our
+/// envelope", and "legit non-chat schema" into one indistinguishable void):
+/// - `"no_continuum_body_hint"` — not a continuum envelope (or the header was lost);
+/// - `"envelope_decode_error"` — hint present, serde decode FAILED (wire drift);
+/// - `"non_chat_schema"` — a continuum envelope that is not a chat line
+///   (presence, event-bridge, media-control) — a legit skip.
+///
+/// Consumers: persona perception (`perceptual_from_event`), the digest element
+/// (`ChannelElement::new` — was the third text-only blind surface), and any
+/// future read surface. One decoder, every reader.
+pub fn room_turn_from_event(
+    event: &TranscriptEvent,
+) -> Result<(uuid::Uuid, String), &'static str> {
+    if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
+        return Ok((event.peer_id.as_uuid(), text.to_string()));
+    }
+    match envelope_from_event(event) {
+        Err(_) => Err("envelope_decode_error"),
+        Ok(None) => Err("no_continuum_body_hint"),
+        Ok(Some(envelope)) => chat_transcript_message(&envelope, event.peer_id.as_uuid())
+            .ok_or("non_chat_schema"),
+    }
+}
+
 pub fn chat_transcript_message(
     envelope: &AircRealtimeEnvelope,
     fallback_peer: uuid::Uuid,

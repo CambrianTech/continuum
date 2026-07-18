@@ -18,7 +18,7 @@
     "vendor:views:check": "node scripts/vendor-views.mjs --check"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   }
 }

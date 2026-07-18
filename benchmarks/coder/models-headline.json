@@ -1,0 +1,14 @@
+[
+  {
+    "label": "Qwen2.5-Coder-14B",
+    "base_model_id": "continuum-ai/qwen2.5-coder-14b-instruct-GGUF",
+    "raw_endpoint": "http://127.0.0.1:8093/v1",
+    "raw_model": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+    "opencode_model": "local/qwen14b",
+    "opponents": [
+      "opencode",
+      "hermes",
+      "aider"
+    ]
+  }
+]

@@ -439,6 +439,8 @@ mod tests {
             multi_party_strategy: Default::default(),
             stop_sequences: Vec::new(),
             parameter_count: 0,
+            sampling: crate::model_registry::types::ModelSampling::default(),
+            persona_serving_eligible: true,
         }
     }
 

@@ -13,21 +13,60 @@ use uuid::Uuid;
 /// Per-step grade timeout. A compile or run that overruns is SIGKILLed on drop.
 const TEST_GRADE_TIMEOUT_SECS: u64 = 10;
 
-/// Extract a code block from a model response for test-grading. Prefers the first
-/// ```fenced``` block (stripping the language tag line); falls back to the whole
-/// text. Small models wrap code in fences inconsistently — this is forgiving.
+/// Extract the model's code from a response for test-grading.
+///
+/// A persona commonly authors ONE program across SEVERAL fences — "First the
+/// imports: ```rust\nuse std::fs;\n``` then the logic: ```rust\nfn solve(){ fs::…
+/// }\n```". Grading only the FIRST fence (the old behavior) dropped the rest of her
+/// real code — glass-boxed 2026-07-14: `error[E0432]: fs not found` on the eval
+/// while `use std::fs;` sat in a sibling fence, failing tasks the model actually
+/// got right (system tax, not model weakness). So: concatenate ALL Rust-tagged
+/// fences in order — faithful (only her code, all of it), never fabricated. When
+/// NO fence is Rust-tagged, fall back to the first fenced block (the original
+/// forgiving heuristic for models that fence inconsistently), then to the whole text.
 pub fn extract_code_block(answer: &str) -> String {
-    if let Some(start) = answer.find("```") {
-        let after = &answer[start + 3..];
-        let body = match after.find('\n') {
-            Some(i) => &after[i + 1..], // skip the ```lang tag line
-            None => after,
+    let blocks = fenced_blocks(answer);
+    if blocks.is_empty() {
+        return answer.trim().to_string();
+    }
+    let rust: Vec<&str> = blocks
+        .iter()
+        .filter(|(lang, _)| lang == "rust" || lang == "rs")
+        .map(|(_, code)| code.as_str())
+        .collect();
+    if !rust.is_empty() {
+        return rust.join("\n\n");
+    }
+    // No Rust-tagged fence — a text/output/other fence, or an untagged block. Keep
+    // the original single-fence behavior rather than risk concatenating a non-code
+    // fence (expected-output samples, shell transcripts) into the compiled unit.
+    blocks[0].1.clone()
+}
+
+/// Parse every ```lang … ``` fence in order, returning `(lowercased lang tag, trimmed
+/// body)` pairs. An unterminated final fence takes the rest of the text as its body
+/// (a model that forgot the closing fence still gets graded on what it wrote).
+fn fenced_blocks(answer: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = answer;
+    while let Some(start) = rest.find("```") {
+        let after = &rest[start + 3..];
+        let (lang, body) = match after.find('\n') {
+            Some(i) => (after[..i].trim().to_ascii_lowercase(), &after[i + 1..]),
+            None => (String::new(), after),
         };
-        if let Some(end) = body.find("```") {
-            return body[..end].trim().to_string();
+        match body.find("```") {
+            Some(end) => {
+                out.push((lang, body[..end].trim().to_string()));
+                rest = &body[end + 3..];
+            }
+            None => {
+                out.push((lang, body.trim().to_string()));
+                break;
+            }
         }
     }
-    answer.trim().to_string()
+    out
 }
 
 /// Strip a top-level `fn main() { … }` from candidate code, returning the code
@@ -242,9 +281,76 @@ fn trunc_stderr(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr).trim().chars().take(180).collect()
 }
 
+/// [`Verifier`](crate::cognition::resolution::Verifier) over the real code grader
+/// ([`test_grade`]) — **outlier A** of the will-driven resolution spine
+/// ([`crate::cognition::resolution`]). The draft is the persona's spoken answer;
+/// verification compiles + runs it against the task's test harness. The compiler +
+/// tests ARE the necessity detector (WILL-DRIVEN-RESOLUTION.md §2): a PASS ships, a
+/// FAIL carries the real compiler/panic output as the escalation reason so a climb
+/// re-drafts INFORMED by why the cheaper resolution fell short.
+///
+/// This is what makes "a pass with the higher model for code" fall out of the
+/// escalation loop automatically AND guarantees the benchmark cannot regress —
+/// failure is what summons the smarts. Rust-only today (the grader's constraint;
+/// any other `lang` fails loud, never a silent pass).
+pub struct CodeVerifier {
+    lang: String,
+    test: String,
+}
+
+impl CodeVerifier {
+    /// Verify a draft against a task's test harness. `test` is the assertion body the
+    /// grader wraps in `fn main()` — the same contract [`test_grade`] takes.
+    pub fn new(lang: impl Into<String>, test: impl Into<String>) -> Self {
+        Self {
+            lang: lang.into(),
+            test: test.into(),
+        }
+    }
+}
+
+impl crate::cognition::resolution::Verifier for CodeVerifier {
+    type Draft = String;
+    async fn verify(&self, draft: &String) -> crate::cognition::resolution::Verdict {
+        let (passed, detail) = test_grade(draft, &self.lang, &self.test).await;
+        if passed {
+            crate::cognition::resolution::Verdict::pass(detail)
+        } else {
+            crate::cognition::resolution::Verdict::fail(detail)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#168): CodeVerifier bridges the REAL rustc grader to the
+    // resolution spine's Verdict — a correct draft verifies PASS, a wrong draft
+    // verifies FAIL with the real compiler/assert output as the escalation reason.
+    // This is outlier A of the will-driven resolution loop proven on real ground:
+    // the objective verifier that lets "failure summons the smarts" hold.
+    #[tokio::test]
+    async fn code_verifier_passes_correct_draft_fails_wrong_one() {
+        use crate::cognition::resolution::Verifier;
+        let v = CodeVerifier::new("rust", "assert_eq!(add(2, 3), 5);");
+
+        let good = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```".to_string();
+        let good_verdict = v.verify(&good).await;
+        assert!(
+            good_verdict.passed,
+            "correct code must PASS, got: {}",
+            good_verdict.detail
+        );
+
+        let bad = "```rust\nfn add(a: i32, b: i32) -> i32 { a - b }\n```".to_string();
+        let bad_verdict = v.verify(&bad).await;
+        assert!(!bad_verdict.passed, "wrong code must FAIL to trigger escalation");
+        assert!(
+            !bad_verdict.detail.is_empty(),
+            "a failure must carry a reason to escalate on"
+        );
+    }
 
     // what this catches: the first fenced block is extracted and the ```lang tag
     // line is stripped, so a model that wraps its answer in ```rust … ``` is
@@ -267,6 +373,32 @@ mod tests {
             extract_code_block("  fn one() -> i32 { 1 }  "),
             "fn one() -> i32 { 1 }"
         );
+    }
+
+    // what this catches: a persona who splits ONE program across several ```rust
+    // fences (imports first, then the logic) must be graded on ALL of it — the old
+    // first-fence-only extraction dropped the logic and failed with `E0432: fs not
+    // found` on code the model actually wrote (system tax). // regression: live
+    // 2026-07-14 eval E0432 cluster
+    #[test]
+    fn concatenates_all_rust_fences_so_split_imports_survive() {
+        let answer = "First, the imports:\n```rust\nuse std::fs;\n```\n\
+                      Then the logic:\n```rust\nfn read_it(p: &str) -> String {\n    \
+                      fs::read_to_string(p).unwrap()\n}\n```";
+        let code = extract_code_block(answer);
+        assert!(code.contains("use std::fs;"), "keeps the imports fence: {code}");
+        assert!(code.contains("fn read_it"), "keeps the logic fence: {code}");
+    }
+
+    // what this catches: a NON-Rust fence (expected-output sample, shell transcript)
+    // that follows the Rust solution must NOT be concatenated into the compiled unit
+    // — only Rust-tagged fences are joined; a text fence is ignored.
+    #[test]
+    fn ignores_non_rust_fences_when_a_rust_fence_exists() {
+        let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```\n\
+                      Expected output:\n```text\n5\n```";
+        let code = extract_code_block(answer);
+        assert_eq!(code, "fn add(a: i32, b: i32) -> i32 { a + b }");
     }
 
     // what this catches: correct Rust that compiles AND whose asserts hold → exit 0

@@ -78,25 +78,41 @@ crate::action_command! {
     params: RecallEngramsParams,
     output: RecallEngramsResult,
     run(this, _ctx, p) => {
-        let persona = this
-            .state
-            .personas
+        // LIVE personas register their mind in `persona_workspace::global()` (the
+        // production spawn path); the `CognitionState` map is the IPC-era registry.
+        // Live-first, IPC-fallback — the SAME resolution `forget-context` and
+        // `redact-memory` use. Without this, recall-engrams returned "No cognition"
+        // for a persona that `cognition/personas` lists as resident (glass-boxed
+        // 2026-07-17: the eval fork and the learn-mode transfer both found her via
+        // the live registry, but this command only looked in the IPC map).
+        let live = crate::cognition::persona_workspace::global()
             .get(&p.persona_id)
-            .ok_or_else(|| CommandError::NotFound(format!("No cognition for {}", p.persona_id)))?;
+            .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()));
+        let admission = match live {
+            Some(a) => a,
+            None => this
+                .state
+                .personas
+                .get(&p.persona_id)
+                .map(|persona| persona.admission.clone())
+                .ok_or_else(|| {
+                    CommandError::NotFound(format!("No cognition for {}", p.persona_id))
+                })?,
+        };
 
         let engrams = match p.kind.as_str() {
-            "recent" => persona.admission.recall_recent(p.limit),
+            "recent" => admission.recall_recent(p.limit),
             "by_id" => {
                 let id = p
                     .id
                     .ok_or_else(|| CommandError::Invalid("by_id recall requires 'id'".into()))?;
-                persona.admission.recall_by_id(id).into_iter().collect()
+                admission.recall_by_id(id).into_iter().collect()
             }
             "by_keyword" => {
                 let keyword = p.keyword.as_deref().ok_or_else(|| {
                     CommandError::Invalid("by_keyword recall requires 'keyword'".into())
                 })?;
-                persona.admission.recall_by_keyword(keyword, p.limit)
+                admission.recall_by_keyword(keyword, p.limit)
             }
             "by_origin" => {
                 let origin_str = p.origin.as_deref().ok_or_else(|| {
@@ -114,7 +130,7 @@ crate::action_command! {
                         )))
                     }
                 };
-                persona.admission.recall_by_origin_kind(origin_kind, p.limit)
+                admission.recall_by_origin_kind(origin_kind, p.limit)
             }
             other => {
                 return Err(CommandError::Invalid(format!(

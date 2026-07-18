@@ -4,6 +4,7 @@
 //! ```text
 //! cu start            # build + run the headless Rust core (detached), wait until ready
 //! cu reboot           # rebuild + relaunch, replacing any running core (~0 downtime)
+//!                     # refuses while training (mlx_lm) is live — `--force` overrides
 //! cu stop             # stop the running core
 //! cu ping             # dispatch a command to the running core
 //! cu ping '{"message":"hi"}'
@@ -53,7 +54,10 @@ async fn run() -> Result<(), String> {
             Ok(())
         }
         "start" => start().await,
-        "reboot" | "restart" => reboot().await,
+        "reboot" | "restart" => {
+            let force = args.any(|a| a == "--force");
+            reboot(force).await
+        }
         "stop" => stop().await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
@@ -369,8 +373,37 @@ async fn start() -> Result<(), String> {
 /// execs the new one (~0 downtime). This is the canonical operator
 /// rebuild-after-edit verb — one command, no manual kill dance
 /// ([[validate-via-pure-rust-not-npm-jtag]]).
-async fn reboot() -> Result<(), String> {
+async fn reboot(force: bool) -> Result<(), String> {
     let socket = socket_path();
+    // Training guard (task #137, Joel's consent-gate doctrine: the denial names
+    // the policy AND the path). A core swap kills spawned trainer children
+    // (mlx_lm.lora) and their in-process watchers — glass-boxed 2026-07-11: 41
+    // jobs submitted, zero outcomes recorded, all orphaned by reboots. Live
+    // training is a lease the reboot must respect, not silently revoke.
+    let trainers = running_trainer_pids();
+    if !trainers.is_empty() && !force {
+        return Err(format!(
+            "training in flight (mlx_lm pid(s) {}) — a reboot would kill it and the \
+             run would be journaled killed-by-reboot. Wait for it to finish, or rerun \
+             with `cu reboot --force` if losing the run is acceptable.",
+            trainers
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    if !trainers.is_empty() {
+        println!(
+            "⚠ --force: rebooting over live training (mlx_lm pid(s) {}) — the run dies \
+             here and the job ledger will record killed-by-reboot at next boot",
+            trainers
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
     // Snapshot the running core PIDs up front so launch_core can wait for them to
     // actually exit before trusting the new core's ping (same socket, both answer).
     let old = running_core_pids();
@@ -385,11 +418,21 @@ async fn reboot() -> Result<(), String> {
     launch_core(&old).await
 }
 
+/// PIDs of live training runs (`mlx_lm` trainers spawned by the MLX adapter) —
+/// the reboot guard's evidence. Same pgrep shape as [`running_core_pids`].
+fn running_trainer_pids() -> Vec<i32> {
+    pgrep("mlx_lm")
+}
+
 /// PIDs of every running `continuum-core-server`, via `pgrep` (pure unix, no
 /// Node). Empty on no match or if pgrep is unavailable.
 fn running_core_pids() -> Vec<i32> {
+    pgrep("continuum-core-server")
+}
+
+fn pgrep(pattern: &str) -> Vec<i32> {
     std::process::Command::new("pgrep")
-        .args(["-f", "continuum-core-server"])
+        .args(["-f", pattern])
         .output()
         .ok()
         .filter(|o| o.status.success())

@@ -57,6 +57,9 @@ pub struct ChannelElement {
     event: TranscriptEvent,
     /// Text body extracted once (None for non-text events — they carry no embedding).
     text: Option<String>,
+    /// The envelope's TRUE author for a `chat/send` line (the human/web identity),
+    /// `None` for a plain `say()` (transport peer IS the author). See `sender_id()`.
+    logical_sender: Option<Uuid>,
     /// The embedder used to compute this element's vector. In production this is the
     /// content-addressed `CachingEmbeddingProvider`, so the compute-once property
     /// also holds across messages with identical text.
@@ -69,14 +72,31 @@ pub struct ChannelElement {
 impl ChannelElement {
     /// Build an element around an airc event. Cheap — the embedding is NOT computed
     /// here; it is pulled lazily on first `embedding()` (CBAR lazy getter).
+    ///
+    /// Text recovery goes through BOTH on-wire room-turn shapes, via the same ONE
+    /// `chat_transcript_message` decoder as persona perception and the positron
+    /// projection: a peer's plain-text `say()` (`Body::Text`) AND a human/web
+    /// `chat/send` (`Body::Json` chat_transcript envelope). Task #177 live diagnosis
+    /// (2026-07-16): this was the THIRD surface with the text-only blindness — human
+    /// chat lines became `text: None` elements, so every ChannelDigest (every tick's
+    /// room context) silently omitted them and personas read an active room as
+    /// "quiet". The envelope also carries the TRUE logical sender (the human's
+    /// identity), which `sender_id()` exposes so digests attribute the words to the
+    /// speaker, not to the core's relay peer.
     fn new(event: TranscriptEvent, embedder: Arc<dyn EmbeddingProvider>) -> Self {
-        let text = event
-            .body
-            .as_ref()
-            .and_then(|b| b.as_text().map(|s| s.to_string()));
+        // The ONE room-turn decoder (realtime_wire::room_turn_from_event) recovers
+        // text + logical sender for BOTH wire shapes. A non-turn (presence,
+        // event-bridge, decode error) is simply a text-less element here; the
+        // skip-reason visibility lives on the perception path.
+        let (text, logical_sender) =
+            match crate::airc::realtime_wire::room_turn_from_event(&event) {
+                Ok((sender, text)) => (Some(text), Some(sender)),
+                Err(_) => (None, None),
+            };
         Self {
             event,
             text,
+            logical_sender,
             embedder,
             embedding: OnceCell::new(),
         }
@@ -95,6 +115,14 @@ impl ChannelElement {
     /// The message text, if it has a text body.
     pub fn text(&self) -> Option<&str> {
         self.text.as_deref()
+    }
+
+    /// Who actually said this: the envelope's logical sender for a `chat/send`
+    /// (the human/web identity that authored the line), else the transport peer
+    /// (a persona's own `say()`). Attribution recovery, never fabrication — both
+    /// candidates are real identities on the event.
+    pub fn sender_id(&self) -> Uuid {
+        self.logical_sender.unwrap_or_else(|| self.event.peer_id.as_uuid())
     }
 
     /// The message embedding — computed ONCE for this element and shared by every
@@ -244,6 +272,66 @@ mod tests {
             receipt: None,
             metadata: serde_json::Value::Null,
         }
+    }
+
+    // what this catches: #177's THIRD blind surface, fixed. A human/web `chat/send`
+    // rides the wire as a Body::Json chat_transcript envelope — as_text() is None, and
+    // before this fix the element got `text: None`, so every ChannelDigest (every
+    // tick's room context) silently omitted human chat and personas read an active
+    // room as "quiet" (live, 2026-07-16: Atlas said exactly that 16 min after an
+    // operator message). The element must recover the text through the ONE
+    // chat_transcript decoder AND attribute the LOGICAL sender (the human identity in
+    // the envelope), not the relay peer that published it.
+    #[tokio::test]
+    async fn chat_send_envelope_yields_text_and_logical_sender() {
+        use crate::airc::realtime::{
+            AircRealtimeDelivery, AircRealtimeEnvelope, AircRealtimePayload,
+            AircRealtimePayloadRef, AircRealtimeSchema,
+        };
+        use crate::airc::realtime_wire::{body_for_envelope, headers_for_envelope};
+
+        let human = Uuid::new_v4(); // the operator identity chat/send carries
+        let envelope = AircRealtimeEnvelope {
+            event_id: Uuid::new_v4().to_string(),
+            room_id: RoomId::new().as_uuid(),
+            source_id: human.to_string(),
+            target_id: None,
+            created_at_ms: 1,
+            delivery: AircRealtimeDelivery::Durable,
+            trace_id: None,
+            payload: AircRealtimePayload::ExistingSchema {
+                payload: AircRealtimePayloadRef::inline(
+                    AircRealtimeSchema::ChatTranscript,
+                    serde_json::json!({
+                        "messageId": Uuid::new_v4().to_string(),
+                        "text": "Asha — reply with what you are doing right now.",
+                        "senderId": human.to_string(),
+                    }),
+                ),
+            },
+        };
+        let mut event = make_event(None, 7); // Json body, NOT text
+        event.headers = headers_for_envelope(&envelope);
+        event.body = Some(body_for_envelope(&envelope).expect("envelope encodes"));
+
+        let cache = ChannelElementCache::new(Arc::new(CountingEmbedder::new()));
+        let element = cache.get_or_insert(event);
+        assert_eq!(
+            element.text(),
+            Some("Asha — reply with what you are doing right now."),
+            "a human chat line must be VISIBLE in the digest, not a text:None ghost"
+        );
+        assert_eq!(
+            element.sender_id(),
+            human,
+            "attributed to the human who wrote it, not the relay peer"
+        );
+
+        // And the plain-say sibling keeps transport-peer attribution.
+        let say = make_event(Some("hello"), 8);
+        let say_peer = say.peer_id.as_uuid();
+        let el = cache.get_or_insert(say);
+        assert_eq!(el.sender_id(), say_peer, "a say() is authored by its transport peer");
     }
 
     // what this catches: THE REFERENCE-PASSED FRAME — resolving the same airc

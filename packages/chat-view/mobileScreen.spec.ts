@@ -18,7 +18,9 @@ const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k });
 const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   member_id: 'm-1', display_name: 'Asha', kind: kind('agent'), integrations: {},
   provenance: { runtime: 'persona' }, active: true, last_seen_ms: 0,
-  vitals: { activity: 42 }, ...over,
+  vitals: { activity: 42 },
+  loadout: { model: 'devstral-24b', params: 24_000_000_000, context_window: 32_768 },
+  ...over,
 });
 const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
   id: 'msg-1', room_id: 'room-1', sender_id: 's-1', sender_name: 'Asha',
@@ -45,12 +47,16 @@ describe('toMobileScreen — the mobile adaptation rule', () => {
 
     expect(screen.title).toBe('general'); // app bar = room
     expect(screen.primary.purpose).toBe('chat'); // conversation owns the screen
-    expect(screen.tabs.length).toBe(1); // the roster listing → one bottom-nav tab
+    // The rail's LISTING widgets become bottom-nav tabs (Rooms + Who); the metrics
+    // widget is NOT a tab (a phone shows presence, not a dashboard in the nav).
+    expect(screen.tabs.map((t) => t.id)).toEqual(['rooms', 'roster']);
 
-    const rosterCell = screen.tabs[0]?.cells[0];
+    const rosterTab = screen.tabs.find((t) => t.id === 'roster');
+    const rosterCell = rosterTab?.cells[0];
     expect(rosterCell?.title).toBe('Asha'); // presence kept
     expect(rosterCell?.status).toBeDefined();
     expect(rosterCell?.badges).toBeUndefined(); // dossier dropped
     expect(rosterCell?.meters).toBeUndefined(); // vitals meters dropped for the phone
+    expect(rosterCell?.loadout).toBeUndefined(); // loadout strip dropped too (dossier)
   });
 });

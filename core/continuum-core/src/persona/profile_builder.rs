@@ -180,10 +180,19 @@ pub fn build_profile(
         HwTierCategory::Cloud => -1,
     };
 
-    // chat_template + stop_sequences: pre-resolved from the registry
-    // row so the adapter doesn't re-query per call.
+    // chat_template + stop_sequences + sampling: pre-resolved from the registry
+    // row so the adapter doesn't re-query per call. Sampling (#76) is the
+    // model's row-level decode defaults (temperature/top-k/p + the #181 anti-loop
+    // pair) combined with the role's response budget — a blessed/tuned model
+    // carries its own knobs, an unblessed row carries the substrate floor. Role
+    // length budget wiring is reserved (see module docstring); until then the
+    // profile uses the default budget.
     let chat_template = model.chat_template.clone();
     let stop_sequences = model.stop_sequences.clone();
+    let sampling = SamplingProfile::from_model(
+        &model.sampling,
+        crate::persona::inference_profile::DEFAULT_MAX_NEW_TOKENS,
+    );
 
     Ok(PersonaInferenceProfile {
         persona_id,
@@ -197,7 +206,7 @@ pub fn build_profile(
         n_batch,
         n_seq_max,
         n_gpu_layers,
-        sampling: SamplingProfile::chat_defaults(),
+        sampling,
         chat_template,
         stop_sequences,
     })
@@ -240,6 +249,14 @@ mod tests {
     }
 
     fn registry_with_qwen25_05b() -> Arc<Registry> {
+        registry_with_sampling(crate::model_registry::types::ModelSampling::default())
+    }
+
+    /// Same LCD row, but with a caller-chosen [`ModelSampling`] — lets a test
+    /// prove #76: the model row's decode knobs flow into the built profile.
+    fn registry_with_sampling(
+        sampling: crate::model_registry::types::ModelSampling,
+    ) -> Arc<Registry> {
         let fake_gguf = make_fake_gguf_tempfile();
         let llamacpp_provider = Provider {
             id: "llamacpp-local".to_string(),
@@ -277,6 +294,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
             parameter_count: 0,
+            sampling,
+            persona_serving_eligible: true,
         };
         Arc::new(
             Registry::from_catalog(vec![model], vec![llamacpp_provider])
@@ -318,6 +337,61 @@ mod tests {
         assert!(profile.gguf_local_path.is_some());
         // Stop sequences propagated from the registry row.
         assert_eq!(profile.stop_sequences, vec!["<|im_end|>".to_string()]);
+        // #76: an unblessed row carries the substrate floor (incl. the #181
+        // anti-loop pair) — a model that tunes nothing is never worse off.
+        assert_eq!(profile.sampling.repeat_last_n, 320);
+        assert!((profile.sampling.frequency_penalty - 0.3).abs() < 1e-6);
+    }
+
+    // what this catches (#76 + "handle infinite model kinds, demonstrate with a
+    // good sample"): a model row's OWN sampling knobs flow through build_profile
+    // into the persona's SamplingProfile — the mechanism carries per-model tuning,
+    // not just the floor everywhere. A blessed/tuned row (here a distinct
+    // temperature + a WIDER anti-loop window than the floor) must reach the profile
+    // verbatim; the floor case above proves an unblessed row still gets the floor.
+    // Together they demonstrate: infinite kinds handled (floor default), any one
+    // tunable per-model (this row) — all from the ONE Model row, no adapter magic.
+    #[test]
+    fn model_row_sampling_flows_into_the_profile() {
+        use crate::model_registry::types::ModelSampling;
+        let tuned = ModelSampling {
+            temperature: 0.35,
+            top_k: 20,
+            top_p: 0.9,
+            repeat_penalty: 1.15,
+            repeat_last_n: 512,
+            frequency_penalty: 0.45,
+        };
+        let registry = registry_with_sampling(tuned);
+        let profile = build_profile(
+            Uuid::nil(),
+            "Ada",
+            "coder",
+            "m1_uma_8gb",
+            HwTierCategory::MSeries,
+            "continuum-ai/qwen2.5-0.5b-instruct-GGUF",
+            ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
+            &registry,
+        )
+        .expect("build profile");
+        assert!((profile.sampling.temperature - 0.35).abs() < 1e-6, "row temperature reached the profile");
+        assert_eq!(profile.sampling.top_k, 20);
+        assert!((profile.sampling.top_p - 0.9).abs() < 1e-6);
+        assert!((profile.sampling.repeat_penalty - 1.15).abs() < 1e-6);
+        assert_eq!(
+            profile.sampling.repeat_last_n, 512,
+            "the row's WIDER anti-loop window overrides the floor — per-model tuning is live"
+        );
+        assert!((profile.sampling.frequency_penalty - 0.45).abs() < 1e-6);
+        // max_new_tokens is a ROLE budget, not a model fact — so it's the default,
+        // NOT carried from ModelSampling (which deliberately has no such field).
+        assert_eq!(
+            profile.sampling.max_new_tokens,
+            crate::persona::inference_profile::DEFAULT_MAX_NEW_TOKENS
+        );
     }
 
     /// Tier-shaped n_gpu_layers: MSeries+ goes full GPU (-1), Compat

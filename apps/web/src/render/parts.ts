@@ -10,8 +10,8 @@
 import { html, svg, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
-import type { ListingCell } from '@continuum/patterns';
-import type { MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
+import type { ListingCell, ListingView } from '@continuum/patterns';
+import type { LoadoutVM, MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
 
 /** GENERIC listing-cell renderer — the first real positron web *component*: it draws
  *  ANY already-projected `ListingCell` (a foundry model, a room, a cohort) the same
@@ -34,6 +34,17 @@ export function listingCell(cell: ListingCell): TemplateResult {
         : nothing}
     </li>
   `;
+}
+
+/** Render a `ListingView`'s rows — the roster as rich member cards (the neutral cell
+ *  carries glyph/name/badges/status/meters), every other listing as generic cells.
+ *  Single-sourced here so `webTarget.listing` AND the `'listing'` rail-widget renderer
+ *  draw the SAME rows without duplication ([[compression]]). */
+export function renderListing(view: ListingView): TemplateResult {
+  if (view.id === 'roster') {
+    return html`<ul class="roster">${view.cells.map(memberCardFromCell)}</ul>`;
+  }
+  return html`<ul class="cells">${view.cells.map(listingCell)}</ul>`;
 }
 
 /** Short glyph per author kind — the neutral human/agent/system discriminant. */
@@ -78,7 +89,7 @@ export function avatarState(v: Readonly<Record<string, number>>, active: boolean
 /** An emoji over the avatar for an emotional event. Today a proxy for the dominant cognitive
  *  faculty; real emotion events (mood/reaction) wire in later — that's the hard part. */
 function emojiOverlay(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
-  const faces: Array<[string, number]> = [
+  const faces: [string, number][] = [
     ['🎯', v.focus ?? 0],
     ['🤔', v.reason ?? 0],
     ['💭', v.recall ?? 0],
@@ -102,10 +113,10 @@ export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateR
   // FOUR distinct triangles pointing out like a compass (N=Focus, E=Reason, S=Recall,
   // W=Act), a gap in the centre — so it reads as four, and a strong faculty burns bright
   // while a dim one nearly vanishes (the SHAPE is the mind). No more solid blob.
-  const lit = (k: string) => 0.14 + 0.86 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
-  const pct = (k: string) => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
+  const lit = (k: string): number => 0.14 + 0.86 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
+  const pct = (k: string): number => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
   // Each faculty its own hue (color > monochrome) — readable by colour AND position.
-  const tri = (pts: string, k: string, label: string, color: string) =>
+  const tri = (pts: string, k: string, label: string, color: string): TemplateResult =>
     svg`<polygon points="${pts}" class="cog-tri" style="fill:${color};opacity:${lit(k)}"><title>${label} ${pct(k)}</title></polygon>`;
   return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
     ${tri('20,2 12,15 28,15', 'focus', 'Focus', '#00d4ff')}
@@ -134,7 +145,7 @@ export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult
  *  simply shows its activity, honestly. */
 /** The engine meters shown as bars — the cognition faculties are the DIAMOND, not bars
  *  (showing them both ways made the tile tall + redundant). Just speed + size here. */
-const STAT_ORDER: ReadonlyArray<readonly [string, string]> = [
+const STAT_ORDER: readonly (readonly [string, string])[] = [
   ['speed', 'SPD'],
   ['size', 'PAR'],
 ];
@@ -166,6 +177,51 @@ export function cognitionCluster(v: Readonly<Record<string, number>>): TemplateR
   return html`<span class="cog-cluster">${hasCog ? cognitionDiamond(v) : nothing}${genome}</span>`;
 }
 
+/** RAW parameter count → a compact unit label: `24_000_000_000` → "24B",
+ *  `671_000_000_000` → "671B", `2_800_000_000_000` → "2.8T", `300_000_000` → "300M".
+ *  The renderer owns the unit so the wire carries the honest raw count. */
+function formatParams(n: number): string {
+  if (n >= 1e12) return `${+(n / 1e12).toFixed(1)}T`;
+  if (n >= 1e9) return `${Math.round(n / 1e9)}B`;
+  if (n >= 1e6) return `${Math.round(n / 1e6)}M`;
+  return String(n);
+}
+
+/** RAW context window (tokens) → a compact label: `32768` → "32k", `262144` → "256k",
+ *  `200000` → "200k", `1_000_000` → "1M". Context windows come in TWO conventions: local
+ *  GGUF models quote powers of two (32768, 131072, 262144), read in 1024-units so they land
+ *  on the round 32k/128k/256k a model is actually known by; cloud models quote round base-10
+ *  (200000, 1_000_000), read in 1000-units. Keying the unit on `% 1024` picks the right one. */
+function formatCtx(n: number): string {
+  if (n <= 0) return String(n);
+  const unit = n % 1024 === 0 ? 1024 : 1000;
+  const mega = unit * unit;
+  if (n >= mega) return `${+(n / mega).toFixed(n % mega === 0 ? 0 : 1)}M`;
+  if (n >= unit) return `${Math.round(n / unit)}k`;
+  return String(n);
+}
+
+/** The LOADOUT strip — the model backing a persona, `model · size · ctx`. Each part
+ *  drawn only when present; an all-absent loadout renders nothing (a human, an
+ *  unresolved agent — honest, never a fabricated model line). The "model size,
+ *  context size" Joel asked the tile to surface. */
+export function loadoutStrip(lo: LoadoutVM | undefined): TemplateResult | typeof nothing {
+  if (!lo) return nothing;
+  const parts: string[] = [];
+  if (lo.model) parts.push(lo.model);
+  if (lo.params) parts.push(formatParams(lo.params));
+  if (lo.contextWindow) parts.push(`${formatCtx(lo.contextWindow)} ctx`);
+  if (parts.length === 0) return nothing;
+  return html`<span class="loadout" title="model · size · context">
+    ${parts.map(
+      (p, i) =>
+        html`${i > 0 ? html`<span class="loadout-sep">·</span>` : nothing}<span class="loadout-part"
+            >${p}</span
+          >`,
+    )}
+  </span>`;
+}
+
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
  *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
 export function memberCard(m: RosterMemberVM): TemplateResult {
@@ -182,6 +238,7 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
           <span class="kind-badge">${kindLabel(m.kind)}</span>
           ${runtimeBadge(m.runtime)}
         </span>
+        ${loadoutStrip(m.loadout)}
         ${personaReadout(m.vitals)}
       </span>
       ${cognitionCluster(m.vitals)}
@@ -213,6 +270,7 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
           <span class="kind-badge">${kind}</span>
           ${runtimeBadge(runtime)}
         </span>
+        ${loadoutStrip(cell.loadout)}
         ${cell.meters ? personaReadout(cell.meters) : nothing}
       </span>
       ${cell.meters ? cognitionCluster(cell.meters) : nothing}
@@ -253,7 +311,7 @@ export function formatContent(text: string): TemplateResult {
 
 /** Inline `code` spans → styled <code>; everything else passes through as text. */
 function inlineCode(text: string): TemplateResult {
-  const out: Array<TemplateResult | string> = [];
+  const out: (TemplateResult | string)[] = [];
   const rx = /`([^`\n]+)`/g;
   let last = 0;
   let m: RegExpExecArray | null;

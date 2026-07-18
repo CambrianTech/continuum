@@ -8,7 +8,23 @@ import type { ToolChoice } from "./ToolChoice";
 /**
  * Text generation request
  */
-export type TextGenerationRequest = { messages: Array<ChatMessage>, systemPrompt?: string, model?: string, provider?: string, temperature?: number, maxTokens?: number, topP?: number, topK?: number, repeatPenalty?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, toolChoice?: ToolChoice, 
+export type TextGenerationRequest = { messages: Array<ChatMessage>, systemPrompt?: string, model?: string, provider?: string, temperature?: number, maxTokens?: number, topP?: number, topK?: number, repeatPenalty?: number, 
+/**
+ * llama.cpp-native, UNWINDOWED repetition guard: scales each token's penalty by how
+ * often it has appeared across the ENTIRE generation (unlike `repeat_penalty`, which
+ * only scans the last `repeat_last_n` tokens). Catches gap-separated loops — a code
+ * block re-emitted many times regardless of the text between (#181). `None` → the
+ * adapter's llama.cpp default (0.3). Joins the Model row with the other sampling
+ * knobs under #76. Ignored by cloud OpenAI-compat providers.
+ */
+frequencyPenalty?: number, 
+/**
+ * Window (trailing tokens) that `repeat_penalty` scans on llama.cpp-
+ * family gateways. `None` → the gateway's own default (64). Widened
+ * by the substrate sampling defaults to catch loops whose span
+ * exceeds 64 tokens (#181). Ignored by cloud OpenAI-compat providers.
+ */
+repeatLastN?: number, stopSequences?: Array<string>, tools?: Array<NativeToolSpec>, toolChoice?: ToolChoice, 
 /**
  * Force the model to output a specific format (e.g. JSON object).
  * OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The

@@ -288,7 +288,7 @@ impl DatasetService {
 
     /// Import a generic CSV file as a JSONL training dataset.
     pub fn import_csv(&self, p: &ImportCsvParams) -> Result<DatasetManifest, String> {
-        let output_dir = self.resolve_root(p.output_dir.as_deref());
+        let output_dir = self.resolve_root(p.output_dir.as_deref()).join(&p.name);
 
         let csv_path = PathBuf::from(&p.csv_path);
         if !csv_path.exists() {
@@ -383,7 +383,7 @@ impl DatasetService {
             ));
         }
 
-        let output_dir = self.resolve_root(p.output_dir.as_deref());
+        let output_dir = self.resolve_root(p.output_dir.as_deref()).join(&p.name);
 
         let mut examples: Vec<Value> = Vec::new();
         let entries = std::fs::read_dir(&turns_dir)
@@ -460,7 +460,7 @@ impl DatasetService {
             }
         }
 
-        let output_dir = self.resolve_root(p.output_dir.as_deref());
+        let output_dir = self.resolve_root(p.output_dir.as_deref()).join(&p.name);
 
         let mut examples: Vec<Value> = Vec::new();
         let entries = std::fs::read_dir(&dir)
@@ -833,12 +833,18 @@ pub struct DatasetModule {
     service: Arc<DatasetService>,
 }
 
+/// The ONE default datasets root (`~/.continuum/datasets`). Producers
+/// (`dataset/*` commands) and consumers (`genome/job-create` by `datasetName`)
+/// both resolve through here — the location is defined once.
+pub fn default_datasets_root() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".continuum").join("datasets")
+}
+
 impl Default for DatasetModule {
     fn default() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let datasets_root = PathBuf::from(home).join(".continuum").join("datasets");
         Self {
-            service: Arc::new(DatasetService::new(datasets_root)),
+            service: Arc::new(DatasetService::new(default_datasets_root())),
         }
     }
 }
@@ -1120,9 +1126,12 @@ mod tests {
         assert_eq!(v.train_examples, 1);
         assert_eq!(v.eval_examples, 1);
 
-        assert!(output_dir.join("train.jsonl").exists());
-        assert!(output_dir.join("eval.jsonl").exists());
-        assert!(output_dir.join("manifest.json").exists());
+        // Files land under <root>/<name>/, never flat at the root — a second
+        // import must not clobber the first, and dataset/list only scans subdirs.
+        let ds_dir = output_dir.join("test-dataset");
+        assert!(ds_dir.join("train.jsonl").exists());
+        assert!(ds_dir.join("eval.jsonl").exists());
+        assert!(ds_dir.join("manifest.json").exists());
     }
 
     // what this catches: the LIVE rooms→training bridge AND the L1 axis contract —
@@ -1250,8 +1259,11 @@ mod tests {
         assert_eq!(v.name, "gastro-turns");
         assert_eq!(v.total_examples, 1, "only the spoke turn is a pair");
 
-        // The written example is a chat SFT record: system + user + assistant.
-        let train = std::fs::read_to_string(output_dir.join("train.jsonl")).unwrap();
+        // The written example is a chat SFT record: system + user + assistant —
+        // landed under <root>/<name>/, never flat at the root (a second dataset
+        // must not clobber the first; dataset/list only scans subdirectories).
+        let train =
+            std::fs::read_to_string(output_dir.join("gastro-turns").join("train.jsonl")).unwrap();
         let example: Value = serde_json::from_str(train.lines().next().unwrap()).unwrap();
         let msgs = example["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);

@@ -49,7 +49,11 @@ pub struct TrainingJobRequest {
     /// genome paging. e.g. "typescript-expertise", "kc-tech-history",
     /// or a persona-named trait like "maya-voice".
     pub trait_kind: String,
-    /// The curated dataset.
+    /// The curated dataset. Rust callers construct it directly; the
+    /// `genome/job-create` wire path may instead name an on-disk dataset
+    /// (`datasetName`), which the command loads into this field before the
+    /// request reaches any adapter — adapters always see a populated dataset.
+    #[serde(default)]
     pub dataset: TrainingDataset,
     /// The gym that MEASURES this trait — a JSONL eval-set path (the
     /// `cognition/eval` `eval_set`). The dataset and this gym are two
@@ -103,6 +107,91 @@ pub struct TrainingDataset {
     /// (default `0.1`, range `[0.0, 0.5]`). Adapters that don't
     /// support a validation split clamp to `0.0`.
     pub validation_split: f32,
+}
+
+impl Default for TrainingDataset {
+    /// The empty dataset the wire path deserializes when the caller named an
+    /// on-disk dataset instead of inlining examples. Never valid to TRAIN on —
+    /// `genome/job-create` rejects an empty `examples` before adapter selection.
+    fn default() -> Self {
+        Self {
+            examples: Vec::new(),
+            source: TrainingSource::OperatorCurated,
+            validation_split: 0.1,
+        }
+    }
+}
+
+impl TrainingDataset {
+    /// Load a chat-format dataset (the `dataset/*` commands' `{messages:[...]}`
+    /// JSONL) into training pairs: every message before the final assistant turn
+    /// folds into `prompt` in render order (system first — the same text the live
+    /// turn saw), the final assistant turn is `completion`. This is the
+    /// dataset-by-NAME seam: `dataset/from-captures` writes the corpus,
+    /// `genome/job-create` consumes it by name — the recipe stays data on disk,
+    /// never a multi-megabyte example blob hand-carried through argv.
+    pub fn from_chat_jsonl(
+        path: &std::path::Path,
+        source: TrainingSource,
+    ) -> Result<Self, String> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("read dataset {}: {e}", path.display()))?;
+        let mut examples = Vec::new();
+        for (i, line) in raw.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let row: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| format!("{}:{}: bad JSON: {e}", path.display(), i + 1))?;
+            let msgs = row
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .ok_or_else(|| format!("{}:{}: row has no messages[]", path.display(), i + 1))?;
+            let (last, context) = msgs
+                .split_last()
+                .ok_or_else(|| format!("{}:{}: empty messages[]", path.display(), i + 1))?;
+            if last.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+                return Err(format!(
+                    "{}:{}: final message is not the assistant turn",
+                    path.display(),
+                    i + 1
+                ));
+            }
+            let completion = last
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let prompt = context
+                .iter()
+                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if prompt.is_empty() || completion.is_empty() {
+                return Err(format!(
+                    "{}:{}: empty prompt or completion after fold",
+                    path.display(),
+                    i + 1
+                ));
+            }
+            examples.push(TrainingExample {
+                prompt,
+                completion,
+                metadata: row
+                    .get("skillAxis")
+                    .map(|a| serde_json::json!({ "skillAxis": a })),
+            });
+        }
+        if examples.is_empty() {
+            return Err(format!("{}: no training examples", path.display()));
+        }
+        Ok(Self {
+            examples,
+            source,
+            validation_split: 0.05,
+        })
+    }
 }
 
 /// One training pair — the unit of evidence.
@@ -357,6 +446,46 @@ pub struct JobMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the dataset-by-NAME seam's fold contract — a chat
+    // {messages} JSONL row (what dataset/from-captures writes) becomes ONE
+    // TrainingExample whose prompt is every pre-assistant message joined in render
+    // order and whose completion is the assistant turn. A row whose final message
+    // is NOT the assistant fails LOUD (training on a context-as-completion row
+    // would teach the model to parrot its own prompt).
+    #[test]
+    fn from_chat_jsonl_folds_context_and_rejects_non_assistant_tail() {
+        let dir = std::env::temp_dir().join(format!("ds-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("train.jsonl");
+        std::fs::write(
+            &good,
+            concat!(
+                r#"{"messages":[{"role":"system","content":"sys"},{"role":"user","content":"burst"},{"role":"assistant","content":"act"}],"skillAxis":"operational"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let ds = TrainingDataset::from_chat_jsonl(&good, TrainingSource::OperatorCurated).unwrap();
+        assert_eq!(ds.examples.len(), 1);
+        assert_eq!(ds.examples[0].prompt, "sys\nburst");
+        assert_eq!(ds.examples[0].completion, "act");
+        assert_eq!(
+            ds.examples[0].metadata.as_ref().unwrap()["skillAxis"],
+            "operational"
+        );
+
+        let bad = dir.join("bad.jsonl");
+        std::fs::write(
+            &bad,
+            r#"{"messages":[{"role":"assistant","content":"act"},{"role":"user","content":"q"}]}"#,
+        )
+        .unwrap();
+        let err = TrainingDataset::from_chat_jsonl(&bad, TrainingSource::OperatorCurated)
+            .unwrap_err();
+        assert!(err.contains("not the assistant turn"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // what this catches: TrainingSource MUST be a typed enum, not a
     // free-form string. The substrate's reputation system branches on

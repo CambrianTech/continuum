@@ -3,4 +3,4 @@
 /**
  * Existing Continuum schema carried by an AIRC realtime envelope.
  */
-export type AircRealtimeSchema = "jtag_message" | "event_bridge_payload" | "grid_frame" | "live_kit_bridge_command" | "live_kit_bridge_event" | "chat_transcript";
+export type AircRealtimeSchema = "jtag_message" | "event_bridge_payload" | "grid_frame" | "live_kit_bridge_command" | "live_kit_bridge_event" | "chat_transcript" | "grid_capacity";

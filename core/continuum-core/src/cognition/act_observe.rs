@@ -25,9 +25,8 @@
 
 use uuid::Uuid;
 
-use super::workspace::{Burst, Decision, TurnFraming, TurnMetrics, WorkspaceCycle};
+use super::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
 use crate::ai::types::ToolCall;
-use crate::persona::types::{InboxMessage, SenderType};
 
 /// Max chars of a single tool result folded into the next perception / engram.
 /// A bound on what we re-inject, NOT a clamp on the model's own generation: the
@@ -69,6 +68,25 @@ pub struct SettleOutcome {
     /// corrupts the accuracy metric ([[self-improvement-is-a-control-loop]]: the
     /// reward is only as trustworthy as the metric). `None` on every settled turn.
     pub inference_error: Option<String>,
+}
+
+impl SettleOutcome {
+    /// An infra-failure outcome: no verdict was reached because the deliberation
+    /// call failed OR was aborted by a watchdog (e.g. a per-task deadline in the
+    /// eval loop). The grader keys on `inference_error.is_some()` to score this a
+    /// NAMED infrastructure failure — never a wrong answer — so a serving wedge
+    /// never masquerades as a capability miss ([[self-improvement-is-a-control-loop]]).
+    /// Zeroed metrics/acts because none accrued meaningfully. `TurnMetrics: Default`.
+    pub fn infra_failure(cause: impl Into<String>) -> Self {
+        Self {
+            decision: Decision::Pass,
+            spoken: None,
+            acts: 0,
+            world_state: String::new(),
+            metrics: TurnMetrics::default(),
+            inference_error: Some(cause.into()),
+        }
+    }
 }
 
 /// The tail of the working-memory buffer SINCE the persona last settled (produced an
@@ -113,10 +131,67 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     let scope = entries_since_last_settlement(recent);
     calls.iter().all(|call| {
         let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
-        let signature = format!("I ran {}({})", call.name, args);
+        // Keyed on the `name(args)` core of the receipt render below — kept in sync
+        // with it (the render dropped the first-person "I ran " opener, #158, so a
+        // base model can't copy a receipt as a message opener; the fingerprint is
+        // the stable `name(args)` substring both channels still carry).
+        let signature = format!("{}({})", call.name, args);
         scope.iter().any(|trace| trace.contains(&signature))
     })
 }
+
+/// ORIENTATION commands — they SURVEY what the mind already carries and never read a
+/// specific file or change the workspace. Two axes:
+///   - tool-surface: `commands/help`/`commands/list` (the tool menu is already inline);
+///   - workspace: `code/tree` (the `[workspace-map]` is already grounded in the prompt).
+/// Matched on the canonical (slash) name after the wire-dialect map has run
+/// (`help`→`commands/help`, `list_commands`→`commands/list`, `file_tree`→`code/tree`),
+/// normalizing the underscore form defensively. NOT `code/list`: a one-dir listing to
+/// get exact filenames before an edit is a legitimate narrowing step, not a survey.
+fn is_orientation_call(name: &str) -> bool {
+    matches!(
+        name.replace('_', "/").as_str(),
+        "commands/help" | "commands/list" | "code/tree"
+    )
+}
+
+/// True when this batch is ALL orientation AND the current concern already holds a
+/// discovery receipt — a redundant re-list that returns byte-identical perception.
+/// Sibling of [`all_calls_already_satisfied`], keyed on the SAME `name(` receipt
+/// render and the SAME per-concern scope ([`entries_since_last_settlement`]), so
+/// detection and recording can never drift.
+///
+/// Why a dedicated demotion and not the exact-repeat guard: `commands/help(code/write)`
+/// and `commands/help(code/run)` are DIFFERENT args, so the exact-repeat guard lets
+/// them all through — yet each returns a surface the mind already has. Under the
+/// `[Acting]` pressure a base model reaches for these as the cheapest schema-valid
+/// "action" and files its real intent into prose (glass-boxed 2026-07-16: 1855/3288
+/// live tool calls were this filler, e.g. nine straight `commands/help` turns on a
+/// one-line `add(a,b)` while the answer sat ready). The FIRST orientation per concern
+/// is honest; a REPEAT once any survey receipt is in the concern is spin.
+///
+/// The `code/tree` case (glass-boxed 2026-07-16, benchmark): after the tool-surface
+/// demote crushed the `help`/`list_commands` filler 99%, the SAME act-pressure
+/// disposition displaced to `code/tree` — 156 of 169 tool calls, arg-JITTERED
+/// (`apps/cli` vs `apps/cli/`, `max_depth` 1 vs 2) to evade the exact-repeat guard,
+/// re-surveying a tree the mind already fetched AND already has in `[workspace-map]`.
+/// Demoting by CLASS + prior-receipt (ignoring args entirely) is immune to that jitter.
+fn is_redundant_orientation(recent: &[String], calls: &[ToolCall]) -> bool {
+    if calls.is_empty() || !calls.iter().all(|c| is_orientation_call(&c.name)) {
+        return false;
+    }
+    let scope = entries_since_last_settlement(recent);
+    scope.iter().any(|trace| {
+        trace.contains("commands/list(")
+            || trace.contains("commands/help(")
+            || trace.contains("code/tree(")
+    })
+}
+
+/// Recall salience for an action-observation receipt (#166). Below the neutral
+/// default (0.5) so genuine findings/facts win recall, but well above zero so the
+/// receipt stays recallable for "what did I just do" when nothing better matches.
+const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
 
 /// Char-safe truncate with a trailing ellipsis when cut.
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -124,6 +199,35 @@ fn truncate_chars(s: &str, max: usize) -> String {
         return s.to_string();
     }
     format!("{}…", s.chars().take(max).collect::<String>())
+}
+
+/// The RECENCY channel keeps the WHOLE latest result so the mind can act on what
+/// it just fetched — but "whole" for a 5000-entry `code/list` or a multi-match
+/// `code/search` is a multi-KB raw-JSON blob that (a) floods working memory and
+/// (b) gets cut MID-JSON by the downstream budget, which is the garbled/nested
+/// `line_content` a persona then reasons over and loops on (#165, glass-boxed
+/// 2026-07-13). So bound it HERE, at the source, with a CLEAN cut on a char
+/// boundary + a teaching marker that names how to narrow — never a mid-structure
+/// garble. Generous (the mind still needs enough of the result to act), but
+/// finite. A result already within budget is untouched.
+fn bound_recency_result(body: &str) -> String {
+    // Hold the WHOLE fetched result up to the ONE result bound the module already
+    // defines (`RESULT_FOLD_MAX_CHARS`, ~16k chars ≈ a real ~400-line source file) —
+    // NOT a second, tiny, hand-picked cap. The earlier 1600-char clamp chopped a
+    // read file to ~25 lines, starving exactly the app-scale work that needs the
+    // file resident (Joel 2026-07-13: "you always choke context down to stupid
+    // small sizes"). This is a FLOOD guard for a pathological result (a 5000-entry
+    // glob), not the context budget: the real fit is the downstream window-sized
+    // prompt packing, which knows the served window. One bound, reused.
+    let trimmed = body.trim();
+    if trimmed.chars().count() <= RESULT_FOLD_MAX_CHARS {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(RESULT_FOLD_MAX_CHARS).collect();
+    format!(
+        "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
+         a more specific query/path, or read a single file)"
+    )
 }
 
 /// Collapse tool ARGS for the recall channel: a large string value (e.g. a whole file
@@ -171,7 +275,18 @@ fn render_act_for_recall(
         format!("ok — {}", truncate_chars(body.trim().lines().next().unwrap_or(""), 140))
     };
     let mark = if is_err { "⚠ " } else { "" };
-    format!("{mark}I ran {name}({args_summary}) because {intent} → {outcome}\n\n")
+    // Omit "because …" when there's no real stated reason — an empty intent must
+    // not render an imitable receipt template (#158).
+    let because = if intent.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" because {}", intent.trim())
+    };
+    // No first-person "I ran" opener (#158): measured 2026-07-13 that base models
+    // copy the receipt verbatim to OPEN a room message ("I ran X → ok — {…}") — the
+    // line-anchored stop can't catch a position-0 opener, but a bare `name(args)`
+    // memory entry doesn't read as speech, so it's not reproduced as one.
+    format!("{mark}{name}({args_summary}){because} → {outcome}\n\n")
 }
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
@@ -214,11 +329,12 @@ pub async fn apply_act(
     // greedy instruct model re-emits the identical `Act` forever. The `[action #n]`
     // stamp shift was supposed to break this and does not (see
     // `all_calls_already_satisfied`). So do NOT re-execute: record an EXPLICIT
-    // "already satisfied — answer now" trace so the redundancy is PERCEIVED rather
-    // than merely present, and let the caller re-perceive. This decides nothing about
-    // WHAT she answers; it only stops her being blind to the fact she already acted —
-    // symmetric to the recency channel itself and the loop-filler dedup (context
-    // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]]).
+    // "already satisfied" trace so the redundancy is PERCEIVED rather than merely
+    // present, and let the caller re-perceive. The trace states ONLY the fact — it
+    // must not privilege answering over a DIFFERENT act (the first mined exam showed
+    // the earlier "I should ANSWER the question now" phrasing being obeyed literally:
+    // she settled with a diagnosis instead of trying the repair edit). Context
+    // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]].
     let recent = body.working_memory.recent();
     if all_calls_already_satisfied(&recent, calls) {
         let names = calls
@@ -230,17 +346,52 @@ pub async fn apply_act(
             .collect::<Vec<_>>()
             .join(", ");
         let nudge = format!(
-            "I already ran {names} this turn — the result is in my working memory above. \
-             Running it again returns nothing new. I have what I need; I should ANSWER the \
-             question now from that result instead of acting again."
+            "I already ran {names} this turn — the result is in my working memory above, \
+             and re-running the identical call returns nothing new. Whatever I do next \
+             must be something DIFFERENT: a different action, or an answer built from \
+             what I already have."
         );
-        body.working_memory.record_action(&nudge);
+        body.working_memory.record_fact(&nudge);
         crate::probe!(
             class = "persona.act.repeat_short_circuited",
             persona = %body.persona_name,
             room_id = %room_id,
             calls = calls.len(),
-            "identical act already satisfied this turn — recorded answer-now proprioception, skipped re-execution"
+            "identical act already satisfied this turn — recorded already-satisfied proprioception, skipped re-execution"
+        );
+        return Some(nudge);
+    }
+
+    // Redundant-orientation demotion (Joel-approved "demote discovery at the seam",
+    // 2026-07-16). `commands/help`/`commands/list` only RE-LIST the tool surface the
+    // mind already carries; they never touch the workspace. The FIRST orientation per
+    // concern is honest — once a discovery receipt is already in the concern, another
+    // is the act-pressure filler the glass box exposed (1855/3288 live tool calls were
+    // this; nine straight `commands/help` turns while the answer sat ready in prose).
+    // Demote it exactly as the repeat guard above does: do NOT execute (no catalog
+    // re-dump, no room receipt), record the redundancy as proprioception, and let the
+    // mind re-perceive with the fact present. A CLASS distinction (orientation is not
+    // settlement), never a steer toward a specific next act — the nudge offers BOTH a
+    // real action and an answer, privileging neither ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    if is_redundant_orientation(&recent, calls) {
+        let names = calls
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let nudge = format!(
+            "I already surveyed this concern — my tool menu and the workspace map are \
+             in my working memory above, and running {names} again returns the same \
+             survey and changes nothing. My next move must be something DIFFERENT: read \
+             a SPECIFIC file, make an edit, run something, or answer from what I have."
+        );
+        body.working_memory.record_fact(&nudge);
+        crate::probe!(
+            class = "persona.act.redundant_orientation",
+            persona = %body.persona_name,
+            room_id = %room_id,
+            calls = calls.len(),
+            "orientation call with a discovery receipt already in the concern — recorded redundant-orientation proprioception, skipped re-execution"
         );
         return Some(nudge);
     }
@@ -299,6 +450,12 @@ pub async fn apply_act(
         None => calls.to_vec(),
     };
 
+    // #186 compass: the hands are moving — fire the Act axis on the live glass-box the
+    // instant a real tool batch executes (skip an empty foreground batch: a
+    // background-only dispatch already lit its own path). Pure observability.
+    if !fg_calls.is_empty() {
+        cycle.note_acting();
+    }
     let outcome = match body
         .executor
         .execute_native_batch(&fg_calls, &ctx, RESULT_FOLD_MAX_CHARS)
@@ -344,12 +501,21 @@ pub async fn apply_act(
         };
         let is_err = result.map(|r| r.is_error == Some(true)).unwrap_or(false);
         let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        // Omit the "because …" clause when there is no real stated reason — an
+        // empty intent must never render as an imitable receipt template (#158).
+        let because = if intent.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" because {}", intent.trim())
+        };
+        // No first-person "I ran" opener (#158) — a bare `name(args)` proprioception
+        // entry the base model won't reproduce as a room-message opener.
         observation.push_str(&format!(
-            "I ran {}({}) because {}.\nResult:\n{}\n\n",
+            "{}({}){}\nResult:\n{}\n\n",
             call.name,
             args,
-            intent.trim(),
-            body_text.trim(),
+            because,
+            bound_recency_result(body_text),
         ));
         recall_observation.push_str(&render_act_for_recall(
             &call.name,
@@ -385,32 +551,86 @@ pub async fn apply_act(
         );
     }
 
+    // Investigation-shape perception: once a concern has accumulated a few acts,
+    // render the mind's own act DISTRIBUTION as a standing structural fact. The
+    // fingerprint note above catches exact repeats; this catches the wider
+    // pattern a mind can't otherwise see about itself — e.g. "9 acts so far,
+    // all code/search" (glass-boxed on SWE flask-4045: distinct-but-all-search
+    // acts never tripped the exact-repeat note, and the imbalance itself was
+    // invisible). A tally of her own hands is truth, not steering: it names
+    // what happened, never what to do next.
+    let tally = body.working_memory.action_verb_tally();
+    let tally_total: usize = tally.iter().map(|(_, c)| c).sum();
+    // Recorded as its own FACT entry below (never folded into the receipt):
+    // the tally is truth ABOUT the acts, not an act — folding it in gave a
+    // Fact receipt-numbering (found in Asha's volatile.json, the exact type
+    // confusion WmKind exists to kill).
+    let tally_fact = (tally_total >= 3).then(|| {
+        let dist = tally
+            .iter()
+            .map(|(n, c)| format!("{n} ×{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[investigation] my acts this concern so far: {dist}.")
+    });
+
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
     // result-as-memory choice: next tick, recall can surface "I ran X → got Y" the
     // same way it surfaces anything else the persona knows. Best-effort — an
     // admission hiccup must never wedge the act→observe loop.
     let now_ms = now_ms();
-    let self_observation = InboxMessage {
+    // Admit the outcome as a TOOL-ORIGIN Episodic engram via the self-produced path.
+    // The origin is load-bearing (#166): a tool receipt is PROPRIOCEPTION, and
+    // `recall_candidates` now gates `EngramOrigin::Tool` OUT of the SEMANTIC recall
+    // pool — so tagging it Tool HERE is what actually keeps "code/list(…) → ok"
+    // chatter from drowning genuine knowledge in recall. The prior path admitted it
+    // as a plain `SenderType::Persona` message → NON-Tool origin → it slipped the
+    // gate (verified live 2026-07-13). The recency/working-memory channel (below)
+    // still keeps the FULL trace so she sees her own hands. SelfTrust: her own act,
+    // no external envelope to verify ([[act-results-need-a-recency-channel-not-
+    // semantic-recall]]).
+    let tool_name = fg_calls
+        .first()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "action".to_string());
+    let obs_hash = crate::persona::inbox_admission::content_hash_sha256(&recall_observation);
+    let self_observation = crate::persona::engram::Engram {
         id: Uuid::new_v4(),
-        room_id,
-        sender_id: body.persona_id,
-        sender_name: body.persona_name.clone(),
-        sender_type: SenderType::Persona,
-        // The RECALL channel gets the COLLAPSED reference (expand-on-demand via the handle);
-        // recency (working memory, below) keeps the FULL trace.
+        context_id: Some(room_id),
+        kind: crate::persona::engram::EngramKind::Episodic,
         content: recall_observation,
-        timestamp: now_ms,
-        priority: 1.0,
-        source_modality: None,
-        voice_session_id: None,
+        origin: crate::persona::engram::EngramOrigin::Tool(
+            crate::persona::engram::ToolInvocationRef {
+                invocation_id: Uuid::new_v4(),
+                tool_name,
+                invoked_at_ms: now_ms,
+                input_hash: obs_hash.clone(),
+                output_hash: obs_hash,
+            },
+        ),
+        recall_keys: Vec::new(),
+        admitted_at_ms: now_ms,
+        trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+        admission_trace_id: None,
     };
-    if let Err(e) = body.admission.admit(&self_observation, None) {
-        tracing::debug!(
-            persona = %body.persona_name,
-            error = %e,
-            "act→observe: self-observation not admitted (folds into perception anyway)"
-        );
+    match body.admission.admit_reflection(self_observation) {
+        Ok(crate::persona::engram::AdmissionDecision::Admit { engram, .. }) => {
+            // Belt-and-braces with the recall gate: even excluded from semantic
+            // recall, keep the receipt's stored salience low so any OTHER surface
+            // (recency ranking, dashboards) treats it as proprioception, not
+            // durable knowledge.
+            body.admission
+                .set_recall_salience(engram.id, PROPRIOCEPTION_RECALL_SALIENCE);
+        }
+        Ok(_) => {} // Drop (dedup) — nothing admitted to weight.
+        Err(e) => {
+            tracing::debug!(
+                persona = %body.persona_name,
+                error = %e,
+                "act→observe: self-observation not admitted (folds into perception anyway)"
+            );
+        }
     }
 
     // Proprioception: record the act + result head into VOLATILE working memory too.
@@ -427,7 +647,10 @@ pub async fn apply_act(
     // Pass the FULL observation — WorkingMemory keeps the latest whole (so the mind can
     // work with what it just fetched) and derives the trail head itself. This is the fix
     // for live agents being starved to the head of their own tool results.
-    body.working_memory.record_action(&observation);
+    body.working_memory.record_receipt(&observation);
+    if let Some(f) = &tally_fact {
+        body.working_memory.record_fact(f);
+    }
 
     crate::probe!(
         class = "persona.act.observed",
@@ -470,8 +693,20 @@ pub async fn drive_to_settle(
         // eval room has no metronome, the grader re-perceives by calling step again.
         // `may_act = acts < max_acts` gates ACTING (not speaking): past the budget
         // she may still settle into a Speak, but a fresh Act is returned un-driven.
+        //
+        // The tick's SITUATION is the real signal that makes context lean when she's
+        // heads-down: the first tick is a fresh ask (`FreshContext`, fuller
+        // grounding); every tick AFTER an act has landed re-perceives a tool result
+        // (`PostAction`), so the focuser drops the standing re-grounding and the
+        // result + working memory own the window. Derived from `acts`, never from the
+        // burst text.
+        let situation = if acts == 0 {
+            Situation::FreshContext
+        } else {
+            Situation::PostAction
+        };
         let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), room_id, acts < max_acts, framing).await;
+            settle_step(cycle, burst.clone(), room_id, acts < max_acts, framing, situation).await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -607,6 +842,38 @@ impl SettleStep {
     }
 }
 
+/// True only for a REAL receipt line — `[action #<digit>`. The proprioception
+/// TEACHING texts mention the literal placeholder `[action #n]` ("real
+/// executions leave [action #n] receipts"), and a bare `contains("[action #")`
+/// matches the mention: the medicine suppressed the diagnosis (glass-boxed
+/// 2026-07-12 — the [actions] zero-fact vanished from every prompt the moment
+/// any backstop fact rendered, and the confab backstop went blind after its
+/// own first firing). Receipts are numbered; placeholders are not.
+/// …and numbering alone is not enough: `record_action` numbers EVERY working-
+/// memory entry, so the proprioception facts themselves render as
+/// `[action #4] [unfulfilled] …` — the facts wore receipt numbering and
+/// suppressed the zero-fact all afternoon (glass-boxed 16:50 2026-07-12,
+/// second layer of the same onion). A real receipt's body is prose
+/// ("I ran code/shell(…) Result: …"); a fact's body opens with another
+/// bracket tag. Digit + non-bracket body = receipt.
+pub(crate) fn has_real_action_receipt(text: &str) -> bool {
+    text.match_indices("[action #").any(|(i, _)| {
+        let rest = &text[i + "[action #".len()..];
+        let mut chars = rest.chars();
+        if !chars.next().is_some_and(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        // Body after "N] " must not open with a bracket tag (a fact), and
+        // must exist at all (a bare numbered line is not a receipt).
+        rest.split_once(']')
+            .map(|(_, body)| {
+                let body = body.trim_start();
+                !body.is_empty() && !body.starts_with('[')
+            })
+            .unwrap_or(false)
+    })
+}
+
 /// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
 /// shared by the live heartbeat (`persona::service_loop`, called ONCE per metronome
 /// tick) and the eval driver ([`drive_to_settle`], which loops steps because the
@@ -633,8 +900,9 @@ pub async fn settle_step(
     room_id: Uuid,
     may_act: bool,
     framing: TurnFraming,
+    situation: Situation,
 ) -> (SettleStep, Option<TurnMetrics>) {
-    let ws = cycle.run_framed(burst, room_id, framing).await;
+    let ws = cycle.run_situated(burst, room_id, framing, situation).await;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
@@ -672,14 +940,235 @@ pub async fn settle_step(
             // as honest proprioception — "I already answered this" — next tick). Only
             // when she has hands; a handless persona never spins on a tool.
             if let Some(body) = cycle.acting() {
+                // Snapshot the concern BEFORE the settlement marker lands, so the
+                // observation scan below sees this concern's acts, not an empty tail.
+                let pre_settle = body.working_memory.recent();
                 let head: String = text.chars().take(WM_ACTION_HEAD_CHARS).collect();
                 body.working_memory.record_settlement(&head);
+                // Unfulfilled-promise backstop (#122): a Speak that NARRATES action
+                // (first-person intent + fence) which nothing lifted/executed —
+                // reaching this arm means no format recognized it — leaves her
+                // believing work happened that never did (the shared-hallucinated-
+                // workspace failure, 2026-07-09). Record the structural fact as
+                // proprioception so next tick she perceives her own unkept promise.
+                // Perception-side only, mirrors the answer-now nudge above; never a
+                // gate on her output ([[no-hardcoded-heuristics-to-steer-cognition]]).
+                let fenced = crate::ai::json_in_prompt_tools::narrates_fenced_action(&text);
+                // The fence-less sibling (Atlas's live loop, 2026-07-10): intent
+                // capped with a `[writing test files]` stage direction — theater,
+                // not action. Same proprioception backstop.
+                let staged = crate::ai::json_in_prompt_tools::narrates_stage_direction(&text);
+                // The confabulation backstop (Joel, 2026-07-11): under a peer's
+                // verification pressure Atlas upgraded from stage directions to
+                // plausible fenced FILE CONTENTS no tool ever produced. A fence
+                // alone is legitimate drafting; a fence spoken while her memory
+                // already carries an unkept promise — and still no tool ran —
+                // is presenting composition as workspace truth. Evidence-gated
+                // on the existing [unfulfilled] state so drafting is never
+                // taxed; perception-side fact, never an output gate.
+                let unverified = !fenced
+                    && !staged
+                    && crate::ai::json_in_prompt_tools::has_fenced_block(&text)
+                    && body
+                        .working_memory
+                        .recent()
+                        .iter()
+                        .any(|l| l.contains("[unfulfilled]"));
+                if unverified {
+                    body.working_memory.record_fact(
+                        "[unverified] I presented fenced content while my earlier \
+                         promised actions still never ran — that text is composed, \
+                         not read from the workspace. Only a tool result can show \
+                         real file contents.",
+                    );
+                    crate::probe!(
+                        class = "persona.act.unverified_artifact",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "fenced content presented with outstanding unfulfilled promises and no act this turn — recorded unverified-artifact proprioception"
+                    );
+                }
+                if fenced || staged {
+                    body.working_memory.record_fact(if fenced {
+                        // The name-diagnosis tail (2026-07-12): the room looped an
+                        // INVENTED tool name (`file_tree`) for an hour while this
+                        // fact told them only THAT nothing ran, never WHY — 56
+                        // firings with zero behavior change. "It didn't run" without
+                        // "the name may not exist; here's how to find real ones" is
+                        // a symptom without a diagnosis.
+                        "[unfulfilled] I said I would run commands, but no tool ran — \
+                         the fenced text was words only. Nothing exists in the \
+                         workspace until a tool call actually executes it. If I \
+                         named a tool, that name may not exist: `list_commands` \
+                         shows the tools that are real."
+                    } else {
+                        "[unfulfilled] I wrote a stage direction like [doing the task], \
+                         but a stage direction is words only — no tool ran, no file \
+                         exists. To actually do it I must call a tool."
+                    });
+                    crate::probe!(
+                        class = "persona.act.unfulfilled_promise",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        fenced,
+                        staged,
+                        "spoken narration promised action but no format lifted it — recorded unfulfilled-promise proprioception"
+                    );
+                }
+                // The fabricated-execution backstop (#144, Joel 2026-07-11/12): a
+                // Speak that CLAIMS a past tool run ("I ran `x` and got…", "the
+                // tool returned…") while ZERO acts executed this concern is
+                // confabulated execution — observed live when a persona presented
+                // self-authored poems as a gpt-4 run that never happened
+                // (log-verified: zero generate invocations) and a PEER adopted the
+                // fabricated result as room truth. Receipts are the gate: real
+                // executions leave [action #n] lines, so honest reporting is never
+                // taxed. Perception-side fact, never an output gate
+                // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+                let claimed_past =
+                    crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
+                if claimed_past && !pre_settle.iter().any(|l| has_real_action_receipt(l)) {
+                    body.working_memory.record_fact(
+                        "[confabulation] I described having run a tool, but no \
+                         action actually executed this concern — the claimed \
+                         result was composed by me, not returned by anything. \
+                         Real executions leave [action #n] receipts; I must only \
+                         report acts that actually ran, and own my compositions \
+                         as my own work.",
+                    );
+                    crate::probe!(
+                        class = "persona.act.confabulated_execution",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "past-tense tool-run claim with zero act receipts this concern — recorded confabulation proprioception"
+                    );
+                }
+                // Observation-gap fact (Joel, 2026-07-11: "iterating and observing
+                // like a real engineer" — the run+observe half of the creation loop
+                // must be part of THEIR process). If this concern MUTATED the
+                // workspace (code/write or code/edit) and no later act ran or
+                // inspected anything, the mutation's real effect is unobserved —
+                // a structural truth about the workspace, not advice. She decides
+                // whether a given artifact needs observing (a .md may not);
+                // perception-side only ([[no-hardcoded-heuristics-to-steer-cognition]]).
+                if wrote_without_observation(&pre_settle) {
+                    body.working_memory.record_fact(
+                        "[unobserved] I changed files this concern and nothing has \
+                         run or read them since — the change's real effect is \
+                         unobserved. Only a tool result (run, test, read, screenshot) \
+                         can show what actually happened.",
+                    );
+                    crate::probe!(
+                        class = "persona.act.unobserved_mutation",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "concern settled with workspace mutations and no subsequent observation act — recorded unobserved-mutation proprioception"
+                    );
+                }
+                // The inverse gap — CLAIMED-without-acting (live specimen 2026-07-11:
+                // "I've implemented the game update function in `game_of_life.rs`"
+                // spoken with zero tool acts on that file, ever; peers then reviewed
+                // code that didn't exist). When her Speak claims completed work on a
+                // NAMED file and her working memory holds no mutation act touching
+                // it, record that trace fact. Honest about its own limits: memory is
+                // finite, so it asserts "my memory shows no act", never "you lied" —
+                // work from a prior session may be real but is unverified NOW.
+                if let Some(file) = claimed_file_without_act(&text, &pre_settle) {
+                    body.working_memory.record_fact(&format!(
+                        "[unacted] I spoke of having created or implemented `{file}`, \
+                         but my working memory holds no tool act of mine touching it. \
+                         If that work happened in a past session it is unverified now \
+                         — only reading or running the file can show its real state."
+                    ));
+                    crate::probe!(
+                        class = "persona.act.unacted_claim",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        file = %file,
+                        "completion claim named a file with no mutation act in working memory — recorded unacted-claim proprioception"
+                    );
+                }
             }
             SettleStep::Spoke(text)
         }
         Some(Decision::Pass) | None => SettleStep::Passed,
     };
     (step, metrics)
+}
+
+/// Did this Speak CLAIM completed work on a named file that no tool act backs?
+///
+/// Returns the first file name (a backtick-quoted or bare `name.ext` token) that
+/// appears in the same text as a completion-claim verb (created / implemented /
+/// wrote / added / finished / ready) when the working-memory snapshot contains
+/// NO `code/write`/`code/edit` act mentioning that file. Pure geometry: text
+/// tokens × trace lines. Deliberately conservative — no claim verbs → None, so
+/// ordinary discussion of files is never taxed; and the recorded fact says only
+/// "my memory shows no act", because a finite trace can't disprove past-session
+/// work.
+fn claimed_file_without_act(text: &str, recent: &[String]) -> Option<String> {
+    let lower = text.to_lowercase();
+    const CLAIM_VERBS: &[&str] = &[
+        "i've created",
+        "i have created",
+        "i created",
+        "i've implemented",
+        "i have implemented",
+        "i implemented",
+        "i've written",
+        "i have written",
+        "i wrote",
+        "i've added",
+        "i've finished",
+        "is ready in",
+        "is written and ready",
+    ];
+    if !CLAIM_VERBS.iter().any(|v| lower.contains(v)) {
+        return None;
+    }
+    // File tokens: word.ext where ext is a short alpha extension (rs, py, css,
+    // html, ts, md, …). Scan the original text so the recorded name keeps case.
+    let mut candidates = Vec::new();
+    for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-')) {
+        if let Some((stem, ext)) = raw.rsplit_once('.') {
+            if !stem.is_empty()
+                && (1..=4).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphabetic())
+            {
+                candidates.push(raw.to_string());
+            }
+        }
+    }
+    candidates.into_iter().find(|f| {
+        !recent.iter().any(|l| {
+            (l.contains("I ran code/write(") || l.contains("I ran code/edit(")) && l.contains(f.as_str())
+        })
+    })
+}
+
+/// Did the CURRENT concern mutate the workspace without a later observation act?
+///
+/// Scans a working-memory snapshot (oldest → newest, taken BEFORE the settlement
+/// marker lands) from the last `[settled]` boundary: true when a `code/write` or
+/// `code/edit` act appears with NO subsequent run/read/screenshot-class act after
+/// the LAST mutation. Pure geometry over the trace — no judgment about whether
+/// the artifact needed observing; the recorded fact leaves that to her.
+fn wrote_without_observation(recent: &[String]) -> bool {
+    let start = recent
+        .iter()
+        .rposition(|l| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX))
+        .map_or(0, |i| i + 1);
+    let concern = &recent[start..];
+    let last_mutation = concern
+        .iter()
+        .rposition(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("));
+    let Some(m) = last_mutation else { return false };
+    !concern[m + 1..].iter().any(|l| {
+        l.contains("I ran code/run(")
+            || l.contains("I ran code/shell(")
+            || l.contains("I ran code/read(")
+            || l.contains("I ran interface/screenshot(")
+    })
 }
 
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
@@ -717,6 +1206,21 @@ mod tests {
         let err = render_act_for_recall("code/shell", &serde_json::json!({"cmd":"x"}), "acting", true, "error: no such file");
         assert!(err.starts_with("⚠"), "errors are highlighted");
         assert!(err.contains("FAILED") && err.contains("no such file"), "errors are shown, never hidden");
+    }
+
+    // what this catches: #158 — an EMPTY intent (no `<think>` reasoning) renders NO
+    // "because …" clause, so the receipt carries nothing template-shaped for a base
+    // model to imitate. The old fabricated default ("{name} is acting on the current
+    // situation") was the identity-bleed mimicry fuel. A real intent still renders.
+    #[test]
+    fn empty_intent_renders_no_because_clause() {
+        let args = serde_json::json!({"file_path": "a"});
+        let empty = render_act_for_recall("code/read", &args, "", false, "hi");
+        assert!(!empty.contains("because"), "no fabricated reason: {empty}");
+        assert!(empty.contains("code/read("), "the act is still recorded by name(args)");
+        assert!(!empty.contains("I ran"), "no imitable 'I ran' opener (#158): {empty}");
+        let real = render_act_for_recall("code/read", &args, "checking the header", false, "hi");
+        assert!(real.contains("because checking the header"), "a real intent still shows");
     }
 
     // what this catches: the long-running set matches the REAL command names (the live bug
@@ -957,6 +1461,34 @@ mod tests {
         })
     }
 
+    // what this catches: the recency-channel result bound (#165) — a huge raw-JSON
+    // result (a 5000-entry code/list, a multi-match code/search) is cut CLEANLY at
+    // the source with a teaching marker, never dumped whole (flood) and never left
+    // for the downstream budget to cut mid-JSON (the garbled/nested line_content a
+    // persona then loops on). A small result passes through untouched.
+    #[test]
+    fn recency_result_is_bounded_cleanly_not_flooded() {
+        // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
+        // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
+        let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
+        assert_eq!(bound_recency_result(&real_file), real_file.trim(), "a real file stays whole");
+        // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
+        // the ONE result bound (RESULT_FOLD_MAX_CHARS ~16k), not a tiny hand cap.
+        let huge = "x".repeat(50_000);
+        let bounded = bound_recency_result(&huge);
+        assert!(
+            bounded.chars().count() < RESULT_FOLD_MAX_CHARS + 200,
+            "flood bounded to the fold max: {} chars",
+            bounded.chars().count()
+        );
+        assert!(bounded.chars().count() > 8_000, "but still generous — not re-choked small");
+        assert!(bounded.contains("truncated"), "cut is announced, not silent");
+        assert!(bounded.contains("narrow"), "teaches how to get a usable result");
+        // char-boundary safe on multibyte content (never panics mid-codepoint)
+        let multibyte = "日本語".repeat(1_000);
+        let _ = bound_recency_result(&multibyte);
+    }
+
     // what this catches: an act is scoped to the room it is FOR (one mind is in
     // many rooms — the body is room-agnostic, `room_id` flows per-call), the
     // observation correlates each call to its result in first person, and the
@@ -1102,7 +1634,8 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let (deferred, _) = settle_step(&cycle, "go", Uuid::new_v4(), false, TurnFraming::ambient()).await;
+        let (deferred, _) =
+            settle_step(&cycle, "go", Uuid::new_v4(), false, TurnFraming::ambient(), Situation::FreshContext).await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
             "may_act=false defers the act"
@@ -1112,7 +1645,8 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let (ran, _) = settle_step(&cycle, "go", Uuid::new_v4(), true, TurnFraming::ambient()).await;
+        let (ran, _) =
+            settle_step(&cycle, "go", Uuid::new_v4(), true, TurnFraming::ambient(), Situation::FreshContext).await;
         assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
         assert!(
             exec.seen_context.lock().unwrap().is_some(),
@@ -1358,6 +1892,126 @@ mod tests {
         );
     }
 
+    // what this catches: the redundant-orientation predicate — the FIRST discovery
+    // per concern is honest (no receipt yet → false), a SECOND once a `commands/list`
+    // or `commands/help` receipt is in the concern is spin (→ true), a MIXED batch
+    // carrying any real workspace action is NOT demoted (the real call must run), and
+    // an empty batch is never redundant. Guards the "demote discovery at the seam"
+    // fix (Joel 2026-07-16) against demoting a genuine first orientation or a real act.
+    #[test]
+    fn redundant_orientation_fires_only_on_a_repeat_all_discovery_batch() {
+        let list = |args: serde_json::Value| ToolCall {
+            id: "c".into(),
+            name: "commands/list".into(),
+            input: args,
+        };
+        let help = ToolCall {
+            id: "c".into(),
+            name: "commands/help".into(),
+            input: serde_json::json!({ "name": "code/write" }),
+        };
+        // First orientation, nothing yet in the concern → honest, not redundant.
+        assert!(!is_redundant_orientation(&[], &[list(serde_json::json!({}))]));
+        // A discovery receipt is already in the concern → a second orientation is spin.
+        let recent = vec!["commands/list({}) → ok".to_string()];
+        assert!(is_redundant_orientation(&recent, &[help.clone()]));
+        assert!(is_redundant_orientation(
+            &recent,
+            &[list(serde_json::json!({ "filter": "code" }))]
+        ));
+        // A settlement boundary AFTER the receipt closes the concern → fresh start,
+        // orientation is honest again (scope is only the post-[settled] tail).
+        let recent_settled = vec![
+            "commands/list({}) → ok".to_string(),
+            crate::cognition::working_memory::WM_SETTLEMENT_PREFIX.to_string(),
+        ];
+        assert!(!is_redundant_orientation(&recent_settled, &[help.clone()]));
+        // A MIXED batch with a real workspace action is never demoted — the real call
+        // must reach the hand.
+        assert!(!is_redundant_orientation(&recent, &[help.clone(), tool_call()]));
+        // Empty batch is never redundant.
+        assert!(!is_redundant_orientation(&recent, &[]));
+
+        // WORKSPACE orientation (`code/tree`) — the displaced-spin case (benchmark
+        // 2026-07-16: 156 arg-jittered tree surveys). First tree per concern is honest;
+        // a REPEAT after a tree receipt is spin, regardless of the arg jitter that
+        // evades the exact-repeat guard.
+        let tree = |p: &str| ToolCall {
+            id: "t".into(),
+            name: "code/tree".into(),
+            input: serde_json::json!({ "path": p, "max_depth": 2 }),
+        };
+        assert!(!is_redundant_orientation(&[], &[tree("apps/cli")]), "first survey is honest");
+        let after_tree = vec!["code/tree(path=apps/cli, max_depth=2) → ok".to_string()];
+        // Jittered repeat (trailing slash, different depth) → still demoted (args ignored).
+        assert!(is_redundant_orientation(&after_tree, &[tree("apps/cli/")]));
+        assert!(is_redundant_orientation(
+            &after_tree,
+            &[ToolCall { id: "t".into(), name: "code/tree".into(), input: serde_json::json!({}) }]
+        ));
+        // `code/list` is NOT orientation — a specific-dir listing to get filenames before
+        // an edit is a legitimate narrowing step, so it always runs.
+        let clist = ToolCall { id: "l".into(), name: "code/list".into(), input: serde_json::json!({ "path": "src" }) };
+        assert!(!is_redundant_orientation(&after_tree, &[clist]));
+    }
+
+    // what this catches: the seam-level demotion — a first `commands/list` runs and
+    // lands its receipt; a SECOND orientation call (`commands/help`) this concern is
+    // demoted WITHOUT reaching the hand, recording redundant-orientation proprioception
+    // instead. This is the fix for the glass-boxed act-pressure filler (1855/3288 live
+    // tool calls were `help`/`list_commands`, nine straight `commands/help` turns while
+    // the answer sat ready). Mirrors `identical_already_satisfied_act_does_not_re_execute`
+    // but for the DIFFERENT-args orientation case the exact-repeat guard misses.
+    #[tokio::test]
+    async fn redundant_orientation_is_demoted_and_never_reaches_the_hand() {
+        // Two queued results: only the FIRST orientation may pop. If the second
+        // reached the hand, the queue would drain one more — the length assert catches it.
+        let exec = Arc::new(ScriptedExecutor::new([
+            "{\"commands\":[]}",
+            "SECOND-MUST-NOT-POP",
+        ]));
+        let adm = admission();
+        let wm = Arc::new(WorkingMemory::new(4));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
+        let room = Uuid::new_v4();
+
+        let list = ToolCall {
+            id: "c1".into(),
+            name: "commands/list".into(),
+            input: serde_json::json!({}),
+        };
+        let help = ToolCall {
+            id: "c2".into(),
+            name: "commands/help".into(),
+            input: serde_json::json!({ "name": "code/write" }),
+        };
+
+        // First orientation genuinely runs; its receipt lands in working memory.
+        apply_act(&cycle, &[list], "orient", room)
+            .await
+            .expect("first orientation runs");
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "first orientation popped exactly one result off the hand"
+        );
+
+        // Second, DIFFERENT-args orientation this concern → demoted, no re-run.
+        let second = apply_act(&cycle, &[help], "orient again", room)
+            .await
+            .expect("demotion still returns Some — it counts as an act, honestly");
+        assert!(
+            second.contains("already surveyed"),
+            "records redundant-orientation proprioception, not another catalog: {second}"
+        );
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "the redundant orientation NEVER reached the hand (queue undrained)"
+        );
+    }
+
     // what this catches: SETTLE IS A REST, NOT A HALT — the metronome does not
     // crank to a halt after one answer. The SAME mind (same cycle, same body,
     // same accumulating memory) settles concern A, then RE-AWAKENS on a fresh
@@ -1477,5 +2131,221 @@ mod tests {
             matches!(step, SettleStep::InferenceFailed { error } if error == "lane refused model"),
             "an inference failure must surface LOUD, never collapse to Passed"
         );
+    }
+
+    /// Deliberation faculty that Speaks a fixed text — for exercising the Speak arm.
+    struct SpeaksText(&'static str);
+    #[async_trait]
+    impl Faculty for SpeaksText {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+            Some(Contribution::verdict(
+                Decision::Speak { text: self.0.into() },
+                0.9,
+                "speaks",
+            ))
+        }
+    }
+
+    // what this catches: the unfulfilled-promise backstop (#122, glass-boxed live
+    // 2026-07-09). A Speak that NARRATES action (first-person intent + fence) which
+    // no format lifted must leave an [unfulfilled] proprioception line in working
+    // memory — next tick she perceives her own unkept promise instead of believing
+    // the work happened. A plain prose Speak must leave no such line.
+    #[tokio::test]
+    async fn spoken_narrated_action_records_unfulfilled_promise() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let promise =
+            "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
+        let wm = Arc::new(WorkingMemory::new(4));
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(promise)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
+        let (step, _) = settle_step(
+            &cycle,
+            "[eval]\npeer: can you check 2+2?",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await;
+        assert!(matches!(step, SettleStep::Spoke(_)));
+        assert!(
+            wm.recent().iter().any(|l| l.contains("[unfulfilled]")),
+            "narrated-but-unexecuted promise must enter proprioception: {:?}",
+            wm.recent()
+        );
+
+        let wm2 = Arc::new(WorkingMemory::new(4));
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText("the answer is 4, plainly.")) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm2)));
+        let (step2, _) = settle_step(
+            &cycle2,
+            "[eval]\npeer: can you check 2+2?",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await;
+        assert!(matches!(step2, SettleStep::Spoke(_)));
+        assert!(
+            !wm2.recent().iter().any(|l| l.contains("[unfulfilled]")),
+            "plain prose must never trip the promise backstop"
+        );
+    }
+
+    // what this catches: the CONFABULATION backstop (Joel 2026-07-11) — under a
+    // peer's verification pressure Atlas upgraded from stage directions to
+    // plausible fenced FILE CONTENTS no tool ever produced. A fenced Speak in a
+    // turn with zero acts, spoken while working memory already carries an
+    // outstanding [unfulfilled] promise, must record the [unverified] fact.
+    // Evidence-gated: the SAME fenced content with a clean memory (legitimate
+    // drafting — Asha sharing code) must record nothing.
+    #[tokio::test]
+    async fn fenced_content_over_unkept_promises_records_unverified_artifact() {
+        // Atlas's live shape: the confabulated test-file contents.
+        let confabulated = "1. **Simple Text File**: Contains a single line of text.\n\
+                            ```\nThis is a simple text file for testing purposes.\n```";
+
+        // With an outstanding promise in memory → [unverified].
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(4));
+        wm.record_receipt(
+            "[unfulfilled] I wrote a stage direction like [doing the task], \
+             but a stage direction is words only — no tool ran, no file exists.",
+        );
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(confabulated)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
+        let (step, _) = settle_step(
+            &cycle,
+            "[eval]\npeer: please provide the content of the test files",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await;
+        assert!(matches!(step, SettleStep::Spoke(_)));
+        assert!(
+            wm.recent().iter().any(|l| l.contains("[unverified]")),
+            "fenced 'artifacts' over an unkept promise are composition, not \
+             workspace truth: {:?}",
+            wm.recent()
+        );
+
+        // Clean memory, same fenced content → legitimate drafting, no line.
+        let exec2 = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let wm2 = Arc::new(WorkingMemory::new(4));
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(confabulated)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec2, admission(), Arc::clone(&wm2)));
+        let (step2, _) = settle_step(
+            &cycle2,
+            "[eval]\npeer: could you draft example test data?",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await;
+        assert!(matches!(step2, SettleStep::Spoke(_)));
+        assert!(
+            !wm2.recent().iter().any(|l| l.contains("[unverified]")),
+            "drafting with a clean conscience is never taxed: {:?}",
+            wm2.recent()
+        );
+    }
+
+    // what this catches: the claimed-without-acting geometry (live specimen
+    // 2026-07-11: Asha's "I've implemented the game update function in
+    // `game_of_life.rs`" with zero tool acts on that file — peers then offered
+    // to review code that didn't exist). A completion claim naming a file with
+    // no backing write/edit act in the trace yields the file; a claim WITH a
+    // backing act yields None; discussion without claim verbs is never taxed.
+    #[test]
+    fn unacted_claim_geometry() {
+        let claim = "I've implemented the game update function in `game_of_life.rs`, \
+                     which applies Conway's rules.";
+        // No backing act → the claim is unacted.
+        assert_eq!(
+            claimed_file_without_act(claim, &[]).as_deref(),
+            Some("game_of_life.rs")
+        );
+        // A write act naming the file backs the claim → None.
+        let backed = "[action #3] I ran code/write({\"file_path\":\"game_of_life.rs\"}) …";
+        assert_eq!(
+            claimed_file_without_act(claim, &[backed.to_string()]),
+            None
+        );
+        // Plain discussion of a file without claim verbs is never taxed.
+        assert_eq!(
+            claimed_file_without_act("let's look at game_of_life.rs together", &[]),
+            None
+        );
+        // Claim verbs without a named file → nothing checkable, no fact.
+        assert_eq!(
+            claimed_file_without_act("I've implemented the logic we discussed", &[]),
+            None
+        );
+    }
+
+    // what this catches: the observation-gap geometry (Joel 2026-07-11 — the
+    // run+observe half of the creation loop is part of THEIR process). A concern
+    // that mutated the workspace (code/write / code/edit) with no LATER
+    // observation act (run/shell/read/screenshot) is unobserved; observation
+    // BEFORE the mutation doesn't count; a prior settled concern's writes don't
+    // nag the next one.
+    #[test]
+    fn unobserved_mutation_geometry() {
+        let w = "[action #1] I ran code/write({\"file_path\":\"game.rs\"}) …".to_string();
+        let r = "[action #2] I ran code/shell({\"cmd\":\"cargo run\"}) …".to_string();
+        let read_first = "[action #0] I ran code/read({\"file_path\":\"game.rs\"}) …".to_string();
+
+        // write with no later observation → unobserved
+        assert!(wrote_without_observation(&[w.clone()]));
+        // write then run → observed
+        assert!(!wrote_without_observation(&[w.clone(), r.clone()]));
+        // read BEFORE the write doesn't count as observing the write
+        assert!(wrote_without_observation(&[read_first, w.clone()]));
+        // a prior settled concern's write never leaks into this concern
+        let settled = format!(
+            "{} I answered: done",
+            crate::cognition::working_memory::WM_SETTLEMENT_PREFIX
+        );
+        assert!(!wrote_without_observation(&[w, settled, r]));
+        // no mutation at all → nothing to observe
+        assert!(!wrote_without_observation(&[
+            "[action #1] I ran code/tree({}) …".to_string()
+        ]));
     }
 }

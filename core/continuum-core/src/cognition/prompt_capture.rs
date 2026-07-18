@@ -23,7 +23,10 @@ use uuid::Uuid;
 use crate::ai::types::{ChatMessage, TextGenerationResponse};
 
 /// Bumped when the on-disk record shape changes (replay readers gate on it).
-const SCHEMA_VERSION: u32 = 1;
+/// v2: added `offered_tools` (the native tool specs' WIRE names sent with the
+/// request) — the first mined exam was unauditable on "were edit_file/write_file
+/// even offered?" because the tools param was the one request axis not captured.
+const SCHEMA_VERSION: u32 = 2;
 
 /// Records the verbatim request/response of one deliberation LLM call. A `None`
 /// sink (the default) means no capture — zero hot-path cost.
@@ -31,6 +34,8 @@ pub trait PromptCaptureSink: Send + Sync {
     /// Capture ONE LLM call this tick. `iteration` is the agent-loop round (0 =
     /// first generation; >0 = re-prompt after a tool round). `messages` is the
     /// EXACT thread sent (burst, then any assistant tool_use + tool_results turns).
+    /// `offered_tools` is the wire-dialect NAME of every native tool spec sent
+    /// with this request (names only — schemas would bloat every line).
     fn record(
         &self,
         persona_id: Uuid,
@@ -38,6 +43,7 @@ pub trait PromptCaptureSink: Send + Sync {
         iteration: usize,
         system: &str,
         messages: &[ChatMessage],
+        offered_tools: &[String],
         response: &TextGenerationResponse,
     );
 }
@@ -54,6 +60,9 @@ struct PromptCaptureRecord {
     system: String,
     /// The exact message thread sent this call (user burst + tool turns).
     messages: serde_json::Value,
+    /// Wire-dialect names of the native tool specs sent with this request —
+    /// the auditable answer to "was she OFFERED that verb?". Empty = no tools.
+    offered_tools: Vec<String>,
     /// The raw model response (text + reasoning + finish_reason + tool_calls).
     response: serde_json::Value,
 }
@@ -95,6 +104,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         iteration: usize,
         system: &str,
         messages: &[ChatMessage],
+        offered_tools: &[String],
         response: &TextGenerationResponse,
     ) {
         let rec = PromptCaptureRecord {
@@ -105,6 +115,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             iteration,
             system: system.to_string(),
             messages: serde_json::to_value(messages).unwrap_or(serde_json::Value::Null),
+            offered_tools: offered_tools.to_vec(),
             response: serde_json::to_value(response).unwrap_or(serde_json::Value::Null),
         };
         let line = match serde_json::to_string(&rec) {

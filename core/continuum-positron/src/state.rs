@@ -138,6 +138,27 @@ impl StateBuilder {
         }
     }
 
+    /// Frame an already-serialized `payload` under an explicit `kind` — the escape
+    /// hatch for a renderer-agnostic CONTRACT type that deliberately does NOT
+    /// implement [`ViewState`] (e.g. the Join Contract's `Experience`, which must not
+    /// depend on positron-core to stay renderer-agnostic). The caller passes its own
+    /// `KIND` const and the serialized value; the revision is drawn from the same
+    /// monotonic [`Revisions`] well keyed by that kind, exactly like [`Self::build`].
+    /// Session-tier.
+    ///
+    /// Prefer [`Self::session`] whenever the payload IS a `ViewState` — there the kind
+    /// can't drift from the type. This variant trusts the caller to pass the type's
+    /// own `KIND` const, so keep the two paired at the call site.
+    pub fn session_raw(&self, kind: &'static str, payload: serde_json::Value) -> StateEnvelope {
+        let revision = self.revisions.next(kind);
+        StateEnvelope {
+            kind: kind.to_string(),
+            revision: Some(revision),
+            layer: StateLayer::Session,
+            payload,
+        }
+    }
+
     /// Read the current revision for `kind` without advancing.
     /// Used by the wire-session layer: a resubscribe with
     /// `last_seen.revision < revisions.current(kind)` triggers
@@ -154,6 +175,25 @@ mod tests {
     use crate::chat::{ChatViewState, Provenance, RosterSlotView, SenderKind};
     use std::collections::BTreeMap;
     use uuid::Uuid;
+
+    // what this catches: session_raw is the renderer-agnostic escape hatch — a
+    // non-ViewState payload (like the Join Contract's Experience) still gets a
+    // correctly-tagged, monotonically-revisioned Session envelope from the same
+    // per-kind Revisions well. If it stopped drawing revisions per kind, wire replay
+    // (last_seen) would silently break for that kind.
+    #[test]
+    fn session_raw_frames_kind_revision_and_payload() {
+        let b = StateBuilder::standalone();
+        let e1 = b.session_raw("experience", serde_json::json!({ "purpose": "chat" }));
+        let e2 = b.session_raw("experience", serde_json::json!({ "purpose": "chat" }));
+        assert_eq!(e1.kind, "experience");
+        assert!(matches!(e1.layer, StateLayer::Session));
+        assert_eq!(e1.payload, serde_json::json!({ "purpose": "chat" }));
+        assert!(
+            e2.revision.unwrap() > e1.revision.unwrap(),
+            "revisions monotonic per kind"
+        );
+    }
 
     fn empty_chat(room_id: Uuid) -> ChatViewState {
         ChatViewState {
@@ -173,6 +213,7 @@ mod tests {
                 availability: Some("ready".into()),
                 last_seen_ms: 1_700_000_000_000,
                 vitals: BTreeMap::new(),
+                loadout: None,
             }],
         }
     }

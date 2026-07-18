@@ -53,7 +53,8 @@
 //! into `runtime.airc()` and calls airc-lib directly — no
 //! `sendAs(persona_id, text)` wrapper here.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 use tokio::sync::Mutex;
@@ -81,6 +82,14 @@ pub struct PersonaSlot {
     /// composition hadn't yet wired her loop), `Some` once attached.
     /// Taken back to `None` during `shutdown_slot`.
     service_loop: Mutex<Option<JoinHandle<Result<ServeOutcome, String>>>>,
+    /// Autonomic self-tick suspension flag. When `true`, the persona's service
+    /// loop skips INITIATING self-directed turns — she stays online and still
+    /// answers explicit / forked-eval work; she just stops wandering. This is the
+    /// humane, restore-guaranteed quiesce an eval-preemption lease sets so a
+    /// benchmark measures a CLEAN GPU without despawning anyone. Distinct from
+    /// despawn (which aborts the loop task entirely).
+    /// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
+    quiesced: Arc<AtomicBool>,
 }
 
 /// Registry of personas currently online in The Grid.
@@ -94,10 +103,59 @@ pub struct PersonaAircRuntimeRegistry {
     inner: Arc<DashMap<Uuid, Arc<PersonaSlot>>>,
 }
 
+/// RAII lease that suspends a set of personas' autonomic self-tick for a
+/// measurement and GUARANTEES their resume on drop — a panicking or
+/// early-returning eval can never leave the fleet frozen (the restore rides the
+/// unwind). Held for the duration of a `cognition/eval` / `benchmark/run`; when
+/// it drops, every leased persona resumes wandering. Acquire via
+/// [`PersonaAircRuntimeRegistry::quiesce_all`].
+/// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
+pub struct QuiesceLease {
+    flags: Vec<Arc<AtomicBool>>,
+}
+
+impl QuiesceLease {
+    /// How many personas this lease suspended — the observable that tells a caller
+    /// (and the log) whether the fleet was actually quiesced or the roster was empty.
+    pub fn count(&self) -> usize {
+        self.flags.len()
+    }
+}
+
+impl Drop for QuiesceLease {
+    fn drop(&mut self) {
+        for f in &self.flags {
+            f.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Process-global handle to the live roster. Set once at boot by the supervisor
+/// that owns the real registry; read by host-independent callers that must reach
+/// the fleet without a threaded handle — notably `cognition/eval`'s DETACHED body,
+/// which (by design) reaches cognition through globals and holds neither `self` nor
+/// `ctx`. Same shape as `model_registry::try_global` and the focus registry.
+static GLOBAL: OnceLock<PersonaAircRuntimeRegistry> = OnceLock::new();
+
 impl PersonaAircRuntimeRegistry {
     /// Empty roster — nobody's online yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Publish THIS registry as the process-global live roster. First writer wins
+    /// (set once at boot); later calls are ignored, so a test that stands up its own
+    /// supervisor can't clobber the live one. Cheap — the registry is `Arc`-backed,
+    /// so the global holds a shared view, not a copy.
+    pub fn set_global(reg: PersonaAircRuntimeRegistry) {
+        let _ = GLOBAL.set(reg);
+    }
+
+    /// The process-global live roster, if boot published one. `None` in unit tests /
+    /// tools that never stood up a supervisor — callers degrade gracefully (an eval
+    /// with no live fleet has nothing to quiesce).
+    pub fn try_global() -> Option<PersonaAircRuntimeRegistry> {
+        GLOBAL.get().cloned()
     }
 
     /// Add a persona to the roster. Idempotent: if the persona is
@@ -113,6 +171,7 @@ impl PersonaAircRuntimeRegistry {
         let slot = Arc::new(PersonaSlot {
             runtime: runtime_arc.clone(),
             service_loop: Mutex::new(None),
+            quiesced: Arc::new(AtomicBool::new(false)),
         });
         self.inner.insert(persona_id, slot);
         tracing::info!(
@@ -150,6 +209,52 @@ impl PersonaAircRuntimeRegistry {
             .iter()
             .find(|entry| entry.value().runtime.agent_name() == agent_name)
             .map(|entry| entry.value().runtime.clone())
+    }
+
+    /// The persona's autonomic-quiesce flag (a shared handle). The service loop
+    /// clones this once at spawn and checks it each self-tick (slice 2); the
+    /// setters below flip it. `None` if the persona isn't online. Returning the
+    /// `Arc` (not a bool) is what lets the loop read the SAME atomic the lease
+    /// writes — no parallel registry, no polling round-trip.
+    pub fn quiesced_flag(&self, persona_id: Uuid) -> Option<Arc<AtomicBool>> {
+        self.inner.get(&persona_id).map(|e| e.quiesced.clone())
+    }
+
+    /// Is this persona's autonomic self-tick currently suspended? `false` if she
+    /// isn't online (a despawned persona initiates nothing anyway).
+    pub fn is_quiesced(&self, persona_id: Uuid) -> bool {
+        self.inner
+            .get(&persona_id)
+            .map(|e| e.quiesced.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    }
+
+    /// Suspend / resume ONE persona's autonomic self-tick. No-op if she isn't
+    /// online. Prefer [`quiesce_all`] for measurement — its lease guarantees the
+    /// resume even if the eval panics.
+    pub fn set_quiesced(&self, persona_id: Uuid, quiesced: bool) {
+        if let Some(e) = self.inner.get(&persona_id) {
+            e.quiesced.store(quiesced, Ordering::Relaxed);
+        }
+    }
+
+    /// Acquire an exclusive-measurement lease over the WHOLE live fleet: every
+    /// online persona's autonomic self-tick suspends now, and RESTORES when the
+    /// returned guard drops — including on panic / early-return, because `Drop`
+    /// runs during unwind. A frozen autonomic fleet is worse than a contended
+    /// eval, so the restore is structural, not best-effort. This is the
+    /// "benchmark requests an exclusive-GPU lease and the governor quiesces the
+    /// persona consumer" seam (#56 lease model, #59 humane-eval discipline).
+    /// [[benchmark-is-a-governor-preemption-lease]]
+    #[must_use = "bind the lease to a named `_lease` for the eval's duration; \
+                  binding to `_` drops it immediately and resumes the fleet at once"]
+    pub fn quiesce_all(&self) -> QuiesceLease {
+        let flags: Vec<Arc<AtomicBool>> =
+            self.inner.iter().map(|e| e.quiesced.clone()).collect();
+        for f in &flags {
+            f.store(true, Ordering::Relaxed);
+        }
+        QuiesceLease { flags }
     }
 
     /// Attach a service-loop `JoinHandle` to the persona's slot. The
@@ -312,6 +417,47 @@ mod tests {
         assert_eq!(Arc::strong_count(&registry.inner), 2);
         drop(cloned);
         assert_eq!(Arc::strong_count(&registry.inner), 1);
+    }
+
+    #[test]
+    fn quiesce_lease_restores_the_fleet_even_on_panic() {
+        // what this catches: the eval-preemption lease MUST resume every suspended
+        // persona when it drops — INCLUDING when the eval panics, because `Drop`
+        // runs during unwind. A frozen autonomic fleet (everyone stuck quiesced
+        // because an eval died holding the lease) is worse than a contended
+        // measurement. Regression guard for [[benchmark-is-a-governor-preemption-lease]].
+        // Tests the RAII invariant directly on the flags `quiesce_all` collects,
+        // since a live `PersonaSlot` needs a real airc daemon (see clone_shares_roster).
+        let flags: Vec<Arc<AtomicBool>> =
+            (0..2).map(|_| Arc::new(AtomicBool::new(true))).collect();
+
+        // normal path: held → suspended, dropped → resumed.
+        {
+            let _lease = QuiesceLease { flags: flags.clone() };
+            assert!(
+                flags.iter().all(|f| f.load(Ordering::Relaxed)),
+                "lease held → fleet suspended"
+            );
+        }
+        assert!(
+            flags.iter().all(|f| !f.load(Ordering::Relaxed)),
+            "lease dropped → fleet resumed"
+        );
+
+        // panic path: the fleet still resumes because Drop runs during unwind.
+        for f in &flags {
+            f.store(true, Ordering::Relaxed);
+        }
+        let flags_moved = flags.clone();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _lease = QuiesceLease { flags: flags_moved };
+            panic!("eval blew up mid-run while holding the lease");
+        }));
+        assert!(outcome.is_err(), "the leased closure did panic");
+        assert!(
+            flags.iter().all(|f| !f.load(Ordering::Relaxed)),
+            "fleet resumed despite the panic — restore rode the unwind"
+        );
     }
 
     /// `attach_service_loop` fails fast when the slot doesn't exist

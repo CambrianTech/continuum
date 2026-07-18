@@ -28,4 +28,29 @@ test?: string,
 /**
  * Language of `test` (the gym grades `rust` only). Defaults to `rust`.
  */
-lang?: string, };
+lang?: string, 
+/**
+ * A REAL definition-of-done: a shell command run in the persona's workspace AFTER she
+ * acts (edits files with her tools). Pass = exit 0. This is what makes a task REAL vs
+ * a HumanEval toy — the grade checks the actual repo state her edits produced (e.g.
+ * `cargo test --test foo`), not code extracted from her chat answer. Supersedes
+ * `test`/`expect`; the recovery loop feeds its stdout+stderr back on failure so she
+ * iterates against the real compiler/test output until it goes green.
+ */
+dod_shell?: string, 
+/**
+ * ARTIFACT grade: a relative in-workspace path she is told to write her solution to. When
+ * set alongside `test`, the grade reads HER FILE (her hands) instead of extracting a code
+ * block from her spoken answer (her mouth), then runs the SAME harness (strip her `main`,
+ * append `test`, compile, run). This is how an ACTING persona is measured — the act→verify
+ * loop is only visible if we grade what she actually wrote + compiled, not what she narrated.
+ * The file lands in the workspace root (= core cwd, where `code/write` sandboxes writes).
+ */
+solution_file?: string, 
+/**
+ * Task-state SETUP: a shell command run BEFORE the prompt is posed, restoring the
+ * task's initial workspace state so runs are repeatable (a `gym/mine` task re-breaks
+ * its checkout: `git checkout <commit>^ -- src/lib.rs`). Setup failure is a named
+ * infra grade, never a silent broken workspace ([[fallbacks-are-illegal-fail-loud]]).
+ */
+setup_shell?: string, };

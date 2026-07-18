@@ -1031,7 +1031,28 @@ impl LlamaServerControl for LlamaServerProcess {
             // pure optimization flag: absent it we just re-prefill (correct, slow);
             // present it we reuse (correct, fast) — no fallback, no behavior change.
             .arg("--cache-reuse")
-            .arg("256");
+            .arg("256")
+            // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
+            // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30–110s turns
+            // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
+            // physical micro-batch (`--ubatch-size`, llama.cpp default 512) is how many
+            // prompt tokens Metal processes per compute pass — bigger batch = more
+            // parallel prefill = higher tok/s, traded against a larger per-slot compute
+            // buffer. 1024 doubles prefill parallelism; the compute-buffer growth is the
+            // same axis that OOMs (kIOGPUCommandBufferCallbackErrorOutOfMemory) so it is
+            // sized WITH the 2-lane headroom, not blindly. Measured knob: watch prefill
+            // tok/s in the captures and back off if the lane 500s "Compute error".
+            .arg("--ubatch-size")
+            .arg("1024")
+            // Overflow must FAIL, never silently amputate. With context shift on
+            // (the llama.cpp default), a prompt larger than the slot's window has
+            // its MIDDLE evicted and generation proceeds on the mutilated prompt —
+            // exam-corrupting amnesia no log line reports (#139: 44k-token prompts
+            // observed riding ~13.4k slots with no error anywhere). Disabled, the
+            // server 400s ("exceeds context size") and the caller's fail-loud path
+            // surfaces the real defect: a RAG budget that overshot the served
+            // window ([[fallbacks-are-illegal-fail-loud]]).
+            .arg("--no-context-shift");
         // `--embeddings` is deliberately NOT set on this GENERATION lane. On the
         // current llama.cpp build it puts the server in embedding (non-causal)
         // mode, which makes generation fail with `500 "Compute error."` on EVERY
@@ -1088,9 +1109,37 @@ impl LlamaServerControl for LlamaServerProcess {
         for adapter in &target.adapters {
             cmd.arg("--lora").arg(&adapter.path);
         }
+        // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
+        // its load banner AND — critically — the underlying ggml/Metal fault behind a
+        // `{"code":500,"message":"Compute error"}` HTTP reply to stderr. The prior
+        // `Stdio::null()` threw that root cause away, so a compute-error storm was
+        // undiagnosable from outside the process (glass-boxed 2026-07-15: every request
+        // 500'd in ~7ms and the WHY went to /dev/null). Fail-soft: if the log can't be
+        // opened, fall back to null and say so — an unreadable log must never block
+        // serving (same posture as the pidfile below).
+        // [[never-blind-feedback-driven-iteration]] [[self-test-via-command-feedback-surface-never-blind]]
+        let stderr_stdio = dirs::home_dir()
+            .map(|h| h.join(".continuum").join("logs"))
+            .and_then(|dir| {
+                std::fs::create_dir_all(&dir).ok()?;
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join(format!("llama-server-{}.log", port)))
+                    .ok()
+            })
+            .map(Stdio::from)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    probe_class = "serving.llama.stderr_unlogged",
+                    port = port,
+                    "could not open llama-server stderr log — falling back to null (#175)"
+                );
+                Stdio::null()
+            });
         let child = cmd
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr_stdio)
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
 
@@ -1288,6 +1337,8 @@ mod tests {
                 multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
                 mmproj_local_path: None,
                 parameter_count: 0,
+                sampling: crate::model_registry::types::ModelSampling::default(),
+                persona_serving_eligible: true,
             },
             context_window: 32768,
             lanes: 1,

@@ -82,9 +82,11 @@ use uuid::Uuid;
 
 use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
-    ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind, StateBuilder, Substrate,
+    ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView, RosterViewState,
+    SenderKind, StateBuilder, Substrate,
 };
 
+use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
 use crate::runtime::MessageBus;
 
 /// Bus event prefix carrying posted-message payloads. A cheap prefix
@@ -194,6 +196,12 @@ pub(crate) const PERSONA_VITALS: &str = "persona:vitals";
 pub(crate) struct PersonaVitalsUpdate {
     pub(crate) member_id: Uuid,
     pub(crate) vitals: BTreeMap<String, u8>,
+    /// The model backing this persona (`model · size · ctx`) — the slow-moving
+    /// capability half of the same radiator that carries `vitals`. `None` when
+    /// the persona's cycle reports no bound model. `#[serde(default)]` so a
+    /// vitals payload minted before this field deserializes with no loadout.
+    #[serde(default)]
+    pub(crate) loadout: Option<Loadout>,
 }
 
 /// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's
@@ -269,6 +277,11 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // never through this presence path. Empty here = no vitals reported,
         // never fabricated bars ([[fallbacks-are-illegal-fail-loud]]).
         vitals: BTreeMap::new(),
+        // Same design B as vitals: an AI member's loadout (`model · size · ctx`)
+        // arrives on its OWN `persona:vitals` event and is folded in by id at
+        // `store` time. `None` here = no bound model reported (a human, an
+        // unresolved agent) — honest-absent, never a fabricated model.
+        loadout: None,
     }
 }
 
@@ -303,6 +316,7 @@ pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> Ro
         availability: None,
         last_seen_ms: 0,
         vitals: BTreeMap::new(),
+        loadout: None,
     }
 }
 
@@ -381,15 +395,48 @@ struct ChatProjection {
     /// into each slot at `store` time, surviving roster churn. A member with no
     /// entry simply has empty vitals (no meter), never a fabricated one.
     vitals: HashMap<Uuid, BTreeMap<String, u8>>,
+    /// Latest radiated **loadout** (`model · size · ctx`) per member id, folded
+    /// from the SAME `persona:vitals` events. Kept SEPARATE from the roster for
+    /// the same reason as `vitals` — presence replaces the roster wholesale, so
+    /// the loadout overlay lives here and is merged into each slot at `store`
+    /// time, surviving roster churn. A member with no entry carries `None` (no
+    /// loadout strip), never a fabricated model.
+    loadout: HashMap<Uuid, Loadout>,
     /// Resolves this room's activity **purpose** (the `Content` dispatch key) — #6.
     /// The projection no longer hardcodes `"chat"`; it routes through this seam so a
     /// foundry / scada / academy room reports its own recipe-defined purpose with NO
     /// projection change once the real (recipe-backed) resolver is injected.
     purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+    /// Recipe-backed source for this room's [`Experience`] manifest (the Join
+    /// Contract), keyed by the SAME purpose the chat view uses. Published alongside
+    /// chat so a renderer/agent sees the full room — regions, affordances, and the
+    /// live membership — not just the message stream.
+    /// `[[join-contract-experience-is-a-latent-space]]`.
+    experience_source: RecipeExperienceSource,
+    /// Own monotonic revisions well for the `"experience"` kind — the projection is
+    /// its sole writer, exactly as `builder` is for `"chat"`.
+    experience_builder: StateBuilder,
+    /// Last-published manifest, for emit-on-change: the Experience only shifts when
+    /// membership/purpose change (presence), NOT on every message, so re-publishing
+    /// an identical manifest per message is wasted work + churned revisions
+    /// (`[[optimization-is-always-first]]`, `[[never-thrash-sticky-hysteresis-on-every-lane]]`).
+    /// `RefCell` because `store` takes `&self`.
+    last_experience: std::cell::RefCell<Option<Experience>>,
+    /// Own Revisions well for the decomposed `"roster"` kind (path-3): the Experience
+    /// manifest's roster region binds to this rich payload (names/kinds/vitals).
+    roster_builder: StateBuilder,
+    /// Last-published roster, for emit-on-change (roster shifts on presence, not per
+    /// message) — same discipline as `last_experience`.
+    last_roster: std::cell::RefCell<Option<Vec<RosterSlotView>>>,
 }
 
 impl ChatProjection {
     fn new(substrate: Substrate) -> Self {
+        // ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
+        // the Experience manifest's recipe lookup. Default (every room → "chat") until
+        // the recipe-backed source lands; injecting a real one is a one-line change
+        // here, no call-site churn.
+        let purpose_source = crate::ipc::room_purpose::default_source();
         Self {
             substrate,
             // The projection is the SOLE writer of the `chat` kind, so
@@ -401,9 +448,13 @@ impl ChatProjection {
             messages: VecDeque::new(),
             roster: Vec::new(),
             vitals: HashMap::new(),
-            // Default resolver (every room → "chat") until the recipe-backed source
-            // lands; injecting a real one is a one-line change here, no call-site churn.
-            purpose_source: crate::ipc::room_purpose::default_source(),
+            loadout: HashMap::new(),
+            experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
+            experience_builder: StateBuilder::standalone(),
+            last_experience: std::cell::RefCell::new(None),
+            roster_builder: StateBuilder::standalone(),
+            last_roster: std::cell::RefCell::new(None),
+            purpose_source,
         }
     }
 
@@ -420,6 +471,7 @@ impl ChatProjection {
             self.messages.clear();
             self.roster.clear();
             self.vitals.clear();
+            self.loadout.clear();
         }
     }
 
@@ -430,6 +482,13 @@ impl ChatProjection {
     /// roster keeps no bearing here — `store` only merges vitals for members the
     /// current roster still lists.
     fn apply_vitals(&mut self, update: PersonaVitalsUpdate) {
+        // Loadout only OVERWRITES when the radiator reports one this tick — a
+        // `None` means "not sampled" (the persona's cycle has no binding), never
+        // "clear the last-known loadout". So a member keeps its resolved loadout
+        // across ticks; it's a durable capability fact, not a per-tick meter.
+        if let Some(loadout) = update.loadout {
+            self.loadout.insert(update.member_id, loadout);
+        }
         self.vitals.insert(update.member_id, update.vitals);
         self.store();
     }
@@ -516,14 +575,53 @@ impl ChatProjection {
         let roster: Vec<RosterSlotView> = self
             .roster
             .iter()
-            .map(|slot| match self.vitals.get(&slot.member_id) {
-                Some(v) => RosterSlotView {
-                    vitals: v.clone(),
+            .map(|slot| {
+                let vitals = self.vitals.get(&slot.member_id);
+                let loadout = self.loadout.get(&slot.member_id);
+                // No live overlay for this member → the presence slot, verbatim.
+                if vitals.is_none() && loadout.is_none() {
+                    return slot.clone();
+                }
+                RosterSlotView {
+                    vitals: vitals.cloned().unwrap_or_else(|| slot.vitals.clone()),
+                    loadout: loadout.cloned().or_else(|| slot.loadout.clone()),
                     ..slot.clone()
-                },
-                None => slot.clone(),
+                }
             })
             .collect();
+
+        // Publish the room's Experience manifest (the Join Contract) ALONGSIDE the
+        // chat view, so a renderer/agent sees the whole room — regions, affordances,
+        // and the live membership — not just the message stream. Membership is
+        // projected from the SAME roster (kind-agnostic: human/persona/agent are all
+        // Members). `Experience` is renderer-agnostic (no positron-core dep), so it
+        // rides `session_raw` under its own `KIND`. No recipe for the room's purpose
+        // → nothing published (fail-quiet on this OPTIONAL surface; chat still ships).
+        if let Some(exp) = self.build_experience(room_id, &roster) {
+            // Emit-on-change: skip re-publishing an identical manifest (messages don't
+            // move membership/purpose). Only presence-driven changes reach the wire.
+            let unchanged = self.last_experience.borrow().as_ref() == Some(&exp);
+            if !unchanged {
+                let payload = serde_json::to_value(&exp)
+                    .expect("Experience must serialize — substrate bug, not a runtime error");
+                self.substrate
+                    .store(self.experience_builder.session_raw(Experience::KIND, payload));
+                *self.last_experience.borrow_mut() = Some(exp);
+            }
+        }
+
+        // Publish the rich roster under its OWN "roster" kind (path-3 per-region
+        // ViewState): the Experience manifest's roster region binds to this for
+        // names/kinds/vitals — the display data the manifest's minimal Member omits.
+        // Emit-on-change (roster only shifts on presence, not per message).
+        if self.last_roster.borrow().as_deref() != Some(roster.as_slice()) {
+            self.substrate.store(
+                self.roster_builder
+                    .session(RosterViewState { room_id, roster: roster.clone() }),
+            );
+            *self.last_roster.borrow_mut() = Some(roster.clone());
+        }
+
         let view = ChatViewState {
             room_id,
             room_name: self.room_name.clone(),
@@ -537,6 +635,27 @@ impl ChatProjection {
             roster,
         };
         self.substrate.store(self.builder.session(view));
+    }
+
+    /// Assemble this room's [`Experience`] manifest: recipe (by the room's purpose)
+    /// → static manifest, live roster → `membership`. Pure over `(room_id, roster)`
+    /// so it's unit-testable without a live bus. `None` when no recipe matches the
+    /// room's purpose (the manifest is an OPTIONAL surface; chat still ships).
+    ///
+    /// Membership is kind-agnostic — every present peer becomes a plain
+    /// [`Standing::Member`]; structural-role overlay (examinee/owner) is a higher
+    /// concern supplied by run/room context, not this presence projection.
+    fn build_experience(&self, room_id: Uuid, roster: &[RosterSlotView]) -> Option<Experience> {
+        let membership: Vec<Member> = roster
+            .iter()
+            .map(|slot| Member {
+                peer_id: slot.member_id.to_string(),
+                standing: Standing::Member,
+            })
+            .collect();
+        self.experience_source
+            .experience_for(room_id)
+            .map(|exp| exp.with_membership(membership))
     }
 }
 
@@ -726,6 +845,7 @@ mod tests {
                 ("energy".to_string(), 80u8),
                 ("attention".to_string(), 90u8),
             ]),
+            loadout: None,
         })
         .unwrap();
         match classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -751,6 +871,64 @@ mod tests {
             Some(&80),
             "vitals survive a roster refresh (they are keyed by id, not carried on presence)"
         );
+    }
+
+    #[test]
+    fn persona_loadout_folds_into_the_slot_and_survives_a_vitals_only_tick() {
+        // what this catches: a radiated LOADOUT (model · size · ctx) must fold
+        // into the member's slot by id — the strip the tile draws — AND persist
+        // as a durable capability fact: a later vitals-only tick (`loadout:
+        // None`, the common 2s pulse) must NOT wipe the known model. A
+        // regression that overwrote loadout with every tick would blank the
+        // strip the instant vitals moved without a re-home.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0xa);
+        let asha = Uuid::from_u128(0xd);
+        if let ProjectionInput::Presence(u) =
+            classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({})))
+                .unwrap()
+        {
+            p.apply_presence(u);
+        }
+
+        // Radiate the model backing this persona.
+        let radiated = serde_json::to_value(PersonaVitalsUpdate {
+            member_id: asha,
+            vitals: BTreeMap::new(),
+            loadout: Some(Loadout {
+                model: Some("devstral-24b".into()),
+                params: Some(24_000_000_000),
+                context_window: Some(32_768),
+            }),
+        })
+        .unwrap();
+        if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
+            p.apply_vitals(v);
+        }
+        let slot = current_chat(&substrate).roster.remove(0);
+        let lo = slot.loadout.as_ref().expect("loadout folded into the slot");
+        assert_eq!(lo.model.as_deref(), Some("devstral-24b"));
+        assert_eq!(lo.params, Some(24_000_000_000));
+        assert_eq!(lo.context_window, Some(32_768));
+
+        // A later vitals-only tick (no loadout this sample) must keep the model.
+        let vitals_only = serde_json::to_value(PersonaVitalsUpdate {
+            member_id: asha,
+            vitals: BTreeMap::from([("activity".to_string(), 50u8)]),
+            loadout: None,
+        })
+        .unwrap();
+        if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &vitals_only).unwrap() {
+            p.apply_vitals(v);
+        }
+        let slot = current_chat(&substrate).roster.remove(0);
+        assert_eq!(
+            slot.loadout.as_ref().and_then(|l| l.context_window),
+            Some(32_768),
+            "a vitals-only tick must not clear the durable loadout"
+        );
+        assert_eq!(slot.vitals.get("activity"), Some(&50));
     }
 
     #[test]
@@ -1057,6 +1235,7 @@ mod tests {
         let radiated = serde_json::to_value(PersonaVitalsUpdate {
             member_id: m,
             vitals: BTreeMap::from([("energy".to_string(), 70u8)]),
+            loadout: None,
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {

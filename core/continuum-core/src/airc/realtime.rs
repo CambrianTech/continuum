@@ -49,6 +49,10 @@ pub enum AircRealtimeSchema {
     LiveKitBridgeEvent,
     /// A bounded transcript/chat payload projected into Continuum UI or memory.
     ChatTranscript,
+    /// A node's live capacity offer (`capacity::gossip::CapacityOffer`) — grid
+    /// presence-of-compute. EphemeralCoalesced: latest wins, never replayed
+    /// (a stale capacity reading is a lie).
+    GridCapacity,
 }
 
 /// Handle to a payload already defined by a Continuum schema.
@@ -452,6 +456,9 @@ impl AircRealtimePayload {
             Self::ExistingSchema { payload } => match payload.schema {
                 AircRealtimeSchema::LiveKitBridgeCommand
                 | AircRealtimeSchema::LiveKitBridgeEvent => AircRealtimeDelivery::Control,
+                // Capacity offers are presence-of-compute: latest wins, never
+                // replayed — a stale reading must not outlive its freshness.
+                AircRealtimeSchema::GridCapacity => AircRealtimeDelivery::EphemeralCoalesced,
                 _ => AircRealtimeDelivery::Durable,
             },
             Self::Presence { event } => event.delivery(),

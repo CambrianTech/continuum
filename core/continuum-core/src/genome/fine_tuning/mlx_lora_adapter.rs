@@ -180,6 +180,32 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             &request.base_model,
         )
         .map_err(FineTuningError::InvalidRequest)?;
+        // Prefer a LOCAL 4-bit MLX conversion of the base when one exists
+        // (`<genome>/models/mlx-q4/<hf id with '/'→'_'>`). QLoRA on the
+        // quantized base is how a 24B trains NEXT TO its own living serving
+        // lane on unified memory: the bf16 base (44GB) + the 25GB server
+        // SIGABRT'd Metal on the first lived-curriculum train (2026-07-10);
+        // the 12GB 4-bit conversion coexists. A deliberate, LOGGED preference
+        // for a stronger-fitting artifact — not a fallback: absent the
+        // conversion we train the full base exactly as before, and its OOM
+        // stays loud.
+        let train_base = {
+            let q4 = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".continuum/genome/models/mlx-q4")
+                .join(train_base.replace('/', "_"));
+            if q4.join("config.json").exists() {
+                crate::probe!(
+                    class = "genome.train.base",
+                    base = %train_base,
+                    local_q4 = %q4.display(),
+                    "training against the local 4-bit MLX conversion (fits beside the living lane)"
+                );
+                q4.to_string_lossy().into_owned()
+            } else {
+                train_base
+            }
+        };
         if request.dataset.examples.is_empty() {
             return Err(FineTuningError::InvalidRequest(
                 "dataset has no examples".into(),
@@ -211,7 +237,9 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                 adapter_dir.display()
             ))
         })?;
-        write_mlx_dataset(&data_dir, &request)?;
+        let chat_template =
+            tokenizer_has_chat_template(&self.python, &job_dir, &train_base).await?;
+        write_mlx_dataset(&data_dir, &request, chat_template)?;
 
         // ── Build the mlx_lm.lora --train invocation ───────────────
         let schedule = request.schedule.clone().unwrap_or_else(default_schedule);
@@ -243,11 +271,24 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             .arg("--iters")
             .arg(iters.to_string())
             .arg("--batch-size")
-            .arg(schedule.batch_size.max(1).to_string())
+            // Clamped to the SMALLEST split: mlx_lm iterates valid with the same
+            // batch size and hard-errors when a split has fewer rows than one
+            // batch ("Dataset must have at least batch_size=4" — killed the
+            // 12-example lived-curriculum train, 2026-07-10). Small datasets are
+            // the NORM for the lived loop (a day's corrections, not a corpus);
+            // the schedule's batch is a ceiling, the data is the floor.
+            .arg(effective_batch_size(&request, &schedule).to_string())
             .arg("--num-layers")
             .arg(lora.target_modules.len().max(8).to_string())
             .arg("--learning-rate")
             .arg(format!("{:e}", schedule.learning_rate))
+            // Sequence cap is a MEMORY control, not just quality: activation
+            // memory scales with batch × seq × model size, and mlx_lm's silent
+            // 2048 default meant the schedule's sequence_length never reached
+            // the trainer (found on job a96e2341 — Metal OOM at batch 4 beside
+            // a resident llama-server; the operator's 3072 was never applied).
+            .arg("--max-seq-length")
+            .arg(schedule.sequence_length.to_string())
             .arg("-c")
             .arg(&config_path)
             .stdout(Stdio::piped())
@@ -318,7 +359,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
 /// terminal [`TrainingStatus`] into the watch channel. Canonical
 /// own-task + `watch::Sender` shape (CONCURRENCY-STYLE-GUIDE).
 fn spawn_watcher(
-    child: tokio::process::Child,
+    mut child: tokio::process::Child,
     tx: watch::Sender<TrainingStatus>,
     cancel: Arc<tokio::sync::Notify>,
     adapter_dir: PathBuf,
@@ -332,9 +373,35 @@ fn spawn_watcher(
         });
         let started = Instant::now();
 
+        // Stream the trainer's pipes LIVE instead of buffering to exit
+        // (`wait_with_output`), which made a running job unfalsifiable: no loss
+        // curve existed anywhere until the process died. Every line lands in
+        // `trainer.log`; `Iter N: … loss X` lines additionally parse into
+        // `loss.jsonl` (the live learning proof `genome/job-status` and the
+        // evidence engine can read). The last stderr lines are kept for the
+        // failure message the old path built from the buffered output.
+        let stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(stream_trainer_pipe(
+                stdout,
+                adapter_dir.join("trainer.log"),
+                adapter_dir.join("loss.jsonl"),
+                None,
+            ));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(stream_trainer_pipe(
+                stderr,
+                adapter_dir.join("trainer.log"),
+                adapter_dir.join("loss.jsonl"),
+                Some(stderr_tail.clone()),
+            ));
+        }
+
         let outcome = tokio::select! {
             // mlx_lm.lora ran to completion (or failed).
-            res = child.wait_with_output() => res,
+            res = child.wait() => res,
             // Operator cancelled — kill is via kill_on_drop when we
             // drop the child by leaving the select with a Cancelled.
             _ = cancel.notified() => {
@@ -346,7 +413,7 @@ fn spawn_watcher(
 
         let wall_clock_ms = started.elapsed().as_millis() as u64;
         let status = match outcome {
-            Ok(out) if out.status.success() => {
+            Ok(exit) if exit.success() => {
                 let safetensors = adapter_dir.join("adapters.safetensors");
                 if !safetensors.exists() {
                     TrainingStatus::Failed {
@@ -377,11 +444,17 @@ fn spawn_watcher(
                     }
                 }
             }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let tail: String = stderr.lines().rev().take(8).collect::<Vec<_>>().join("\n");
+            Ok(exit) => {
+                let tail: String = stderr_tail
+                    .lock()
+                    .map(|d| d.iter().rev().take(8).cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 TrainingStatus::Failed {
-                    error: format!("mlx_lm.lora exited {}: {tail}", out.status),
+                    error: format!("mlx_lm.lora exited {exit}: {tail}"),
                 }
             }
             Err(e) => TrainingStatus::Failed {
@@ -390,6 +463,76 @@ fn spawn_watcher(
         };
         let _ = tx.send(status);
     });
+}
+
+/// Stream one trainer pipe: every line appends to `log_path`; `Iter N: … loss X`
+/// lines additionally append a `{"iter","kind","loss","atMs"}` row to `loss_path`;
+/// when `tail` is given (the stderr pipe) the last ~40 lines are retained for the
+/// failure message. Line-buffered writes — the trainer emits a handful of lines
+/// per minute, so this costs nothing.
+async fn stream_trainer_pipe(
+    pipe: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    log_path: PathBuf,
+    loss_path: PathBuf,
+    tail: Option<Arc<std::sync::Mutex<std::collections::VecDeque<String>>>>,
+) {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(pipe).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+        }
+        if let Some((iter, kind, loss)) = parse_loss_line(&line) {
+            if let Ok(mut f) =
+                std::fs::OpenOptions::new().create(true).append(true).open(&loss_path)
+            {
+                use std::io::Write;
+                let _ = writeln!(
+                    f,
+                    "{}",
+                    serde_json::json!({
+                        "iter": iter,
+                        "kind": kind,
+                        "loss": loss,
+                        "atMs": chrono::Utc::now().timestamp_millis(),
+                    })
+                );
+            }
+        }
+        if let Some(t) = &tail {
+            if let Ok(mut d) = t.lock() {
+                d.push_back(line);
+                while d.len() > 40 {
+                    d.pop_front();
+                }
+            }
+        }
+    }
+}
+
+/// Parse an mlx_lm loss line — `Iter 100: Train loss 1.234, …` /
+/// `Iter 200: Val loss 1.5, …` → `(100, "train", 1.234)`. Hand-rolled (no regex
+/// dep): anything that isn't exactly this shape returns `None` and stays a plain
+/// log line.
+fn parse_loss_line(line: &str) -> Option<(u64, &'static str, f64)> {
+    let rest = line.strip_prefix("Iter ")?;
+    let (iter_s, rest) = rest.split_once(':')?;
+    let iter: u64 = iter_s.trim().parse().ok()?;
+    let kind = if rest.contains("Train loss") {
+        "train"
+    } else if rest.contains("Val loss") {
+        "val"
+    } else {
+        return None;
+    };
+    let after = rest.split("loss").nth(1)?.trim_start();
+    let num: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    let loss: f64 = num.parse().ok()?;
+    Some((iter, kind, loss))
 }
 
 /// `~/.continuum/genome/<persona>/<trait_kind>/<job_uuid>/` — honors an
@@ -411,15 +554,52 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// Write the dataset into MLX's expected `train.jsonl` / `valid.jsonl`
-/// using the `{"prompt","completion"}` schema mlx_lm.lora accepts
-/// natively (maps 1:1 from [`super::types::TrainingExample`]). The
+/// Does `train_base`'s tokenizer carry a chat template? Decides the dataset
+/// schema: mlx_lm renders `{"prompt","completion"}` rows THROUGH
+/// `tokenizer.apply_chat_template`, so a template-less base (Devstral/Tekken —
+/// its template lives outside tokenizer_config) exits 1 mid-train ("Cannot use
+/// chat template functions"; killed the first lived-curriculum train,
+/// 2026-07-10). Probed under the SAME interpreter that runs mlx_lm.lora, from
+/// the authoritative source (the tokenizer itself — the #74 doctrine), never
+/// guessed from the model name. Probe failure is loud: a base whose tokenizer
+/// can't even load will not train either.
+async fn tokenizer_has_chat_template(
+    python: &Path,
+    job_dir: &Path,
+    train_base: &str,
+) -> Result<bool, FineTuningError> {
+    let probe_path = job_dir.join("probe_chat_template.py");
+    std::fs::write(&probe_path, include_str!("probe_chat_template.py")).map_err(|e| {
+        FineTuningError::LocalTrainerFailed(format!("write chat-template probe: {e}"))
+    })?;
+    let out = tokio::process::Command::new(python)
+        .arg(&probe_path)
+        .arg(train_base)
+        .output()
+        .await
+        .map_err(|e| FineTuningError::LocalTrainerFailed(format!("spawn probe: {e}")))?;
+    if !out.status.success() {
+        return Err(FineTuningError::LocalTrainerFailed(format!(
+            "chat-template probe failed for {train_base}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim() == "yes")
+}
+
+/// Write the dataset into MLX's expected `train.jsonl` / `valid.jsonl`.
+/// `chat_template: true` → the `{"prompt","completion"}` schema (maps 1:1 from
+/// [`super::types::TrainingExample`]; mlx_lm renders it through the tokenizer's
+/// template). `false` → the raw `{"text"}` schema (prompt + completion joined),
+/// the only schema a template-less tokenizer can train on — whole-text LM loss
+/// instead of completion-masked, the honest capability of such a base. The
 /// validation split is honored; with too few examples for a split we
 /// still emit a (possibly 1-line) valid file so mlx_lm doesn't error on
 /// a missing file.
 fn write_mlx_dataset(
     data_dir: &Path,
     request: &TrainingJobRequest,
+    chat_template: bool,
 ) -> Result<(), FineTuningError> {
     let examples = &request.dataset.examples;
     let split = request.dataset.validation_split.clamp(0.0, 0.5);
@@ -431,10 +611,16 @@ fn write_mlx_dataset(
     let to_jsonl = |rows: &[super::types::TrainingExample]| -> Result<String, FineTuningError> {
         let mut s = String::new();
         for ex in rows {
-            let line = serde_json::json!({
-                "prompt": ex.prompt,
-                "completion": ex.completion,
-            });
+            let line = if chat_template {
+                serde_json::json!({
+                    "prompt": ex.prompt,
+                    "completion": ex.completion,
+                })
+            } else {
+                serde_json::json!({
+                    "text": format!("{}\n{}", ex.prompt, ex.completion),
+                })
+            };
             s.push_str(
                 &serde_json::to_string(&line)
                     .map_err(|e| FineTuningError::LocalTrainerFailed(format!("encode row: {e}")))?,
@@ -460,6 +646,24 @@ fn write_mlx_dataset(
 }
 
 /// mlx_lm.lora counts iterations, not epochs. Derive iters from the
+/// The batch size mlx_lm can actually run: the schedule's ask, clamped to the
+/// smallest dataset split (mlx iterates BOTH splits at this batch size and
+/// hard-errors on a split smaller than one batch), floored at 1. Split sizing
+/// mirrors [`write_mlx_dataset`] exactly — one arithmetic, two readers.
+fn effective_batch_size(
+    request: &TrainingJobRequest,
+    schedule: &ScheduleParams,
+) -> u32 {
+    let n = request.dataset.examples.len();
+    let split = request.dataset.validation_split.clamp(0.0, 0.5);
+    let n_valid = (((n as f32) * split).floor() as usize).min(n.saturating_sub(1));
+    let n_train = n - n_valid;
+    // A zero-row valid file is mirrored from train by the writer, so the
+    // effective smallest split is never zero.
+    let smallest = n_train.min(n_valid.max(1)).max(1) as u32;
+    schedule.batch_size.max(1).min(smallest)
+}
+
 /// schedule's epochs × example count ÷ batch — a reasonable mapping
 /// from the substrate's epoch-shaped schedule to MLX's iter knob.
 fn iters_for(request: &TrainingJobRequest, schedule: &ScheduleParams) -> u32 {
@@ -515,6 +719,30 @@ fn lora_config_yaml(lora: &LoRAHyperparams) -> String {
 mod tests {
     use super::*;
     use crate::genome::fine_tuning::types::{TrainingDataset, TrainingExample, TrainingSource};
+
+    // what this catches: the live-learning-proof parser — mlx_lm's `Iter N: Train/Val
+    // loss X` lines become loss.jsonl rows, and everything else (tqdm bars, checkpoint
+    // saves, blank lines) stays a plain log line. A parser that mis-reads a bar as a
+    // loss point poisons the curve the evidence engine renders.
+    #[test]
+    fn loss_lines_parse_and_noise_does_not() {
+        assert_eq!(
+            parse_loss_line("Iter 100: Train loss 1.234, Learning Rate 1e-05, It/sec 0.12"),
+            Some((100, "train", 1.234))
+        );
+        assert_eq!(
+            parse_loss_line("Iter 200: Val loss 0.987, Val took 30.1s"),
+            Some((200, "val", 0.987))
+        );
+        for noise in [
+            "Calculating loss...:  12%|█▎        | 2/16 [00:50<06:19, 27.11s/it]",
+            "Iter 300: Saved adapter weights to adapters/0000300_adapters.safetensors",
+            "Loading pretrained model",
+            "",
+        ] {
+            assert_eq!(parse_loss_line(noise), None, "noise parsed as loss: {noise:?}");
+        }
+    }
 
     fn req(examples: Vec<(&str, &str)>) -> TrainingJobRequest {
         TrainingJobRequest {
@@ -609,7 +837,7 @@ mod tests {
             ("p4", "c4"),
             ("p5", "c5"),
         ]);
-        write_mlx_dataset(&dir, &r).unwrap();
+        write_mlx_dataset(&dir, &r, true).unwrap();
 
         let train = std::fs::read_to_string(dir.join("train.jsonl")).unwrap();
         let valid = std::fs::read_to_string(dir.join("valid.jsonl")).unwrap();
@@ -624,6 +852,25 @@ mod tests {
         assert!(first.get("prompt").is_some());
         assert!(first.get("completion").is_some());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // what this catches: a template-less base (Devstral/Tekken) gets the raw
+    // {"text"} schema — the only one its tokenizer can train on. Regression for
+    // the 2026-07-10 recall-trust train that died mid-job on
+    // "Cannot use chat template functions".
+    #[test]
+    fn template_less_base_writes_text_schema() {
+        let dir = std::env::temp_dir().join(format!("mlx_ds_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = req(vec![("the prompt", "the completion"), ("p2", "c2")]);
+        write_mlx_dataset(&dir, &r, false).unwrap();
+        let train = std::fs::read_to_string(dir.join("train.jsonl")).unwrap();
+        let first: serde_json::Value =
+            serde_json::from_str(train.lines().next().unwrap()).unwrap();
+        assert!(first.get("prompt").is_none(), "no chat schema without a template");
+        let text = first["text"].as_str().unwrap();
+        assert!(text.contains("the prompt") && text.contains("the completion"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

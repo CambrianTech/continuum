@@ -6,8 +6,8 @@
 
 use super::registry::{Registry, RegistryError};
 use super::types::{
-    Arch, AuthKind, Capability, Model, MultiPartyChatStrategy, Provider, ProviderCapabilities,
-    ProviderKind, ToolProtocol,
+    Arch, AuthKind, Capability, Model, ModelSampling, MultiPartyChatStrategy, Provider,
+    ProviderCapabilities, ProviderKind, ToolProtocol,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -435,6 +435,204 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
             ..ModelSpec::default()
         }),
+        // DEVSTRAL SMALL 2507 — the AGENTIC coder (Mistral-Small-3.1 base, 24B, 68% SWE-bench
+        // Verified, runs on a 32GB Mac at Q4_K_M ~14GB). The 14B coder ACTS but loops/mis-plans at
+        // repo scale (glass-boxed); Devstral is built for the search→read→edit→verify arc. FIRST
+        // Arch::Mistral row. `chat_template: None` → use the GGUF's embedded Tekken template
+        // (--jinja renders tools). `multi_party_strategy` is the one field to serve-validate against
+        // Tekken (starting with the single-party collapse the coders use); stop uses Mistral's `</s>`.
+        model(ModelSpec {
+            id: "unsloth/Devstral-Small-2507-GGUF",
+            name: "Devstral-Small-2507 (agentic coder)",
+            provider: "llama-server",
+            arch: Arch::Mistral,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 10.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/unsloth/Devstral-Small-2507-GGUF"),
+            // The trainable HF safetensors base (mistralai upstream) — what the
+            // genome forge trains LoRA against; the GGUF above is serving-only.
+            // Without this, genome/job-create fails loud ("no hf_source"), which
+            // blocked the first lived-curriculum train (recall-trust, 2026-07-10).
+            hf_source: Some("mistralai/Devstral-Small-2507"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["</s>"],
+            // #181 REFERENCE ROW (#76): Devstral-Small is the model that exhibited
+            // the reasoning-channel repetition loop (identical wrong code block ~5×,
+            // 14k tokens to the length cap, empty answer). Its sampling is pinned
+            // EXPLICITLY to the substrate anti-loop floor so this row is the
+            // documented ESCALATION POINT: if the floor proves insufficient once
+            // measured live post-reboot, the fix is bumping THESE numbers
+            // (repeat_last_n → wider, frequency_penalty → stronger) here — a
+            // one-line per-model tune, not a re-plumb. Values == floor today, so
+            // the reboot cleanly measures the floor as planned
+            // ([[anti-loop-sampling-windowed-vs-unwindowed]]).
+            sampling: ModelSampling::default(),
+            ..ModelSpec::default()
+        }),
+        // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
+        // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
+        // and opencode like any other model, so the head-to-head is model-through-harness fair, not
+        // a hardcoded reference column. Llama-3.1 arch; Hermes ships a ChatML template embedded in
+        // the GGUF, so chat_template: None + --jinja (same pattern as Devstral's Tekken).
+        model(ModelSpec {
+            id: "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+            name: "Hermes-3-Llama-3.1-8B (opponent)",
+            provider: "llama-server",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 30.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Hermes-3-Llama-3.1-8B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|eot_id|>"],
+            persona_serving_eligible: false, // opponent: benchmark-only, never the citizens' model
+            ..ModelSpec::default()
+        }),
+        // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──
+        // Opponents + community champions for the 64GB-class matrix. Arch + context
+        // read from each GGUF's OWN header at add time (#74 — never guessed):
+        // Hermes-4.3-36B is seed_oss (ByteDance Seed-OSS base), not a Llama/Qwen.
+        // All serve via llama-server (--jinja, template embedded in GGUF); GGUFs
+        // land under genome/models/ and resolve by id-token derivation.
+        model(ModelSpec {
+            id: "NousResearch/Hermes-4.3-36B-GGUF",
+            name: "Hermes-4.3-36B (opponent — their current flagship-mid)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // seed_oss — not yet an enumerated arch; llama-server reads the header
+            context_window: 524_288,
+            max_output_tokens: 8192,
+            tokens_per_second: 8.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/NousResearch/Hermes-4.3-36B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // opponent flagship: the planner conscripted this TWICE (2026-07-12)
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "Qwen/Qwen3-32B-GGUF",
+            name: "Qwen3-32B (aider's 64GB-class local ceiling: 40.0% polyglot)",
+            provider: "llama-server",
+            arch: Arch::Qwen3,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 9.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark reference row (aider 64GB-class ceiling)
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            name: "Qwen3-Coder-30B-A3B (community champion — MoE, 3B active)",
+            provider: "llama-server",
+            arch: Arch::Qwen3, // qwen3moe header; MoE routing handled by llama-server
+            context_window: 262_144,
+            max_output_tokens: 8192,
+            tokens_per_second: 25.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // campaign row; eligibility revisit gated on #126 consent ranges
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/phi-4-GGUF",
+            name: "Phi-4-14B (roster — MS small-model line)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // phi3 header — not yet an enumerated arch
+            context_window: 16_384,
+            max_output_tokens: 8192,
+            tokens_per_second: 14.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/phi-4-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark roster row (no ToolUse — unfit for citizens anyway)
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
+            name: "Qwen2.5-Coder-32B (aider's published 16.4% polyglot — replicate then beat)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 9.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark reference row (aider replicate-then-beat)
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+            name: "Qwen2.5-Coder-7B (roster — small coder tier)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 30.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
         // The Qwen2.5-Coder SIZE LADDER — 0.5B / 1.5B / 3B, so a weak box serves what it can and
         // we can chart small→large on the same benchmark (what a MacBook — or a Pi — gets away
         // with). plan_serving still picks the largest that FITS, so these only serve where the
@@ -707,6 +905,10 @@ pub fn providers() -> Vec<Provider> {
             ..Default::default()
         }),
         provider(ProviderSpec {
+            // Gemini via its OpenAI-COMPATIBLE endpoint (/v1beta/openai) — the
+            // modern fix for the legacy era's broken bespoke integration
+            // (Joel 2026-07-10: "something was wrong with the Google"): one data
+            // row, the same parameterized OpenAICompatibleAdapter as everyone.
             id: "google",
             name: "Google",
             base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -850,6 +1052,14 @@ struct ModelSpec {
     chat_template: Option<&'static str>,
     multi_party_strategy: MultiPartyChatStrategy,
     stop_sequences: &'static [&'static str],
+    /// Per-model decode defaults (#76). Defaults to the substrate floor
+    /// ([`ModelSampling::default`], incl. the #181 anti-loop pair) via
+    /// `..Default::default()`, so only a model we've measured/tuned overrides it.
+    sampling: ModelSampling,
+    /// See [`Model::persona_serving_eligible`]. Default TRUE; benchmark
+    /// opponents / campaign-roster rows opt OUT so the autonomic planner can
+    /// never conscript them as the citizens' model.
+    persona_serving_eligible: bool,
 }
 
 impl Default for ModelSpec {
@@ -872,6 +1082,8 @@ impl Default for ModelSpec {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::NamePrefixedUserTurns,
             stop_sequences: &[],
+            sampling: ModelSampling::default(),
+            persona_serving_eligible: true,
         }
     }
 }
@@ -895,11 +1107,13 @@ fn model(spec: ModelSpec) -> Model {
         chat_template: spec.chat_template.map(str::to_string),
         multi_party_strategy: spec.multi_party_strategy,
         stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),
+        sampling: spec.sampling,
         // Not a hand-authored fact: the size comes from the artifact's own
         // `general.parameter_count` header, hydrated once at registry load
         // ([`super::hydrate`]). The `ModelSpec` deliberately omits it so no
         // human types "4B" into a row — the sentinel `0` means "ask the GGUF".
         parameter_count: 0,
+        persona_serving_eligible: spec.persona_serving_eligible,
     }
 }
 

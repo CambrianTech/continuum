@@ -1,0 +1,25 @@
+{
+  "purpose": "video-chat",
+  "regions": [
+    { "name": "stage", "kind": "video", "scope": "activity", "role": "primary", "slot": "content", "live": true },
+    { "name": "messages", "kind": "chat", "scope": "activity", "role": "peripheral", "slot": "content", "live": true },
+    { "name": "roster", "kind": "chat", "scope": "activity", "role": "peripheral", "slot": "context", "live": true }
+  ],
+  "affordances": [],
+  "layout": {
+    "container": "row",
+    "children": [
+      { "node": { "container": "region", "name": "stage" }, "weight": 3.0 },
+      {
+        "node": {
+          "container": "col",
+          "children": [
+            { "node": { "container": "region", "name": "messages" } },
+            { "node": { "container": "region", "name": "roster" } }
+          ]
+        },
+        "weight": 1.0
+      }
+    ]
+  }
+}

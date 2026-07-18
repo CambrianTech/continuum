@@ -1,0 +1,8 @@
+{
+  "purpose": "chat",
+  "regions": [
+    { "name": "messages", "kind": "chat", "scope": "activity", "role": "primary", "slot": "content", "live": true },
+    { "name": "roster", "kind": "roster", "scope": "activity", "role": "peripheral", "slot": "context", "live": true }
+  ],
+  "affordances": []
+}

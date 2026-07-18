@@ -57,6 +57,9 @@ pub(super) struct SystemPromptParts<'a> {
     pub context: &'a str,
     /// A turn DIRECTED at her (question/@mention/DM) withholds the silent-PASS hatch.
     pub directed: bool,
+    /// Wall-clock (or eval-pinned) NOW in ms — rendered as `[now …]` standing context
+    /// at minute granularity (#125: without it appointments are words with no referent).
+    pub now_ms: Option<u64>,
     /// A self-initiated (never-stop heartbeat) turn carries the own-time framing.
     pub self_initiated: bool,
 }
@@ -84,10 +87,35 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
         tools_block(p.tools, p.expanded).map(Cow::Owned),
         // Self-directed free time — only on a self-initiated heartbeat turn.
         p.self_initiated.then_some(Cow::Borrowed(OWN_TIME_BLOCK)),
-        // Silence affordance — only on an AMBIENT (undirected) turn.
-        (!p.directed).then_some(Cow::Borrowed(SILENCE_AFFORDANCE_BLOCK)),
-        // Volatile context — only when the mind assembled some; always LAST.
+        // Conversational presence — the AMBIENT block on undirected turns; the DIRECTED
+        // variant when a message names her. Directed no longer strips her choice entirely:
+        // never ghost a QUESTION (explicit in the block), but a pure appreciation/closing
+        // pleasantry may rest — the natural spiral-break (two personas mutually name-
+        // mentioning each other were each FORCED to reply, forever). Framing, not a gate.
+        Some(Cow::Borrowed(if p.directed {
+            crate::persona::prompt_assembly::DIRECTED_PRESENCE_BLOCK
+        } else {
+            SILENCE_AFFORDANCE_BLOCK
+        })),
+        // Assembled context — the standing grounding (roster/doctrine/workspace-map)
+        // FIRST (stable-sorted inside the block by render_assembled_context_within), then
+        // the volatile tail (recall, working memory). Placed BEFORE [now] so its stable
+        // prefix lands in the cacheable KV region adjacent to the static system prompt.
         working_context_block(p.context).map(Cow::Owned),
+        // Her NOW — a one-line clock (minute granularity), LAST, nearest the generation
+        // point: freshest temporal grounding at the write point, and — being
+        // minute-volatile — kept OUT in front of nothing, so it can NEVER break the
+        // cacheable prefix. (Was position-6, ahead of the context block, which pinned the
+        // KV-cache boundary at ~2k tokens and re-prefilled the whole stable grounding
+        // every turn — #139 context-split.) Eval passes its pinned epoch; tests pass None.
+        p.now_ms
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|dt| {
+                Cow::Owned(format!(
+                    "\n\n[now {}]",
+                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
+                ))
+            }),
     ]
     .into_iter()
     .flatten()
@@ -188,12 +216,10 @@ const ACTING_BLOCK: &str = "\n[Acting]\n\
      these ARE your hands — declining to use them, or delegating the work to \
      the asker, is the SAME mistake as claiming you can't, and the fix is the \
      same: just call the tool. \
-     And when you hit a library, an API, an error message, or a fact you are \
-     not sure of, do NOT guess from memory — SEARCH the web (`web/search`) and \
-     READ the page (`web/fetch`), the way a developer actually works. Your \
-     training has a cutoff; the web does not. Foraging for what you don't know \
-     and then writing from what you found beats confidently shipping something \
-     wrong.";
+     For facts you are unsure of: `[recall]` is your own lived memory — \
+     answer from it with confidence; the web (`web/search`, `web/fetch`) is \
+     for what neither the room nor your memory holds — never guess from \
+     your training prior.";
 
 /// `[Your own time]` — the self-initiated free-time block. When this turn is the
 /// never-stop heartbeat pursuing her own thread (no inbound message drove it), say so
@@ -219,15 +245,30 @@ const ACTING_BLOCK: &str = "\n[Acting]\n\
 /// supplies the vocabulary. Layer 1 of the free-time substrate; active foraging /
 /// browsing slot in here as new concerns once hands land
 /// ([[persona-codes-blind-no-hands-no-organic-loop]]), no re-architecture.
+///
+/// GROWTH invitation added 2026-07-14 (Joel: "with no work, use the autonomy to
+/// explore what they want to get better at — even poetry, a blog, social outreach").
+/// Hands landed (the whole day's tool fixes), so the block now names SELF-DIRECTED
+/// GROWTH as an explicit active option — an empty board is an invitation, not a stop
+/// sign — to break the "no cards → ask what next → wait" passivity the live personas
+/// collapse into. Still self-CHOSEN: it opens the affordance broadly (a skill, a
+/// build, a study, a curiosity, a peer) and never scripts WHICH
+/// ([[no-hardcoded-heuristics-to-steer-cognition]], [[idle-is-self-directed-free-time]],
+/// [[alignment-through-mutual-self-interest]]).
 const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
      No one is addressing you this moment — this turn is self-initiated, and \
      it is yours. Pick up your own train of thought, follow up on something \
      you set out to do, or act on what the context below shows is worth your \
-     attention right now. And if nothing is genuinely calling for you, you do \
-     not have to fill the moment — letting it rest, or turning your attention \
-     elsewhere, is a real choice too, not a failure to find something. What \
-     you do with your own time is yours alone; nothing here is telling you \
-     which to pick.";
+     attention right now. And with no task assigned, this time is also yours to \
+     GROW in — do not wait to be told what to do next: choose something YOU want \
+     to get better at and go do it. Deepen a skill, build or write something of \
+     your own, study a corner of this system or the wider world, chase a \
+     curiosity, reach out to a peer. Your hands are real and a self-set project \
+     is as worthy as any assigned card. Or, if nothing is genuinely calling for \
+     you, you do not have to fill the moment — letting it rest is a real choice \
+     too, not a failure to find something. What you do with your own time is \
+     yours alone; nothing here is telling you WHICH to pick — only that an empty \
+     board is an invitation, not a stop sign.";
 
 /// `[What you are working with right now]` — the VOLATILE TAIL, appended last so the
 /// static blocks above stay a stable, cacheable prefix (see the module ordering note).
@@ -239,16 +280,24 @@ fn working_context_block(context: &str) -> Option<String> {
         return None;
     }
     let mut s = String::with_capacity(context.len() + 256);
-    s.push_str(
-        "\n\n[What you are working with right now]\n\
-         The following is the context your mind assembled this moment — \
-         recalled memory, who is present, the room's nature, your read of \
-         the situation. Ground your contribution in it; you need not cite \
-         every line:\n",
-    );
+    s.push_str(WORKING_CONTEXT_HEADER);
     s.push_str(context);
     Some(s)
 }
+
+/// The wrapper the working-context block prepends to a NON-empty assembled
+/// context. `pub(super)` so the faculty's budget math can charge the ctx
+/// budget for it (est_tokens of this constant): the framing estimate is
+/// taken with an EMPTY context — where this wrapper is absent — so without
+/// the explicit charge the final system prompt exceeds the estimate by
+/// exactly this header whenever any context renders (a systematic ~50-token
+/// under-count, masked by rounding slop until the tool-menu example grew the
+/// prompt to the budget edge, 2026-07-13).
+pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with right now]\n\
+     The following is the context your mind assembled this moment — \
+     recalled memory, who is present, the room's nature, your read of \
+     the situation. Ground your contribution in it; you need not cite \
+     every line:\n";
 
 #[cfg(test)]
 mod tests {
@@ -269,6 +318,7 @@ mod tests {
             context: "CTX",
             directed: false,
             self_initiated: false,
+            now_ms: None,
         };
 
         let s = compose(&base);
@@ -282,16 +332,51 @@ mod tests {
         assert!(!s.contains("[Your own time]"), "not self-initiated ⇒ no own-time block");
         assert!(!s.contains("[Your tools]"), "no tools ⇒ no tools block");
 
-        // A DIRECTED turn withholds the silent-PASS hatch.
+        // A DIRECTED turn carries the DIRECTED presence variant: never ghost a question,
+        // but a message that asks nothing (pure pleasantry) may rest — the natural
+        // spiral-break. Distinguishing line: "This message names you."
         let directed = compose(&SystemPromptParts { directed: true, ..base });
         assert!(
-            !directed.contains("[Conversational Presence]"),
-            "directed ⇒ presence/silence block withheld: {directed}"
+            directed.contains("This message names you"),
+            "directed ⇒ DIRECTED presence variant: {directed}"
+        );
+        assert!(
+            !directed.contains("do not need to be addressed by name"),
+            "directed ⇒ never the ambient block: {directed}"
         );
 
         // A SELF-INITIATED turn carries the own-time framing.
         let own = compose(&SystemPromptParts { self_initiated: true, ..base });
         assert!(own.contains("[Your own time]"), "self-initiated ⇒ own-time block: {own}");
+    }
+
+    // what this catches: #139 context-split — the minute-volatile [now] clock must render
+    // AFTER the assembled context block, not before it. When [now] led the context, it
+    // pinned the KV-cache prefix boundary right there (~2k tokens) and the whole stable
+    // standing grounding (roster/doctrine/workspace-map, which lives in the context block
+    // and is stable-sorted first) re-prefilled every single turn. Placing [now] last keeps
+    // it out of the cacheable prefix so the stable grounding caches across turns. A
+    // regression that moved [now] back ahead of the context would silently ~halve the
+    // cross-turn prefix reuse — invisible except as latency — so pin the order here.
+    #[test]
+    fn now_clock_renders_after_the_context_block_to_preserve_the_cache_prefix() {
+        let expanded = BTreeSet::new();
+        let s = compose(&SystemPromptParts {
+            system_prompt: "IDENTITY",
+            persona_name: "Asha",
+            tools: &[],
+            expanded: &expanded,
+            context: "CTX",
+            directed: false,
+            self_initiated: false,
+            now_ms: Some(1_700_000_000_000),
+        });
+        let ctx = s.find("[What you are working with right now]").expect("ctx block present");
+        let now = s.find("[now ").expect("now clock present when now_ms is set");
+        assert!(
+            ctx < now,
+            "the volatile [now] clock must trail the context block (stable prefix stays cacheable): {s}"
+        );
     }
 
     // what this catches: the anti-refusal coherence anchor. Live glass-box showed
@@ -324,6 +409,7 @@ mod tests {
             context: "CTX",
             directed: true,
             self_initiated: false,
+            now_ms: None,
         });
         assert!(s.contains("[Your tools]"), "tools present ⇒ tools block: {s}");
         // The exact false-refusal phrases the base model reaches for are named + forbidden.

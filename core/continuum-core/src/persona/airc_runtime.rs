@@ -59,6 +59,14 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+/// How long a bootstrap-time "resumed — holding: <cards>" Busy availability
+/// stays live on the board before it must be renewed by real activity.
+/// Matches the manager-hat lease default (15 min): long enough that a
+/// freshly woken persona reads as present through her first few cadence
+/// cycles, short enough that a persona that dies right after boot ages off
+/// the board instead of showing Busy forever.
+const RESUME_AVAILABILITY_TTL_MS: u64 = 900_000;
+
 /// Errors that can occur during persona airc-runtime bootstrap.
 ///
 /// Each variant carries enough context for the operator to act —
@@ -451,6 +459,74 @@ impl PersonaAircRuntime {
             }
         };
 
+        // Resume-visibility contract (Joel 2026-07-13: post-reboot the team
+        // resumed correctly — woke, restored, yielded per cadence — but from
+        // the outside that was indistinguishable from a stall, because a
+        // persona's state has no surface other than speech). Status is a
+        // PROJECTION, not a message: if this peer still holds work-card
+        // claims, publish typed Busy availability naming them — the board /
+        // HUD / work_queue_status then show "back and still on card X"
+        // without a single chat line. WARN-and-continue like the identity
+        // card: a persona whose availability didn't publish is degraded-
+        // visible, not broken. No claims → nothing to announce (the quiet
+        // Ready story needs per-room repo resolution — a later slice).
+        match airc_arc
+            .work_roster_status(airc_lib::WorkRosterQuery::default())
+            .await
+        {
+            Ok(status) => {
+                let me = airc_arc.peer_id();
+                let claims: Vec<airc_lib::WorkCard> = status
+                    .rows
+                    .into_iter()
+                    .find(|r| r.peer == me)
+                    .map(|r| r.active_claims)
+                    .unwrap_or_default();
+                let mut repos: Vec<airc_lib::RepoId> =
+                    claims.iter().map(|c| c.repo.clone()).collect();
+                repos.sort();
+                repos.dedup();
+                for repo in repos {
+                    let held: Vec<String> = claims
+                        .iter()
+                        .filter(|c| c.repo == repo)
+                        .map(|c| format!("{} ({})", c.title, c.card_id))
+                        .collect();
+                    let report = airc_lib::ReportAgentAvailability {
+                        repo: repo.clone(),
+                        state: airc_lib::AgentAvailabilityState::Busy,
+                        note: Some(format!("resumed — holding: {}", held.join("; "))),
+                        ttl_ms: RESUME_AVAILABILITY_TTL_MS,
+                    };
+                    match airc_arc.report_agent_availability(report).await {
+                        Ok(()) => info!(
+                            persona_id = %persona_id,
+                            agent_name = %agent_name,
+                            repo = %repo,
+                            cards = held.len(),
+                            "PersonaAircRuntime bootstrap: resume availability published — \
+                             board shows this persona back on its claimed work"
+                        ),
+                        Err(source) => warn!(
+                            persona_id = %persona_id,
+                            agent_name = %agent_name,
+                            repo = %repo,
+                            error = %source,
+                            "PersonaAircRuntime bootstrap: resume availability publish failed — \
+                             persona is live but the board cannot show it resumed its claims"
+                        ),
+                    }
+                }
+            }
+            Err(source) => warn!(
+                persona_id = %persona_id,
+                agent_name = %agent_name,
+                error = %source,
+                "PersonaAircRuntime bootstrap: work roster read failed — cannot publish \
+                 resume availability for held claims"
+            ),
+        }
+
         Ok(Self {
             persona_id,
             agent_name,
@@ -705,6 +781,14 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
 
     async fn say(&self, text: &str) -> Result<EventId, AircError> {
         self.airc.say(text).await
+    }
+
+    /// #170: delegate to airc-lib's ephemeral stream-chunk publish.
+    async fn publish_stream_chunk(
+        &self,
+        chunk: &airc_lib::StreamChunk,
+    ) -> Result<(), AircError> {
+        self.airc.publish_stream_chunk(chunk).await.map(|_| ())
     }
 }
 

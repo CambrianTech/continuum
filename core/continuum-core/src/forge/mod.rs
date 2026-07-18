@@ -14,10 +14,14 @@ pub mod custodian_client;
 pub mod endpoint;
 pub mod gene_handle;
 pub mod grid_custodian;
+pub mod hf_publisher;
 pub mod lora_convert;
 pub mod mlx_job;
 pub mod mlx_train;
 pub mod protocol;
+pub mod publish_request;
+pub mod publish_tags;
+pub mod publisher;
 pub mod recipe;
 
 pub use artifact::{ForgeArtifact, HardwareProfile};

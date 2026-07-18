@@ -668,6 +668,8 @@ async fn run_render(
         top_p: None,
         top_k: None,
         repeat_penalty: None,
+        frequency_penalty: None,
+        repeat_last_n: None,
         stop_sequences: None,
         tools: None,
         tool_choice: None,
@@ -931,6 +933,17 @@ static PARAMETERS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 static ARGUMENTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?is)<arguments\b[^>]*>.*?</arguments>").expect("arguments regex")
 });
+static TOOL_CALLS_MARKER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    // The Devstral/Mistral native tool-call marker `[TOOL_CALLS]` plus an optional
+    // immediately-following bracket-tag (the tool the model tried to invoke, e.g.
+    // `[room-roster]`). Reserved vocabulary that must NEVER appear in SPOKEN text.
+    // When a real tool followed, the parser lifted it upstream; what reaches the
+    // visible-text stripper is UNPARSED residue — an unknown/hallucinated tag
+    // (#159) — that would otherwise leak as speech (glass-boxed 2026-07-17: Casper
+    // spoke `[TOOL_CALLS][room-roster] (no one else is present)` verbatim).
+    regex::Regex::new(r"\[TOOL_CALLS\]\s*(?:\[[a-z][a-z0-9/_-]*\])?")
+        .expect("tool_calls marker regex")
+});
 static BARE_TOOL_REF_LINE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r#"^\s*['"`][a-z][a-z0-9_-]*/[a-z0-9_/-]+['"`]\s*$"#)
         .expect("bare tool ref line regex")
@@ -1004,6 +1017,7 @@ fn strip_leaked_tool_markup(text: &str) -> String {
         &*TOOL_NAME_RE,
         &*PARAMETERS_RE,
         &*ARGUMENTS_RE,
+        &*TOOL_CALLS_MARKER_RE,
     ] {
         cleaned = re.replace_all(&cleaned, "").into_owned();
     }
@@ -1116,6 +1130,24 @@ mod tests {
         assert_eq!(visible, "Before  after");
         assert!(!visible.contains("tool_use"));
         assert!(!visible.contains("cargo test"));
+    }
+
+    // what this catches: the Devstral/Mistral native `[TOOL_CALLS]` marker (and an
+    // unparsed tool-tag after it) must NEVER reach spoken text. Glass-boxed
+    // 2026-07-17: Casper answered a task by SPEAKING
+    // `[TOOL_CALLS][room-roster] (no one else is present)` — the marker + a
+    // hallucinated `room-roster` tag leaked verbatim into the room. The marker is
+    // stripped; the model's actual prose survives.
+    #[test]
+    fn strip_leaked_tool_markup_removes_tool_calls_native_marker() {
+        let raw = "[TOOL_CALLS][room-roster] (no one else is present right now)";
+        let visible = strip_leaked_tool_markup(raw);
+        assert!(!visible.contains("[TOOL_CALLS]"), "reserved native marker never spoken");
+        assert!(!visible.contains("[room-roster]"), "unparsed tool tag stripped");
+        assert!(
+            visible.contains("no one else is present"),
+            "the model's actual prose is preserved"
+        );
     }
 
     /// What this catches: models sometimes drop the outer

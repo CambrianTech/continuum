@@ -14,6 +14,7 @@ import {
   type RenderTarget,
   type WorkspaceView,
   type ListingView,
+  type PanelWidget,
   type ContentView,
   type ContextPanelView,
   type AppSource,
@@ -66,12 +67,16 @@ function stringTarget(): RenderTarget<string> {
   const content = createContentRegistry<string>();
   content.register<ChatContentBody>('chat', (b) => JSON.stringify(b.messages));
   const listing = (v: ListingView): string => `${v.title}[${v.cells.map((c) => c.title).join(',')}]`;
+  // A rail widget renders its listing body, or its title for a non-listing kind (metrics).
+  const widget = (w: PanelWidget): string =>
+    w.kind === 'listing' ? listing(w.body as ListingView) : `<${w.title}>`;
   return {
     listing,
     content: (v: ContentView) => content.render(v),
     contextPanel: (v: ContextPanelView) => `ctx:${v.listings.length}`,
+    widget,
     workspace: (v: WorkspaceView) =>
-      `nav=${listing(v.nav)} who=${v.left.map(listing).join('|')} what=${content.render(v.content)}`,
+      `nav=${listing(v.nav)} who=${v.left.map(widget).join('|')} what=${content.render(v.content)}`,
   };
 }
 

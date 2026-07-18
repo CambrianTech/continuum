@@ -52,7 +52,7 @@ const FETCH_LIMIT: usize = 100;
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, head_to_tokens};
 
 /// Abstract reader over airc transcript events. Production impl rides on
 /// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.
@@ -106,29 +106,62 @@ impl AircRagSource {
     /// accumulating tokens until budget, then emits chronological (oldest-first) so
     /// the chat template reads turns in order. Each item is tagged `unread` vs
     /// grounding so the prompt builder / glass box can tell them apart.
+    ///
+    /// BREADTH OVER VERBATIM DEPTH (#128/#146, measured 2026-07-13): the original
+    /// packer kept WHOLE messages newest-first, so a small budget in a verbose
+    /// four-persona room held ~2-3 turns TOTAL — the persona's entire perceivable
+    /// world. Any low-frequency speaker (the operator) was displaced within
+    /// seconds; the room degenerated into parallel monologues that only rapid-fire
+    /// exchange survived. A conversation is legible from turn HEADS; it is not
+    /// legible from two verbatim essays. So each turn now costs at most a
+    /// per-turn cap (a budget fraction, never a hardcoded model tier) and long
+    /// turns are head-trimmed with an explicit marker — the same
+    /// straddling-trim law the prompt fitter applies to messages, one level down.
+    /// The NEWEST turn is exempt (kept verbatim up to the whole budget): it is
+    /// what the persona is responding to.
     fn pack_digest(digest: &ChannelDigest, budget: u32) -> (Vec<RagItem>, u32) {
-        let mut keep: Vec<usize> = Vec::new();
+        // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
+        // tiny budgets still render a sentence and huge ones don't let one
+        // essay crowd the window.
+        let per_turn_cap = (budget / 8).clamp(48, 256);
+        let mut keep: Vec<(usize, Option<String>)> = Vec::new();
         let mut tokens_used: u32 = 0;
+        let mut newest_kept = true;
         for (idx, el) in digest.elements.iter().enumerate().rev() {
             let Some(text) = el.text() else { continue };
-            let tokens = estimate_tokens(text);
-            if tokens_used.saturating_add(tokens) > budget {
+            let full = estimate_tokens(text);
+            let cap = if newest_kept { budget } else { per_turn_cap };
+            let (cost, trimmed) = if full <= cap {
+                (full, None)
+            } else {
+                let head = head_to_tokens(text, cap);
+                let head_cost = estimate_tokens(&head).saturating_add(2); // marker
+                (head_cost, Some(format!("{head} (…{full}-token message trimmed)")))
+            };
+            if tokens_used.saturating_add(cost) > budget {
                 break;
             }
-            tokens_used += tokens;
-            keep.push(idx);
+            newest_kept = false;
+            tokens_used += cost;
+            keep.push((idx, trimmed));
         }
         keep.reverse();
         let items = keep
             .into_iter()
-            .map(|idx| Self::format_item(&digest.elements[idx], idx >= digest.unread_start))
+            .map(|(idx, trimmed)| {
+                Self::format_item(&digest.elements[idx], idx >= digest.unread_start, trimmed)
+            })
             .collect();
         (items, tokens_used)
     }
 
-    fn format_item(element: &Arc<ChannelElement>, unread: bool) -> RagItem {
+    fn format_item(
+        element: &Arc<ChannelElement>,
+        unread: bool,
+        trimmed: Option<String>,
+    ) -> RagItem {
         let ev = element.event();
-        let text = element.text().unwrap_or_default().to_string();
+        let text = trimmed.unwrap_or_else(|| element.text().unwrap_or_default().to_string());
         let tokens = estimate_tokens(&text);
         RagItem {
             content: text,
@@ -136,7 +169,10 @@ impl AircRagSource {
             metadata: serde_json::json!({
                 "event_id": ev.event_id.as_uuid().to_string(),
                 "room_id": ev.room_id.as_uuid().to_string(),
-                "peer_id": ev.peer_id.as_uuid().to_string(),
+                // The LOGICAL author: a chat/send line is attributed to the human/web
+                // identity that wrote it (envelope senderId), not the core's relay
+                // peer — so the rendered room reads "Joel: …", never "core: …" (#177).
+                "peer_id": element.sender_id().to_string(),
                 "occurred_at_ms": ev.occurred_at_ms,
                 "lamport": ev.lamport,
                 "unread": unread,
@@ -363,6 +399,46 @@ mod tests {
         assert_eq!(delivery.items[0].content, "hello");
         assert_eq!(delivery.items[1].content, "world");
         assert_eq!(delivery.items[1].metadata.get("unread").and_then(|v| v.as_bool()), Some(true));
+    }
+
+    // what this catches: BREADTH OVER VERBATIM DEPTH (#128/#146, measured
+    // 2026-07-13: live persona prompts held THREE messages total in a busy
+    // room — the whole perceivable world — so any low-frequency speaker was
+    // displaced in seconds and the operator went unheard for hours). Long
+    // turns must render as head-trimmed summaries so a small budget holds
+    // MANY turns: the oldest (operator) message survives trimmed, the newest
+    // stays verbatim. Under the old whole-message packer this exact input
+    // delivered 3 items and the operator message was gone.
+    #[tokio::test]
+    async fn small_budget_keeps_many_trimmed_turns_not_three_essays() {
+        let room = RoomId::new();
+        let long = |tag: &str| format!("{tag}: {}", "lorem ipsum dolor sit amet ".repeat(15));
+        let mut events = vec![event_in(room, Some(&long("OPERATOR your card is 0b1a6230")), 1)];
+        for (i, l) in (2..=5).enumerate() {
+            events.push(event_in(room, Some(&long(&format!("peer essay {i}"))), l));
+        }
+        events.push(event_in(room, Some(&long("newest peer question")), 6));
+        let reader = Arc::new(StubReader::new(events));
+        let (source, _, _) = isolated_source(reader);
+        let delivery = source.deliver(&ctx_in(room), 400, ResolutionPreference::Raw).await;
+
+        assert!(
+            delivery.items.len() >= 6,
+            "breadth: all 6 turns fit a 400-token budget as trimmed heads, got {}",
+            delivery.items.len()
+        );
+        assert!(
+            delivery.items[0].content.starts_with("OPERATOR")
+                && delivery.items[0].content.contains("trimmed"),
+            "oldest low-frequency speaker survives, trimmed: {:?}",
+            delivery.items[0].content
+        );
+        let newest = &delivery.items.last().unwrap().content;
+        assert!(
+            newest.starts_with("newest peer question") && !newest.contains("trimmed"),
+            "the turn being responded to stays verbatim: {newest:?}"
+        );
+        assert!(delivery.tokens_used <= 400, "budget honored: {}", delivery.tokens_used);
     }
 
     // what this catches: THE DEAF-PERSONA FIX — when the turn's ctx has no airc_room

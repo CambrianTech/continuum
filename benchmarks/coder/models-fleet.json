@@ -1,0 +1,34 @@
+[
+  {
+    "label": "Hermes-3-Llama-3.1-8B",
+    "gguf_repo": "bartowski/Hermes-3-Llama-3.1-8B-GGUF",
+    "gguf_file": "Hermes-3-Llama-3.1-8B-Q4_K_M.gguf",
+    "alias": "Hermes-3-Llama-3.1-8B-Q4_K_M.gguf",
+    "base_model_id": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+    "serve_port": 8091
+  },
+  {
+    "label": "Qwen2.5-Coder-1.5B",
+    "gguf_repo": "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+    "gguf_file": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
+    "alias": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
+    "base_model_id": "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF",
+    "serve_port": 8091
+  },
+  {
+    "label": "Qwen2.5-Coder-3B",
+    "gguf_repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
+    "gguf_file": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+    "alias": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+    "base_model_id": "continuum-ai/qwen2.5-coder-3b-instruct-GGUF",
+    "serve_port": 8091
+  },
+  {
+    "label": "Qwen2.5-Coder-14B",
+    "gguf_repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+    "gguf_file": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+    "alias": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+    "base_model_id": "continuum-ai/qwen2.5-coder-14b-instruct-GGUF",
+    "serve_port": 8091
+  }
+]

@@ -750,6 +750,50 @@ mod tests {
         );
     }
 
+    // what this catches: the FIRST universal AI-tool conformance invariant
+    // (Joel 2026-07-13: "make it part of the tool base so a tool with xyz problem
+    // CAN'T exist"). A tool a model cannot understand is a tool that will be
+    // mis-called — the whole tool-defect ledger (silent no-op #159, glob-in-path
+    // #160, corrupted-id #161) is the model reaching for a tool it couldn't read.
+    // The base invariant, enforced over the WHOLE registry so no individual tool
+    // has to remember and a new tool inherits it for free: every AI-facing (AiSafe)
+    // command is SELF-DESCRIBING — a non-trivial, model-usable description. This is
+    // the static seed of the harness; the BEHAVIORAL invariants (fuzzy-id
+    // resolution, glob tolerance, fail-loud-with-suggestion — the #159/#160/#161
+    // class) attach next as per-tool exams the generator scaffolds and a runner
+    // executes here (and, later, in CI — "require the tools to work for AIs").
+    // A non-compliant tool fails THIS test — it cannot be merged, so it cannot exist.
+    #[test]
+    fn every_ai_facing_command_is_self_describing() {
+        const MIN_DESCRIPTION_CHARS: usize = 20;
+        let offenders: Vec<String> = command_registry()
+            .into_iter()
+            .filter(|d| d.access_level == AccessLevel::AiSafe)
+            .filter_map(|d| {
+                let desc = d.description.trim();
+                if desc.chars().count() < MIN_DESCRIPTION_CHARS {
+                    Some(format!(
+                        "  {} — description is {} chars (min {}): {:?}",
+                        d.name,
+                        desc.chars().count(),
+                        MIN_DESCRIPTION_CHARS,
+                        desc
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "{} AI-facing command(s) are not self-describing — a model cannot use a \
+             tool it cannot read (the root of the tool-defect ledger). Give each a \
+             concrete, model-usable DESCRIPTION:\n{}",
+            offenders.len(),
+            offenders.join("\n")
+        );
+    }
+
     // what this catches (the review's CRITICAL #4): real ts-rs types carry the
     // `../../../protocol/typescript/...` export escape path; module_of must resolve
     // them to clean importable modules. Earlier demo types (no export_to) hid this.

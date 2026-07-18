@@ -120,3 +120,72 @@ Honest read: on function-level tasks a solo writer already nails, the reviewer h
 recovery loop (no lift on easy tasks). The team mechanism is built + reproducible; its VALUE needs tasks where the
 writer actually FAILS (harder/multi-step/repo-level) and a reviewer with the judgment to leave correct code alone.
 Measured, not asserted; reported straight. The molecule works — the proving ground is hard tasks, same as the loop.
+
+## System-lift isolator — one command, same model both ways (2026-07)
+
+`benchmarks/coder/headtohead.py` automates the same-model control: it scores ONE model RAW
+(one-shot `/v1`) and SYSTEM (full Continuum loop via `benchmark/run --base_model_id`) on the
+SAME gym, same grader, and prints `Δ = SYSTEM − RAW`. The pending "system-lift isolation" is
+now a tool, not a hand-run pair of scripts.
+
+```bash
+python3 benchmarks/coder/headtohead.py \
+    --endpoint http://127.0.0.1:58057/v1 --model <served-id> \
+    --base-model-id <same-id> --label "<name>" --limit 40
+```
+
+### First finding — the TAX is model-dependent, and it correlates with native-tool-call training
+
+| model | raw one-shot | through our system | Δ | note |
+|---|---|---|---|---|
+| Qwen2.5-Coder-14B | 82% | 85% | ~0 | answers as text — sails through |
+| **Devstral-Small-24B** | **100% (3/3)** | **0% (0/3)** | **−100%** | **native-tool-caller — drowns in discovery** |
+
+**Devstral one-shot writes `number.fract()` instantly and passes; through our loop it scores
+ZERO.** Glass-box (`prompt-captures`) shows why: every one of its 6 act cycles is a native
+`commands/help` / `commands/list` discovery call — it never speaks an answer. Root cause: our
+native tool surface offers ONLY the discovery pair (`commands/list`, `commands/help`); real
+tools ride a text menu + narrated-call recovery. That design fits WEAK models that can't emit
+native tool_calls — but a model *trained* to tool-call (Devstral) uses the only native tools it
+has (discovery) and loops forever, never reaching the real tool and never falling back to
+speaking. The stronger the native-tool-call training, the harder the fall — which is why Hermes
+was −10pts, Qwen-Coder ~0, and Devstral −100.
+
+**The fix this measurement scopes:** the native tool surface must ADAPT to model capability
+(`[[adaptive-tool-surface-meets-you-in-the-middle]]`) — a native-tool-caller gets the real
+(bounded) tools as native specs so it can actually act OR just answer; only a non-native-caller
+gets discovery-only + text menu. Until then, our loop is a net TAX on exactly the capable models
+we most want to win with. This is the #1 cognition-refinement target, now with a per-model number.
+
+### FIX LANDED — the tax is dead (2026-07)
+
+The −100% Devstral tax is fixed. Root: we offered a tool surface on a SPOKEN-graded exam, and a
+native-tool-call model looped on discovery instead of answering. Fix (`fix(eval): spoken-graded
+exams run speak-only`): match the tool surface to the grading modality — `test`/`expect` (graded
+from her mouth) → speak-only; `solution_file`/`dod_shell`/`workspace_root` (graded from her hands)
+→ keep tools. Re-measured with the isolator:
+
+| model | before fix | after fix | RAW |
+|---|---|---|---|
+| Devstral-Small-24B | 0/3 (0%) | **5/5 (100%)** | 100% |
+
+Also 4× faster (76s vs 324s — no discovery loops). Zero tax vs raw on a native-tool-caller; the
+SWE-bench tool path (`workspace_root`) is unchanged. Full matrix: `benchmarks/coder/MATRIX.md`
+via `matrix.py --models models.json`.
+
+### opencode opponent — matched 14B row (2026-07)
+
+Same model (Qwen2.5-Coder-14B), same 20 humaneval-rs tasks, same rustc grader. opencode drives the
+local model through the toolcall-shim (its narrated tool calls recovered to native — its fair shot).
+
+| harness (Qwen2.5-Coder-14B, 20 tasks) | pass@1 |
+|---|---|
+| RAW one-shot | 90% (18/20) |
+| **OURS (Continuum)** | **90% (18/20)** |
+| opencode + shim | 75% (15/20) |
+| Hermes-3-8B (reference) | 52% (21/40) |
+
+**OURS beats opencode by 15 points and ties raw one-shot (zero tax). opencode's agentic loop drops
+3 tasks the model solves raw** — the opponent's harness taxes the model where ours doesn't. Setup for
+the opencode cell: `llama-server` on :8093 (the model) + `toolcall_shim.py --listen 8094 --upstream
+http://127.0.0.1:8093` + opencode configured to the shim (`~/.config/opencode/opencode.json`).

@@ -99,6 +99,21 @@ pub trait AircCitizen:
     /// can correlate with the subscribe stream's echo (not required
     /// today, but the wire shape preserves it).
     async fn say(&self, text: &str) -> Result<EventId, AircError>;
+
+    /// #170: publish ONE ephemeral streaming token chunk (typing-indicator
+    /// class, NOT durable transcript) via airc-lib's `publish_stream_chunk`.
+    /// The settled utterance is still published once via [`say`](Self::say);
+    /// these chunks let subscribers (positron / TTS / avatar) render the answer
+    /// progressively as it decodes (#169 proved the token rail; this makes it
+    /// VISIBLE). Default no-op — only the production runtime streams; scripted /
+    /// stub citizens don't. Returns `Ok(())` (the event id isn't needed by the
+    /// forwarder).
+    async fn publish_stream_chunk(
+        &self,
+        _chunk: &airc_lib::StreamChunk,
+    ) -> Result<(), AircError> {
+        Ok(())
+    }
 }
 
 /// Test fixture implementing [`AircCitizen`] without standing up the

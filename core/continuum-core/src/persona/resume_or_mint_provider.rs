@@ -277,6 +277,7 @@ mod tests {
             persona_id: Uuid::parse_str("9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7").unwrap(),
             agent_name: "Pax".to_string(),
             created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
         };
         write_seed_atomic(&seed_path, &seed).await.unwrap();
 
@@ -308,6 +309,7 @@ mod tests {
             persona_id: Uuid::new_v4(),
             agent_name: "Pax".to_string(),
             created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
         };
         write_seed_atomic(&seed_path, &seed).await.unwrap();
 
@@ -337,6 +339,7 @@ mod tests {
             persona_id: Uuid::new_v4(),
             agent_name: "Pax".to_string(),
             created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
         };
         write_seed_atomic(&good, &seed).await.unwrap();
         // Corrupted persona.

@@ -31,6 +31,13 @@ members = [
     # apps/ — first-party UI shells / embodiments
     "apps/cli",
 ]
+# Citizen project dirs are STANDALONE crates, never substrate-workspace members:
+# `cargo new` inside the checkout auto-adds members (rewriting THIS file
+# non-atomically — a persona's git_diff caught a torn 2-line read of it live,
+# 2026-07-11), and membership makes OUR builds compile THEIR projects. Exclude
+# keeps their in-dir cargo builds working while the substrate manifest stays
+# substrate-only. The real fix is workspace isolation (#49); this is the fence.
+exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"]
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]
 # airc substrate — git-pinned to a stable SHA for efficient-passthrough
@@ -127,18 +134,18 @@ members = [
 # `peer_identity_index_converges_across_scopes_via_coordinator_store`. The
 # general scope-home scoped_state (tool.mode/wall/coordination) is unchanged.
 # Additive — no ABI change. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

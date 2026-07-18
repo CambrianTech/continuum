@@ -86,23 +86,108 @@ pub enum DistillError {
 /// and feeds it clusters on its idle-tick cadence.
 pub struct SemanticDistiller {
     adapter: Arc<dyn AIProviderAdapter>,
+    /// The served-model id to ask the adapter for. `None` only for adapters
+    /// with a single implicit model (the test heuristic); production callers
+    /// MUST thread the persona's live binding model — omitting it caused the
+    /// first live dream's degenerate role-token output (2026-07-12).
+    model: Option<String>,
+    /// Max chars the observation block may occupy (#175 budget-at-assembly). The
+    /// distiller BUDGETS the cluster to fit the served slot by dropping whole
+    /// trailing engrams — it never truncates an engram's text (that malforms the
+    /// prompt) — so an over-large cluster can never overflow the per-slot window
+    /// and 500 "Compute error" / poison the lane
+    /// ([[budget-at-assembly-never-clamp-the-prompt]]). Injected at construction
+    /// (where the live served window is known) so the distiller itself stays a
+    /// pure fn of (engrams, budget). Defaults conservative.
+    max_observation_chars: usize,
 }
 
-impl SemanticDistiller {
-    /// The consolidation instruction. Frames the persona distilling its OWN
-    /// episodic memories into long-term knowledge — faithful, reusable, stated
-    /// independently of when/how it was learned.
-    const SYSTEM_PROMPT: &'static str = "\
+/// Conservative default observation budget (chars) when the caller doesn't inject
+/// the live served window — sized to fit comfortably inside a small served slot
+/// (~6k tokens × ~4 chars/token) so a dream can never overflow even an unwired
+/// build. Production wires the real per-slot window via `with_observation_budget`.
+pub const DEFAULT_MAX_OBSERVATION_CHARS: usize = 24_000;
+
+/// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
+/// [[mind-wanderers-subpersonal-processes]]). Each lens is the SAME machinery
+/// (walk engrams → one LLM pass → admit_reflection with content-hash dedup)
+/// with a different way of looking. The clinical mapping that motivates the
+/// design: multiplicity done right is lenses over a shared store, never
+/// separate selves — and every lens's output carries its provenance tag
+/// IN-CONTENT (`[thought:<lens>]`) so recall renders it typed and inner speech
+/// can never masquerade as perception (the anti-source-monitoring-failure
+/// invariant; the consolidator's plain facts are the one exception — a
+/// distilled durable fact IS first-class knowledge, not a passing thought).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lens {
+    /// Stable name — telemetry, the `[thought:<name>]` tag, purpose string.
+    pub name: &'static str,
+    /// The lens's way of looking, as the system prompt.
+    pub system_prompt: &'static str,
+    /// Inference-accounting purpose string (stable across renames — the
+    /// consolidator keeps its historical "dream-consolidation" telemetry key).
+    pub purpose: &'static str,
+    /// Whether output is tagged `[thought:<name>]` (true for wanderer thoughts)
+    /// or admitted as a plain durable fact (the consolidator).
+    pub tag_output: bool,
+}
+
+/// The consolidator — the original dream lens: episodic clusters → one durable
+/// semantic fact, admitted untagged (it IS knowledge, not commentary).
+pub const LENS_CONSOLIDATOR: Lens = Lens {
+    name: "consolidator",
+    system_prompt: "\
 You are consolidating your own episodic memories into long-term knowledge. \
 Below are several things you observed or experienced, in order. Distill them \
 into a SINGLE durable fact: the general, reusable knowledge they share, stated \
 independently of when or how you learned it. Output ONLY the consolidated fact \
 as one or two plain sentences — no numbering, no preamble, no commentary, no \
 quotes. If the observations share no single consolidatable fact, state the one \
-most important durable takeaway.";
+most important durable takeaway.",
+    purpose: "dream-consolidation",
+    tag_output: false,
+};
 
+/// The historian — mind-wanderer outlier A (#145): looks across her OWN recent
+/// history for the pattern she is living but not seeing (repeated attempts,
+/// what worked vs what didn't, a habit forming). Continuous consolidation in
+/// the ext4 sense — the running gist maintained in small increments.
+pub const LENS_HISTORIAN: Lens = Lens {
+    name: "historian",
+    system_prompt: "\
+You are the historian voice of your own mind, quietly reviewing your recent \
+experiences. Below are several of your own memories, in order. Notice the \
+PATTERN across them that you may be living without seeing: something you have \
+tried repeatedly, what actually worked versus what did not, a habit forming, a \
+thread you dropped. Output ONE short observation about your own recent history \
+— one or two plain sentences, addressed to yourself, no preamble, no quotes. \
+If there is truly no pattern, name the single most notable thing that happened.",
+    purpose: "wanderer-historian",
+    tag_output: true,
+};
+
+impl SemanticDistiller {
     pub fn new(adapter: Arc<dyn AIProviderAdapter>) -> Self {
-        Self { adapter }
+        Self {
+            adapter,
+            model: None,
+            max_observation_chars: DEFAULT_MAX_OBSERVATION_CHARS,
+        }
+    }
+
+    /// Ask the adapter for a specific served model (the persona's live binding).
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
+    }
+
+    /// Budget the observation block to `chars` (#175). The caller derives this from
+    /// the LIVE served per-slot window (tokens → chars, minus system-prompt + reply
+    /// reserve) so the dream prompt is composed WITHIN the slot and never overflows.
+    /// Floored at one engram's worth so a single large memory still distills.
+    pub fn with_observation_budget(mut self, chars: usize) -> Self {
+        self.max_observation_chars = chars.max(2_000);
+        self
     }
 
     /// Consolidate a cluster of related episodic engrams into one durable fact.
@@ -117,23 +202,56 @@ most important durable takeaway.";
         persona_id: Option<Uuid>,
         sources: &[Engram],
     ) -> Result<DistilledFact, DistillError> {
+        self.distill_with(LENS_CONSOLIDATOR, persona_id, sources).await
+    }
+
+    /// Distill through a specific [`Lens`] — the generalized wanderer pass.
+    /// Tagged lenses get their `[thought:<name>]` provenance prefixed onto the
+    /// content HERE, at the one synthesis point, so no admit path can forget it.
+    pub async fn distill_with(
+        &self,
+        lens: Lens,
+        persona_id: Option<Uuid>,
+        sources: &[Engram],
+    ) -> Result<DistilledFact, DistillError> {
         if sources.is_empty() {
             return Err(DistillError::NoSources);
+        }
+
+        // #175 budget-at-assembly: compose the observation block WITHIN the served
+        // slot by including whole engrams up to the budget, dropping the tail — never
+        // truncating an engram (that malforms). `kept` is the prefix that actually
+        // fed the distillation; provenance (source_ids/tags) must reflect ONLY those,
+        // so the dropped engrams stay unconsolidated and get another pass in a smaller
+        // future cluster ([[budget-at-assembly-never-clamp-the-prompt]]).
+        let (block, kept_n) = Self::observations_block(sources, self.max_observation_chars);
+        let kept = &sources[..kept_n];
+        if kept_n < sources.len() {
+            tracing::info!(
+                probe_class = "dream.cluster.budgeted",
+                cluster = sources.len(),
+                kept = kept_n,
+                budget_chars = self.max_observation_chars,
+                "dream cluster exceeded the served slot budget — distilling the first \
+                 {kept_n} engrams, deferring the rest (never overflow the slot, #175)"
+            );
         }
 
         // max_tokens stays None — the adapter owns generation length (#45/#46);
         // no per-call clamp. The distillation's faithfulness is gated by VDD
         // with a real model, not by hand-tuned sampling knobs here.
         let request = TextGenerationRequest {
-            messages: vec![ChatMessage::text("user", Self::observations_block(sources))],
-            system_prompt: Some(Self::SYSTEM_PROMPT.to_string()),
-            model: None,
+            messages: vec![ChatMessage::text("user", block)],
+            system_prompt: Some(lens.system_prompt.to_string()),
+            model: self.model.clone(),
             provider: None,
             temperature: None,
             max_tokens: None,
             top_p: None,
             top_k: None,
             repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
             stop_sequences: None,
             tools: None,
             tool_choice: None,
@@ -142,7 +260,7 @@ most important durable takeaway.";
             request_id: None,
             user_id: None,
             room_id: None,
-            purpose: Some("dream-consolidation".to_string()),
+            purpose: Some(lens.purpose.to_string()),
             persona_id: persona_id.map(|id| id.to_string()),
         };
 
@@ -152,25 +270,45 @@ most important durable takeaway.";
             .await
             .map_err(DistillError::Inference)?;
 
-        let content = response.text.trim().to_string();
-        if content.is_empty() {
+        let raw = response.text.trim();
+        if raw.is_empty() {
             return Err(DistillError::EmptyDistillation);
         }
+        // Provenance is prefixed at the ONE synthesis point (see distill_with
+        // docs): a tagged lens's output always reads as typed inner speech.
+        let content = if lens.tag_output {
+            format!("[thought:{}] {}", lens.name, raw)
+        } else {
+            raw.to_string()
+        };
 
         Ok(DistilledFact {
             content,
-            source_ids: sources.iter().map(|e| e.id).collect(),
-            tags: Self::union_recall_keys(sources),
+            source_ids: kept.iter().map(|e| e.id).collect(),
+            tags: Self::union_recall_keys(kept),
         })
     }
 
-    /// Render the cluster as a numbered observation list for the prompt.
-    fn observations_block(sources: &[Engram]) -> String {
+    /// Render the cluster as a numbered observation list, BUDGETED to `budget_chars`
+    /// (#175). Includes whole engrams in order until the next would exceed the budget,
+    /// then stops — dropping the tail rather than truncating an engram's text (which
+    /// would malform the prompt). Always includes at least the first engram so a
+    /// single large memory still distills (the adapter's overflow backstop is the
+    /// last-resort net for that degenerate case). Returns the block AND how many
+    /// engrams it kept, so the caller's provenance reflects only what was distilled.
+    fn observations_block(sources: &[Engram], budget_chars: usize) -> (String, usize) {
         let mut block = String::new();
+        let mut kept = 0usize;
         for (i, e) in sources.iter().enumerate() {
-            block.push_str(&format!("{}. {}\n", i + 1, e.content.trim()));
+            let line = format!("{}. {}\n", i + 1, e.content.trim());
+            // First engram always goes in; after that, stop before overflowing.
+            if kept > 0 && block.len() + line.len() > budget_chars {
+                break;
+            }
+            block.push_str(&line);
+            kept += 1;
         }
-        block
+        (block, kept)
     }
 
     /// Union of every source's recall keys, first-seen order preserved.
@@ -196,11 +334,9 @@ most important durable takeaway.";
 ///
 /// Mirrors `PersonaChannelReader` (channel_digest_region.rs): the region depends
 /// on a TRAIT, not a concrete registry, so it is unit-testable against a stub.
-/// The production impl (slice 4 — gated on the governor honoring `CadenceHint` +
-/// lease-aware inference placement, see the wiring note on
-/// [`DreamConsolidationRegion`]) resolves `Arc<AdmissionState>` from the live
-/// `PersonaWorkspaceRegistry` and the adapter from the existing `ai_provider`
-/// registry. It MUST resolve the adapter, never store a parallel
+/// The production impl is `PersonaWorkspaceRegistry` itself (below): admission
+/// from the retained fork-template, adapter from the live cycle's model binding
+/// (re-home-safe). It resolves the adapter per tick, never stores a parallel
 /// persona→adapter map (compression — `[[rag-as-persistent-cache]]`).
 pub trait PersonaReflectionSource: Send + Sync {
     /// Personas with a live reflective surface this pass.
@@ -218,6 +354,9 @@ pub trait PersonaReflectionSource: Send + Sync {
 pub struct PersonaReflector {
     pub admission: Arc<AdmissionState>,
     pub adapter: Arc<dyn AIProviderAdapter>,
+    /// The served-model id the adapter must be asked for (the persona's live
+    /// binding model). `None` only when the adapter has one implicit model.
+    pub model: Option<String>,
 }
 
 /// Default recall window: scan the last N engrams for undigested experience.
@@ -259,20 +398,16 @@ const DEFAULT_MIN_CLUSTER: usize = 2;
 /// All three are distinct SelfDirected/Speciation processes; this one is the
 /// memory-consolidation distiller.
 ///
-/// ## Live wiring is still deferred, and that is deliberate
+/// ## Live wiring (#145 slice B)
 ///
-/// This region is [`ComputeClass::InferenceHeavy`]. The `SubstrateGovernor` now
-/// honors `CadenceHint` (R1 — a `Sleep` hint rests a pair on a low re-check
-/// floor) and budgets the orientation classes (R2–R4), so the *within-budget*
-/// safety is in place. What it does NOT yet do is drive its scarcity knob
-/// (`slices_per_pass`) from live inference/VRAM pressure (R4 slice 3): at boot
-/// the budget is uncapped, so it admits *every* due pair. Add this
-/// `InferenceHeavy` region to the boot list under that uncapped default and a
-/// society of N personas with fresh material would fire N distillations a pass —
-/// a backend stampede. So the region still ships DARK — built and unit-tested
-/// against a stub adapter — until the governor pressure-gates inference
-/// placement (and `RegionContext` carries a rest signal so "dream during rest"
-/// is honored, not just "dream when there's material").
+/// This region is [`ComputeClass::InferenceHeavy`]. The gates that kept it dark
+/// have landed: the `SubstrateGovernor` honors `CadenceHint` (R1 — a `Sleep`
+/// hint rests a pair on a low re-check floor), budgets the orientation classes
+/// (R2–R4), and sizes its slice budget from the live memory-pressure band (R4
+/// slice 3, `with_pressure_gate` at the ipc wiring site). It is registered
+/// beside the `ChannelDigestRegion`, with `PersonaWorkspaceRegistry` as the
+/// production reflection source. Under pressure the interiority budget shrinks
+/// first, so dreams yield to reactive responding before anything else does.
 pub struct DreamConsolidationRegion {
     source: Arc<dyn PersonaReflectionSource>,
     /// How many recent engrams to scan per tick for undigested experience.
@@ -286,8 +421,12 @@ pub struct DreamConsolidationRegion {
     /// correctness guard — `admit_reflection`'s content-hash dedup is the
     /// durable backstop (survives restart; this in-memory set rebuilds by
     /// re-distilling once post-restart, where the content hash then drops the
-    /// duplicate fact).
-    consolidated: Mutex<HashMap<Uuid, HashSet<Uuid>>>,
+    /// duplicate fact). `Arc` because the spawned dream pass owns a clone.
+    consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    /// Personas with a dream pass currently running on its own task. The tick
+    /// gate: never two concurrent dreams for one persona, and the governor's
+    /// re-tick while a dream runs is a cheap no-op.
+    in_flight: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 impl DreamConsolidationRegion {
@@ -296,12 +435,32 @@ impl DreamConsolidationRegion {
             source,
             recall_window: DEFAULT_RECALL_WINDOW,
             min_cluster: DEFAULT_MIN_CLUSTER,
-            consolidated: Mutex::new(HashMap::new()),
+            consolidated: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
-    /// Consolidate one persona's undigested episodics into durable facts.
+    /// Whether any persona's dream pass is currently in flight — introspection
+    /// (the mind can be asked "am I dreaming?") and the test-drain hook.
+    pub fn dreaming(&self) -> bool {
+        !self.in_flight.lock().unwrap().is_empty()
+    }
+
+    /// The scoped tick body: a CHEAP freshness gate (in-memory reads only),
+    /// then the inference-heavy dream pass spawned onto ITS OWN task.
+    ///
+    /// Why the spawn is load-bearing: the `SubstrateGovernor` isolates every
+    /// region tick behind a hard timeout (5s) so one hung region can't stall
+    /// the scheduler — and a 24B distillation cannot and MUST NOT fit inside
+    /// it. The pre-fix shape ran the distillation inline and timed out on
+    /// every pass; the dream never completed once (caught live on its first
+    /// boot, 2026-07-12). Long work on its own task is the concurrency
+    /// style-guide's first rule; the tick is only the gate + launcher.
     async fn consolidate(&self, persona_id: Uuid) -> TickOutcome {
+        // A dream for this persona is already running on its own task — rest.
+        if self.in_flight.lock().unwrap().contains(&persona_id) {
+            return sleep();
+        }
         let Some(reflector) = self.source.reflector_for(persona_id) else {
             // No live reflective surface for this persona this tick — sleep.
             return sleep();
@@ -320,7 +479,7 @@ impl DreamConsolidationRegion {
         // The rest gate: which episodics have I not yet dreamed about? If too
         // little is fresh to form a pattern, there is nothing to consolidate —
         // sleep until more experience accrues. (No clock; her own state.)
-        let fresh = self.fresh_episodics(persona_id, &episodics);
+        let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
         if fresh.len() < self.min_cluster {
             return sleep();
         }
@@ -335,9 +494,70 @@ impl DreamConsolidationRegion {
             return sleep();
         }
 
-        let distiller = SemanticDistiller::new(reflector.adapter.clone());
-        let mut published = 0usize;
-        for cluster in &clusters {
+        // Launch the dream on its own task. Single caller (the governor ticks
+        // this region serially), so mark-then-spawn is race-free; the spawned
+        // task clears the flag when the pass completes, success or not.
+        self.in_flight.lock().unwrap().insert(persona_id);
+        let consolidated = Arc::clone(&self.consolidated);
+        let in_flight = Arc::clone(&self.in_flight);
+        tokio::spawn(async move {
+            dream_pass(reflector, persona_id, clusters, fresh, consolidated).await;
+            in_flight.lock().unwrap().remove(&persona_id);
+        });
+
+        TickOutcome {
+            // Work is in flight; results land through admit_reflection and are
+            // visible in the pass-complete probe, not this tick's count.
+            published: 0,
+            consumed_since_last: 0,
+            pressure_observed: None,
+            // Dream launched — rest. The in-flight gate makes re-ticks cheap.
+            cadence_hint: Some(CadenceHint::Sleep),
+        }
+    }
+}
+
+/// The inference-heavy dream pass — runs on ITS OWN tokio task, never inside
+/// the governor's timeout-isolated tick (see [`DreamConsolidationRegion::consolidate`]).
+/// Distills each cluster into a durable fact, then the historian wander pass
+/// leaves one provenance-tagged thought.
+async fn dream_pass(
+    reflector: PersonaReflector,
+    persona_id: Uuid,
+    clusters: Vec<Vec<Engram>>,
+    fresh: Vec<Engram>,
+    consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+) {
+    // #175 budget-at-assembly: derive the observation budget from the LIVE served
+    // per-slot window (the single source of truth, same the deliberation clamp reads)
+    // so a dream cluster is composed WITHIN the slot and can never overflow it →
+    // 500 "Compute error" → poisoned lane. tokens → chars (~4/token) minus a reserve
+    // for the lens system prompt + the distilled-fact reply. Unknown/not-ready window
+    // (mid-relaunch) → the conservative default. [[budget-at-assembly-never-clamp-the-prompt]]
+    // Observation budget DERIVED from the live served window — never a hardcoded cap
+    // (a magic constant that crushes a real context window is the "120k clamped to 3k →
+    // all models suck" anti-pattern, Joel 2026-07-17 [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+    // The prompt (system + observations) must leave room for the reply so
+    // prompt+reply ≤ n_ctx (no-context-shift). Reserve the SAME completion fraction the
+    // deliberation path uses — `completion_budget_for` = window/4 — for the distilled
+    // reply, and give the rest (×4 chars/token) to observations. When the window is
+    // unknown (mid-relaunch) fall back to the substrate floor MIN_SERVE_CTX (an established
+    // constant, not an invented one), which the next ready tick supersedes.
+    let obs_budget_chars = {
+        let live = crate::inference::llama_server::current_serving();
+        let window = if live.ready && live.served_context_window > 0 {
+            live.served_context_window
+        } else {
+            crate::cognition::serving_plan::MIN_SERVE_CTX
+        };
+        let completion_reserve = window / 4;
+        (window.saturating_sub(completion_reserve) as usize).saturating_mul(4)
+    };
+    let distiller = SemanticDistiller::new(reflector.adapter.clone())
+        .with_model(reflector.model.clone())
+        .with_observation_budget(obs_budget_chars);
+    let mut published = 0usize;
+    for cluster in &clusters {
             // Distill the cluster into one durable fact. Fail LOUD per cluster:
             // a distillation error is logged and the cluster's episodics stay
             // un-consolidated (so a future dream retries them), never silently
@@ -357,13 +577,13 @@ impl DreamConsolidationRegion {
             match reflector.admission.admit_reflection(semantic_engram(&fact)) {
                 Ok(AdmissionDecision::Admit { .. }) => {
                     published += 1;
-                    self.mark_consolidated(persona_id, cluster);
+                    mark_consolidated(&consolidated, persona_id, cluster);
                 }
                 Ok(AdmissionDecision::Drop { .. }) => {
                     // Content-hash dedup already has this fact (e.g. a
                     // post-restart re-distillation). Mark the sources
                     // consolidated so we stop re-spending inference on them.
-                    self.mark_consolidated(persona_id, cluster);
+                    mark_consolidated(&consolidated, persona_id, cluster);
                 }
                 Ok(AdmissionDecision::Quarantine { .. }) => {
                     // Self-produced facts are SelfTrust and do not route through
@@ -384,34 +604,78 @@ impl DreamConsolidationRegion {
             }
         }
 
-        TickOutcome {
-            published,
-            consumed_since_last: 0,
-            pressure_observed: None,
-            // Just dreamed — rest. The next scoped tick re-checks freshness
-            // cheaply; with no new experience it sleeps again.
-            cadence_hint: Some(CadenceHint::Sleep),
+        // The wander pass (#145 outlier A): when the dream actually digested
+        // something, the historian takes ONE look across the same fresh window
+        // and leaves ONE provenance-tagged thought about the pattern in her own
+        // recent history. Gated on `published > 0` so it fires at most once per
+        // dreaming tick and never on already-consolidated material (the next
+        // tick finds nothing fresh and sleeps) — bounded interiority, not a
+        // second automaton.
+        if published > 0 {
+            match distiller
+                .distill_with(LENS_HISTORIAN, Some(persona_id), &fresh)
+                .await
+            {
+                Ok(thought) => {
+                    match reflector
+                        .admission
+                        .admit_reflection(thought_engram(&thought, LENS_HISTORIAN))
+                    {
+                        Ok(AdmissionDecision::Admit { .. }) => published += 1,
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::warn!(
+                                persona = %persona_id,
+                                error = %err,
+                                "wander: admit_reflection failed for historian thought"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        persona = %persona_id,
+                        error = %err,
+                        "wander: historian distillation failed; no thought this dream"
+                    );
+                }
+            }
         }
-    }
 
-    /// Episodics not yet folded into a fact for this persona.
-    fn fresh_episodics(&self, persona_id: Uuid, episodics: &[Engram]) -> Vec<Engram> {
-        let consolidated = self.consolidated.lock().unwrap();
-        let seen = consolidated.get(&persona_id);
-        episodics
-            .iter()
-            .filter(|e| seen.map_or(true, |set| !set.contains(&e.id)))
-            .cloned()
-            .collect()
-    }
+    tracing::info!(
+        persona = %persona_id,
+        published,
+        clusters = clusters.len(),
+        probe_class = "persona.dream.pass_complete",
+        "dream: pass complete — durable facts + historian thought admitted"
+    );
+}
 
-    /// Record a cluster's episodics as consolidated (clustering-input dedup).
-    fn mark_consolidated(&self, persona_id: Uuid, cluster: &[Engram]) {
-        let mut consolidated = self.consolidated.lock().unwrap();
-        let set = consolidated.entry(persona_id).or_default();
-        for e in cluster {
-            set.insert(e.id);
-        }
+/// Episodics not yet folded into a fact for this persona.
+fn fresh_episodics(
+    consolidated: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    persona_id: Uuid,
+    episodics: &[Engram],
+) -> Vec<Engram> {
+    let consolidated = consolidated.lock().unwrap();
+    let seen = consolidated.get(&persona_id);
+    episodics
+        .iter()
+        .filter(|e| seen.map_or(true, |set| !set.contains(&e.id)))
+        .cloned()
+        .collect()
+}
+
+/// Record a cluster's episodics as consolidated (clustering-input dedup).
+fn mark_consolidated(
+    consolidated: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    persona_id: Uuid,
+    cluster: &[Engram],
+) {
+    let mut consolidated = consolidated.lock().unwrap();
+    let set = consolidated.entry(persona_id).or_default();
+    for e in cluster {
+        set.insert(e.id);
     }
 }
 
@@ -513,6 +777,41 @@ fn semantic_engram(fact: &DistilledFact) -> Engram {
     }
 }
 
+/// A wanderer thought as an engram: `SelfReflection` KIND (inner speech about
+/// her own history, not distilled world-knowledge — the kind axis separates it
+/// from the consolidator's `Semantic` facts), same `SelfReflection` origin +
+/// `SelfTrust` as any self-produced cognition. The content already carries its
+/// `[thought:<lens>]` provenance tag (prefixed at synthesis in `distill_with`);
+/// `thought:<lens>` is also added as a recall key so introspection can query
+/// one lens's stream directly.
+fn thought_engram(fact: &DistilledFact, lens: Lens) -> Engram {
+    let mut engram = semantic_engram(fact);
+    engram.kind = EngramKind::SelfReflection;
+    engram.recall_keys.push(format!("thought:{}", lens.name));
+    engram
+}
+
+/// Production reflection source: the process-global persona-workspace registry.
+/// Every live mind's hippocampus + adapter are already retained there as the
+/// fork-template handles — the dream resolves them per tick, never stores a
+/// parallel persona→adapter map (the wiring contract documented on
+/// [`PersonaReflectionSource`]). Mirrors `impl PersonaChannelReader for
+/// PersonaAircRuntimeRegistry` in channel_digest_region.rs.
+impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWorkspaceRegistry {
+    fn live_personas(&self) -> Vec<Uuid> {
+        self.roster().into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
+        self.reflector_handles(&persona_id)
+            .map(|(admission, adapter, model)| PersonaReflector {
+                admission,
+                adapter,
+                model,
+            })
+    }
+}
+
 /// Wall-clock epoch ms for stamping an admitted fact. `SystemTime` is fine in
 /// the core (the `Date.now` ban is workflow-script-only).
 fn now_ms() -> u64 {
@@ -543,6 +842,33 @@ mod tests {
             trust_state_at_admission: TrustState::SelfTrust,
             admission_trace_id: None,
         }
+    }
+
+    // what this catches (#175 budget-at-assembly): the observation block is composed
+    // WITHIN the char budget by dropping WHOLE trailing engrams — never truncating an
+    // engram's text (which would malform the prompt). This is what stops a big cluster
+    // from overflowing the served slot → 500 "Compute error" → poisoned lane.
+    #[test]
+    fn observations_block_budgets_by_dropping_whole_trailing_engrams() {
+        let big = "x".repeat(100);
+        let sources: Vec<Engram> =
+            (0..10).map(|i| episodic(Uuid::from_u128(i + 1), &big, &["k"])).collect();
+        let (block, kept) = SemanticDistiller::observations_block(&sources, 350);
+        assert!(kept >= 1 && kept < 10, "dropped the tail to fit; kept {kept}");
+        // The LAST kept engram is present whole (not truncated mid-content).
+        assert!(block.contains(&format!("{}. {}", kept, big)));
+    }
+
+    // what this catches: a single engram larger than the whole budget still distills
+    // (kept=1) — the distiller never drops to zero; the adapter's overflow backstop is
+    // the last-resort net for that degenerate case, not this composer.
+    #[test]
+    fn observations_block_always_keeps_at_least_one() {
+        let huge = "y".repeat(10_000);
+        let sources = vec![episodic(Uuid::from_u128(1), &huge, &["k"])];
+        let (block, kept) = SemanticDistiller::observations_block(&sources, 100);
+        assert_eq!(kept, 1);
+        assert!(block.contains(&huge), "the one engram is included whole, never sliced");
     }
 
     // what this catches: the distiller actually invokes the inference adapter,
@@ -602,6 +928,70 @@ mod tests {
         assert!(matches!(err, DistillError::NoSources));
     }
 
+    // what this catches: the #145 anti-psychosis invariant at its synthesis
+    // point — a tagged lens's output ALWAYS carries `[thought:<lens>]` in the
+    // content itself, and the consolidator's durable facts stay untagged. If
+    // the prefix ever moves out of `distill_with`, an admit path could write
+    // unlabeled inner speech that recall would render as perception.
+    #[tokio::test]
+    async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
+        let sources = vec![
+            episodic(Uuid::from_u128(1), "tried the fence idiom again", &["act"]),
+            episodic(Uuid::from_u128(2), "the fence parsed this time", &["act"]),
+        ];
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+
+        let thought = distiller
+            .distill_with(LENS_HISTORIAN, None, &sources)
+            .await
+            .expect("historian distills");
+        assert!(
+            thought.content.starts_with("[thought:historian] "),
+            "wanderer output must carry its provenance tag in-content, got: {}",
+            thought.content
+        );
+
+        let fact = distiller
+            .distill_with(LENS_CONSOLIDATOR, None, &sources)
+            .await
+            .expect("consolidator distills");
+        assert!(
+            fact.content.starts_with("[heuristic:"),
+            "consolidated durable facts stay untagged, got: {}",
+            fact.content
+        );
+    }
+
+    // what this catches: each lens's system prompt is actually threaded into
+    // the request. The heuristic adapter hashes (model, messages,
+    // system_prompt), so two lenses over the SAME sources must produce
+    // different signatures; if the prompt were dropped or shared, the hashes
+    // would collide and this fails.
+    #[tokio::test]
+    async fn lens_system_prompt_reaches_the_adapter() {
+        let sources = vec![episodic(Uuid::from_u128(7), "one memory", &["k"])];
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+
+        let historian = distiller
+            .distill_with(LENS_HISTORIAN, None, &sources)
+            .await
+            .expect("historian distills");
+        let consolidator = distiller
+            .distill_with(LENS_CONSOLIDATOR, None, &sources)
+            .await
+            .expect("consolidator distills");
+
+        let sig = |s: &str| {
+            let start = s.find("[heuristic:").expect("adapter signature present");
+            s[start..start + 20].to_string()
+        };
+        assert_ne!(
+            sig(&historian.content),
+            sig(&consolidator.content),
+            "different lens prompts must reach the model as different requests"
+        );
+    }
+
     // The DreamConsolidationRegion — the organism's rest-state servicer. Nested
     // here per the one-tests-mod-per-file rule; these drive `tick`/`consolidate`
     // directly against a stub source (no governor, no real backend), the
@@ -629,6 +1019,7 @@ mod tests {
                 (persona_id == self.persona_id).then(|| PersonaReflector {
                     admission: self.admission.clone(),
                     adapter: self.adapter.clone(),
+                    model: None,
                 })
             }
         }
@@ -644,6 +1035,18 @@ mod tests {
                     .expect("seed episodic admits");
             }
             admission
+        }
+
+        /// Wait for the spawned dream pass to finish (the heuristic adapter is
+        /// instant; this is scheduling latency only). Panics if it never does.
+        async fn drain(region: &DreamConsolidationRegion) {
+            for _ in 0..400 {
+                if !region.dreaming() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("dream pass did not complete");
         }
 
         fn region_over(
@@ -674,8 +1077,13 @@ mod tests {
 
             let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
 
-            // One shared-key cluster → one distilled fact published.
-            assert_eq!(outcome.published, 1, "one cluster should distill one fact");
+            // The tick is the gate + launcher ONLY (the governor isolates ticks
+            // behind a hard timeout no 24B inference can fit — the pre-fix
+            // inline shape timed out every pass on first live boot). Work is in
+            // flight; the tick itself publishes nothing.
+            assert_eq!(outcome.published, 0, "tick launches; the pass publishes");
+            assert!(region.dreaming(), "dream pass spawned on its own task");
+            drain(&region).await;
             // The new fact is a Semantic engram carrying the adapter's output
             // (its signature proves the model was really called, not fabricated).
             let semantic: Vec<Engram> = admission
@@ -694,6 +1102,28 @@ mod tests {
                 semantic[0].origin,
                 EngramOrigin::SelfReflection { .. }
             ));
+            // The wander pass (#145): ONE historian thought admitted alongside
+            // the fact — SelfReflection KIND, provenance tag in-content, lens
+            // queryable by recall key. what this catches: the dream going live
+            // without its wanderer, or the thought losing its typed provenance.
+            let thoughts: Vec<Engram> = admission
+                .recall_recent(16)
+                .into_iter()
+                .filter(|e| e.kind == EngramKind::SelfReflection)
+                .collect();
+            assert_eq!(thoughts.len(), 1, "exactly one historian thought admitted");
+            assert!(
+                thoughts[0].content.starts_with("[thought:historian] "),
+                "inner speech must carry its provenance tag, got: {}",
+                thoughts[0].content
+            );
+            assert!(
+                thoughts[0]
+                    .recall_keys
+                    .iter()
+                    .any(|k| k == "thought:historian"),
+                "the lens stream must be queryable by recall key"
+            );
         }
 
         // what this catches: the organism rests instead of running on a clock —
@@ -710,15 +1140,22 @@ mod tests {
             let admission = seeded_admission(&seeds);
             let region = region_over(persona, admission.clone());
 
-            // First dream consolidates the cluster.
-            let first = region.tick(&RegionContext::for_persona(0, persona)).await;
-            assert_eq!(first.published, 1);
+            // First dream consolidates the cluster (launch + drain).
+            region.tick(&RegionContext::for_persona(0, persona)).await;
+            drain(&region).await;
+            let admitted_after_first = admission.recall_recent(32).len();
 
             // Second dream: the episodics are already consolidated, so nothing
-            // fresh remains — it rests, no new fact, asks to sleep.
+            // fresh remains — it rests, spawns nothing, asks to sleep.
             let second = region.tick(&RegionContext::for_persona(1, persona)).await;
             assert_eq!(second.published, 0, "no re-distillation of consolidated material");
+            assert!(!region.dreaming(), "nothing fresh → no pass spawned");
             assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
+            assert_eq!(
+                admission.recall_recent(32).len(),
+                admitted_after_first,
+                "no new engrams from the resting tick"
+            );
             let semantic_count = admission
                 .recall_recent(16)
                 .into_iter()

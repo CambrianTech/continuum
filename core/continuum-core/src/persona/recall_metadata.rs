@@ -259,6 +259,19 @@ impl From<EngramRecallMetadata> for (Uuid, RecallMetadata) {
 /// cognition-cache-hierarchy doc's meta-learning section.
 pub const SALIENCE_FLOOR: f32 = 0.05;
 
+/// Ceiling that RECALL-FREQUENCY alone can push a memory's salience to. Rehearsal
+/// (recall hits) strengthens a memory Hebbianly, but on its own it must NOT be able
+/// to pin one at the very top — glass-boxed 2026-07-14: a persona's stale, FALSE
+/// "workspace is empty" belief self-reinforced to ~0.98 purely by being re-surfaced
+/// (surface → uplift → higher salience → slower decay → surfaces again), overpowering
+/// live ground truth. Capping the recall asymptote below 1.0 reserves the top band
+/// for GENUINE importance (high admission salience, or an explicit permanent pin),
+/// so recall frequency can make a memory *prominent* but never *unassailable*. It
+/// only bites at high salience (the +0.1/hit cap dominates the first several hits, so
+/// early rehearsal is unchanged); the permanent-pin path (salience 1.0) is untouched.
+/// Tunable via a future `MemoryParameterAdapter`.
+pub const RECALL_UPLIFT_CEILING: f32 = 0.9;
+
 /// Sentinel value for `protected_until_ms` indicating permanent
 /// protection — these engrams never decay, regardless of access
 /// pattern or how long the substrate runs. Set via
@@ -345,10 +358,14 @@ impl RecallMetadataRegistry {
             .and_modify(|m| {
                 m.access_count = m.access_count.saturating_add(1);
                 m.last_accessed_ms = now_ms;
-                // Salience uplift: half the remaining headroom,
-                // capped at +0.1 per hit so a single recall doesn't
-                // saturate the score.
-                let headroom = 1.0 - m.salience;
+                // Salience uplift: half the remaining headroom, capped at +0.1 per
+                // hit so a single recall doesn't saturate the score. Headroom is
+                // measured toward RECALL_UPLIFT_CEILING (not 1.0): recall frequency
+                // strengthens a memory but can't self-reinforce it into the top band
+                // reserved for genuine importance / permanent pins — the fix for the
+                // stale-belief spiral. A memory ALREADY above the ceiling (high
+                // admission salience) keeps its value; recall simply adds nothing.
+                let headroom = (RECALL_UPLIFT_CEILING - m.salience).max(0.0);
                 let uplift = (headroom * 0.5).min(0.1);
                 m.salience = (m.salience + uplift).min(1.0);
             })
@@ -564,13 +581,40 @@ mod tests {
         assert!(after_one.salience <= before.salience + 0.1 + f32::EPSILON);
 
         // Two more hits — salience keeps growing with diminishing
-        // returns, asymptoting toward 1.0.
+        // returns, asymptoting toward the recall ceiling (not 1.0).
         r.record_recall_hit(id, 1_001_000);
         r.record_recall_hit(id, 1_002_000);
         let after_three = r.get(id).unwrap();
         assert_eq!(after_three.access_count, 3);
         assert!(after_three.salience > after_one.salience);
         assert!(after_three.salience <= 1.0);
+    }
+
+    // what this catches: recall FREQUENCY alone must not self-reinforce a memory into
+    // the top band — the stale-belief spiral fix. Many hits asymptote to
+    // RECALL_UPLIFT_CEILING, never above; and a memory already above the ceiling
+    // (genuine importance) is neither lowered nor raised by recall. // regression:
+    // live 2026-07-14 "workspace is empty" pinned to ~0.98 by re-surfacing
+    #[test]
+    fn recall_uplift_caps_at_the_ceiling_not_one() {
+        let r = RecallMetadataRegistry::new();
+        let id = Uuid::new_v4();
+        r.admit_with_defaults(id); // starts at 0.5
+        for i in 0..50 {
+            r.record_recall_hit(id, 1_000_000 + i * 1000);
+        }
+        let s = r.get(id).unwrap().salience;
+        assert!(s <= RECALL_UPLIFT_CEILING + f32::EPSILON, "recall alone must not exceed the ceiling: {s}");
+        assert!(s > 0.85, "but it should still climb close to it: {s}");
+
+        // A memory admitted ABOVE the ceiling keeps its value — recall neither lifts
+        // nor lowers it (genuine importance owns the top band).
+        let hi = Uuid::new_v4();
+        let mut md = RecallMetadata::default();
+        md.salience = 0.97;
+        r.admit(hi, md);
+        r.record_recall_hit(hi, 2_000_000);
+        assert_eq!(r.get(hi).unwrap().salience, 0.97, "recall must not disturb an already-important memory");
     }
 
     #[test]

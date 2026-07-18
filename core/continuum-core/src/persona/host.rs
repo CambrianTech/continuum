@@ -388,9 +388,21 @@ impl PersonaSpawnSupervisor {
         let persona_id = ctx.identity.peer_id.as_uuid();
         let agent_name = ctx.identity.agent_name.clone();
         let role = ctx.role;
+        // Hand the loop the SAME quiesce atomic the registry slot holds so an
+        // eval-preemption lease can suspend her autonomic self-tick. Register precedes
+        // spawn, so the flag is present; if it somehow isn't, that's a registration
+        // bug, not a serving one — degrade to a private never-set flag (she's simply
+        // never quiescable) rather than fail her whole boot.
+        let quiesced = self
+            .registry
+            .quiesced_flag(persona_id)
+            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
         let handle = match spawn_persona_service(
             ctx,
-            ServeOptions::default(),
+            ServeOptions {
+                quiesced,
+                ..ServeOptions::default()
+            },
             self.rt_handle.clone(),
         )
         .await

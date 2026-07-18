@@ -22,6 +22,9 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
+use continuum_positron::Loadout;
+
+use crate::cognition::faculty_pulse::CognitionAxis;
 use crate::cognition::persona_workspace;
 use crate::ipc::positron_source::{PersonaVitalsUpdate, PERSONA_VITALS};
 use crate::runtime::message_bus::MessageBus;
@@ -52,7 +55,11 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
     rt.spawn(async move {
         let mut ticker = tokio::time::interval(EMIT_INTERVAL);
         let mut last_ticks: HashMap<Uuid, u64> = HashMap::new();
-        let mut last_vitals: HashMap<Uuid, BTreeMap<String, u8>> = HashMap::new();
+        // Dedup on the WHOLE radiated readout — vitals AND loadout. Loadout
+        // moves only on a model re-home; keying dedup on both means a re-home
+        // with otherwise-stable vitals still radiates the new loadout.
+        let mut last_emitted: HashMap<Uuid, (BTreeMap<String, u8>, Option<Loadout>)> =
+            HashMap::new();
         loop {
             ticker.tick().await;
             // Wrap the (synchronous) sample in catch_unwind: the only realistic
@@ -87,13 +94,54 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
                         vitals
                             .insert("genome".to_string(), pct_usize(genome_len, GEN_FULL_SCALE_GENES));
                     }
+                    // #186 COGNITION COMPASS: the decaying per-axis firing levels
+                    // (Focus/Reason/Recall/Act) the cognition tick + acting seam bumped.
+                    // Omit a dark (0) axis so an idle persona radiates no compass — the
+                    // tile's diamond triangle stays unlit until that faculty actually
+                    // fires (honest empty, never a fabricated glow). Keys are exactly
+                    // what the tile's `cognitionDiamond` reads.
+                    let levels = cycle.faculty_pulse().levels();
+                    for (axis, level) in CognitionAxis::ALL.iter().zip(levels) {
+                        if level > 0 {
+                            vitals.insert(axis.vital_key().to_string(), level);
+                        }
+                    }
 
-                    // Change-dedup: a stable persona radiates nothing.
-                    if last_vitals.get(&id) == Some(&vitals) {
+                    // LOADOUT: the model backing this persona — the display strip
+                    // (`model · size · ctx`). Model id + EFFECTIVE window come from
+                    // the live binding; the parameter COUNT is resolved from the
+                    // registry row by that id (GGUF-hydrated #74) — NEVER sniffed
+                    // from the model name ([[models-are-infinite-decide-on-capability-not-name]]).
+                    // A `0` param count (unhydrated row) and a `0` window collapse
+                    // to absent — honest-unknown, never a fabricated `0B`/`0 ctx`.
+                    let loadout = cycle.model_loadout().map(|(model_id, ctx)| {
+                        let params = model_id
+                            .as_deref()
+                            .and_then(|mid| {
+                                crate::model_registry::try_global().and_then(|r| r.model(mid))
+                            })
+                            .map(|m| m.parameter_count)
+                            .filter(|&c| c > 0);
+                        Loadout {
+                            model: model_id,
+                            params,
+                            context_window: (ctx > 0).then_some(ctx),
+                        }
+                    });
+
+                    // Change-dedup: a stable persona radiates nothing (vitals AND
+                    // loadout unchanged).
+                    if last_emitted.get(&id).map(|(v, l)| v == &vitals && l == &loadout)
+                        == Some(true)
+                    {
                         continue;
                     }
-                    last_vitals.insert(id, vitals.clone());
-                    let update = PersonaVitalsUpdate { member_id: id, vitals };
+                    last_emitted.insert(id, (vitals.clone(), loadout.clone()));
+                    let update = PersonaVitalsUpdate {
+                        member_id: id,
+                        vitals,
+                        loadout,
+                    };
                     match serde_json::to_value(&update) {
                         Ok(payload) => bus.publish_async_only(PERSONA_VITALS, payload),
                         Err(e) => {

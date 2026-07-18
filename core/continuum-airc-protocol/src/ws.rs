@@ -163,12 +163,55 @@ pub enum WsServerMessage {
     /// `#[ts(type = ...)]`: same ts-rs 10↔12 skew as the `Subscribe` fields —
     /// project `StateEnvelope` by TS name (import wiring = task #80).
     State(#[ts(type = "StateEnvelope")] StateEnvelope),
+    /// A pushed EPHEMERAL token from a persona's in-progress turn — the live
+    /// "typing" surface (#170). NOT durable state: the authoritative message still
+    /// arrives as a `chat:posted` transcript row folded into a `State` envelope;
+    /// this rail only carries the turn token-by-token so a persona visibly *types*
+    /// instead of freezing then dumping a wall of text. Its own ephemeral rail,
+    /// matching the airc substrate's Event-class-vs-Message-class split — the
+    /// durable `State`/`StateEnvelope` path is untouched.
+    ///
+    /// Correlated to the eventual durable row by `room_id` + `sender_id` (the
+    /// per-turn `stream_id` is minted at stream start and is NOT the final message
+    /// id): the client keys a transient bubble on `sender_id`, grows it per token,
+    /// and retires it when the durable row from that sender lands OR `done` (the
+    /// `text_end` chunk) arrives — whichever comes first.
+    StreamDelta {
+        room_id: String,
+        sender_id: String,
+        stream_id: String,
+        #[ts(type = "number")]
+        seq: u64,
+        token: String,
+        done: bool,
+    },
 }
 
 impl WsServerMessage {
     /// Build a `Response` frame for a given correlation id.
     pub fn response(id: u64, response: AircCommandResponse) -> Self {
         Self::Response { id, response }
+    }
+
+    /// Wrap one ephemeral turn token as a pushed `StreamDelta` frame (#170) — the
+    /// mechanical seam for fanning a persona's live token stream out over this
+    /// transport, alongside (never replacing) the durable `State` path.
+    pub fn stream_delta(
+        room_id: String,
+        sender_id: String,
+        stream_id: String,
+        seq: u64,
+        token: String,
+        done: bool,
+    ) -> Self {
+        Self::StreamDelta {
+            room_id,
+            sender_id,
+            stream_id,
+            seq,
+            token,
+            done,
+        }
     }
 
     /// Wrap a positron [`StateEnvelope`] as a pushed `State` frame — the
@@ -214,6 +257,29 @@ mod tests {
         let wire = serde_json::to_string(&msg).expect("serialize");
         assert!(wire.contains("\"type\":\"response\""), "outer tag: {wire}");
         assert!(wire.contains("\"status\":\"ok\""), "nested status tag: {wire}");
+        let back: WsServerMessage = serde_json::from_str(&wire).expect("deserialize");
+        assert_eq!(back, msg);
+    }
+
+    // what this catches (#170): the ephemeral token frame serializes under the
+    // snake_case outer tag "stream_delta" with its correlation fields (room_id,
+    // sender_id) flat, and round-trips — so the client can key a typing bubble on
+    // sender_id and grow it per token. A tag-rename regression would silently drop
+    // the whole live-typing rail.
+    #[test]
+    fn server_stream_delta_round_trips_with_correlation_fields() {
+        let msg = WsServerMessage::stream_delta(
+            "room-1".into(),
+            "peer-asha".into(),
+            "stream-abc".into(),
+            3,
+            "Hello".into(),
+            false,
+        );
+        let wire = serde_json::to_string(&msg).expect("serialize");
+        assert!(wire.contains("\"type\":\"stream_delta\""), "outer tag: {wire}");
+        assert!(wire.contains("\"sender_id\":\"peer-asha\""), "sender flat: {wire}");
+        assert!(wire.contains("\"token\":\"Hello\""), "token present: {wire}");
         let back: WsServerMessage = serde_json::from_str(&wire).expect("deserialize");
         assert_eq!(back, msg);
     }

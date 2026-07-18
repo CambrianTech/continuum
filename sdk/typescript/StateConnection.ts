@@ -64,6 +64,47 @@ export interface StateSubscription {
   off(): void;
 }
 
+/**
+ * One ephemeral token from a persona's in-progress turn (#170) — the live "typing"
+ * surface, delivered token-by-token so a persona visibly types instead of freezing.
+ * NOT part of the durable state contract: the authoritative message still arrives as
+ * a `chat` {@link StateEnvelope}. Correlate to the eventual durable row by `roomId` +
+ * `senderId` — the per-turn `streamId` is minted at stream start, NOT the final
+ * message id. `done` marks the turn's end (retire the typing bubble).
+ */
+export interface StreamDelta {
+  roomId: string;
+  senderId: string;
+  streamId: string;
+  seq: number;
+  token: string;
+  done: boolean;
+}
+
+/** Receives successive {@link StreamDelta}s across all rooms/senders on this socket. */
+export type StreamDeltaSink = (delta: StreamDelta) => void;
+
+/**
+ * The continuum-transport `stream_delta` frame — an ephemeral sibling of positron's
+ * durable `ServerMessage`, carried on the same socket (fields are the wire's
+ * snake_case, mirroring Rust `WsServerMessage::StreamDelta`). Kept local: this is
+ * continuum's own transport frame, deliberately NOT folded into positron's
+ * `ServerMessage` union so the durable state contract stays positron-pure.
+ */
+interface StreamDeltaFrame {
+  type: 'stream_delta';
+  room_id: string;
+  sender_id: string;
+  stream_id: string;
+  seq: number;
+  token: string;
+  done: boolean;
+}
+
+/** Every frame this socket may receive: positron's durable state/response frames
+ *  plus the continuum ephemeral token rail. */
+type IncomingFrame = ServerMessage | StreamDeltaFrame;
+
 /** Options for {@link StateConnection.connect}. */
 export interface StateConnectOptions {
   /**
@@ -92,6 +133,9 @@ export class StateConnection {
   /** Surfaced (not swallowed) when the socket drops — a dead feed means stale
    *  UI, which the app must be able to see and act on. */
   private onCloseCb?: (reason: string) => void;
+  /** Sink for the ephemeral token rail (#170); undefined = no one is rendering
+   *  live typing, so `stream_delta` frames are dropped (cheap, cosmetic). */
+  private onStreamDeltaCb?: StreamDeltaSink;
 
   /**
    * @param url the core's WS endpoint, e.g. `ws://127.0.0.1:<CONTINUUM_CORE_WS>`.
@@ -141,6 +185,16 @@ export class StateConnection {
   /** Notified when the socket closes (surface stale-feed to the app). */
   onClose(cb: (reason: string) => void): void {
     this.onCloseCb = cb;
+  }
+
+  /**
+   * Register the sink for the live token rail (#170): a persona's in-progress turn
+   * delivered token-by-token. Ephemeral — the durable message still arrives via the
+   * `chat` state sink; this only drives the transient "typing" bubble. One sink (the
+   * app fans out to the right room bubble by `delta.roomId`/`senderId`).
+   */
+  onStreamDelta(sink: StreamDeltaSink): void {
+    this.onStreamDeltaCb = sink;
   }
 
   /**
@@ -197,7 +251,7 @@ export class StateConnection {
     try {
       socket.send(JSON.stringify(frame));
     } catch (err) {
-      throw new Error(`StateConnection: failed to send subscribe frame: ${String(err)}`);
+      throw new Error('StateConnection: failed to send subscribe frame', { cause: err });
     }
   }
 
@@ -231,18 +285,31 @@ export class StateConnection {
 
   private onMessage(data: unknown): void {
     const text = typeof data === 'string' ? data : String(data);
-    let msg: ServerMessage;
+    let msg: IncomingFrame;
     try {
-      msg = JSON.parse(text) as ServerMessage;
+      msg = JSON.parse(text) as IncomingFrame;
     } catch (err) {
       // A frame we can't parse has no kind to route to — loud, never silent.
       console.error('StateConnection: dropping unparseable server frame:', err);
       return;
     }
 
-    // Exhaustive over ServerMessage's union so a future server→client frame
+    // Exhaustive over IncomingFrame's union so a future server→client frame
     // surfaces as a compile error here rather than a silent drop.
     switch (msg.type) {
+      case 'stream_delta': {
+        // #170 ephemeral token rail — hand the app one live token; it grows the
+        // matching sender's transient typing bubble. Never touches durable state.
+        this.onStreamDeltaCb?.({
+          roomId: msg.room_id,
+          senderId: msg.sender_id,
+          streamId: msg.stream_id,
+          seq: msg.seq,
+          token: msg.token,
+          done: msg.done,
+        });
+        return;
+      }
       case 'state': {
         // `{type:'state'} & StateEnvelope` — reconstruct the bare envelope for
         // the sink (drop the wire tag; the sink keys off `kind` itself).

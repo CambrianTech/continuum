@@ -1,0 +1,26 @@
+{
+  "name": "@continuum/experience-view",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared Experience (Join Contract) projection for Continuum clients — the framework-free decode + Workspace view model that turns a room's Experience manifest (+ its rich roster region payload) into the neutral @continuum/patterns WorkspaceView. The second defineApp consumer after chat-view: one app definition, mounted on web (Lit) / terminal (ANSI) / mobile (Flutter) / RAG. Holds NO transport, NO DOM, NO ANSI; typed against @continuum/sdk-typescript's manifest + view types.",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@continuum/patterns": "*",
+    "@continuum/sdk-typescript": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "@types/node": "^26.1.1"
+  }
+}

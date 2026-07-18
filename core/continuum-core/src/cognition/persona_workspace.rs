@@ -23,7 +23,7 @@ use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
 use super::working_memory::{WorkingMemory, WorkingMemoryFaculty, DEFAULT_WORKING_MEMORY_CAPACITY};
-use super::workspace::{ActingBody, Faculty, SalienceArbiter, WorkspaceCycle};
+use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::rag_budget::RagSource;
@@ -153,6 +153,14 @@ pub struct GroundingSource {
     /// bg via [`GroundingSource::defer_tolerant`], having decided its first-tick
     /// miss is tolerable).
     pub deferrability: Deferrability,
+    /// CAPABILITY CONSISTENCY: this grounding DESCRIBES the persona's hands
+    /// (tool paths, "drill in with code/list…"), so it must only be delivered
+    /// into a cycle that HAS hands. Glass-boxed 2026-07-10: every spoken-graded
+    /// exam prompt carried the workspace-map telling her to use tools that were
+    /// stripped for the exam — the RAG lying to her about her own affordances.
+    /// A perception surface must never describe affordances that don't exist
+    /// this cycle. `false` (default) = capability-neutral grounding.
+    pub requires_hands: bool,
 }
 
 impl GroundingSource {
@@ -164,7 +172,15 @@ impl GroundingSource {
             source,
             policy: SaliencePolicy::StandingFraming,
             deferrability: Deferrability::ColdStartCritical,
+            requires_hands: false,
         }
+    }
+
+    /// Mark this grounding as DESCRIBING the persona's hands — it is dropped
+    /// from any cycle whose tools are stripped (see field docs).
+    pub fn requires_hands(mut self) -> Self {
+        self.requires_hands = true;
+        self
     }
 
     /// Retrieved grounding (engram, conversation) — competes on relevance.
@@ -173,6 +189,7 @@ impl GroundingSource {
             source,
             policy: SaliencePolicy::Retrieved,
             deferrability: Deferrability::ColdStartCritical,
+            requires_hands: false,
         }
     }
 
@@ -211,6 +228,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // executing an `Act` verdict is the organism's job, not the deliberator's.
     let persona_id = cfg.persona_id;
     let persona_name_for_body = cfg.persona_name.to_string();
+    // (Memento-fix persistence helpers live at the bottom of this file:
+    // volatile_path / save_volatile / load_volatile + PersistedVolatile.)
     let admission_for_body = Arc::clone(&cfg.admission);
     let tool_executor = cfg.tool_executor; // partial move out of cfg (other fields still used)
 
@@ -234,6 +253,29 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
     let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // MEMENTO FIX (#138 slice 2, Joel: "they wake up blank like Memento — an
+    // engineering failure; the flywheel falls apart"): on LIVE spawns, restore
+    // the volatile tier persisted by the previous life so she wakes MID-WORK —
+    // her recent thoughts, receipts, and own-speech ring intact across a deploy
+    // reboot. Eval forks/harnesses (defer_recall=false) stay pristine: an exam
+    // must never inherit a prior life's scratchpad.
+    if cfg.defer_recall {
+        if let Some(persisted) = load_volatile(cfg.persona_id) {
+            let n = persisted.wm.entries.len();
+            working_memory.restore(persisted.wm);
+            let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
+            for utterance in &persisted.own_speech {
+                super::deliberation_budget::record_own_speech(peer, utterance);
+            }
+            crate::probe!(
+                class = "persona.volatile.restored",
+                persona = %cfg.persona_name,
+                entries = n,
+                ring = persisted.own_speech.len(),
+                "volatile tier restored — waking mid-work, not blank"
+            );
+        }
+    }
     // Async-dispatch listener (LIVE personas only): fold completions of THIS persona's
     // background dispatches back into working memory by handle, so a compile/train/sentinel
     // it sent away streams its result into the mind when it lands ([[persona-async-dispatch-channel]]).
@@ -247,6 +289,22 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             .and_then(|exec| exec.message_bus())
         {
             super::dispatch_listener::spawn(bus, Arc::clone(&working_memory));
+        }
+        // MEMENTO FIX write-through: persist the volatile tier every 15s so a
+        // reboot (graceful or SIGKILL) loses at most one interval of thought.
+        // Atomic tmp+rename; spawn_blocking-free because the payload is tiny
+        // (≤ a few KB) and the interval is coarse — cadence-ladder compliant.
+        {
+            let wm = Arc::clone(&working_memory);
+            let persona_id = cfg.persona_id;
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tick.tick().await;
+                    save_volatile(persona_id, &wm);
+                }
+            });
         }
     }
     let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
@@ -293,8 +351,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // synchronous so it's never `None` on the first tick. Eval/harness keep
     // everything synchronous (`defer_grounding == false`) — their tight settle-loops
     // never yield to the worker, so deferral there would measure a starved mind.
+    // Per-source grounding ceiling scales with the LIVE served window (task #50's
+    // single-sourced `cfg.context_window`), exactly like recall's budget above —
+    // never a baked constant (task #124). A 128k model lets each source hold its
+    // full board/map/roster; a tight window shrinks them honestly; the packer keeps
+    // the total ≤ window.
+    let grounding_budget = super::rag_source_faculty::grounding_budget_for(cfg.context_window);
     for g in cfg.grounding_sources {
-        let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy);
+        let faculty =
+            RagSourceFaculty::new(cfg.persona_id, g.source, g.policy).with_budget(grounding_budget);
         match g.deferrability {
             Deferrability::DeferTolerant if cfg.defer_grounding => {
                 faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));
@@ -378,7 +443,12 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
 
     let cycle = WorkspaceCycle::new(
         faculties,
-        Arc::new(SalienceArbiter),
+        // Situation-aware focuser: on every act→observe re-perception (`PostAction`)
+        // it drops the standing SOCIAL re-grounding so the tool result + working
+        // memory + recall own the window — the persona goes lean and code-first while
+        // heads-down, and fuller-grounded on a fresh ask. This is the wire behind
+        // "straightforward for whatever their current state requires."
+        Arc::new(SituationFocusArbiter::new()),
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     )
     .with_genome(genome)
@@ -389,6 +459,11 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // to execute a `Decision::Act`, admit the result into `admission_for_body` (the
     // unified hippocampus), and re-perceive. Room-agnostic: one persona is in many
     // rooms at once, so `room_id` flows per-act, never baked in here.
+    // Bind the hippocampus to its owner so recall can gate the persona's OWN
+    // authored chat out of ambient semantic recall (#166) — her broadcasts are
+    // proprioception, not external knowledge. Set once here, at the live spawn,
+    // where both the id and the admission store are in hand.
+    admission_for_body.set_owner_id(persona_id);
     let cycle = match tool_executor {
         Some(executor) => cycle.with_acting(Arc::new(ActingBody {
             persona_id,
@@ -509,7 +584,7 @@ impl PersonaWorkspaceRegistry {
     /// (never spawned through `register_from_cfg`/`get_or_build`) — the caller
     /// fails loud rather than measuring her live mind. See
     /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
-    pub fn fork_eval_cycle(&self, persona_id: &Uuid) -> Option<WorkspaceCycle> {
+    pub fn fork_eval_cycle(&self, persona_id: &Uuid, with_tools: bool) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         // The eval fork runs recall + grounding SYNCHRONOUSLY: drive_to_settle's
@@ -517,6 +592,22 @@ impl PersonaWorkspaceRegistry {
         // measure a starved copy. Faithful eval = synchronous perception here.
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
+        // Match the tool surface to the exam's grading MODALITY. A spoken-graded task
+        // (`test`/`expect`, answer read from her mouth) needs NO hands — offering the
+        // discovery-pair tool surface only lets a native-tool-call model loop on
+        // `commands/help` and never SPEAK (Devstral 100%→0% through the loop; the
+        // system-lift isolator's finding). Grade her mouth → don't hand her hands to
+        // fumble; grade her hands (`solution_file`/`dod_shell`/`workspace_root`) → keep
+        // them. This is exam hygiene, the same family as the greedy/directed controls —
+        // [[adaptive-tool-surface-meets-you-in-the-middle]], [[eval-is-an-exam-not-a-life]].
+        if !with_tools {
+            cfg.tool_executor = None;
+            // Capability consistency: grounding that DESCRIBES her hands
+            // (workspace-map's tool paths + "drill in with code/list…") must not
+            // be delivered into a hands-stripped cycle — a perception surface
+            // never describes affordances that don't exist this cycle.
+            cfg.grounding_sources.retain(|g| !g.requires_hands);
+        }
         Some(build_workspace_cycle(cfg))
     }
 
@@ -543,6 +634,7 @@ impl PersonaWorkspaceRegistry {
         persona_id: &Uuid,
         adapter: Arc<dyn AIProviderAdapter>,
         context_window: u32,
+        with_tools: bool,
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
@@ -551,6 +643,15 @@ impl PersonaWorkspaceRegistry {
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
+        // Speak-only for spoken-graded exams (see `fork_eval_cycle` for why).
+        if !with_tools {
+            cfg.tool_executor = None;
+            // Capability consistency: grounding that DESCRIBES her hands
+            // (workspace-map's tool paths + "drill in with code/list…") must not
+            // be delivered into a hands-stripped cycle — a perception surface
+            // never describes affordances that don't exist this cycle.
+            cfg.grounding_sources.retain(|g| !g.requires_hands);
+        }
         Some(build_workspace_cycle(cfg))
     }
 
@@ -566,6 +667,32 @@ impl PersonaWorkspaceRegistry {
             .iter()
             .map(|(id, cycle)| (*id, cycle.acting().map(|b| b.persona_name.clone())))
             .collect()
+    }
+
+    /// The reflective handles for one persona's mind: its hippocampus + the
+    /// inference adapter it currently deliberates through. The seam the
+    /// `DreamConsolidationRegion`'s production `PersonaReflectionSource` reads —
+    /// admission from the retained fork-template (the SAME `Arc` the live
+    /// cycle's recall shares), adapter from the live cycle's model binding so a
+    /// re-home is tracked (falling back to the template's spawn adapter for a
+    /// pure-cognition cycle with no binding). Resolved per call, never cached —
+    /// no parallel persona→adapter map ([[rag-as-persistent-cache]]).
+    pub fn reflector_handles(
+        &self,
+        persona_id: &Uuid,
+    ) -> Option<(Arc<AdmissionState>, Arc<dyn AIProviderAdapter>, Option<String>)> {
+        // Lock order contract: `cycles` THEN `templates` (see struct docs).
+        // `get` takes + releases the cycles lock before we touch templates.
+        let cycle = self.get(persona_id)?;
+        let templates = self.templates.lock().unwrap();
+        let cfg = templates.get(persona_id)?;
+        // Adapter AND served-model id from the live binding: a request without
+        // the model id degenerated on the dream's first live pass (role-token
+        // runaway) while turns — which send it — were clean.
+        let (adapter, model) = cycle
+            .current_model_route()
+            .unwrap_or_else(|| (cfg.adapter.clone(), None));
+        Some((Arc::clone(&cfg.admission), adapter, model))
     }
 
     /// Re-home EVERY resident persona onto a newly served model — atomically swap
@@ -617,6 +744,71 @@ pub fn global() -> Arc<PersonaWorkspaceRegistry> {
     GLOBAL
         .get_or_init(|| Arc::new(PersonaWorkspaceRegistry::new()))
         .clone()
+}
+
+// ── MEMENTO FIX (#138): volatile-tier persistence across deploy reboots ──
+// "They wake up blank like Memento — an engineering failure; the flywheel
+// falls apart" (Joel 2026-07-12; nine reboots that day = nine blank wakes).
+// The persisted file is the SAME serialization grid-sync will ship — one
+// format, one seam ([[persona-mind-persists-across-shutdowns]]).
+
+/// On-disk shape: the working-memory snapshot plus the own-speech ring (the
+/// ring is process-global in `deliberation_budget`, so it dies with the
+/// process unless carried here — the repetition detectors were re-blinded by
+/// every reboot until this).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedVolatile {
+    wm: super::working_memory::VolatileSnapshot,
+    own_speech: Vec<String>,
+}
+
+fn volatile_path(persona_id: Uuid) -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".continuum/personas")
+        .join(persona_id.to_string())
+        .join("volatile.json")
+}
+
+/// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
+/// leaves a torn file (a torn mind-file failing to parse = silent blank wake,
+/// the exact failure this exists to kill). Errors log loud and drop: losing
+/// one interval of scratchpad is acceptable; blocking a tick is not.
+fn save_volatile(persona_id: Uuid, wm: &super::working_memory::WorkingMemory) {
+    let persisted = PersistedVolatile {
+        wm: wm.snapshot(),
+        own_speech: super::deliberation_budget::recent_own_speech(
+            crate::identity::PeerId::from_uuid(persona_id),
+        ),
+    };
+    let path = volatile_path(persona_id);
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&persisted)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::warn!(persona_id = %persona_id, error = %e, "volatile-tier save failed — one interval of scratchpad at risk");
+    }
+}
+
+/// Load the previous life's volatile tier, if any. Unreadable/corrupt files
+/// return None LOUDLY (a mind-file that fails to parse must never be silently
+/// ignored twice — the warn is the operator's cue to look).
+fn load_volatile(persona_id: Uuid) -> Option<PersistedVolatile> {
+    let path = volatile_path(persona_id);
+    let bytes = std::fs::read(&path).ok()?;
+    match serde_json::from_slice(&bytes) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!(persona_id = %persona_id, error = %e, path = %path.display(), "volatile-tier file unreadable — waking blank this once");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -943,6 +1135,88 @@ mod tests {
         // retrieved() (the other constructor) also defaults to the safe side.
         let retrieved = GroundingSource::retrieved(Arc::clone(&s));
         assert_eq!(retrieved.deferrability, Deferrability::ColdStartCritical);
+    }
+
+    // what this catches: capability consistency on the eval fork — grounding
+    // marked requires_hands (workspace-map: "drill in with code/list and
+    // code/tree") must be DROPPED from a tools-stripped fork and KEPT on a
+    // handed fork. Glass-boxed 2026-07-10: every captured spoken-exam prompt
+    // (484/484) carried the workspace-map telling her to use tools that were
+    // stripped for the exam — the RAG lying to her about her own affordances.
+    #[tokio::test]
+    async fn eval_fork_drops_hands_describing_grounding_when_tools_stripped() {
+        const HANDS_MARKER: &str = "drill in with code/list and code/tree";
+        let registry = PersonaWorkspaceRegistry::new();
+        let persona = Uuid::new_v4();
+        // SlowGrounding's fixed roster line stands in for capability-NEUTRAL
+        // grounding; the hands-describing source is its own tiny stub.
+        struct HandsMap;
+        #[async_trait::async_trait]
+        impl RagSource for HandsMap {
+            fn source_id(&self) -> &'static str {
+                "workspace-map"
+            }
+            async fn deliver(
+                &self,
+                _ctx: &crate::persona::rag_budget::RagContext,
+                _budget: u32,
+                resolution: crate::persona::rag_budget::ResolutionPreference,
+            ) -> crate::persona::rag_budget::RagDelivery {
+                crate::persona::rag_budget::RagDelivery {
+                    source_id: "workspace-map".to_string(),
+                    items: vec![crate::persona::rag_budget::RagItem {
+                        content: format!("workspace layout — {HANDS_MARKER}"),
+                        tokens: 12,
+                        metadata: serde_json::Value::Null,
+                    }],
+                    tokens_used: 12,
+                    continuation: None,
+                    resolution_used: resolution,
+                }
+            }
+            async fn deliver_continuation(
+                &self,
+                _ctx: &crate::persona::rag_budget::RagContext,
+                _cursor: crate::persona::rag_budget::ContinuationCursor,
+                _budget: u32,
+            ) -> Option<crate::persona::rag_budget::RagDelivery> {
+                None
+            }
+        }
+        let mut cfg = cfg_for(persona);
+        cfg.grounding_sources = vec![
+            GroundingSource::framing(Arc::new(HandsMap)).requires_hands(),
+            GroundingSource::framing(Arc::new(SlowGrounding { delay_ms: 0 })),
+        ];
+        registry.register_from_cfg(cfg);
+
+        // Spoken exam (no hands): the workspace-map must not reach her mind.
+        let spoken = registry
+            .fork_eval_cycle(&persona, false)
+            .expect("template retained");
+        let ws = spoken.run("proctor: reverse a string in Rust").await;
+        assert!(
+            !ws.perceived().contains(HANDS_MARKER),
+            "tool-stripped fork must NOT perceive hands-describing grounding:\n{}",
+            ws.perceived()
+        );
+        // Neutral grounding survives the filter — only hands-claims are dropped.
+        assert!(
+            ws.perceived().contains("roster:"),
+            "capability-neutral grounding must survive the hands filter:\n{}",
+            ws.perceived()
+        );
+
+        // Handed exam: the map is real guidance and must be delivered.
+        let handed = registry
+            .fork_eval_cycle(&persona, true)
+            .expect("template retained");
+        let ws = handed.run("proctor: reverse a string in Rust").await;
+        assert!(
+            ws.perceived().contains(HANDS_MARKER),
+            "handed fork must keep the workspace-map:\n{}",
+            ws.perceived()
+        );
     }
 
     /// A grounding RagSource whose deliver is deliberately slow — models the real

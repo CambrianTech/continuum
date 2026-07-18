@@ -390,6 +390,8 @@ pub(super) async fn run_adapter_inference(
         top_p: Some(request.sampling.top_p),
         top_k: Some(request.sampling.top_k),
         repeat_penalty: Some(request.sampling.repeat_penalty),
+        frequency_penalty: Some(request.sampling.frequency_penalty),
+        repeat_last_n: Some(request.sampling.repeat_last_n),
         stop_sequences: if request.stop_sequences.is_empty() {
             None
         } else {

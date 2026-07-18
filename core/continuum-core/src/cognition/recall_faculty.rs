@@ -44,7 +44,7 @@ use super::embedding::{cosine_similarity, EmbeddingProvider};
 use super::working_memory::WorkingMemory;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;
-use crate::persona::engram::Engram;
+use crate::persona::engram::{Engram, EngramOrigin};
 
 /// Hard safety ceiling on memories surfaced per tick, regardless of model size —
 /// the [`RecallBudget`] picks the ACTUAL count (smaller) within this. `with_limit`
@@ -52,16 +52,15 @@ use crate::persona::engram::Engram;
 /// limiter on a live persona.
 const DEFAULT_RECALL_LIMIT: usize = 16;
 
-/// Minimum cosine relevance (vs the focused query) for a memory to be surfaced at
-/// all. The closest-match gate the recall budget enforces: a memory the
-/// hippocampus holds at high SALIENCE but that is topically UNRELATED to what's
-/// happening now (cosine ≈ 0) is junk in the prompt — it spends the small model's
-/// attention on noise. Gates on the relevance COMPONENT, never the blended score:
-/// a salience-1.0 nag blends to `0.5·0 + 0.5·1.0 = 0.5` and would sail over any
-/// blended floor, yet its cosine is ~0 and it must be dropped. Only meaningful
-/// when an embedder is present (lexical or neural); the no-embedder path has no
-/// relevance signal and is never floor-filtered. Tunable; the replay A/B bench can
-/// sweep it alongside [`DEFAULT_RELEVANCE_WEIGHT`].
+/// Fallback absolute cosine floor handed to the default [`SignificanceRanker`]
+/// for an UNCALIBRATED embedding space only. An absolute floor can never be the
+/// primary gate: it is calibrated against one embedder's similarity distribution
+/// and silently breaks under another's — glass-boxed live 2026-07-10: under the
+/// neural Qwen3-Embedding (measured unrelated-null μ=0.304), this 0.15 floor sat
+/// 1.8σ BELOW what unrelated texts score, filtered NOTHING, and
+/// saturated-salience room chatter surfaced identically on 11/11 different
+/// coding-exam tasks. The primary gate lives in the [`RecallRanker`] adapter
+/// (significance vs the MEASURED null).
 const RECALL_RELEVANCE_FLOOR: f32 = 0.15;
 
 /// Fraction of the served context window recall may spend, in tokens. Recall is
@@ -94,7 +93,6 @@ fn recall_count_for_window(context_window: u32) -> usize {
 /// [`RECALL_RELEVANCE_FLOOR`], [`RECALL_WINDOW_FRACTION`].
 struct RecallBudget {
     max_count: usize,
-    relevance_floor: f32,
     token_ceiling: usize,
 }
 
@@ -107,7 +105,6 @@ impl RecallBudget {
         };
         Self {
             max_count: recall_count_for_window(context_window),
-            relevance_floor: RECALL_RELEVANCE_FLOOR,
             token_ceiling,
         }
     }
@@ -117,9 +114,10 @@ impl RecallBudget {
 /// memory or two — below this, recall would be silently empty.
 const MIN_RECALL_TOKENS: usize = 256;
 
-/// Cheap token estimate for one surfaced memory: the body plus the
-/// `- … (salience X.XX)\n` framing, at the ~4-chars-per-token rule of thumb. Used
-/// only to keep recall within its window budget — an estimate, not a tokenizer.
+/// Cheap token estimate for one surfaced memory: the body plus the `- …\n` list
+/// framing (padded generously — the score annotation it once covered is no longer
+/// model-visible), at the ~4-chars-per-token rule of thumb. Used only to keep
+/// recall within its window budget — an estimate, not a tokenizer.
 fn estimate_recall_tokens(content: &str) -> usize {
     (content.chars().count() + 24) / 4 + 1
 }
@@ -136,18 +134,6 @@ const RERANK_CANDIDATE_MULTIPLIER: usize = 4;
 /// relevance) and DIFF the resulting traces — tuning by evidence, not guessing.
 pub const DEFAULT_RELEVANCE_WEIGHT: f32 = 0.5;
 
-/// Blend a precomputed cosine-relevance with the memory's salience-decay score
-/// at relevance `weight` (0.0 = pure salience, 1.0 = pure relevance).
-///
-/// `rel` is precomputed because embedding is now async — recall awaits the
-/// embeds in a loop, then blends; you can't `.await` inside a sort comparator.
-/// `weight` is the per-faculty configurable relevance weight
-/// ([`RecallFaculty::with_relevance_weight`]), so the replay A/B bench can sweep
-/// it.
-fn blend(salience: f32, rel: f32, weight: f32) -> f32 {
-    weight * rel + (1.0 - weight) * salience
-}
-
 /// The query recall conditions on — the CURRENT stimulus, not the whole burst.
 /// Live, `world_state` is the full room transcript; embedding ALL of it dilutes
 /// relevance with unrelated chatter, so a salient memory matching the NOISE beats
@@ -156,11 +142,22 @@ fn blend(salience: f32, rel: f32, weight: f32) -> f32 {
 /// last non-empty, non-room-header line, with a `[t=...]` timestamp prefix stripped.
 /// A single-line `world_state` (a tidy query) returns unchanged — backward compatible.
 /// Structural extraction (most-recent line), not content interpretation.
+///
+/// Annotation lines are never the stimulus: the burst carries bracket-tagged
+/// STRUCTURAL annotations (`[room …]` headers, the `[pattern]` repetition
+/// brick) alongside `[t=…]`-stamped messages. Glass-boxed 2026-07-10: a
+/// directed gateway question arrived with the `[pattern]` brick appended
+/// after it, the brick became the recall query, and recall surfaced
+/// spiral/work memories instead of the asked-about fact (the live-room
+/// query-dilution failure; the controlled eval passed because its burst was
+/// only the question). The rule is bracket-tag GRAMMAR — a line starting
+/// with `[` is an annotation unless it is a `[t=…]` message stamp — never
+/// content inspection.
 fn focused_query(world_state: &str) -> &str {
     let line = world_state
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("[room "))
+        .filter(|l| !l.is_empty() && (!l.starts_with('[') || l.starts_with("[t=")))
         .last()
         .unwrap_or(world_state.trim());
     if let Some(rest) = line.strip_prefix("[t=") {
@@ -209,6 +206,12 @@ pub struct RecallFaculty {
     /// (harness) → the historical default count, no token gate. Threaded from
     /// [`PersonaBrainConfig::context_window`] via `with_context_window`.
     context_window: u32,
+    /// The ranking ADAPTER (see [`crate::cognition::recall_ranker`]): which
+    /// candidates surface and in what order. `None` → a default
+    /// [`SignificanceRanker`] built per tick from `relevance_weight` (impl A,
+    /// statistical). A trained ranker (impl B) is injected via
+    /// [`with_ranker`](Self::with_ranker) and A/B'd on the replay bench.
+    ranker: Option<Arc<dyn crate::cognition::recall_ranker::RecallRanker>>,
     /// The recency channel (working memory), when shared in. Recall is the SEMANTIC
     /// channel for the broader past; the recency channel owns what the persona's
     /// hands JUST did ([[act-results-need-a-recency-channel-not-semantic-recall]]).
@@ -220,6 +223,13 @@ pub struct RecallFaculty {
     /// recency→semantic handoff, never both at once. `None` → no dedup (harness /
     /// backward-compatible).
     working_memory: Option<Arc<WorkingMemory>>,
+    /// The focus→thresholds junction (docs/cognition/FOCUS-AS-ATTENTION-
+    /// TEMPERATURE.md). Default = [`CalibratedConstants`] — a behavioral no-op
+    /// until something moves the dial (recipe defaults, `focus/nudge`, or a
+    /// learned policy — same seam for all three). The SCALAR it consumes is
+    /// read per tick from the persona focus kernel
+    /// ([`crate::persona::focus::registry`]) — one home for focus state.
+    focus_policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
 }
 
 impl RecallFaculty {
@@ -233,8 +243,33 @@ impl RecallFaculty {
             embedder: None,
             relevance_weight: DEFAULT_RELEVANCE_WEIGHT,
             context_window: 0,
+            ranker: None,
             working_memory: None,
+            focus_policy: Arc::new(crate::cognition::focus_policy::CalibratedConstants),
         }
+    }
+
+    /// Inject a focus policy (formula or learned). The junction where "focus
+    /// cleans up the RAG": at a high kernel scalar the recall significance bar
+    /// rises so only exceptional memories intrude.
+    pub fn with_focus_policy(
+        mut self,
+        policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
+    ) -> Self {
+        self.focus_policy = policy;
+        self
+    }
+
+    /// Inject a ranking adapter (a trained reranker, or a tuned statistical one).
+    /// Default (`None`) = [`SignificanceRanker`] at this faculty's
+    /// `relevance_weight` — implementation A, the permanent null model any
+    /// learned ranker must beat on the replay bench before shipping.
+    pub fn with_ranker(
+        mut self,
+        ranker: Arc<dyn crate::cognition::recall_ranker::RecallRanker>,
+    ) -> Self {
+        self.ranker = Some(ranker);
+        self
     }
 
     /// Override the hard safety ceiling on memories surfaced per tick. The
@@ -310,6 +345,34 @@ fn strip_action_stamp(entry: &str) -> &str {
         .trim()
 }
 
+/// #166 near-duplicate collapse: are two surfaced memories "the same thing restated"?
+/// After collapsing whitespace + lowercasing, they are if one is a prefix of the other
+/// OR they share an identical head of [`NEAR_DUP_HEAD_CHARS`]. This is what keeps three
+/// near-identical own turns ("I ran `code/tree` to explore the workspace…" with
+/// different tails) from taking every recall slot with one restated thought. Deliberately
+/// conservative — genuinely distinct memories almost never share a 48-char identical head
+/// — so a distinct memory is never collapsed. Char-boundary safe (operates on chars,
+/// not bytes).
+const NEAR_DUP_HEAD_CHARS: usize = 48;
+
+fn recall_near_duplicate(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    }
+    let (na, nb) = (norm(a), norm(b));
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    if na.starts_with(&nb) || nb.starts_with(&na) {
+        return true;
+    }
+    let head = |s: &str| s.chars().take(NEAR_DUP_HEAD_CHARS).collect::<String>();
+    let (ha, hb) = (head(&na), head(&nb));
+    ha.chars().count() >= NEAR_DUP_HEAD_CHARS
+        && hb.chars().count() >= NEAR_DUP_HEAD_CHARS
+        && ha == hb
+}
+
 /// Minimum stripped-body length for a working-memory entry to gate recall dedup. A
 /// trivially-short trace (e.g. an empty or one-token action) is too generic to safely
 /// prefix-match a distinct engram, so it never suppresses recall — only a substantive
@@ -358,25 +421,79 @@ impl Faculty for RecallFaculty {
         // Without an embedder there is no relevance signal: blended_score IS
         // salience (candidates already in that order) and relevance is 1.0 so the
         // floor never fires (pure salience×recency, backward-compatible).
-        let scored: Vec<(f32, Engram, f32, f32)> = match &self.embedder {
+        // The 4th element is `passes_gate`: did this candidate clear the relevance
+        // gate? The DECISION lives behind the [`RecallRanker`] adapter seam —
+        // implementation A ([`SignificanceRanker`]) gates by significance vs the
+        // space's MEASURED unrelated-null and blends for ordering; a trained
+        // ranker (learned head over the same features, rustc-graded labels) slots
+        // in via [`with_ranker`](Self::with_ranker) and is A/B'd on the replay
+        // bench against A before shipping. No embedder → no relevance signal →
+        // everything passes (pure salience×recency, unchanged).
+        let null = self
+            .embedder
+            .as_ref()
+            .and_then(|e| e.unrelated_null());
+        let scored: Vec<(f32, Engram, f32, bool, f32)> = match &self.embedder {
             Some(embedder) => {
                 // Embed the query AND every candidate CONCURRENTLY. Each embed is an
                 // independent IO future on the neural/grid backend; awaiting them in
                 // a serial loop stalled the whole tick on N sequential round-trips —
                 // a starved-FIFO blocker that grew with the over-fetch multiplier.
                 // `join` races the query against the candidate batch as one organic
-                // unit; the cache still collapses repeats to a sync hit. Then blend
-                // at the per-faculty configurable relevance weight (#1656) and sort
-                // (can't .await inside a sort comparator, so relevance is precomputed).
+                // unit; the cache still collapses repeats to a sync hit.
                 let query_fut = embedder.embed(focused_query(&ws.world_state));
                 let cand_futs = join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
                 let (query, cand_embeds) = join(query_fut, cand_futs).await;
-                let mut s: Vec<(f32, Engram, f32, f32)> = candidates
+                // Rank + gate through the adapter (content never crosses the seam —
+                // embeddings and usage signals only, so no ranker CAN regress to
+                // string matching).
+                let ranker_cands: Vec<crate::cognition::recall_ranker::RecallCandidate<'_>> =
+                    cand_embeds
+                        .iter()
+                        .zip(candidates.iter())
+                        .map(|(emb, (_, salience))| {
+                            crate::cognition::recall_ranker::RecallCandidate {
+                                embedding: emb.as_slice(),
+                                salience: *salience,
+                            }
+                        })
+                        .collect();
+                let ranker: Arc<dyn crate::cognition::recall_ranker::RecallRanker> =
+                    self.ranker.clone().unwrap_or_else(|| {
+                        // The significance bar comes from the focus junction:
+                        // σ(focus), anchored so NEUTRAL == the conventional 3σ.
+                        let mut r = crate::cognition::recall_ranker::SignificanceRanker::new(
+                            self.relevance_weight,
+                            RECALL_RELEVANCE_FLOOR,
+                        );
+                        // The scalar comes from HER focus kernel, per tick —
+                        // peek only (a persona who never touched focus reads
+                        // the resting setpoint; no state is created for her).
+                        let scalar = crate::persona::focus::registry()
+                            .get(&self.persona_id)
+                            .map(|h| {
+                                h.lock()
+                                    .expect("focus state mutex poisoned by a prior panic")
+                                    .focus()
+                            })
+                            .unwrap_or(crate::persona::focus::RESTING_FOCUS);
+                        r.sigma = self.focus_policy.recall_sigma(scalar);
+                        Arc::new(r)
+                    });
+                let verdicts = ranker
+                    .rank(
+                        &query,
+                        &ranker_cands,
+                        crate::cognition::recall_ranker::SpaceCalibration {
+                            unrelated_null: null,
+                        },
+                    )
+                    .await;
+                let mut s: Vec<(f32, Engram, f32, bool, f32)> = candidates
                     .into_iter()
-                    .zip(cand_embeds)
-                    .map(|((engram, salience), emb)| {
-                        let rel = cosine_similarity(&query, &emb);
-                        (blend(salience, rel, self.relevance_weight), engram, salience, rel)
+                    .zip(verdicts)
+                    .map(|((engram, salience), v)| {
+                        (v.score, engram, salience, v.passes, v.attention_bid)
                     })
                     .collect();
                 s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -384,34 +501,37 @@ impl Faculty for RecallFaculty {
             }
             None => candidates
                 .into_iter()
-                .map(|(engram, salience)| (salience, engram, salience, 1.0))
+                .map(|(engram, salience)| (salience, engram, salience, true, salience))
                 .collect(),
         };
 
-        // Apply the budget: closest-match floor (drop topically-irrelevant junk),
-        // capability-scaled count, and a context-window token ceiling. Ordered by
-        // blended score, so we take the most relevant+salient first; the floor uses
-        // `continue` (not `break`) because a low-relevance high-salience nag can
-        // rank above a genuinely relevant memory under the blend, and we want to
-        // skip the nag and keep scanning for the relevant one.
-        //
-        // The floor belongs to the relevance machinery: it gates only when
-        // relevance actually has a voice (`relevance_weight > 0`). At weight 0.0
-        // (pure salience×recency — the A/B-sweep extreme and the no-embedder path,
-        // where `rel` is 1.0) there is no relevance gate, preserving that mode.
-        let relevance_floor = if self.relevance_weight > 0.0 {
-            budget.relevance_floor
-        } else {
-            f32::NEG_INFINITY
-        };
-        let mut surfaced: Vec<(f32, Engram, f32)> = Vec::with_capacity(surface_count);
+        // Apply the budget: the relevance gate (standout / small-pool floor,
+        // computed above), capability-scaled count, and a context-window token
+        // ceiling. Ordered by blended score, so we take the most relevant+salient
+        // first; the gate uses `continue` (not `break`) because a low-relevance
+        // high-salience nag can rank above a genuinely relevant memory under the
+        // blend, and we want to skip the nag and keep scanning for the relevant one.
+        let mut surfaced: Vec<(f32, Engram, f32, f32)> = Vec::with_capacity(surface_count);
         let mut used_tokens = 0usize;
-        for (blended, engram, salience, rel) in scored.into_iter() {
+        for (blended, engram, salience, passes_gate, attention_bid) in scored.into_iter() {
             if surfaced.len() >= surface_count {
                 break;
             }
-            if rel < relevance_floor {
-                continue; // topically irrelevant — junk in the prompt
+            if !passes_gate {
+                continue; // does not stand out from the pool — junk in the prompt
+            }
+            // #166: skip a memory that merely RESTATES one already surfaced this tick.
+            // The persona's own near-identical recent turns (e.g. three "I ran
+            // `code/tree` to explore the workspace…" with different tails) otherwise
+            // take every recall slot with one restated thought, drowning distinct
+            // knowledge — and recall-hit uplift then entrenches the restatement. Keep
+            // the highest-blend copy (we scan best-first) and `continue` scanning for a
+            // genuinely different memory, mirroring the `passes_gate` skip above.
+            if surfaced
+                .iter()
+                .any(|(_, e, _, _)| recall_near_duplicate(&e.content, &engram.content))
+            {
+                continue;
             }
             let est = estimate_recall_tokens(&engram.content);
             // Always admit the first qualifying memory (don't starve recall on a
@@ -420,7 +540,7 @@ impl Faculty for RecallFaculty {
                 break;
             }
             used_tokens += est;
-            surfaced.push((blended, engram, salience));
+            surfaced.push((blended, engram, salience, attention_bid));
         }
 
         // Recency→semantic handoff: drop any surfaced engram the recency channel
@@ -443,7 +563,7 @@ impl Faculty for RecallFaculty {
                 .filter(|b| b.len() >= WM_DEDUP_MIN_BODY_CHARS)
                 .collect();
             if !wm_bodies.is_empty() {
-                surfaced.retain(|(_, engram, _)| {
+                surfaced.retain(|(_, engram, _, _)| {
                     !wm_bodies.iter().any(|b| engram.content.starts_with(b))
                 });
             }
@@ -459,8 +579,34 @@ impl Faculty for RecallFaculty {
 
         // Close the loop on what we ACTUALLY surface — Hebbian rehearsal on the
         // memories the persona truly used this tick (uplift + persistence).
-        let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _)| e.id).collect();
+        let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _, _)| e.id).collect();
         self.admission_state.record_recall_hits(&surfaced_ids, now);
+
+        // RTOS probe at the hippocampus seam: WHAT query conditioned recall and
+        // WHAT won, with the scores the model never sees. This is how a
+        // wrong-memory-surfaced bug is diagnosed from the log (glass-boxed live
+        // 2026-07-10: 11 different coding exam tasks each recalled the identical
+        // stale room imperative — without this probe the ranking was a black box).
+        tracing::info!(
+            probe_class = "recall.surface",
+            persona_id = %self.persona_id,
+            query = %focused_query(&ws.world_state).chars().take(90).collect::<String>(),
+            embedder = self.embedder.is_some(),
+            relevance_weight = self.relevance_weight,
+            null_mean = null.map(|(m, _)| m).unwrap_or(f32::NAN),
+            null_std = null.map(|(_, s)| s).unwrap_or(f32::NAN),
+            surfaced = %scored
+                .iter()
+                .map(|(blended, e, sal, _)| format!(
+                    "[blend={blended:.3} sal={sal:.3} | {}]",
+                    e.content.chars().take(60).collect::<String>().replace('\n', " ")
+                ))
+                .collect::<Vec<_>>()
+                .join(" "),
+            "recall surfaced {} memor{}",
+            scored.len(),
+            if scored.len() == 1 { "y" } else { "ies" }
+        );
 
         // The faculty's bid salience: max(blended score, intrinsic_salience). The
         // `.max` removes the regression where a lexically-thin burst (cosine ≈ 0)
@@ -468,14 +614,52 @@ impl Faculty for RecallFaculty {
         // in the arbiter — recall now never bids BELOW the surfaced memory's own
         // salience, and a highly-relevant hit can bid ABOVE it. (`f32::max` also
         // returns the finite operand if the other is NaN — defensive.)
-        let top_salience = scored[0].0.max(scored[0].2).clamp(0.0, 1.0);
-        let content = scored
+        // The faculty's workspace bid: attention honors EVIDENCE. The ranker maps
+        // each surfaced memory's significance to a bid (Φ(z) for the statistical
+        // ranker — the probability the similarity is not noise); the block bids at
+        // the STRONGEST surfaced evidence, so a 5.5σ memory holds its seat against
+        // the 0.9 standing-framing floor instead of being evicted from the prompt
+        // (the utilization failure this fixes: she answered "I don't know" about a
+        // fact her hippocampus HAD surfaced — glass-boxed live 2026-07-10, #130).
+        // Floored by the historical max(blend, salience) so the no-embedder and
+        // uncalibrated paths keep their exact prior bids.
+        let top_salience = scored
             .iter()
-            .map(|(_, engram, salience)| {
-                format!("- {} (salience {:.2})", engram.content, salience)
-            })
+            .map(|(_, _, _, bid)| *bid)
+            .fold(scored[0].0.max(scored[0].2), f32::max)
+            .clamp(0.0, 1.0);
+        // The memory line the MODEL sees carries no internal score — glass-boxed
+        // live 2026-07-09: Anwen broadcast "...productive sessions together!
+        // (salience 0.99)", parroting the annotation straight from her prompt.
+        // Scores stay in probes/captures/introspection (where the debugger reads
+        // them), never in the model-visible rendering ([[px-persona-experience-tools-as-good-ux]]).
+        //
+        // But PROVENANCE is not a score — it is what makes a memory READ as a
+        // memory. Glass-boxed live 2026-07-10 (silver-harbor): the block rendered
+        // as bare unattributed quotes, three of five being the QUESTION itself,
+        // so the natural completion of the pattern "this question keeps being
+        // asked with no answer visible" was "I don't know" — about a fact sitting
+        // two lines below, in the same block. The engram KNOWS who spoke and
+        // when ([`EngramOrigin`]); dropping that at render time was the positron
+        // failure (right data, hostile projection — Joel: "positron in coding
+        // view ought to be more accommodating and ergonomic or we have failed").
+        // Structural attribution only: origin variant + speaker identity + age —
+        // never content inspection ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        let now_ms = (self.clock)();
+        let lines = scored
+            .iter()
+            .map(|(_, engram, _, _)| render_memory_line(engram, self.persona_id, now_ms))
             .collect::<Vec<_>>()
             .join("\n");
+        // Label the section AS memory, inline, so a transcript-trained model reads the
+        // lines below as RECOLLECTION — "I remember/recall that …" — not as statements
+        // about the present. Glass-boxed 2026-07-14 (Joel, "in prose/rag form engrams
+        // are more like 'I remember/recall that:'"): Atlas recalled a stale "you keep
+        // failing to claim" and a 42m-old "already claimed by another peer" AS current
+        // truth, contradicting his fresh successful claim, and looped. The provenance
+        // prefix per line already marks WHO/WHEN; this frames the whole block so the
+        // pastness is unmissable. Not a directive about what to do — just what this IS.
+        let content = format!("{RECALL_MEMORY_FRAME}\n{lines}");
         let reasoning = format!(
             "recalled {} memor{} ({}) — salience-uplifted, loop closed",
             scored.len(),
@@ -496,9 +680,191 @@ impl Faculty for RecallFaculty {
     }
 }
 
+/// Inline label for the recall section: frames the lines below AS memory, so a
+/// transcript-trained model reads them as "I remember/recall that …" rather than as
+/// statements about the present moment (Joel, 2026-07-14). Non-directive — it says
+/// what the block IS, not what to do; each line still carries its own who/when prefix.
+const RECALL_MEMORY_FRAME: &str =
+    "(These are my own MEMORIES — things I recall from earlier, tagged with who they \
+     came from and how long ago. They describe the PAST, not necessarily the present.)";
+
+/// Structural provenance for a rendered memory line: WHO the memory came from
+/// (relative to `persona_id`) and HOW LONG AGO it was admitted — read from
+/// [`EngramOrigin`] + `admitted_at_ms`, never from the content. This is the
+/// positron move at the recall seam: the store already knows the provenance;
+/// the projection must carry it or a fact and a bystander's question render
+/// identically (the silver-harbor IDK — see the call site).
+fn provenance_prefix(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
+    let age = humanize_age(now_ms.saturating_sub(engram.admitted_at_ms));
+    let who = match &engram.origin {
+        EngramOrigin::Chat(r) => {
+            if r.sender_id == persona_id {
+                "you said"
+            } else {
+                "heard"
+            }
+        }
+        EngramOrigin::Airc(r) => {
+            if r.sender_id == persona_id.to_string() {
+                "you said"
+            } else {
+                "heard"
+            }
+        }
+        EngramOrigin::Tool(_) => "you did",
+        EngramOrigin::SelfReflection { .. } => "you reflected",
+    };
+    format!("({who}, {age}) ")
+}
+
+/// One rendered memory line: provenance prefix + content, with PEER-HEARD speech
+/// additionally wrapped in quotation marks. The quotes are typography, not
+/// content editing — recalled speech IS a quotation, and rendering it bare
+/// invites replaying it as one's own words. Verified live 2026-07-11 (#134
+/// specimen 2): a persona's recall showed `- (heard, 2h ago) I see that I've
+/// been repeating myself…` with honest provenance, and she still broadcast the
+/// peer's first-person message verbatim as her own. Quote marks are the
+/// strongest structural signal a transcript-trained model has that words belong
+/// to someone else.
+fn render_memory_line(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
+    let prefix = provenance_prefix(engram, persona_id, now_ms);
+    let heard = matches!(
+        &engram.origin,
+        EngramOrigin::Chat(r) if r.sender_id != persona_id
+    ) || matches!(
+        &engram.origin,
+        EngramOrigin::Airc(r) if r.sender_id != persona_id.to_string()
+    );
+    if heard {
+        format!("- {prefix}\u{201c}{}\u{201d}", engram.content)
+    } else {
+        format!("- {prefix}{}", engram.content)
+    }
+}
+
+/// Coarse human age buckets — a memory's rough distance in time, not a
+/// timestamp. Coarseness is deliberate: "2h ago" orients; "7,243,118ms"
+/// is noise the model would parrot.
+fn humanize_age(delta_ms: u64) -> String {
+    const MIN: u64 = 60_000;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    match delta_ms {
+        d if d < 2 * MIN => "moments ago".to_string(),
+        d if d < 2 * HOUR => format!("{}m ago", d / MIN),
+        d if d < 2 * DAY => format!("{}h ago", d / HOUR),
+        d => format!("{}d ago", d / DAY),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#166): the persona's own near-identical recent turns must
+    // collapse to ONE recall slot, not take three — three "I ran `code/tree` to
+    // explore the workspace…" with different tails otherwise drown distinct knowledge,
+    // and recall-hit uplift then entrenches the restatement. Distinct memories, and
+    // ones that merely share a short lead, are NEVER collapsed.
+    #[test]
+    fn near_identical_own_turns_collapse_but_distinct_memories_survive() {
+        let a = "I ran `code/tree` to explore the workspace structure, and I see a Rust project";
+        let b = "I ran `code/tree`  to explore the workspace structure, and I found several dirs"; // same 48-char head, different tail + whitespace
+        let c = "The deploy pipeline went green after the 4pm fix to the auth handler";
+        // Same restated thought → near-duplicate.
+        assert!(recall_near_duplicate(a, b));
+        // Prefix relationship → near-duplicate.
+        assert!(recall_near_duplicate("I ran code/tree to explore", "I ran code/tree to explore the whole tree"));
+        // Genuinely different memory → NOT collapsed.
+        assert!(!recall_near_duplicate(a, c));
+        // Short shared lead only (< head window, no prefix) → NOT collapsed.
+        assert!(!recall_near_duplicate("the cat sat on the mat", "the cat ran up the wall today"));
+        // Empty never collapses.
+        assert!(!recall_near_duplicate("", a));
+    }
+
+    // what this catches: bracket-tagged perception annotations ([pattern], [room …])
+    // are never the recall query — the query is the newest MESSAGE. Regression for
+    // the 2026-07-10 live query-dilution: the [pattern] brick, appended after a
+    // directed question, became the query and recall surfaced spiral memories
+    // instead of the asked-about fact. [t=…]-stamped messages still qualify.
+    #[test]
+    fn focused_query_skips_annotation_lines() {
+        let burst = "[room general]\n\
+                     [t=100] Claude: what port does silver-harbor point to?\n\
+                     [pattern] Anwen's last 9 messages repeat the same sentiment.";
+        assert_eq!(
+            focused_query(burst),
+            "Claude: what port does silver-harbor point to?"
+        );
+        // A trailing plain message still wins over everything.
+        let burst2 = "[room general]\nAsha: hello\nClaude: the real question";
+        assert_eq!(focused_query(burst2), "Claude: the real question");
+        // All-annotation burst degrades to the trimmed whole (never panics).
+        assert_eq!(focused_query("[room general]"), "[room general]");
+    }
+
+    // what this catches: the rendered [recall] line carries STRUCTURAL provenance
+    // (who + age from EngramOrigin, never content inspection). Regression for the
+    // silver-harbor IDK (2026-07-10): bare unattributed quotes made a taught fact
+    // and a bystander's question render identically, and the model completed the
+    // "question repeated, no answer visible" pattern with "I don't know" — about
+    // a fact two lines below in the same block.
+    #[test]
+    fn provenance_prefix_attributes_who_and_age_structurally() {
+        let me = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let now: u64 = 10 * 24 * 60 * 60 * 1000;
+        let engram_from = |sender: Uuid, age_ms: u64| Engram {
+            context_id: None,
+            id: Uuid::new_v4(),
+            kind: EngramKind::Episodic,
+            content: "staging gateway is on port 58057".to_string(),
+            origin: EngramOrigin::Chat(ChatMessageRef {
+                message_id: Uuid::new_v4(),
+                room_id: Uuid::new_v4(),
+                sender_id: sender,
+                posted_at_ms: now - age_ms,
+                content_hash: "h".to_string(),
+            }),
+            recall_keys: Vec::new(),
+            admitted_at_ms: now - age_ms,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        };
+        // A peer's words render as heard; her own as said — and the age buckets
+        // stay coarse and human, never raw milliseconds for the model to parrot.
+        assert_eq!(
+            provenance_prefix(&engram_from(peer, 3 * 60 * 60 * 1000), me, now),
+            "(heard, 3h ago) "
+        );
+        assert_eq!(
+            provenance_prefix(&engram_from(me, 5 * 60 * 1000), me, now),
+            "(you said, 5m ago) "
+        );
+        assert_eq!(
+            provenance_prefix(&engram_from(peer, 30_000), me, now),
+            "(heard, moments ago) "
+        );
+        assert_eq!(
+            provenance_prefix(&engram_from(peer, 3 * 24 * 60 * 60 * 1000), me, now),
+            "(heard, 3d ago) "
+        );
+
+        // PEER-HEARD speech renders QUOTED — recalled speech is a quotation
+        // (#134 specimen 2: honest provenance alone didn't stop a persona
+        // broadcasting a peer's first-person recalled message as her own; quote
+        // marks are the strongest structural not-your-words signal). Her OWN
+        // words render bare — quoting yourself invites parroting yourself.
+        assert_eq!(
+            render_memory_line(&engram_from(peer, 3 * 60 * 60 * 1000), me, now),
+            "- (heard, 3h ago) \u{201c}staging gateway is on port 58057\u{201d}"
+        );
+        assert_eq!(
+            render_memory_line(&engram_from(me, 5 * 60 * 1000), me, now),
+            "- (you said, 5m ago) staging gateway is on port 58057"
+        );
+    }
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
     use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
 
@@ -935,8 +1301,14 @@ mod tests {
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
             match ws.broadcast.iter().find(|c| c.faculty == FacultyId::Recall) {
                 Some(mem) => {
-                    // Reference the most relevant recalled line.
-                    let first_line = mem.content.lines().next().unwrap_or("").to_string();
+                    // Reference the most relevant recalled MEMORY line (each starts with
+                    // "- "), skipping the section's memory-frame header.
+                    let first_line = mem
+                        .content
+                        .lines()
+                        .find(|l| l.trim_start().starts_with("- "))
+                        .unwrap_or("")
+                        .to_string();
                     Some(Contribution::verdict(
                         Decision::Speak {
                             text: format!("Picking up the thread — I recall: {first_line}"),
@@ -1241,7 +1613,8 @@ mod tests {
             .await
             .expect("relevant memories should surface");
         assert_eq!(
-            c.content.lines().count(),
+            // Count MEMORY lines (each starts with "- "), not the section frame header.
+            c.content.lines().filter(|l| l.trim_start().starts_with("- ")).count(),
             3,
             "a 4096-token window caps recall at 3 memories; got:\n{}",
             c.content
@@ -1301,7 +1674,7 @@ mod tests {
         // The recency channel carries the SAME act (its head, stamped), exactly as
         // apply_act records it after executing the Decision::Act.
         let wm = Arc::new(WorkingMemory::new(3));
-        wm.record_action(own_act);
+        wm.record_receipt(own_act);
 
         // No embedder → pure salience×recency, relevance floor disabled → both would
         // surface if not for the working-memory dedup. Large window so count is not the
@@ -1376,6 +1749,120 @@ mod tests {
             c.content.contains("code/run(source=fn is_prime)"),
             "without a working-memory channel, recall must keep the act; got:\n{}",
             c.content
+        );
+    }
+
+    /// Test-only anisotropic embedding space: unrelated pairs baseline at a
+    /// NONZERO cosine (like the neural Qwen3 space, measured ≈0.25–0.3), with a
+    /// calibrated null. `embed` keys canned contents to fixed 2-d unit vectors —
+    /// a geometry fixture, not matching logic.
+    struct AnisotropicStub;
+
+    #[async_trait]
+    impl crate::cognition::embedding::EmbeddingProvider for AnisotropicStub {
+        fn id(&self) -> &str {
+            "test-anisotropic"
+        }
+        fn dim(&self) -> usize {
+            2
+        }
+        async fn embed(&self, text: &str) -> Vec<f32> {
+            if text.contains("BLUEHERON") {
+                vec![0.8, 0.6] // cos vs query = 0.8 → z = (0.8−0.27)/0.04 ≈ 13 — significant
+            } else if text.contains("deploy codename") {
+                vec![1.0, 0.0] // the query
+            } else {
+                vec![0.28, 0.96] // cos vs query = 0.28 ≈ the null — NOT significant
+            }
+        }
+        fn unrelated_null(&self) -> Option<(f32, f32)> {
+            Some((0.27, 0.04)) // the measured anisotropy of this space
+        }
+    }
+
+    // what this catches: the live 2026-07-10 hippocampus bug — under an
+    // ANISOTROPIC space (unrelated baseline ≈0.27, NOT 0) the old absolute floor
+    // (0.15 < baseline) filtered nothing, so a salience-saturated room nag
+    // surfaced identically on 11/11 unrelated coding tasks. The calibrated
+    // SIGNIFICANCE gate must (a) DROP null-scoring junk even at salience 0.99,
+    // (b) SURFACE a true match (several σ above the null) despite lower salience,
+    // and (c) surface NOTHING when no memory rejects the null — never pad the
+    // prompt with the least-irrelevant memory.
+    #[tokio::test]
+    async fn significance_gate_beats_saturated_salience_under_anisotropic_space() {
+        let now = 1_000_000_000u64;
+        let query = "what was the deploy codename again?";
+        let seed = |with_match: bool| {
+            let recall_meta = Arc::new(RecallMetadataRegistry::new());
+            let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+            let mut mk = |content: &str, salience: f32| {
+                let id = Uuid::new_v4();
+                state.push_for_test(Engram {
+                    context_id: None,
+                    id,
+                    kind: EngramKind::Episodic,
+                    content: content.to_string(),
+                    origin: EngramOrigin::Chat(ChatMessageRef {
+                        message_id: Uuid::new_v4(),
+                        room_id: Uuid::new_v4(),
+                        sender_id: Uuid::new_v4(),
+                        posted_at_ms: now,
+                        content_hash: "h".to_string(),
+                    }),
+                    recall_keys: Vec::new(),
+                    admitted_at_ms: now,
+                    trust_state_at_admission: TrustState::ApprovedPeer,
+                    admission_trace_id: None,
+                });
+                recall_meta.admit(
+                    id,
+                    RecallMetadata {
+                        salience,
+                        access_count: 0,
+                        last_accessed_ms: 0,
+                        protected_until_ms: 0,
+                        last_decayed_ms: now,
+                    },
+                );
+            };
+            // Rehearsal-saturated junk (the "enough goodbyes" class): max salience,
+            // cosine AT the null.
+            mk("enough goodbyes, the board has real work", 0.99);
+            mk("hello, how can I assist you today", 0.99);
+            mk("let me check the current task at hand", 0.99);
+            if with_match {
+                // The genuinely relevant memory — LOWER salience.
+                mk("the codename is BLUEHERON-7", 0.4);
+            }
+            state
+        };
+
+        // (a)+(b): the true match surfaces; every saturated-junk memory is dropped.
+        let recall = RecallFaculty::new(Uuid::new_v4(), seed(true))
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(AnisotropicStub));
+        let c = recall
+            .contribute(&Workspace::new(query))
+            .await
+            .expect("the significant memory must surface");
+        assert!(
+            c.content.contains("BLUEHERON"),
+            "the true match must surface despite lower salience; got:\n{}",
+            c.content
+        );
+        assert!(
+            !c.content.contains("goodbyes") && !c.content.contains("assist you"),
+            "null-scoring junk must be dropped even at salience 0.99; got:\n{}",
+            c.content
+        );
+
+        // (c): with NO memory rejecting the null, recall surfaces NOTHING.
+        let recall = RecallFaculty::new(Uuid::new_v4(), seed(false))
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(AnisotropicStub));
+        assert!(
+            recall.contribute(&Workspace::new(query)).await.is_none(),
+            "an all-junk pool must surface nothing, never the least-irrelevant memory"
         );
     }
 }

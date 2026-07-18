@@ -88,6 +88,34 @@ describe('chatViewModel', () => {
     expect(vm.members[2]?.vitals).toEqual({});
   });
 
+  // what this catches: a member's LOADOUT (model · size · ctx) must project onto
+  // the VM with the wire's snake_case `context_window` mapped to camel
+  // `contextWindow`, dropping empty fields; a member with no loadout carries
+  // `undefined` (the card draws no strip), never a fabricated model. This is the
+  // "model size, context size" the glass-box tile surfaces.
+  it('projects a member loadout, camel-casing the window and omitting when absent', () => {
+    const vm = chatViewModel(
+      state({
+        roster: [
+          member({
+            member_id: 'a',
+            loadout: { model: 'devstral-24b', params: 24_000_000_000, context_window: 32_768 },
+          }),
+          member({ member_id: 'b' }), // no loadout
+          member({ member_id: 'c', loadout: { model: '', params: 0, context_window: 0 } }),
+        ],
+      }),
+    );
+    expect(vm.members[0]?.loadout).toEqual({
+      model: 'devstral-24b',
+      params: 24_000_000_000,
+      contextWindow: 32_768,
+    });
+    expect(vm.members[1]?.loadout).toBeUndefined();
+    // all-empty fields collapse to no loadout — honest absent, not an empty strip.
+    expect(vm.members[2]?.loadout).toBeUndefined();
+  });
+
   // what this catches: activeCount counts only present members — it drives the
   // "N/M here" header and the presence dots. Counting all members (or none)
   // would misreport who is live in the room.

@@ -33,7 +33,13 @@ export { buildCommandUri, buildEventTopic, stampContext } from './transport';
 export { WebSocketTransport } from './WebSocketTransport';
 export type { WebSocketLike, WebSocketCtor } from './WebSocketTransport';
 export { StateConnection } from './StateConnection';
-export type { StateSink, StateSubscription, StateConnectOptions } from './StateConnection';
+export type {
+  StateSink,
+  StateSubscription,
+  StateConnectOptions,
+  StreamDelta,
+  StreamDeltaSink,
+} from './StateConnection';
 export type {
   StateLayer,
   KindRevision,
@@ -48,11 +54,27 @@ export type {
   ChatViewState,
   ChatMessageView,
   RosterSlotView,
+  RosterViewState,
   SenderKind,
   Provenance,
   ForgeViewState,
   ForgeModelView,
 } from './generated/views';
+// The Join Contract manifest closure — the room-level structure a renderer projects
+// into a Workspace (purpose / regions / affordances / membership / layout).
+export type {
+  Experience,
+  Region,
+  RegionScope,
+  RegionRole,
+  Affordance,
+  ProofSpec,
+  Member,
+  Standing,
+  Layout,
+  LayoutChild,
+  TrustLevel,
+} from './generated/experience';
 export type { CommandMap, CommandName } from './generated/CommandMap';
 export type { EventMap, EventClass } from './generated/EventMap';
 /** Typed, string-free accessors generated from the Rust command/event specs. */

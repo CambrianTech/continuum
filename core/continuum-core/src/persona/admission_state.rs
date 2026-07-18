@@ -166,6 +166,18 @@ pub struct AdmissionState {
     /// per-token), so the cost is nil. See
     /// [[eval-mutates-persona-lift-needs-isolation]].
     persistence: RwLock<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    /// The persona this store BELONGS to (its own user id). Set once at spawn via
+    /// [`set_owner_id`](Self::set_owner_id); `None` for bare/test states. Used to
+    /// recognize the persona's OWN authored chat engrams (`Chat` origin whose
+    /// `sender_id == owner_id`) so they can be gated out of AMBIENT semantic
+    /// recall (#166): a persona's own broadcasts are proprioception-like — she
+    /// said them, she knows she said them — not external knowledge, and left in
+    /// the recall pool they DROWN real memory (glass-boxed 2026-07-17: 271
+    /// self-authored "I ran X because Y is acting" receipts recalling at
+    /// salience 0.78-0.85, teaching the survey-spin). Still explicitly
+    /// queryable by keyword (`recall_by_keyword`) — this gates AMBIENT recall
+    /// only, the same treatment as Tool receipts and stale inner-speech.
+    owner_id: RwLock<Option<Uuid>>,
 }
 
 impl Default for AdmissionState {
@@ -210,6 +222,7 @@ impl AdmissionState {
             engrams: Mutex::new(Vec::new()),
             recall_metadata,
             persistence: RwLock::new(persistence),
+            owner_id: RwLock::new(None),
         }
     }
 
@@ -253,6 +266,7 @@ impl AdmissionState {
             engrams: Mutex::new(loaded_engrams),
             recall_metadata,
             persistence: RwLock::new(persistence),
+            owner_id: RwLock::new(None),
         }
     }
 
@@ -263,6 +277,20 @@ impl AdmissionState {
         &self,
     ) -> &Arc<crate::persona::recall_metadata::RecallMetadataRegistry> {
         &self.recall_metadata
+    }
+
+    /// Bind this store to the persona that owns it (its own user id). Called once
+    /// at spawn (`persona_workspace` ActingBody construction). Enables the
+    /// own-authored-chat recall gate (#166). Idempotent; last write wins.
+    pub fn set_owner_id(&self, id: Uuid) {
+        *self.owner_id.write().unwrap() = Some(id);
+    }
+
+    /// The owning persona's id, if bound. `None` for bare/test states — the
+    /// own-chat recall gate is then a no-op (fail-open: never gate what we can't
+    /// prove is self-authored).
+    fn owner_id_snapshot(&self) -> Option<Uuid> {
+        *self.owner_id.read().unwrap()
     }
 
     /// Construct AdmissionState for a specific persona — opens the
@@ -380,6 +408,25 @@ impl AdmissionState {
         )?;
         self.record_side_effects(&decision);
         Ok(decision)
+    }
+
+    /// Override the recall salience of an already-admitted engram, preserving its
+    /// other metadata (notably `last_decayed_ms`, so this never triggers the
+    /// epoch-delta decay-collapse `admit_with_defaults` guards against).
+    ///
+    /// Used to DOWN-WEIGHT proprioception (#166): an action-observation receipt
+    /// ("code/list(...) → ok") is admitted as an Episodic engram so the mind can
+    /// remember what it did, but it is NOT durable knowledge — at neutral salience
+    /// it out-competes genuine findings in recall (recency-heavy), so recall
+    /// echoes the persona's own recent tool-chatter back at it instead of useful
+    /// memory. A lower salience keeps the receipt recallable (for "what did I just
+    /// do") without letting it dominate. Not a content heuristic that steers
+    /// output — a storage-tier weight on a structurally-known kind (a receipt),
+    /// the recall-side twin of the recency-vs-recall channel split in act_observe.
+    pub fn set_recall_salience(&self, engram_id: uuid::Uuid, salience: f32) {
+        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default();
+        meta.salience = salience;
+        self.recall_metadata.admit(engram_id, meta);
     }
 
     /// Admit a SELF-PRODUCED engram — a memory the persona generated ABOUT
@@ -620,6 +667,14 @@ impl AdmissionState {
             crate::persona::recall_metadata::RecallMetadataRegistry::new(),
         ));
         fork.restore(&cp);
+        // Carry owner identity across the fork, or the eval measurement copy would
+        // recall the persona's OWN chatter that the live self now gates (#166): the
+        // fork is a fresh AdmissionState (owner_id=None) and `restore` copies only
+        // engrams — so without this the BENCHMARK (which runs on the fork) wouldn't
+        // reflect the recall fix, and the number would lie about the living mind.
+        if let Some(owner) = self.owner_id_snapshot() {
+            fork.set_owner_id(owner);
+        }
         fork
     }
 
@@ -657,6 +712,84 @@ impl AdmissionState {
         }
         let engrams = self.engrams.lock().unwrap();
         engrams.iter().rev().take(limit).cloned().collect()
+    }
+
+    /// The AMNESIA FLASH (Joel's "MIB lamp"): drop every engram tagged with `context_id`,
+    /// returning how many were forgotten. This is what lets a benchmark be a PROCTORED EXAM of
+    /// the NATURAL living persona — she sits the exam with her full memory intact (never a
+    /// stripped fork), and afterward we neuralyze JUST that exam's episode so the answer key
+    /// can't leak into what she carries forward or trains on. Scoped strictly by `context_id`
+    /// (the exam's own context), so her life's other memories are untouched. In-memory drop;
+    /// the ORM/persistence sink deletion for the durable row is a follow-up (the eval fork uses
+    /// a NoopSink, so nothing durable is written during an exam anyway).
+    /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    pub fn forget_context(&self, context_id: Uuid) -> usize {
+        let mut engrams = self.engrams.lock().unwrap();
+        let before = engrams.len();
+        engrams.retain(|e| e.context_id != Some(context_id));
+        before - engrams.len()
+    }
+
+    /// The SURGICAL complement to [`forget_context`](Self::forget_context):
+    /// walk every engram and scrub a policy-defined *class* of content out of
+    /// its `content` and `recall_keys`, keeping the engram (its id, salience,
+    /// recall history, provenance) otherwise intact. Where `forget_context`
+    /// drops a whole exam episode, `redact` keeps the memory of *having been
+    /// asked and having answered* and excises only the crib sheet — the held-out
+    /// answer key, a leaked secret, PII on export. Returns an aggregate report
+    /// of what was removed across the whole store.
+    ///
+    /// Durable: every rewritten engram is re-saved through the persistence sink
+    /// (`observe_content_update`) so the scrub survives restart. A noop policy
+    /// (no detectors) short-circuits — no store walk, no lock churn.
+    ///
+    /// Note on dedup: rewriting `content` changes its hash, so the
+    /// `seen_content` map's old-hash→id pointer goes stale. That is harmless and
+    /// arguably correct — the pre-redaction content is gone, so a future admit of
+    /// the *old* text should NOT dedup against a memory that no longer holds it.
+    pub fn redact(
+        &self,
+        policy: &crate::persona::redaction::RedactionPolicy,
+    ) -> crate::persona::redaction::RedactionReport {
+        let mut total = crate::persona::redaction::RedactionReport::default();
+        if policy.is_noop() {
+            return total;
+        }
+
+        // Rewrite in-memory under the engrams lock; collect the changed rows to
+        // persist AFTER releasing it (never hold the store lock across the sink).
+        let mut changed: Vec<Engram> = Vec::new();
+        {
+            let mut engrams = self.engrams.lock().unwrap();
+            for engram in engrams.iter_mut() {
+                let mut touched = false;
+                let (new_content, r) = policy.redact(&engram.content);
+                if !r.is_empty() {
+                    engram.content = new_content;
+                    total.merge(&r);
+                    touched = true;
+                }
+                for key in engram.recall_keys.iter_mut() {
+                    let (new_key, rk) = policy.redact(key);
+                    if !rk.is_empty() {
+                        *key = new_key;
+                        total.merge(&rk);
+                        touched = true;
+                    }
+                }
+                if touched {
+                    changed.push(engram.clone());
+                }
+            }
+        }
+
+        if !changed.is_empty() {
+            let sink = self.persistence.read().unwrap().clone();
+            for engram in &changed {
+                sink.observe_content_update(engram);
+            }
+        }
+        total
     }
 
     /// Algorithm 4 recall. Returns the top `limit` engrams ranked by
@@ -736,6 +869,16 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
+        // How long a wanderer INNER-SPEECH thought (EngramKind::SelfReflection — the
+        // historian/dreamer lenses, #145) stays eligible for AMBIENT recall. A passing
+        // thought is "current inner speech" only briefly; past this it has PASSED, and
+        // resurfacing it as though it were current fact is a bug, not a memory. 15 min:
+        // long enough that a fresh musing can still bubble up the same activity, short
+        // enough that a stale self-assessment cannot masquerade as the present.
+        const INNER_SPEECH_RECALL_TTL_MS: u64 = 15 * 60 * 1000;
+        // The owning persona's id (if bound) — for the own-authored-chat gate below.
+        // Snapshotted once, outside the per-engram closure.
+        let owner = self.owner_id_snapshot();
         let engrams = self.engrams.lock().unwrap();
         // Enumerate in insertion order: `idx` is a monotonic recency rank
         // (higher == more recently admitted), used as the tiebreaker below.
@@ -743,6 +886,51 @@ impl AdmissionState {
             .iter()
             .enumerate()
             .filter_map(|(idx, e)| {
+                // Tool receipts — the persona's own "I ran X → result" — are
+                // PROPRIOCEPTION, not durable knowledge. The recency/working-memory
+                // channel carries them so she sees her own hands
+                // ([[act-results-need-a-recency-channel-not-semantic-recall]]); they
+                // must NOT compete in the SEMANTIC recall pool, where they were
+                // drowning real memories (#166, seen live: recall surfaced "I ran
+                // commands/list because Anwen is acting" as its top hits). Gate them
+                // out here → recall returns knowledge (conversation, distilled
+                // self-reflection), never the persona's own tool chatter. This is the
+                // structural form of the earlier salience down-weight, which alone
+                // couldn't stop them surfacing when knowledge was sparse.
+                if matches!(e.origin, EngramOrigin::Tool(_)) {
+                    return None;
+                }
+                // The persona's OWN authored chat is the SIBLING leak (#166, glass-boxed
+                // 2026-07-17 on Casper: 271 self-authored "I ran X because Y is acting"
+                // messages — receipt-mimicry SPEECH, #158 — admitted as durable Chat
+                // engrams, recalling at salience 0.78-0.85 and teaching the survey-spin).
+                // The Tool gate can't catch them (they're Chat-origin, not Tool). A
+                // persona's own broadcast is proprioception, not external knowledge —
+                // she said it, she knows she said it. Gate own-authored chat out of
+                // AMBIENT recall the same way; it stays keyword-queryable
+                // (`recall_by_keyword`). Fail-open: only when we can PROVE self-authorship
+                // (owner bound AND sender matches) — never gate others' chat.
+                if let (Some(owner_id), EngramOrigin::Chat(chat_ref)) = (owner, &e.origin) {
+                    if chat_ref.sender_id == owner_id {
+                        return None;
+                    }
+                }
+                // Wanderer inner-speech (EngramKind::SelfReflection) is a PASSING
+                // thought, not durable knowledge. A FRESH one may bubble up as ambient
+                // inner speech (the arc's intent, dream_consolidation §wanderer); a STALE
+                // one must NOT resurface as current fact. Glass-boxed 2026-07-14: Atlas
+                // recalled a 25m-old "[thought:historian] you keep failing to claim" AS
+                // present truth minutes after his claim SUCCEEDED, and rationalized the
+                // contradiction into a loop — the "feedback vs rag" incoherence. Bound
+                // its ambient-recall lifetime here; introspection still queries ALL of
+                // them explicitly by `thought:<lens>` recall-key (`recall_by_keyword`, a
+                // separate path). Dream-DISTILLED insight is EngramKind::Semantic
+                // (durable) — untouched. Sibling of the Tool-receipt gate above (#166).
+                if e.kind == crate::persona::engram::EngramKind::SelfReflection
+                    && now_ms.saturating_sub(e.admitted_at_ms) > INNER_SPEECH_RECALL_TTL_MS
+                {
+                    return None;
+                }
                 self.recall_metadata.apply_decay(e.id, now_ms);
                 self.recall_metadata
                     .get(e.id)
@@ -1188,6 +1376,44 @@ mod tests {
         assert_eq!(recent[2].id, ids[0]);
     }
 
+    /// What this catches: the amnesia flash (`forget_context`) wipes ONLY the exam episode's
+    /// engrams and leaves her other memory intact — the property that makes a natural proctored
+    /// exam safe (she keeps her life's memory; only the answer-key episode is neuralyzed). A
+    /// regression that widened the scope would erase real memories; one that narrowed it would
+    /// leak exam answers into what she carries forward.
+    /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    #[test]
+    fn forget_context_wipes_only_the_tagged_episode() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        admit_n_distinct(
+            &state,
+            &[
+                "her real life memory one worth keeping",
+                "exam question engram to be neuralyzed",
+                "her real life memory two worth keeping",
+            ],
+        );
+        let exam_ctx = Uuid::new_v4();
+        // Stamp the middle engram as belonging to the exam episode (the acting body tags act
+        // results with a context_id in the live path; here we set it directly for the test).
+        {
+            let mut engrams = state.engrams.lock().unwrap();
+            engrams[1].context_id = Some(exam_ctx);
+        }
+        let forgotten = state.forget_context(exam_ctx);
+        assert_eq!(forgotten, 1, "exactly the one exam engram is neuralyzed");
+        let remaining = state.recall_recent(10);
+        assert_eq!(remaining.len(), 2, "her two real memories survive");
+        assert!(
+            remaining.iter().all(|e| e.context_id != Some(exam_ctx)),
+            "no exam-tagged engram remains"
+        );
+        // Flashing an unrelated context wipes nothing (scope safety).
+        assert_eq!(state.forget_context(Uuid::new_v4()), 0);
+    }
+
     /// What this catches: recall_recent honors the limit, never exceeds
     /// it, never panics on limit > available.
     #[test]
@@ -1252,6 +1478,92 @@ mod tests {
         );
     }
 
+    // what this catches: a Tool-origin engram — a persona's own "I ran X → result"
+    // receipt (proprioception) — must be EXCLUDED from the semantic recall pool so
+    // it can never drown durable knowledge (#166). Note it's admitted NEWER than the
+    // knowledge, so if the exclusion regressed, recency would surface it first. This
+    // is the coverage that was missing when act_observe mis-admitted receipts as
+    // non-Tool persona messages and the gate never bit.
+    #[test]
+    fn recall_candidates_excludes_tool_origin_receipts() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let knowledge = admit_n_distinct(&state, &["the ticket asks for a wordstats CLI here"]);
+        let receipt = crate::persona::engram::Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: crate::persona::engram::EngramKind::Episodic,
+            content: "code/list(path=src) → ok".to_string(),
+            origin: crate::persona::engram::EngramOrigin::Tool(
+                crate::persona::engram::ToolInvocationRef {
+                    invocation_id: Uuid::new_v4(),
+                    tool_name: "code/list".to_string(),
+                    invoked_at_ms: 1000,
+                    input_hash: "sha256:in".to_string(),
+                    output_hash: "sha256:out".to_string(),
+                },
+            ),
+            recall_keys: Vec::new(),
+            admitted_at_ms: 2000,
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let receipt_id = receipt.id;
+        state.admit_reflection(receipt).expect("receipt admits");
+
+        let ids: Vec<Uuid> = state
+            .recall_candidates(10_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .collect();
+        assert!(ids.contains(&knowledge[0]), "durable knowledge stays recallable");
+        assert!(
+            !ids.contains(&receipt_id),
+            "a Tool-origin receipt is NEVER in the semantic recall pool"
+        );
+    }
+
+    // what this catches: wanderer INNER-SPEECH recall is recency-bounded (#145 / the
+    // 2026-07-14 "feedback vs rag" incoherence — Atlas recalled a stale historian
+    // thought "you keep failing to claim" as present truth after his claim succeeded).
+    // A FRESH SelfReflection-kind thought still bubbles up; a STALE one drops; a
+    // dream-DISTILLED Semantic reflection is durable and ALWAYS stays.
+    #[test]
+    fn recall_recency_bounds_wanderer_inner_speech_but_keeps_distilled() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let now = 100 * 60 * 1000; // 100 min in
+        let inner = |content: &str, admitted_at_ms: u64| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: EngramKind::SelfReflection, // wanderer inner speech
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection { parent_engram_id: Uuid::new_v4() },
+            recall_keys: vec!["thought:historian".to_string()],
+            admitted_at_ms,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let fresh = inner("[thought:historian] a passing thought, moments old", now - 5 * 60 * 1000);
+        let stale = inner("[thought:historian] you keep failing to claim", now - 40 * 60 * 1000);
+        // A dream-distilled DURABLE insight (Semantic kind, SelfReflection origin).
+        let distilled = semantic_reflection("the codebase grades via rustc exit code", Uuid::new_v4());
+        let (fresh_id, stale_id, distilled_id) = (fresh.id, stale.id, distilled.id);
+        for e in [fresh, stale, distilled] {
+            state.admit_reflection(e).expect("admits");
+        }
+        let ids: Vec<Uuid> = state
+            .recall_candidates(now, 10)
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .collect();
+        assert!(ids.contains(&fresh_id), "fresh inner speech still bubbles up");
+        assert!(!ids.contains(&stale_id), "a stale wanderer thought does NOT resurface as current fact");
+        assert!(ids.contains(&distilled_id), "dream-distilled Semantic insight is durable — always recallable");
+    }
+
     fn semantic_reflection(content: &str, parent: Uuid) -> Engram {
         Engram {
             context_id: None,
@@ -1288,6 +1600,176 @@ mod tests {
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].content, fact.content);
         assert_eq!(recent[0].kind, EngramKind::Semantic);
+    }
+
+    /// What this catches: `redact` is the surgical complement to
+    /// `forget_context` — it scrubs the held-out answer key out of a memory
+    /// while KEEPING the engram and the experience of having answered. The
+    /// proctored-exam integrity guarantee at the store level: she can't
+    /// memorize the crib sheet, but her autobiography of struggling stays.
+    #[test]
+    fn redact_scrubs_exam_key_from_memory_keeping_the_experience() {
+        use crate::persona::redaction::{ExamKeyDetector, RedactionClass, RedactionPolicy};
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mem = semantic_reflection(
+            "I was asked which file holds the loop; I answered service_loop.rs and it passed.",
+            Uuid::new_v4(),
+        );
+        state.admit_reflection(mem).expect("admits");
+
+        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+            ["service_loop.rs".to_string()],
+            ExamKeyDetector::DEFAULT_MIN_LEN,
+        ))]);
+        let report = state.redact(&policy);
+        assert_eq!(report.count(RedactionClass::ExamKey), 1);
+
+        let recalled = state.recall_recent(1);
+        assert_eq!(recalled.len(), 1);
+        let content = &recalled[0].content;
+        assert!(content.contains("I was asked which file holds the loop"));
+        assert!(content.contains("it passed."));
+        assert!(!content.contains("service_loop.rs"));
+        assert!(content.contains("[redacted:exam-key]"));
+    }
+
+    /// What this catches: a noop policy (no detectors) short-circuits to an
+    /// empty report and mutates nothing — the hot path when no exam is in play.
+    #[test]
+    fn redact_with_noop_policy_changes_nothing() {
+        use crate::persona::redaction::RedactionPolicy;
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mem = semantic_reflection("plain memory, nothing sensitive", Uuid::new_v4());
+        state.admit_reflection(mem).expect("admits");
+        let report = state.redact(&RedactionPolicy::new(vec![]));
+        assert!(report.is_empty());
+        assert_eq!(state.recall_recent(1)[0].content, "plain memory, nothing sensitive");
+    }
+
+    fn chat_engram(content: &str, sender: Uuid) -> Engram {
+        Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: EngramKind::Episodic,
+            content: content.to_string(),
+            origin: EngramOrigin::Chat(ChatMessageRef {
+                message_id: Uuid::new_v4(),
+                room_id: Uuid::new_v4(),
+                sender_id: sender,
+                posted_at_ms: 1_000,
+                content_hash: format!("sha256:{content}"),
+            }),
+            recall_keys: vec![],
+            admitted_at_ms: 1_000,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        }
+    }
+
+    // what this catches: #166 sibling leak — a persona's OWN authored chat is
+    // gated out of AMBIENT recall (it's proprioception, not knowledge) once
+    // owner-id is bound, while OTHERS' chat still surfaces AND the own message
+    // stays explicitly keyword-queryable. This is the structural kill for the
+    // 271 self-authored "I ran X because Y" engrams that were drowning Casper's
+    // real memory and teaching the survey-spin.
+    #[test]
+    fn own_authored_chat_is_gated_from_ambient_recall_but_stays_queryable() {
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state.set_owner_id(owner);
+
+        state
+            .admit_reflection(chat_engram(
+                "I ran commands/list because Asha is acting on the situation",
+                owner,
+            ))
+            .expect("own chat admits");
+        state
+            .admit_reflection(chat_engram("The service loop lives in service_loop.rs", other))
+            .expect("other's chat admits");
+
+        let ambient: Vec<String> = state
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            ambient.iter().any(|c| c.contains("service_loop.rs")),
+            "others' knowledge still surfaces in ambient recall"
+        );
+        assert!(
+            !ambient.iter().any(|c| c.contains("because Asha is acting")),
+            "own chatter is gated out of ambient recall"
+        );
+
+        // Still there when asked for explicitly.
+        let queried: Vec<String> = state
+            .recall_by_keyword("commands/list", 10)
+            .into_iter()
+            .map(|e| e.content)
+            .collect();
+        assert!(
+            queried.iter().any(|c| c.contains("because Asha is acting")),
+            "own chat remains keyword-queryable (gated from AMBIENT recall only)"
+        );
+    }
+
+    // what this catches: the eval fork inherits owner-id, so the BENCHMARK (which
+    // runs on `fork_detached`, not the live self) reflects the #166 recall fix.
+    // Without the propagation, live turns would be clean but measured numbers
+    // would still be polluted by the persona's own chatter — a lying benchmark.
+    #[test]
+    fn fork_detached_inherits_owner_id_so_the_benchmark_gets_the_recall_fix() {
+        let owner = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state.set_owner_id(owner);
+        state
+            .admit_reflection(chat_engram(
+                "I ran commands/list because I am acting",
+                owner,
+            ))
+            .expect("admits");
+        let fork = state.fork_detached();
+        let ambient: Vec<String> = fork
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            !ambient.iter().any(|c| c.contains("because I am acting")),
+            "fork inherits owner-id → own chatter is gated on the measurement copy too"
+        );
+    }
+
+    // what this catches: fail-open — with no owner bound (bare/test state), the
+    // gate never fires, so we never drop chat we can't prove is self-authored.
+    #[test]
+    fn chat_recall_gate_is_noop_without_owner_bound() {
+        let author = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state
+            .admit_reflection(chat_engram("some chat from an author", author))
+            .expect("admits");
+        let ambient: Vec<String> = state
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            ambient.iter().any(|c| c.contains("some chat from an author")),
+            "no owner bound → nothing gated (fail-open)"
+        );
     }
 
     /// What this catches: re-distilling the same cluster on a later dream tick
@@ -1764,6 +2246,31 @@ mod tests {
     /// Vec with N engrams + a metadata vec with only K < N entries.
     /// The post-fix invariant: every loaded engram is recall-visible
     /// (with default metadata if its row was missing).
+    // what this catches: set_recall_salience (#166) down-weights an admitted
+    // engram's recall salience WITHOUT clobbering its other metadata — critically
+    // last_decayed_ms, whose loss would trigger the epoch-delta decay collapse.
+    #[test]
+    fn set_recall_salience_lowers_salience_and_preserves_decay_clock() {
+        let registry =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let state = AdmissionState::new(registry.clone());
+        let id = Uuid::new_v4();
+        // Seed as an ordinary admission does (default 0.5 salience, decay clock set).
+        registry.admit_with_defaults(id);
+        let before = registry.get(id).expect("seeded");
+        assert_eq!(before.salience, 0.5);
+        assert!(before.last_decayed_ms > 0, "decay clock initialized");
+
+        state.set_recall_salience(id, PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST);
+        let after = registry.get(id).expect("still present");
+        assert_eq!(after.salience, PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST);
+        assert_eq!(
+            after.last_decayed_ms, before.last_decayed_ms,
+            "decay clock preserved — no epoch-delta collapse"
+        );
+    }
+    const PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST: f32 = 0.25;
+
     #[test]
     fn rehydrate_backfills_metadata_for_phantom_engrams() {
         let registry = Arc::new(

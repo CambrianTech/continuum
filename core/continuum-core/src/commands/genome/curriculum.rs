@@ -181,6 +181,7 @@ mod tests {
             lang: Some("rust".to_string()),
             dod_shell: None,
             solution_file: None,
+            setup_shell: None,
         }
     }
 

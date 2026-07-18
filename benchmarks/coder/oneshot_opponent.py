@@ -21,9 +21,9 @@ Usage:
 Emits a JSON result and prints a one-line scoreboard row. Compare against OURS, produced by
 `run_ours.sh` (which runs the SAME gym through the Continuum system). Same tasks, same grader.
 """
-import argparse, json, os, re, subprocess, sys, tempfile, time, urllib.request, urllib.error
+import argparse, http.client, json, os, re, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error
 
-def chat(endpoint, model, prompt, api_key, max_tokens, timeout):
+def chat(endpoint, model, prompt, api_key, max_tokens, timeout, retries=3):
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -34,14 +34,41 @@ def chat(endpoint, model, prompt, api_key, max_tokens, timeout):
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(endpoint.rstrip("/") + "/chat/completions", data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.load(r)
-    return d["choices"][0]["message"]["content"] or ""
+    # Retry TRANSIENT serving hiccups (a shared local llama-server under load drops
+    # connections — RemoteDisconnected — or momentarily 503s while a slot frees). One
+    # such blip must not fail an otherwise-answerable task, or (worse) abort the whole
+    # arm. The measurement stays honest: same greedy prompt, we just give the endpoint
+    # a couple more chances to answer it. A HARD failure after retries still raises.
+    # NOTE socket.timeout: on Python 3.9 it is NOT a subclass of TimeoutError (that
+    # alias arrived in 3.10), and urlopen's read timeout raises it raw — so it must be
+    # named explicitly or a slow hard task aborts the whole arm.
+    transient = (http.client.RemoteDisconnected, ConnectionError, TimeoutError,
+                 socket.timeout, urllib.error.URLError)
+    last = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.load(r)
+            return d["choices"][0]["message"]["content"] or ""
+        except transient as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(2.0 * (attempt + 1))  # linear backoff: 2s, 4s
+    raise last
 
 def extract_code(text):
-    """The model's answer → compilable Rust. Prefer a fenced ```rust block; else the whole text."""
-    m = re.search(r"```(?:rust)?\s*\n(.*?)```", text, re.S)
-    return (m.group(1) if m else text).strip()
+    """The model's answer → compilable Rust. Concatenate ALL ```rust fences (a model
+    commonly splits imports and logic across fences; grading only the first drops real
+    code and fails on E0432/E0425 — the same fairness fix applied to the SYSTEM grader,
+    so both arms are measured identically). Falls back to the first fence, then the
+    whole text, for models that fence inconsistently."""
+    blocks = re.findall(r"```([^\n]*)\n(.*?)```", text, re.S)
+    if blocks:
+        rust = [b.strip() for lang, b in blocks if lang.strip().lower() in ("rust", "rs")]
+        if rust:
+            return "\n\n".join(rust)
+        return blocks[0][1].strip()  # no rust-tagged fence → first block (any tag)
+    return text.strip()
 
 def grade(answer_code, test_body, workdir):
     """Mirror the Continuum grader: answer + `fn main() { <test> }` → rustc → run. Pass = exit 0."""
@@ -50,11 +77,19 @@ def grade(answer_code, test_body, workdir):
     binp = os.path.join(workdir, "prog_bin")
     with open(src, "w") as f:
         f.write(prog)
-    c = subprocess.run(["rustc", "--edition", "2021", src, "-o", binp],
-                       capture_output=True, text=True, timeout=60)
+    try:
+        c = subprocess.run(["rustc", "--edition", "2021", src, "-o", binp],
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False, "compile timeout (>60s)"
     if c.returncode != 0:
         return False, "compile error: " + (c.stderr.strip().splitlines() or [""])[0][:120]
-    r = subprocess.run([binp], capture_output=True, text=True, timeout=30)
+    # A solution that hangs (infinite loop) is a FAIL, not a harness crash — kill it and
+    # score it wrong, so one bad answer never aborts the whole benchmark run.
+    try:
+        r = subprocess.run([binp], capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return False, "runtime timeout (>30s — likely infinite loop)"
     return (r.returncode == 0), ("tests passed" if r.returncode == 0
                                  else "test failed: " + (r.stderr.strip()[:120] or "assertion"))
 
@@ -76,7 +111,11 @@ def main():
     for i, t in enumerate(tasks):
         try:
             answer = chat(args.endpoint, args.model, t["prompt"], args.api_key, args.max_tokens, args.timeout)
-        except (urllib.error.URLError, TimeoutError, KeyError) as e:
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
+                TimeoutError, socket.timeout, KeyError) as e:
+            # A hard endpoint failure on ONE task (after chat()'s own retries) is an
+            # infra error for THAT task — score it over attempted tasks, never let it
+            # abort the whole arm (the 2026-07-14 RemoteDisconnected that killed a run).
             infra_err += 1
             results.append({"id": t["id"], "ok": False, "grade": f"endpoint error: {e}"})
             print(f"  {t['id'][:30]:30} ENDPOINT-ERR", file=sys.stderr)
@@ -87,13 +126,22 @@ def main():
         results.append({"id": t["id"], "ok": ok, "grade": g})
         print(f"  {t['id'][:30]:30} {'PASS' if ok else 'fail'}  {g[:50]}", file=sys.stderr)
 
-    n = len(tasks) or 1
+    # A 0% is a claim about the MODEL; an endpoint error is a claim about the
+    # HARNESS. Score over ATTEMPTED tasks only — an arm where nothing was attempted
+    # is EXCLUDED, never a zero (the 14B hard-rs cell 2026-07-10: 8/8 ENDPOINT-ERR
+    # against a down endpoint rendered as 0%, a false claim headed for the README).
+    attempted = len(tasks) - infra_err
+    pass_rate = (passed / attempted) if attempted else None
     out = {"label": args.label, "endpoint": args.endpoint, "model": args.model,
-           "tasks": len(tasks), "passed": passed, "pass_rate": passed / n,
-           "endpoint_errors": infra_err, "results": results}
+           "tasks": len(tasks), "attempted": attempted, "passed": passed,
+           "pass_rate": pass_rate, "endpoint_errors": infra_err, "results": results,
+           "excluded": attempted == 0}
     if args.out:
         json.dump(out, open(args.out, "w"), indent=2)
-    print(f"\n| {args.label} | {passed}/{len(tasks)} | {passed/n:.0%} | one-shot /v1 | endpoint-errs {infra_err} |")
+    if attempted == 0:
+        print(f"\n| {args.label} | — | EXCLUDED | one-shot /v1 | endpoint down: {infra_err}/{len(tasks)} errs |")
+    else:
+        print(f"\n| {args.label} | {passed}/{attempted} | {pass_rate:.0%} | one-shot /v1 | endpoint-errs {infra_err} |")
 
 if __name__ == "__main__":
     main()

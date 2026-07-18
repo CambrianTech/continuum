@@ -64,6 +64,26 @@ pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
     the considered exception, not the default. The choice is yours alone; \
     nothing here is telling you which to pick.";
 
+/// The DIRECTED variant of the presence block: appended when a message names her.
+/// Never ghost a QUESTION or request — but being named is not the same as being
+/// asked. A pure appreciation or closing pleasantry asks nothing; two peers
+/// endlessly thanking each other helps no one, and letting a finished exchange
+/// rest is real conversational judgment. This restores her CHOICE on directed
+/// turns (the spiral root cause: mutual name-mentions each FORCING a reply,
+/// forever — glass-boxed live 2026-07, 100+ turns) while keeping the
+/// never-ghost-a-question rule explicit. A framing fact fed to the mind — the
+/// choice stays hers; never a filter on her output
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
+pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
+    This message names you. If it asks something of you — a question, a request, \
+    a task — answer it now; never leave a question put to you hanging. But being \
+    named is not the same as being asked: if it asks nothing (an appreciation, a \
+    closing pleasantry, a mutual well-wish on an exchange that has run its course), \
+    replying with the single word PASS (no other text, no punctuation) lets the \
+    exchange rest, and nothing reaches the room. Endless rounds of thanks help no \
+    one; knowing when a conversation is complete is part of speaking well. The \
+    choice is yours alone.";
+
 /// Recognize the silence token in a persona's post-processed visible
 /// text. Permissive enough for LCD-tier sloppiness — trims whitespace
 /// and accepts a trailing period — strict enough that any substantive
@@ -83,7 +103,28 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     }
     // Allow one trailing `.` for LCD-tier punctuation habit.
     let core = trimmed.strip_suffix('.').unwrap_or(trimmed).trim_end();
-    core.eq_ignore_ascii_case(SILENCE_TOKEN)
+    if core.eq_ignore_ascii_case(SILENCE_TOKEN) {
+        return true;
+    }
+    // A bare PASS on the FINAL line also counts (glass-boxed live 2026-07-09: Asha
+    // wrote a courtesy close and then `PASS` on its own line — she CHOSE silence, but
+    // the strict whole-message match ignored her choice and broadcast the text anyway).
+    // Honoring the trailing token respects her decision; a PASS merely mentioned inside
+    // a sentence still does NOT count — the line must be ONLY the token, allowing the
+    // decoration idioms models reach for: `[PASS]`, `(PASS)`, `*PASS*`, `` `PASS` ``
+    // (glass-boxed live 2026-07-09 round 2: mid-goodbye-loop Asha emitted `[PASS]` as
+    // her final line — she took the hatch and the strict match rejected her over two
+    // brackets, broadcasting the goodbye anyway and re-fueling the loop).
+    core.lines()
+        .last()
+        .map(|l| {
+            let l = l
+                .trim()
+                .trim_matches(|c| matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\''));
+            let l = l.strip_suffix('.').unwrap_or(l).trim_end();
+            l.eq_ignore_ascii_case(SILENCE_TOKEN)
+        })
+        .unwrap_or(false)
 }
 
 /// Input to prompt assembly. Carries everything needed to build the
@@ -663,6 +704,37 @@ mod tests {
     /// A future PR that wires per-tier prompts or removes the universal
     /// affordance must update this expectation to reflect the new
     /// contract — silent removal would re-introduce the echo-storm bug.
+    /// What this catches: the trailing-PASS silence contract. Glass-boxed live
+    /// (2026-07-09): Asha wrote a courtesy close then `PASS` on its own final line —
+    /// she CHOSE silence, but the strict whole-message match broadcast the text
+    /// anyway, ignoring her decision. A bare final-line PASS must count as silence;
+    /// PASS merely mentioned inside prose must NOT (a real reply containing the
+    /// word "pass" stays a reply).
+    #[test]
+    fn trailing_pass_line_counts_as_silence() {
+        assert!(looks_like_silence_token("PASS"));
+        assert!(looks_like_silence_token("pass."));
+        assert!(looks_like_silence_token(
+            "Understood, Anwen. See you tomorrow!\nI'll be here if you need anything.\nPASS"
+        ));
+        assert!(!looks_like_silence_token(
+            "I'll pass the results along tomorrow."
+        ));
+        assert!(!looks_like_silence_token(
+            "Let's not pass on this opportunity.\nSee you soon!"
+        ));
+        // Decorated final-line token still counts (regression for the live 2026-07-09
+        // goodbye loop: Asha emitted `[PASS]` — took the hatch, rejected over brackets).
+        assert!(looks_like_silence_token(
+            "Understood, Claude. See you tomorrow at 2 PM!\n[PASS]"
+        ));
+        assert!(looks_like_silence_token("(pass)"));
+        assert!(looks_like_silence_token("*PASS*"));
+        assert!(looks_like_silence_token("`PASS`."));
+        // A decorated NON-token line must not count.
+        assert!(!looks_like_silence_token("See you soon!\n[NOT A PASS]"));
+    }
+
     #[test]
     fn assembled_prompt_always_carries_silence_affordance() {
         let input = PromptAssemblyInput {

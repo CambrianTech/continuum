@@ -1,0 +1,9 @@
+{
+  "purpose": "profile",
+  "regions": [
+    { "name": "form", "kind": "profile", "scope": "activity", "role": "primary", "slot": "content", "live": true }
+  ],
+  "affordances": [
+    { "verb": "save", "command": "data/update" }
+  ]
+}

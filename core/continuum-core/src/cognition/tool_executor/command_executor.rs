@@ -517,34 +517,43 @@ mod tests {
         let out = persona_tool_error("frobnicate", raw);
         assert!(!out.contains("ServiceModule"), "dev noise leaked to persona: {out}");
         assert!(!out.contains("TS-bridge"), "dev noise leaked to persona: {out}");
-        assert!(out.contains("commands/list"), "must point her at discovery: {out}");
-        assert!(out.contains("commands/help"), "must reinforce the manual: {out}");
+        // No near-miss exists for "frobnicate", so she's pointed at full
+        // discovery (commands/help with no arguments) — the #1916 contract.
+        assert!(out.contains("commands/help"), "must point her at discovery: {out}");
         assert!(out.contains("`frobnicate`"), "must name what she tried: {out}");
     }
 
     // what this catches: a dropped category prefix (the most common near-miss) gets a
-    // concrete did-you-mean drawn from the live registry — `cargo/check` is a real
-    // suffix of the AiSafe `code/cargo/check`, so she's handed the exact name.
+    // concrete near-miss list drawn from the live registry — `cargo/check` is a real
+    // suffix of the AiSafe `code/cargo/check` — AND the top match's inline manual so
+    // she retries THIS turn with the exact shape, no discovery detour (#1916).
     #[test]
     fn unknown_command_offers_did_you_mean_on_dropped_prefix() {
         let raw = "no Rust module handles command: 'cargo/check'.".to_string();
         let out = persona_tool_error("cargo/check", raw);
         assert!(
-            out.contains("Did you mean") && out.contains("code/cargo/check"),
+            out.contains("Closest") && out.contains("code/cargo/check"),
             "should suggest the full AiSafe name: {out}"
+        );
+        assert!(
+            out.contains("retry with this shape"),
+            "must inline the top match's manual so the retry needs no detour: {out}"
         );
     }
 
     // what this catches: a bad-args refusal keeps the substrate's own field-naming
-    // reason AND appends the commands/help reinforcement — feedback that names the
-    // problem and the fix, in her paradigm.
+    // reason AND inlines the command's correct call shape — feedback that names the
+    // problem and the fix in the SAME observation, no help-lookup turn (#1916).
     #[test]
     fn invalid_params_feedback_reinforces_help() {
         let raw = "code/write: [invalid] missing field `filePath`".to_string();
         let out = persona_tool_error("code/write", raw);
         assert!(out.contains("missing field `filePath`"), "keeps the real cause: {out}");
-        assert!(out.contains("commands/help"), "reinforces the manual: {out}");
-        assert!(out.contains("code/write"), "names the tool to look up: {out}");
+        assert!(
+            out.contains("fix your arguments and retry") || out.contains("commands/help"),
+            "must hand her the correct shape (inline manual) or the manual pointer: {out}"
+        );
+        assert!(out.contains("code/write"), "names the tool: {out}");
     }
 
     // what this catches: a refusal that already carries a real, persona-readable
@@ -590,7 +599,11 @@ mod tests {
         let out = truncate_tool_output(body, 600, Some(&fake));
         assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
         assert!(out.contains("tool/output"), "names the recovery tool: {out}");
-        assert!(out.contains("error|panic|failed"), "points at the failure hunt: {out}");
+        // #1917: the failure hunt is a PREBUILT one-word filter, not a regex.
+        assert!(
+            out.contains("\"filter\":\"errors\""),
+            "points at the prebuilt failure filter: {out}"
+        );
     }
 
     // what this catches: output within budget is returned verbatim — no marker,
@@ -823,7 +836,10 @@ mod tests {
 
         fn persona_over(executor: Arc<CommandExecutor>) -> CommandToolExecutor {
             let transport =
-                InProcessTransport::new(executor, Some(CallerIdentity::airc(Uuid::new_v4())));
+                InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(Uuid::new_v4()))),
+            );
             CommandToolExecutor::new(Connection::new(transport))
         }
 

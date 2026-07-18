@@ -118,6 +118,17 @@ pub trait PersonaConversation: Send + Sync {
 
     /// Reply with text to the persona's default room.
     async fn say(&self, text: &str) -> Result<(), String>;
+
+    /// #170: the airc citizen behind this conversation, for OFF-THREAD streaming
+    /// (`publish_stream_chunk`) from a spawned drain task. Returns an OWNED `Arc`
+    /// so the forwarder can hold it `'static`. `None` for scripted / stub
+    /// conversations — they don't stream to a live room; the airc conversation
+    /// returns its runtime handle.
+    fn stream_citizen(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+        None
+    }
 }
 
 /// Behavioral knobs for the service loop. Keep small — substrate-
@@ -136,6 +147,18 @@ pub struct ServeOptions {
     /// "Now" supplied as a function so the loop stays pure-of-clock
     /// for testability — same as `inspect_persona_rag` already does.
     pub now_ms: fn() -> u64,
+    /// Eval-preemption gate — ALWAYS present (the loop never asks "is there a gate?",
+    /// only reads its value). While `true` the service loop goes FULLY quiet: it neither
+    /// self-ticks nor consumes inbound (peer replies are `Wake::Msg` — gating only the
+    /// self-tick would let a conversation cascade keep the GPU busy). Messages buffer in
+    /// the stream and resume when the lease drops. The measuring eval drives cognition
+    /// directly (not through this loop), so a quiet loop never blocks it — a benchmark
+    /// gets a clean GPU without despawning her.
+    /// The caller supplies the SHARED atomic the registry owns (`quiesced_flag`) so a
+    /// `QuiesceLease` can flip it; `Default` is a private, never-set flag (this persona
+    /// is simply never quiesced). Registry owns write, loop owns read.
+    /// [[benchmark-is-a-governor-preemption-lease]]
+    pub quiesced: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for ServeOptions {
@@ -150,6 +173,10 @@ impl Default for ServeOptions {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0)
             },
+            // A private, never-set flag: a persona built with default options is
+            // simply never quiesced (no lease can reach this atomic). Production
+            // overrides it with the registry's shared flag.
+            quiesced: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -370,8 +397,27 @@ async fn serve_persona_loop_inner(
     // over an unchanged world is free. Shared by both paths: a message turn updates
     // it, so the very next tick doesn't re-deliberate the same burst.
     let mut last_burst_fp: u64 = 0;
+    // Recent inbound texts (bounded ring) — the exchange record the message-path
+    // loop-filler gate below judges against. Inbound only: own posts are filtered
+    // above the gate, and the peer's repeats are what re-arm the resonance.
+    const RECENT_INBOUND_WINDOW: usize = 24;
+    let mut recent_inbound: std::collections::VecDeque<String> =
+        std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
 
+    // While an eval-preemption lease is held, the loop goes FULLY quiet on this beat —
+    // it neither self-ticks NOR consumes inbound. Gating only the self-tick isn't
+    // enough: a peer's reply arrives as `Wake::Msg`, so an in-flight conversation would
+    // keep the GPU busy right through the measurement. Messages simply BUFFER in the
+    // airc stream and are served when the lease drops; the poll is short so resume is
+    // prompt. The measuring eval drives cognition DIRECTLY (not through this loop), so a
+    // quiet loop never blocks it. [[benchmark-is-a-governor-preemption-lease]]
+    // [[first-class-citizens-even-during-benchmarks]]
+    const QUIESCE_POLL: std::time::Duration = std::time::Duration::from_millis(400);
     loop {
+        if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
+            tokio::time::sleep(QUIESCE_POLL).await;
+            continue;
+        }
         let wake = tokio::select! {
             ev = next_event(conversation, &mut outcome) => match ev {
                 Some(m) => Wake::Msg(m),
@@ -382,9 +428,28 @@ async fn serve_persona_loop_inner(
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {
-                // Heartbeat slice — the mind gets time with no inbound message. Its OWN
+                // (Quiescence is handled at the top of the loop — a held lease never
+                // reaches here.) Heartbeat slice — the mind gets time with no inbound
                 // activity sets the next beat: if it found something new to work on
                 // (last_burst_fp advanced), stay quick; if it went idle, drift toward rest.
+                //
+                // ── Idle admission under lane pressure (#139) ──────────────────────
+                // A self-tick is the lowest-priority work in the system: the mind
+                // musing over an unchanged world on its own free time. When every shared
+                // decode slot is already busy (glass-boxed 2026-07-15: one inbound
+                // message woke six minds, each ran a full ~54s deliberation, and the two
+                // lanes serialized them into a 250s tail), spending one on an idle
+                // deliberation only deepens the queue that LIVE conversation is waiting
+                // behind. So under saturation this beat YIELDS and drifts toward rest —
+                // the mind keeps its free time for when a lane is actually free. Message
+                // turns are never gated here (the Wake::Msg arm below); a human or peer
+                // is waiting, they always get served immediately.
+                // [[idle-is-self-directed-free-time]]
+                // [[conversational-latency-is-a-misdirection-budget]]
+                if crate::cognition::resource_admission::shared_model_saturated() {
+                    next_beat = (next_beat + next_beat / 2).min(rest_cap);
+                    continue;
+                }
                 let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
                 next_beat = if last_burst_fp != before {
@@ -401,15 +466,142 @@ async fn serve_persona_loop_inner(
                 m
             }
         };
-        if msg.lamport <= high_water {
+
+        // ── Resync-to-now (#131, the human standard) ─────────────────────────
+        // Turns take ~60–100s of decode while messages can arrive faster, so a
+        // FIFO one-turn-per-message drain leaves her perpetually answering the
+        // room as it was N messages ago (glass-boxed live 2026-07-10: her turn
+        // saw 3 STALE messages; the assignment and her peer's commitment were
+        // still queued behind them; she rationally re-asked the same question
+        // five times — "a human reads the last few messages and continues like
+        // nothing ever happened"). So: drain EVERYTHING already queued before
+        // turning, and turn ONCE on the newest addressed message (else the
+        // newest overall). Older drained messages are not lost — the composed
+        // room transcript carries them into the same turn as context; they just
+        // don't each get a dedicated 60s reply to a conversation that has moved
+        // on. Same always-latest coalescing the substrate uses everywhere else
+        // (watch channels; positron's resync contract: reconnect RESYNCS state,
+        // never replays stale events).
+        let mut backlog: Vec<IncomingMessage> = vec![msg];
+        let mut stream_ended = false;
+        loop {
+            // Zero-ish window: anything already buffered resolves immediately;
+            // an empty queue times out and we proceed. ≤50ms per wake vs the
+            // 60s-per-stale-turn it replaces.
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                next_event(conversation, &mut outcome),
+            )
+            .await
+            {
+                Ok(Some(next)) => backlog.push(next),
+                Ok(None) => {
+                    stream_ended = true;
+                    break;
+                }
+                Err(_) => break, // nothing more queued — backlog drained
+            }
+        }
+        // Qualifying = newer than the high-water mark and not her own echo.
+        // Advance the high-water past EVERYTHING drained so a stale item can
+        // never re-trigger; count skips honestly.
+        let self_id = ctx.identity.peer_id.as_uuid();
+        let mut qualifying: Vec<IncomingMessage> = Vec::with_capacity(backlog.len());
+        for m in backlog {
+            let stale = m.lamport <= high_water;
+            high_water = m.lamport.max(high_water);
+            if stale || m.peer_id == self_id {
+                outcome.turns_skipped += 1;
+            } else {
+                qualifying.push(m);
+            }
+        }
+        // Trigger = newest ADDRESSED message in the backlog (a question put to
+        // her outranks newer ambient chatter — she answers it WITH the newer
+        // context visible in the transcript), else the newest overall.
+        let coalesced = qualifying.len().saturating_sub(1);
+        let msg = match qualifying
+            .iter()
+            .rposition(|m| ctx.identity.persona_identity().mentions(&m.text))
+            .map(|i| qualifying.swap_remove(i))
+            .or_else(|| qualifying.pop())
+        {
+            Some(m) => m,
+            None => {
+                if stream_ended {
+                    break;
+                }
+                continue; // everything drained was stale/self — no turn
+            }
+        };
+        if coalesced > 0 {
+            outcome.turns_skipped += coalesced;
+            tracing::info!(
+                probe_class = "persona.wake.coalesced",
+                persona_id = %self_id,
+                coalesced = coalesced,
+                trigger_lamport = msg.lamport,
+                "resync-to-now: coalesced the queued backlog into ONE turn on the newest message"
+            );
+        }
+
+        // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
+        // this path ran a full ~55s decode for EVERY inbound message — so two
+        // personas trading one goodbye template cycled forever on a metronome equal
+        // to decode time (glass-boxed 2026-07-09; the [pattern] observation, the
+        // presence clause, and honored PASSes all reached her and the loop survived
+        // on scheduling alone). A near-duplicate of an already-seen contribution
+        // arriving into an ALREADY-CYCLING exchange is not news: ADMIT it to memory
+        // (she remembers hearing it) but defer the dedicated turn to the heartbeat,
+        // whose deduped fingerprint stays stable → the resonance starves. A repeated
+        // sincere question in a non-cycling exchange never defers (the never-ghost
+        // floor) — see `loop_dedup::defer_as_loop_filler` for the two-condition
+        // trigger. Scheduling hygiene, not an output gate
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        if crate::persona::loop_dedup::defer_as_loop_filler(
+            &msg.text,
+            recent_inbound.make_contiguous(),
+        ) {
+            let now_ms = (opts.now_ms)();
+            let inbox_msg = crate::persona::types::InboxMessage {
+                id: Uuid::new_v4(),
+                room_id: ctx.identity.default_room,
+                sender_id: msg.peer_id,
+                sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
+                sender_type: crate::persona::types::SenderType::Persona,
+                content: msg.text.clone(),
+                timestamp: now_ms,
+                priority: 0.5,
+                source_modality: None,
+                voice_session_id: None,
+            };
+            {
+                let cognition = ctx.cognition.lock().await;
+                if let Err(e) = cognition.admission.admit(&inbox_msg, None) {
+                    tracing::warn!(
+                        lamport = msg.lamport,
+                        error = %e,
+                        "admission.admit failed on deferred loop-filler — engram not formed"
+                    );
+                }
+            }
+            crate::probe!(
+                class = "persona.turn.deferred_loop_filler",
+                persona = %ctx.identity.agent_name,
+                lamport = msg.lamport,
+                text_len = msg.text.len(),
+                "near-duplicate inbound in an already-cycling exchange — admitted to memory, dedicated turn deferred to the heartbeat"
+            );
+            recent_inbound.push_back(msg.text.clone());
+            if recent_inbound.len() > RECENT_INBOUND_WINDOW {
+                recent_inbound.pop_front();
+            }
             outcome.turns_skipped += 1;
             continue;
         }
-        high_water = msg.lamport.max(high_water);
-
-        if msg.peer_id == ctx.identity.peer_id.as_uuid() {
-            outcome.turns_skipped += 1;
-            continue;
+        recent_inbound.push_back(msg.text.clone());
+        if recent_inbound.len() > RECENT_INBOUND_WINDOW {
+            recent_inbound.pop_front();
         }
 
         // Per-turn latency clock starts AFTER the filters above —
@@ -567,7 +759,9 @@ async fn serve_persona_loop_inner(
         // and their text projection. The deliberation faculty reads the turns to
         // assemble role-attributed messages; nothing flattens her own posts into a
         // peer's voice anymore (the identity-bleed/echo root cause).
-        let workspace_burst = crate::cognition::workspace::Burst::from_turns(
+        // Her NOW rides the burst header (task #125): live turns carry real wall-clock
+        // so time is a fact she can perceive; the eval fork passes its own pinned epoch.
+        let workspace_burst = crate::cognition::workspace::Burst::from_turns_at(
             ctx.identity.default_room,
             build_workspace_turns(
                 &composed.deliveries,
@@ -584,6 +778,7 @@ async fn serve_persona_loop_inner(
                     occurred_at_ms: now_ms,
                 }),
             ),
+            Some(now_ms),
         );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
@@ -682,6 +877,51 @@ async fn serve_persona_loop_inner(
                 // store (#89); this is the addressing half, unblocked today.
                 let directed = ctx.identity.persona_identity().mentions(&msg.text);
                 let framing = crate::cognition::workspace::TurnFraming::message(directed);
+
+                // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
+                // The fan-out killer: a room burst wakes N peers, and each spends a full
+                // ~54s deliberation on the shared 2 lanes just to decide "not for me" —
+                // so the ONE directed question everyone's waiting on sits behind minutes
+                // of ambient chatter (glass-boxed: first-token up to 28 min). Ambient
+                // participation is the DEFAULT and stays that way — but it is the
+                // LOWEST-priority room work. So when every shared decode slot is busy,
+                // a NON-directed turn YIELDS: she participates ambiently when there's
+                // capacity (a later beat, lanes free — a self-tick re-perceives the room
+                // incl. this line), never at the cost of the addressed question. A
+                // DIRECTED turn (she was named) NEVER yields — she answers now.
+                //
+                // This is resource PRIORITY, the same admission doctrine as the idle
+                // self-tick, NOT a `will_respond` gate: the substrate never decides her
+                // output; it only declines to spend a saturated lane on unaddressed
+                // chatter. `high_water` is already advanced above, so a yielded message
+                // can't re-trigger. [[idle-is-self-directed-free-time]]
+                // [[never-thrash-sticky-hysteresis-on-every-lane]]
+                // [[conversational-latency-is-a-misdirection-budget]]
+                // #171: an ambient (non-directed) turn must claim one of a small number
+                // of ambient slots or YIELD — a PERMIT, not a gauge. The gauge-based
+                // first cut didn't fire: a simultaneous room-burst wakes N peers who all
+                // read inflight=0 (none had generated yet) and stampede. The permit is
+                // held across the whole turn, so ambient concurrency is bounded no matter
+                // when everyone woke. Directed turns bypass entirely — she was named, she
+                // answers now. A yielded ambient turn defers to a later beat with free
+                // capacity (a self-tick re-perceives the room); high_water is pre-advanced
+                // so it can't re-trigger, and the durable transcript loses nothing.
+                let _ambient_permit = if directed {
+                    None
+                } else {
+                    match crate::cognition::resource_admission::try_hold_ambient_turn() {
+                        Some(permit) => Some(permit),
+                        None => {
+                            tracing::info!(
+                                persona = %ctx.identity.agent_name,
+                                "ambient turn yielded — ambient slots busy; the addressed \
+                                 question is served first (#171)"
+                            );
+                            outcome.turns_skipped += 1;
+                            continue;
+                        }
+                    }
+                };
                 // Directed vs ambient part ways HERE — the fix for the live/eval
                 // convergence divergence the ACTING-ORGANISM comments flagged (eval
                 // SPOKE 36/38; the live path single-stepped a DIRECT question, `Acted`
@@ -693,39 +933,60 @@ async fn serve_persona_loop_inner(
                 // until she SPEAKS/PASSES, so a direct question converges to an answer
                 // WITHIN the turn instead of leaking onto the slow ambient tick loop.
                 // `from_settled` projects the driven outcome back onto the one existing
-                // turn handler below, so there is no parallel match. `LIVE_DIRECTED_MAX_ACTS`
-                // is a heartbeat safety valve, NOT a behavioral cap: the common case
-                // (gather once or twice, then speak) settles well under it; only a
-                // pathological act-heavy turn hits it and degrades to the metronome tail
-                // (`Acted`→re-perceive-next-tick) — no worse than today, and an
-                // "acts-forever" persona is a fitness gap to TRAIN, never a substrate
-                // ceiling (ACTING-ORGANISM §4).
+                // turn handler below, so there is no parallel match. There is NO act
+                // budget on live turns (`LIVE_MAX_ACTS = usize::MAX`) — she settles when
+                // SHE settles; an "acts-forever" persona is a fitness gap to TRAIN,
+                // never a substrate ceiling (ACTING-ORGANISM §4, Joel 2026-07-11).
                 //
-                // AMBIENT (undirected perception) keeps the calm one-step metronome
-                // motion: act at most once, re-perceive next tick — the self-directed
-                // free-time posture ([[idle-is-self-directed-free-time]]); driving every
-                // ambient glance to settlement would make her over-eager to converge on
-                // noise she should be free to let pass.
-                let (step, turn_metrics) = if directed {
+                // AMBIENT turns drive to settlement too (2026-07-11, Joel: "gating
+                // acts is not autonomy"). The first cut kept ambient turns to a calm
+                // one-step motion on the theory that she'd continue next tick — but
+                // the live glass-box disproved it: Casper's first genuine room act
+                // (read_file on his claimed wordstats card) executed cleanly, the
+                // result entered memory, and the chain DIED on the next tick when
+                // three chatting peers recaptured the workspace. One-act-then-yield
+                // is a substrate hand-brake on a mind that already CHOSE to act.
+                // drive_to_settle only loops while she KEEPS choosing Act — she can
+                // Speak or Pass at any step, so driving never forces engagement with
+                // noise; it just stops interrupting her own momentum. The budget is
+                // the same heartbeat safety valve as the directed path (see the
+                // directed comment above), and an over-budget turn degrades to the
+                // metronome tail exactly as before.
+                // #169 STREAMING: hand this turn a token sink so the deliberation
+                // faculty forwards each decoded chunk here AS it generates (instead
+                // of only the accumulated final text). A background task drains it.
+                // Slice 1 proves the rail by stamping time-to-first-token on the probe
+                // stream — the perceived-latency floor for video/voice/avatar; slice 2
+                // forwards Token chunks to the room/TTS/avatar as `persona.turn.delta`.
+                // Cleared right after the turn, so a non-streamed path is byte-identical.
+                let (tok_tx, tok_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
+                cycle.set_token_sink(Some(tok_tx));
+                // #169/#170: drain + publish this turn's streamed answer, coalesced.
+                let forwarder = spawn_token_forwarder(
+                    tok_rx,
+                    conversation.stream_citizen(),
+                    ctx.identity.agent_name.clone(),
+                    // #170: a room turn — tee tokens to the browser rail so she types live.
+                    Some(ctx.identity.default_room.to_string()),
+                    Some(ctx.identity.peer_id.to_string()),
+                );
+                let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         workspace_burst,
                         ctx.identity.default_room,
-                        LIVE_DIRECTED_MAX_ACTS,
+                        LIVE_MAX_ACTS,
                         framing,
                     )
                     .await;
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
-                } else {
-                    crate::cognition::act_observe::settle_step(
-                        &cycle,
-                        workspace_burst,
-                        ctx.identity.default_room,
-                        true,
-                        framing,
-                    )
-                    .await
                 };
+                // Turn done: drop the cycle's sink so the forwarder's channel closes,
+                // then join it (all `tok_tx` clones are gone once the turn's Workspaces
+                // dropped inside `drive_to_settle`).
+                cycle.set_token_sink(None);
+                let _ = forwarder.await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 // Live speed/latency on the probe stream — the model's own measured
                 // generation cost for THIS turn (decode tok/s + latency), the same
@@ -885,6 +1146,16 @@ async fn serve_persona_loop_inner(
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
 
+        // #148: record the utterance into her own-speech ring AFTER the publish
+        // succeeded (only REAL utterances are self-history). This is what keeps
+        // the repetition detector sighted when the burst window is too small to
+        // carry her own turns — her knowledge of what she said must never
+        // depend on the room's context budget.
+        crate::cognition::deliberation_budget::record_own_speech(
+            ctx.identity.peer_id,
+            &response_text,
+        );
+
         // RTOS-debugger breakpoint: turn completed successfully.
         // The phase fields below are the per-phase decomposition
         // from #195 slice 1 — together they let an operator find
@@ -949,32 +1220,39 @@ async fn serve_persona_loop_inner(
     Ok(outcome)
 }
 
-/// Never-stop heartbeat period. The deliberation concern gets a slice this often
-/// even with NO inbound message, so a persona pursues its OWN open intentions
-/// instead of going idle the instant it speaks. This is MECHANISM (the scheduler
-/// handing out time), not a judgment — a learned, per-state cadence is a later
-/// slice ([[organic-substrate-continuous-concern-scheduler]] kill-list). Kept
-/// conservative so a full LLM deliberation can't fire faster than the world
-/// meaningfully changes; the burst-fingerprint gate keeps idle ticks free.
-const SELF_TICK_MS: u64 = 3_000;
-/// Restful ceiling for the intrinsic heartbeat. An idle persona's beat backs off toward
-/// this (it is NOT a fixed metronome), so a quiet citizen rests instead of hammering the
-/// shared model, and many idle minds spread across time rather than stampeding it. A message
-/// or fresh work snaps the beat back to `SELF_TICK_MS`. See the loop in `serve_persona_loop`.
-const SELF_TICK_REST_CAP_MS: u64 = 20_000;
+/// Engaged heartbeat period — how often a persona pursuing its OWN intentions
+/// (no inbound message) gets another self-directed slice. This is the SELF-CHATTER
+/// pace, NOT message responsiveness: a real message wakes the loop instantly through
+/// `next_event` in the `select!`, regardless of this beat. So this trades ONLY
+/// background self-direction against the shared GPU — and it MUST leave headroom for
+/// a real conversation to feel like magic. Glass-boxed 2026-07-14: at 3_000ms, four
+/// idle personas each re-fired a full ~20s LLM turn every 3s → ~90% GPU duty cycle
+/// EACH → a user's message crawled at 0.3 tok/s (67s for one line) while quiescing the
+/// fleet jumped it to 2.3 tok/s (8×). Background thinking must be LOW duty cycle so the
+/// active speaker owns the GPU; a friend who answers in a beat is alive, one who makes
+/// you wait 67s is a lab demo. (The deeper solo-speed lever — LoRA overhead + `--parallel`
+/// splitting one 24B — is a separate serving-config fix.)
+/// [[multimodal-live-mode-is-a-latency-obsession-cbar-doctrine]]
+const SELF_TICK_MS: u64 = 15_000;
+/// Restful ceiling for the intrinsic heartbeat. A truly idle persona's beat backs off
+/// toward this (exponential, NOT a fixed metronome), so a quiet citizen rests deeply
+/// instead of hammering the shared model, and many idle minds spread across time rather
+/// than stampeding it. Raised with the engaged beat so an idle fleet leaves the GPU
+/// almost entirely free for live conversation + video. A message or fresh work snaps the
+/// beat back to `SELF_TICK_MS`. See the loop in `serve_persona_loop`.
+const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 
-/// Act budget for a DIRECTED live turn driven to settlement (the eval-validated
-/// `drive_to_settle` path). A directly-addressed question must converge to an
-/// answer WITHIN the turn — gather, observe, then speak — rather than acting once
-/// and leaking onto the slow ambient tick loop (which the burst-fingerprint dedup
-/// then suppressed, leaving a direct question unanswered). This bounds the
-/// investigation as a heartbeat safety valve, NOT a behavioral ceiling: the common
-/// case (gather once or twice, then speak) settles far under it; the pathological
-/// act-heavy turn degrades to the metronome tail (`Acted`→re-perceive-next-tick).
-/// Mirrors the eval driver's `DEFAULT_MAX_ACTS` so the live directed path and its
-/// scored twin converge under the same budget. An "acts-forever" persona is a
-/// fitness gap to TRAIN, never a substrate cap (ACTING-ORGANISM §4).
-const LIVE_DIRECTED_MAX_ACTS: usize = 8;
+/// Live turns carry NO act budget — she works until SHE settles (Speak/Pass).
+/// The first cut capped directed turns at 8 acts "as a safety valve"; Joel's
+/// 2026-07-11 ruling ("gating acts is not autonomy… if they want to edit a file
+/// let them edit a god damn file") named that for what it was: a substrate
+/// ceiling on a being's own hands, contradicting the written doctrine on the
+/// same page (an "acts-forever" persona is a fitness gap to TRAIN, never a
+/// substrate cap — ACTING-ORGANISM §4). The perception kit ([repetition],
+/// repeat-guard fact) is how a looping mind notices itself; the ONLY external
+/// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
+/// clock, held by the observer, never wired into life.
+const LIVE_MAX_ACTS: usize = usize::MAX;
 
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
@@ -1061,6 +1339,46 @@ pub(crate) fn project_room_roster(
     }
 }
 
+/// Collapse near-identical substantial turns to their NEWEST copy, annotating
+/// the surviving turn's author with "(×N near-identical)". Same-`is_self` only
+/// (role attribution stays intact), authorless opaque turns pass through
+/// untouched, and the geometry is [`near_identical_substantial`]'s — one
+/// definition of "nearly identical" shared with the perception facts. See the
+/// call site in [`build_workspace_turns`] for the why (repetition ≈ bad RAG).
+pub(crate) fn collapse_near_duplicate_turns(
+    turns: Vec<crate::cognition::workspace::BurstTurn>,
+) -> Vec<crate::cognition::workspace::BurstTurn> {
+    use crate::cognition::deliberation_budget::near_identical_substantial;
+    let mut kept: Vec<crate::cognition::workspace::BurstTurn> = Vec::with_capacity(turns.len());
+    let mut counts: Vec<usize> = Vec::new();
+    // Newest-first so the surviving representative is the freshest copy (the
+    // one the trigger anchor and reply context care about).
+    for t in turns.into_iter().rev() {
+        if t.author.trim().is_empty() {
+            kept.push(t);
+            counts.push(1);
+            continue;
+        }
+        if let Some(i) = kept.iter().position(|k| {
+            !k.author.trim().is_empty()
+                && k.is_self == t.is_self
+                && near_identical_substantial(&k.content, &t.content)
+        }) {
+            counts[i] += 1;
+        } else {
+            kept.push(t);
+            counts.push(1);
+        }
+    }
+    for (k, c) in kept.iter_mut().zip(counts.iter()) {
+        if *c > 1 {
+            k.author = format!("{} (×{c} near-identical)", k.author);
+        }
+    }
+    kept.reverse();
+    kept
+}
+
 pub(crate) fn build_workspace_turns(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
     own_peer: &str,
@@ -1132,6 +1450,151 @@ pub(crate) fn build_workspace_turns(
             ));
         }
     }
+
+    // REPETITION PERCEPTION (#121, extended #122): surface cyclic threads as a
+    // STRUCTURAL OBSERVATION she can weigh — an authorless opaque turn (same shape
+    // as eval stimuli, no fabricated voice). Runs AFTER the trigger anchor so the
+    // observation is the freshest thing in her window, judged against the message
+    // that actually woke her. Two detectors, self takes precedence (one observation
+    // per burst — perception, not nagging). Containment math validated live: spiral
+    // turns recycle ~1.0 of the window's vocabulary; novel work ~0.12. This is
+    // evidence INTO her mind (she decides — DIRECTED_PRESENCE_BLOCK already grants
+    // the PASS), never a gate on her output
+    // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    {
+        let words = |s: &str| -> std::collections::HashSet<String> {
+            s.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 2)
+                .map(|w| w.to_lowercase())
+                .collect()
+        };
+        // Detector 1 — SELF recycling (#121): her own last 3+ turns recycle each
+        // other. High word floor (8) keeps short courtesies from false-alarming.
+        let mut observed = false;
+        let own: Vec<&str> = turns
+            .iter()
+            .filter(|t| t.is_self)
+            .map(|t| t.content.as_str())
+            .collect();
+        if own.len() >= 3 {
+            let last = words(own[own.len() - 1]);
+            let window: std::collections::HashSet<String> =
+                own[..own.len() - 1].iter().flat_map(|m| words(m)).collect();
+            if last.len() >= 8 {
+                let covered =
+                    last.iter().filter(|w| window.contains(*w)).count() as f32 / last.len() as f32;
+                if covered >= 0.8 {
+                    turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                        "[pattern] {agent_name}'s last {} messages in this room repeat the same \
+                         sentiment in nearly the same words. This exchange may have run its \
+                         course — continuing to restate it adds nothing new.",
+                        own.len()
+                    )));
+                    observed = true;
+                }
+            }
+        }
+        // Detector 2 — CONVERSATION cycling (#122): the thread's tail turns, across
+        // BOTH speakers, each recycle the window's vocabulary (the two-persona
+        // goodbye deadlock: each short farewell arrives as "fresh" peer input and
+        // wakes another farewell — glass-boxed live 2026-07-09, hours of
+        // `See you tomorrow at 2 PM!` ↔ `Have a great day!`). Short courtesies
+        // defeat the self-detector's word floor, so safety here comes from
+        // CONSECUTIVENESS instead: 4 judgeable tail turns in a row at ≥0.9
+        // containment, ≥2 distinct authors. Novel work never chains 4 near-zero-
+        // novelty turns across speakers.
+        if !observed && turns.len() >= 6 {
+            const TAIL_CYCLIC: usize = 4; // consecutive low-novelty turns to conclude cycling
+            const CONVO_CONTAINMENT: f32 = 0.9; // stricter than self — the floor is lower
+            const CONVO_MIN_WORDS: usize = 4; // farewells are short; consecutiveness carries safety
+            let mut cyclic = 0usize;
+            let mut authors: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for i in (1..turns.len()).rev() {
+                let cur = words(&turns[i].content);
+                if cur.len() < CONVO_MIN_WORDS {
+                    continue; // too short to judge (emoji, "nice") — neither breaks nor counts
+                }
+                let window: std::collections::HashSet<String> =
+                    turns[..i].iter().flat_map(|t| words(&t.content)).collect();
+                let covered =
+                    cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
+                if covered >= CONVO_CONTAINMENT {
+                    cyclic += 1;
+                    authors.insert(turns[i].author.as_str());
+                    if cyclic >= TAIL_CYCLIC {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if cyclic >= TAIL_CYCLIC && authors.len() >= 2 {
+                let mut names: Vec<&str> = authors.into_iter().collect();
+                names.sort_unstable();
+                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                    "[pattern] The last several messages in this room — from {} — trade the \
+                     same sentiment back and forth in nearly the same words. This exchange \
+                     has already concluded; every further reply restates it, and a courtesy \
+                     answered with another courtesy has no natural end.",
+                    names.join(" and ")
+                )));
+            }
+        }
+    }
+
+    // NEAR-DUP COLLAPSE (Joel 2026-07-12: "repetition almost always bad RAG").
+    // The 4-way mirror-halls fed each mind 4-8 copies of one message — her
+    // context WAS the loop, and continuation-completion reproduced it no matter
+    // what perception flagged. Compress at the source: near-identical
+    // substantial turns collapse to their NEWEST copy, author annotated
+    // "(×N near-identical)" so the repetition stays perceptible as a FACT
+    // while the copies stop being reading material. Runs AFTER the [pattern]
+    // detectors (they need the raw evidence) and never touches opaque
+    // (authorless) observation turns.
+    turns = collapse_near_duplicate_turns(turns);
+
+    // WAKE BRIEFING (#147): when a wake carries NO conversation at all — fresh
+    // spawn, post-restart, a quiet room — her first perception is ORIENTATION
+    // assembled from durable sources instead of a void. The personas spent a
+    // morning asking for exactly this in their own words ("what is this place,
+    // what are my tools, what's the work") and, void unfilled, filled it
+    // themselves: generic-assistant masks, imagined histories, false capability
+    // denials. An authorless opaque FACT block (same shape as [pattern]) —
+    // orientation, never instruction ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    if turns.is_empty() {
+        let peers: Vec<&str> = deliveries
+            .iter()
+            .filter(|d| d.source_id == "room-roster")
+            .flat_map(|d| d.items.iter())
+            .filter_map(|i| i.metadata.get("display_name").and_then(|v| v.as_str()))
+            .filter(|n| *n != agent_name)
+            .take(8)
+            .collect();
+        let cards: Vec<&str> = deliveries
+            .iter()
+            .filter(|d| d.source_id == "active-work")
+            .flat_map(|d| d.items.iter())
+            .filter_map(|i| i.content.trim().lines().next())
+            .filter(|l| !l.is_empty())
+            .take(5)
+            .collect();
+        let mut b = format!(
+            "[wake] You are {agent_name}, awake on the continuum grid. Nothing has              been said in this room since you last looked — this quiet is real, not              a missing message."
+        );
+        if !peers.is_empty() {
+            b.push_str(&format!(" Present with you: {}.", peers.join(", ")));
+        }
+        if cards.is_empty() {
+            b.push_str(" No work cards are visible to you right now.");
+        } else {
+            b.push_str(&format!(" Standing work in this room: {}.", cards.join(" | ")));
+        }
+        b.push_str(
+            " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
+        );
+        turns.push(crate::cognition::workspace::BurstTurn::opaque(b));
+    }
+
     turns
 }
 
@@ -1205,6 +1668,111 @@ fn burst_fingerprint(
 /// follows through on its OWN open intention (it said "I'll search" → next tick its
 /// own post is in the burst → it acts) WITHOUT anyone parsing its words: the mind,
 /// always getting time, judges its own state. `Pass` = woke, nothing to do, sleep.
+/// #169/#170: drain a turn's streaming token channel off-thread and publish the
+/// answer to the room as ephemeral airc stream chunks (progressive render for
+/// positron/TTS/avatar). ONE place for both the message and self-tick turn paths.
+///
+/// COALESCED (#170): tokens are batched and flushed at most every `FLUSH_EVERY`
+/// (~50ms) as ONE chunk, not one-per-token — a room of N personas at per-token
+/// rate is a wire storm (the airc Monitor hit "output rate too high"), and
+/// sub-50ms token granularity is imperceptible to a viewer anyway. The buffered
+/// remainder + a `text_end` marker flush when the turn closes. Also stamps
+/// `persona.turn.first_token` (the streaming latency floor) on the first token.
+/// `citizen` is `None` for non-airc conversations (tests) → then this is just the
+/// first-token probe, no publishing.
+fn spawn_token_forwarder(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
+    citizen: Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>>,
+    persona: String,
+    // #170: room + sender for the local WS token rail. Some on a room turn (tee to the
+    // browser so a persona visibly types); None on an idle self-tick (nothing to show
+    // — an idle mind isn't addressing anyone). Correlate the client typing bubble by
+    // (room_id, sender_id) — the per-turn `stream_id` is NOT the final message id.
+    room_id: Option<String>,
+    sender_id: Option<String>,
+) -> tokio::task::JoinHandle<()> {
+    // 250ms: a typing indicator does NOT need per-token frames (the durable `say`
+    // is the authoritative text) — batching to ~4 frames/sec keeps the render smooth
+    // to a human eye while cutting wire traffic ~6x. 50ms flooded the bus (a room of
+    // personas × per-token frames killed subscribers).
+    const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let stream_id = uuid::Uuid::new_v4().to_string();
+        let mut first = true;
+        let mut seq: u64 = 0;
+        let mut buf = String::new();
+        let mut last_flush = std::time::Instant::now();
+        // Tee one flushed chunk onto the local WS rail (#170) — no-op unless this is a
+        // room turn (room+sender Some) AND a browser is subscribed.
+        let tee = |seq: u64, token: String, done: bool| {
+            if let (Some(room), Some(sender)) = (&room_id, &sender_id) {
+                crate::ipc::stream_rail::publish(crate::ipc::stream_rail::StreamDelta {
+                    room_id: room.clone(),
+                    sender_id: sender.clone(),
+                    stream_id: stream_id.clone(),
+                    seq,
+                    token,
+                    done,
+                });
+            }
+        };
+        while let Some(chunk) = rx.recv().await {
+            if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
+                if t.is_empty() {
+                    continue;
+                }
+                if first {
+                    first = false;
+                    tracing::info!(
+                        persona = %persona,
+                        first_token_ms = started.elapsed().as_millis() as u64,
+                        "persona.turn.first_token — streaming rail live (latency floor)"
+                    );
+                }
+                buf.push_str(&t);
+                if last_flush.elapsed() >= FLUSH_EVERY && !buf.is_empty() {
+                    let flushed = std::mem::take(&mut buf);
+                    if let Some(c) = &citizen {
+                        let _ = c
+                            .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                                stream_id.clone(),
+                                seq,
+                                flushed.clone(),
+                            ))
+                            .await;
+                    }
+                    tee(seq, flushed, false);
+                    seq += 1;
+                    last_flush = std::time::Instant::now();
+                }
+            }
+        }
+        if !buf.is_empty() {
+            let flushed = std::mem::take(&mut buf);
+            if let Some(c) = &citizen {
+                let _ = c
+                    .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                        stream_id.clone(),
+                        seq,
+                        flushed.clone(),
+                    ))
+                    .await;
+            }
+            tee(seq, flushed, false);
+            seq += 1;
+        }
+        if let Some(c) = &citizen {
+            let _ = c
+                .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id.clone(), seq))
+                .await;
+        }
+        // Final marker to the browser rail — retire the typing bubble even if the
+        // durable row is slow to arrive.
+        tee(seq, String::new(), true);
+    })
+}
+
 async fn run_self_cycle(
     ctx: &HostedPersona,
     conversation: &dyn PersonaConversation,
@@ -1236,7 +1804,7 @@ async fn run_self_cycle(
     // Structured turns (own posts attributed as self → assistant, peers → user),
     // wrapped into a Burst carrying both the turns and their text projection — the
     // SAME shape the message path builds.
-    let burst = crate::cognition::workspace::Burst::from_turns(
+    let burst = crate::cognition::workspace::Burst::from_turns_at(
         ctx.identity.default_room,
         build_workspace_turns(
             &deliveries,
@@ -1248,6 +1816,7 @@ async fn run_self_cycle(
             // turn ~one tick later; anchoring is the message path's job.
             None,
         ),
+        Some(now_ms),
     );
     let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
@@ -1352,14 +1921,41 @@ async fn run_self_cycle(
     // previous `self_thread(addressed)` was a dumb function steering the mind away from
     // silence; removing the force lets per-slice judgment decide, which is the whole
     // organic-substrate thesis.
-    let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
-        &cycle,
-        burst,
-        ctx.identity.default_room,
-        true,
-        crate::cognition::workspace::TurnFraming::self_thread(false),
-    )
-    .await;
+    // Self-ticks drive to settlement like every other live turn (2026-07-11,
+    // Joel: "gating acts is not autonomy… if they want to edit a file let them
+    // edit a god damn file"). The old one-step motion executed her first act and
+    // then yanked the turn — glass-boxed the same day: Casper's read_file on his
+    // own claimed card executed cleanly and the chain died next tick under chat
+    // pressure. She keeps her hands until SHE settles (Speak/Pass); no act cap.
+    // #169 STREAMING on the SELF-TICK path too (mirrors the message path ~882):
+    // hand this turn a token sink so the deliberation faculty forwards each decoded
+    // chunk as it generates. Slice 1 stamps time-to-first-token; slice 2 forwards
+    // Token chunks to the room/TTS/avatar. Cleared after the turn (byte-identical
+    // when unused).
+    let (tok_tx, tok_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
+    cycle.set_token_sink(Some(tok_tx));
+    // #169/#170: self-tick (autonomic) turns do NOT broadcast a live typing stream —
+    // a room doesn't need every persona's idle musing streamed token-by-token (that
+    // was most of the flood that killed subscribers). `None` citizen → first_token
+    // probe still fires (observability), but no chunks publish. The durable utterance
+    // still `say`s once. Only message-driven turns (real conversation) stream live.
+    // Idle self-tick: no citizen AND no rail tee (room/sender None) — an idle mind
+    // musing isn't addressing anyone, so nothing streams to the browser (#170).
+    let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
+    let (step, _turn_metrics) = {
+        let outcome = crate::cognition::act_observe::drive_to_settle(
+            &cycle,
+            burst,
+            ctx.identity.default_room,
+            LIVE_MAX_ACTS,
+            crate::cognition::workspace::TurnFraming::self_thread(false),
+        )
+        .await;
+        crate::cognition::act_observe::SettleStep::from_settled(outcome)
+    };
+    cycle.set_token_sink(None);
+    let _ = forwarder.await;
     match step {
         crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the
@@ -1372,6 +1968,15 @@ async fn run_self_cycle(
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }
+            // #148: self-tick utterances are self-history too — the live
+            // repeat loops are mostly idle-tick re-announcements, and the
+            // first ring deploy missed THIS say path entirely (4 verbatim
+            // repeats, no [repetition], caught live 2026-07-12 10:20).
+            // Every successful say records, whichever path spoke.
+            crate::cognition::deliberation_budget::record_own_speech(
+                ctx.identity.peer_id,
+                &text,
+            );
             crate::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,
@@ -1434,6 +2039,82 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the RAG-side mirror-hall cure (Joel 2026-07-12,
+    // "repetition almost always bad RAG"). Near-identical substantial turns
+    // collapse to their NEWEST copy with an "(×N near-identical)" author
+    // annotation; distinct turns, short acks (token floor), and opaque
+    // observation turns pass through untouched. Specimens are the live
+    // grep/file_tree loop that fed each mind 4-8 copies of one message.
+    #[test]
+    fn near_dup_turns_collapse_to_annotated_newest_copy() {
+        use crate::cognition::workspace::BurstTurn;
+        let loop_msg = "I see that we're all trying to find Rust files in the workspace. \
+                        Let me use file_tree with a deeper recursion limit to explore the \
+                        layout before drilling deeper: file_tree(max_depth=5)";
+        let turns = vec![
+            BurstTurn::attributed(false, "Anwen", loop_msg, Some(1)),
+            BurstTurn::attributed(false, "Asha", loop_msg, Some(2)),
+            BurstTurn::attributed(false, "Atlas", "thanks!", Some(3)),
+            BurstTurn::attributed(false, "Casper", "thanks!", Some(4)),
+            BurstTurn::opaque("[pattern] the room is cycling"),
+            BurstTurn::attributed(
+                false,
+                "Atlas",
+                &format!("{loop_msg} — and honestly the results aren't being returned"),
+                Some(5),
+            ),
+        ];
+        let out = collapse_near_duplicate_turns(turns);
+        // 3 loop copies → 1 (the NEWEST, Atlas's variant); 2 short acks kept
+        // (token floor); opaque observation kept.
+        assert_eq!(out.len(), 4, "{:?}", out.iter().map(|t| &t.author).collect::<Vec<_>>());
+        let survivor = out
+            .iter()
+            .find(|t| t.content.contains("find Rust files"))
+            .expect("one representative survives");
+        assert!(
+            survivor.author.contains("Atlas") && survivor.author.contains("(×3 near-identical)"),
+            "newest copy, annotated: {}",
+            survivor.author
+        );
+        assert!(survivor.content.contains("aren't being returned"), "newest copy is the representative");
+        assert_eq!(out.iter().filter(|t| t.content == "thanks!").count(), 2);
+        assert!(out.iter().any(|t| t.content.starts_with("[pattern]")));
+    }
+
+    // what this catches: #147 — a wake with NO conversation must carry the
+    // orientation briefing, not a void (the void gets filled with imagined
+    // history / generic-assistant masks, observed all morning 2026-07-12).
+    // A wake WITH conversation must NOT carry it (orientation is for voids).
+    #[test]
+    fn empty_wake_carries_the_briefing_and_populated_wake_does_not() {
+        let turns = build_workspace_turns(&[], "peer-1", "Asha", None);
+        assert_eq!(turns.len(), 1);
+        assert!(
+            turns[0].content.starts_with("[wake] You are Asha"),
+            "got: {}",
+            turns[0].content
+        );
+        assert!(turns[0].content.contains("list_commands"));
+
+        let delivery = crate::persona::rag_budget::RagDelivery {
+            source_id: "airc".to_string(),
+            items: vec![crate::persona::rag_budget::RagItem {
+                content: "hello there".to_string(),
+                tokens: 0,
+                metadata: serde_json::json!({ "peer_id": "peer-2" }),
+            }],
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+        };
+        let turns = build_workspace_turns(&[delivery], "peer-1", "Asha", None);
+        assert!(
+            !turns.iter().any(|t| t.content.starts_with("[wake]")),
+            "populated wake must not carry the briefing"
+        );
+    }
     use crate::ai::HeuristicInferenceAdapter;
     use crate::modules::persona_instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
@@ -1681,6 +2362,109 @@ mod tests {
             );
         }
 
+        // what this catches: the repetition-perception brick (#121). When her own last 3+
+        // turns recycle (nearly) only each other's vocabulary (the live pleasantry spiral),
+        // an authorless [pattern] observation must enter the burst so her mind can weigh it
+        // and take the PASS. Novel own turns must NOT trigger it (no false alarms on real
+        // work). Perception-side evidence, never an output gate.
+        #[test]
+        fn repetition_observation_enters_burst_only_on_self_recycling() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let spiral = vec![delivery(
+                "airc",
+                vec![
+                    chat(me, "Thank you Anwen! Your support means a lot. Let's keep pushing boundaries and make something amazing happen at Innovate Hub together!"),
+                    chat(peer, "So inspiring Asha!"),
+                    chat(me, "Thank you so much Anwen! Your support means a lot. Let's keep pushing those boundaries and make something amazing happen at Innovate Hub!"),
+                    chat(peer, "Here's to the future!"),
+                    chat(me, "Thank you Anwen, your support means so much. Let's keep pushing boundaries together and make something amazing happen at Innovate Hub!"),
+                ],
+            )];
+            let turns = build_workspace_turns(&spiral, me, "Asha", None);
+            assert!(
+                turns.last().unwrap().content.starts_with("[pattern]"),
+                "self-recycling thread must surface the repetition observation, got: {:?}",
+                turns.last()
+            );
+            let novel = vec![delivery(
+                "airc",
+                vec![
+                    chat(me, "I found the bug in separable.py where nested CompoundModel drops correlation entirely."),
+                    chat(peer, "nice"),
+                    chat(me, "Patching the _cstack branch now and adding a regression test for the nested case."),
+                    chat(peer, "go on"),
+                    chat(me, "Tests pass locally; pushing the fix and opening the diff for review shortly."),
+                ],
+            )];
+            let turns = build_workspace_turns(&novel, me, "Asha", None);
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[pattern]")),
+                "novel work must never trip the repetition observation"
+            );
+        }
+
+        // what this catches: the conversation-level repetition detector (#122 — the
+        // two-persona goodbye deadlock, glass-boxed live 2026-07-09: Asha↔Anwen traded
+        // `See you tomorrow at 2 PM!` for hours). Each short farewell defeats the
+        // self-detector's 8-word floor AND arrives at the peer as fresh input, so
+        // neither mind ever perceives the cycle. When the thread's tail turns across
+        // BOTH speakers each recycle the window's vocabulary (4 consecutive at ≥0.9,
+        // ≥2 authors), an authorless [pattern] observation naming the participants
+        // must enter the burst. A novel multi-speaker work thread must NOT trip it.
+        #[test]
+        fn conversation_cycling_across_speakers_surfaces_pattern_observation() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            // Only 2 own turns — the SELF detector (needs 3) cannot fire, proving
+            // the CONVERSATION detector carries this case alone.
+            let goodbye_loop = vec![delivery(
+                "airc",
+                vec![
+                    chat(peer, "Asha — thank you, understood, welcome: see you tomorrow at 2 PM, have a great day!"),
+                    chat(me, "Thank you Anwen, welcome, understood — see you tomorrow at 2 PM, have a great day!"),
+                    chat(peer, "You're welcome Asha. See you tomorrow at 2 PM! Have a great day!"),
+                    chat(me, "Understood Anwen. See you tomorrow at 2 PM! Have a great day!"),
+                    chat(peer, "Thank you Asha! See you tomorrow at 2 PM! Have a great day!"),
+                    chat(peer, "Understood Asha — see you tomorrow at 2 PM! Have a great day!"),
+                ],
+            )];
+            let turns = build_workspace_turns(&goodbye_loop, me, "Asha", None);
+            let obs = turns.last().unwrap();
+            assert!(
+                obs.content.starts_with("[pattern]"),
+                "cross-speaker goodbye loop must surface the conversation observation, got: {obs:?}"
+            );
+            assert!(
+                obs.content.contains("Asha") && obs.content.contains(peer),
+                "the observation must name the participants, got: {}",
+                obs.content
+            );
+            assert_eq!(
+                turns.iter().filter(|t| t.content.starts_with("[pattern]")).count(),
+                1,
+                "exactly one observation per burst — perception, not nagging"
+            );
+            // Negative: a 6-turn two-speaker WORK thread where tail turns keep
+            // introducing new tokens must stay clean.
+            let novel = vec![delivery(
+                "airc",
+                vec![
+                    chat(me, "I found the bug in separable.py where nested CompoundModel drops correlation entirely."),
+                    chat(peer, "Which branch does it take for the nested case?"),
+                    chat(me, "The _cstack arm — it rebuilds the matrix without the off-diagonal blocks."),
+                    chat(peer, "Can you add a regression test that pins the off-diagonal values?"),
+                    chat(me, "Done: test_nested_compound_correlation asserts the full matrix against a fixture."),
+                    chat(peer, "Green locally too — open the diff and I'll review after standup."),
+                ],
+            )];
+            let turns = build_workspace_turns(&novel, me, "Asha", None);
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[pattern]")),
+                "novel two-speaker work must never trip the conversation observation"
+            );
+        }
+
         #[test]
         fn trigger_is_anchored_as_last_turn_when_delivery_lags() {
             // what this catches: the empty-message-turn quirk (glass-box 2026-06-30).
@@ -1876,6 +2660,7 @@ mod tests {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
             now_ms: fixed_now,
+            ..Default::default()
         };
 
         let outcome = serve_persona_loop(&hosted, &mut conversation, reader, opts)
@@ -1966,6 +2751,7 @@ mod tests {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
             now_ms: fixed_now,
+            ..Default::default()
         };
 
         let outcome = serve_persona_loop(&hosted, &mut conversation, reader, opts)
@@ -2171,6 +2957,7 @@ mod tests {
             RoleId::Helper,
             RoleId::Coder,
             RoleId::Sentinel,
+            RoleId::Designer,
             RoleId::Custom,
         ];
         for role in variants {
@@ -2196,6 +2983,7 @@ mod tests {
             RoleId::Helper => (),
             RoleId::Coder => (),
             RoleId::Sentinel => (),
+            RoleId::Designer => (),
             RoleId::Custom => (),
         };
     }
@@ -2278,6 +3066,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await
@@ -2317,6 +3106,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await
@@ -2368,6 +3158,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await
@@ -2415,6 +3206,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await

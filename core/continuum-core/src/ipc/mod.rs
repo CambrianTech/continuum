@@ -107,6 +107,7 @@ impl IpcStream for TcpStream {
 // here so existing call sites resolve unchanged.
 
 pub mod diagnostics;
+pub mod experience_resolver;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
@@ -116,6 +117,7 @@ pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
 pub mod room_purpose;
+pub mod stream_rail;
 pub mod vitals_emitter;
 pub mod ws;
 
@@ -1064,6 +1066,26 @@ pub fn start_server(
             .register(disk_pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>);
         broker.register(pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>);
 
+        // Cargo-target eviction owner (task #155 wire 2). The 2026-07-13
+        // incident: the broker spent days emitting the designed zero-byte
+        // "disk hot AND nobody owns the eviction" alerts while the unswept
+        // cargo-target cache reached 363 GB. This pool owns that class:
+        // budget-capped, flock-guarded against live builds, derived
+        // artifacts only (safe on any user's machine — the next build
+        // recreates everything it deletes). Shares its TrackedDir with the
+        // disk reporter — one measurement per class.
+        if let Some(cargo_dir) = crate::system_resources::tracked_dir("cargo-target") {
+            broker.register(Arc::new(crate::system_resources::CargoTargetPool::new(
+                cargo_dir,
+                crate::system_resources::DEFAULT_CARGO_TARGET_BUDGET_BYTES,
+            )) as Arc<dyn crate::paging::pool::ResourcePool>);
+            log_info!(
+                "ipc",
+                "server",
+                "CargoTargetPool registered with PressureBroker (budget-capped, flock-guarded)"
+            );
+        }
+
         // Wire the resource authority's per-kind lease pools onto the broker so
         // cross-resource pressure relief reaches VRAM/RAM/disk leases: when a
         // kind goes over its scanned ceiling (a game grabs VRAM), the broker's
@@ -1357,6 +1379,8 @@ pub fn start_server(
     // ("No module registered for this command prefix") — a discoverability lie.
     // The slot is filled by `install_executor_on_all` after all registration,
     // so ordering here is irrelevant.
+    // (#140: the durable-transcript writer is spawned by ChatModule::initialize
+    // on the runtime handle — registration here runs on a non-tokio thread.)
     runtime.register(Arc::new(crate::modules::chat::ChatModule::new()));
 
     // Phase 4a: LoggerModule (absorbs standalone logger worker)
@@ -1527,9 +1551,26 @@ pub fn start_server(
     > = None;
 
     if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
+        // Grid capacity gossip (#56 step 4): this node offers its live capacity to
+        // the grid on the module tick and hears every peer's offers (its own echo
+        // included — the loopback proof) via inbound_attach → gossip::global_ledger.
+        // Rides the DISCOVERED default room, same dep the citizens attach to.
+        runtime.register(Arc::new(crate::modules::grid_capacity::GridCapacityModule::new(
+            resource_daemon.clone(),
+            default_room,
+        )));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        // Publish the live roster process-globally so host-independent callers — the
+        // detached cognition/eval body — can acquire an eval-preemption lease over
+        // the fleet without a threaded handle. First writer wins (this boot path).
+        crate::persona::PersonaAircRuntimeRegistry::set_global(registry.clone());
+        // Publish THE bus process-globally too (same first-writer-wins shape) so
+        // host-independent bodies — the detached eval's `eval:progress` scoreboard —
+        // can emit events widgets/observers subscribe to (#123/#141).
+        crate::runtime::MessageBus::set_global(runtime.bus_arc());
+        crate::resources::ResourceDaemon::set_global(resource_daemon.clone());
         // Native airc kanban tools — personas claim/create/release cards on the
         // shared board as THEIR OWN airc key, delegating to airc's work API. Shares
         // the SAME registry (cheap Clone over an inner Arc) so a work command can
@@ -1551,16 +1592,32 @@ pub fn start_server(
                 crate::cognition::channel_substrate::global_channel_digest_buffer(),
             ),
         );
+        // The dream/consolidation region goes LIVE (#145 slice B): per live persona,
+        // on a material-driven cadence (dreams only when undigested episodic
+        // experience accrues, `CadenceHint::Sleep` otherwise), it distills episodic
+        // clusters into durable Semantic facts and leaves ONE `[thought:historian]`
+        // SelfReflection per dreaming tick — the first mind-wanderer. Hippocampus +
+        // adapter resolve per tick from the live workspace registry (re-home-safe),
+        // never a parallel persona→adapter map.
+        let dream_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+            crate::cognition::dream_consolidation::DreamConsolidationRegion::new(
+                crate::cognition::persona_workspace::global()
+                    as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>,
+            ),
+        );
         // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
         // budget to the host's current memory band so a society of inference-bearing
         // background regions can't stampede the model backend under load. A homeostatic
         // protection, not cognition steering — and on a healthy host the band is Normal
         // → budget None → behavior is identical to the uncapped default the digest
-        // region runs under today (the digest runs no inference, so this is the safe
-        // floor that lets the dark consolidation region go LIVE next).
+        // region runs under today (the digest runs no inference; the consolidation
+        // region is the first InferenceHeavy tenant under this floor).
         runtime.register(Arc::new(
-            crate::runtime::SubstrateGovernor::new(vec![digest_region], registry.clone())
-                .with_pressure_gate(pressure_monitor.subscribe()),
+            crate::runtime::SubstrateGovernor::new(
+                vec![digest_region, dream_region],
+                registry.clone(),
+            )
+            .with_pressure_gate(pressure_monitor.subscribe()),
         ));
         let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
@@ -1731,6 +1788,18 @@ pub fn start_server(
             crate::provisioning::Provisioner::default().cache_report()
         );
         let (hw_cap, tier_cat, tier_id) = serving_daemon.detected_tier();
+        // Persona floor — how many citizens to host (read early: it is ALSO the
+        // serving plan's lane DEMAND, so it must be set before the first
+        // compute_plan; see below for the full doc).
+        let persona_floor = crate::config_env::read("CONTINUUM_PERSONA_FLOOR")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(1);
+        // Lanes serve DEMAND: the floor is how many minds need a concurrent
+        // lane. Without this, the planner maximized lane count and split the KV
+        // budget across slots nobody asked for — 2 personas served through 4
+        // slots at a quarter-window each (the 2026-07-10 starvation).
+        serving_daemon.set_lane_demand(persona_floor as u32);
         // The plan is the single grouped source of truth (model + lanes +
         // host-fit served window). Pass it by reference to the spawner per
         // [[pass-the-model-struct-no-param-hell]] — no destructured loose
@@ -1763,10 +1832,6 @@ pub fn start_server(
         // signal (rooms → recorder → dataset → genome). Config-owned
         // ([[config-env-single-owner]]); once minted, citizens persist + resume
         // even if the floor is later lowered.
-        let persona_floor = crate::config_env::read("CONTINUUM_PERSONA_FLOOR")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|&n| n >= 1)
-            .unwrap_or(1);
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
                 .with_serving(serving_plan.as_ref())

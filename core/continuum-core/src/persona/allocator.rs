@@ -68,6 +68,31 @@ pub struct PersonaCatalogEntry {
     pub model_preferences: Vec<ModelPreference>,
 }
 
+impl PersonaCatalogEntry {
+    /// Whether this entry's provider is the local in-process inference lane.
+    ///
+    /// The ONE place the allocator decides "local" from the catalog `provider`
+    /// field, so the literal lives here once instead of drifting across the file
+    /// (`[[magic-strings-vs-enums]]`, SMELL #70/#73).
+    ///
+    /// TRAP — do NOT merge this with `crate::cognition::turn_batch::is_local_provider`.
+    /// They answer different questions: this is "is the catalog provider field
+    /// exactly `local`"; that is the runtime "does this *execute* as a local model"
+    /// (which also matches `dmr`, `qwen`, `continuum-ai/`). Collapsing them into one
+    /// `is_local` would make the allocator treat qwen/dmr entries as local — a
+    /// silent mis-route. The real fix is a `ProviderKind` enum on this field (#73),
+    /// threaded through routing under live validation; this accessor is the safe,
+    /// behavior-preserving first compression.
+    pub fn is_local(&self) -> bool {
+        self.provider == "local"
+    }
+
+    /// Whether this entry's provider is the sentinel-AI lane (gated on `SENTINEL_PATH`).
+    pub fn is_sentinel(&self) -> bool {
+        self.provider == "sentinel"
+    }
+}
+
 // =============================================================================
 // ALLOCATION RESULT (exported to TypeScript via ts-rs)
 // =============================================================================
@@ -290,7 +315,7 @@ pub fn allocate(
         };
 
         // Sentinel: special case — needs SENTINEL_PATH env var
-        if entry.provider == "sentinel" {
+        if entry.is_sentinel() {
             if has_api_key("SENTINEL_PATH") {
                 allocation.reason = "SENTINEL_PATH set".to_string();
                 allocations.push(allocation);
@@ -305,7 +330,7 @@ pub fn allocate(
         // Model sharing: if two personas use the same model, the model loads ONCE.
         // The second persona's cost is ~0 (just config overhead). This means a
         // 24GB Docker container can run multiple local personas off one model.
-        if entry.provider == "local" {
+        if entry.is_local() {
             // Runtime per-persona assignment, keyed by the persona's stable catalog
             // id. Written by `persona/reassign-model` (which loads each persona's
             // `PersonaModelOverride` from her home and passes the resolved map here),
@@ -585,6 +610,41 @@ mod tests {
             anthropic_count >= 1,
             "Should create at least one Anthropic persona"
         );
+    }
+
+    #[test]
+    fn provider_identity_accessors_are_the_single_source() {
+        // what this catches: is_local/is_sentinel centralize the catalog-provider
+        // predicate the allocator branches on; if they drift from the "local" /
+        // "sentinel" strings the main path checks, allocation silently mis-routes.
+        // Also pins the TRAP: a cloud provider is neither, and these stay NARROWER
+        // than turn_batch::is_local_provider (must never be merged).
+        let base = PersonaCatalogEntry {
+            unique_id: "x".to_string(),
+            display_name: "X".to_string(),
+            provider: "local".to_string(),
+            persona_type: "persona".to_string(),
+            voice_id: None,
+            model_id: None,
+            is_audio_native: false,
+            api_key_env: None,
+            min_vram_gb: None,
+            bio: None,
+            speciality: None,
+            accent_color: None,
+            model_preferences: vec![],
+        };
+        assert!(base.is_local() && !base.is_sentinel(), "provider=local");
+        let sentinel = PersonaCatalogEntry {
+            provider: "sentinel".to_string(),
+            ..base.clone()
+        };
+        assert!(sentinel.is_sentinel() && !sentinel.is_local(), "provider=sentinel");
+        let cloud = PersonaCatalogEntry {
+            provider: "anthropic".to_string(),
+            ..base
+        };
+        assert!(!cloud.is_local() && !cloud.is_sentinel(), "cloud is neither");
     }
 
     #[test]

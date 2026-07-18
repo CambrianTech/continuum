@@ -158,6 +158,13 @@ pub struct ServingDaemonModule {
     /// and the plan reads the same authority lock-free; the planner still owns
     /// the decision (this only ever EXCLUDES, never forces).
     suppressed: watch::Sender<Arc<HashSet<String>>>,
+    /// How many minds actually need a concurrent serving lane — the persona
+    /// floor, set by the boot wiring BEFORE the first plan and updated if the
+    /// population changes. Lanes come from DEMAND ([`plan_serving`] docs):
+    /// llama-server splits `-c` evenly across slots, so every lane nobody
+    /// asked for divides every mind's window for nothing (the 4-slots-for-2-
+    /// personas starvation, 2026-07-10). Default 1 — window-first.
+    lane_demand: Arc<std::sync::atomic::AtomicU32>,
     /// The operator/persona's explicit FORCE-serve pin — the "hard pin" the
     /// `serving/load` doc names as the future verb, the mechanism behind
     /// promote/demote (`serving/pin` ↔ `serving/unpin`). `None` = autonomic
@@ -223,7 +230,21 @@ impl ServingDaemonModule {
             catalog,
             suppressed,
             pinned,
+            lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
         }
+    }
+
+    /// Set the lane DEMAND (how many minds need a concurrent lane — the
+    /// persona floor). The boot wiring calls this before the first
+    /// [`Self::compute_plan`]; the next tick replans if it changes.
+    pub fn set_lane_demand(&self, demand: u32) {
+        self.lane_demand
+            .store(demand.max(1), Ordering::Relaxed);
+    }
+
+    /// The current lane demand (≥ 1).
+    fn lane_demand(&self) -> u32 {
+        self.lane_demand.load(Ordering::Relaxed).max(1)
     }
 
     /// Test seam: override how planned model ids resolve to [`Model`] structs,
@@ -336,10 +357,25 @@ impl ServingDaemonModule {
     fn live_candidates(&self) -> Vec<ModelFootprint> {
         let suppressed = self.suppressed.borrow();
         let pinned = self.pinned.borrow();
-        candidates_from_snapshot(&self.catalog.snapshot())
+        let snapshot = self.catalog.snapshot();
+        // Benchmark/opponent rows carry Ready GGUFs but are NOT persona-servable:
+        // without this gate the autonomic tick picks "largest Ready artifact" and
+        // conscripted Hermes-4.3 as the citizens' model twice (#142). An explicit
+        // pin BYPASSES eligibility — pinning IS operator consent (how the matrix
+        // serves an opponent on purpose); the autonomic path never is.
+        let ineligible: HashSet<String> = snapshot
+            .models
+            .values()
+            .filter(|live| !live.model.persona_serving_eligible)
+            .map(|live| live.model.id.clone())
+            .collect();
+        candidates_from_snapshot(&snapshot)
             .into_iter()
             .filter(|c| !suppressed.contains(&c.model_id))
-            .filter(|c| pinned.as_ref().is_none_or(|p| p == &c.model_id))
+            .filter(|c| match pinned.as_ref() {
+                Some(p) => p == &c.model_id,
+                None => !ineligible.contains(&c.model_id),
+            })
             .collect()
     }
 
@@ -377,7 +413,9 @@ impl ServingDaemonModule {
             // footprint None = no GGUF on disk → not servable at all (plan None).
             // footprint Some but over budget → plan_serving degrades honestly
             // with fits_on_gpu=false, which the command reads to refuse loud.
-            let plan = footprint.and_then(|f| plan_serving(budget, std::slice::from_ref(&f)));
+            // Fit verdict at ONE lane — "can this model hold a lane at all";
+            // the live plan sizes lanes from demand separately.
+            let plan = footprint.and_then(|f| plan_serving(budget, std::slice::from_ref(&f), 1));
             PinFit {
                 plan,
                 weights_bytes,
@@ -391,7 +429,11 @@ impl ServingDaemonModule {
     /// to drive the spawner before the tick loop starts — single source of
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
-        plan_serving(self.host_budget(), &self.live_candidates())
+        plan_serving(
+            self.host_budget(),
+            &self.live_candidates(),
+            self.lane_demand(),
+        )
     }
 
     /// The detected hardware tier for this host, for the persona spawner's
@@ -483,9 +525,38 @@ impl ServingDaemonModule {
                 && live.active_model.as_deref() == Some(desired.as_str())
                 && live.adapters == desired_adapter_paths
             {
-                return None;
+                // …UNLESS the running server's per-slot window froze at HALF or
+                // less of what the current plan affords. A lane spawned under
+                // transient memory pressure (a benchmark server, a build) keeps
+                // its starved window forever otherwise — glass-boxed 2026-07-10:
+                // 14,700 recomputes wandering 3.6k↔22k while the living lane
+                // stayed frozen at 3.8k and the room degenerated into a greeting
+                // loop. 2× is deliberate hysteresis (doubling rule): the plan
+                // breathes with every consumer, and a relaunch kills in-flight
+                // turns, so only a step-change worth of headroom justifies one.
+                // One-directional by design — over-served vs a dipped plan is
+                // the pressure broker's reclaim problem (#79), not a relaunch.
+                let starved = live.served_context_window > 0
+                    && live.served_context_window.saturating_mul(2) <= served_ctx;
+                if !starved {
+                    return None;
+                }
+                crate::probe!(
+                    class = "serving.reconcile",
+                    live_window = live.served_context_window,
+                    plan_window = served_ctx,
+                    lanes,
+                    "re-homing starved lane: served window froze at ≤ half the planned window",
+                );
             }
         }
+
+        // #175 sticky window: we're past the no-relaunch guard, so a relaunch WILL
+        // happen (a genome page-in / model change). Don't let the startup LoRA-load
+        // cascade ratchet the per-slot window DOWN on a same-lane relaunch and strand
+        // the personas pinned to the earlier, larger slot — keep the incumbent window
+        // when lanes are unchanged (memory-safe; a lane change legitimately resizes KV).
+        let served_ctx = sticky_served_window(served_ctx, lanes, &self.serving_tx.borrow());
 
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
@@ -590,7 +661,7 @@ impl ServingDaemonModule {
             .borrow()
             .as_ref()
             .map(|p| p.base_model_id.clone());
-        match plan_serving_stable(budget, candidates, incumbent.as_deref()) {
+        match plan_serving_stable(budget, candidates, incumbent.as_deref(), self.lane_demand()) {
             Some(plan) => {
                 crate::probe!(
                     class = "serving.plan",
@@ -602,6 +673,20 @@ impl ServingDaemonModule {
                     candidates = candidates.len(),
                     "serving plan recomputed",
                 );
+                // Publish the LIVE lane count to the admission gate so its directed-turn
+                // reservation semaphores size by what's actually served (`--parallel
+                // plan.lanes`), not the `MAX_LANES` ceiling — exact once the plan can serve
+                // fewer lanes than the ceiling (#139 compute-buffer fit). ONE source of truth.
+                crate::cognition::resource_admission::set_served_lane_count(plan.lanes as usize);
+                // And the prefill throttle's demand facts (#56): the served model's per-spike
+                // transient compute buffer + the lane count. Published HERE, next to the lane
+                // count, so both gates read the one plan — no second path.
+                let spike = candidates
+                    .iter()
+                    .find(|c| c.model_id == plan.base_model_id)
+                    .map(|f| f.compute_buffer_per_lane())
+                    .unwrap_or(0);
+                crate::cognition::prefill_throttle::publish_serving(spike, plan.lanes as usize);
                 // send_replace keeps the latest even with no live receivers yet.
                 let _ = self.plan_tx.send_replace(Some(plan));
             }
@@ -619,16 +704,34 @@ impl ServingDaemonModule {
     }
 }
 
-/// Serving budget from LIVE free memory, capped at physical VRAM, minus
-/// headroom. Pure for tests. `available_bytes` is the monitor's current free
-/// memory (already net of everything else running); we never plan above what's
-/// free, nor above what the device physically has.
-pub fn host_budget_from(available_bytes: u64, total_vram_bytes: u64, perf_cores: u32) -> HostBudget {
-    let live = available_bytes.min(total_vram_bytes);
+/// The live host readings a serving budget is derived from. A NAMED struct, not
+/// three positional args, so the two byte counts (`available_bytes` and
+/// `total_vram_bytes` are both `u64`) can never be silently transposed at a call
+/// site — the compiler cannot catch `host_budget_from(total, available, ..)` on
+/// positionals, but `HostBudgetInputs { available_bytes, total_vram_bytes, .. }`
+/// names each ([[structs-by-reference-not-massive-param-lists]]). A new input
+/// (e.g. a device-tier hint) becomes ONE added field with a default, not a fourth
+/// positional every caller must thread.
+#[derive(Debug, Clone, Copy)]
+pub struct HostBudgetInputs {
+    /// Monitor's current free memory (already net of everything else running);
+    /// we never plan above what's free.
+    pub available_bytes: u64,
+    /// Physical VRAM ceiling — we never plan above what the device has.
+    pub total_vram_bytes: u64,
+    /// Performance-core proxy for the lane cap (floored at 1 inside).
+    pub perf_cores: u32,
+}
+
+/// Serving budget from LIVE free memory, capped at physical VRAM, minus headroom.
+/// Pure for tests. Takes [`HostBudgetInputs`] by reference so the byte-count fields
+/// are named at every call site (never transposable).
+pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
+    let live = inputs.available_bytes.min(inputs.total_vram_bytes);
     let usable = (live as f64 * SERVING_BUDGET_FRACTION) as u64;
     HostBudget {
         usable_bytes: usable,
-        perf_cores: perf_cores.max(1),
+        perf_cores: inputs.perf_cores.max(1),
     }
 }
 
@@ -643,7 +746,11 @@ pub fn live_host_budget(
 ) -> HostBudget {
     let available = system.snapshot().memory.available_bytes;
     let vram_ceiling = governed_vram_ceiling(resource_daemon).unwrap_or(0);
-    host_budget_from(available, vram_ceiling, perf_cores())
+    host_budget_from(&HostBudgetInputs {
+        available_bytes: available,
+        total_vram_bytes: vram_ceiling,
+        perf_cores: perf_cores(),
+    })
 }
 
 /// The governed VRAM ceiling RIGHT NOW: the resource authority's `available(Vram)`
@@ -666,7 +773,11 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
 /// `MAX_LANES` ceiling in the classifier is the binding cap on capable boxes,
 /// so this only matters on tiny machines where physical-core count is a fine
 /// proxy. Refined to true P-core detection in a later slice.
-fn perf_cores() -> u32 {
+///
+/// `pub` so off-daemon planners that build a one-shot [`HostBudget`] (e.g. the
+/// ephemeral eval lane sizing its `-c` via [`plan_serving`]) derive the lane cap
+/// from the SAME proxy, never a second constant.
+pub fn perf_cores() -> u32 {
     num_cpus::get_physical().max(1) as u32
 }
 
@@ -810,6 +921,26 @@ pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'stati
 
 /// Map a reconcile [`EnsureOutcome`] (+ the real per-slot window read from
 /// `/props`) to the published [`ServingSnapshot`]. Pure (no IO) so the mapping
+/// #175 sticky per-slot window on relaunch. The startup LoRA-load cascade relaunches
+/// the living lane once per persona (each genome-set change is a relaunch), and each
+/// relaunch recomputes `-c` against now-lower free memory, ratcheting the per-slot
+/// window DOWN — which strands the personas pinned to the earlier, larger slot (they
+/// then overflow it → the poisoned-slot "Compute error"). Keep the incumbent window
+/// when we relaunch at the SAME lane count: its KV is already resident and a same-lane
+/// genome reload adds only a tiny LoRA delta, so preserving it is memory-safe. A
+/// LANE-count change legitimately resizes per-slot KV (2 slots need half the window
+/// each) — keeping the old window across a lane INCREASE would multiply resident KV
+/// and risk OOM, so only stick when `live.lanes == plan_lanes`. A LARGER plan window
+/// (memory freed) is never held down here — the "starved lane" grow check above owns
+/// growing. Pure so the invariant is unit-tested without a live gateway.
+fn sticky_served_window(plan_window: u32, plan_lanes: u32, live: &ServingSnapshot) -> u32 {
+    if live.ready && live.lanes == plan_lanes && live.served_context_window > plan_window {
+        live.served_context_window
+    } else {
+        plan_window
+    }
+}
+
 /// is unit-tested directly. A live/spawned model is `ready` with the served base
 /// url AND the real served window; a degraded reconcile — OR a ready server whose
 /// window we could not read (`served_context_window == 0`) — publishes "nothing
@@ -909,6 +1040,16 @@ impl ServiceModule for ServingDaemonModule {
         // the tick, so the tick never blocks on model load.
         self.recompute();
         let _ = self.reconcile_to_plan();
+        // The cheap knob on the reaction ladder (#56): re-derive the concurrent-prefill
+        // grant from the board's LIVE VRAM availability (lock-free watch read, already net
+        // of external pressure + grants). Flexes both directions every tick — the instant
+        // valve for the 2026-07-16 compute-buffer OOM; re-planning above stays the slow,
+        // hysteresis-guarded knob. Ungoverned VRAM (no monitor) → no live number → the
+        // throttle holds at the lane count rather than guessing.
+        if let Some(available) = governed_vram_ceiling(&self.resource_daemon) {
+            // Probes on CHANGE only, inside the throttle — a steady grant is silence.
+            let _granted = crate::cognition::prefill_throttle::reconcile(available);
+        }
         Ok(())
     }
 
@@ -957,20 +1098,41 @@ mod tests {
     #[test]
     fn host_budget_tracks_live_free_memory() {
         // 40GB free on a 53GB device → budget from the 40, with headroom.
-        let b = host_budget_from(40 * GB, 53 * GB, 6);
+        let b = host_budget_from(&HostBudgetInputs {
+            available_bytes: 40 * GB,
+            total_vram_bytes: 53 * GB,
+            perf_cores: 6,
+        });
         assert!(b.usable_bytes < 40 * GB, "must reserve headroom");
         assert!(b.usable_bytes >= 30 * GB, "but most of free is ours: {}", b.usable_bytes);
 
         // Organic: less free memory → smaller budget (a game grabbed memory).
-        let busy = host_budget_from(6 * GB, 53 * GB, 6);
+        let busy = host_budget_from(&HostBudgetInputs {
+            available_bytes: 6 * GB,
+            total_vram_bytes: 53 * GB,
+            perf_cores: 6,
+        });
         assert!(busy.usable_bytes < b.usable_bytes, "less free → smaller budget");
 
         // Never plan above physical VRAM even if the OS reports more free RAM
         // (unified memory: free RAM can exceed the VRAM serving ceiling).
-        let capped = host_budget_from(100 * GB, 53 * GB, 6);
+        let capped = host_budget_from(&HostBudgetInputs {
+            available_bytes: 100 * GB,
+            total_vram_bytes: 53 * GB,
+            perf_cores: 6,
+        });
         assert!(capped.usable_bytes <= 53 * GB, "capped at physical VRAM");
 
-        assert_eq!(host_budget_from(8 * GB, 8 * GB, 0).perf_cores, 1, "cores floored at 1");
+        assert_eq!(
+            host_budget_from(&HostBudgetInputs {
+                available_bytes: 8 * GB,
+                total_vram_bytes: 8 * GB,
+                perf_cores: 0,
+            })
+            .perf_cores,
+            1,
+            "cores floored at 1"
+        );
     }
 
     // what this catches: footprint estimate is honest about weights (passed
@@ -1137,6 +1299,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
             parameter_count: 0,
+            sampling: crate::model_registry::types::ModelSampling::default(),
+            persona_serving_eligible: true,
         }
     }
 
@@ -1294,6 +1458,64 @@ mod tests {
         );
     }
 
+    // what this catches: #142 — the autonomic planner conscripting a benchmark
+    // OPPONENT as the citizens' model. A Ready GGUF whose catalog row opts out
+    // (`persona_serving_eligible: false`) must be invisible to the autonomic
+    // plan (the tick picked Hermes-4.3 twice, 2026-07-12, purely because it was
+    // the largest Ready artifact), while an explicit `serving/pin` — operator
+    // consent — still serves it (how the benchmark matrix brings one up).
+    #[tokio::test]
+    async fn ineligible_rows_never_join_the_autonomic_plan_but_pin_bypasses() {
+        use crate::model_registry::live::ModelStatus;
+        use std::io::Write;
+
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves, ok: true }));
+        let id = "opponent-probe";
+
+        let mut opponent = fake_model(id);
+        opponent.persona_serving_eligible = false;
+        let mut gguf = tempfile::Builder::new()
+            .suffix(".gguf")
+            .tempfile()
+            .expect("temp gguf");
+        gguf.write_all(&[0u8; 4096]).expect("write weights");
+        gguf.flush().expect("flush");
+        daemon.catalog.register(
+            opponent,
+            ModelStatus {
+                availability: Availability::NotDownloaded,
+                verified: None,
+            },
+        );
+        assert!(
+            daemon
+                .catalog
+                .attach_local_artifact(id, gguf.path().to_path_buf(), None),
+            "opponent GGUF lands on disk and flips Ready"
+        );
+
+        // Ready on disk, but ineligible → the autonomic path must never see it.
+        assert!(
+            !daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "an ineligible Ready model is excluded from the autonomic plan"
+        );
+
+        // Explicit pin = operator consent → eligibility is bypassed.
+        daemon.pin_sender().send_replace(Some(id.to_string()));
+        assert!(
+            daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "a pinned ineligible model serves — pin is consent"
+        );
+
+        // Unpin → back off the autonomic plan.
+        daemon.pin_sender().send_replace(None);
+        assert!(
+            !daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "unpin returns the opponent to benchmark-only invisibility"
+        );
+    }
+
     // what this catches: the EnsureOutcome → ServingSnapshot mapping. A live or
     // spawned model is ready with the served base url AND the real per-slot window
     // it carries through to personas; a degraded reconcile — OR a ready server
@@ -1356,6 +1578,26 @@ mod tests {
         assert!(degraded.adapters.is_empty(), "degraded → no genome claimed");
     }
 
+    // what this catches (#175 sticky window): the LoRA-load relaunch cascade must not
+    // ratchet the per-slot window down and strand earlier-pinned personas. A same-lane
+    // genome relaunch KEEPS the larger incumbent window; a lane-count change lets the
+    // plan window through (resizing KV is legitimate; keeping the old window across a
+    // lane increase would OOM); a larger plan window is never held down (the
+    // starved-grow check owns growing); nothing-serving-yet → the plan window stands.
+    #[test]
+    fn sticky_window_holds_the_incumbent_only_on_a_same_lane_relaunch() {
+        let live = |ready: bool, window: u32, lanes: u32| ServingSnapshot {
+            ready,
+            served_context_window: window,
+            lanes,
+            ..ServingSnapshot::empty()
+        };
+        assert_eq!(sticky_served_window(31_744, 2, &live(true, 49_664, 2)), 49_664);
+        assert_eq!(sticky_served_window(31_744, 2, &live(true, 49_664, 1)), 31_744);
+        assert_eq!(sticky_served_window(60_000, 2, &live(true, 49_664, 2)), 60_000);
+        assert_eq!(sticky_served_window(31_744, 2, &live(false, 0, 0)), 31_744);
+    }
+
     // what this catches: a published plan drives a reconcile that brings the
     // server up and publishes a ready ServingSnapshot for that model — the
     // plan→reality wiring. Regression here = the daemon decides but never acts.
@@ -1401,6 +1643,60 @@ mod tests {
 
         assert!(daemon.reconcile_to_plan().is_none(), "already serving → no reconcile");
         assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch");
+    }
+
+    // what this catches: a lane whose per-slot window froze at ≤ HALF the
+    // currently-planned window gets RE-HOMED (relaunched) even though model +
+    // genome match. A server spawned under transient memory pressure (a scratch
+    // benchmark server) otherwise keeps its starved window forever — 2026-07-10:
+    // the living Devstral froze at 3.8k/slot on a 131k model while 14,700 plan
+    // recomputes wandered above it, and the room degenerated into a greeting
+    // loop. Within 2× of the plan → hysteresis holds, no relaunch churn.
+    #[tokio::test]
+    async fn reconcile_re_homes_a_starved_window_but_holds_within_hysteresis() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        daemon.publish_plan(budget, &candidates);
+        let plan_window = daemon
+            .plan_tx
+            .borrow()
+            .as_ref()
+            .expect("plan published")
+            .served_context_window;
+
+        // Same model + genome, but the live slot froze far below the plan.
+        let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            active_model: Some("coder-14b".into()),
+            ready: true,
+            base_url: serving_v1_url(),
+            adapters: Vec::new(),
+            served_context_window: plan_window / 4,
+            lanes: 4,
+        });
+        daemon
+            .reconcile_to_plan()
+            .expect("starved window must trigger a re-home")
+            .await
+            .unwrap();
+        assert_eq!(serves.load(Ordering::SeqCst), 1, "one relaunch");
+
+        // Within hysteresis (> half the plan) → hold, no churn.
+        let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            active_model: Some("coder-14b".into()),
+            ready: true,
+            base_url: serving_v1_url(),
+            adapters: Vec::new(),
+            served_context_window: plan_window / 2 + 256,
+            lanes: 4,
+        });
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "within 2\u{d7} of the plan the lane holds — no relaunch churn"
+        );
+        assert_eq!(serves.load(Ordering::SeqCst), 1, "still one relaunch");
     }
 
     // what this catches: no servable plan (empty registry) publishes the empty

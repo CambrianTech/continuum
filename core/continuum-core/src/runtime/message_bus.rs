@@ -96,6 +96,8 @@ impl Default for MessageBus {
     }
 }
 
+static GLOBAL_BUS: std::sync::OnceLock<std::sync::Arc<MessageBus>> = std::sync::OnceLock::new();
+
 impl MessageBus {
     /// Minimum interval between events with the same prefix.
     /// Events arriving faster than this are dropped (coalesced).
@@ -164,10 +166,34 @@ impl MessageBus {
         });
     }
 
+    /// Publish THE runtime bus process-globally (first writer wins — the boot path).
+    /// Same precedent as `PersonaAircRuntimeRegistry::set_global`: host-independent
+    /// bodies (the detached cognition/eval emitting `eval:progress`) publish without
+    /// a threaded handle. Read with [`MessageBus::global`].
+    pub fn set_global(bus: std::sync::Arc<MessageBus>) {
+        let _ = GLOBAL_BUS.set(bus);
+    }
+
+    /// The process-global runtime bus, if boot has published it (None in bare unit
+    /// tests — callers treat that as "no subscribers", never an error).
+    pub fn global() -> Option<std::sync::Arc<MessageBus>> {
+        GLOBAL_BUS.get().cloned()
+    }
+
     /// Subscribe to events matching a glob pattern.
     ///
-    /// synchronous=true: handle_event() called inline during publish (real-time tier)
-    /// synchronous=false: event queued for async delivery (deferred tier)
+    /// synchronous=true: handle_event() called inline during `publish(..., registry)`.
+    ///
+    /// REALITY CHECK (#140 post-mortem, 2026-07-16): there is NO deferred tier.
+    /// synchronous=false subscriptions are stored but never delivered — and
+    /// `publish(..., registry)` (the only dispatching publisher) has no production
+    /// callers today; live events flow through `publish_async_only`, which feeds
+    /// ONLY the broadcast channel. A module that needs async bus events must run a
+    /// bus-receiver task (`bus.receiver()` + `tokio::spawn` from `initialize`) —
+    /// see `cognition::dispatch_listener::spawn` and
+    /// `modules::chat::spawn_persist_listener` for the canonical shape. This doc
+    /// used to promise "queued for async delivery (deferred tier)", which nearly
+    /// shipped a silently-dead transcript writer.
     pub fn subscribe(&self, pattern: &str, module_name: &'static str, synchronous: bool) {
         let sub = Subscription {
             pattern: pattern.to_string(),

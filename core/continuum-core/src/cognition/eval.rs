@@ -58,23 +58,70 @@ const DEFAULT_MAX_ACTS: u32 = 8;
 /// only its constancy matters.
 const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 
-/// PHYSICAL launch window (`-c`) cap for the EPHEMERAL gene-measurement lane — NOT
-/// the fork's cognition window. The fork's cognition window is read back from the
-/// lane's real `/props` after spawn (`EphemeralServingLane::served_context_window`),
-/// the SAME served-truth pin the supervisor applies to the living persona, so a
-/// measurement copy always budgets against exactly what its lane serves — never a
-/// constant fed to cognition independently of the lane
-/// ([[dreaming-mind-eval-must-match-live-cognition]], task #50). This constant only
-/// bounds how big that throwaway lane's KV may get: it has to coexist with the
-/// LIVING persona's lane while we score a copy (#59), so its `-c` is deliberately
-/// small — coder-eval prompts are short and the deliberation faculty bounds its
-/// offered tools to whatever window the fork carries. Always capped by the base
-/// model's own trained ceiling. Follow-up (env-match, not self-consistency): size
-/// this lane's `-c` host-fit via `plan_serving` against the live budget (needs a
-/// daemon-published budget watch threaded in, the way `serving/plan` reads it) so
-/// the measurement lane's geometry mirrors what production would serve THIS base —
-/// negligible for short coder prompts, but the last constant on this path.
-const EVAL_LANE_CONTEXT: u32 = 16_384;
+/// Host-fit PHYSICAL launch window (`-c`) for the EPHEMERAL measurement lane —
+/// derived from the LIVE serving budget through the SAME [`plan_serving`] classifier
+/// the autonomic serving daemon uses, NEVER a baked constant (task #124; the old
+/// `EVAL_LANE_CONTEXT: u32 = 16_384` was the exact "clamp a 128k window to a magic
+/// number → the model is starved" anti-pattern [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+///
+/// The fork's COGNITION window is still read back from the lane's real `/props` after
+/// spawn ([`EphemeralServingLane::served_context_window`]) — the SAME served-truth pin
+/// the supervisor applies to the living persona, so a measurement copy budgets against
+/// exactly what its lane serves ([[dreaming-mind-eval-must-match-live-cognition]], task
+/// #50). This value only sizes the launch `-c` + KV allocation. Because it now comes
+/// from `plan_serving` against live FREE VRAM (already net of the resident living lane,
+/// the same figure [`decide_eval_lane_placement`] reads), the throwaway lane's geometry
+/// mirrors what production would serve THIS base on THIS host RIGHT NOW: roomy host →
+/// big window up to the model's trained ceiling; contended host → honestly smaller;
+/// always floored at [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX)
+/// and capped at the base's own trained window.
+///
+/// Degrades honestly (never a fresh magic cap): no GPU monitor on the node (CPU-only
+/// host) or a base whose GGUF can't be sized → fall back to the model's own trained
+/// window. Short coder-eval prompts dominate, so an over-large `-c` on a CPU host costs
+/// KV allocation but never starves cognition; the point is to stop clamping a capable
+/// GPU host's window to a constant below what it could serve. Remaining edge: when
+/// placement spills this lane to CPU, the window is still sized off the GPU free-VRAM
+/// budget (under-sizes for the rare CPU-spilled eval) — acceptable for short prompts;
+/// the two-phase device-aware sizing rides with #56's `ResourceGovernor`.
+fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
+    use crate::cognition::serving_plan::{plan_serving, MIN_SERVE_CTX};
+    use crate::modules::serving_daemon::{footprint_for, host_budget_from, perf_cores, HostBudgetInputs};
+
+    let plan = match (crate::gpu::monitor::detect(), footprint_for(base)) {
+        (Some(mon), Some(footprint)) => {
+            // Live free VRAM (net of the resident living lane) against physical VRAM,
+            // scaled by the serving headroom fraction — the coexistence-safe budget.
+            // One measurement stream, no batching → demand_lanes = 1.
+            let budget = host_budget_from(&HostBudgetInputs {
+                available_bytes: mon.free_bytes(),
+                total_vram_bytes: mon.total_bytes(),
+                perf_cores: perf_cores(),
+            });
+            plan_serving(budget, std::slice::from_ref(&footprint), 1)
+        }
+        // CPU-only host or unsizable base: the model's own trained window, floored —
+        // never a fresh invented cap.
+        _ => None,
+    };
+    plan.map(|p| p.served_context_window)
+        .unwrap_or_else(|| base.context_window.max(MIN_SERVE_CTX))
+}
+
+/// A stood-up ephemeral measurement lane plus everything the eval loop needs to fork
+/// a cognition copy onto it. Named fields, NOT a positional 4-tuple, so a new piece of
+/// lane state threads as ONE field instead of a fifth positional slot every caller
+/// must re-destructure in the right order ([[structs-by-reference-not-massive-param-lists]]).
+struct EvalLane {
+    /// The throwaway server; kills its process on drop (#59).
+    lane: crate::inference::llama_server::EphemeralServingLane,
+    /// Adapter pinned to THIS lane (never the global serving root).
+    adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+    /// The lane's REAL served `/props` window — what the fork's cognition budgets against.
+    served_ctx: u32,
+    /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
+    placement: PlacementEvidence,
+}
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
 /// ABOVE the default serving port (58057) so the scan never lands on — or has to
@@ -211,12 +258,7 @@ fn decide_eval_lane_placement(
 async fn spawn_gene_eval_lane(
     gene: &EvalGene,
 ) -> Result<
-    (
-        crate::inference::llama_server::EphemeralServingLane,
-        std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
-        u32,
-        PlacementEvidence,
-    ),
+    EvalLane,
     CommandError,
 > {
     use crate::ai::adapter::AIProviderAdapter; // brings `initialize` into scope
@@ -252,14 +294,15 @@ async fn spawn_gene_eval_lane(
             ))
         })?;
 
-    // 3. Bounded, model-capped PHYSICAL window (`-c`) for the throwaway lane (see
-    //    EVAL_LANE_CONTEXT). One lane: a single measurement stream, no batching.
-    //    This sizes the lane's launch `-c` + its placement; the fork's COGNITION
-    //    window is read back from the lane's real `/props` after spawn (below), the
-    //    same served-truth pin the supervisor applies to the living persona — so a
-    //    measurement copy budgets against exactly what its lane serves, never this
-    //    planned value ([[dreaming-mind-eval-must-match-live-cognition]], task #50).
-    let lane_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+    // 3. Host-fit PHYSICAL window (`-c`) for the throwaway lane, derived from the
+    //    live serving budget (see `plan_eval_lane_ctx`). One lane: a single
+    //    measurement stream, no batching. This sizes the lane's launch `-c` + its
+    //    placement; the fork's COGNITION window is read back from the lane's real
+    //    `/props` after spawn (below), the same served-truth pin the supervisor
+    //    applies to the living persona — so a measurement copy budgets against
+    //    exactly what its lane serves, never this planned value
+    //    ([[dreaming-mind-eval-must-match-live-cognition]], task #50).
+    let lane_ctx = plan_eval_lane_ctx(&base);
 
     // 3b. GPU-FIRST placement (Joel: fill GPU lanes first, ~100% utilization; CPU is
     //     spillover of last resort, never the default for a coexisting lane). Probe
@@ -337,12 +380,12 @@ async fn spawn_gene_eval_lane(
         ))
     })?;
 
-    Ok((
+    Ok(EvalLane {
         lane,
-        std::sync::Arc::new(adapter),
+        adapter: std::sync::Arc::new(adapter),
         served_ctx,
-        placement_evidence,
-    ))
+        placement: placement_evidence,
+    })
 }
 
 /// Stand up an ephemeral measurement lane for a BARE base model (no gene, no LoRA) — the
@@ -355,15 +398,7 @@ async fn spawn_gene_eval_lane(
 /// the id isn't in the registry or the lane won't come up.
 async fn spawn_base_eval_lane(
     base_id: &str,
-) -> Result<
-    (
-        crate::inference::llama_server::EphemeralServingLane,
-        std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
-        u32,
-        PlacementEvidence,
-    ),
-    CommandError,
-> {
+) -> Result<EvalLane, CommandError> {
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
@@ -374,7 +409,7 @@ async fn spawn_base_eval_lane(
                 "base_model_id '{base_id}' is not in the model registry — cannot stand up a measurement lane for it. Call ai/inference/models for loadable ids."
             ))
         })?;
-    let lane_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+    let lane_ctx = plan_eval_lane_ctx(&base);
     let placement_evidence =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
     let target = ServingTarget {
@@ -405,7 +440,12 @@ async fn spawn_base_eval_lane(
             "eval lane for base '{base_id}' is up but its /props served window is unreadable ({e})"
         ))
     })?;
-    Ok((lane, std::sync::Arc::new(adapter), served_ctx, placement_evidence))
+    Ok(EvalLane {
+        lane,
+        adapter: std::sync::Arc::new(adapter),
+        served_ctx,
+        placement: placement_evidence,
+    })
 }
 
 /// One eval task. Both the JSONL rows and inline `tasks` deserialize into this;
@@ -439,7 +479,7 @@ pub struct EvalTask {
     /// `cargo test --test foo`), not code extracted from her chat answer. Supersedes
     /// `test`/`expect`; the recovery loop feeds its stdout+stderr back on failure so she
     /// iterates against the real compiler/test output until it goes green.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "dodShell", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dod_shell: Option<String>,
     /// ARTIFACT grade: a relative in-workspace path she is told to write her solution to. When
@@ -448,9 +488,16 @@ pub struct EvalTask {
     /// append `test`, compile, run). This is how an ACTING persona is measured — the act→verify
     /// loop is only visible if we grade what she actually wrote + compiled, not what she narrated.
     /// The file lands in the workspace root (= core cwd, where `code/write` sandboxes writes).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "solutionFile", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub solution_file: Option<String>,
+    /// Task-state SETUP: a shell command run BEFORE the prompt is posed, restoring the
+    /// task's initial workspace state so runs are repeatable (a `gym/mine` task re-breaks
+    /// its checkout: `git checkout <commit>^ -- src/lib.rs`). Setup failure is a named
+    /// infra grade, never a silent broken workspace ([[fallbacks-are-illegal-fail-loud]]).
+    #[serde(default, alias = "setupShell", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub setup_shell: Option<String>,
 }
 
 /// A gene to page in for the candidate arm of an A/B. The persona runs the eval
@@ -540,6 +587,11 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub detach: Option<bool>,
+    /// Handle for a detached run (#86 fire-and-poll). Minted by the command when omitted;
+    /// the progress-ledger row carries it, and `cognition/eval-status` polls by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
     /// Repo-work seam (#49): pin the persona's file engine at this directory (e.g. a SWE-bench
     /// target-repo clone) BEFORE her cycle, by invoking `code/create-workspace` through HER OWN
     /// identity-bearing executor. Deterministic rooting — no reliance on the model choosing to
@@ -556,6 +608,18 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub capture_dir: Option<String>,
+    /// LEARN mode (the exam as a legitimate teacher). When true, after the exam the
+    /// redacted lesson of each task — "I was asked X; I solved it / did not (grade Y)" with
+    /// the held-out answer key scrubbed — is admitted into the LIVING persona via
+    /// `admit_reflection`, so she carries the *experience* forward and gets better across
+    /// retakes WITHOUT ever memorizing the crib sheet. The exam still runs on the fork
+    /// (#59: living persona never frozen/degraded); only the redacted lesson crosses back.
+    /// This is what makes "learn from the exam" honest — provably clean, encouraged. Default
+    /// false = pure measurement (the discarded fork teaches nothing, as before). Single-pass
+    /// only in this slice (ignored under a `gene` A/B). [[redaction-makes-exam-learning-honest-so-encourage-it]]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub learn: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -605,6 +669,9 @@ pub struct EvalTaskResult {
 
 #[derive(Debug, Clone, Serialize, TS, Default)]
 pub struct CognitionEvalResult {
+    /// The run handle (#86): present on a detached ack AND on the ledger row, so the
+    /// two halves of fire-and-poll join on one id.
+    pub run_id: Option<String>,
     pub persona_id: String,
     /// True = this is a fire-and-poll JOB HANDLE (#86), NOT a completed run: the eval was
     /// spawned detached and its real result is in the progress ledger, not in these fields
@@ -725,8 +792,17 @@ impl ActionCommand for CognitionEval {
         if p.detach.unwrap_or(false) {
             let persona_id = p.persona_id.clone();
             let note = p.note.clone().unwrap_or_default();
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let mut inner = p.clone();
             inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
+            // Own copies for the spawned closure so `persona_id`/`run_id` remain available
+            // for the ack's return value below (they're `String`, not `Copy`).
+            let ledger_persona = persona_id.clone();
+            let ledger_run = run_id.clone();
             tokio::spawn(async move {
                 match CognitionEval::run_eval(inner).await {
                     Ok(r) => tracing::info!(
@@ -736,13 +812,23 @@ impl ActionCommand for CognitionEval {
                         "cognition/eval detached run complete — result in progress ledger"
                     ),
                     Err(e) => {
-                        tracing::error!(note = %note, error = %e, "cognition/eval detached run failed")
+                        tracing::error!(note = %note, error = %e, "cognition/eval detached run failed");
+                        // Fail loud on the POLL SURFACE, not only the log. A detached run
+                        // that dies before `append_progress_ledger` leaves eval-status
+                        // returning `complete:false, row:null` forever — indistinguishable
+                        // from "still starting", so the poller waits on a corpse (cost me
+                        // two cycles staring at `total:null` while the real error — a
+                        // post-reboot "no workspace template" fork race — sat in the log).
+                        // Write a FAILED row keyed on the SAME run_id so the poller sees the
+                        // error and can retry. [[fallbacks-are-illegal-fail-loud]]
+                        append_failed_ledger(&ledger_persona, &ledger_run, &note, &e.to_string());
                     }
                 }
             });
             return Ok(CognitionEvalResult {
                 detached: true,
                 persona_id,
+                run_id: Some(run_id),
                 ..Default::default()
             });
         }
@@ -756,6 +842,38 @@ impl CognitionEval {
     /// spawned detached for fire-and-poll (#86). One code path, two launch modes: the test
     /// and prod paths stay identical [[validate-via-pure-rust-not-npm-jtag]].
     async fn run_eval(p: CognitionEvalParams) -> Result<CognitionEvalResult, CommandError> {
+        // Eval-preemption lease: suspend the WHOLE live fleet's autonomic self-tick
+        // for the duration of this measurement, so it runs on an uncontended GPU. The
+        // personas stay online and still answer THIS eval's directed cognition turns —
+        // they just stop wandering, so their self-directed generation can't fight the
+        // measurement for the single GPU. The lease RESTORES every persona on drop,
+        // including early-return and panic (Drop rides the unwind). Held for the whole
+        // body. `None` (no live fleet — tools/tests) → nothing to quiesce; measure as-is.
+        // [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
+        // Observable via `probe!`, NOT `tracing::info!`: the eval runs across the
+        // concurrent tokio fleet where tracing lines don't survive to a readable sink
+        // ([[jtag-probes-are-rtos-debugger]]). Whether the fleet actually quiesced is
+        // load-bearing for trusting a benchmark number (contended → depressed score), so
+        // it MUST be verifiable — this probe is how we confirm the clean lane fired.
+        let _fleet_lease = match crate::persona::PersonaAircRuntimeRegistry::try_global() {
+            Some(r) => {
+                let lease = r.quiesce_all();
+                crate::probe!(
+                    class = "eval.quiesce",
+                    personas = lease.count(),
+                    "eval-preemption lease: fleet quiesced for the measurement"
+                );
+                Some(lease)
+            }
+            None => {
+                crate::probe!(
+                    class = "eval.quiesce.absent",
+                    "eval-preemption: no global roster published — fleet NOT quiesced; measurement may be GPU-contended"
+                );
+                None
+            }
+        };
+
         let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
@@ -806,6 +924,15 @@ impl CognitionEval {
             parse_jsonl(&text, &origin)?
         };
 
+        // Does this exam grade her HANDS or her MOUTH? A task graded from a file she
+        // writes (`solution_file`), a workspace DoD she must satisfy (`dod_shell`), or
+        // a pinned repo she edits (`workspace_root`) needs tools. A purely spoken-graded
+        // task (`test`/`expect`) does not — and offering tools there is a net TAX: a
+        // native-tool-call model loops on the discovery pair (`commands/help`) and never
+        // speaks (the isolator's Devstral 100%→0%). Match the surface to the modality.
+        let needs_tools = p.workspace_root.is_some()
+            || tasks.iter().any(|t| t.solution_file.is_some() || t.dod_shell.is_some());
+
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
         // copy while the LIVING persona keeps living (heartbeat beating, present in
         // the room, never frozen or anesthetized to be measured). The fork carries
@@ -830,10 +957,15 @@ impl CognitionEval {
         let cycle = match (&p.gene, p.base_model_id.as_deref()) {
             // A gene names its own forged base → ephemeral lane + the gene as `--lora`.
             (Some(gene), _) => {
-                let (lane, adapter, served_ctx, evidence) = spawn_gene_eval_lane(gene).await?;
-                placement_evidence = Some(evidence);
+                let EvalLane {
+                    lane,
+                    adapter,
+                    served_ctx,
+                    placement,
+                } = spawn_gene_eval_lane(gene).await?;
+                placement_evidence = Some(placement);
                 let cycle = crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx)
+                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
                     .ok_or_else(|| CommandError::NotFound(format!(
                         "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                     )))?;
@@ -844,10 +976,15 @@ impl CognitionEval {
             // same-model control: measure the full loop on a chosen model in its own
             // throwaway server, living persona untouched (#59).
             (None, Some(base_id)) => {
-                let (lane, adapter, served_ctx, evidence) = spawn_base_eval_lane(base_id).await?;
-                placement_evidence = Some(evidence);
+                let EvalLane {
+                    lane,
+                    adapter,
+                    served_ctx,
+                    placement,
+                } = spawn_base_eval_lane(base_id).await?;
+                placement_evidence = Some(placement);
                 let cycle = crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx)
+                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
                     .ok_or_else(|| CommandError::NotFound(format!(
                         "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                     )))?;
@@ -855,11 +992,33 @@ impl CognitionEval {
                 cycle
             }
             // Neither → fork onto her LIVE lane (a plain number on whatever she's served on).
-            (None, None) => crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid)
-                .ok_or_else(|| CommandError::NotFound(format!(
-                    "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-                )))?,
+            // Bounded wait-for-template (the fork race, glass-boxed 2026-07-17): after a
+            // reboot the supervisor's `register_from_cfg` assembles each persona's
+            // fork-template ASYNChronously, so an eval fired seconds after boot can race
+            // ahead of it → "no workspace template". A run a few seconds later succeeded.
+            // Retry a bounded number of times — the template appears as registration
+            // completes — and fail loud only once it's clearly not coming.
+            (None, None) => {
+                let mut forked = None;
+                for attempt in 0..WORKSPACE_TEMPLATE_WAIT_TRIES {
+                    if let Some(c) = crate::cognition::persona_workspace::global()
+                        .fork_eval_cycle(&persona_uuid, needs_tools)
+                    {
+                        forked = Some(c);
+                        break;
+                    }
+                    if attempt == 0 {
+                        tracing::info!(
+                            %persona_uuid,
+                            "eval: workspace template not ready (post-spawn register_from_cfg race) — waiting"
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                forked.ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                )))?
+            }
         };
 
         // GLASS-BOX (task #14): if a capture_dir is pinned, wrap the fork's cognition in the
@@ -1038,7 +1197,8 @@ impl CognitionEval {
             // Guard drops here: her memory frame + real persistence sink restored.
             let verify = self_verify_rate(&gene_results);
             let agg = speed_latency_aggregates(&gene_results);
-            let result = CognitionEvalResult {
+            let mut result = CognitionEvalResult {
+                run_id: None,
                 detached: false,
                 persona_id: persona_uuid.to_string(),
                 score: gene_score,
@@ -1070,7 +1230,14 @@ impl CognitionEval {
                     .as_ref()
                     .and_then(|e| e.footprint_bytes),
             };
-            append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
+            result.run_id = p.run_id.clone();
+            result.run_id = p.run_id.clone();
+        append_progress_ledger(
+            &result,
+            p.note.as_deref(),
+            &eval_set_label,
+            _fleet_lease.as_ref().map(|_| true),
+        );
             return Ok(result);
         }
 
@@ -1105,7 +1272,7 @@ impl CognitionEval {
         let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
         let (score, results) = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid)
+                .fork_eval_cycle(&persona_uuid, needs_tools)
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;
@@ -1118,9 +1285,26 @@ impl CognitionEval {
             run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await
         };
         drop(isolation);
+
+        // LEARN mode: the exam just taught her — carry the redacted lesson back to the
+        // LIVING self. She keeps the experience of having been asked and how she did; the
+        // held-out answer key is scrubbed so she can never memorize it (redaction, not
+        // forget-context: keep the memory, excise the crib sheet). The exam ran on the fork
+        // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
+        if p.learn.unwrap_or(false) && p.gene.is_none() {
+            let transferred = transfer_redacted_lessons(&persona_uuid, room, &tasks, &results);
+            tracing::info!(
+                persona = %persona_uuid,
+                transferred,
+                tasks = tasks.len(),
+                "learn mode: redacted exam lessons admitted to the living self"
+            );
+        }
+
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
-        let result = CognitionEvalResult {
+        let mut result = CognitionEvalResult {
+            run_id: None,
             detached: false,
             persona_id: persona_uuid.to_string(),
             score,
@@ -1148,9 +1332,96 @@ impl CognitionEval {
             lane_free_vram_bytes: None,
             lane_estimated_footprint_bytes: None,
         };
-        append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
+        result.run_id = p.run_id.clone();
+        append_progress_ledger(
+            &result,
+            p.note.as_deref(),
+            &eval_set_label,
+            _fleet_lease.as_ref().map(|_| true),
+        );
         Ok(result)
     }
+}
+
+/// Build the durable LESSON string for one graded exam task — what she was asked
+/// and how she did. Pure and answer-key-agnostic (the caller's redaction policy
+/// scrubs the crib sheet); kept separate so it's unit-testable.
+fn format_exam_lesson(task: &EvalTask, result: &EvalTaskResult) -> String {
+    let outcome = if result.ok { "I solved it" } else { "I did NOT solve it" };
+    format!(
+        "Exam task '{}'. I was asked: {} {} (grade: {}).",
+        task.id.trim(),
+        task.prompt.trim(),
+        outcome,
+        result.grade.trim()
+    )
+}
+
+/// LEARN mode's transfer step: admit each task's REDACTED lesson into the LIVING
+/// persona so the exam becomes a real teacher without leaking the answer key. The
+/// exam already ran on the fork (#59 untouched); this is the ONLY thing that
+/// reaches her durable memory, and only after the held-out answers are scrubbed.
+/// Returns how many FRESH lessons were admitted (an identical lesson from a
+/// re-take dedups idempotently via `admit_reflection` and is not counted).
+fn transfer_redacted_lessons(
+    persona_uuid: &uuid::Uuid,
+    room: uuid::Uuid,
+    tasks: &[EvalTask],
+    results: &[EvalTaskResult],
+) -> usize {
+    // Policy: scrub every held-out answer key (each task's `expect`).
+    let answers: Vec<String> = tasks
+        .iter()
+        .map(|t| t.expect.clone())
+        .filter(|a| !a.trim().is_empty())
+        .collect();
+    let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
+        crate::persona::redaction::ExamKeyDetector::new(
+            answers,
+            crate::persona::redaction::ExamKeyDetector::DEFAULT_MIN_LEN,
+        ),
+    )]);
+
+    // The LIVING persona's admission — never the fork.
+    let Some(admission) = crate::cognition::persona_workspace::global()
+        .get(persona_uuid)
+        .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))
+    else {
+        tracing::warn!(
+            persona = %persona_uuid,
+            "learn mode: no live admission for persona — lesson not transferred \
+             (she was measured, but the living self is not resident to teach)"
+        );
+        return 0;
+    };
+
+    let mut admitted = 0usize;
+    for (task, result) in tasks.iter().zip(results.iter()) {
+        if task.prompt.trim().is_empty() {
+            continue;
+        }
+        let (lesson, _report) = policy.redact(&format_exam_lesson(task, result));
+        let engram = crate::persona::engram::Engram {
+            id: uuid::Uuid::new_v4(),
+            context_id: Some(room),
+            kind: crate::persona::engram::EngramKind::Episodic,
+            content: lesson,
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: uuid::Uuid::nil(),
+            },
+            recall_keys: vec!["exam".to_string(), task.id.clone()],
+            admitted_at_ms: crate::persona::trace::now_ms(),
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        if matches!(
+            admission.admit_reflection(engram),
+            Ok(crate::persona::engram::AdmissionDecision::Admit { .. })
+        ) {
+            admitted += 1;
+        }
+    }
+    admitted
 }
 
 /// Fraction of tasks where she ACTED at least once before settling — the
@@ -1240,7 +1511,127 @@ fn speed_latency_aggregates(results: &[EvalTaskResult]) -> SpeedAggregates {
 /// is test-graded, `selfVerifyRate` is whether she actually ran her own code —
 /// so the trend can't be gamed by prose. One JSONL line per run at
 /// `~/.continuum/progress/<persona_id>.jsonl`, labelled by `note`.
-fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval_set: &str) {
+/// `cognition/eval-status` — the poll half of fire-and-poll (#86). A detached
+/// `cognition/eval`/`benchmark/run` returns a `run_id` immediately; this command reads the
+/// persona's progress ledger and reports whether that run's row has landed (complete, with
+/// the full result row) or not yet (pending). Read-only, ai-safe: personas can watch their
+/// OWN runs ([[first-class-citizens]] — self-monitoring rides the same registry), clients
+/// poll instead of holding a connection open across a many-minute exam.
+#[derive(Default)]
+pub struct CognitionEvalStatus;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CognitionEvalStatusParams {
+    /// The examinee persona (whose ledger holds the row). Optional: omit (with
+    /// run_id) to poll just the LIVE progress of whatever pass is running now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persona_id: Option<String>,
+    /// The handle returned by the detached run. Optional: omit for live progress only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, Default)]
+pub struct CognitionEvalStatusResult {
+    /// True once the run's ledger row exists.
+    pub complete: bool,
+    /// The full ledger row when complete (score/total/passRate/lift/...), else null.
+    pub row: Option<serde_json::Value>,
+    /// LIVE progress of the currently-grading pass (done/total/pass/current task) —
+    /// the mid-run scoreboard (#123/#141). `null` when nothing has graded yet this
+    /// process; check `updated_at_ms` for staleness on long-dead passes.
+    pub progress: Option<EvalPassProgress>,
+}
+
+#[async_trait]
+impl ActionCommand for CognitionEvalStatus {
+    const NAME: &'static str = "cognition/eval-status";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Poll a detached cognition/eval / benchmark/run by its run_id: returns {complete, row} \
+         from the persona's progress ledger. The poll half of fire-and-poll — clients and \
+         personas alike watch long runs without holding a connection open.";
+
+    type Params = CognitionEvalStatusParams;
+    type Output = CognitionEvalStatusResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: CognitionEvalStatusParams,
+    ) -> Result<CognitionEvalStatusResult, CommandError> {
+        // The live scoreboard rides on EVERY poll — with or without a run_id.
+        let progress = subscribe_eval_progress().borrow().clone();
+        let (Some(persona_id), Some(run_id)) = (p.persona_id, p.run_id) else {
+            // No run handle → live progress only (the "how's it going" poll).
+            return Ok(CognitionEvalStatusResult { complete: false, row: None, progress });
+        };
+        let home = std::env::var("HOME")
+            .map_err(|_| CommandError::Internal("HOME unset — no progress ledger".into()))?;
+        let path = std::path::PathBuf::from(home)
+            .join(".continuum/progress")
+            .join(format!("{persona_id}.jsonl"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            // No ledger yet = no completed runs for this persona = pending.
+            return Ok(CognitionEvalStatusResult { complete: false, row: None, progress });
+        };
+        for line in text.lines().rev() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if v.get("runId").and_then(|r| r.as_str()) == Some(run_id.as_str()) {
+                    return Ok(CognitionEvalStatusResult { complete: true, row: Some(v), progress });
+                }
+            }
+        }
+        Ok(CognitionEvalStatusResult { complete: false, row: None, progress })
+    }
+}
+
+crate::register_stateless_command!(CognitionEvalStatus);
+
+/// Write a FAILED run row to the progress ledger so `cognition/eval-status` surfaces
+/// the error (keyed on `run_id`) instead of returning `null` forever. The poll surface
+/// must be able to tell "died" from "still starting" — a detached run that errors before
+/// [`append_progress_ledger`] otherwise reads as an eternal pending. `error` + `failed:true`
+/// mark it; `total:0` keeps the numeric shape valid for consumers.
+fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str) {
+    let Some(home) = std::env::var("HOME").ok() else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(home).join(".continuum/progress");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("{persona_id}.jsonl"));
+    let row = serde_json::json!({
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "personaId": persona_id,
+        "runId": run_id,
+        "note": note,
+        "failed": true,
+        "error": error,
+        "score": 0,
+        "total": 0,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{row}");
+    }
+}
+
+/// `clean_lane`: whether an eval-preemption quiesce lease was held for this run
+/// (`Some(true)` = the live fleet was suspended, the fork measured on a clean GPU
+/// lane; `None` = no lease acquired — no live roster, so the provenance is UNKNOWN,
+/// never falsely claimed clean). This is the honesty stamp: a number carries whether
+/// it was measured contended, on the durable row, so `cognition/observe` can light a
+/// CLEAN/UNKNOWN chip instead of anyone inferring it. [[benchmark-numbers-carry-gpu-provenance]]
+fn append_progress_ledger(
+    result: &CognitionEvalResult,
+    note: Option<&str>,
+    eval_set: &str,
+    clean_lane: Option<bool>,
+) {
     let Some(home) = std::env::var("HOME").ok() else {
         return;
     };
@@ -1253,6 +1644,7 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
         "capturedAtMs": crate::persona::trace::now_ms(),
         "personaId": result.persona_id,
         "evalSet": eval_set,
+        "cleanLane": clean_lane,
         "score": result.score,
         "total": result.total,
         "passRate": result.pass_rate,
@@ -1269,6 +1661,7 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
         "basePassRate": result.base_pass_rate,
         "lift": result.lift,
         "note": note,
+        "runId": result.run_id,
     });
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1289,6 +1682,11 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
 /// before we score it a miss. This is the agentic-recovery budget — the edge over one-shot
 /// inference. 3 keeps a full eval bounded while giving real iteration room.
 const MAX_FAIL_RETRIES: u32 = 3;
+
+/// Seconds to wait (1s/try) for a persona's fork-template to appear before failing the
+/// eval. Covers the post-reboot window where the supervisor's `register_from_cfg` is
+/// still assembling the mind when an eval fires (the fork race, 2026-07-17).
+const WORKSPACE_TEMPLATE_WAIT_TRIES: u32 = 10;
 
 /// Run a REAL definition-of-done: a shell command in the persona's workspace (cwd). Pass =
 /// exit 0. Returns `(ok, verdict)`; on failure the verdict carries the real stdout+stderr
@@ -1325,6 +1723,106 @@ async fn run_dod(cmd: &str) -> (bool, String) {
     }
 }
 
+// ── Live eval progress (#123/#141, Joel: "widgets and others like yourself should
+// subscribe to these events, current totals, by command, and also display the
+// process — things like this take forever so you really need to provide feedback").
+//
+// ONE source of truth (each graded task), THREE surfaces:
+//  1. watch snapshot — the substrate-canonical live surface; `cognition/eval-status`
+//     with no run_id returns it (poll, works for agents/scripts today);
+//  2. `eval:progress` bus event — widgets / positron (#141) / persona observers
+//     subscribe (published via the global bus, same set_global precedent as the
+//     persona registry);
+//  3. `eval.task` probe — the greppable log pulse.
+//
+// ONE progress row is correct by construction: the eval-preemption lease serializes
+// evals on the GPU, so at most one pass is grading at any instant.
+
+#[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/cognition/EvalPassProgress.ts")]
+pub struct EvalPassProgress {
+    /// Tasks graded so far in the CURRENT pass.
+    #[ts(type = "number")]
+    pub done: u32,
+    /// Tasks in the current pass.
+    #[ts(type = "number")]
+    pub total: u32,
+    /// Passes so far — `pass / done` is the running rate.
+    #[ts(type = "number")]
+    pub pass: u32,
+    /// The task just graded.
+    pub current_task: String,
+    /// Whether it passed.
+    pub last_ok: bool,
+    /// Receiver-clock ms — staleness signal for readers (a row older than a task's
+    /// typical latency means the pass ended or died; the ledger row is the truth).
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+    /// Live VRAM available (GB) at grade time — the resource-efficiency axis next to
+    /// accuracy and latency, sampled from the ONE per-machine authority. `null` when
+    /// VRAM is ungoverned (bare tests) — absence is honest, never a fabricated 0.
+    #[ts(optional, type = "number")]
+    pub vram_free_gb: Option<u64>,
+}
+
+static EVAL_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<EvalPassProgress>>> =
+    std::sync::OnceLock::new();
+
+fn eval_progress_tx() -> &'static tokio::sync::watch::Sender<Option<EvalPassProgress>> {
+    EVAL_PROGRESS.get_or_init(|| tokio::sync::watch::channel(None).0)
+}
+
+/// Subscribe to live eval progress — the watch every reader shares.
+pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPassProgress>> {
+    eval_progress_tx().subscribe()
+}
+
+/// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
+/// team) — one reporter, no drift.
+fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass: u32, done: usize, total: usize) {
+    // Efficiency axis: sample the live board (lock-free watch read) so every graded
+    // task carries the VRAM state it ran under — the tuning signal for knobs like
+    // max_acts / context budget / lane count ([[self-improvement-is-a-control-loop]]:
+    // the reward is only as trustworthy as the metric, and a score without its
+    // resource cost is half a metric).
+    let vram_free_gb = crate::resources::ResourceDaemon::global().and_then(|d| {
+        d.board()
+            .kinds
+            .iter()
+            .find(|k| k.kind == crate::resources::ResourceKind::Vram)
+            .map(|k| k.available_bytes / 1_000_000_000)
+    });
+    let snap = EvalPassProgress {
+        done: done as u32,
+        total: total as u32,
+        pass,
+        current_task: task_id.to_string(),
+        last_ok: ok,
+        updated_at_ms: crate::persona::trace::now_ms(),
+        vram_free_gb,
+    };
+    let _ = eval_progress_tx().send_replace(Some(snap.clone()));
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        if let Ok(v) = serde_json::to_value(&snap) {
+            bus.publish_async_only("eval:progress", v);
+        }
+    }
+    crate::probe!(
+        class = "eval.task",
+        task = task_id,
+        ok = ok,
+        acts = acts,
+        done = done,
+        total = total,
+        pass = pass,
+        running_rate = format!("{:.3}", pass as f64 / done.max(1) as f64).as_str(),
+        latency_ms = latency_ms,
+        vram_free_gb = vram_free_gb.unwrap_or(0),
+        "task graded",
+    );
+}
+
 async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     isolation: &crate::cognition::workspace::EvalIsolation,
@@ -1335,28 +1833,46 @@ async fn run_pass(
 ) -> (u32, Vec<EvalTaskResult>) {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
+    // THE NATURAL PROCTORED EXAM (Joel: "we use our own persona as naturally as possible, as
+    // if these are proctored exams... natural personas even in tests, with memories intact").
+    // She sits down ONCE: rewind to the pre-eval frame at PASS start (each A/B arm still
+    // starts from the identical memory — arm fairness preserved), clear the volatile
+    // mid-thought scratch (she walks into the exam room attending to the exam), and then
+    // she works the whole task sheet CONTINUOUSLY — carrying what she learns on task 3 into
+    // task 4, exactly like a real student. The old per-task reset ("exam hygiene") measured
+    // a rigged amnesiac who could never accumulate — the very cognition+learning the thesis
+    // claims helps was structurally excluded from the measurement. If cross-task memory
+    // helps, that's the system WORKING; if it distracts, that's a real cognition gap the
+    // honest number should show. The exam EPISODE is dropped afterward (the fork is
+    // discarded; `AdmissionState::forget_context` is the amnesia flash for live-self runs),
+    // so the answer key never leaks into training.
+    // [[benchmarks-are-proctored-exams-of-the-natural-living-persona]]
+    cycle.reset_working_memory();
+    isolation.rewind();
     for t in tasks {
-        // Each task is a DISJOINT concern (the grader presents them back-to-back
-        // with no temporal continuity), so reset BOTH memory channels to the
-        // pre-eval frame before it runs — otherwise the prior task's state bleeds
-        // into this one's perception and contaminates an independent measurement:
-        //   (1) the VOLATILE working-memory scratch — the `[action #n]`
-        //       proprioception traces (`reset_working_memory`); and
-        //   (2) the DURABLE admission frame — the Episodic engrams a task admits
-        //       by ACTING (act→observe's result-as-engram), which survive a
-        //       working-memory clear and which recall would otherwise surface next
-        //       task ("based on my earlier code search, SELF_TICK_MS is in…" leaking
-        //       into an unrelated task — observed live 2026-07-02). `isolation.rewind`
-        //       restores the admission frame to the checkpoint the guard took before
-        //       any task ran, so every task starts from the IDENTICAL clean memory.
-        // This is the SAME rewind mechanism the A/B path uses between arms, now
-        // applied at the finer per-task boundary — one rule: every task starts from
-        // the pre-eval frame. The perception assembly + decision path stay identical
-        // to the live heartbeat (which never resets — there concerns flow
-        // continuously and traces age naturally); this is exam hygiene, not a change
-        // to how she thinks.
-        cycle.reset_working_memory();
-        isolation.rewind();
+        // Task-state SETUP (gym/mine tasks re-break their checkout so runs are
+        // repeatable). A failed setup is a NAMED infra grade — the persona is
+        // never examined against a workspace in an unknown state.
+        if let Some(setup) = &t.setup_shell {
+            let (setup_ok, setup_out) = run_dod(setup).await;
+            if !setup_ok {
+                results.push(EvalTaskResult {
+                    id: t.id.clone(),
+                    ok: false,
+                    grade: format!("setup failed (infra, not capability): {setup_out}"),
+                    acts: 0,
+                    answer: String::new(),
+                    latency_ms: 0,
+                    output_tokens: 0,
+                    tokens_per_second: 0.0,
+                    decode_tokens_per_second: 0.0,
+                    cache_hit_rate: 0.0,
+                    prefill_ms: 0,
+                    decode_ms: 0,
+                });
+                continue;
+            }
+        }
         // Frame the task through the SAME burst formatter the live heartbeat uses
         // (service_loop::build_workspace_burst), as a single airc room message
         // from a peer — so her deliberation perceives an examiner's question with
@@ -1407,14 +1923,43 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        let settled = crate::cognition::act_observe::drive_to_settle(
-            cycle,
-            burst,
-            room,
-            max_acts,
-            crate::cognition::workspace::TurnFraming::directed(),
+        // Per-task wedge watchdog (#123 hang): `drive_to_settle` awaits the persona's
+        // real cognition, which POSTs to the serving gateway. If the gateway wedges
+        // mid-generation (connection open, zero tokens) that await NEVER returns and the
+        // WHOLE eval hangs on this one task — observed live 2026-07-17: humaneval-rs
+        // stalled at task 6/20, no progress for >20 min, holding the fleet-quiesce lease
+        // the entire time. A hung task MUST degrade to a graded infra-fail (identical to
+        // an inference_error) and let the run proceed — never block the measurement. The
+        // deadline is a generous backstop vs real per-task latency (16–50s observed on
+        // humaneval; minutes across act cycles on the harder tiers), so slow-but-valid
+        // work is never cut; it fires only on a true wedge. Not a latency policy.
+        const PER_TASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+        let settled = match tokio::time::timeout(
+            PER_TASK_DEADLINE,
+            crate::cognition::act_observe::drive_to_settle(
+                cycle,
+                burst,
+                room,
+                max_acts,
+                crate::cognition::workspace::TurnFraming::directed(),
+            ),
         )
-        .await;
+        .await
+        {
+            Ok(s) => s,
+            Err(_) => {
+                tracing::warn!(
+                    probe_class = "eval.task.timeout",
+                    deadline_s = PER_TASK_DEADLINE.as_secs(),
+                    "eval task exceeded the per-task deadline — grading infra-fail and \
+                     advancing, NOT hanging the run (serving wedged mid-generation)"
+                );
+                crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
+                    "per-task deadline exceeded ({}s) — serving wedged mid-generation",
+                    PER_TASK_DEADLINE.as_secs()
+                ))
+            }
+        };
         let answer = settled.spoken.clone().unwrap_or_default();
         let (ok, grade) = if let Some(cause) = &settled.inference_error {
             // The model call FAILED (timeout, 5xx, a serving lane refusing a model it
@@ -1474,6 +2019,7 @@ async fn run_pass(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
+        report_task_graded(&t.id, ok, total_acts, m.latency_ms, pass, results.len(), tasks.len());
     }
     (pass, results)
 }
@@ -1537,16 +2083,21 @@ async fn run_pass_team(
 ) -> (u32, Vec<EvalTaskResult>) {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
+    // Natural proctored exam, team edition: both teammates sit down ONCE (rewind to the
+    // pre-eval frame at pass start) and then work the sheet CONTINUOUSLY — the writer carries
+    // what she learned on earlier tasks; the reviewer builds a sense of the writer's habits.
+    // That accumulated familiarity IS part of what a team is. Same rationale as run_pass —
+    // [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    writer.reset_working_memory();
+    writer_iso.rewind();
+    reviewer.reset_working_memory();
+    reviewer_iso.rewind();
     for t in tasks {
-        // WRITER solves (exam-hygiene reset, same delivery as solo run_pass).
-        writer.reset_working_memory();
-        writer_iso.rewind();
+        // WRITER solves (same delivery as solo run_pass).
         let w = eval_settle(writer, room, &t.prompt, max_acts).await;
         let writer_answer = w.spoken.clone().unwrap_or_default();
 
         // REVIEWER reviews the writer's solution and produces the FINAL code.
-        reviewer.reset_working_memory();
-        reviewer_iso.rewind();
         // The reviewer's job is QUALITY CONTROL, not rewriting. The failure mode a glass-box
         // trace exposed: the reviewer eyeballs (acts=0), narrates a review, and "optimizes"
         // WORKING code — regressing tasks the writer got right. So the mandate is explicit:
@@ -1598,6 +2149,7 @@ async fn run_pass_team(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
+        report_task_graded(&t.id, ok, acts, m.latency_ms, pass, results.len(), tasks.len());
     }
     (pass, results)
 }
@@ -1608,6 +2160,29 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the mid-run scoreboard's poll surface (#123/#141). One
+    // report_task_graded call must land on the watch every reader shares — done/total/
+    // pass/current task — so cognition/eval-status (no run_id) and widget bridges see
+    // live totals instead of a multi-hour void. If the watch write is dropped, long
+    // runs go dark again (the exact gap Joel called out mid-run 2026-07-16).
+    #[test]
+    fn report_task_graded_lands_on_the_progress_watch() {
+        report_task_graded("HumanEval/7", true, 2, 45_000, 6, 7, 164);
+        let snap = subscribe_eval_progress()
+            .borrow()
+            .clone()
+            .expect("a graded task must publish progress");
+        assert_eq!(snap.done, 7);
+        assert_eq!(snap.total, 164);
+        assert_eq!(snap.pass, 6);
+        assert_eq!(snap.current_task, "HumanEval/7");
+        assert!(snap.last_ok);
+        assert!(snap.updated_at_ms > 0);
+        // Bare unit test: no global authority published → honest None, never a
+        // fabricated 0 ([[fallbacks-are-illegal-fail-loud]] applied to metrics).
+        assert!(snap.vram_free_gb.is_none());
+    }
 
     fn task_result(latency_ms: u64, output_tokens: u32, tps: f64) -> EvalTaskResult {
         EvalTaskResult {
@@ -1624,6 +2199,38 @@ mod tests {
             prefill_ms: 0,
             decode_ms: 0,
         }
+    }
+
+    // what this catches: LEARN mode's lesson keeps the EXPERIENCE (what she was
+    // asked + how she did) while the redaction policy scrubs the held-out answer
+    // key — so the exam teaches her without ever letting her memorize the crib
+    // sheet. If the format changed to drop the experience, or redaction stopped
+    // catching the key, "learn from exams" would either teach nothing or cheat.
+    #[test]
+    fn learn_mode_lesson_keeps_experience_but_scrubs_the_answer_key() {
+        use crate::persona::redaction::{ExamKeyDetector, RedactionClass, RedactionPolicy};
+        let task = EvalTask {
+            id: "loop-file".into(),
+            prompt: "Which file holds the service loop, service_loop.rs perhaps?".into(),
+            expect: "service_loop.rs".into(),
+            ..Default::default()
+        };
+        let mut result = task_result(1000, 10, 5.0);
+        result.grade = "answer contained service_loop.rs".into();
+
+        let lesson = format_exam_lesson(&task, &result);
+        assert!(lesson.contains("I was asked"));
+        assert!(lesson.contains("I solved it"));
+
+        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+            [task.expect.clone()],
+            ExamKeyDetector::DEFAULT_MIN_LEN,
+        ))]);
+        let (redacted, report) = policy.redact(&lesson);
+        assert!(!redacted.contains("service_loop.rs"), "answer key must be scrubbed");
+        assert!(report.count(RedactionClass::ExamKey) >= 1);
+        assert!(redacted.contains("I was asked"), "the experience survives");
+        assert!(redacted.contains("I solved it"), "the outcome survives");
     }
 
     // what this catches: the speed/latency aggregate math behind the scoreboard —

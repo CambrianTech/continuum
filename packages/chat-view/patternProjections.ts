@@ -9,12 +9,15 @@
  * a target only draws them.
  */
 
+import { listingWidget } from '@continuum/patterns';
 import type {
   ListingView,
   ListingCell,
   CellStatus,
   ContentView,
   WorkspaceView,
+  PanelWidget,
+  MetricsView,
 } from '@continuum/patterns';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
 
@@ -38,8 +41,13 @@ function kindGlyph(kind: MemberKind): string {
 function rosterCell(m: RosterMemberVM): ListingCell {
   const badges = m.runtime ? [m.kind, m.runtime] : [m.kind];
   const status: CellStatus = m.active ? 'active' : 'idle';
-  const cell: ListingCell = { id: m.id, title: m.name, glyph: kindGlyph(m.kind), badges, status };
-  return Object.keys(m.vitals).length > 0 ? { ...cell, meters: m.vitals } : cell;
+  let cell: ListingCell = { id: m.id, title: m.name, glyph: kindGlyph(m.kind), badges, status };
+  // Vitals (0–100 meters) and loadout (model·size·ctx labels) both ride the neutral
+  // cell so the projection stays LOSSLESS — a target draws both from the Listing alone,
+  // no rich view-model crosses the render boundary. Each attaches only when present.
+  if (Object.keys(m.vitals).length > 0) cell = { ...cell, meters: m.vitals };
+  if (m.loadout) cell = { ...cell, loadout: m.loadout };
+  return cell;
 }
 
 /** The chat activity's `who` panel projected as the `Listing` primitive. Same shape
@@ -65,6 +73,30 @@ export function roomsListing(vm: ChatViewModel): ListingView {
   };
 }
 
+/** The `AI Performance` rail widget — the room's LIVE team-cognition readout, derived
+ *  from the roster's own vitals (no fabricated numbers, no extra pipe): how many are
+ *  here, how many are actively thinking (a faculty firing on the live compass), and how
+ *  many carry a paged-in genome. A persona whose Reason/Act/Focus lit this tick counts
+ *  as thinking — the same signal the tile's compass draws, aggregated. (System resource
+ *  + spend metrics — CPU/GPU/$ — are a separate core feed; this ships the honest slice.) */
+export function metricsWidget(vm: ChatViewModel): PanelWidget<MetricsView> {
+  const agents = vm.members.filter((m) => m.kind === 'agent');
+  const here = vm.members.filter((m) => m.active).length;
+  const thinking = agents.filter((m) => {
+    const v = m.vitals;
+    return (v.reason ?? 0) > 40 || (v.act ?? 0) > 40 || (v.focus ?? 0) > 40 || (v.recall ?? 0) > 40;
+  }).length;
+  const genomes = agents.filter((m) => (m.vitals.genome ?? 0) > 0).length;
+  const metrics: MetricsView = {
+    stats: [
+      { label: 'here', value: String(here), tone: 'accent' },
+      { label: 'thinking', value: String(thinking), tone: thinking > 0 ? 'good' : 'muted' },
+      { label: 'genome', value: String(genomes), tone: genomes > 0 ? 'good' : 'muted' },
+    ],
+  };
+  return { id: 'metrics', kind: 'metrics', title: 'AI Performance', body: metrics, scope: 'global' };
+}
+
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
  *  room's `purpose` (here `vm.purpose`, `"chat"`), so a target's registered chat
  *  renderer draws these rows; a foundry room would carry a different purpose + body. */
@@ -84,7 +116,15 @@ export function chatWorkspace(vm: ChatViewModel): WorkspaceView {
   };
   return {
     nav: roomsListing(vm),
-    left: [rosterListing(vm)],
+    // The left rail = a global widget stack (the README's sidebar): AI Performance
+    // (live team cognition) · Rooms (all rooms/DMs) · Users & Agents (the rich live
+    // tiles). Each is one PanelWidget dispatched by kind; the roster stays the
+    // participants `Listing` (ROSTER_LISTING_ID) that RAG + mobile ground on.
+    left: [
+      metricsWidget(vm),
+      listingWidget(roomsListing(vm)),
+      listingWidget(rosterListing(vm)),
+    ],
     content,
     context: { listings: [] },
   };

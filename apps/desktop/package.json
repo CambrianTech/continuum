@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@continuum/sdk-typescript": "*",
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.11.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
-    "typescript": "^5.6.0"
+    "@tauri-apps/cli": "^2.11.4",
+    "typescript": "^5.9.3"
   }
 }

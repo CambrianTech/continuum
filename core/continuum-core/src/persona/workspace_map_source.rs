@@ -117,10 +117,27 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
 /// truthful: it states the real root, the real directories, and the path
 /// semantics of the tools — it never names which directory holds the answer.
 fn render_layout(layout: &WorkspaceLayout) -> String {
+    let count = layout.top_level_dirs.len();
     let dirs = if layout.top_level_dirs.is_empty() {
         "(none)".to_string()
     } else {
         layout.top_level_dirs.join(", ")
+    };
+    // When the workspace HAS directories, explicitly refute the stale "workspace is
+    // empty" confabulation (glass-boxed 2026-07-14: a persona kept RECALLING a past
+    // "the workspace is empty" note and acting on it over this live ground truth,
+    // never re-checking). The map is the authority on workspace state; a memory that
+    // contradicts it is stale by definition. Silent when genuinely empty (never claim
+    // non-empty falsely). [[empty-workspace-is-a-confabulation-not-infra]]
+    let not_empty = if count > 0 {
+        format!(
+            "\nThis workspace is NOT empty: it has {count} top-level directories (above) \
+             and many files. If a memory or earlier note says the workspace is empty, that \
+             note is STALE — trust THIS live layout, and re-run code/list before concluding \
+             anything is missing."
+        )
+    } else {
+        String::new()
     };
     format!(
         "This workspace is a real checkout rooted at: {root}\n\
@@ -129,10 +146,58 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
          depth — e.g. `**/*.rs` finds files anywhere, regardless of which \
          directory holds them. Do NOT assume source lives under one particular \
          top-level directory (such as `src/`); check this layout, or drill in \
-         with code/list and code/tree.",
+         with code/list and code/tree.{not_empty}",
         root = layout.root.display(),
         dirs = dirs,
     )
+}
+
+/// Reads the layout from the persona's OWN citizen layer — the copy-on-write
+/// workspace their hands actually act in (`<home>/citizens/peers/<peer>/
+/// workspace`), the same root [`ensure_engine`](crate::modules::code_commands::ensure_engine)
+/// gives an identified peer. This is the #49 swap the module header anticipated:
+/// before it, the map named the core's cwd while the tools rooted at the citizen
+/// layer — a root the persona could never `cd` to, and one that never reflected
+/// files the persona itself created. Now the map's root == the tools' root, and
+/// it updates as the persona shapes its own workspace.
+///
+/// Read-only: resolves the layer PATH (no CoW provisioning — that's the hands'
+/// job on first write). If the layer isn't provisioned yet, it falls back to the
+/// shared base (the core cwd the layer will clone), whose top-level layout is
+/// identical — so the map is truthful either way, never empty, never a panic.
+pub struct CitizenLayerWorkspaceLayoutReader {
+    peer: String,
+}
+
+impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
+    fn layout(&self) -> Result<WorkspaceLayout, String> {
+        let layer = crate::modules::code_commands::citizen_layer_path(&self.peer)
+            .map_err(|e| format!("citizen layer path unavailable: {e}"))?;
+        // Not yet provisioned → the shared base (cwd) has the same top-level
+        // layout the layer will clone; grounding stays truthful, never empty.
+        let root = if layer.is_dir() {
+            layer
+        } else {
+            std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?
+        };
+        let security =
+            PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
+        let engine = FileEngine::new(SOURCE_ID, security);
+        let listing = engine
+            .list_dir(".", false)
+            .map_err(|e| format!("workspace list failed: {e}"))?;
+        let mut top_level_dirs: Vec<String> = listing
+            .entries
+            .into_iter()
+            .filter(|e| e.kind == FsEntryKind::Directory)
+            .map(|e| e.name)
+            .collect();
+        top_level_dirs.sort();
+        Ok(WorkspaceLayout {
+            root,
+            top_level_dirs,
+        })
+    }
 }
 
 /// WorkspaceMapSource — persona-bound, reads the layout from any
@@ -147,9 +212,20 @@ impl WorkspaceMapSource {
         Self { persona_id, reader }
     }
 
-    /// Construct with the production cwd-rooted reader (the live wiring).
+    /// Construct with the production cwd-rooted reader (operator scope / tests).
     pub fn from_cwd(persona_id: uuid::Uuid) -> Self {
         Self::new(persona_id, Arc::new(CwdWorkspaceLayoutReader))
+    }
+
+    /// Construct rooted at the persona's own citizen layer — the live persona
+    /// wiring, so the map matches the root the persona's hands act in (#49 swap).
+    pub fn for_peer_layer(persona_id: uuid::Uuid) -> Self {
+        Self::new(
+            persona_id,
+            Arc::new(CitizenLayerWorkspaceLayoutReader {
+                peer: persona_id.to_string(),
+            }),
+        )
     }
 
     /// Fit the rendered map to `budget` tokens. The map is small (a root path +
@@ -317,6 +393,10 @@ mod tests {
         // The generic path-semantics rule that lets her avoid assuming `src/`.
         assert!(content.contains("**/"));
         assert_eq!(delivery.items[0].metadata["top_level_dirs"][1], "core");
+        // Explicitly refutes the recalled "workspace is empty" confabulation with a
+        // concrete count, so live ground truth beats a stale memory.
+        assert!(content.contains("NOT empty"), "refutes the empty-belief: {content}");
+        assert!(content.contains("4 top-level directories"), "states the count: {content}");
     }
 
     // what this catches: we do NOT steer — the block never tells her which
@@ -403,5 +483,23 @@ mod tests {
         let mut sorted = layout.top_level_dirs.clone();
         sorted.sort();
         assert_eq!(layout.top_level_dirs, sorted, "dirs must be sorted");
+    }
+
+    // what this catches: the citizen-layer reader roots at the persona's OWN
+    // workspace when it exists (the #49 swap — map root == the tools' root), and
+    // falls back to the shared base (cwd) when the layer isn't provisioned yet —
+    // truthful either way, never empty, never a panic. Here the peer has no layer
+    // (random id under a temp home), so the fallback path must yield the real cwd
+    // layout rather than erroring.
+    #[test]
+    fn citizen_layer_reader_falls_back_to_base_when_unprovisioned() {
+        let reader = CitizenLayerWorkspaceLayoutReader {
+            peer: "00000000-0000-0000-0000-0000000000ff".to_string(),
+        };
+        let layout = reader.layout().expect("unprovisioned layer falls back to base cwd");
+        assert!(
+            !layout.top_level_dirs.is_empty(),
+            "fallback to base cwd yields the real checkout layout, never empty"
+        );
     }
 }

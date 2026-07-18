@@ -14,12 +14,17 @@ use super::types::{TreeNode, TreeResult};
 /// and limits depth to prevent runaway recursion.
 pub fn generate_tree(root: &Path, max_depth: u32, include_hidden: bool) -> TreeResult {
     if !root.exists() || !root.is_dir() {
+        // Defensive only: the LIVE code/tree path resolves through
+        // `FileEngine::resolve_dir`, which owns the actionable persona-facing errors
+        // (missing-vs-file, "the root IS explorable") and the idiom-forgiveness. This
+        // guards direct callers (tests, internal) — one terse line, not a second copy
+        // of the guidance (single source of truth).
         return TreeResult {
             success: false,
             root: None,
             total_files: 0,
             total_directories: 0,
-            error: Some(format!("Not a directory: {}", root.display())),
+            error: Some(format!("not a directory: {}", root.display())),
         };
     }
 
@@ -270,9 +275,12 @@ mod tests {
 
     #[test]
     fn test_tree_nonexistent() {
+        // Defensive guard for direct callers — the actionable persona-facing message
+        // lives in FileEngine::resolve_dir (tested there). Here we only assert the
+        // guard fires.
         let result = generate_tree(Path::new("/nonexistent/path"), 10, false);
         assert!(!result.success);
-        assert!(result.error.is_some());
+        assert!(result.error.unwrap().contains("not a directory"));
     }
 
     #[test]

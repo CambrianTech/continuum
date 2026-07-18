@@ -45,12 +45,17 @@ crate::action_command! {
     params: PersonaInstancesGetParams,
     output: PersonaInstanceInfo,
     run(this, _ctx, p) => {
-        let persona_id = Uuid::parse_str(&p.persona_id).map_err(|e| {
-            CommandError::Invalid(format!(
-                "persona_id '{}' is not a valid uuid: {e} — call persona/instances/list",
-                p.persona_id
-            ))
-        })?;
+        // Short-form persona ids resolve too (#164): the roster/personas surfaces
+        // DISPLAY 8-char short ids, so accept the id a caller was shown. A clean
+        // UUID passes straight through; a short/mistyped form expands against the
+        // live registry — the ONE shared id_resolve primitive, candidates = who's
+        // online.
+        let persona_id = crate::id_resolve::resolve(
+            &p.persona_id,
+            &this.registry.ids(),
+            "persona",
+        )
+        .map_err(|e| CommandError::Invalid(format!("{e} — call persona/instances/list")))?;
         let runtime = this.registry.get(persona_id).ok_or_else(|| {
             CommandError::NotFound(format!(
                 "no persona with id {persona_id} is currently online — call persona/instances/list"

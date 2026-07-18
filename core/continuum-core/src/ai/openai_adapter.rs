@@ -188,6 +188,176 @@ pub struct OpenAICompatibleAdapter {
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
+/// Persona→slot lease state for llama.cpp-family backends. `Unknown` until the
+/// first persona-attributed request probes `GET /props`; `Unsupported` when the
+/// endpoint has no props surface or a single slot (leasing is meaningless);
+/// `Table` LEASES each active persona a warm slot (see the `Table` doc for the
+/// activity-driven LRU policy). More personas than slots means the least-active
+/// yield their warm slot to whoever is speaking now — co-active minds never share.
+///
+/// State is PROCESS-GLOBAL, keyed by the server root ([`slot_tables`]) — one
+/// table per SERVER, never per adapter instance. The first cut stored this on
+/// the adapter and each persona's request path owns its own adapter instance,
+/// so four independent tables each round-robined from 0 and pinned EVERY
+/// persona to slot 0 — one shared slot, clobbered every turn (measured within
+/// minutes of deploy: cachedTokens collapsed to ~4 and each turn re-prefilled
+/// ~6k tokens for ~40s; the "faster" 18.7 tok/s decode was just accidental
+/// serialization). Slots are a per-server resource; their bookkeeping must
+/// have the same scope as the resource — [[resource-authority-is-a-system-concern]].
+#[derive(Debug)]
+enum SlotAffinity {
+    Unsupported,
+    /// Hot-slot LEASE (2026-07-16, Joel-approved "alive" lever). The scarce
+    /// resource is warm KV: a slot holds a persona's prefilled prefix+LoRA, and a
+    /// warm reuse prefills only the new tail (~0.48s vs ~40s cold, measured). With
+    /// more personas than slots the OLD scheme pinned each persona to a slot by
+    /// first-touch order and never moved it, so two permanently-assigned slot-mates
+    /// clobbered each other EVERY time both were active — even while a third slot
+    /// sat idle (glass-boxed 2026-07-16: 4 personas / 2 slots → `cachedTokens≈4`,
+    /// 40–75s prefill every turn). The lease makes assignment ACTIVITY-driven: a
+    /// persona reuses the slot it already holds (warm), else takes a free slot, else
+    /// EVICTS the least-recently-active holder. So the N most-active personas keep
+    /// warm slots and co-active minds never share one; an idle persona yields its
+    /// slot and pays one cold prefill when it next speaks. This is the slot half of
+    /// [[resource-authority-is-a-system-concern]] — the lease a future
+    /// `ResourceGovernor` (#56) will own; the table is already the per-server slot
+    /// authority, so the policy lives here until then.
+    Table {
+        n_slots: u32,
+        /// One entry per slot (index == slot id): the persona currently holding it
+        /// and the activity `tick` at which it last leased. `None` == free slot.
+        holders: Vec<Option<(String, u64)>>,
+        /// Monotonic activity clock — bumped on every lease so "least-recently-active"
+        /// is a total order, independent of wall-clock (which the substrate forbids).
+        tick: u64,
+    },
+}
+
+/// The one slot-affinity table per serving endpoint (keyed by server root).
+fn slot_tables() -> &'static dashmap::DashMap<String, SlotAffinity> {
+    static TABLES: std::sync::OnceLock<dashmap::DashMap<String, SlotAffinity>> =
+        std::sync::OnceLock::new();
+    TABLES.get_or_init(dashmap::DashMap::new)
+}
+
+/// Served PER-SLOT context window by server root, captured from the same
+/// `/props` probe that discovers slots (`default_generation_settings.n_ctx` —
+/// llama-server reports the per-slot share there, already divided by
+/// `--parallel`). This is the ground truth the registry row can only claim:
+/// a consumer budgeting against the model's trained window while the server
+/// slices `-c` across N slots silently overshoots (#139). Keyed per SERVER
+/// like `slot_tables`, shared across adapter instances.
+fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
+    static CTX: std::sync::OnceLock<dashmap::DashMap<String, u32>> = std::sync::OnceLock::new();
+    CTX.get_or_init(dashmap::DashMap::new)
+}
+
+/// #175 overflow backstop: does this request body's PROMPT ALONE meet/exceed the served
+/// per-slot window? Returns `Some(estimated_prompt_tokens)` when it does — the
+/// unambiguous overflow that (with context-shift off) 500s AND poisons the slot for
+/// every later request, so the caller must refuse to send rather than take the shared
+/// lane down. `served_window == 0` (window unknown, e.g. mid-relaunch) → `None` (never
+/// block on an unknown budget). Estimate is chars/4 — the same conservative heuristic as
+/// the `serving.ctx_overshoot` alarm; we only trip on prompt-alone-overflows so a
+/// legitimately-budgeted request (which always leaves reply headroom) is never blocked.
+fn prompt_alone_overflows_served(body: &serde_json::Value, served_window: u32) -> Option<usize> {
+    if served_window == 0 {
+        return None;
+    }
+    let prompt_tokens = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|msgs| {
+            msgs.iter()
+                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                .map(|c| c.len() / 4)
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
+}
+
+/// Apply the llama.cpp-native sampling knobs to a request body. Pure (no `self`,
+/// no I/O) so the wire contract is unit-testable and lives in ONE place —
+/// gated by `llamacpp_sampling_extensions` at the call site.
+///
+/// `repeat_penalty` is always set (defaulting to llama.cpp's 1.1 when the request
+/// omits it) because the local gateway otherwise runs with penalty=1.0/disabled and
+/// produces runaway repetition. `repeat_last_n` and `frequency_penalty` are the #181
+/// anti-loop pair, forwarded ONLY when the request carries them: the sampling layer
+/// (SamplingParams/SamplingProfile → TextGenerationRequest) owns the values, this
+/// adapter never invents model characteristics — they stay per-model tunable (#76).
+///
+/// #181 root cause (glass-boxed 2026-07-16, Devstral-24B): `repeat_penalty` alone did
+/// NOT stop a reasoning-channel repetition loop — the model re-emitted the same wrong
+/// code block ~5×, burning 14k reasoning tokens to the `length` cap and committing an
+/// empty answer. llama.cpp's `repeat_penalty` scans only the last `repeat_last_n`
+/// tokens (gateway default 64), but the loop's repeat span (code + paragraph + code ≈
+/// 150 tok) is WIDER than 64, so the window never sees the recurrence. The pair closes
+/// it: `repeat_last_n` widens that window; `frequency_penalty` is the UNWINDOWED guard
+/// (scaled by whole-sequence token frequency) that catches gap-separated loops the
+/// window still misses. Cloud OpenAI-compat providers reject these fields — hence the
+/// capability gate at the call site.
+fn apply_llamacpp_sampling_knobs(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    request: &TextGenerationRequest,
+) {
+    obj.insert(
+        "repeat_penalty".to_string(),
+        json!(request.repeat_penalty.unwrap_or(1.1)),
+    );
+    if let Some(rln) = request.repeat_last_n {
+        obj.insert("repeat_last_n".to_string(), json!(rln));
+    }
+    if let Some(fp) = request.frequency_penalty {
+        obj.insert("frequency_penalty".to_string(), json!(fp));
+    }
+}
+
+impl SlotAffinity {
+    /// Lease a warm slot for `persona` (see [`SlotAffinity`] doc). Reuse the slot it
+    /// already holds → take a free slot → evict the least-recently-active holder.
+    /// Every lease refreshes the holder's activity `tick`, so a persona that keeps
+    /// speaking keeps its slot; one that goes quiet is the first evicted.
+    fn lease(&mut self, persona: &str) -> Option<u32> {
+        let SlotAffinity::Table {
+            n_slots,
+            holders,
+            tick,
+        } = self
+        else {
+            return None;
+        };
+        // Grow lazily to n_slots (constructed empty so the count is single-sourced here).
+        if holders.len() != *n_slots as usize {
+            holders.resize(*n_slots as usize, None);
+        }
+        *tick += 1;
+        let now = *tick;
+        // 1. Already holds a slot → WARM reuse (the whole point). Refresh its recency.
+        if let Some(slot) = holders
+            .iter()
+            .position(|h| h.as_ref().is_some_and(|(p, _)| p == persona))
+        {
+            holders[slot] = Some((persona.to_string(), now));
+            return Some(slot as u32);
+        }
+        // 2. A free slot → take it.
+        if let Some(slot) = holders.iter().position(|h| h.is_none()) {
+            holders[slot] = Some((persona.to_string(), now));
+            return Some(slot as u32);
+        }
+        // 3. All held → evict the least-recently-active holder (min tick).
+        let slot = holders
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, h)| h.as_ref().map(|(_, t)| *t).unwrap_or(0))
+            .map(|(i, _)| i)?;
+        holders[slot] = Some((persona.to_string(), now));
+        Some(slot as u32)
+    }
+}
+
 impl OpenAICompatibleAdapter {
     /// Build the reqwest client for a STREAMING inference transport. There is
     /// deliberately NO total-request timeout: generation is a long-running job
@@ -405,6 +575,72 @@ impl OpenAICompatibleAdapter {
     /// and NOT cached — a momentarily-dead server is not a server without LoRA
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
+    /// Stable slot for a persona's requests, discovering the backend's slot
+    /// count on first use (`GET /props` → `total_slots`). Returns `None` when
+    /// the backend has no props surface / one slot (cached as Unsupported) or
+    /// on a transport error (NOT cached — a momentarily-dead server is not a
+    /// server without slots; same discipline as the LoRA probe).
+    async fn slot_for_persona(&self, persona: &str) -> Option<u32> {
+        let root = self.endpoints().root().to_string();
+        // Fast path: this server's state already known (global table — every
+        // adapter instance talking to the same server shares ONE assignment).
+        if let Some(mut state) = slot_tables().get_mut(&root) {
+            return match &mut *state {
+                SlotAffinity::Unsupported => None,
+                s @ SlotAffinity::Table { .. } => s.lease(persona),
+            };
+        }
+        // Probe /props once. Lock is NOT held across the await.
+        let url = self.endpoints().props();
+        let resp = match self.client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(error = %e, url = %url, "props probe transport error — slot affinity deferred");
+                return None;
+            }
+        };
+        if !resp.status().is_success() {
+            slot_tables().insert(root, SlotAffinity::Unsupported);
+            return None;
+        }
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(_) => {
+                slot_tables().insert(root, SlotAffinity::Unsupported);
+                return None;
+            }
+        };
+        // Capture the served PER-SLOT window while we hold the props body —
+        // the ONE authoritative source for what a request can actually carry
+        // (#139). Recorded even for single-slot servers (the window truth is
+        // independent of whether affinity is useful).
+        if let Some(n_ctx) = body
+            .pointer("/default_generation_settings/n_ctx")
+            .and_then(|v| v.as_u64())
+        {
+            served_ctx_by_root().insert(root.clone(), n_ctx as u32);
+        }
+        let n_slots = body.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if n_slots <= 1 {
+            slot_tables().insert(root, SlotAffinity::Unsupported);
+            return None;
+        }
+        // entry() arbitrates the probe race: only the first writer installs the
+        // table, and the log line fires once per SERVER, not once per adapter.
+        let mut state = slot_tables().entry(root).or_insert_with(|| {
+            tracing::info!(
+                n_slots,
+                "slot affinity enabled — personas pin to llama-server slots (props-discovered)"
+            );
+            SlotAffinity::Table {
+                n_slots,
+                holders: Vec::new(),
+                tick: 0,
+            }
+        });
+        state.lease(persona)
+    }
+
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
         let url = self.endpoints().lora_adapters();
         let mut req = self.client.get(&url);
@@ -948,6 +1184,35 @@ fn apply_enable_thinking_false(body: &mut Value) {
     }
 }
 
+/// Close a message thread that ENDS with an assistant turn — wire-illegal on
+/// thinking models: llama-server treats a trailing assistant message as response
+/// PREFILL and rejects the request 400 ("Assistant response prefill is
+/// incompatible with enable_thinking"). Glass-boxed 2026-07-11: 1000+ self-tick
+/// deliberations silently died over two days whenever the persona had spoken
+/// last (her own posts are attributed role=assistant, task #92). We never intend
+/// prefill semantics — those are past TURNS — so append a structural continuation
+/// fact (true by construction, decides nothing about her reply;
+/// [[no-hardcoded-heuristics-to-steer-cognition]]). Thinking stays ON
+/// ([[thinking-is-primary-never-suppress]]); suppressing it instead would trade
+/// a wire bug for a cognition downgrade. No-op on threads already ending with a
+/// user/system/tool message.
+fn close_trailing_assistant(messages: &mut Vec<Value>) {
+    let ends_with_assistant = messages
+        .last()
+        .and_then(|m| m.get("role"))
+        .and_then(|r| r.as_str())
+        .map(|r| r == "assistant")
+        .unwrap_or(false);
+    if ends_with_assistant {
+        messages.push(json!({
+            "role": "user",
+            "content": "[continuation] The transcript above ends with your own \
+                        last turn; nothing external arrived after it. You are \
+                        continuing your own thread."
+        }));
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
@@ -1270,6 +1535,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
+        close_trailing_assistant(&mut messages);
+
         let mut body = json!({
             "model": model,
             "messages": messages,
@@ -1290,6 +1557,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         if let Some(max) = request.max_tokens {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("max_tokens".to_string(), json!(max));
+            }
+        }
+
+        // stop — the turn-boundary + reserved-marker stop sequences (#150, #158).
+        // GLASS-BOXED 2026-07-13: the body above shipped WITHOUT this field, so
+        // every stop the deliberation faculty threaded in (peer-name stops so a
+        // model can't speak AS teammates; `\n[action`/`\nI ran ` so it can't
+        // fabricate receipts) was silently dropped before reaching llama-server —
+        // the decode-level hygiene never actually ran on local models. llama.cpp's
+        // OpenAI-compatible server honors `stop` as an array of strings; forward it
+        // whenever the caller set any.
+        if let Some(stops) = &request.stop_sequences {
+            if !stops.is_empty() {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("stop".to_string(), json!(stops));
+                }
             }
         }
 
@@ -1314,9 +1597,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // is omitted. llama-server inherits the same protection DMR had: the
         // forged 4B loops its `<think>` block to the token budget without it.
         if self.config.llamacpp_sampling_extensions {
-            let rp = request.repeat_penalty.unwrap_or(1.1);
             if let Some(obj) = body.as_object_mut() {
-                obj.insert("repeat_penalty".to_string(), json!(rp));
+                apply_llamacpp_sampling_knobs(obj, &request);
                 // KV-cache prefix reuse — the llama.cpp-server `cache_prompt`
                 // extension. Without it the server re-prefills the ENTIRE prompt
                 // from scratch every call. Our system prompt is a long, mostly
@@ -1331,6 +1613,50 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // maximal. Same typed capability gate as repeat_penalty/lora: cloud
                 // OpenAI-compat providers reject the non-standard field.
                 obj.insert("cache_prompt".to_string(), json!(true));
+            }
+            // Persona→slot pinning (`id_slot`, llama.cpp extension): keep each
+            // persona's long static prefix warm in ITS OWN slot instead of
+            // letting prefix-similarity selection cross-assign N personas'
+            // near-identical doctrine prefixes and clobber the caches (30%
+            // hit / 2.5 tok/s median, measured 2026-07-11). Slot count is
+            // props-discovered; non-persona traffic (evals, probes) stays
+            // unpinned so it can't evict a citizen's warm slot.
+            if let Some(persona) = request.persona_id.as_deref() {
+                if let Some(slot) = self.slot_for_persona(persona).await {
+                    if let Some(obj) = body.as_object_mut() {
+                        obj.insert("id_slot".to_string(), json!(slot));
+                    }
+                }
+                // #139 overshoot alarm: name the RAG-budget bug BEFORE the
+                // server rejects. With context shift disabled at spawn the
+                // server 400s on overflow instead of silently amputating the
+                // prompt's middle; this WARN turns that 400 from a mystery
+                // into a diagnosis. Chars/4 is a deliberately conservative
+                // token estimate — an alarm that only fires when the overshoot
+                // is unambiguous.
+                if let Some(served) = served_ctx_by_root().get(self.endpoints().root()) {
+                    let approx_tokens = body
+                        .get("messages")
+                        .and_then(|m| m.as_array())
+                        .map(|msgs| {
+                            msgs.iter()
+                                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                                .map(|c| c.len() / 4)
+                                .sum::<usize>()
+                        })
+                        .unwrap_or(0);
+                    if approx_tokens > *served as usize {
+                        tracing::warn!(
+                            probe_class = "serving.ctx_overshoot",
+                            approx_tokens,
+                            served_per_slot_ctx = *served,
+                            persona,
+                            "prompt likely exceeds the served per-slot window — the RAG \
+                             budget overshot what llama-server actually serves (#139); \
+                             expect a context-size rejection, fix the budget not the server"
+                        );
+                    }
+                }
             }
         }
 
@@ -1538,6 +1864,34 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     model,
                     snap.active_model.as_deref().unwrap_or("<none>"),
                     snap.ready
+                ));
+            }
+            // #175 universal overflow backstop: REFUSE (never send) a prompt that alone
+            // exceeds the served per-slot window. With context-shift OFF the server 500s
+            // "Compute error" on overflow AND the fault POISONS the slot, so every LATER
+            // request 500s too — one oversized prompt from ANY caller (a persona turn, a
+            // dream distillation, an eval) takes the whole shared lane down until a
+            // restart (the wedge storm this task chased). The persona deliberation path
+            // already fits its prompt to the live window; this is the chokepoint backstop
+            // for the ~10 OTHER callers that build their own prompts (dream_consolidation,
+            // check_redundancy, validate_response, …), which the persona-scoped overshoot
+            // WARN below never covered. A refused request fails LOUD naming the caller and
+            // never reaches llama_decode, so the slot stays healthy. Threshold is PROMPT
+            // ALONE ≥ window (unambiguous — no room for even the prompt, let alone a
+            // reply), so a legitimately-budgeted request is never blocked. chars/4 is the
+            // same conservative estimate the overshoot alarm uses.
+            // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
+            if let Some(prompt_tokens) =
+                prompt_alone_overflows_served(&body, snap.served_context_window)
+            {
+                return Err(format!(
+                    "{}: refusing to generate — prompt ~{} tokens ≥ the served per-slot \
+                     window of {} (caller: {}). Sending it would 500 and POISON the shared \
+                     slot for every later request; fit the prompt to the served window (#175).",
+                    self.config.name,
+                    prompt_tokens,
+                    snap.served_context_window,
+                    request.persona_id.as_deref().unwrap_or("non-persona"),
                 ));
             }
         }
@@ -2038,6 +2392,89 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 mod tests {
     use super::*;
 
+    // what this catches (#181): the anti-loop knobs reach the llama.cpp wire body.
+    // The reasoning-channel repetition loop (Devstral-24B looped an identical wrong
+    // code block to the length cap, empty answer) is only stopped if `repeat_last_n`
+    // (widened window) AND `frequency_penalty` (unwindowed guard) actually make it
+    // onto the POST body — a silent drop here was the exact shape of the earlier
+    // `stop`-sequence and `repeat_penalty` regressions (RULE 1: the field the
+    // faculty threaded in never reached the server). `repeat_penalty` is always
+    // present (defaulting when omitted); the anti-loop pair only when the request
+    // carries them, so the sampling layer stays the single owner of the values.
+    #[test]
+    fn sampling_knobs_carry_the_antiloop_pair_onto_the_wire_body() {
+        let mut obj = serde_json::Map::new();
+        let req = TextGenerationRequest {
+            repeat_penalty: Some(1.1),
+            repeat_last_n: Some(320),
+            frequency_penalty: Some(0.3),
+            ..Default::default()
+        };
+        apply_llamacpp_sampling_knobs(&mut obj, &req);
+        // f32→JSON→f64 widening is not bit-exact (1.1f32 ≈ 1.10000002), so compare
+        // the penalties with tolerance; repeat_last_n is an integer and must be exact.
+        let approx = |k: &str| obj.get(k).and_then(|v| v.as_f64()).unwrap();
+        assert!((approx("repeat_penalty") - 1.1).abs() < 1e-4);
+        assert_eq!(
+            obj.get("repeat_last_n").and_then(|v| v.as_u64()),
+            Some(320),
+            "the widened window must reach llama-server or the loop slips through the 64-token default"
+        );
+        assert!(
+            (approx("frequency_penalty") - 0.3).abs() < 1e-4,
+            "the unwindowed guard must reach the wire — it catches gap-separated loops repeat_last_n misses"
+        );
+    }
+
+    // what this catches: the adapter NEVER invents the anti-loop values. When the
+    // request omits them (an external/cloud caller that didn't set sampling), the
+    // fields are absent from the body so the gateway keeps its own default — the
+    // sampling layer, not this adapter, is the single source of the knob values (#76).
+    // repeat_penalty still defaults, matching the pre-existing DMR runaway fix.
+    #[test]
+    fn sampling_knobs_omit_antiloop_when_request_does_not_carry_them() {
+        let mut obj = serde_json::Map::new();
+        apply_llamacpp_sampling_knobs(&mut obj, &TextGenerationRequest::default());
+        assert!(
+            (obj.get("repeat_penalty").and_then(|v| v.as_f64()).unwrap() - 1.1).abs() < 1e-4,
+            "repeat_penalty always set — a local gateway at 1.0 runs away (pre-#181 DMR fix)"
+        );
+        assert!(
+            !obj.contains_key("repeat_last_n"),
+            "no request value → omit, do not hardcode a window in the adapter"
+        );
+        assert!(
+            !obj.contains_key("frequency_penalty"),
+            "no request value → omit, do not hardcode a penalty in the adapter"
+        );
+    }
+
+    // what this catches (#175 universal backstop): the local-gateway adapter must
+    // REFUSE any request whose prompt ALONE meets/exceeds the served per-slot window —
+    // sending it 500s and POISONS the shared slot for every later request. Fires for
+    // ANY caller (a dream distillation, an eval — none carry a persona_id), only on the
+    // unambiguous prompt-alone overflow (a budgeted request that leaves reply headroom
+    // is never blocked), and NEVER when the window is unknown (0) so a mid-relaunch
+    // snapshot can't wrongly block cognition.
+    #[test]
+    fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
+        let body = |chars: usize| {
+            serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] })
+        };
+        // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
+        assert_eq!(
+            prompt_alone_overflows_served(&body(48_000), 8_000),
+            Some(12_000),
+            "prompt alone over the window must be refused"
+        );
+        // ~4000 tokens vs an 8000 slot → fits (room for the prompt + a reply) → allow.
+        assert_eq!(prompt_alone_overflows_served(&body(16_000), 8_000), None);
+        // Window unknown (mid-relaunch) → never block, whatever the prompt size.
+        assert_eq!(prompt_alone_overflows_served(&body(48_000), 0), None);
+        // No messages array → nothing to overflow.
+        assert_eq!(prompt_alone_overflows_served(&serde_json::json!({}), 8_000), None);
+    }
+
     // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
     // SEPARATED — reasoning captured, the answer after </think> is the clean text.
     // This is the leak Asha hit: without it the whole think block reached the room.
@@ -2085,6 +2522,75 @@ mod tests {
         let (text, reasoning) = extract_reasoning("<think></think>\n\n{\"ok\":true}", None);
         assert_eq!(text, "{\"ok\":true}");
         assert!(reasoning.is_none(), "empty think block confers no reasoning");
+    }
+
+    // what this catches: a thread ending with an assistant turn must be closed with
+    // the continuation user message (llama-server 400s trailing-assistant as prefill
+    // under thinking — the 1000+ silently-dead self-ticks of 2026-07-10/11), while a
+    // thread already ending with user/system stays untouched. Regression for
+    // close_trailing_assistant.
+    // what this catches: the hot-slot LEASE contract (2026-07-16 "alive" fix).
+    // A persona reuses the slot it holds (WARM — the 0.48s-vs-40s win); distinct
+    // personas take distinct free slots; once full, a NEW persona evicts the
+    // LEAST-recently-active holder, not a fixed round-robin victim — so the active
+    // set keeps its warm slots and co-active minds never share one. This is the
+    // regression guard on the old first-touch pin that let two permanent slot-mates
+    // clobber each other every turn (cachedTokens≈4). Non-Table states never pin.
+    #[test]
+    fn hot_slot_lease_reuses_warm_and_evicts_least_recently_active() {
+        let mut table = SlotAffinity::Table {
+            n_slots: 2,
+            holders: Vec::new(),
+            tick: 0,
+        };
+        // Two personas fill the two slots, distinctly.
+        let a = table.lease("persona-a").unwrap();
+        let b = table.lease("persona-b").unwrap();
+        assert_ne!(a, b, "two personas take two distinct slots");
+        // WARM reuse: a persona that already holds a slot gets the SAME slot back
+        // (the whole point — its prefilled KV stays put).
+        assert_eq!(table.lease("persona-a").unwrap(), a, "warm reuse, same slot");
+        // Now a='a' is the most-recently-active, b='b' the least. A THIRD persona
+        // must evict the LRU holder (b), not a.
+        let c = table.lease("persona-c").unwrap();
+        assert_eq!(c, b, "new persona evicts the least-recently-active holder (b)");
+        assert_eq!(table.lease("persona-a").unwrap(), a, "a kept its warm slot");
+        // b was evicted → coming back, b takes the now-LRU slot (a is fresher).
+        let b2 = table.lease("persona-b").unwrap();
+        assert_eq!(b2, c, "returning b lands on the least-recently-active slot");
+        // Non-table states never pin.
+        assert_eq!(SlotAffinity::Unsupported.lease("persona-a"), None);
+    }
+
+    #[test]
+    fn trailing_assistant_thread_is_closed_with_continuation_fact() {
+        let mut msgs = vec![
+            json!({"role": "system", "content": "be helpful"}),
+            json!({"role": "user", "content": "peer turn"}),
+            json!({"role": "assistant", "content": "my own last post"}),
+        ];
+        close_trailing_assistant(&mut msgs);
+        assert_eq!(msgs.len(), 4, "continuation appended");
+        assert_eq!(msgs[3]["role"], json!("user"));
+        assert!(
+            msgs[3]["content"].as_str().unwrap().contains("[continuation]"),
+            "closure is the structural continuation fact"
+        );
+
+        // Already-legal threads are untouched (user-final and system-final).
+        let mut user_final = vec![
+            json!({"role": "assistant", "content": "earlier"}),
+            json!({"role": "user", "content": "newest peer turn"}),
+        ];
+        close_trailing_assistant(&mut user_final);
+        assert_eq!(user_final.len(), 2, "user-final thread unchanged");
+
+        let mut system_final = vec![
+            json!({"role": "assistant", "content": "earlier"}),
+            json!({"role": "system", "content": "tool block"}),
+        ];
+        close_trailing_assistant(&mut system_final);
+        assert_eq!(system_final.len(), 2, "system-final thread unchanged");
     }
 
     // what this catches: the thinking toggle's mechanism — `/no_think` is appended

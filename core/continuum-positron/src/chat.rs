@@ -228,6 +228,49 @@ impl Provenance {
     }
 }
 
+/// A member's **loadout** — the model backing this roster slot, as the
+/// display facts a tile renders (`model · size · ctx`). Neutral and
+/// OPTIONAL the same way `vitals` is: an AI member's substrate MAY attach
+/// it; positron carries it, never interprets it. Every field is
+/// `Option` — an honest absent when the substrate hasn't resolved it
+/// yet, never a fabricated capability ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// Distinct from `vitals` on purpose: vitals are fast-moving normalized
+/// `0..=100` METERS (the live cognition pulse); a loadout is a slow-moving
+/// CAPABILITY LABEL (what the member is running). A number-that-is-a-meter
+/// and a number-that-is-a-token-count are different data with different
+/// render rules, so they ride different fields, not one overloaded map.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/Loadout.ts"
+)]
+pub struct Loadout {
+    /// The served model id, verbatim from the binding (`"devstral-24b"` /
+    /// `"claude-opus-4-8"` / …). `None` = the member reports no bound model
+    /// (unresolved) — an honest unknown, never a placeholder name.
+    #[serde(default)]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// Total parameter count of the served model, RAW (e.g. `24_000_000_000`
+    /// for a 24B model) — the app formats the unit (`24B` / `671B` / `300M`).
+    /// Sourced from the model registry row's GGUF-hydrated
+    /// `parameter_count` (#74); NEVER sniffed from the model NAME
+    /// ([[models-are-infinite-decide-on-capability-not-name]]). `None` when
+    /// the row is unhydrated (a `0` count) — honest-absent, not `0B`. `u64`
+    /// → `number` (param counts are < 2^53, so no bigint drift, #120).
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub params: Option<u64>,
+    /// The EFFECTIVE served context window in tokens (`32768` → the app
+    /// renders `32k`). The live binding's window (#50 single-sourced it),
+    /// not the model row's nominal max, so a re-home to a smaller window
+    /// reads true. `None`/`Some(0)` collapse to absent. `u32` → `number`.
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub context_window: Option<u32>,
+}
+
 /// A roster entry — one member present in this room.
 ///
 /// Roster is airc presence (surfaced through `RoomRosterSource`),
@@ -302,6 +345,14 @@ pub struct RosterSlotView {
     #[serde(default)]
     #[ts(type = "Record<string, number>")]
     pub vitals: BTreeMap<String, u8>,
+    /// The model backing this member — its display loadout (`model · size ·
+    /// ctx`). Folded in from the same per-persona radiator that carries
+    /// `vitals` (design B), keyed by id; a member with no bound model (a
+    /// human, an unresolved agent) carries `None`. `#[serde(default)]` so a
+    /// slot serialized before this field folds as absent, never dropped.
+    #[serde(default)]
+    #[ts(optional)]
+    pub loadout: Option<Loadout>,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills
@@ -394,10 +445,57 @@ impl positron_core::ViewState for ChatViewState {
     // real one. See `Revisions` for the one-counter-per-kind semantics.
 }
 
+/// Top-level state for the `"roster"` widget kind — a room's live participant roster
+/// as rich `RosterSlotView`s (name, kind, vitals meters), DECOMPOSED out of
+/// `ChatViewState` so the Join Contract's roster REGION binds to its own payload kind
+/// (path-3 per-region ViewStates). The experience renderer subscribes to THIS for the
+/// display data the manifest's minimal `Member` intentionally omits; the room's
+/// message stream stays on `ChatViewState` (`"chat"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/RosterViewState.ts"
+)]
+pub struct RosterViewState {
+    /// The room this roster describes.
+    #[ts(type = "string")]
+    pub room_id: Uuid,
+    /// Members present, in richest form — the same slots the chat view carries,
+    /// published under their own kind so a region renderer draws them alone.
+    pub roster: Vec<RosterSlotView>,
+}
+
+impl RosterViewState {
+    /// The on-wire `kind` — the Experience manifest's roster region binds to this.
+    pub const KIND: &'static str = "roster";
+}
+
+impl positron_core::ViewState for RosterViewState {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use positron_core::ViewState as _;
+
+    // what this catches: RosterViewState is the path-3 decomposed roster kind — its
+    // KIND must be "roster" (the Experience roster region binds to it) and it must
+    // round-trip, since a renderer keys off both.
+    #[test]
+    fn roster_view_state_kind_and_round_trip() {
+        let rv = RosterViewState {
+            room_id: Uuid::nil(),
+            roster: vec![],
+        };
+        assert_eq!(rv.kind(), "roster");
+        assert_eq!(RosterViewState::KIND, "roster");
+        let json = serde_json::to_string(&rv).expect("serializes");
+        let back: RosterViewState = serde_json::from_str(&json).expect("round-trips");
+        assert_eq!(back, rv);
+    }
 
     #[test]
     fn sender_kind_wire_shape_is_tagged() {
@@ -490,6 +588,7 @@ mod tests {
             availability: Some("busy".into()),
             last_seen_ms: 1_700_000_000_000,
             vitals: BTreeMap::new(),
+            loadout: None,
         };
         let back: RosterSlotView =
             serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
@@ -549,6 +648,7 @@ mod tests {
                 availability: Some("ready".into()),
                 last_seen_ms: 1_700_000_000_000,
                 vitals: BTreeMap::new(),
+                loadout: None,
             }],
         };
         let json = serde_json::to_string(&state).unwrap();

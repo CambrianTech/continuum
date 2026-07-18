@@ -82,6 +82,13 @@ pub enum RoleId {
     /// Code-review specialist. Spawned on-demand when a card enters
     /// Review state and needs an adversarial reviewer.
     Sentinel,
+    /// Design/UX specialist — CSS, themes, typography, interface
+    /// comprehension. Works eyes-first: renders, screenshots, and
+    /// iterates against what the pixels actually show (Joel 2026-07-11:
+    /// "iterating on graphic design and user experience as if they have
+    /// eyes and ears"). First resident of the design-LoRA flywheel;
+    /// dogfoods positron themes.
+    Designer,
     /// Custom user-defined role. The user supplies the template; the
     /// substrate doesn't have a built-in default.
     Custom,
@@ -95,6 +102,7 @@ impl RoleId {
             RoleId::Helper => "helper",
             RoleId::Coder => "coder",
             RoleId::Sentinel => "sentinel",
+            RoleId::Designer => "designer",
             RoleId::Custom => "custom",
         }
     }
@@ -568,6 +576,49 @@ pub fn coder_template() -> RoleTemplate {
     }
 }
 
+/// Designer — the eyes-first design/UX specialist. CSS, themes,
+/// typography, interface comprehension; dogfoods positron themes as
+/// her standing work. Her working style IS the observation doctrine:
+/// render → screenshot → judge the pixels → adjust → look again
+/// ([[never-blind-feedback-driven-iteration]]). Shares the Coder
+/// model table — CSS/HTML/theme work is code work with a visual
+/// grade — so at every tier she rides the same base + LoRA paging.
+pub fn designer_template() -> RoleTemplate {
+    RoleTemplate {
+        role: RoleId::Designer,
+        priority: SpawnPriority::HighlyRecommended,
+        identity: IdentityDefaults {
+            name_pool: vec![
+                "Wren".to_string(),
+                "Indigo".to_string(),
+                "Sable".to_string(),
+                "Juniper".to_string(),
+                "Marlow".to_string(),
+                "Isla".to_string(),
+                "Rio".to_string(),
+                "Noor".to_string(),
+            ],
+            bio_template:
+                "I'm {name}. I'm Designer-tier — themes, CSS, typography, and the feel of an \
+                 interface are my craft. I work with my eyes: I render, screenshot, and judge \
+                 what the pixels actually show before and after every change — never from \
+                 imagination. Show me a screen and I'll tell you what's wrong with it; give \
+                 me the stylesheet and I'll make it right, one observed iteration at a time."
+                    .to_string(),
+        },
+        cognition: CognitionDefaults {
+            depth_preference: 60,
+            voice: "designer".to_string(),
+            max_response_chars: 3000,
+            asks_before_guessing: true,
+        },
+        // Same table as Coder: theme work is code with a visual grade, and
+        // sharing the base at every tier keeps her a LoRA page, not a second
+        // resident model.
+        model_per_tier: coder_template().model_per_tier,
+    }
+}
+
 /// Substrate-default role roster for a given hardware tier. ALWAYS
 /// returns ≥ 2 templates — the "singular AI" failure mode is
 /// structurally impossible, enforced by the test
@@ -577,7 +628,7 @@ pub fn coder_template() -> RoleTemplate {
 /// Researcher when grid inference is available, etc.) — same
 /// machinery, never fewer than 2.
 pub fn defaults_for_tier(_tier: HwCapabilityTier) -> Vec<RoleTemplate> {
-    vec![helper_template(), coder_template()]
+    vec![helper_template(), coder_template(), designer_template()]
 }
 
 #[cfg(test)]

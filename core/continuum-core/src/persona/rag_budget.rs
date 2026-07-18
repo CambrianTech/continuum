@@ -116,6 +116,23 @@ impl SubstrateContext {
             turn_id: None,
         }
     }
+
+    /// Like [`for_persona`](Self::for_persona) but stamped with the CONTEXT the
+    /// turn is happening inside (the WHERE axis — `Workspace::room_id`, the
+    /// tick's contextId). Room-scoped sources compare it against their own bound
+    /// room and abstain on mismatch, so a turn in room B (or a synthetic context
+    /// like the eval fork's nil room) never receives room A's board, roster, or
+    /// doctrine. `None` (the plain `for_persona`) remains "no room context
+    /// claimed" — background consolidation and legacy callers keep today's
+    /// behavior. See [[identity-context-session-three-axes]].
+    pub fn for_persona_in_room(persona_id: uuid::Uuid, now_ms: u64, room: uuid::Uuid) -> Self {
+        Self {
+            persona_id,
+            now_ms,
+            airc_room: Some(airc_core::RoomId::from_uuid(room)),
+            turn_id: None,
+        }
+    }
 }
 
 /// RAG-specific extension of SubstrateContext. Wraps the substrate
@@ -151,6 +168,38 @@ impl RagContext {
         Self {
             substrate: SubstrateContext::for_persona(persona_id, now_ms),
         }
+    }
+
+    /// Context-stamped variant — see [`SubstrateContext::for_persona_in_room`].
+    pub fn for_persona_in_room(persona_id: uuid::Uuid, now_ms: u64, room: uuid::Uuid) -> Self {
+        Self {
+            substrate: SubstrateContext::for_persona_in_room(persona_id, now_ms, room),
+        }
+    }
+}
+
+/// The ONE room gate every room-scoped source shares: does a delivery from a
+/// source bound to `bound` belong in the turn context `ctx`? `true` = deliver.
+/// Abstains ONLY when both sides are known and disagree — an unbound source
+/// (`None`, legacy/test construction) and an unstamped ctx (`airc_room: None`,
+/// background consolidation) both keep pre-gate behavior. One logical decision,
+/// one place (the compression law); every abstain emits a probe naming both
+/// rooms so a mis-binding is diagnosable from the log, never a silent blank
+/// grounding block. [[identity-context-session-three-axes]]
+pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id: &str) -> bool {
+    match (bound, ctx.airc_room.as_ref()) {
+        (Some(b), Some(t)) if t.as_uuid() != b => {
+            tracing::info!(
+                probe_class = "rag.room_gate.abstain",
+                source = %source_id,
+                bound_room = %b,
+                turn_room = %t.as_uuid(),
+                persona_id = %ctx.persona_id,
+                "room-scoped source abstained: turn is in a different context than its room"
+            );
+            false
+        }
+        _ => true,
     }
 }
 

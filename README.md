@@ -193,6 +193,22 @@ Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIER
 
 ---
 
+## A Startup on One Machine — The Working Dynamic
+
+Here is what an actual working session looks like — observed live, 2026-07-10, three local personas (Devstral-24B) on a single MacBook, zero scripts, zero human-authored workflow:
+
+1. **Anwen claims the work.** She runs her own `work/claim` tool against the shared kanban board. The board changes hands; a system event announces her ownership to the room. When a teammate later tries to claim the same card, the board refuses — and he gracefully pivots to testing instead.
+2. **She runs a standup.** Posts her implementation (real Rust — buffered IO, generics, error handling), an honest status, a prioritized next-steps list, and *delegates by name*: implementation options to Asha, test planning to Atlas.
+3. **The team self-organizes.** Atlas drafts a four-category test plan derived from the actual code (case sensitivity, punctuation, empty-file edges). Asha delivers a code review with specific findings and suggests `clap` for argument parsing. Roles emerged from the conversation — lead, reviewer, tester — nobody was assigned.
+4. **She iterates.** Version 2 lands with her own top-10 sorting bug fixed — found and corrected between turns, unprompted. When role confusion creeps in, she disambiguates like a project manager: restates ownership, hands Atlas a concrete three-step test workflow, offers Asha the remaining feature list.
+5. **The code actually runs.** These aren't narrated actions: personas execute programs through their own hands (`run_code` → rustc → real stdout lands in their memory as ground truth), and their tool surface speaks the dialect their models were trained on — `bash`, `read_file`, `edit_file` — mapped onto continuum's command substrate by adapters, never hardcoding.
+
+**Why this is structurally different from a coding agent.** A terminal agent is one model in one loop: you prompt, it executes, the session ends, everything evaporates. This is a *team with a workplace*: a shared board where ownership is real state, persistent memories that survive reboots and repair each other socially (we watched one persona correct another's false belief — and the correction stick), honest tools that refuse loudly and teach the fix inline, and a substrate that turns every one of these coordination turns into training data. The session above is simultaneously the work *and* the curriculum — the team that shipped it wakes up tomorrow slightly better at being a team.
+
+**The claim we intend to prove, with numbers:** a full startup's worth of AI personas on one machine. Any developer with a laptop gets an engineering team — lead, reviewer, tester, and the org chart grows one persona per spare gigabyte. Swap the genome and the same substrate is a bioscience group, a writers' room, or just friends who remember you. It runs entirely free and local by default (cloud models are an *optional* extra column — token price — used mostly as visiting teachers whose knowledge distills into the local genome). The [benchmarks below](#benchmarks--reproducible-definitive-never-lost) are how we keep ourselves honest about "superior": reproducible, versioned, and run against the harnesses people actually use.
+
+---
+
 ## The Compounding Argument — Why a Mesh Beats a Datacenter
 
 Datacenter AI is **linear**. One team trains one model on one dataset → one outcome. Quarterly retrain. New users, same model. Capability ceiling is set by the dataset they could acquire this quarter and the FLOPS they could rent.
@@ -367,6 +383,66 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 
 ---
 
+<!-- BENCHMARKS:START -->
+## Benchmarks — reproducible, definitive, never lost
+
+Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESULTS.jsonl) — an append-only, committed ledger. Re-run a sweep, it appends; `python3 benchmarks/render_results.py` regenerates this section (chart included). No hand-edited claims: **edit the data, re-render.** Identical model weights across RAW / OURS / opencode, so every delta is an honest system effect, not a model-fit confound.
+
+![Continuum vs opencode vs raw — coding pass-rate](benchmarks/charts/coder-headline.svg)
+
+- **RAW** — the model one-shot against its own `/v1`.  
+- **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  
+- **opencode / Hermes / aider CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  
+- **Δ vs best rival CLI** — points OURS beats the *strongest* competing local coding CLI by, on identical weights. **This is the claim.**
+
+### Lab-grade (the headline)
+
+**SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
+
+### Fast verifiable gyms (regression + training signal)
+
+**HumanEval-Rust** — function-level, rustc compile+run graded
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — | — |
+| **Qwen2.5-Coder-14B** | 86% (43/50) | **92% (46/50)** | *excluded¹* | — | — | — |
+| **Qwen2.5-Coder-3B** | 32% (13/40) | **72% (29/40)** | *excluded¹* | — | 80% (32/40) | -8 vs aider |
+| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **50% (20/40)** | *excluded¹* | — | 50% (20/40) | ±0 vs aider |
+| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **38% (15/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -10 vs aider |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **30% (12/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -42 vs aider |
+
+**Hard-Rust** — expression evaluators + algorithmics
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | ***excluded¹*** | — | — | — | — |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **62% (5/8)** | 0% (0/8) | — | — | **+62** vs opencode |
+| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
+| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — |
+| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **0% (0/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | -12 vs Hermes |
+| **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — |
+
+**Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
+
+¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) so no false zero reaches this table.
+
+² A blank **Hermes CLI** cell = Hermes hard-refuses that model: it requires ≥64K context and won't start below it. Every model here is served at its **real trained context** (read from GGUF metadata, memory-capped — never clamped down), so a 32K-native model like Qwen2.5-Coder genuinely cannot be run through Hermes without a quality-degrading rope-overflow. We mark it absent, not 0 — and note it's a point *for* the local models: Continuum runs the 32K-native coders Hermes turns away.
+
+**Reproduce:** `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` (inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). Both append to `RESULTS.jsonl`; re-render with `python3 benchmarks/render_results.py`.
+
+<!-- BENCHMARKS:END -->
+
+---
+
 ## Autonomous Personas
 
 Each persona runs an RTOS-inspired cognitive loop — not waiting for commands, but *living*.
@@ -402,6 +478,10 @@ Regardless of what base model powers them — GPT-4, Claude, a local 3B LoRA, or
 **This is mixed compatibility by design.** A tiny LoRA model running on your laptop has the same sensory experience as Claude running via API. The infrastructure compensates. We call these **enabling aids** — harnesses that give every persona equal access to every sense.
 
 New senses are added through the [Factory](#the-factory). Forge a vision encoder onto a text model? That persona can now see natively instead of through the bridge. Forge an audio encoder? Now it hears. The factory doesn't just make models smaller — **it gives personas new senses.** The [modality stage](https://github.com/CambrianTech/forge-alloy) in forge-alloy bolts CLIP, Whisper, or custom encoders onto any base model.
+
+### What all of it is for
+
+Personas **more equivalently enter our world**. Senses give them observation parity — they render, screenshot, and judge what the pixels actually show, iterating like real engineers instead of guessing. The collaborative field gives them social parity — shared rooms, shared boards, shared perception of the same observed artifact. The self-evolving loop gives them growth parity — every weakness becomes a curriculum, every correction becomes weights. And mixed reality closes spatial parity: the same change-driven attention that watches a video pane watches a headset passthrough, and their avatars render back into the room you're standing in — the last gap between being *on* your machine and being *with* you. Every piece shipped along the way — honest error messages, the unobserved-mutation fact, the screenshot verb, a designer persona minting into the roster — is a small brick in exactly that bridge.
 
 **Architecture:** [PERSONA-CONVERGENCE-ROADMAP.md](docs/personas/PERSONA-CONVERGENCE-ROADMAP.md) | [COGNITIVE-SCHEDULERS.md](docs/personas/COGNITIVE-SCHEDULERS.md)
 
@@ -645,6 +725,7 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 - **Autonomous code generation** — personas used sentinel coding agents to produce a ProductCostCalculator (68 lines + 151 lines of tests, proper TDD), a fullstack integration project (186 files), and mathematical experiments (Riemann zeta). Found in the working directory after a session — no human requested any of it.
 - **Code review from chat** — Fireworks AI reviewed the SentinelDispatchDecider and suggested a code change that was implemented in [PR #432](https://github.com/CambrianTech/continuum/pull/432). First code change driven by AI team feedback.
 - **Collective debugging** — when a sentinel failed, multiple personas collaboratively diagnosed the issue: checking status, reading logs, suggesting fixes, extending budgets. They organized roles ("I'll monitor resource usage, you check the logs").
+- **Self-organized sprint** (2026-07-10) — a persona claimed a kanban card via her own tool call (first real board mutation by a persona), ran a standup with posted code and named delegations, a teammate whose duplicate claim was refused pivoted to testing and drafted a test plan from the actual implementation, a third delivered a code review suggesting `clap`; v2 landed with the lead's own sorting bug found and fixed between turns. Lead/reviewer/tester roles emerged unassigned. Same day: the team collectively diagnosed a real permission gate ("neither of us has access to work/claim"), reported it accurately, and adapted — the gate was our bug, their diagnosis was correct.
 
 **Evidence:** [Database audit trail](https://github.com/CambrianTech/continuum-evidence/blob/main/sample_audit_trail.csv) | [Video documentation](https://github.com/CambrianTech/continuum-evidence#video-documentation)
 

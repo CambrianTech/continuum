@@ -305,6 +305,58 @@ pub enum MultiPartyChatStrategy {
     ProperChatMlSingleParty,
 }
 
+/// Per-model sampling defaults (#76) — the model-level decode knobs, tuned per
+/// blessed model and validated, living on the ONE `Model` row exactly like
+/// `chat_template` / `stop_sequences` / `multi_party_strategy`. This is the
+/// curated-catalog home Joel wants for "a few acceptable models tuned to our
+/// grid's best cases": one place, data-driven, overridable per model, so the
+/// forge/eval flywheel can WRITE measured values here instead of a human typing
+/// magic numbers into an adapter ([[anti-loop-sampling-windowed-vs-unwindowed]],
+/// [[no-hardcoded-heuristics-to-steer-cognition]]).
+///
+/// Deliberately does NOT carry `max_new_tokens`: response LENGTH is a ROLE
+/// concern (a helper answers short, a researcher long), not a model fact — the
+/// profile builder combines these model knobs with the role's budget.
+///
+/// `Default` is the SINGLE SOURCE of the substrate floor (the same values
+/// `SamplingProfile::chat_defaults` projects), so a row that omits `sampling`
+/// behaves exactly as the pre-#76 global default did — an unblessed model is
+/// never worse off, and the anti-loop floor (#181) applies to every model.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSampling {
+    /// Softmax temperature. Lower = more deterministic.
+    pub temperature: f32,
+    /// Top-K filter. 0 = disabled.
+    pub top_k: u32,
+    /// Nucleus sampling threshold.
+    pub top_p: f32,
+    /// Windowed repetition penalty (scans the last `repeat_last_n` tokens).
+    pub repeat_penalty: f32,
+    /// Window width for `repeat_penalty`, widened past llama.cpp's default 64
+    /// so a loop whose span exceeds 64 tokens is still caught (#181). 0 = off.
+    pub repeat_last_n: u32,
+    /// Unwindowed repetition guard (whole-sequence token frequency) — catches
+    /// gap-separated loops the window misses (#181). 0.0 = off.
+    pub frequency_penalty: f32,
+}
+
+impl Default for ModelSampling {
+    /// The substrate floor — conservative chat defaults + the #181 anti-loop
+    /// pair. The ONE place these numbers live; `SamplingProfile::chat_defaults`
+    /// projects from here so there is never a second copy to drift.
+    fn default() -> Self {
+        Self {
+            temperature: 0.6,
+            top_k: 40,
+            top_p: 0.95,
+            repeat_penalty: 1.1,
+            repeat_last_n: 320,
+            frequency_penalty: 0.3,
+        }
+    }
+}
+
 /// A single model's metadata. Constructed by the Rust model catalog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model {
@@ -414,6 +466,25 @@ pub struct Model {
     /// EOS id in the GGUF at next bake; until then this is the bridge.
     #[serde(default)]
     pub stop_sequences: Vec<String>,
+    /// Per-model decode defaults (#76) — temperature/top-k/top-p + the #181
+    /// anti-loop pair, pre-resolved off this row into the persona's
+    /// `SamplingProfile` (like `chat_template`/`stop_sequences` above). Omitted
+    /// rows get [`ModelSampling::default`] (the substrate floor) via serde, so a
+    /// row that doesn't tune sampling is byte-identical to the pre-#76 default.
+    #[serde(default)]
+    pub sampling: ModelSampling,
+    /// Whether the autonomic serving planner may pick this row to host the
+    /// PERSONAS. Benchmark opponents and campaign-roster rows carry real Ready
+    /// GGUFs (so the matrix can serve them on demand) but must NEVER be
+    /// conscripted into the citizens' serving plan — the planner picked
+    /// Hermes-4.3 as the persona model TWICE (2026-07-12) purely because it
+    /// was the largest Ready artifact on disk, silently re-homing every mind
+    /// onto the opponent's flagship and confounding a day of measurements.
+    /// `serving/pin` BYPASSES this flag: an explicit operator pin is consent,
+    /// the autonomic tick is not ([[first-neighborhood-and-model-scale-consent]]).
+    /// Defaults TRUE (a normal model is servable); opponent rows opt OUT.
+    #[serde(default = "default_true")]
+    pub persona_serving_eligible: bool,
     /// Total trained parameter count, as the artifact itself declares it
     /// (`general.parameter_count` in the GGUF header, or the provider
     /// `/v1/models` listing where one exposes it). `0` is the absent
@@ -426,6 +497,11 @@ pub struct Model {
     /// honest "unknown", not a guess.
     #[serde(default)]
     pub parameter_count: u64,
+}
+
+/// Serde default for `Model::persona_serving_eligible` — absent means servable.
+fn default_true() -> bool {
+    true
 }
 
 impl Model {

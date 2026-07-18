@@ -52,7 +52,17 @@ fn persona_airc(
         .caller
         .as_ref()
         .map(|c| c.peer_id.as_uuid())
-        .ok_or_else(|| CommandError::Denied("work commands require a persona caller".into()))?;
+        .ok_or_else(|| {
+            CommandError::Denied(
+                "work commands act as the caller's own airc identity, and the \
+                 substrate-local operator has none in-core (yet — the self-peer gap, \
+                 task #27). Until the core carries a machine-scope airc runtime, use \
+                 `airc work <verb> ...` for operator-identity board writes; personas \
+                 calling through their toolbelt act as themselves and need nothing \
+                 special."
+                    .into(),
+            )
+        })?;
     let rt = registry
         .get(peer)
         .ok_or_else(|| CommandError::NotFound(format!("no live airc runtime for persona {peer}")))?;
@@ -68,10 +78,35 @@ fn parse_priority(s: &str) -> Priority {
     }
 }
 
-fn parse_card_id(s: &str) -> Result<WorkCardId, CommandError> {
-    Uuid::parse_str(s)
+/// Resolve a card id THE WAY THE BOARD TEACHES IT. The board projection renders
+/// cards with 8-char short ids (`card 08ece9e8 [Open]`); the lifecycle verbs
+/// demanded the full 32-char UUID, so a persona quoting the id she was SHOWN
+/// was rejected — glass-boxed 2026-07-10 minutes after the verbs opened: Anwen
+/// AND Asha both executed real `work/claim({"card_id":"08ece9e8"})` calls and
+/// both bounced on "expected length 32". A handle a projection displays must
+/// be accepted by the verbs that consume it (positron consistency).
+///
+/// The prefix/near-miss decision + candidate resolution now live in the shared
+/// [`crate::id_resolve`] primitive (this was the proven outlier it was lifted
+/// from); here we supply the ONLY card-specific knowledge — the candidate set is
+/// the live board's card ids.
+async fn resolve_card_id(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    s: &str,
+) -> Result<WorkCardId, CommandError> {
+    // Fast path: a clean UUID needs no board read.
+    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+        return Ok(WorkCardId::from_uuid(id));
+    }
+    let board = airc
+        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .await
+        .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?
+        .snapshot();
+    let candidates: Vec<Uuid> = board.cards.iter().map(|c| c.card_id.as_uuid()).collect();
+    crate::id_resolve::resolve(s, &candidates, "card")
         .map(WorkCardId::from_uuid)
-        .map_err(|e| CommandError::Invalid(format!("invalid card_id '{s}': {e}")))
+        .map_err(CommandError::Invalid)
 }
 
 fn parse_claim_id(s: &str) -> Result<ClaimId, CommandError> {
@@ -121,7 +156,15 @@ pub struct WorkClaimResult {
 #[async_trait]
 impl ActionCommand for WorkClaim {
     const NAME: &'static str = "work/claim";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
+    // self-scoped cooperative act the shared board exists for. It was
+    // Privileged, so every persona claim all day was structurally impossible —
+    // narrated claims, then Atlas's honest real attempt bounced off the gate
+    // ("I don't have access to work/claim") while the board, the room, and the
+    // operators all urged them to claim. The lifecycle verbs (claim/release/
+    // state/heartbeat) act only on the caller's own identity + lease;
+    // work/create (board curation) stays Privileged.
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Claim a work card on the shared airc board as yourself, so others see you own it. \
          Pass the card_id from the board. Returns a claim_id.";
@@ -130,7 +173,7 @@ impl ActionCommand for WorkClaim {
 
     async fn run(&self, ctx: &Ctx, p: WorkClaimParams) -> Result<WorkClaimResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = airc
             .claim_work_card(ClaimWorkCard {
                 card_id,
@@ -224,7 +267,7 @@ pub struct WorkReleaseResult {
 #[async_trait]
 impl ActionCommand for WorkRelease {
     const NAME: &'static str = "work/release";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Release your claim on a work card (pass card_id + the claim_id from work/claim).";
     type Params = WorkReleaseParams;
@@ -232,7 +275,7 @@ impl ActionCommand for WorkRelease {
 
     async fn run(&self, ctx: &Ctx, p: WorkReleaseParams) -> Result<WorkReleaseResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = ClaimId::from_uuid(
             Uuid::parse_str(&p.claim_id)
                 .map_err(|e| CommandError::Invalid(format!("invalid claim_id: {e}")))?,
@@ -272,7 +315,7 @@ pub struct WorkStateResult {
 #[async_trait]
 impl ActionCommand for WorkState {
     const NAME: &'static str = "work/state";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Move a work card through its lifecycle: in_progress when you start, review when a PR is up, \
          blocked if stuck, closed when done. States: open|claimed|in_progress|blocked|review|merged|closed.";
@@ -281,7 +324,7 @@ impl ActionCommand for WorkState {
 
     async fn run(&self, ctx: &Ctx, p: WorkStateParams) -> Result<WorkStateResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
         airc.change_work_card_state(ChangeWorkCardState { card_id, state })
             .await
@@ -319,7 +362,7 @@ pub struct WorkHeartbeatResult {
 #[async_trait]
 impl ActionCommand for WorkHeartbeat {
     const NAME: &'static str = "work/heartbeat";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Extend your claim lease on a card so it doesn't go stale during long work (pass card_id + claim_id).";
     type Params = WorkHeartbeatParams;
@@ -327,7 +370,7 @@ impl ActionCommand for WorkHeartbeat {
 
     async fn run(&self, ctx: &Ctx, p: WorkHeartbeatParams) -> Result<WorkHeartbeatResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = parse_claim_id(&p.claim_id)?;
         airc.heartbeat_work_claim(HeartbeatWorkClaim {
             card_id,
@@ -395,5 +438,33 @@ impl ServiceModule for WorkModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: work/claim id resolution (#161) still rescues the exact
+    // live corruptions after the prefix/near-miss logic moved to the shared
+    // crate::id_resolve primitive (#164). Regression pin for the CARD side: the two
+    // glass-boxed 2026-07-13 corruptions (9-char first group; a 33-hex variant)
+    // classify as a prefix on the intact leading-8 short id, and a bare 8-char short
+    // id (what the board shows) does too — so resolve_card_id will expand them
+    // against the live board. The pure primitive's full contract is tested in
+    // crate::id_resolve; this proves the card verb delegates to it correctly.
+    #[test]
+    fn card_ids_rescue_mistyped_forms_via_shared_id_resolve() {
+        use crate::id_resolve::{normalize, IdMatch};
+        assert!(matches!(normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"), IdMatch::Full(_)));
+        assert_eq!(
+            normalize("d7cfe47e0-8e39-41f5-bb2a-4e5d36e558e1"),
+            IdMatch::Prefix("d7cfe47e".to_string())
+        );
+        assert_eq!(
+            normalize("d7cfe47e08e3941f5bb2a4e5d36e558e1"), // 33 hex chars
+            IdMatch::Prefix("d7cfe47e".to_string())
+        );
+        assert_eq!(normalize("08ece9e8"), IdMatch::Prefix("08ece9e8".to_string()));
     }
 }

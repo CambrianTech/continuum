@@ -628,7 +628,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::room_roster_source::RoomRosterSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
         // Clone the Arc: the SAME source feeds both the legacy compose path
         // (set_roster_source) and the brain (as a bridged grounding faculty,
         // below). One source of truth, two consumers during the cutover
@@ -642,7 +647,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::room_doctrine_source::RoomDoctrineSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
         // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
         cognition.set_doctrine_source(doctrine_source.clone());
 
@@ -665,7 +675,7 @@ pub async fn materialize_adapters(
         // framing. Grounding, not steering — names the dirs, never which holds
         // the answer. Swaps to the airc-leased root when #49 lands.
         let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::from_cwd(
+            Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
                 identity.peer_id.as_uuid(),
             ));
 
@@ -684,7 +694,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::wall_source::WallSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
 
         // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
         // work board — every card, its column, priority, and owner — read live
@@ -701,7 +716,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::room_board_source::RoomBoardSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
 
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
@@ -792,13 +812,23 @@ pub async fn materialize_adapters(
                         active_work_source,
                     )
                     .defer_tolerant(),
-                    // WHERE code lives — the real workspace layout as enriching
-                    // framing, so a reasoner can avoid blind globs like `src/**/*.rs`
-                    // from the prompt alone. Defer-tolerant.
+                    // WHERE code lives — the real workspace layout as framing, so a
+                    // reasoner can avoid blind globs like `src/**/*.rs` from the
+                    // prompt alone. ColdStartCritical (synchronous, NOT deferred):
+                    // measured 2026-07-13 that the deferred version was ABSENT on
+                    // cold ticks (worst under repeated reboots), so some personas
+                    // acted blind to the layout — a WRONG turn (blind-glob loops),
+                    // not merely unenriched, which is exactly the ColdStartCritical
+                    // bar. It's a cheap local dir listing (unlike the airc-backed
+                    // framing sources that stay deferred), so it earns synchronous
+                    // presence like doctrine. requires_hands: the block SAYS "drill
+                    // in with code/list and code/tree" — it must vanish from a
+                    // tool-stripped cycle (spoken exams) or the RAG lies about her
+                    // affordances.
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         workspace_map_source,
                     )
-                    .defer_tolerant(),
+                    .requires_hands(),
                     // The room's pinned shared documents (airc wall) as
                     // enriching framing — the plan/instructions/recipe that
                     // shape HOW the persona works here, read from the exact

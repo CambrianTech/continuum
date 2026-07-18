@@ -59,6 +59,29 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "humaneval-rs.jsonl",
         include_str!("../../../../docs/genome/humaneval-rs.jsonl"),
     ),
+    (
+        "hard-rs.jsonl",
+        include_str!("../../../../docs/genome/hard-rs.jsonl"),
+    ),
+    (
+        // frontier-rs: the "strive-toward" tier — real algorithms (Levenshtein,
+        // Dijkstra, O(n log n) LIS, topological sort, arbitrary-precision add, a
+        // precedence-climbing calculator, `.`/`*` regex matching). Problems a small
+        // local model rarely nails one-shot; the system's write→compile→test→read-
+        // error→fix loop is where it earns them. Every task's assertions are
+        // reference-verified (a wrong test poisons the benchmark).
+        "frontier-rs.jsonl",
+        include_str!("../../../../docs/genome/frontier-rs.jsonl"),
+    ),
+    (
+        // games-rs: OUR games benchmark — the tier public benchmarks lack (they grade
+        // an agent PLAYING, not BUILDING). Auto-verifiable game LOGIC: a Conway step,
+        // a tic-tac-toe/connect-4 win-checker, a 2048 merge, knight moves, minesweeper
+        // counts. Every task reference-verified. The runnable complement to the Conway/
+        // Snake whole-game project cards.
+        "games-rs.jsonl",
+        include_str!("../../../../docs/genome/games-rs.jsonl"),
+    ),
 ];
 
 /// Look up a committed gym's embedded bytes by the basename of `reference`.

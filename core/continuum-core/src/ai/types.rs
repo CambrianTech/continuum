@@ -209,7 +209,7 @@ fn default_adapter_scale() -> f64 {
 }
 
 /// Text generation request
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/TextGenerationRequest.ts"
@@ -243,6 +243,22 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repeat_penalty: Option<f32>,
+    /// llama.cpp-native, UNWINDOWED repetition guard: scales each token's penalty by how
+    /// often it has appeared across the ENTIRE generation (unlike `repeat_penalty`, which
+    /// only scans the last `repeat_last_n` tokens). Catches gap-separated loops — a code
+    /// block re-emitted many times regardless of the text between (#181). `None` → the
+    /// adapter's llama.cpp default (0.3). Joins the Model row with the other sampling
+    /// knobs under #76. Ignored by cloud OpenAI-compat providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub frequency_penalty: Option<f32>,
+    /// Window (trailing tokens) that `repeat_penalty` scans on llama.cpp-
+    /// family gateways. `None` → the gateway's own default (64). Widened
+    /// by the substrate sampling defaults to catch loops whose span
+    /// exceeds 64 tokens (#181). Ignored by cloud OpenAI-compat providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repeat_last_n: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stop_sequences: Option<Vec<String>>,

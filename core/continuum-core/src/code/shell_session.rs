@@ -198,12 +198,30 @@ impl ShellSession {
         })?;
 
         let cwd = canonical_root.clone();
+        // Every session shares the machine's ONE cargo build cache. Citizen
+        // layers make N isolated checkouts cheap (CoW — each stores only its
+        // diff), but a `cargo build` inside a layer would otherwise materialize
+        // a full per-layer target/ (~10 GB for continuum-core) and undo the
+        // whole economy. Registry-dependency artifacts are path-independent, so
+        // the shared cache dedupes nearly all of a build across peers; only the
+        // small workspace leaf crates fingerprint per-path. Inherit the core's
+        // own CARGO_TARGET_DIR when set, else the canonical shared location the
+        // start script pins. A later explicit env set through the session still
+        // overrides.
+        let mut env = HashMap::new();
+        let shared_target = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .ok()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum/cache/cargo-target")));
+        if let Some(t) = shared_target {
+            env.insert("CARGO_TARGET_DIR".to_string(), t.display().to_string());
+        }
         Ok(Self {
             id: session_id.to_string(),
             persona_id: persona_id.to_string(),
             workspace_root: canonical_root,
             cwd,
-            env: HashMap::new(),
+            env,
             executions: HashMap::new(),
             history: Vec::new(),
             total_executions: 0,
@@ -353,9 +371,26 @@ impl ShellSession {
             .ok_or_else(|| "Execution vanished".to_string())?
             .clone();
 
-        // Await completion using the notify mechanism
+        // Completion is REPORTED by the spawned `run_shell_command` task (status +
+        // notify). If that task dies silently (a panic in a spawned task drops the
+        // JoinHandle with no log line), status stays Running forever and a bare
+        // `notified().await` hangs the caller — glass-boxed 2026-07-11: two eval
+        // runs froze mid-exam on a `cargo test` act with NO child process alive.
+        // So completion must be STRUCTURAL, not trusted: re-check state at least
+        // every 2s regardless of notifications, and enforce a hard deadline
+        // (caller timeout + grace; generous default — cargo builds are long) after
+        // which we fail LOUD with the execution id instead of hanging
+        // ([[fallbacks-are-illegal-fail-loud]], task #85).
+        const RECHECK_EVERY: Duration = Duration::from_secs(2);
+        const DEADLINE_GRACE_MS: u64 = 30_000;
+        const DEFAULT_DEADLINE_MS: u64 = 600_000;
+        let deadline = Duration::from_millis(
+            timeout_ms.map_or(DEFAULT_DEADLINE_MS, |t| t.saturating_add(DEADLINE_GRACE_MS)),
+        );
+        let started = std::time::Instant::now();
+
         loop {
-            let (is_done, notify) = {
+            let notify = {
                 let s = state_arc
                     .lock()
                     .map_err(|e| format!("Lock poisoned: {e}"))?;
@@ -368,13 +403,21 @@ impl ShellSession {
                         exit_code: s.exit_code,
                     });
                 }
-                (false, s.output_notify.clone())
+                s.output_notify.clone()
             };
 
-            if !is_done {
-                // Wait for notification (non-blocking async wait)
-                notify.notified().await;
+            if started.elapsed() >= deadline {
+                return Err(format!(
+                    "shell execution '{execution_id}' still reports Running after \
+                     {}s with no completion signal — the runner task likely died \
+                     without reporting; refusing to wait forever",
+                    deadline.as_secs()
+                ));
             }
+
+            // Bounded wait: a notification wakes us immediately; a lost/never-sent
+            // one degrades to a 2s re-check instead of an infinite hang.
+            let _ = tokio::time::timeout(RECHECK_EVERY, notify.notified()).await;
         }
     }
 
@@ -925,6 +968,28 @@ mod tests {
         let canonical = dir.path().canonicalize().unwrap();
         assert_eq!(session.cwd(), canonical);
         assert_eq!(session.workspace_root(), canonical);
+    }
+
+    // what this catches: the shared-build-cache invariant of the citizen-layer
+    // economy (Joel 2026-07-10: layers are cheap ONLY if builds share ONE
+    // cargo cache). A session must be born with CARGO_TARGET_DIR pointing at
+    // the shared cache, so a peer's `cargo build` inside her CoW layer never
+    // materializes a per-layer target/ (~10 GB each). An explicit session env
+    // set must still override.
+    #[test]
+    fn session_inherits_the_shared_cargo_target_dir() {
+        let (dir, _rt) = setup_workspace();
+        let mut session = ShellSession::new("t", "p1", dir.path()).unwrap();
+        let target = session
+            .env
+            .get("CARGO_TARGET_DIR")
+            .expect("born with the shared cargo cache");
+        assert!(
+            target.contains("cargo-target") || std::env::var("CARGO_TARGET_DIR").is_ok(),
+            "points at the shared cache: {target}"
+        );
+        session.set_env("CARGO_TARGET_DIR".into(), "/tmp/override".into());
+        assert_eq!(session.env.get("CARGO_TARGET_DIR").unwrap(), "/tmp/override");
     }
 
     #[test]

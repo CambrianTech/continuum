@@ -168,6 +168,7 @@ impl TrainingCompletionSentinel {
             };
 
             let params = CognitionEvalParams {
+                run_id: None,
                 persona_id: job.persona_id.to_string(),
                 gene: Some(EvalGene {
                     name: job.trait_kind.clone(),
@@ -187,6 +188,7 @@ impl TrainingCompletionSentinel {
                 max_retries: None,
                 workspace_root: None,
                 capture_dir: None,
+                learn: None,
                 note: Some(format!(
                     "L3 auto-eval (gene={}, base={}, provider={})",
                     job.trait_kind, job.base_model, job.handle.provider_id

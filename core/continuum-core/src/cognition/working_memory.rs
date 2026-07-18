@@ -73,6 +73,38 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 /// ("I'll read it again") because the data never came back. [[act-results-need-a-recency-channel-not-semantic-recall]]
 pub const WM_ACTION_HEAD_CHARS: usize = 800;
 
+/// Upper bound on the FULL most-recent-action block. The full result rides in the
+/// prompt as the volatile tail (placed AFTER the byte-stable trail so the KV prefix
+/// caches) — but it re-prefills EVERY turn it's present, and it persists as "most
+/// recent action" until the next act replaces it. So a persona that runs one big
+/// `code/tree` (measured 16k chars ≈ 4k tokens — HALF the whole prompt) then has
+/// several conversational turns pays ~33s of pure re-prefill (@122 tok/s on this Mac)
+/// for that raw dump on EVERY one of those turns. This cap keeps genuine reads whole
+/// (a ~300-line source file fits) while clipping pathological dumps to a usable head
+/// plus an actionable "re-fetch narrower" marker — the mind already extracted what it
+/// needed the turn it acted, and can re-run the tool with a path/range to see more.
+/// The block is the single biggest volatile chunk of the 14k persona prompt (#139);
+/// bounding it is the OOM-safe latency lever (no lane/window change). Sits well above
+/// `WM_ACTION_HEAD_CHARS` so the trail head is never the thing that gets clipped.
+/// [[persona-turn-latency-is-slot-clobbered-reprefill]] [[act-results-need-a-recency-channel-not-semantic-recall]]
+pub const WM_ACTION_FULL_MAX_CHARS: usize = 12_000;
+
+/// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
+/// Returns the body unchanged when it fits; otherwise a `char`-boundary-safe head plus
+/// a marker naming exactly how many chars were dropped and how to see them (re-run the
+/// tool with a narrower scope). One place so the render site and its test agree.
+pub fn clip_action_full(full: &str) -> std::borrow::Cow<'_, str> {
+    if full.chars().count() <= WM_ACTION_FULL_MAX_CHARS {
+        return std::borrow::Cow::Borrowed(full);
+    }
+    let head: String = full.chars().take(WM_ACTION_FULL_MAX_CHARS).collect();
+    let dropped = full.chars().count() - WM_ACTION_FULL_MAX_CHARS;
+    std::borrow::Cow::Owned(format!(
+        "{head}\n[… +{dropped} chars truncated — re-run the tool with a narrower scope \
+         (a path or line range) to see the rest]"
+    ))
+}
+
 /// Max distinct dispatched (background) handles tracked at once. A persona with more than
 /// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
 /// oldest-updated finished handle is evicted first (a still-running one is never dropped).
@@ -108,7 +140,7 @@ struct DispatchedAction {
 #[derive(Debug)]
 pub struct WorkingMemory {
     capacity: usize,
-    entries: Mutex<VecDeque<String>>,
+    entries: Mutex<VecDeque<WmEntry>>,
     /// The FULL result of the most recent act, kept whole (bounded upstream by the
     /// executor's fold cap) so the mind can work with what its hands just fetched — a
     /// file to count, a screenshot description to read, a log to scan. Only the latest is
@@ -142,6 +174,87 @@ pub struct WorkingMemory {
     /// window. Explicit repeat-perception (a true fact about her own hands, never a directive)
     /// lets a looping mind SEE its redundancy and move on organically.
     action_fps: Mutex<VecDeque<String>>,
+    /// DURABLE per-session repeat COUNT per fingerprint — independent of the tiny
+    /// `capacity`-bounded `action_fps` window above. The default capacity is 3, so a
+    /// windowed count STRUCTURALLY caps at 3: the moment any other act interleaves,
+    /// the identical call is evicted before it can be counted again, and a deepening
+    /// loop reads "3 times" forever. Glass-boxed 2026-07-14: Atlas re-issued ONE
+    /// identical `code/tree{max_depth:1}` 38× while the loop-warning stayed pinned at
+    /// "3 times", conveying none of the spiral. This map accumulates over the whole
+    /// spawn so loop-awareness ESCALATES honestly (3 → 10 → 38). Distinct fingerprints
+    /// per session are naturally modest (a persona issues dozens of distinct calls,
+    /// not millions), so it is left unbounded within the per-spawn lifetime.
+    action_fp_counts: Mutex<HashMap<String, usize>>,
+    /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
+    /// still inside the act→observe loop that produced it and hasn't yet spoken. The
+    /// full raw result exists to answer "what next" the moment the hands fetch it; once
+    /// the persona SETTLES (record_settlement), that result has served its purpose and
+    /// only bloats every subsequent conversational turn's prompt (a 2k-token code/tree
+    /// dump riding along for turns after the mind already used it — the #139/#165
+    /// stale-result-replay waste). On settlement this advances PAST the current
+    /// last_action, so [`active_action_full`](Self::active_action_full) then abstains and
+    /// the block drops to the trail head (still in `entries`, still in episodic memory,
+    /// still re-fetchable). 0 = nothing settled yet → the current result is active.
+    active_from_seq: AtomicU64,
+}
+
+/// The PROVENANCE of one working-memory entry — the type that makes receipts,
+/// facts, thoughts, and settlements structurally distinct instead of one
+/// string blob (docs/architecture/PERCEPTION-FACTS.md; the 2026-07-12
+/// three-layer suppression onion was pure type confusion: proprioception
+/// facts wore receipt numbering and every consumer re-parsed semantics out of
+/// rendered text). Render derives markers FROM the kind; consumers query the
+/// kind, never the string.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WmKind {
+    /// Chain-of-thought the persona produced (`record`).
+    Thought,
+    /// A REAL tool execution + its result head — the only kind that renders
+    /// the `[action #N]` receipt stamp.
+    Receipt { n: u64 },
+    /// A perception fact ([unfulfilled]/[confabulation]/… ) — renders its own
+    /// bracket tag, NEVER a receipt number.
+    Fact,
+    /// The "I answered this" concern boundary (`record_settlement`).
+    Settlement,
+}
+
+/// The serializable VOLATILE TIER of one persona's mind — what a deploy reboot
+/// used to destroy (working memory, freshest full result, act fingerprints,
+/// the receipt counter). Written to `~/.continuum/personas/<id>/volatile.json`
+/// at shutdown / on tick write-through, restored at spawn. Deliberately
+/// EXCLUDES engrams (already durable in sqlite) and dispatched handles (their
+/// processes died with the old core — restoring them would fabricate
+/// in-flight work).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VolatileSnapshot {
+    pub entries: Vec<WmEntry>,
+    pub last_action: Option<(u64, String)>,
+    pub action_fps: Vec<String>,
+    pub next_action_seq: u64,
+    /// Wall-clock when this snapshot was written — lets restore render the
+    /// interruption GAP ("~N minutes ago") as a perceivable fact instead of
+    /// an invisible discontinuity. `0` on snapshots from before this field
+    /// (serde default): restore then omits the gap, never guesses it.
+    #[serde(default)]
+    pub saved_at_ms: u64,
+    /// LABELS (never handles) of dispatched commands still `Running` at
+    /// save time. Their processes die with the old core, so the handles are
+    /// deliberately NOT restored (that would fabricate in-flight work) —
+    /// but the persona must KNOW what was cut off so she can repeat it in
+    /// one motion (Joel 2026-07-13: an interruption should be like closing
+    /// a laptop — reopen, see what didn't finish, redo it easily). Restore
+    /// renders these into a `[resumed]` fact marked safe-to-repeat.
+    #[serde(default)]
+    pub interrupted_dispatches: Vec<String>,
+}
+
+/// One typed working-memory entry: kind + the FINAL rendered line (rendered
+/// once at record time so `recent()` stays byte-stable and cheap).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WmEntry {
+    pub kind: WmKind,
+    pub text: String,
 }
 
 impl WorkingMemory {
@@ -153,6 +266,8 @@ impl WorkingMemory {
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
+            action_fp_counts: Mutex::new(HashMap::new()),
+            active_from_seq: AtomicU64::new(0),
         }
     }
 
@@ -161,15 +276,48 @@ impl WorkingMemory {
     /// `≥ 2` means the mind is re-issuing an identical call — proprioception the act→observe
     /// step renders EXPLICITLY so a looping mind perceives its own redundancy and moves on.
     /// Reports a TRUE fact about her hands; it never dictates what to do instead (that would
-    /// be steering — [[no-hardcoded-heuristics-to-steer-cognition]]). Bounded by `capacity`,
-    /// same rolling window as the recency trail.
+    /// be steering — [[no-hardcoded-heuristics-to-steer-cognition]]). The returned count is
+    /// DURABLE across the spawn (see `action_fp_counts`) so a loop that recurs amid other
+    /// acts escalates honestly instead of pinning at the tiny recency-window size.
     pub fn note_action_fingerprint(&self, fingerprint: &str) -> usize {
-        let mut fps = self.action_fps.lock();
-        fps.push_back(fingerprint.to_string());
-        while fps.len() > self.capacity {
-            fps.pop_front();
+        // Windowed push feeds `action_verb_tally` (the RECENT investigation shape) — that
+        // one WANTS the rolling `capacity` window, so leave it bounded here.
+        {
+            let mut fps = self.action_fps.lock();
+            fps.push_back(fingerprint.to_string());
+            while fps.len() > self.capacity {
+                fps.pop_front();
+            }
         }
-        fps.iter().filter(|f| f.as_str() == fingerprint).count()
+        // The repeat COUNT is durable across the spawn — NOT clipped to the tiny recency
+        // window — so an identical call interleaved with other acts still climbs 3→38
+        // rather than resetting every time it falls out of the `capacity`-deep window.
+        let mut counts = self.action_fp_counts.lock();
+        let c = counts.entry(fingerprint.to_string()).or_insert(0);
+        *c += 1;
+        *c
+    }
+
+    /// Tally of recent actions BY TOOL NAME (the part of the fingerprint before
+    /// `|`), most-used first — the mind's own act distribution as a structural
+    /// fact. Where `note_action_fingerprint` perceives "this EXACT call again",
+    /// this perceives the SHAPE of the whole investigation ("9 acts so far, all
+    /// code/search") — glass-boxed on SWE flask-4045 (2026-07-11): a 24B with a
+    /// per-file result menu in view still re-searched 6×; the imbalance itself
+    /// was never a perceivable fact. A tally is truth about her own hands,
+    /// never a directive. Same rolling window as the fingerprints.
+    pub fn action_verb_tally(&self) -> Vec<(String, usize)> {
+        let fps = self.action_fps.lock();
+        let mut tally: Vec<(String, usize)> = Vec::new();
+        for fp in fps.iter() {
+            let name = fp.split('|').next().unwrap_or(fp).to_string();
+            match tally.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, c)) => *c += 1,
+                None => tally.push((name, 1)),
+            }
+        }
+        tally.sort_by(|a, b| b.1.cmp(&a.1));
+        tally
     }
 
     /// Record the reasoning the persona just produced. Blank/empty is ignored
@@ -180,7 +328,7 @@ impl WorkingMemory {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(r.to_string());
+        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string() });
         while e.len() > self.capacity {
             e.pop_front();
         }
@@ -194,7 +342,7 @@ impl WorkingMemory {
     /// entry is stamped with a monotonic `#n` so a repeated identical act still
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
-    pub fn record_action(&self, result: &str) {
+    pub fn record_receipt(&self, result: &str) {
         let a = result.trim();
         if a.is_empty() {
             return;
@@ -210,10 +358,157 @@ impl WorkingMemory {
         // trail's KV-cache prefix byte-stable across a settle-act.
         let head: String = a.chars().take(WM_ACTION_HEAD_CHARS).collect();
         let mut e = self.entries.lock();
-        e.push_back(format!("[action #{seq}] {head}"));
+        e.push_back(WmEntry {
+            kind: WmKind::Receipt { n: seq },
+            text: format!("[action #{seq}] {head}"),
+        });
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// Record a PERCEPTION FACT ([unfulfilled]/[unverified]/[confabulation]/
+    /// nudges) — proprioception ABOUT the mind, not a tool execution. Renders
+    /// its own bracket tag and NEVER a receipt number: the 2026-07-12
+    /// suppression onion was facts wearing `[action #N]` costumes and every
+    /// consumer misreading them as receipts. Same rolling buffer + aging.
+    pub fn record_fact(&self, fact: &str) {
+        let f = fact.trim();
+        if f.is_empty() {
+            return;
+        }
+        let mut e = self.entries.lock();
+        e.push_back(WmEntry {
+            kind: WmKind::Fact,
+            text: f.to_string(),
+        });
+        while e.len() > self.capacity {
+            e.pop_front();
+        }
+    }
+
+    /// Snapshot the volatile tier for PAUSE/RESUME across deploy reboots — the
+    /// Memento fix (Joel 2026-07-12: "they wake up blank like Memento — an
+    /// engineering failure; the flywheel falls apart"). Nine reboots today =
+    /// nine blank wakes; the mind's momentum IS the product. The snapshot is
+    /// the same serialization grid-sync will ship (one format, one seam —
+    /// [[persona-mind-persists-across-shutdowns]]).
+    pub fn snapshot(&self) -> VolatileSnapshot {
+        VolatileSnapshot {
+            entries: self.entries.lock().iter().cloned().collect(),
+            last_action: self.last_action.lock().clone(),
+            action_fps: self.action_fps.lock().iter().cloned().collect(),
+            next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
+            saved_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            interrupted_dispatches: self
+                .dispatched
+                .lock()
+                .values()
+                .filter(|d| d.status == DispatchStatus::Running)
+                .map(|d| d.label.clone())
+                .collect(),
+        }
+    }
+
+    /// Restore a snapshot into this (fresh) working memory at spawn — she wakes
+    /// mid-thought instead of blank. Capacity re-clamps on the way in so a
+    /// snapshot from a larger-capacity life never overflows this one.
+    ///
+    /// The laptop-lid contract (Joel 2026-07-13): the interruption itself
+    /// becomes a PERCEIVABLE fact — how long the lid was closed, and exactly
+    /// which dispatched commands were cut off mid-flight (their processes
+    /// died with the old core; the work did NOT complete and is safe to
+    /// repeat). Without this, a killed dispatch is indistinguishable from a
+    /// finished one, and she either re-does completed work or trusts work
+    /// that never happened.
+    pub fn restore(&self, snap: VolatileSnapshot) {
+        {
+            let mut e = self.entries.lock();
+            e.clear();
+            e.extend(snap.entries);
+            while e.len() > self.capacity {
+                e.pop_front();
+            }
+        }
+        *self.last_action.lock() = snap.last_action;
+        {
+            let mut f = self.action_fps.lock();
+            f.clear();
+            f.extend(snap.action_fps);
+            while f.len() > self.capacity {
+                f.pop_front();
+            }
+        }
+        self.next_action_seq
+            .store(snap.next_action_seq.max(1), Ordering::Relaxed);
+
+        // Render the interruption as a fact AFTER the entries land, so it is
+        // the NEWEST thing in her window when she wakes. A fact, never an
+        // instruction — she decides whether the cut-off work still matters.
+        let gap = (snap.saved_at_ms > 0)
+            .then(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| (d.as_millis() as u64).saturating_sub(snap.saved_at_ms))
+                    .ok()
+            })
+            .flatten()
+            .map(|ms| {
+                let mins = ms / 60_000;
+                if mins == 0 {
+                    "under a minute".to_string()
+                } else {
+                    format!("~{mins} min")
+                }
+            });
+        let fact = match (&gap, snap.interrupted_dispatches.is_empty()) {
+            (Some(g), false) => format!(
+                "[resumed] your session was interrupted {g} ago and your memory restored. Cut off mid-flight and NOT completed: {} — safe to repeat if still wanted",
+                snap.interrupted_dispatches.join("; ")
+            ),
+            (Some(g), true) => format!(
+                "[resumed] your session was interrupted {g} ago and your memory restored; nothing was in flight"
+            ),
+            (None, false) => format!(
+                "[resumed] your session was interrupted and your memory restored. Cut off mid-flight and NOT completed: {} — safe to repeat if still wanted",
+                snap.interrupted_dispatches.join("; ")
+            ),
+            (None, true) => {
+                "[resumed] your session was interrupted and your memory restored; nothing was in flight".to_string()
+            }
+        };
+        self.record_fact(&fact);
+    }
+
+    /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
+    /// of [`Self::recent`] for consumers that render BY KIND (the steps-taken
+    /// ledger renders `Receipt`s as numbered steps and `Fact`s under
+    /// [notices]; docs/architecture/PERCEPTION-FACTS.md).
+    pub fn recent_entries(&self) -> Vec<WmEntry> {
+        self.entries.lock().iter().cloned().collect()
+    }
+
+    /// How many acts have executed this session (survives reboots via the
+    /// volatile snapshot's `next_action_seq`). The steps-taken ledger uses
+    /// this to keep its zero-case HONEST: receipts are rare entries in a
+    /// chatty capacity-bounded ring, so they age out — "no receipts in the
+    /// window" must never be rendered as "nothing has executed" when this
+    /// counter says otherwise (glass-boxed 2026-07-13: Asha's window held
+    /// 3 silence Facts and zero Receipts minutes after real searches ran).
+    pub fn actions_taken(&self) -> u64 {
+        self.next_action_seq.load(Ordering::Relaxed).saturating_sub(1)
+    }
+
+    /// TRUE if any entry in the window is a real tool receipt — the kind
+    /// query that replaces string-scanning rendered text for `[action #`.
+    pub fn has_receipt(&self) -> bool {
+        self.entries
+            .lock()
+            .iter()
+            .any(|e| matches!(e.kind, WmKind::Receipt { .. }))
     }
 
     /// The FULL result of the most recent act, with its `#seq` stamp — `None` before any
@@ -221,6 +516,20 @@ impl WorkingMemory {
     /// whole of what its hands just fetched, not the truncated trail head.
     pub fn last_action_full(&self) -> Option<(u64, String)> {
         self.last_action.lock().clone()
+    }
+
+    /// The full most-recent-act result ONLY while it is still ACTIVE — the mind is
+    /// inside the act→observe loop that produced it and hasn't spoken yet. Returns `None`
+    /// once the persona has SETTLED past it (the raw result did its "what next" job; the
+    /// trail head, episodic memory, and re-fetch remain). This is what the perception
+    /// faculty surfaces so a 2k-token `code/tree` dump stops re-prefilling on every
+    /// conversational turn AFTER the mind already used it (#139 prefill / #165 stale
+    /// replay). `last_action_full` stays the ungated accessor for callers that want the
+    /// raw slot regardless of settlement (snapshotting, tests).
+    pub fn active_action_full(&self) -> Option<(u64, String)> {
+        let action = self.last_action.lock().clone()?;
+        let active_from = self.active_from_seq.load(Ordering::Relaxed);
+        (action.0 >= active_from).then_some(action)
     }
 
     /// Fold a streamed event from a DISPATCHED (background) command into the mind's
@@ -296,19 +605,32 @@ impl WorkingMemory {
     pub fn record_settlement(&self, answer_head: &str) {
         let a = answer_head.trim();
         let mut e = self.entries.lock();
-        e.push_back(if a.is_empty() {
-            WM_SETTLEMENT_PREFIX.to_string()
-        } else {
-            format!("{WM_SETTLEMENT_PREFIX} I answered: {a}")
+        e.push_back(WmEntry {
+            kind: WmKind::Settlement,
+            text: if a.is_empty() {
+                WM_SETTLEMENT_PREFIX.to_string()
+            } else {
+                format!("{WM_SETTLEMENT_PREFIX} I answered: {a}")
+            },
         });
         while e.len() > self.capacity {
             e.pop_front();
+        }
+        drop(e);
+        // Settling closes over the current act→observe loop: the most recent action's
+        // FULL result has done its "what next" job. Advance the active boundary PAST it
+        // so the full block stops riding along subsequent conversational turns (#139/#165
+        // stale-result-replay). A later act re-activates by minting a higher seq. Nothing
+        // acted yet (last_action None) → nothing to close. `fetch_max` so it never regresses.
+        if let Some((seq, _)) = self.last_action.lock().as_ref() {
+            let next_active = seq.saturating_add(1);
+            self.active_from_seq.fetch_max(next_active, Ordering::Relaxed);
         }
     }
 
     /// Snapshot of recent reasonings, oldest → newest.
     pub fn recent(&self) -> Vec<String> {
-        self.entries.lock().iter().cloned().collect()
+        self.entries.lock().iter().map(|e| e.text.clone()).collect()
     }
 
     /// Drop all volatile traces — the scratchpad goes dark. Used at the boundary
@@ -394,9 +716,12 @@ impl Faculty for WorkingMemoryFaculty {
         // regardless). Lets the mind USE what its hands fetched — count the file, read the
         // screenshot description, scan the log — instead of looping on the truncated head.
         // Only when it carries more than the trail head already does.
-        if let Some((seq, full)) = self.memory.last_action_full() {
+        if let Some((seq, full)) = self.memory.active_action_full() {
             if full.chars().count() > WM_ACTION_HEAD_CHARS {
-                sections.push(format!("Full result of your most recent action (#{seq}):\n{full}"));
+                let clipped = clip_action_full(&full);
+                sections.push(format!(
+                    "Full result of your most recent action (#{seq}):\n{clipped}"
+                ));
             }
         }
         // Background commands the mind sent away — sentinels, compiles, debuggers —
@@ -447,6 +772,93 @@ mod tests {
     // IDENTICAL call so the act→observe step can surface "you've issued this N times." A
     // different call resets to 1; the count rises only on exact repeats. This is the explicit
     // proprioception that breaks a smaller model out of the search-loop the glass box caught.
+    // (Stray duplicate #[test] removed 2026-07-12 — it made the next test run twice.)
+    // what this catches: the investigation-shape fact's source of truth — the
+    // verb tally aggregates fingerprints by tool name, most-used first, so
+    // "9 acts, all code/search" is derivable as pure structure (SWE flask-4045
+    // glass-box: distinct searches never tripped the exact-repeat note and the
+    // imbalance was invisible). // regression for the [investigation] brick
+    #[test]
+    fn action_verb_tally_aggregates_by_tool_name() {
+        let wm = WorkingMemory::new(16);
+        for args in ["{\"pattern\":\"a\"}", "{\"pattern\":\"b\"}", "{\"pattern\":\"c\"}"] {
+            wm.note_action_fingerprint(&format!("code/search|{args}"));
+        }
+        wm.note_action_fingerprint("code/read|{\"file_path\":\"x.py\"}");
+        let tally = wm.action_verb_tally();
+        assert_eq!(tally[0], ("code/search".to_string(), 3), "most-used first: {tally:?}");
+        assert_eq!(tally[1], ("code/read".to_string(), 1));
+    }
+
+    // what this catches: the Memento fix's foundation — the volatile tier
+    // round-trips through the JSON snapshot losslessly: typed entries (kinds
+    // intact), the full last result, fingerprints, and the receipt counter
+    // (so post-restore receipts keep ascending numbers instead of colliding
+    // with restored ones) — PLUS the laptop-lid contract (Joel 2026-07-13):
+    // the interruption itself lands as the NEWEST fact, naming the gap and
+    // any dispatched commands cut off mid-flight as safe to repeat.
+    #[test]
+    fn volatile_snapshot_round_trips_and_renders_the_interruption() {
+        let wm = WorkingMemory::new(8);
+        wm.record("thinking about the tokenizer");
+        wm.record_receipt("I ran code/list({\"path\":\".\"}) Result: 4 files");
+        wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
+        wm.record_settlement("shared the plan");
+        wm.note_action_fingerprint("code/list|{\"path\":\".\"}");
+        // A dispatched compile still Running at snapshot time — the process
+        // dies with the old core; only its LABEL must survive.
+        let handle = Uuid::new_v4();
+        wm.record_dispatch_event(handle, "cargo build (dispatched)", "compiling…", DispatchStatus::Running);
+        let snap = wm.snapshot();
+        assert_eq!(snap.interrupted_dispatches, vec!["cargo build (dispatched)"]);
+        assert!(snap.saved_at_ms > 0);
+        let json = serde_json::to_string(&snap).expect("serializes");
+        let back: VolatileSnapshot = serde_json::from_str(&json).expect("deserializes");
+
+        let fresh = WorkingMemory::new(8);
+        fresh.restore(back);
+        // Everything restored, and the [resumed] fact appended as NEWEST.
+        let restored = fresh.recent();
+        let (window, resumed) = restored.split_at(restored.len() - 1);
+        assert_eq!(window, wm.recent().as_slice(), "window identical before the marker");
+        assert!(resumed[0].contains("[resumed]"), "interruption is perceivable: {resumed:?}");
+        assert!(
+            resumed[0].contains("cargo build (dispatched)")
+                && resumed[0].contains("safe to repeat"),
+            "cut-off work named + marked repeatable: {resumed:?}"
+        );
+        assert!(fresh.has_receipt(), "receipt kind survives the trip");
+        assert_eq!(
+            fresh.last_action_full(),
+            wm.last_action_full(),
+            "full latest result survives"
+        );
+        // The counter resumes PAST the restored receipts — the next act gets a
+        // fresh number, never a collision with a restored one. (#3, not #2:
+        // the dispatched compile consumed a seq too — dispatches are acts.)
+        fresh.record_receipt("I ran code/tree({}) Result: ok");
+        let last = fresh.recent();
+        assert!(
+            last.last().unwrap().starts_with("[action #3]"),
+            "counter resumed: {last:?}"
+        );
+
+        // And the quiet path: nothing in flight → the fact says so plainly.
+        let quiet = WorkingMemory::new(8);
+        quiet.restore(VolatileSnapshot {
+            entries: Vec::new(),
+            last_action: None,
+            action_fps: Vec::new(),
+            next_action_seq: 1,
+            saved_at_ms: 0, // pre-field snapshot: no gap guessed
+            interrupted_dispatches: Vec::new(),
+        });
+        let q = quiet.recent();
+        assert_eq!(q.len(), 1);
+        assert!(q[0].contains("nothing was in flight"), "{q:?}");
+        assert!(!q[0].contains("ago"), "no fabricated gap on legacy snapshots: {q:?}");
+    }
+
     #[test]
     fn note_action_fingerprint_counts_identical_repeats() {
         let wm = WorkingMemory::new(8);
@@ -459,6 +871,36 @@ mod tests {
         assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 4);
     }
 
+    // what this catches: the loop-awareness COUNT must survive the tiny recency window
+    // (regression for the 2026-07-14 Atlas ×38 pinned-at-3 spiral). The live default
+    // capacity is 3, so the windowed `action_fps` alone caps the count at 3 the instant
+    // other acts interleave — a deepening loop then reads "3 times" forever and conveys
+    // none of the spiral. The DURABLE per-session count must keep climbing to 38.
+    #[test]
+    fn action_fingerprint_count_escalates_past_the_tiny_recency_window() {
+        let wm = WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY); // = 3, the live default
+        let tree = "code/tree|{\"max_depth\":1}";
+        let mut last = 0;
+        for _ in 0..38 {
+            last = wm.note_action_fingerprint(tree);
+            // three OTHER distinct calls per cycle — more than capacity(3), so a
+            // window-only count would evict `tree` before it recurs and never exceed 1.
+            wm.note_action_fingerprint("code/read|{\"f\":\"a\"}");
+            wm.note_action_fingerprint("code/list|{\"p\":\".\"}");
+            wm.note_action_fingerprint("code/search|{\"q\":\"x\"}");
+        }
+        assert_eq!(
+            last, 38,
+            "durable count must reflect all 38 identical issues, not cap at the window size"
+        );
+        // The recent-window tally (action_verb_tally) stays CORRECTLY windowed — it's
+        // the recent-shape channel, not the durable-repeat channel.
+        assert!(
+            wm.action_verb_tally().len() <= DEFAULT_WORKING_MEMORY_CAPACITY,
+            "verb tally stays bounded to the recency window"
+        );
+    }
+
     // what this catches: THE starvation fix — a large tool result comes back to the mind
     // in FULL (so it can count/read/scan it), while the rolling trail keeps only the head
     // (byte-stable proprioception). Older acts drop to head-only; a fresh act's full result
@@ -468,7 +910,7 @@ mod tests {
     async fn latest_action_returns_full_result_trail_keeps_head() {
         let wm = Arc::new(WorkingMemory::new(8));
         let big = format!("line0\n{}", "x".repeat(5_000)); // > WM_ACTION_HEAD_CHARS
-        wm.record_action(&big);
+        wm.record_receipt(&big);
 
         // The full result is available whole.
         let (seq, full) = wm.last_action_full().expect("latest act kept");
@@ -498,9 +940,122 @@ mod tests {
         assert!(rendered.contains(&"x".repeat(5_000)), "and it's the FULL body");
 
         // A second act replaces the full slot; the first survives only as a trail head.
-        wm.record_action("small follow-up");
+        wm.record_receipt("small follow-up");
         let (seq2, _) = wm.last_action_full().unwrap();
         assert_eq!(seq2, 2, "latest-full tracks the most recent act");
+    }
+
+    // what this catches: #139 latency — a PATHOLOGICAL tool result (a huge code/tree
+    // dump ≈ 4k tokens, HALF the whole prompt) is clipped in the full-result block so it
+    // stops re-prefilling verbatim every turn it rides along as "most recent action",
+    // while a GENUINE read (a ~130-line file, the design's stated legit case) still comes
+    // through WHOLE. The clip is re-fetchable, never silent: it names the dropped size and
+    // how to see the rest. Bounding this volatile tail is the OOM-safe prefill lever.
+    #[tokio::test]
+    async fn oversized_action_result_is_clipped_but_genuine_reads_survive_whole() {
+        // A genuine read at the design's stated legit size (5k chars ≈ 130-line file) is
+        // BELOW the cap → unchanged, matches the sibling test's guarantee.
+        let genuine = "y".repeat(5_000);
+        assert_eq!(
+            clip_action_full(&genuine),
+            genuine,
+            "a genuine file read stays whole — never clipped"
+        );
+
+        // A pathological dump ABOVE the cap → clipped to the head + a re-fetch marker.
+        let dump = "z".repeat(WM_ACTION_FULL_MAX_CHARS + 4_000);
+        let clipped = clip_action_full(&dump);
+        assert!(
+            clipped.chars().count() < dump.chars().count(),
+            "the pathological dump is shorter than the raw body"
+        );
+        assert!(
+            clipped.chars().count() <= WM_ACTION_FULL_MAX_CHARS + 120,
+            "clipped to ~the cap plus the short marker, not the full 16k"
+        );
+        assert!(
+            clipped.contains("+4000 chars truncated"),
+            "the marker names exactly how much was dropped"
+        );
+        assert!(
+            clipped.contains("narrower scope"),
+            "the marker tells the mind how to see the rest — never a silent starve"
+        );
+
+        // End-to-end through the faculty: the oversized block renders clipped.
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.record_receipt(&dump);
+        let rendered = WorkingMemoryFaculty::new(wm.clone())
+            .contribute(&Workspace::new("a fresh burst"))
+            .await
+            .expect("bids")
+            .content
+            .clone();
+        assert!(
+            rendered.contains("Full result of your most recent action (#1):"),
+            "the block still surfaces"
+        );
+        assert!(
+            rendered.contains("chars truncated"),
+            "and it's the CLIPPED body, not the raw 16k dump"
+        );
+    }
+
+    // what this catches: #139/#165 — the FULL action result rides in the prompt only while
+    // the mind is inside the act→observe loop (active). Once the persona SETTLES (speaks),
+    // the raw result has done its "what next" job and drops out of the prompt so a 2k-token
+    // code/tree dump stops re-prefilling on every subsequent conversational turn. The trail
+    // HEAD survives (proprioception), and a NEW act re-activates the full channel.
+    #[tokio::test]
+    async fn full_result_drops_out_after_the_persona_settles_but_a_new_act_reactivates() {
+        let wm = Arc::new(WorkingMemory::new(8));
+        let dump = format!("code/tree result\n{}", "n".repeat(3_000)); // > WM_ACTION_HEAD_CHARS
+        wm.record_receipt(&dump);
+
+        let render = |wm: Arc<WorkingMemory>| async move {
+            WorkingMemoryFaculty::new(wm)
+                .contribute(&Workspace::new("tick"))
+                .await
+                .expect("bids")
+                .content
+                .clone()
+        };
+
+        // Active (acted, not yet spoken): the full result is present.
+        let r1 = render(wm.clone()).await;
+        assert!(
+            r1.contains("Full result of your most recent action"),
+            "while active, the mind sees the whole result it just fetched"
+        );
+
+        // The persona SETTLES → the full result drops out; the trail head remains.
+        wm.record_settlement("the workspace has a wordstats crate");
+        assert!(
+            wm.active_action_full().is_none(),
+            "a settled result is no longer active"
+        );
+        let r2 = render(wm.clone()).await;
+        assert!(
+            !r2.contains("Full result of your most recent action"),
+            "after settling, the 2k-token dump stops riding along the prompt (#139/#165)"
+        );
+        assert!(
+            r2.contains("[action #1]"),
+            "but the proprioceptive trail head survives — the mind still knows it acted"
+        );
+
+        // A NEW act re-activates the full channel (higher seq beats the settled boundary).
+        let dump2 = format!("code/read result\n{}", "m".repeat(3_000));
+        wm.record_receipt(&dump2);
+        assert!(
+            wm.active_action_full().map(|(s, _)| s) == Some(2),
+            "the fresh act is active again"
+        );
+        let r3 = render(wm.clone()).await;
+        assert!(
+            r3.contains("Full result of your most recent action (#2):"),
+            "the new act's result is surfaced whole for its own what-next decision"
+        );
     }
 
     // what this catches: the ASYNC feedback channel — a dispatched (background) command
@@ -568,8 +1123,8 @@ mod tests {
     #[test]
     fn repeated_action_yields_distinct_stamped_entries() {
         let wm = WorkingMemory::new(3);
-        wm.record_action("I ran code/search(pattern=foo) -> 0 matches");
-        wm.record_action("I ran code/search(pattern=foo) -> 0 matches"); // identical act
+        wm.record_receipt("I ran code/search(pattern=foo) -> 0 matches");
+        wm.record_receipt("I ran code/search(pattern=foo) -> 0 matches"); // identical act
         let recent = wm.recent();
         assert_eq!(recent.len(), 2);
         assert_ne!(
@@ -579,7 +1134,7 @@ mod tests {
         assert!(recent[0].starts_with("[action #1] "));
         assert!(recent[1].starts_with("[action #2] "));
         // blank action ignored (no fabricated proprioception).
-        wm.record_action("   ");
+        wm.record_receipt("   ");
         assert_eq!(wm.recent().len(), 2);
     }
 
@@ -591,7 +1146,7 @@ mod tests {
     #[test]
     fn record_settlement_marks_a_boundary_in_the_buffer() {
         let wm = WorkingMemory::new(4);
-        wm.record_action("I ran commands/list({}) -> 100 commands");
+        wm.record_receipt("I ran commands/list({}) -> 100 commands");
         wm.record_settlement("there are 100 commands");
         let recent = wm.recent();
         assert_eq!(recent.len(), 2);
@@ -615,12 +1170,12 @@ mod tests {
     #[test]
     fn clear_empties_buffer_but_keeps_stamps_monotonic() {
         let wm = WorkingMemory::new(3);
-        wm.record_action("ran A");
-        wm.record_action("ran B");
+        wm.record_receipt("ran A");
+        wm.record_receipt("ran B");
         assert_eq!(wm.recent().len(), 2);
         wm.clear();
         assert!(wm.is_empty(), "clear drops the disjoint concern's traces");
-        wm.record_action("ran C");
+        wm.record_receipt("ran C");
         let recent = wm.recent();
         assert_eq!(recent.len(), 1);
         assert!(

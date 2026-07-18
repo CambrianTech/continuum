@@ -26,6 +26,17 @@ import type { ChatMessageView, RosterSlotView, SenderKind } from '@continuum/sdk
 /** The neutral author/member kind discriminant (`'human' | 'agent' | 'system'`). */
 export type MemberKind = SenderKind['kind'];
 
+/** A member's **loadout** — the model backing it (`model · size · ctx`), the
+ *  glass-box tile's LOADOUT strip. Every field optional: an honest absent when
+ *  the substrate hasn't resolved it, never a fabricated capability. `params` is
+ *  the RAW parameter count (the renderer formats `24_000_000_000` → "24B");
+ *  `contextWindow` the raw token window (`32768` → "32k"). */
+export interface LoadoutVM {
+  readonly model?: string;
+  readonly params?: number;
+  readonly contextWindow?: number;
+}
+
 /** One roster-rail entry — "who is here", rendered live off airc presence. */
 export interface RosterMemberVM {
   readonly id: string;
@@ -40,6 +51,10 @@ export interface RosterMemberVM {
    *  none reported (a human, a remote peer, or a persona not surfacing state) —
    *  the card simply draws no meters, never fabricated bars. */
   readonly vitals: Record<string, number>;
+  /** The model backing this member (`model · size · ctx`). Absent for a human,
+   *  a remote peer, or a persona whose binding hasn't resolved — the card draws
+   *  no LOADOUT strip, never a fabricated model. */
+  readonly loadout?: LoadoutVM;
 }
 
 /** One conversation row — "what was said". */
@@ -80,7 +95,23 @@ export function formatTimeOfDay(unixMs: number): string {
   return `${hh}:${mm}`;
 }
 
+/** Project the wire `Loadout` into the flat VM — dropping empty fields so an
+ *  all-absent loadout collapses to `undefined` (the card draws no strip, never
+ *  an empty one). `context_window` (snake, wire) → `contextWindow` (camel, VM). */
+function loadoutVM(lo: RosterSlotView['loadout']): LoadoutVM | undefined {
+  if (!lo) return undefined;
+  const out: LoadoutVM = {
+    ...(lo.model ? { model: lo.model } : {}),
+    ...(lo.params ? { params: lo.params } : {}),
+    ...(lo.context_window ? { contextWindow: lo.context_window } : {}),
+  };
+  return out.model || out.params !== undefined || out.contextWindow !== undefined
+    ? out
+    : undefined;
+}
+
 function memberVM(slot: RosterSlotView): RosterMemberVM {
+  const loadout = loadoutVM(slot.loadout);
   return {
     id: slot.member_id,
     name: slot.display_name,
@@ -89,7 +120,14 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     runtime: slot.provenance.runtime,
     // Additive field (#vitals): an older core omits it → treat as no vitals, the
     // same back-compat discipline as `purpose` ([[fallbacks-are-illegal-fail-loud]]).
+    // The wire type marks vitals required (serde default), but a pre-field core sends
+    // it undefined at runtime — the guard is real despite the type, so silence the
+    // "unnecessary condition" the type-only view infers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     vitals: slot.vitals ?? {},
+    // Additive field (#186 loadout): absent for a human / unresolved agent — the
+    // card draws no LOADOUT strip, never a fabricated model.
+    ...(loadout ? { loadout } : {}),
   };
 }
 

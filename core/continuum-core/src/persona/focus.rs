@@ -79,13 +79,18 @@ pub struct FocusState {
     mutes: Vec<Mute>,
 }
 
+/// The resting focus setpoint — the balanced posture every consumer anchors on
+/// (the cognition focus-policy junction returns its calibrated constants exactly
+/// here). Single-sourced; the future genome-borne trait baseline replaces it.
+pub const RESTING_FOCUS: f32 = 0.5;
+
 impl Default for FocusState {
     fn default() -> Self {
         // Balanced posture: neither heads-down nor maximally associative, no lane
         // chosen yet, nothing muted. A recipe may PRESET a different default; she
         // overrides from there.
         Self {
-            focus: 0.5,
+            focus: RESTING_FOCUS,
             cursor: None,
             mutes: Vec::new(),
         }

@@ -19,7 +19,15 @@ const vm: ChatViewModel = {
   memberCount: 2,
   activeCount: 1,
   members: [
-    { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'persona', vitals: { energy: 80, attention: 90 } },
+    {
+      id: 'a',
+      name: 'Asha',
+      kind: 'agent',
+      active: true,
+      runtime: 'persona',
+      vitals: { energy: 80, attention: 90 },
+      loadout: { model: 'devstral-24b', params: 24_000_000_000, contextWindow: 32_768 },
+    },
     { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '', vitals: {} },
   ],
   messages: [
@@ -58,6 +66,20 @@ describe('chat → pattern projections', () => {
     expect(cells[1]).not.toHaveProperty('meters');
   });
 
+  // what this catches: a member's LOADOUT (model·size·ctx) rides the neutral cell
+  // losslessly — the SAME design as `meters` — so a target draws the strip from the
+  // Listing alone. A member with no loadout carries no `loadout` key (absent, never
+  // a fabricated model).
+  it('carries member loadout as a neutral cell field, absent when none', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.loadout).toEqual({
+      model: 'devstral-24b',
+      params: 24_000_000_000,
+      contextWindow: 32_768,
+    });
+    expect(cells[1]).not.toHaveProperty('loadout');
+  });
+
   // what this catches: the focused room projects to the nav `Listing` (the tab
   // bar / channel-attention), carrying its purpose as the cell group.
   it('projects the focused room into the nav Listing', () => {
@@ -74,8 +96,15 @@ describe('chat → pattern projections', () => {
   it('composes the room into a Workspace with purpose-keyed Content', () => {
     const ws = chatWorkspace(vm);
     expect(ws.nav.id).toBe('rooms');
-    expect(ws.left).toHaveLength(1);
-    expect(ws.left[0]?.id).toBe('roster');
+    // The left rail is a global widget stack: AI Performance (metrics) · Rooms (listing)
+    // · Users & Agents (listing). The roster is the participants listing (id 'roster').
+    expect(ws.left).toHaveLength(3);
+    expect(ws.left.map((w) => w.kind)).toEqual(['metrics', 'listing', 'listing']);
+    const roster = ws.left.find(
+      (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'roster',
+    );
+    expect(roster).toBeDefined();
+    expect(roster?.id).toBe('roster');
     expect(ws.content.purpose).toBe('chat');
     // `WorkspaceView.content.body` is deliberately opaque (`ContentView<unknown>`) at
     // the workspace boundary; a chat-aware test narrows to the exported chat body.

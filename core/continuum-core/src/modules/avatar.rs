@@ -38,10 +38,24 @@ impl AvatarModule {
         width: u32,
         height: u32,
         avatar_dir: &std::path::Path,
+        // #174: the persona's PINNED VRM path (durable, sticky). `Some` → render THIS
+        // model directly, bypassing the roster-dependent selection that thrashes to a
+        // default when the in-memory gender roster is cold. `None` → deterministic
+        // selection (correct when warm).
+        pinned_vrm: Option<std::path::PathBuf>,
+        // Glass box (#172): optional expression/pose to render instead of the idle
+        // neutral face; `out_stem` is the state-suffixed output filename (no `.png`).
+        expression: Option<crate::live::video::bevy_renderer::Emotion>,
+        pose: Option<crate::live::video::bevy_renderer::Gesture>,
+        // Mouth openness weight 0.0..1.0 (viseme/lip-sync glass box). None → resting.
+        mouth: Option<f32>,
+        out_stem: &str,
     ) -> Result<String, String> {
-        // Select avatar model for this identity
-        let model = select_avatar_by_identity(identity);
-        let vrm_path = avatar_model_path(model.filename);
+        // Pinned VRM wins (sticky, #174); else fall back to the deterministic selection.
+        let vrm_path = match pinned_vrm {
+            Some(p) => p,
+            None => avatar_model_path(select_avatar_by_identity(identity).filename),
+        };
 
         if !vrm_path.exists() {
             return Err(format!("VRM model not found: {}", vrm_path.display()));
@@ -71,35 +85,56 @@ impl AvatarModule {
         // Allocate a Bevy render slot
         let allocation = allocate_bevy_slot(config)?;
 
-        // Wait for model to load and render clean frames.
-        // Skip initial frames (loading/black), then grab a good one.
-        let mut best_frame = None;
+        // Phase 1 — warm up. A COLD VRM load emits no frames until the model is parsed
+        // and the scene is instantiated (SceneInstanceReady) — observed ~15s on a 21MB
+        // VRM before the first healthy frame, then a warmup. 30s covers cold load +
+        // warmup; the result is cached so this wait is paid once per (avatar, state).
+        // Capture NOTHING here — just drain until the avatar is clearly loaded, so the
+        // expression/pose in phase 2 has a spawned entity to land on.
         let mut frames_received = 0u32;
-        // A COLD VRM load doesn't emit frames until the model is parsed + the scene is
-        // instantiated (SceneInstanceReady) — observed ~15s on a 21MB VRM before the
-        // first healthy frame, then the 40-frame warmup skip below. 5s always failed
-        // cold (the live video pump succeeds only because it stays allocated). 30s
-        // covers cold load + warmup; the result is cached (png_path.exists() short-
-        // circuits) so this wait is paid once per avatar.
         let max_wait = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
-
         while start.elapsed() < max_wait {
-            // Drain all available frames, keeping the latest
-            while let Ok(frame) = allocation.frame_rx.try_recv() {
+            while let Ok(_frame) = allocation.frame_rx.try_recv() {
                 frames_received += 1;
-                // Skip first ~30 frames (model loading, initial black)
-                if frames_received > 30 {
-                    best_frame = Some(frame);
-                }
             }
-
-            // If we have a good frame after the skip window, we're done
-            if best_frame.is_some() && frames_received > 40 {
+            if frames_received > 40 {
                 break;
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
 
-            // Wait for next frame notification
+        // Phase 2 — glass box (#172): apply the requested expression/pose to the now-
+        // loaded avatar. Issued AFTER warmup because SetEmotion/SetGesture target a
+        // spawned entity — before load it would be dropped (mirrors avatar_emote.rs).
+        // No-op for a neutral snapshot (both None).
+        let has_state = expression.is_some() || pose.is_some() || mouth.is_some();
+        if has_state {
+            let system = crate::live::video::bevy_renderer::get_or_init();
+            if let Some(e) = expression {
+                system.set_emotion_by_identity(identity, e, 1.0, 300);
+            }
+            if let Some(g) = pose {
+                system.set_gesture_by_identity(identity, g, 1500);
+            }
+            if let Some(m) = mouth {
+                system.set_mouth_weight_by_identity(identity, m.clamp(0.0, 1.0));
+            }
+        }
+
+        // Phase 3 — capture the latest frame after a settle window (longer when a
+        // ~300ms morph transition was applied, so the expression is fully on).
+        let settle = std::time::Duration::from_millis(if has_state { 1200 } else { 200 });
+        let settle_start = std::time::Instant::now();
+        let mut best_frame = None;
+        while start.elapsed() < max_wait {
+            while let Ok(frame) = allocation.frame_rx.try_recv() {
+                frames_received += 1;
+                best_frame = Some(frame);
+            }
+            if best_frame.is_some() && settle_start.elapsed() >= settle {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
@@ -158,7 +193,7 @@ impl AvatarModule {
         std::fs::create_dir_all(avatar_dir)
             .map_err(|e| format!("Failed to create avatar directory: {e}"))?;
 
-        let png_path = avatar_dir.join(format!("{identity}.png"));
+        let png_path = avatar_dir.join(format!("{out_stem}.png"));
         img.save(&png_path)
             .map_err(|e| format!("Failed to save PNG: {e}"))?;
 
@@ -174,7 +209,7 @@ impl AvatarModule {
 
         // SlotGuard drops here via RAII, releasing the Bevy slot back to the pool
 
-        Ok(format!("/avatars/{identity}.png"))
+        Ok(format!("/avatars/{out_stem}.png"))
     }
 }
 
@@ -298,8 +333,11 @@ impl ServiceModule for AvatarModule {
         let identity = &needs_refresh[0];
         let id = identity.clone();
         let dir = avatar_dir.clone();
-        let result =
-            tokio::task::spawn_blocking(move || Self::capture_snapshot(&id, 480, 480, &dir)).await;
+        // Auto-refresh renders the NEUTRAL profile under `<identity>.png` (no state).
+        let result = tokio::task::spawn_blocking(move || {
+            Self::capture_snapshot(&id, 480, 480, &dir, None, None, None, None, &id)
+        })
+        .await;
 
         match result {
             Ok(Ok(path)) => {

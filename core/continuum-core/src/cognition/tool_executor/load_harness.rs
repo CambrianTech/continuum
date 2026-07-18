@@ -66,7 +66,10 @@ fn substrate() -> Arc<CommandExecutor> {
 
 /// A persona = a client over the local transport carrying its own identity.
 fn persona(executor: Arc<CommandExecutor>, id: Uuid) -> CommandToolExecutor {
-    let transport = InProcessTransport::new(executor, Some(CallerIdentity::airc(id)));
+    let transport = InProcessTransport::new(
+        executor,
+        Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(id))),
+    );
     CommandToolExecutor::new(Connection::new(transport))
 }
 

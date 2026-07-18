@@ -439,6 +439,10 @@ impl BurstTurn {
 /// stimulus → a single opaque turn rendered verbatim).
 #[derive(Debug, Clone)]
 pub struct Burst {
+    /// The persona's NOW at assembly (wall-clock ms; eval passes its pinned epoch;
+    /// None for raw-string/test bursts). Threaded to the prompt as a [now …] line
+    /// (task #125 — the rendered header never reaches the structured-turns prompt).
+    pub now_ms: Option<u64>,
     /// The structured conversation — the unit the deliberation faculty attributes
     /// to `assistant`/`user` roles. Excludes the room header (standing context
     /// that belongs in the system prompt, not the conversation).
@@ -455,13 +459,31 @@ impl Burst {
     /// `build_workspace_burst`) but deliberately kept OUT of `turns` — room
     /// identity is standing context for the system prompt, not a conversation turn.
     pub fn from_turns(room: Uuid, turns: Vec<BurstTurn>) -> Self {
+        Self::from_turns_at(room, turns, None)
+    }
+
+    /// Like [`from_turns`](Self::from_turns) but stamps the persona's NOW into the
+    /// header — the clock in her perception (task #125 prospective memory: a being
+    /// who commits to "tomorrow at 2 PM" must know when now IS; glass-boxed live,
+    /// her prompts carried no time referent at all, so appointments were words she
+    /// could never act on). The clock is a PARAMETER, never an ambient global read:
+    /// the live path passes wall-clock, the eval passes its pinned epoch (exams stay
+    /// byte-reproducible), tests pass fixtures. Rendered at MINUTE granularity so
+    /// the prompt prefix — and the serving KV cache — only changes once a minute.
+    pub fn from_turns_at(room: Uuid, turns: Vec<BurstTurn>, now_ms: Option<u64>) -> Self {
         use std::fmt::Write as _;
         let mut rendered = String::new();
         let _ = writeln!(rendered, "[room {room}]");
+        if let Some(ms) = now_ms {
+            if let Some(dt) = chrono::DateTime::from_timestamp_millis(ms as i64) {
+                let local = dt.with_timezone(&chrono::Local);
+                let _ = writeln!(rendered, "[now {}]", local.format("%Y-%m-%d %H:%M %A"));
+            }
+        }
         for turn in &turns {
             turn.write_line(&mut rendered);
         }
-        Self { turns, rendered }
+        Self { turns, rendered, now_ms }
     }
 }
 
@@ -473,6 +495,7 @@ impl From<String> for Burst {
         Self {
             turns: vec![BurstTurn::opaque(s.clone())],
             rendered: s,
+            now_ms: None,
         }
     }
 }
@@ -593,6 +616,23 @@ pub struct Workspace {
     /// the conversation turns stay clean). `false` (the default) = message/eval
     /// driven.
     pub self_initiated: bool,
+    /// The persona's NOW at burst assembly (see [`Burst::now_ms`]) — rendered as a
+    /// [now …] line in the system prompt so time is a fact she can perceive (#125).
+    pub now_ms: Option<u64>,
+    /// Per-turn OUTPUT sink for STREAMING the deliberation's answer token-by-token
+    /// (#169). `None` (the default) = the accumulate path — every current caller and
+    /// test is byte-identical. When `Some`, the deliberation faculty generates through
+    /// `generate_stream` instead of `generate_text` (the adapter returns the SAME full
+    /// response either way — `generate_text` is literally `generate_stream` +
+    /// accumulate), and forwards each [`GenerationChunk::Token`] here as it decodes so
+    /// the caller can emit a progressive `persona.turn.delta` to the room / TTS /
+    /// avatar. `GenerationChunk::Reasoning` is NOT forwarded — the model thinks
+    /// deeply, only the ANSWER streams out ([[thinking-is-primary-never-suppress]]).
+    /// Rides the Workspace because the cycle is room-agnostic (one persona, many
+    /// rooms) so the output target is a per-TURN fact, not a per-cycle one. Cloneable
+    /// (the sender is cheap/refcounted) so a cloned Workspace streams to the same
+    /// channel; skipped by every capture/replay reader (it is live I/O, not state).
+    pub token_sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
 }
 
 impl Workspace {
@@ -607,6 +647,7 @@ impl Workspace {
     /// (collapses to one opaque turn — faculty tests, replay).
     pub fn in_room(burst: impl Into<Burst>, room_id: Uuid) -> Self {
         let burst = burst.into();
+        let burst_now = burst.now_ms;
         Self {
             world_state: burst.rendered,
             turns: burst.turns,
@@ -615,7 +656,21 @@ impl Workspace {
             broadcast: Vec::new(),
             directed_at_self: false,
             self_initiated: false,
+            now_ms: burst_now,
+            token_sink: None,
         }
+    }
+
+    /// Attach a per-turn token sink for STREAMING the answer (#169). Builder form,
+    /// mirroring [`directed`](Self::directed)/[`self_initiated`](Self::self_initiated).
+    /// `None` stays the default everywhere; the live caller sets `Some` only for a
+    /// turn it wants to stream to the room/TTS/avatar. See [`token_sink`](Self::token_sink).
+    pub fn with_token_sink(
+        mut self,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+    ) -> Self {
+        self.token_sink = sink;
+        self
     }
 
     /// Mark whether this turn is directed AT the persona (builder form). See
@@ -835,6 +890,72 @@ impl Arbiter for SalienceArbiter {
     }
 }
 
+/// Situation-aware focuser (outlier B to [`SalienceArbiter`]'s outlier A) — the
+/// first policy that actually READS `ctx.situation` instead of ignoring it, and
+/// the wire that makes [`Situation::PostAction`]'s documented promise real:
+/// *"the persona doesn't need the standing grounding re-dumped — it needs the
+/// result + the affordances for 'what next' — so a focuser can drop re-grounding
+/// and tighten the context."*
+///
+/// This is the mechanism behind "straightforward for whatever their current state
+/// requires": when a persona is heads-down driving an act→observe loop (write →
+/// compile → run → re-perceive the result), every re-perception tick is
+/// `PostAction`. On those ticks the standing SOCIAL framing — room roster,
+/// operating doctrine, workspace map — was already perceived on the fresh tick and
+/// only crowds the window; the code, the tool result, and working memory are what
+/// the "what next" decision turns on. So on `PostAction` we drop the
+/// [`Contribution::stable`] standing-framing contributions BEFORE the salience
+/// top-k, leaving the volatile task context (recall, working memory, the just-
+/// landed action result) to fill the bounded workspace. `FreshContext` is
+/// untouched — a fresh ask still gets the fuller grounding (the safe default,
+/// "when in doubt, ground more, never less").
+///
+/// Still INPUT-side only ([[no-hardcoded-heuristics-to-steer-cognition]]): it
+/// curates which context the model attends to, never the output. And it uses the
+/// existing, maintained `stable` semantic — not a brittle faculty-name list — so a
+/// new standing-grounding source inherits the right behavior for free the moment
+/// it marks itself stable.
+pub struct SituationFocusArbiter {
+    inner: SalienceArbiter,
+}
+
+impl SituationFocusArbiter {
+    pub const fn new() -> Self {
+        Self {
+            inner: SalienceArbiter,
+        }
+    }
+}
+
+impl Default for SituationFocusArbiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Arbiter for SituationFocusArbiter {
+    fn focus(
+        &self,
+        candidates: Vec<Contribution>,
+        capacity: usize,
+        ctx: &FocusContext<'_>,
+    ) -> Vec<Contribution> {
+        let candidates = match ctx.situation {
+            // Re-perceiving a tool result: drop the standing SOCIAL re-grounding so
+            // the result + affordances + working memory own the window. The salience
+            // top-k below then packs the lean, code-first context.
+            Situation::PostAction => candidates
+                .into_iter()
+                .filter(|c| !c.stable)
+                .collect::<Vec<_>>(),
+            // Fresh ask: fuller grounding, ground more never less. Identical to the
+            // bootstrap floor.
+            Situation::FreshContext => candidates,
+        };
+        self.inner.focus(candidates, capacity, ctx)
+    }
+}
+
 /// A full record of one workspace tick — the **mechanic's view of the mind.**
 /// Captures every faculty bid *including the ones that LOST attention*, what won,
 /// and the decision. This is why working on cognition is debuggable and fun:
@@ -957,6 +1078,24 @@ pub struct WorkspaceCycle {
     /// Starts at 0 so the first live cycle is `CycleId(1)` and `CycleId(0)`
     /// stays the UNSTAMPED sentinel.
     cycle_counter: std::sync::atomic::AtomicU64,
+    /// #169 per-turn STREAMING sink — the output channel for the CURRENT turn's
+    /// answer tokens, or `None` when this turn is not streamed (the default; every
+    /// non-live caller and test). Interior-mutable (like `cycle_counter`) because
+    /// `run_in_room_inner` takes `&self`: the live caller (service_loop) sets it
+    /// `Some` just before a streamed turn and clears it after, and
+    /// `run_in_room_inner` reads it into the per-turn [`Workspace::token_sink`]. A
+    /// std `Mutex` — set/read is a cheap clone of a refcounted `Sender`, never held
+    /// across an await. Safe: a persona's live turns are sequential, and eval runs
+    /// on a SEPARATE forked cycle, so no cross-turn contention.
+    token_sink: std::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+    >,
+    /// #186 glass-box: the decaying per-axis "which faculty is firing" accumulator the
+    /// vitals radiator samples (Focus/Reason/Recall/Act → the tile's live compass). The
+    /// tick seam bumps it from the faculties this cycle already runs + times; the acting
+    /// seam bumps Act. PURE OBSERVABILITY — no decision path ever reads it. `Arc` so the
+    /// radiator can hold a cheap clone without the cycle lock. See [`FacultyPulse`].
+    faculty_pulse: Arc<super::faculty_pulse::FacultyPulse>,
 }
 
 /// RAII guard for a memory-isolated measurement window over a cycle's
@@ -1060,7 +1199,37 @@ impl WorkspaceCycle {
             decoding: relaxed_decoding(),
             model_binding: None,
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
+            token_sink: std::sync::Mutex::new(None),
+            faculty_pulse: Arc::new(super::faculty_pulse::FacultyPulse::new()),
         }
+    }
+
+    /// The live cognition-compass accumulator (#186). The tick seam + acting seam bump
+    /// it; the vitals radiator samples [`FacultyPulse::levels`]. `Arc` clone is cheap.
+    pub fn faculty_pulse(&self) -> Arc<super::faculty_pulse::FacultyPulse> {
+        self.faculty_pulse.clone()
+    }
+
+    /// #186 glass-box tap: record that a faculty CONTRIBUTED this tick on the live
+    /// compass, brightness scaled by its salience (a strong recall lights brighter than
+    /// a weak one) but floored so any real firing is visibly lit. Maps the internal
+    /// faculty → its display axis; a faculty with no compass home (Affect/Volition/
+    /// Salience) is a silent no-op. PURE OBSERVABILITY — called from the tick after a
+    /// bid, never reads back into a decision.
+    fn note_faculty_firing(&self, faculty: &FacultyId, salience: f32) {
+        if let Some(axis) = super::faculty_pulse::CognitionAxis::of(faculty) {
+            // 35..=100: a bid always lights (≥35), salience carries the rest.
+            let level = (35.0 + salience.clamp(0.0, 1.0) * 65.0).round() as u8;
+            self.faculty_pulse.note(axis, level);
+        }
+    }
+
+    /// #186 glass-box: fire the Act axis on the live compass — the hands moving, a tool
+    /// actually executing. Called from the acting seam ([`super::act_observe::apply_act`]);
+    /// Act has no `FacultyId` (the hands run AFTER deliberation, not as a workspace
+    /// faculty), so it is bumped explicitly rather than through the tick map.
+    pub fn note_acting(&self) {
+        self.faculty_pulse.fire(super::faculty_pulse::CognitionAxis::Act);
     }
 
     /// Share the persona's decoding handle — call with the SAME [`DecodingHandle`]
@@ -1103,6 +1272,67 @@ impl WorkspaceCycle {
         if let Some(handle) = &self.model_binding {
             handle.store(Arc::new(binding));
         }
+    }
+
+    /// #169: set the per-turn STREAMING sink for the NEXT turn(s). The live caller
+    /// (service_loop) sets `Some(tx)` just before a streamed turn and `None` after,
+    /// so `run_in_room_inner` reads it into that turn's [`Workspace::token_sink`].
+    /// `&self` (interior-mutable, like [`rebind_model`](Self::rebind_model)) — the
+    /// living mind is shared, not owned per tick.
+    pub fn set_token_sink(
+        &self,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+    ) {
+        *self.token_sink.lock().unwrap() = sink;
+    }
+
+    /// The per-turn streaming sink to hand this tick's Workspace, or `None`.
+    fn current_token_sink(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>> {
+        self.token_sink.lock().unwrap().clone()
+    }
+
+    /// The inference adapter this mind CURRENTLY deliberates through — read from
+    /// the same shared binding [`rebind_model`](Self::rebind_model) writes, so it
+    /// tracks re-homes. `None` for a cycle with no deliberation faculty. The seam
+    /// background regions (dream consolidation, wanderers) resolve their adapter
+    /// from, instead of a spawn-time snapshot that would go stale on failover.
+    pub fn current_adapter(&self) -> Option<Arc<dyn crate::ai::adapter::AIProviderAdapter>> {
+        self.model_binding
+            .as_ref()
+            .map(|handle| handle.load().adapter.clone())
+    }
+
+    /// The adapter AND the served-model id it must be asked for, as one read of
+    /// the shared binding. Background regions must send BOTH: the model id
+    /// selects the route/template on the serving side, and omitting it produced
+    /// degenerate role-token runaway on the dream's first live pass
+    /// (2026-07-12) while normal turns — which send `binding.model` — were
+    /// clean through the same adapter.
+    pub fn current_model_route(
+        &self,
+    ) -> Option<(Arc<dyn crate::ai::adapter::AIProviderAdapter>, Option<String>)> {
+        self.model_binding.as_ref().map(|handle| {
+            let b = handle.load();
+            (b.adapter.clone(), b.model.clone())
+        })
+    }
+
+    /// The served-model id + EFFECTIVE context window, as ONE atomic read of the
+    /// shared binding — the display inputs a roster LOADOUT projects (`model ·
+    /// ctx`). `None` for a cycle with no deliberation faculty (no binding to
+    /// report). The parameter COUNT is deliberately NOT here: it isn't on the
+    /// binding, and the caller resolves it from the model registry by this id
+    /// (honest-absent when the row is unhydrated) — the cognition layer must not
+    /// take a `model_registry` dependency to hand a display fact to the projector.
+    /// Reading both in one `load()` avoids a torn `(model, window)` across a
+    /// concurrent [`rebind_model`](Self::rebind_model).
+    pub fn model_loadout(&self) -> Option<(Option<String>, u32)> {
+        self.model_binding.as_ref().map(|handle| {
+            let b = handle.load();
+            (b.model.clone(), b.context_window)
+        })
     }
 
     /// Page a gene (set of LoRA layers) into the persona's genome — the next
@@ -1237,7 +1467,28 @@ impl WorkspaceCycle {
         room_id: Uuid,
         framing: TurnFraming,
     ) -> Workspace {
-        self.run_in_room_inner(burst, room_id, framing).await
+        // Fresh-context default: a bare framed tick is a fresh ask (fuller
+        // grounding). The act→observe driver calls [`run_situated`] with
+        // `PostAction` on re-perception ticks.
+        self.run_in_room_inner(burst, room_id, framing, Situation::FreshContext)
+            .await
+    }
+
+    /// Same as [`run_framed`](Self::run_framed) but with the tick's [`Situation`]
+    /// threaded explicitly — the seam the act→observe loop uses to tell the focuser
+    /// "this tick re-perceives a tool result" (`PostAction`) vs "fresh ask"
+    /// (`FreshContext`). The situation is a TYPED signal carried from the loop,
+    /// never inferred from the burst text ([[no-hardcoded-heuristics-to-steer-
+    /// cognition]]).
+    pub async fn run_situated(
+        &self,
+        burst: impl Into<Burst>,
+        room_id: Uuid,
+        framing: TurnFraming,
+        situation: Situation,
+    ) -> Workspace {
+        self.run_in_room_inner(burst, room_id, framing, situation)
+            .await
     }
 
     /// Same as [`run`](Self::run) but scoped to a room/context (the contextId the
@@ -1248,7 +1499,7 @@ impl WorkspaceCycle {
         // Ambient default: silence stays first-class, message-driven. A turn put TO
         // the persona, or her own heartbeat, uses [`run_framed`](Self::run_framed)
         // with the appropriate [`TurnFraming`].
-        self.run_in_room_inner(burst, room_id, TurnFraming::ambient())
+        self.run_in_room_inner(burst, room_id, TurnFraming::ambient(), Situation::FreshContext)
             .await
     }
 
@@ -1262,6 +1513,7 @@ impl WorkspaceCycle {
         burst: impl Into<Burst>,
         room_id: Uuid,
         framing: TurnFraming,
+        situation: Situation,
     ) -> Workspace {
         // Bump the service tick: this workspace IS cycle N, and every finding
         // collected against it is stamped N (the cbar `frameIndex`). 1-based so
@@ -1279,7 +1531,10 @@ impl WorkspaceCycle {
         let mut ws = Workspace::in_room(burst, room_id)
             .with_cycle(cycle)
             .directed(framing.directed)
-            .self_initiated(framing.self_initiated);
+            .self_initiated(framing.self_initiated)
+            // #169: hand this turn the live streaming sink if the caller set one
+            // (service_loop, just before a streamed Speak); `None` otherwise.
+            .with_token_sink(self.current_token_sink());
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self
@@ -1307,6 +1562,11 @@ impl WorkspaceCycle {
             .await;
         let mut context_bids: Vec<Contribution> = Vec::with_capacity(perception_timed.len());
         for (id, us, bid) in perception_timed {
+            // #186 compass: a perception faculty that surfaced something FIRES its axis
+            // (Recall→recall, WorldModel→focus), scaled by salience.
+            if let Some(c) = &bid {
+                self.note_faculty_firing(&id, c.salience);
+            }
             timings.push(FacultyTiming {
                 faculty: id,
                 elapsed_us: us,
@@ -1326,18 +1586,50 @@ impl WorkspaceCycle {
         // Route the salient subset into the bounded workspace — the arbiter is the
         // attention/FOCUS layer over information flow, not a gate. The winners are
         // the assembled context the deliberation faculty reasons over. The focuser
-        // is handed the situation so a situation-aware impl can streamline context
-        // FOR the ask (the "really good hints" seam); the bootstrap ignores it.
-        // TODO(focus): thread the real `Situation` from the act→observe loop
-        // (PostAction after a tool run) in the FocusArbiter slice — never inferred
-        // by reading the burst text. FreshContext is the safe default until then.
+        // is handed the REAL situation the tick is in — threaded from the act→observe
+        // loop (`PostAction` on every re-perception of a tool result, `FreshContext`
+        // on a fresh ask), NEVER inferred by reading the burst text back. A
+        // situation-aware arbiter ([`SituationFocusArbiter`]) uses it to streamline
+        // context FOR the ask (drop standing re-grounding post-action); the bootstrap
+        // [`SalienceArbiter`] ignores it.
         let focus_ctx = FocusContext {
             world_state: &ws.world_state,
-            situation: Situation::FreshContext,
+            situation,
         };
         let focused = self
             .arbiter
             .focus(context_bids.clone(), self.capacity, &focus_ctx);
+        // Bids-vs-focused receipt at the attention seam. Together with
+        // `delib.context.render` (received-vs-rendered) this closes the glass box
+        // over a surfaced finding's whole path: faculty bid → attention →
+        // prompt. The silver-harbor failure (recall surfaced at z=5.5σ, [recall]
+        // absent from the prompt) was unattributable because BOTH seams were
+        // dark (#130).
+        crate::probe!(
+            class = "workspace.attention.focus",
+            capacity = self.capacity,
+            // The situation that drove this focus — the stat that makes context
+            // control learnable: a focuser policy (this bootstrap, or a later
+            // learned one) is a function of situation → dropped grounding, and the
+            // bids-vs-focused delta below is the reward signal for it.
+            situation = ?situation,
+            bids = context_bids.len(),
+            focused = focused.len(),
+            kept = %focused
+                .iter()
+                .map(|c| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
+                .collect::<Vec<_>>()
+                .join(","),
+            evicted = %context_bids
+                .iter()
+                .filter(|b| !focused.iter().any(|f| f.faculty == b.faculty))
+                .map(|b| format!("{}(sal={:.2})", b.faculty.as_str(), b.salience))
+                .collect::<Vec<_>>()
+                .join(","),
+            "attention: {}/{} bids focused",
+            focused.len(),
+            context_bids.len()
+        );
         ws.broadcast = focused;
         let context_broadcast = ws.broadcast.clone();
 
@@ -1362,6 +1654,11 @@ impl WorkspaceCycle {
             .await;
         let mut decision_bids: Vec<Contribution> = Vec::with_capacity(deliberation_timed.len());
         for (id, us, bid) in deliberation_timed {
+            // #186 compass: the reasoner (Deliberation→reason) FIRES when it emits a
+            // verdict — the bright Reason phase you watch while she thinks.
+            if let Some(c) = &bid {
+                self.note_faculty_firing(&id, c.salience);
+            }
             timings.push(FacultyTiming {
                 faculty: id,
                 elapsed_us: us,
@@ -1533,6 +1830,26 @@ mod tests {
 
         c.page_out();
         assert!(c.genome().is_empty(), "page_out reverts to the clean base");
+    }
+
+    // what this catches: the #186 acting tap lights the Act axis on the live cognition
+    // compass THROUGH the cycle's public API — the exact path `act_observe::apply_act`
+    // drives when a real tool batch executes. A resting cycle's compass is dark; a
+    // `note_acting()` lights ONLY Act (idx 3 in the Focus/Reason/Recall/Act order the
+    // radiator samples). If the tap regressed (wrong axis, or the pulse field dropped)
+    // the tile's Act corner would never light while she runs tools.
+    #[test]
+    fn acting_lights_only_the_act_axis_on_the_compass() {
+        let c = cycle(vec![], 4);
+        assert_eq!(
+            c.faculty_pulse().levels(),
+            [0, 0, 0, 0],
+            "a resting cycle's compass is dark"
+        );
+        c.note_acting();
+        let levels = c.faculty_pulse().levels();
+        assert!(levels[3] > 0, "acting lights the Act axis");
+        assert_eq!(levels[0] + levels[1] + levels[2], 0, "and nothing else");
     }
 
     // what this catches: `rebind_model` writes THROUGH to the SAME shared binding
@@ -2065,6 +2382,69 @@ mod tests {
             calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "deliberation faculty fired exactly once, in its phase"
+        );
+    }
+
+    // what this catches: the situation-aware focuser must make Situation::PostAction
+    // REAL — on a re-perception tick it drops the standing SOCIAL re-grounding
+    // (stable contributions: roster/doctrine/workspace-map) so the tool result +
+    // working memory own the window, while FreshContext keeps the fuller grounding.
+    // Regression guard for the "cognition soup crowds out the code" failure: if a
+    // future edit makes PostAction stop dropping stable grounding, a heads-down
+    // coding turn goes back to re-dumping social framing on every act→observe tick.
+    #[test]
+    fn situation_focuser_drops_stable_grounding_only_post_action() {
+        let arbiter = SituationFocusArbiter::new();
+        // A realistic mixed tick: high-salience standing grounding (stable) plus the
+        // volatile task context (the just-landed tool result + a recalled fact).
+        let roster =
+            Contribution::context(FacultyId::Custom("roster".into()), "room roster", 0.9, "grounding")
+                .session_stable();
+        let doctrine = Contribution::context(
+            FacultyId::Custom("doctrine".into()),
+            "operating doctrine",
+            0.85,
+            "grounding",
+        )
+        .session_stable();
+        let result =
+            Contribution::context(FacultyId::WorldModel, "[action #1] code/read → fn main()...", 0.6, "result");
+        let recall = Contribution::context(FacultyId::Recall, "recalled: the ticket asks for X", 0.5, "recall");
+        let candidates = vec![roster, doctrine, result.clone(), recall.clone()];
+
+        // Fresh ask: fuller grounding — everything within capacity survives, exactly
+        // like the blind salience floor.
+        let fresh = arbiter.focus(
+            candidates.clone(),
+            10,
+            &FocusContext {
+                world_state: "ask",
+                situation: Situation::FreshContext,
+            },
+        );
+        assert_eq!(fresh.len(), 4, "FreshContext keeps the fuller grounding");
+
+        // Post-action re-perception: the two stable grounding contributions are
+        // dropped BEFORE the top-k, leaving only the volatile task context — even
+        // though the stable ones had the HIGHEST salience (the whole point: they were
+        // already perceived; re-dumping them just crowds the result out).
+        let post = arbiter.focus(
+            candidates,
+            10,
+            &FocusContext {
+                world_state: "result",
+                situation: Situation::PostAction,
+            },
+        );
+        assert_eq!(post.len(), 2, "PostAction drops the stable standing grounding");
+        assert!(
+            post.iter().all(|c| !c.stable),
+            "no stable grounding survives a re-perception tick: {:?}",
+            post.iter().map(|c| c.content.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            post.iter().any(|c| c.content.contains("[action #1]")),
+            "the tool result MUST survive — it's what 'what next' turns on"
         );
     }
 }

@@ -42,7 +42,6 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
-use crate::airc::realtime_wire::{chat_transcript_message, envelope_from_event};
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;
@@ -124,6 +123,15 @@ impl PersonaConversation for AircPersonaConversation {
             .subscribe()
             .await
             .map_err(|e| format!("subscribe failed: {e}"))?;
+        // #146 diagnostic: confirm the CHAT subscribe stream actually opened for
+        // this persona. Post-reboot the personas were room-deaf (0 perceptual
+        // decodes) while the core-positron raw-attach path received fine — this
+        // pins whether prime() even ran per persona.
+        tracing::info!(
+            persona = %self.own_peer_id,
+            probe_class = "persona.inbound.subscribe_opened",
+            "persona chat subscribe stream opened (#146)"
+        );
         self.stream = Some(stream);
         Ok(())
     }
@@ -203,6 +211,24 @@ impl PersonaConversation for AircPersonaConversation {
                     return Err(format!("live stream lag: {lag}"));
                 }
                 Some(Ok(event)) => {
+                    // #146 diagnostic: EVERY raw event this persona's subscribe
+                    // stream yields, before any filter. If this probe never fires
+                    // under a room burst, the stream is empty → airc-lib delivery
+                    // gap. If it fires but perceptual/self drops it, the gap is
+                    // continuum-side (decode/self-filter). One line per event,
+                    // greppable by probe_class, cheap enough for a live stream.
+                    let body_kind = match event.body.as_ref() {
+                        None => "none",
+                        Some(b) if b.as_text().is_some() => "text",
+                        Some(_) => "json",
+                    };
+                    tracing::info!(
+                        persona = %self.own_peer_id,
+                        from_peer = %event.peer_id,
+                        body_kind,
+                        probe_class = "persona.inbound.raw_event",
+                        "persona subscribe stream yielded a raw event (#146)"
+                    );
                     // Recover a perceptual room turn. Two on-wire shapes
                     // reach a persona's subscribe stream and both are
                     // messages it must hear: a peer's plain-text `say()`
@@ -212,8 +238,19 @@ impl PersonaConversation for AircPersonaConversation {
                     // schema). `perceptual_from_event` decodes both; a
                     // `None` means the event is not a room turn (presence,
                     // event-bridge, media-control, binary) — skip it.
-                    let Some(message) = perceptual_from_event(&event) else {
-                        continue;
+                    let message = match perceptual_from_event(&event) {
+                        Ok(message) => message,
+                        Err(reason) => {
+                            tracing::info!(
+                                persona = %self.own_peer_id,
+                                from_peer = %event.peer_id,
+                                body_kind,
+                                reason,
+                                probe_class = "persona.inbound.filtered_non_turn",
+                                "raw event was not a perceptual room turn — skipped (#146/#177)"
+                            );
+                            continue;
+                        }
                     };
                     // Skip our own turn, matched on the RESOLVED sender so a
                     // self-authored chat_transcript is caught too — not just
@@ -233,6 +270,14 @@ impl PersonaConversation for AircPersonaConversation {
             .await
             .map(|_event_id| ())
             .map_err(|e| format!("say failed: {e}"))
+    }
+
+    /// #170: the airc citizen behind this conversation streams — hand the
+    /// forwarder our runtime handle so it can publish ephemeral token chunks.
+    fn stream_citizen(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+        Some(self.runtime.clone())
     }
 }
 
@@ -255,32 +300,22 @@ impl PersonaConversation for AircPersonaConversation {
 ///    that relayed the publish.
 ///
 /// Everything else — presence, event-bridge, media-control, binary — is
-/// not a room turn and yields `None` (the caller skips it). This is the
-/// receive half of the send/receive asymmetry noted in task #8
-/// (converge broadcast == RAG context): the sender keeps the rich
-/// `chat_transcript` envelope for the web/replay/durable consumers; the
-/// persona learns to read it rather than forcing a lossy plain-text
-/// downgrade on the send side.
-fn perceptual_from_event(event: &TranscriptEvent) -> Option<IncomingMessage> {
-    // Path 1 — a peer's plain-text say().
-    if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
-        return Some(IncomingMessage {
-            lamport: event.lamport,
-            peer_id: event.peer_id.as_uuid(),
-            text: text.to_string(),
-        });
-    }
-
-    // Path 2 — a structured chat_transcript envelope (chat/send). The
-    // envelope decode + logical-sender/text recovery is the ONE
-    // `chat_transcript_message` decoder in `realtime_wire` — shared with
-    // the positron projection path (`chat_posted_from_envelope`), the
-    // receive-side symmetry of Path 1. A prior fix taught only this
-    // perception path to read the envelope; the positron read surface had
-    // the identical blindness until it too routed through this decoder.
-    let envelope = envelope_from_event(event).ok().flatten()?;
-    let (peer_id, text) = chat_transcript_message(&envelope, event.peer_id.as_uuid())?;
-    Some(IncomingMessage {
+/// not a room turn and yields a NAMED skip reason (the caller logs it —
+/// never a bare drop; task #177 was diagnosed blind because the old
+/// `Option` collapsed "no body-hint header", "envelope decode ERROR", and
+/// "legit non-chat schema" into one silent `None`). This is the receive
+/// half of the send/receive asymmetry noted in task #8 (converge
+/// broadcast == RAG context): the sender keeps the rich `chat_transcript`
+/// envelope for the web/replay/durable consumers; the persona learns to
+/// read it rather than forcing a lossy plain-text downgrade on the send
+/// side.
+fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'static str> {
+    // Both on-wire room-turn shapes (say() text + chat_transcript envelope) and
+    // all three named skip reasons live in the ONE decoder `room_turn_from_event`
+    // (realtime_wire) — shared with the digest element and the positron
+    // projection. This wrapper only adds the transcript's lamport.
+    let (peer_id, text) = crate::airc::realtime_wire::room_turn_from_event(event)?;
+    Ok(IncomingMessage {
         lamport: event.lamport,
         peer_id,
         text,
@@ -431,7 +466,12 @@ mod tests {
                     }
                 }),
             );
-            assert!(perceptual_from_event(&ev).is_none());
+            assert_eq!(
+                perceptual_from_event(&ev),
+                Err("non_chat_schema"),
+                "an event-bridge envelope is a LEGIT skip — and the reason must say so, \
+                 distinguishable from a decode error or a lost body-hint header (#177)"
+            );
         }
     }
 }

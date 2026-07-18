@@ -79,6 +79,15 @@ const DEFAULT_TICK_MS: u64 = 1_000;
 /// fan-out.
 const MIN_RECLAIM_BUDGET_MS: u64 = 100;
 
+/// Materiality threshold for re-emitting the `resource_drift` probe. The reconcile
+/// tick runs every second; a stable untracked residency (e.g. serving holding the
+/// base model without a lease) would otherwise log an identical drift 1/sec forever.
+/// The probe re-fires only when the drift moves by at least this much since its last
+/// emission — enough to catch a real allocation change (a model load/unload, a lane
+/// spin-up) while ignoring per-tick jitter. The live board still carries the exact
+/// current drift every tick for readers.
+const DRIFT_REPORT_DELTA_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Daemon policy knobs. Constructed in code (defaults via `Default`); never env
 /// vars. The `governor` field carries the dwell/grace the inner core applies.
 #[derive(Debug, Clone, Copy)]
@@ -149,9 +158,33 @@ pub struct ResourceDaemon {
     /// an await.
     evict_rx: Mutex<mpsc::UnboundedReceiver<(ResourceKind, u64)>>,
     config: DaemonConfig,
+    /// Last-emitted `resource_drift` bytes per kind (indexed by [`kind_idx`]), so the
+    /// drift probe fires on a MATERIAL CHANGE, not every tick. A persistent untracked
+    /// residency (e.g. serving holding the base model with no lease) is real, but an
+    /// identical drift re-logged 1/sec is noise, not a new event — the live board still
+    /// carries the current drift for readers every tick.
+    last_drift_bytes: Mutex<[u64; 3]>,
 }
 
+static GLOBAL_RESOURCE_DAEMON: std::sync::OnceLock<std::sync::Arc<ResourceDaemon>> =
+    std::sync::OnceLock::new();
+
 impl ResourceDaemon {
+    /// Publish THE per-machine resource authority process-globally (first writer wins —
+    /// the boot path). Doctrine-aligned: there is exactly ONE authority per machine
+    /// (#56), so a global read handle is the honest shape, same precedent as
+    /// `MessageBus::set_global` / `PersonaAircRuntimeRegistry::set_global`. Lets
+    /// host-independent bodies (the detached eval sampling per-task VRAM for the
+    /// efficiency axis) read the live board without a threaded handle.
+    pub fn set_global(daemon: std::sync::Arc<ResourceDaemon>) {
+        let _ = GLOBAL_RESOURCE_DAEMON.set(daemon);
+    }
+
+    /// The process-global authority, if boot published it (None in bare unit tests).
+    pub fn global() -> Option<std::sync::Arc<ResourceDaemon>> {
+        GLOBAL_RESOURCE_DAEMON.get().cloned()
+    }
+
     /// Start the daemon on its own tokio task. Returns the handle subsystems use
     /// to lease, subscribe to the board, and (via `register_with_broker`) wire
     /// cross-resource relief.
@@ -182,6 +215,7 @@ impl ResourceDaemon {
             evict_tx,
             evict_rx: Mutex::new(evict_rx),
             config,
+            last_drift_bytes: Mutex::new([0; 3]),
         });
 
         // The canonical runner owns the loop: interval + Skip + PER-TICK
@@ -407,17 +441,24 @@ impl ResourceDaemon {
         // NO lease tracks — exactly serving holding a resident model with no
         // lease, the "0 tracked while the GPU is full" blindness this task fixes.
         // Reporting-only through the observability seam; it steers nothing.
-        for k in &board.kinds {
-            let drift = k.measured_bytes.saturating_sub(k.granted_bytes);
-            if drift > 0 {
-                crate::probe!(
-                    class = "resource_drift",
-                    kind = k.kind.label(),
-                    measured_bytes = k.measured_bytes,
-                    granted_bytes = k.granted_bytes,
-                    drift_bytes = drift,
-                    "untracked residency: measured exceeds leased"
-                );
+        {
+            let mut last = self.last_drift_bytes.lock();
+            for k in &board.kinds {
+                let drift = k.measured_bytes.saturating_sub(k.granted_bytes);
+                let idx = kind_idx(k.kind);
+                // Emit only on a MATERIAL change since the last emission — a stable
+                // untracked residency is one event, not one-per-second. The board
+                // (published every tick below) stays the live source of truth.
+                if drift_should_report(drift, &mut last[idx]) {
+                    crate::probe!(
+                        class = "resource_drift",
+                        kind = k.kind.label(),
+                        measured_bytes = k.measured_bytes,
+                        granted_bytes = k.granted_bytes,
+                        drift_bytes = drift,
+                        "untracked residency: measured exceeds leased"
+                    );
+                }
             }
         }
 
@@ -624,12 +665,53 @@ fn kind_idx(kind: ResourceKind) -> usize {
     }
 }
 
+/// Decide whether an untracked-residency drift is worth re-emitting on the
+/// `resource_drift` probe, updating the per-kind last-reported value in place. Fires
+/// on the FIRST drift and whenever it moves by at least [`DRIFT_REPORT_DELTA_BYTES`]
+/// since the last emission; a stable drift stays silent (no 1/sec flood); a resolved
+/// drift (→ 0) silently resets so the NEXT untracked residency re-fires.
+fn drift_should_report(drift: u64, last: &mut u64) -> bool {
+    if drift > 0 && drift.abs_diff(*last) >= DRIFT_REPORT_DELTA_BYTES {
+        *last = drift;
+        true
+    } else {
+        if drift == 0 {
+            *last = 0;
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::resources::capacity::MockCapacitySource;
     use crate::resources::consumer::{ConsumerFootprint, ReclaimRequest, ReclaimStatus};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    // what this catches: the drift probe must fire on a MATERIAL CHANGE, not every
+    // tick — a stable untracked residency logged 1/sec is the flood this fixes (live
+    // 2026-07-14: 8976 identical lines). First drift fires; an unchanged/tiny-jitter
+    // drift stays silent; a material move re-fires; a resolved drift resets so the
+    // next residency fires again.
+    #[test]
+    fn drift_probe_reports_on_material_change_not_every_tick() {
+        let gb: u64 = 1024 * 1024 * 1024;
+        let mut last = 0u64;
+        // First untracked residency → fires.
+        assert!(drift_should_report(2 * gb, &mut last), "first drift fires");
+        // Same drift next tick → silent (this is the 1/sec flood we're killing).
+        assert!(!drift_should_report(2 * gb, &mut last), "stable drift stays silent");
+        // Sub-threshold jitter → still silent.
+        assert!(!drift_should_report(2 * gb + 1024 * 1024, &mut last), "1MiB jitter is not material");
+        // A material move (a lane spin-up) → re-fires.
+        assert!(drift_should_report(2 * gb + DRIFT_REPORT_DELTA_BYTES, &mut last), "material move re-fires");
+        // Drift resolves → silent, but state resets…
+        assert!(!drift_should_report(0, &mut last), "resolution is silent");
+        assert_eq!(last, 0, "resolved drift resets the baseline");
+        // …so a returning residency fires again.
+        assert!(drift_should_report(2 * gb, &mut last), "a returning residency re-fires");
+    }
 
     /// A scriptable consumer: holds bytes, frees per a configurable response so a
     /// scenario can make it Release / tier-down-Partial / Defer / panic on cue.

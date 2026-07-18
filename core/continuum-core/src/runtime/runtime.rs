@@ -61,8 +61,21 @@ impl Runtime {
             config.name, config.priority, config.command_prefixes
         );
 
-        // Wire event subscriptions into the message bus
+        // Wire event subscriptions into the message bus.
+        //
+        // LOUD CAVEAT (#140 post-mortem): these fire ONLY via the synchronous
+        // `MessageBus::publish(..., registry)` path, which has no production
+        // callers — live events ride `publish_async_only` (broadcast channel
+        // only). Until a real dispatch tier exists, a module declaring
+        // subscriptions here almost certainly wants a bus-receiver task instead
+        // (dispatch_listener / chat persist-listener shape). Warn so the gap is
+        // a signpost, never a silent void.
         for pattern in config.event_subscriptions {
+            tracing::warn!(
+                module = config.name,
+                pattern,
+                "event_subscriptions are dispatched only by the (currently unused)                  synchronous publish path — if this module expects live bus events,                  spawn a bus-receiver task from initialize() instead                  (see modules::chat::spawn_persist_listener)"
+            );
             self.bus.subscribe(pattern, config.name, false);
         }
 

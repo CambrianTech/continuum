@@ -316,6 +316,37 @@ impl PersonaInstanceManagerModule {
             runtime.agent_name(),
         );
 
+        // Resolve + PIN her avatar VRM ONCE, now that the gender is registered (warm)
+        // so the selection is correct (#174). STICKY: only when unset — a live pin is
+        // never re-derived, so her face never thrashes to a default in a cold render
+        // window. [[never-thrash-sticky-hysteresis-on-every-lane]]. Written to the same
+        // durable seed, so it survives restarts + travels with her.
+        match crate::persona::seed::read_seed(&seed_path).await {
+            Ok(mut seed) if seed.avatar_vrm().is_none() => {
+                let vrm = crate::live::avatar::selection::select_avatar_by_identity(
+                    &runtime.persona_id().to_string(),
+                )
+                .filename
+                .to_string();
+                seed.set_avatar_vrm(vrm.clone());
+                if let Err(e) = crate::persona::seed::write_seed_atomic(&seed_path, &seed).await {
+                    tracing::warn!(
+                        error = %e,
+                        persona_id = %runtime.persona_id(),
+                        "failed to pin avatar_vrm — her face may re-derive on a cold render"
+                    );
+                } else {
+                    tracing::info!(
+                        persona_id = %runtime.persona_id(),
+                        agent_name = %runtime.agent_name(),
+                        avatar_vrm = %vrm,
+                        "pinned persona avatar (sticky) — will not thrash across restarts"
+                    );
+                }
+            }
+            _ => {} // already pinned, or seed unreadable (ensure_seed above already warned)
+        }
+
         let info = PersonaInstanceInfo::from_runtime(&runtime);
         self.registry.register(runtime);
         Ok(info)

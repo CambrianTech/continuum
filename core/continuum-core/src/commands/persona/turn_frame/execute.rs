@@ -248,6 +248,8 @@ crate::action_command! {
             room,
             true,
             crate::cognition::workspace::TurnFraming::message(true),
+            // One-shot directed tick: a fresh ask, so fuller grounding.
+            crate::cognition::workspace::Situation::FreshContext,
         )
         .await;
 
