@@ -1,0 +1,23 @@
+{
+  "name": "@continuum/eye-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Eye-node (#187/#29) — an opt-in, browser-capable worker that gives personas EYES. Connects to the continuum core over the IPC socket, registers as the provider of perception/observe (via @continuum/sdk-typescript's NodeSocketTransport), and fulfils each call by driving a real browser (@continuum/perception). Any URL — continuum's own UI, a persona's project dev server, a benchmark, a room/recipe — becomes pixels + structure a persona can SEE and REASON over.",
+  "main": "./src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@continuum/perception": "*",
+    "@continuum/sdk-typescript": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  }
+}

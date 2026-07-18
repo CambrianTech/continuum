@@ -1,0 +1,18 @@
+{
+  "//": "Eye-node: a Node worker that provides perception/observe. Strict; typecheck-only (tsx runs the TS at runtime). Type-only imports reach the single-source ts-rs wire types in protocol/typescript.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"]
+}
