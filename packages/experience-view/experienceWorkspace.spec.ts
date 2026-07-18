@@ -53,8 +53,8 @@ describe('experienceWorkspace', () => {
     // left rail = a global widget stack; the roster is one `kind:'listing'` widget whose
     // body is the rich roster ListingView (names, glyphs, standing badge, vitals meters).
     expect(ws.left[0]?.kind).toBe('listing');
-    const rosterView = ws.left[0]?.body as { cells: Array<{ id: string; title: string; glyph?: string; badges?: string[]; meters?: Record<string, number> }> };
-    expect(rosterView?.cells).toHaveLength(2);
+    const rosterView = ws.left[0].body as { cells: { id: string; title: string; glyph?: string; badges?: string[]; meters?: Record<string, number> }[] };
+    expect(rosterView.cells).toHaveLength(2);
     const joel = rosterView.cells.find((c) => c.id === 'joel')!;
     const asha = rosterView.cells.find((c) => c.id === 'asha')!;
     expect(joel.title).toBe('Joel');

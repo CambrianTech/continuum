@@ -167,7 +167,8 @@ export class DomSurface implements Surface {
           .filter((c): c is AxNode => c !== undefined)
           .map(build),
       });
-      return build(nodes[0]!);
+      const root = nodes[0];
+      return root ? build(root) : undefined;
     } finally {
       await client.detach().catch(() => undefined);
     }
@@ -249,10 +250,8 @@ function domWalk(maxDepth: number): unknown {
       if (n.nodeType === 3) text += n.textContent ?? '';
     });
     text = text.trim();
-    const roots: Element[] =
-      (el as HTMLElement).shadowRoot != null
-        ? Array.from((el as HTMLElement).shadowRoot!.children)
-        : Array.from(el.children);
+    const shadow = (el as HTMLElement).shadowRoot;
+    const roots: Element[] = shadow ? Array.from(shadow.children) : Array.from(el.children);
     const children: unknown[] = [];
     if (depth < maxDepth) {
       for (const c of roots) {

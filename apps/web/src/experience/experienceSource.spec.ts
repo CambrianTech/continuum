@@ -29,7 +29,7 @@ function flatten(node: unknown): string {
     });
     return out;
   }
-  return String(node);
+  return typeof node === 'string' || typeof node === 'number' ? String(node) : '';
 }
 
 describe('makeExperienceSource + webTarget', () => {

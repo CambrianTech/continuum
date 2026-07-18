@@ -80,10 +80,20 @@ export default tseslint.config(
 
   {
     // Test files run under Node (vitest globals come from the import, but the
-    // process/env access in specs is Node). Keep the same strict rule set.
+    // process/env access in specs is Node). Production code keeps the FULL strict
+    // gate; specs relax three rules that are ergonomic-only in test code and whose
+    // strictness buys nothing there: `!` on known-present fixtures, no-op mock
+    // callbacks (`() => {}` unsubscribe stubs), and return types on inline test
+    // helpers. The safety rules (no-explicit-any, no-floating-promises, no-unsafe-*)
+    // stay ON in specs.
     files: ['**/*.spec.ts', '**/*.test.ts'],
     languageOptions: {
       globals: { ...globals.node },
+    },
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/no-empty-function': 'off',
+      '@typescript-eslint/explicit-function-return-type': 'off',
     },
   },
 );

@@ -89,7 +89,7 @@ export function avatarState(v: Readonly<Record<string, number>>, active: boolean
 /** An emoji over the avatar for an emotional event. Today a proxy for the dominant cognitive
  *  faculty; real emotion events (mood/reaction) wire in later — that's the hard part. */
 function emojiOverlay(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
-  const faces: Array<[string, number]> = [
+  const faces: [string, number][] = [
     ['🎯', v.focus ?? 0],
     ['🤔', v.reason ?? 0],
     ['💭', v.recall ?? 0],
@@ -113,10 +113,10 @@ export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateR
   // FOUR distinct triangles pointing out like a compass (N=Focus, E=Reason, S=Recall,
   // W=Act), a gap in the centre — so it reads as four, and a strong faculty burns bright
   // while a dim one nearly vanishes (the SHAPE is the mind). No more solid blob.
-  const lit = (k: string) => 0.14 + 0.86 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
-  const pct = (k: string) => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
+  const lit = (k: string): number => 0.14 + 0.86 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
+  const pct = (k: string): number => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
   // Each faculty its own hue (color > monochrome) — readable by colour AND position.
-  const tri = (pts: string, k: string, label: string, color: string) =>
+  const tri = (pts: string, k: string, label: string, color: string): TemplateResult =>
     svg`<polygon points="${pts}" class="cog-tri" style="fill:${color};opacity:${lit(k)}"><title>${label} ${pct(k)}</title></polygon>`;
   return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
     ${tri('20,2 12,15 28,15', 'focus', 'Focus', '#00d4ff')}
@@ -145,7 +145,7 @@ export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult
  *  simply shows its activity, honestly. */
 /** The engine meters shown as bars — the cognition faculties are the DIAMOND, not bars
  *  (showing them both ways made the tile tall + redundant). Just speed + size here. */
-const STAT_ORDER: ReadonlyArray<readonly [string, string]> = [
+const STAT_ORDER: readonly (readonly [string, string])[] = [
   ['speed', 'SPD'],
   ['size', 'PAR'],
 ];
@@ -311,7 +311,7 @@ export function formatContent(text: string): TemplateResult {
 
 /** Inline `code` spans → styled <code>; everything else passes through as text. */
 function inlineCode(text: string): TemplateResult {
-  const out: Array<TemplateResult | string> = [];
+  const out: (TemplateResult | string)[] = [];
   const rx = /`([^`\n]+)`/g;
   let last = 0;
   let m: RegExpExecArray | null;

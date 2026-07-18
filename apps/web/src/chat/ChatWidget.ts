@@ -58,7 +58,7 @@ export class ChatWidget extends LitElement {
    * ignored. Never touches `state` — the authoritative message still arrives there.
    */
   applyStreamDelta(delta: StreamDelta): void {
-    if (!this.state || delta.roomId !== this.state.room_id) return;
+    if (delta.roomId !== this.state?.room_id) return;
     const next = new Map(this._typing);
     if (delta.done) {
       next.delete(delta.senderId);

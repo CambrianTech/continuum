@@ -251,7 +251,7 @@ export class StateConnection {
     try {
       socket.send(JSON.stringify(frame));
     } catch (err) {
-      throw new Error(`StateConnection: failed to send subscribe frame: ${String(err)}`);
+      throw new Error('StateConnection: failed to send subscribe frame', { cause: err });
     }
   }
 

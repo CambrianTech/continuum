@@ -8,7 +8,7 @@
  * A universe can be a whole world in MOTION, not just a colour.
  */
 
-import { LitElement, html, css } from 'lit';
+import { LitElement, html, css, type TemplateResult } from 'lit';
 
 interface Star {
   x: number;
@@ -44,9 +44,9 @@ export class CosmosBackdrop extends LitElement {
   /** The room's citizens — rendered as a living constellation (the room, reflected in
    *  the sky). Set by the host each render; the animation reads it live, so who's
    *  present + who's active literally shapes the cosmos. */
-  citizens: Array<{ name: string; active: boolean }> = [];
+  citizens: { name: string; active: boolean }[] = [];
 
-  override render() {
+  override render(): TemplateResult {
     return html`<canvas></canvas>`;
   }
 

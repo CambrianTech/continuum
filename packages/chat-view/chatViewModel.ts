@@ -120,6 +120,10 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     runtime: slot.provenance.runtime,
     // Additive field (#vitals): an older core omits it → treat as no vitals, the
     // same back-compat discipline as `purpose` ([[fallbacks-are-illegal-fail-loud]]).
+    // The wire type marks vitals required (serde default), but a pre-field core sends
+    // it undefined at runtime — the guard is real despite the type, so silence the
+    // "unnecessary condition" the type-only view infers.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     vitals: slot.vitals ?? {},
     // Additive field (#186 loadout): absent for a human / unresolved agent — the
     // card draws no LOADOUT strip, never a fabricated model.

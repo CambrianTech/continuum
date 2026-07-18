@@ -307,7 +307,7 @@ export function mount<State, Out>(
   target: RenderTarget<Out>,
   sink: AppSink<Out>,
 ): () => void {
-  return source((state) => sink(target.workspace(app.project(state))));
+  return source((state) => { sink(target.workspace(app.project(state))); });
 }
 
 /**

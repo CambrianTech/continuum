@@ -87,10 +87,12 @@ function main(): void {
   const name = new URLSearchParams(location.search).get('fixture') ?? 'roster';
   const state = FIXTURES[name] ?? FIXTURES.roster;
 
-  const widget = document.createElement('chat-widget') as ChatWidget;
+  const widget = document.createElement('chat-widget');
   widget.state = state;
   // A no-op send handler so the input area is live for interaction shots without a socket.
-  const noop: SendHandler = async () => {};
+  const noop: SendHandler = async () => {
+    /* no-op: the preview has no socket, so a submit goes nowhere */
+  };
   widget.sendHandler = noop;
 
   const mount = document.getElementById('app') ?? document.body;
