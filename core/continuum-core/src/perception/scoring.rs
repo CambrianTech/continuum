@@ -92,6 +92,40 @@ pub struct UiScore {
     pub results: Vec<UiCheckResult>,
 }
 
+/// A functional web-dev benchmark VERDICT — the [`UiScore`] thresholded to
+/// pass/fail for the eval runner's binary `(ok, grade)` seam, with the fractional
+/// score riding along for a richer scorecard. This is the whole grade decision, so
+/// the `cognition/eval` grading arm is a one-liner (`grade_ui(&obs, &checks, thr)`)
+/// and the STOP-zone edit stays trivial.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/perception/UiGrade.ts")]
+pub struct UiGrade {
+    /// Did the persona's UI meet the bar (`score >= pass_threshold`, on a real
+    /// observation with at least one check)?
+    pub passed: bool,
+    /// The fraction of checks met, `0.0..=1.0` — the graded diff, not just pass/fail.
+    pub score: f32,
+    /// Human scorecard line (`"3/4 checks met (score 0.75)"`).
+    pub summary: String,
+}
+
+/// Grade an observation against a UI spec: score it, then threshold to pass/fail.
+/// `pass_threshold` is the fraction required (1.0 = every check must hold; 0.5 =
+/// half). A failed/empty observation never passes (it meets no criteria).
+pub fn grade_ui(result: &ObserveResult, checks: &[UiCheck], pass_threshold: f32) -> UiGrade {
+    let score = score_observation(result, checks);
+    let passed = result.success && score.total > 0 && score.score >= pass_threshold;
+    UiGrade {
+        passed,
+        score: score.score,
+        summary: format!(
+            "{}/{} checks met (score {:.2})",
+            score.passed, score.total, score.score
+        ),
+    }
+}
+
 /// Score an observation against a UI spec — the deterministic diff on the element
 /// tree. A failed observation (`success == false` / no structure) scores 0 with
 /// every check unmatched (the honest floor — a UI that didn't render meets no
@@ -303,5 +337,64 @@ mod tests {
         let score = score_observation(&login_form(), &[]);
         assert_eq!(score.total, 0);
         assert_eq!(score.score, 0.0);
+    }
+
+    // what this catches: grade_ui thresholds the fraction to pass/fail — a met
+    // spec passes at 1.0; a half-met spec fails at 1.0 but passes at 0.5; the
+    // fractional score always rides along. This is the bench's whole verdict.
+    #[test]
+    fn grade_ui_thresholds_the_score() {
+        let met = vec![UiCheck {
+            description: "heading 'Sign in'".into(),
+            tag: Some("h1".into()),
+            role: None,
+            text_contains: Some("sign in".into()),
+            min_count: 1,
+        }];
+        let g = grade_ui(&login_form(), &met, 1.0);
+        assert!(g.passed);
+        assert_eq!(g.score, 1.0);
+
+        let mixed = vec![
+            UiCheck {
+                description: "has Submit".into(),
+                tag: None,
+                role: Some("button".into()),
+                text_contains: Some("submit".into()),
+                min_count: 1,
+            },
+            UiCheck {
+                description: "has 'Forgot password?'".into(),
+                tag: None,
+                role: Some("link".into()),
+                text_contains: Some("forgot".into()),
+                min_count: 1,
+            },
+        ];
+        assert!(!grade_ui(&login_form(), &mixed, 1.0).passed, "half-met fails at 1.0");
+        assert!(grade_ui(&login_form(), &mixed, 0.5).passed, "half-met passes at 0.5");
+        assert_eq!(grade_ui(&login_form(), &mixed, 1.0).score, 0.5);
+    }
+
+    // what this catches: a UI that didn't render never passes, even at a zero
+    // threshold — a crash is not a pass.
+    #[test]
+    fn grade_ui_never_passes_a_failed_observation() {
+        let failed = ObserveResult {
+            success: false,
+            url: None,
+            title: None,
+            image: None,
+            structure: None,
+            error: Some("crashed".into()),
+        };
+        let checks = vec![UiCheck {
+            description: "has Submit".into(),
+            tag: None,
+            role: Some("button".into()),
+            text_contains: None,
+            min_count: 1,
+        }];
+        assert!(!grade_ui(&failed, &checks, 0.0).passed);
     }
 }
