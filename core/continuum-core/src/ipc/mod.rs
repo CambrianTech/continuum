@@ -107,6 +107,7 @@ impl IpcStream for TcpStream {
 // here so existing call sites resolve unchanged.
 
 pub mod diagnostics;
+pub mod experience_resolver;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
