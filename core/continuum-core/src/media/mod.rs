@@ -26,7 +26,9 @@
 
 pub mod frame;
 pub mod image_ops;
+pub mod perception_buffer;
 pub mod projection;
 
 pub use frame::{FrameDescriber, MediaFrame};
+pub use perception_buffer::{ParticipantId, Percept, PerceptionBuffer};
 pub use projection::{project_image, MediaResolution, ProjectedMedia};
