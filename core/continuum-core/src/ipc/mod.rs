@@ -116,6 +116,7 @@ pub mod positron_presence;
 pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
+pub mod provider_bridge;
 pub mod room_purpose;
 pub mod stream_rail;
 pub mod vitals_emitter;
@@ -156,6 +157,11 @@ struct ServerState {
     runtime: Arc<Runtime>,
     /// GPU memory manager — unified VRAM coordination.
     gpu_manager: Arc<GpuMemoryManager>,
+    /// Connected `Provided`-command providers (eye-nodes), keyed by command name.
+    /// The SAME `Arc` the `ProvidedCommandInterceptor` reads: a `provider/register`
+    /// on any connection binds here, and the interceptor routes perception/observe
+    /// + interface/screenshot to whoever is bound. Empty ⇒ those commands fail loud.
+    provider_registry: Arc<crate::runtime::ProviderRegistry>,
 }
 
 impl ServerState {
@@ -171,6 +177,7 @@ impl ServerState {
         file_engines: Arc<DashMap<String, FileEngine>>,
         shell_sessions: Arc<DashMap<String, ShellSession>>,
         gpu_manager: Arc<GpuMemoryManager>,
+        provider_registry: Arc<crate::runtime::ProviderRegistry>,
     ) -> Self {
         Self {
             voice_service,
@@ -183,6 +190,7 @@ impl ServerState {
             shell_sessions,
             runtime,
             gpu_manager,
+            provider_registry,
         }
     }
 }
@@ -201,6 +209,31 @@ enum HandleResult {
     Binary {
         json_header: Response,
         binary_data: Vec<u8>,
+    },
+}
+
+/// One item the per-connection writer thread serializes to the socket. The
+/// writer is the SOLE owner of the write half, so every outbound frame — a
+/// response to a client request AND a core-initiated call to the client — flows
+/// through this one channel, keeping frames atomic.
+///
+/// `ProvideCall` is the back-channel [`provider_bridge`] rides: an eye-node
+/// fulfilling `perception/observe`/`interface/screenshot`. It carries a
+/// core-allocated `call_id` the client echoes back in its `provideResult`.
+enum Outbound {
+    /// A response to a client request (the entire pre-existing path).
+    Response {
+        request_id: Option<u64>,
+        result: HandleResult,
+    },
+    /// A core→client request: forward a `Provided` command to the connected
+    /// client that registered as its provider. Framed distinctly (`type:
+    /// "provideCall"`) so the client dispatches it against its
+    /// `Commands.provide` registrations rather than treating it as a response.
+    ProvideCall {
+        call_id: u64,
+        command: String,
+        params: serde_json::Value,
     },
 }
 
@@ -256,6 +289,33 @@ fn send_binary_frame<S: Write>(
     stream.flush()
 }
 
+/// Send a length-prefixed core→client `provideCall` frame — the substrate asking
+/// a connected eye-node to fulfil a `Provided` command. Same `[u32 BE len][json]`
+/// framing as a response so the client's existing frame reader delivers it; the
+/// client discriminates on `type: "provideCall"` and replies with a
+/// newline-delimited `{type:"provideResult", callId, ...}`.
+fn send_provide_call_frame<S: Write>(
+    stream: &mut S,
+    call_id: u64,
+    command: &str,
+    params: &serde_json::Value,
+) -> std::io::Result<()> {
+    let frame = serde_json::json!({
+        "type": "provideCall",
+        "callId": call_id,
+        "command": command,
+        "params": params,
+    });
+    let json = serde_json::to_string(&frame).unwrap_or_else(|e| {
+        log_error!("ipc", "server", "Failed to serialize provideCall: {}", e);
+        format!(r#"{{"type":"provideCall","callId":{call_id},"error":"serialize failed"}}"#)
+    });
+    let payload = json.as_bytes();
+    stream.write_all(&(payload.len() as u32).to_be_bytes())?;
+    stream.write_all(payload)?;
+    stream.flush()
+}
+
 /// Handle a single IPC client connection with concurrent request processing.
 ///
 /// Architecture:
@@ -282,27 +342,38 @@ fn handle_client<S: IpcStream>(
 
     let reader = BufReader::new(stream.try_clone_stream()?);
 
-    // Response channel — tokio tasks send completed results, writer thread serializes to socket.
-    // Unbounded: request rate is limited by socket read speed, not processing speed.
-    let (tx, rx) = std::sync::mpsc::channel::<(Option<u64>, HandleResult)>();
+    // Outbound channel — tokio tasks send completed results, the reader thread
+    // sends core→client provideCall frames; the writer thread serializes both to
+    // the socket. Unbounded: request rate is limited by socket read speed, not
+    // processing speed.
+    let (tx, rx) = std::sync::mpsc::channel::<Outbound>();
 
-    // Writer thread — owns the write half of the socket, serializes response frames.
-    // Multiple tokio tasks complete concurrently; this thread ensures atomic frame writes.
+    // Writer thread — owns the write half of the socket, serializes every frame.
+    // Multiple tokio tasks complete concurrently; this thread ensures atomic frame
+    // writes AND is the sole path a core-initiated provideCall reaches the client,
+    // so a response and a provideCall never interleave mid-frame.
     let mut writer_stream = stream.try_clone_stream()?;
     let writer_handle = std::thread::spawn(move || {
-        for (request_id, result) in rx {
-            let write_result = match result {
-                HandleResult::Json(response) => {
-                    let response = response.with_request_id(request_id);
-                    send_json_frame(&mut writer_stream, &response)
-                }
-                HandleResult::Binary {
-                    json_header,
-                    binary_data,
-                } => {
-                    let json_header = json_header.with_request_id(request_id);
-                    send_binary_frame(&mut writer_stream, &json_header, &binary_data)
-                }
+        for outbound in rx {
+            let write_result = match outbound {
+                Outbound::Response { request_id, result } => match result {
+                    HandleResult::Json(response) => {
+                        let response = response.with_request_id(request_id);
+                        send_json_frame(&mut writer_stream, &response)
+                    }
+                    HandleResult::Binary {
+                        json_header,
+                        binary_data,
+                    } => {
+                        let json_header = json_header.with_request_id(request_id);
+                        send_binary_frame(&mut writer_stream, &json_header, &binary_data)
+                    }
+                },
+                Outbound::ProvideCall {
+                    call_id,
+                    command,
+                    params,
+                } => send_provide_call_frame(&mut writer_stream, call_id, &command, &params),
             };
             if let Err(e) = write_result {
                 log_error!("ipc", "server", "Write error: {}", e);
@@ -310,6 +381,15 @@ fn handle_client<S: IpcStream>(
             }
         }
     });
+
+    // Per-connection back-channel state for `Provided` commands (provider_bridge):
+    // `pending` correlates a core→client provideCall to the client's provideResult
+    // by core-allocated `call_id`; `next_call_id` allocates those ids;
+    // `my_registrations` tracks the providers this connection registered so they
+    // can be unregistered (pointer-matched) at disconnect.
+    let pending: provider_bridge::PendingCalls = Arc::new(DashMap::new());
+    let next_call_id = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let mut my_registrations: Vec<provider_bridge::ConnRegistration> = Vec::new();
 
     // #85: track in-flight command tasks for THIS connection so we can abort them if the
     // client disconnects mid-flight — a blocking handler with no one left to answer would
@@ -330,19 +410,51 @@ fn handle_client<S: IpcStream>(
         let json_value: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                let _ = tx.send((
-                    None,
-                    HandleResult::Json(Response::error(format!("Invalid JSON: {e}"))),
-                ));
+                let _ = tx.send(Outbound::Response {
+                    request_id: None,
+                    result: HandleResult::Json(Response::error(format!("Invalid JSON: {e}"))),
+                });
                 continue;
             }
         };
+
+        // Back-channel reply: a connected eye-node answering a core-initiated
+        // provideCall. It is NOT a command — complete the pending correlation and
+        // move on. Discriminated by `type: "provideResult"` (only the provider
+        // back-channel uses `type`; a normal request has `command`).
+        if json_value.get("type").and_then(|v| v.as_str()) == Some("provideResult") {
+            provider_bridge::complete_provide_result(&pending, &json_value);
+            continue;
+        }
 
         let request_id = json_value.get("requestId").and_then(|v| v.as_u64());
         let command = json_value
             .get("command")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+
+        // Provider-registration handshake: a client declaring which `Provided`
+        // commands it fulfils (an eye-node offering perception/observe +
+        // interface/screenshot). Handled inline — NOT routed through a
+        // ServiceModule — because building the back-channel provider needs this
+        // connection's writer `tx` + correlation state, which no module can see.
+        // (This is transport infrastructure, like requestId framing, not an
+        // application command; hence the deliberate name-check here.)
+        if command.as_deref() == Some("provider/register") {
+            let reply = provider_bridge::register_provider(
+                &state.provider_registry,
+                &tx,
+                &pending,
+                &next_call_id,
+                &json_value,
+                &mut my_registrations,
+            );
+            let _ = tx.send(Outbound::Response {
+                request_id,
+                result: HandleResult::Json(reply),
+            });
+            continue;
+        }
 
         // Dispatch to tokio directly — NO RAYON THREAD BLOCKED.
         //
@@ -373,13 +485,13 @@ fn handle_client<S: IpcStream>(
                 if let Some(ref c) = caller {
                     let trust = crate::routing::caller_trust(Some(c));
                     if !crate::modules::grid::acl::is_command_authorized(cmd, trust) {
-                        let _ = tx.send((
+                        let _ = tx.send(Outbound::Response {
                             request_id,
-                            HandleResult::Json(Response::error(format!(
+                            result: HandleResult::Json(Response::error(format!(
                                 "forbidden: command '{cmd}' is not permitted for a remote \
                                  (TCP) caller — Owner-gated commands are local-only"
                             ))),
-                        ));
+                        });
                         return;
                     }
                 }
@@ -463,7 +575,10 @@ fn handle_client<S: IpcStream>(
                     "Missing 'command' field in request".to_string(),
                 ))
             };
-            let _ = tx.send((request_id, handle_result));
+            let _ = tx.send(Outbound::Response {
+                request_id,
+                result: handle_result,
+            });
         });
         inflight.push(inflight_handle);
     }
@@ -483,6 +598,30 @@ fn handle_client<S: IpcStream>(
             "aborted {aborted} in-flight handler(s) for disconnected client: {peer_addr}"
         );
     }
+
+    // Unregister any `Provided` capabilities this connection offered (an eye-node
+    // going away). Pointer-matched so we never evict a NEWER eye-node that
+    // re-registered the same command — after this, a persona's perception/observe
+    // fails loud "no eye-node connected" rather than routing into a dead socket.
+    if !my_registrations.is_empty() {
+        for (provider, commands) in &my_registrations {
+            state
+                .provider_registry
+                .unregister_matching(commands, provider);
+        }
+        log_debug!(
+            "ipc",
+            "server",
+            "unregistered {} provider binding(s) for disconnected eye-node: {peer_addr}",
+            my_registrations.len()
+        );
+    }
+    // Drop this connection's provider Arcs BEFORE joining the writer: each held a
+    // clone of `tx`, so the writer's channel would never close (deadlock) while
+    // they live. (A mid-flight fulfill still holds a clone; it drops on timeout,
+    // which is why the join can lag by at most the provideCall timeout in that
+    // rare race — bounded, never forever.)
+    drop(my_registrations);
 
     // Drop sender to signal writer thread to exit, then wait for it
     drop(tx);
@@ -2294,6 +2433,14 @@ pub fn start_server(
     // before the kernel tries local Rust dispatch. Both interceptors
     // decline cleanly when their routing decision is "local," so
     // existing commands see zero behavior change.
+    //
+    // The ONE provider registry, OWNED by the Runtime so all three readers share
+    // it: the ProvidedCommandInterceptor (in-process/persona route), the
+    // connection layer (writer, via ServerState — binds an eye-node on connect),
+    // AND `Runtime::route_command` (the socket route: cu / IPC / MCP). An
+    // eye-node's `provider/register` on any connection binds here; every dispatch
+    // path routes perception/observe to it, or fails loud when none is connected.
+    let provider_registry = runtime.provider_registry();
     let executor = Arc::new(
         crate::runtime::CommandExecutor::new(runtime.registry_arc())
             // Share the ONE runtime bus (the same Arc every ModuleContext
@@ -2305,6 +2452,18 @@ pub fn start_server(
             .with_message_bus(runtime.bus_arc())
             .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
+            // `provided` sits at the TAIL of the chain: airc/grid get first look
+            // so an explicitly remote-targeted perception/observe still hops to a
+            // peer's eye, but an ordinary (untargeted) Provided call — a persona
+            // asking to SEE — routes here to a connected eye-node adapter, or
+            // fails loud naming the missing eye-node. Empty registry today (the
+            // eye-node client rides task #29): perception/observe + interface/
+            // screenshot fail loud honestly instead of "no Rust module handles".
+            // The connection layer will register providers via the interceptor's
+            // shared `ProviderRegistry` when an eye-node connects.
+            .with_interceptor(Arc::new(crate::runtime::ProvidedCommandInterceptor::new(
+                Arc::clone(&provider_registry),
+            )))
             // Hard ACL gate: cross-grid (airc) + TCP callers — incl. a persona's
             // command inbound pump — are gated by the grid ACL, capped at
             // Provisional. A remote room peer may request ai/generate and nothing
@@ -2384,6 +2543,7 @@ pub fn start_server(
         file_engines,
         shell_sessions,
         gpu_manager,
+        provider_registry,
     ));
 
     log_info!("ipc", "server", "IPC server ready");

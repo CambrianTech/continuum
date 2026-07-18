@@ -11,7 +11,8 @@
     "packages/perception",
     "apps/web",
     "apps/tui",
-    "apps/desktop"
+    "apps/desktop",
+    "apps/eye-node"
   ],
   "scripts": {
     "start": "bash tools/scripts/start-server.sh",
