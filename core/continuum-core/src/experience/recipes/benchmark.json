@@ -1,0 +1,27 @@
+{
+  "purpose": "benchmark/hard-rs",
+  "regions": [
+    { "name": "scoreboard", "kind": "benchmark", "scope": "activity", "role": "primary", "slot": "context", "live": true },
+    { "name": "central", "kind": "benchmark", "scope": "activity", "role": "primary", "slot": "content", "live": true },
+    { "name": "feed", "kind": "benchmark", "scope": "activity", "role": "peripheral", "slot": "content", "live": true }
+  ],
+  "affordances": [
+    { "verb": "observe", "command": "cognition/observe" }
+  ],
+  "layout": {
+    "container": "row",
+    "children": [
+      {
+        "node": {
+          "container": "col",
+          "children": [
+            { "node": { "container": "region", "name": "central" }, "weight": 2.0 },
+            { "node": { "container": "region", "name": "feed" }, "weight": 3.0 }
+          ]
+        },
+        "weight": 3.0
+      },
+      { "node": { "container": "region", "name": "scoreboard" }, "weight": 1.0 }
+    ]
+  }
+}

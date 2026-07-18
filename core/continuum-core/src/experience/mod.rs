@@ -66,6 +66,12 @@ use ts_rs::TS;
 use crate::modules::grid::acl::required_trust;
 use crate::modules::grid::node::TrustLevel;
 
+pub mod recipe;
+pub mod source;
+
+pub use recipe::{AffordanceRecipe, ExperienceRecipe};
+pub use source::{ExperienceSource, RecipeExperienceSource, SharedExperienceSource};
+
 /// One room's Join Contract — the whole activity as a declaration.
 ///
 /// This is the outlier-validated shape: it fits a **benchmark** room (structured,
@@ -252,11 +258,12 @@ impl Affordance {
 /// (`QuiesceLease`/`cleanLane` for [`ProofSpec::CleanLane`]; forge-alloy's
 /// `IntegrityAttestation`/`AlloyReceipt` for [`ProofSpec::Attestation`]) and get
 /// bound in a follow-up slice. Settlement/invoice remain forge-alloy aspiration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/experience/ProofSpec.ts")]
 #[serde(rename_all = "camelCase")]
 pub enum ProofSpec {
     /// No attestation — an ordinary action.
+    #[default]
     None,
     /// The result is measured on a quiesced (clean) lane — the `cleanLane` honesty
     /// stamp (`[[benchmark-numbers-carry-gpu-provenance]]`).
@@ -300,109 +307,37 @@ pub enum Standing {
 /// The **benchmark** room's manifest — outlier A (structured · gradeable ·
 /// ephemeral). Primary surface is *a number and how much to trust it*.
 ///
-/// Hand-built here to validate the type against the real anchor; the eventual
-/// source is a `RoomPurposeSource` projecting a recipe (task #6) — this becomes
-/// data, not code. Region kind `"benchmark"` binds to the live `BenchmarkObserveResult`
-/// surface (`cognition/observe`); per-region kinds (scoreboard/central/feed as their
-/// own subscribable ViewStates) are a migration follow-up.
+/// Now hydrated from recipe DATA: the static manifest (purpose / regions /
+/// affordances / layout) is authored in the embedded `recipes/benchmark.json` and
+/// projected via [`recipe::ExperienceRecipe`]; this fn only supplies the runtime
+/// examinee/owner roster. `who_may` on the observe affordance is COMPUTED from the
+/// ACL at projection, never authored. This is the "manifests are recipe content"
+/// property — the builder is a thin roster-hydrator, not a hand-authored manifest.
 pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Experience {
-    Experience {
-        purpose: "benchmark/hard-rs".to_string(),
-        regions: vec![
-            Region {
-                name: "scoreboard".to_string(),
-                kind: "benchmark".to_string(),
-                scope: RegionScope::Activity,
-                role: RegionRole::Primary, // the score IS the point (emphasis)…
-                slot: Some("context".to_string()), // …but it's context → right inspector
-                live: true,
-            },
-            Region {
-                name: "central".to_string(),
-                kind: "benchmark".to_string(),
-                scope: RegionScope::Activity,
-                role: RegionRole::Primary,
-                slot: Some("content".to_string()),
-                live: true,
-            },
-            Region {
-                name: "feed".to_string(),
-                kind: "benchmark".to_string(),
-                scope: RegionScope::Activity,
-                role: RegionRole::Peripheral,
-                slot: Some("content".to_string()),
-                live: true,
-            },
-        ],
-        affordances: vec![
-            // Read-only observe — AiSafe → Provisional, any citizen may watch.
-            Affordance::for_command("observe", "cognition/observe"),
-        ],
-        membership: vec![
+    recipe::ExperienceRecipe::from_json(include_str!("recipes/benchmark.json"))
+        .expect("embedded benchmark recipe must be valid JSON")
+        .project(vec![
             Member { peer_id: examinee_peer_id.to_string(), standing: Standing::Examinee },
             Member { peer_id: owner_peer_id.to_string(), standing: Standing::Owner },
-        ],
-        // Level-3 explicit composition: content column (current task over the run
-        // feed) beside the scoreboard — proving arbitrary layout is expressible
-        // without pixels. A renderer that ignores this still gets a sane layout from
-        // scope/role/slot (level 2).
-        layout: Some(Layout::Row {
-            children: vec![
-                LayoutChild {
-                    node: Layout::Col {
-                        children: vec![
-                            LayoutChild::region("central", Some(2.0)),
-                            LayoutChild::region("feed", Some(3.0)),
-                        ],
-                    },
-                    weight: Some(3.0),
-                },
-                LayoutChild::region("scoreboard", Some(1.0)),
-            ],
-        }),
-    }
+        ])
 }
 
 /// The **chat** room's manifest — outlier B (social · freeform · durable). Primary
 /// surface is a durable message stream; roster is peripheral context.
 ///
-/// Region kind is single-sourced from `ChatViewState::KIND` — the same `"chat"`
-/// string the live `StateEnvelope` carries — so the manifest can never drift from
-/// the payload it points at. Chat's send verb routes through airc (there is no
-/// `chat/*` command in continuum-core), so no affordance is fabricated here; the
-/// airc-routed post affordance is added when that command surfaces on this plane.
+/// Hydrated from `recipes/chat.json` plus the owner/member roster. The recipe's
+/// region `kind` is `"chat"`; the `both_outliers_fit_one_contract` test pins that
+/// value to `ChatViewState::KIND`, so the authored data cannot drift from the live
+/// `StateEnvelope` payload it points at. Chat's send verb routes through airc (no
+/// `chat/*` command exists in continuum-core), so the recipe declares no affordance
+/// yet — the airc-routed post affordance is added when that command surfaces here.
 pub fn chat_experience(owner_peer_id: &str, member_peer_id: &str) -> Experience {
-    let chat_kind = continuum_positron::ChatViewState::KIND.to_string();
-    Experience {
-        purpose: "chat".to_string(),
-        regions: vec![
-            Region {
-                name: "messages".to_string(),
-                kind: chat_kind.clone(),
-                scope: RegionScope::Activity,
-                role: RegionRole::Primary,
-                slot: Some("content".to_string()),
-                live: true,
-            },
-            Region {
-                name: "roster".to_string(),
-                kind: chat_kind,
-                scope: RegionScope::Activity,
-                role: RegionRole::Peripheral,
-                slot: Some("context".to_string()),
-                live: true,
-            },
-        ],
-        affordances: vec![],
-        membership: vec![
+    recipe::ExperienceRecipe::from_json(include_str!("recipes/chat.json"))
+        .expect("embedded chat recipe must be valid JSON")
+        .project(vec![
             Member { peer_id: owner_peer_id.to_string(), standing: Standing::Owner },
             Member { peer_id: member_peer_id.to_string(), standing: Standing::Member },
-        ],
-        // No explicit layout — chat relies on level-2 semantic placement, and each
-        // paradigm arranges content + context organically. Proof the builder tree is
-        // genuinely optional.
-        layout: None,
-    }
+        ])
 }
 
 #[cfg(test)]
