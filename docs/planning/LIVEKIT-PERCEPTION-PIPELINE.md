@@ -36,6 +36,31 @@ Audio runs the parallel loop: `LiveKit audio → STT → cognition → TTS → L
   equivalent) to look CLOSER at a specific tile/gesture on demand. Ambient low-res always
   on; the tool for detail.
 
+## Resolution & context budget — the ambient look is CHEAP by design
+
+The "forced look" must not blow context, memory, or KV — perception is continuous, so it
+has to be small by default and reused hard ([[perception-feedback-must-not-blow-rag]],
+[[media-is-compute-once-zero-copy-hardware-grade]], [[media-context-is-graduation-gated-scaffold]]):
+
+- **Ambient default ≈ 480px-wide thumbnail.** The forced-look frame is a small standard
+  scaled cell (`project_image` → `MediaResolution::Scaled(DestSize)`, ~480w). Little
+  context per tick — a native-vision persona gets ~one small image; a non-vision persona
+  gets the cached description text. Never the full-res frame on the ambient path.
+- **Request bigger = the drill-in tool.** When a persona needs detail (read a slide, check
+  a gesture), it calls the drill-in tool for a larger cell — up to its model+adapter max,
+  derive-not-clamp. Full res is reachable, never forced.
+- **Resolution is a CONTEXT CONFIG, not a constant.** The ambient default (~480w) is a
+  per-persona / per-situation knob: a big-context native-vision persona in a design review
+  may run a larger ambient; a tiny local model runs description-only. Derived from the
+  persona's real model+adapter + role + budget, threaded by reference — no hardcoded clamp
+  ([[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+- **KV / memory reuse is the hard constraint.** The 480w thumbnail is ONE scaled cell per
+  frame content-hash, shared to every viewer (13 personas, one cell). Its image-token KV
+  is encoded ONCE and reused across cadence ticks AND across viewers — "thumbnails into KV
+  once for all." Sampling cadence (not 30fps) + one-cell-per-content-hash + shared KV is
+  what makes the N-persona wall affordable. The ambient look is designed to be nearly free
+  on the second-and-Nth consumer.
+
 ## Current state (what's already real — don't rebuild)
 
 - **Deploy trust (#194)** ✅ — `core ready` no longer lies (freshness guard). Precondition
