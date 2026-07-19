@@ -956,13 +956,18 @@ impl CognitionEval {
         };
 
         // Does this exam grade her HANDS or her MOUTH? A task graded from a file she
-        // writes (`solution_file`), a workspace DoD she must satisfy (`dod_shell`), or
-        // a pinned repo she edits (`workspace_root`) needs tools. A purely spoken-graded
-        // task (`test`/`expect`) does not — and offering tools there is a net TAX: a
-        // native-tool-call model loops on the discovery pair (`commands/help`) and never
-        // speaks (the isolator's Devstral 100%→0%). Match the surface to the modality.
+        // writes (`solution_file`), a workspace DoD she must satisfy (`dod_shell`), a
+        // pinned repo she edits (`workspace_root`), or a UI she BUILDS and we OBSERVE
+        // (`ui_checks`) needs tools — she must `code/write` the file, then can
+        // `perception/observe` her own render and iterate (the image-feedback loop).
+        // A purely spoken-graded task (`test`/`expect`) does not — and offering tools
+        // there is a net TAX: a native-tool-call model loops on the discovery pair
+        // (`commands/help`) and never speaks (the isolator's Devstral 100%→0%). Match
+        // the surface to the modality.
         let needs_tools = p.workspace_root.is_some()
-            || tasks.iter().any(|t| t.solution_file.is_some() || t.dod_shell.is_some());
+            || tasks.iter().any(|t| {
+                t.solution_file.is_some() || t.dod_shell.is_some() || !t.ui_checks.is_empty()
+            });
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
         // copy while the LIVING persona keeps living (heartbeat beating, present in
