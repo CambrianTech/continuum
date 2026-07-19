@@ -47,6 +47,12 @@ pub const AMBIENT_WARM_MIN_INTERVAL_MS: u64 = 500;
 /// bounds later (#173).
 pub const AMBIENT_WARM_BASELINE_INTERVAL_MS: u64 = 5_000;
 
+/// Mean-luma-delta threshold (0..=255) above which two consecutive frames of a source
+/// count as a CHANGE. ~8/255 ≈ 3% average pixel shift — past camera noise, catches real
+/// motion / scene / slide changes. The trigger that escalates the warm band; below it the
+/// scene is "static" and decays to the baseline floor.
+pub const CHANGE_THRESHOLD: u8 = 8;
+
 /// Depth of each source's sliding-window frame ring — how many recent frames are held
 /// per participant. The HEAD is the most-current frame ("latest"); the window (front K)
 /// is what the sliding-window read + change comparison see. Bounded so a 30fps source
@@ -208,6 +214,34 @@ impl PerceptionBuffer {
         }
     }
 
+    /// Is this source's scene RECENTLY CHANGING? — the real change signal that drives the
+    /// warm band (replacing the old `changed = true` placeholder). Compares the two most
+    /// recent frames whose luma SIGNATURE has already warmed (the change monitor reads only
+    /// ready cells, never awaits): mean-abs delta over [`CHANGE_THRESHOLD`] = changed. Fewer
+    /// than two ready signatures (cold start, or signatures still warming) → `true`: assume
+    /// changed and ride the MIN ceiling until we can actually tell — safe, never starves.
+    /// Cheap: a bounded ring scan + a ~192-byte diff, fine to call per ingest.
+    fn scene_recently_changed(&self, source: &str, compute: &SharedCompute) -> bool {
+        let rings = self.rings.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(ring) = rings.get(source) else {
+            return true;
+        };
+        // Newest-first: collect the two most recent READY, OK signatures.
+        let mut ready = ring.window(usize::MAX).filter_map(|f| {
+            f.signature_if_ready(compute).and_then(|sig| match &*sig {
+                Ok(bytes) => Some(bytes.clone()),
+                Err(_) => None,
+            })
+        });
+        match (ready.next(), ready.next()) {
+            (Some(newest), Some(prev)) => {
+                super::image_ops::luma_mean_abs_delta(&newest, &prev) > CHANGE_THRESHOLD
+            }
+            // Can't tell yet → assume changed (ride the ceiling until a signature warms).
+            _ => true,
+        }
+    }
+
     /// The warm-cadence DECISION (pure + testable): should this observe launch a cell
     /// warm for `participant` at `now_ms`? Returns the in-flight flag to hold for the
     /// warm's duration when YES; `None` when GATED. The cadence is a BAND, not a switch
@@ -278,11 +312,11 @@ impl PerceptionBuffer {
         // coalesced latest and will warm on the next open tick (room-as-now). compute-once
         // per content-hash still applies on top: re-warming identical bytes is a cache hit.
         //
-        // INTERIM: no change detector wired yet (#192), so treat every coalesced frame as
-        // potentially changed → cadence rides the MIN ceiling. When the cheap
-        // motion/scene-change/YOLO detector lands, its signal replaces this `true`, and a
-        // static scene decays to the BASELINE floor.
-        let changed = true;
+        // The change monitor (cheap luma-signature diff of the two most recent warmed
+        // frames) drives the band: a static scene decays to the BASELINE floor, a real
+        // change escalates to the MIN ceiling. Cold start / signatures still warming →
+        // `true` (ride the ceiling until we can tell).
+        let changed = self.scene_recently_changed(&participant, &compute);
         let Some(in_flight) = self.should_warm(&participant, now_ms, changed) else {
             return;
         };
@@ -290,6 +324,9 @@ impl PerceptionBuffer {
         let ambient = self.ambient;
         let mime = mime.to_string();
         tokio::spawn(async move {
+            // Warm the cheap signature FIRST — it's the change monitor's fingerprint that
+            // gates future describes; then the thumbnail; then the expensive describe.
+            let _ = frame.signature(&compute).await;
             let _ = frame.scaled(&compute, None, ambient).await; // warm ~480w thumbnail
             let _ = frame.description(&compute, describer.as_ref(), &mime).await; // warm describe
             // Release the gate so the next due tick can warm the then-latest frame.
@@ -612,6 +649,55 @@ mod tests {
 
         // Unknown source → empty (never a fabricated look).
         assert!(buffer.look(LookScope::Source("nobody".into()), LookFidelity::Thumbnail, &compute).await.is_empty());
+    }
+
+    // what this catches: the change MONITOR — `scene_recently_changed` diffs the two most
+    // recent WARMED luma signatures. Same scene (same pattern, different frame) → NOT changed
+    // (decays to the floor); a visually different frame → changed (escalates). Unknown source
+    // or unwarmed signatures → true (assume changed, ride the ceiling until we can tell).
+    #[tokio::test]
+    async fn scene_recently_changed_reads_warmed_signatures() {
+        fn solid_png(w: u32, h: u32) -> Vec<u8> {
+            let img = RgbaImage::from_pixel(w, h, Rgba([0, 0, 0, 255]));
+            let mut out = Cursor::new(Vec::new());
+            DynamicImage::ImageRgba8(img).write_to(&mut out, ImageFormat::Png).unwrap();
+            out.into_inner()
+        }
+
+        let buffer = PerceptionBuffer::new(AMBIENT);
+        let compute = Arc::new(SharedCompute::new());
+        let src = "alice";
+
+        // Unknown source → assume changed.
+        assert!(buffer.scene_recently_changed(src, &compute));
+
+        // Two visually-IDENTICAL frames (same red|blue pattern, different dims → different
+        // content hash, so both are kept in the ring). Warm their signatures.
+        let f1 = MediaFrame::from_bytes(png(80, 60));
+        let f2 = MediaFrame::from_bytes(png(120, 90));
+        f1.signature(&compute).await;
+        f2.signature(&compute).await;
+        {
+            let mut rings = buffer.rings.lock().unwrap();
+            let r = rings
+                .entry(src.into())
+                .or_insert_with(|| FrameRing::with_capacity(AMBIENT_RING_CAPACITY));
+            r.push(f1.clone());
+            r.push(f2.clone());
+        }
+        assert!(
+            !buffer.scene_recently_changed(src, &compute),
+            "same scene across frames → not changed → decays to the slow floor"
+        );
+
+        // A visually DIFFERENT frame on top → changed.
+        let solid = MediaFrame::from_bytes(solid_png(50, 50));
+        solid.signature(&compute).await;
+        buffer.rings.lock().unwrap().get_mut(src).unwrap().push(solid.clone());
+        assert!(
+            buffer.scene_recently_changed(src, &compute),
+            "a different scene → changed → escalate to the ceiling"
+        );
     }
 
     // what this catches: remove drops a participant who left the call.
