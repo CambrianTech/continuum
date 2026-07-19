@@ -723,6 +723,31 @@ pub async fn materialize_adapters(
                 // the eval fork's nil room) — the exam-bleed fix (#127).
                 .for_room(identity.default_room));
 
+        // Live-call perception: the persona's room-as-NOW visual grounding — WHO is
+        // visible on the call + a description of what they show, read NON-BLOCKING from
+        // the persona's PerceptionBuffer (only cells resolved this tick; the turn never
+        // waits) and BUDGETED through the same flexbox allocator so perception can never
+        // dominate context ([[perception-feedback-must-not-blow-rag]]).
+        //
+        // The buffer is the ADDRESSABLE home in `media::perception_registry` — the ONE
+        // seam the LiveKit media ingest (#192/#193) warms via `observe()` and this source
+        // reads, resolved by persona_id from BOTH sides (the "one home, two reachers"
+        // shape of `focus::registry()`). Its cells resolve on the runtime's ONE
+        // `SharedCompute` (`shared_compute::global()`, which the Runtime adopts), so a
+        // frame warmed once by ingest is a cache hit for EVERY viewing persona:
+        // compute-once / share-many, the multi-persona vision moat
+        // ([[vision-replication-is-the-multipersona-moat-vs-cloud]]). Empty until frames
+        // arrive — this wires the READ path into cognition; the video_rx → observe ingest
+        // is #192.
+        let perception_buffer =
+            crate::media::perception_registry().handle(identity.peer_id.as_uuid());
+        let media_perception_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::media_perception_source::MediaPerceptionSource::new(
+                identity.peer_id.as_uuid(),
+                perception_buffer,
+                crate::runtime::shared_compute::global(),
+            ));
+
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
         // Without this, admission is in-memory only (NoopSink) and the persona is
@@ -844,6 +869,18 @@ pub async fn materialize_adapters(
                     // under-grounded turn, not a wrong one. Task #117 O6.
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         room_board_source,
+                    )
+                    .defer_tolerant(),
+                    // Live-call perception (#187/#192): WHO is visible on the call +
+                    // what they show, as enriching framing. Defer-tolerant: a
+                    // first-tick miss costs one under-grounded turn, not a wrong one —
+                    // and perception is non-blocking by construction (absent cells are
+                    // simply not present this tick, never awaited). NOT requires_hands:
+                    // seeing is a SENSE, not a tool, so it stays present in a
+                    // tool-stripped (spoken-exam) cycle. Reads only ready cells (O(participants)
+                    // string assembly, no inference) — off the 30fps media plane entirely.
+                    crate::cognition::persona_workspace::GroundingSource::framing(
+                        media_perception_source,
                     )
                     .defer_tolerant(),
                 ],
