@@ -93,6 +93,18 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "webdev-rs.jsonl",
         include_str!("../../../../docs/genome/webdev-rs.jsonl"),
     ),
+    (
+        // tool-bugfix-rs: the first TOOL-USING gym. Every other gym is spoken-graded
+        // codegen (no tools offered — needs_tools is false). Each task here seeds a
+        // BUGGY source file into the workspace (`setup_shell`) and grades the persona's
+        // EDITED file (`dod_shell` — a fresh cheat-proof harness that include!()s her
+        // file, asserts, compiles, runs), so she MUST read → edit → compile → run with
+        // her hands. That makes `needs_tools` true → the native tool surface is offered
+        // → this is the ONLY benchmark whose score depends on tool USE, the honest
+        // instrument for the offer-name A/B (#204) [[tool-naming-meet-their-training-alias-or-redirect]].
+        "tool-bugfix-rs.jsonl",
+        include_str!("../../../../docs/genome/tool-bugfix-rs.jsonl"),
+    ),
 ];
 
 /// Look up a committed gym's embedded bytes by the basename of `reference`.
