@@ -498,17 +498,20 @@ impl LlamaCppAdapter {
         let active_kv = self
             .kv_quant_policy
             .for_residency(crate::inference::kv_quant::Residency::Active);
-        // Pull the multimodal projector path from the registry if this
-        // model declares one. The registry is the source of truth for
-        // per-model configuration (mmproj alongside chat_template,
-        // stop_sequences, capabilities). When set, the backend's
-        // generate_with_image route lazily loads the MtmdContext from it.
-        // When absent, generate_with_image returns a clear error rather
-        // than silently bridging to text — vision-capable callers should
-        // surface that as a config issue, not a degraded experience.
-        let mmproj_path = crate::model_registry::try_global()
-            .and_then(|reg| reg.model(&self.default_model))
-            .and_then(|m| m.mmproj_local_path.clone());
+        // Resolve the multimodal projector via the ONE registry resolver — the
+        // single source of truth for "where is this model's mmproj" (declared
+        // local path first, else the projector sitting beside the GGUF in the
+        // HF cache snapshot, existence-checked). Reading the raw
+        // `mmproj_local_path` field here would miss the self-provisioned sibling
+        // and skip the existence check; `resolve_mmproj_for_model` is what
+        // `llama-server` uses too, so both serving paths agree. When set, the
+        // backend's generate_with_image route lazily loads the MtmdContext from
+        // it; when None, generate_with_image returns a clear error rather than
+        // silently bridging to text — a config issue, not a degraded experience.
+        let mmproj_path = crate::model_registry::try_global().and_then(|reg| {
+            reg.model(&self.default_model)
+                .and_then(crate::model_registry::artifacts::resolve_mmproj_for_model)
+        });
         // CONTINUUM_TIER is set by install.sh's hardware probe (commit
         // 7b3b8e086) — when the install detects a Mac Intel + discrete
         // AMD or integrated Intel UHD host, it exports

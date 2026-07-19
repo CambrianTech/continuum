@@ -543,26 +543,24 @@ impl AIProviderModule {
                 // returns a clean error when mmproj is absent — we log
                 // the gap upfront so install scripts catch it before
                 // a real user hits "model declares Vision but mmproj
-                // missing" at request time.
+                // missing" at request time. Resolve via the ONE resolver
+                // (declared path OR the projector beside the GGUF in the
+                // HF cache), so a self-provisioned sibling reads as present
+                // and we don't false-warn on a model that will serve fine.
                 let needs_mmproj = model_meta.has(crate::model_registry::types::Capability::Vision)
                     || model_meta.has(crate::model_registry::types::Capability::AudioInput);
-                if needs_mmproj {
-                    match &model_meta.mmproj_local_path {
-                        None => self.log().info(&format!(
-                            "Adapter `{}` declares Vision/AudioInput but TOML has no \
-                             mmproj_local_path — multimodal calls will hard-error. \
-                             Add `mmproj_local_path = \"...\"` to the row.",
-                            model_meta.id
-                        )),
-                        Some(p) if !p.exists() => self.log().info(&format!(
-                            "Adapter `{}` declares Vision/AudioInput but mmproj file \
-                             missing at {} — multimodal calls will hard-error. \
-                             Install must pull this artifact alongside the GGUF.",
-                            model_meta.id,
-                            p.display()
-                        )),
-                        Some(_) => {} // present + on disk, good
-                    }
+                if needs_mmproj
+                    && crate::model_registry::artifacts::resolve_mmproj_for_model(model_meta)
+                        .is_none()
+                {
+                    self.log().info(&format!(
+                        "Adapter `{}` declares Vision/AudioInput but no mmproj projector \
+                         resolves — none declared, and none sits beside the GGUF in the HF \
+                         cache. Multimodal calls will hard-error. Pull the model's `*-GGUF` \
+                         repo (its projector ships alongside the GGUF) or add \
+                         `mmproj_local_path` to the row.",
+                        model_meta.id
+                    ));
                 }
                 self.log().info(&format!(
                     "Registering in-process llama.cpp adapter for model `{}`",
