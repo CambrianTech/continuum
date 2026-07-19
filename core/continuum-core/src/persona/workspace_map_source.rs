@@ -208,6 +208,46 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
     }
 }
 
+/// Reads the layout from a FIXED, explicitly-pinned root — used when an eval pins
+/// a `workspace_root` (a SWE-bench repo clone, or a clean-from-scratch build dir).
+/// The persona's HANDS get re-rooted there via `code/create-workspace`; this reader
+/// re-roots the `[workspace-map]` grounding to the SAME dir, so the map the persona
+/// reads matches the dir she acts in — otherwise her hands are in the pinned root
+/// while the map still describes the citizen-layer clone, and she reasons over a
+/// layout that isn't hers (a clean build dir reads as the big repo → she explores
+/// instead of building; #206). Same list machinery as the other readers.
+pub struct FixedRootWorkspaceLayoutReader {
+    root: PathBuf,
+}
+
+impl FixedRootWorkspaceLayoutReader {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+}
+
+impl WorkspaceLayoutReader for FixedRootWorkspaceLayoutReader {
+    fn layout(&self) -> Result<WorkspaceLayout, String> {
+        let security = PathSecurity::new(&self.root)
+            .map_err(|e| format!("workspace security init failed for pinned root: {e}"))?;
+        let engine = FileEngine::new(SOURCE_ID, security);
+        let listing = engine
+            .list_dir(".", false)
+            .map_err(|e| format!("pinned-root workspace list failed: {e}"))?;
+        let mut top_level_dirs: Vec<String> = listing
+            .entries
+            .into_iter()
+            .filter(|e| e.kind == FsEntryKind::Directory)
+            .map(|e| e.name)
+            .collect();
+        top_level_dirs.sort();
+        Ok(WorkspaceLayout {
+            root: self.root.clone(),
+            top_level_dirs,
+        })
+    }
+}
+
 /// WorkspaceMapSource — persona-bound, reads the layout from any
 /// [`WorkspaceLayoutReader`].
 pub struct WorkspaceMapSource {
@@ -234,6 +274,13 @@ impl WorkspaceMapSource {
                 peer: persona_id.to_string(),
             }),
         )
+    }
+
+    /// Construct rooted at an explicitly-pinned workspace root — the eval path when a
+    /// `workspace_root` is set (create-workspace re-roots the hands there; this makes
+    /// the map match). See [`FixedRootWorkspaceLayoutReader`].
+    pub fn for_pinned_root(persona_id: uuid::Uuid, root: impl Into<PathBuf>) -> Self {
+        Self::new(persona_id, Arc::new(FixedRootWorkspaceLayoutReader::new(root)))
     }
 
     /// Fit the rendered map to `budget` tokens. The map is small (a root path +
@@ -506,6 +553,38 @@ mod tests {
         let mut sorted = layout.top_level_dirs.clone();
         sorted.sort();
         assert_eq!(layout.top_level_dirs, sorted, "dirs must be sorted");
+    }
+
+    // what this catches: the fixed-root reader (eval workspace_root pin) roots the
+    // MAP at the pinned dir — an EMPTY pinned dir renders write-first grounding, so a
+    // from-scratch build task's map matches its clean hands instead of describing the
+    // repo (#206). Regression for the map-follows-hands link.
+    #[test]
+    fn fixed_root_empty_dir_grounds_write_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reader = FixedRootWorkspaceLayoutReader::new(dir.path());
+        let layout = reader.layout().expect("empty dir layout reads");
+        assert!(layout.top_level_dirs.is_empty(), "a fresh temp dir has no subdirs");
+        let body = render_layout(&layout);
+        assert!(body.contains("EMPTY"), "empty pinned root grounds write-first: {body}");
+        assert!(body.contains("code/write"), "points at creation: {body}");
+    }
+
+    // what this catches: a NON-empty pinned root (a SWE-bench repo clone) lists its
+    // real dirs — the map follows the pinned hands, correct for the existing
+    // workspace_root caller too, not just the clean-build case.
+    #[test]
+    fn fixed_root_with_dirs_lists_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::create_dir(dir.path().join("tests")).unwrap();
+        let layout = FixedRootWorkspaceLayoutReader::new(dir.path())
+            .layout()
+            .expect("layout reads");
+        assert_eq!(layout.top_level_dirs, vec!["src".to_string(), "tests".to_string()]);
+        let body = render_layout(&layout);
+        assert!(body.contains("src") && body.contains("tests"), "lists real dirs: {body}");
+        assert!(body.contains("NOT empty"), "refutes the empty-belief: {body}");
     }
 
     // what this catches: the citizen-layer reader roots at the persona's OWN

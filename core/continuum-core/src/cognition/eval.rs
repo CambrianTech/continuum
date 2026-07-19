@@ -1006,7 +1006,7 @@ impl CognitionEval {
                 placement_evidence = Some(placement);
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref())
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -1028,7 +1028,7 @@ impl CognitionEval {
                 placement_evidence = Some(placement);
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref())
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -1042,7 +1042,7 @@ impl CognitionEval {
             // the post-reboot register_from_cfg race hits every fork path identically.
             (None, None) => fork_eval_cycle_waiting(&persona_uuid, || {
                 crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle(&persona_uuid, needs_tools)
+                    .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref())
             })
             .await
             .ok_or_else(|| CommandError::NotFound(format!(
@@ -1301,7 +1301,7 @@ impl CognitionEval {
         let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
         let (score, results) = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid, needs_tools)
+                .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref())
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;

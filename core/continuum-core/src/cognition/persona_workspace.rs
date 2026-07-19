@@ -520,6 +520,34 @@ pub struct PersonaWorkspaceRegistry {
     templates: Mutex<HashMap<Uuid, PersonaBrainConfig>>,
 }
 
+/// When an eval pins a `workspace_root` (a SWE-bench repo clone, or a clean
+/// from-scratch build dir), `code/create-workspace` re-roots the persona's HANDS
+/// there — but the `[workspace-map]` grounding is baked at spawn rooted at the
+/// citizen layer, so without this it describes the WRONG directory (she reasons over
+/// a layout that isn't hers: a clean build dir reads as the big repo → she explores
+/// instead of building, #206). Re-point the map grounding to the same pinned root so
+/// eyes-grounding matches hands. Swaps ONLY the source Arc — policy, deferrability,
+/// and `requires_hands` are preserved. No-op when no root is pinned (the live path
+/// and every non-pinned benchmark are untouched — zero blast radius).
+fn repoint_workspace_map_if_pinned(
+    cfg: &mut PersonaBrainConfig,
+    persona_id: &Uuid,
+    workspace_root: Option<&str>,
+) {
+    let Some(root) = workspace_root else {
+        return;
+    };
+    for g in cfg.grounding_sources.iter_mut() {
+        if g.source.source_id() == "workspace-map" {
+            g.source = Arc::new(
+                crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(
+                    *persona_id, root,
+                ),
+            );
+        }
+    }
+}
+
 impl PersonaWorkspaceRegistry {
     pub fn new() -> Self {
         Self {
@@ -584,9 +612,15 @@ impl PersonaWorkspaceRegistry {
     /// (never spawned through `register_from_cfg`/`get_or_build`) — the caller
     /// fails loud rather than measuring her live mind. See
     /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
-    pub fn fork_eval_cycle(&self, persona_id: &Uuid, with_tools: bool) -> Option<WorkspaceCycle> {
+    pub fn fork_eval_cycle(
+        &self,
+        persona_id: &Uuid,
+        with_tools: bool,
+        workspace_root: Option<&str>,
+    ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
+        repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // The eval fork runs recall + grounding SYNCHRONOUSLY: drive_to_settle's
         // tight loop never yields to a background prefetch worker, so deferral would
         // measure a starved copy. Faithful eval = synchronous perception here.
@@ -635,11 +669,13 @@ impl PersonaWorkspaceRegistry {
         adapter: Arc<dyn AIProviderAdapter>,
         context_window: u32,
         with_tools: bool,
+        workspace_root: Option<&str>,
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
+        repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
@@ -1192,7 +1228,7 @@ mod tests {
 
         // Spoken exam (no hands): the workspace-map must not reach her mind.
         let spoken = registry
-            .fork_eval_cycle(&persona, false)
+            .fork_eval_cycle(&persona, false, None)
             .expect("template retained");
         let ws = spoken.run("proctor: reverse a string in Rust").await;
         assert!(
@@ -1209,7 +1245,7 @@ mod tests {
 
         // Handed exam: the map is real guidance and must be delivered.
         let handed = registry
-            .fork_eval_cycle(&persona, true)
+            .fork_eval_cycle(&persona, true, None)
             .expect("template retained");
         let ws = handed.run("proctor: reverse a string in Rust").await;
         assert!(

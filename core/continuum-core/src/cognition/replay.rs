@@ -342,7 +342,7 @@ impl ActionCommand for CognitionReplay {
         // duration, paged back out after — her real mind is never touched.
         let cycle = persona_workspace::global()
             // Replay reconstructs a faithful live-like cycle — keep her hands.
-            .fork_eval_cycle(&persona_uuid, true)
+            .fork_eval_cycle(&persona_uuid, true, None)
             .ok_or_else(|| {
                 CommandError::Invalid(format!(
                     "persona {persona_uuid} has no live WorkspaceCycle — spawn her before replaying her cognition"
