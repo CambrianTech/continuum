@@ -137,6 +137,41 @@ impl Percept {
     }
 }
 
+/// An à la carte look request — WHICH sources a persona wants to see right now. The PULL
+/// side of perception (the persona's explicit ask), distinct from the ambient PUSH (the
+/// warm band). "Into their vision à la carte" — the persona composes its own view.
+#[derive(Clone, Debug)]
+pub enum LookScope {
+    /// One participant's most-current frame.
+    Source(ParticipantId),
+    /// Every participant's most-current frame — the contact-sheet / gallery.
+    Everyone,
+}
+
+/// The image fidelity of a look. Higher-res is just a different SIZE on the same content
+/// hash, so it's compute-once/shared exactly like the thumbnail (a higher-res look another
+/// persona already asked for is a cache hit here). `Full` is the raw frame bytes.
+#[derive(Clone, Copy, Debug)]
+pub enum LookFidelity {
+    /// The ambient thumbnail (~480w) — the cheap default.
+    Thumbnail,
+    /// A specific resolution (higher OR lower than ambient).
+    Res(DestSize),
+    /// The raw source frame, unscaled.
+    Full,
+}
+
+/// One satisfied look — the image bytes for a source at the requested fidelity, shared
+/// (`Arc`, zero-copy for the scaled path). `Err` surfaces a real failure, never a
+/// fabricated image ([[fallbacks-are-illegal-fail-loud]]).
+#[derive(Clone)]
+pub struct LookImage {
+    pub participant: ParticipantId,
+    pub content_hash: String,
+    pub fidelity: LookFidelity,
+    pub image: Arc<Result<Vec<u8>, String>>,
+}
+
 /// Non-blocking, room-as-now perception hold. One latest frame per airc participant; cells
 /// warm async on the shared cache; reads take only what's ready.
 pub struct PerceptionBuffer {
@@ -302,6 +337,56 @@ impl PerceptionBuffer {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// à la carte PULL: satisfy a persona's EXPLICIT request for image(s) — of one source or
+    /// the whole group, at a chosen fidelity — ASAP. A warm cell returns instant; a cold one
+    /// is warmed NOW (compute-once/shared on the content hash, so a higher-res look another
+    /// persona already pulled is a cache hit). This is the ONE place perception AWAITS: a
+    /// deliberate ask, not the ambient hot path — and it implicitly JUMPS the warm cadence
+    /// band (it never consults the ambient gate, it computes-or-hits directly). Unknown source
+    /// → empty (never a fabricated look).
+    pub async fn look(
+        &self,
+        scope: LookScope,
+        fidelity: LookFidelity,
+        compute: &SharedCompute,
+    ) -> Vec<LookImage> {
+        // Snapshot the target heads UNDER the lock (cheap Arc-backed clones), then await
+        // compute OUTSIDE it — never hold a Mutex across an await.
+        let targets: Vec<(ParticipantId, MediaFrame)> = {
+            let rings = self.rings.lock().unwrap_or_else(|e| e.into_inner());
+            match scope {
+                LookScope::Source(id) => rings
+                    .get(&id)
+                    .and_then(|r| r.head().cloned())
+                    .map(|f| (id, f))
+                    .into_iter()
+                    .collect(),
+                LookScope::Everyone => rings
+                    .iter()
+                    .filter_map(|(id, r)| r.head().cloned().map(|f| (id.clone(), f)))
+                    .collect(),
+            }
+        };
+
+        let mut out = Vec::with_capacity(targets.len());
+        for (participant, frame) in targets {
+            let image = match fidelity {
+                LookFidelity::Thumbnail => frame.scaled(compute, None, self.ambient).await,
+                LookFidelity::Res(dest) => frame.scaled(compute, None, dest).await,
+                // Deliberate full-res pull: hand back the raw bytes (a copy — the rare,
+                // explicit expensive path; the scaled paths stay zero-copy/shared).
+                LookFidelity::Full => Arc::new(Ok(frame.source().to_vec())),
+            };
+            out.push(LookImage {
+                participant,
+                content_hash: frame.content_hash().to_string(),
+                fidelity,
+                image,
+            });
+        }
+        out
     }
 
     /// Drop a participant that left the call.
@@ -484,6 +569,49 @@ mod tests {
 
         // Unknown participant → empty (never a fabricated look).
         assert!(buffer.window_percepts("nobody", 5, &compute).is_empty());
+    }
+
+    // what this catches: the à la carte PULL — a persona requests images of a SOURCE or the
+    // GROUP, at THUMBNAIL / higher-RES / FULL, satisfied ASAP. Higher-res is a distinct cache
+    // key on the same content-hash; a repeat pull is compute-once/shared (same Arc); FULL is
+    // the raw bytes; an unknown source pulls empty.
+    #[tokio::test]
+    async fn look_serves_source_or_group_at_requested_fidelity_asap_and_shared() {
+        let buffer = PerceptionBuffer::new(AMBIENT);
+        let compute = Arc::new(SharedCompute::new());
+        let describer: Arc<dyn FrameDescriber> = Arc::new(StubDescriber);
+
+        // Two sources present (via the ingest path — the head is what a look reads).
+        buffer.observe("alice".into(), MediaFrame::from_bytes(png(120, 90)), compute.clone(), describer.clone(), "image/png", 0);
+        buffer.observe("bob".into(), MediaFrame::from_bytes(png(64, 64)), compute.clone(), describer.clone(), "image/png", 0);
+
+        // SOURCE + THUMBNAIL: one image, at the ambient size, satisfied ASAP (awaited).
+        let a = buffer.look(LookScope::Source("alice".into()), LookFidelity::Thumbnail, &compute).await;
+        assert_eq!(a.len(), 1, "source scope → just that source");
+        assert_eq!(a[0].participant, "alice");
+        let bytes = a[0].image.as_ref().as_ref().expect("thumbnail resolved");
+        assert_eq!(image::load_from_memory(bytes).unwrap().width(), AMBIENT.width, "ambient thumbnail size");
+
+        // PREFER-WARM / compute-once: a second identical pull returns the SAME shared Arc.
+        let a2 = buffer.look(LookScope::Source("alice".into()), LookFidelity::Thumbnail, &compute).await;
+        assert!(Arc::ptr_eq(&a[0].image, &a2[0].image), "repeat pull is compute-once/shared, not recomputed");
+
+        // Higher-RES: a distinct size → a distinct derivative (bigger than the thumbnail).
+        let hi = DestSize { width: 96, height: 72 };
+        let r = buffer.look(LookScope::Source("alice".into()), LookFidelity::Res(hi), &compute).await;
+        assert_eq!(image::load_from_memory(r[0].image.as_ref().as_ref().unwrap()).unwrap().width(), hi.width, "higher-res honored");
+        assert!(!Arc::ptr_eq(&a[0].image, &r[0].image), "different fidelity → different cell");
+
+        // FULL: the raw source bytes (original 120×90).
+        let f = buffer.look(LookScope::Source("alice".into()), LookFidelity::Full, &compute).await;
+        assert_eq!(image::load_from_memory(f[0].image.as_ref().as_ref().unwrap()).unwrap().width(), 120, "full = raw frame");
+
+        // GROUP (Everyone) + THUMBNAIL: the contact-sheet — one image per source.
+        let group = buffer.look(LookScope::Everyone, LookFidelity::Thumbnail, &compute).await;
+        assert_eq!(group.len(), 2, "group scope → every source's current frame (the gallery)");
+
+        // Unknown source → empty (never a fabricated look).
+        assert!(buffer.look(LookScope::Source("nobody".into()), LookFidelity::Thumbnail, &compute).await.is_empty());
     }
 
     // what this catches: remove drops a participant who left the call.

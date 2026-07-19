@@ -31,6 +31,8 @@ pub mod perception_registry;
 pub mod projection;
 
 pub use frame::{FrameDescriber, MediaFrame};
-pub use perception_buffer::{ParticipantId, Percept, PerceptionBuffer};
+pub use perception_buffer::{
+    LookFidelity, LookImage, LookScope, ParticipantId, Percept, PerceptionBuffer,
+};
 pub use perception_registry::{registry as perception_registry, AMBIENT_PERCEPTION_SIZE};
 pub use projection::{project_image, MediaResolution, ProjectedMedia};
