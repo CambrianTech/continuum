@@ -87,16 +87,24 @@ pub enum OfferStyle {
 
 /// The offer policy for a served model — THE per-model adapter seam. Today it
 /// returns the global default for every model; the foresight is that a model whose
-/// LoRA is tuned on the trained names could be met with `TrainedReflex` while a
-/// fresh / base model is offered `Canonical` to learn our namespace. That logic
-/// lands HERE, once, instead of scattered at the call sites.
+/// LoRA is tuned on the trained names is met with `TrainedReflex` while a fresh /
+/// base model could be offered `Canonical` to learn our namespace. That logic lands
+/// HERE, once, instead of scattered at the call sites.
 pub fn offer_style_for(_model: Option<&str>) -> OfferStyle {
-    // Hypothesis under benchmark gate (#202 Slice 5): offering our canonical,
-    // semantically-grouped names (`code_read`, `code_write`, `code_search`) improves
-    // BOTH the objective score AND user/API alignment — one namespace, everywhere —
-    // and the trained alias still resolves inbound so a reflex never breaks. If the
-    // gate ever fails for a model class, branch on `_model` and return TrainedReflex.
-    OfferStyle::Canonical
+    // DEFAULT: meet their training. The living personas' coder LoRAs are tuned on the
+    // trained names (`read_file`, `bash`); ~99.9% of live tool calls already resolve
+    // ([[tool-naming-meet-their-training-alias-or-redirect]]) and tool-naming is NOT
+    // the score bottleneck. So we offer the trained reflex — no blind change to the
+    // tuned surface.
+    //
+    // Canonical (`code_read`) is a HYPOTHESIS, not yet validated: the only offer-surface
+    // gate we can run today is humaneval-rs, which is PURE CODEGEN and offers NO tools
+    // (needs_tools is false for spoken-graded tasks), so it structurally CANNOT measure
+    // whether renaming the offered tools helps or hurts. Flipping the global default to
+    // Canonical on that gate was a blind flip of the tuned surface — the exact move the
+    // hard constraint forbids. Canonical stays available via `to_wire_spec_with` and is
+    // adopted here (per-model or globally) only once a TOOL-USING A/B (#204) validates it.
+    OfferStyle::TrainedReflex
 }
 
 /// Charset-legal wire form of a canonical command name: `/` → `_` (`code/read` →
@@ -261,15 +269,24 @@ mod tests {
         assert_eq!(from_wire_name("frobnicate"), "frobnicate");
     }
 
-    // what this catches: the DEFAULT offer policy (the benchmark-gated #202 Slice 5
-    // hypothesis) is Canonical — a hot verb is offered under OUR name, and the
-    // per-model seam is what a future TrainedReflex exception would flip. If someone
-    // reverts the default this fails loudly, naming the behavior change.
+    // what this catches: the DEFAULT offer policy MEETS THEIR TRAINING — a hot verb is
+    // offered under the model's trained reflex (`read_file`), NOT our canonical
+    // `code_read`. Canonical is a hypothesis not yet validated by a tool-using A/B
+    // (#204): the only offer-surface gate we can run (humaneval-rs) is pure codegen and
+    // offers no tools, so it can't measure the change. If someone flips the default to
+    // Canonical without that validation, this fails loudly — the guard against a blind
+    // flip of the tuned surface. [[tool-naming-meet-their-training-alias-or-redirect]]
     #[test]
-    fn default_offer_policy_is_our_canonical_namespace() {
-        assert_eq!(offer_style_for(None), OfferStyle::Canonical);
-        assert_eq!(to_wire_spec(spec("code/read")).name, "code_read");
-        assert_eq!(to_wire_spec(spec("work/claim")).name, "work_claim");
+    fn default_offer_policy_meets_their_training() {
+        assert_eq!(offer_style_for(None), OfferStyle::TrainedReflex);
+        assert_eq!(to_wire_spec(spec("code/read")).name, "read_file");
+        assert_eq!(to_wire_spec(spec("work/claim")).name, "claim_task");
+        // Canonical is still REACHABLE as an explicit policy (the seam is intact) —
+        // it's just not the blind default.
+        assert_eq!(
+            to_wire_spec_with(spec("code/read"), OfferStyle::Canonical).name,
+            "code_read"
+        );
     }
 
     // what this catches: the socket/CLI resolver (used at Runtime::route_command and
