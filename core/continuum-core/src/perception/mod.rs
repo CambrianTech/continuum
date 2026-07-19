@@ -203,6 +203,7 @@ pub struct ObserveCommand;
 impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const NAME: &'static str = "perception/observe";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const NATIVE: bool = true; // SEE + REASON — offered natively beside interface/screenshot
     const DESCRIPTION: &'static str =
         "Observe a UI or web page — SEE it as pixels AND read its STRUCTURE (the \
          tree of elements with their names, text, and on-screen boxes). Use it to \

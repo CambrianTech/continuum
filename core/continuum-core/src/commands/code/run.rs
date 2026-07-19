@@ -81,6 +81,7 @@ pub struct CodeRun;
 #[async_trait]
 impl ActionCommand for CodeRun {
     const NAME: &'static str = "code/run";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Compile and run a complete Rust program (lang \"rust\", code must have its own \
          `fn main`) and return its stdout, stderr, exit code, and duration. A compile \

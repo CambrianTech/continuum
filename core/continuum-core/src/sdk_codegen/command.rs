@@ -155,6 +155,11 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// Model-facing one-liner surfaced into the persona tool surface. Defaults
     /// empty (falls back to a name-based description).
     const DESCRIPTION: &'static str = "";
+    /// Whether this command joins the persona's NATIVE tool surface (the bounded set
+    /// given as full structured tool-call schemas every turn). Defaults `false`
+    /// (catalog-only); a core agentic command overrides it to `true` — and then it's
+    /// offered natively AUTOMATICALLY, no central list. See [`CommandSpec::NATIVE`].
+    const NATIVE: bool = false;
 
     /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
     /// is derived automatically (no hand-authoring) and exposed to every SDK.
@@ -173,6 +178,7 @@ impl<T: ActionCommand> CommandSpec for T {
     const NAME: &'static str = <T as ActionCommand>::NAME;
     const ACCESS_LEVEL: AccessLevel = <T as ActionCommand>::ACCESS;
     const DESCRIPTION: &'static str = <T as ActionCommand>::DESCRIPTION;
+    const NATIVE: bool = <T as ActionCommand>::NATIVE;
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;

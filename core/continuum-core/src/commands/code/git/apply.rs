@@ -44,6 +44,7 @@ crate::action_command! {
     pub struct CodeGitApply { state: Arc<CodeState> }
     name: "code/git/apply",
     access: AiSafe,
+    native: true,
     params: GitApplyParams,
     output: GitApplyResult,
     run(this, ctx, p) => {

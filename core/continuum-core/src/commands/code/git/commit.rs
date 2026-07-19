@@ -31,6 +31,7 @@ crate::action_command! {
     pub struct CodeGitCommit { state: Arc<CodeState> }
     name: "code/git/commit",
     access: AiSafe,
+    native: true,
     params: GitCommitParams,
     output: GitCommitResult,
     run(this, ctx, p) => {

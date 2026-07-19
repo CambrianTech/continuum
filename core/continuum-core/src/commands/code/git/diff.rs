@@ -32,6 +32,7 @@ crate::action_command! {
     pub struct CodeGitDiff { state: Arc<CodeState> }
     name: "code/git/diff",
     access: AiSafe,
+    native: true,
     params: GitDiffParams,
     output: GitDiffResult,
     run(this, ctx, p) => {
