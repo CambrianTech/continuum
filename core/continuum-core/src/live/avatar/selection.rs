@@ -113,24 +113,24 @@ pub fn select_avatar_by_identity(identity: &str) -> &'static AvatarModel {
 static AVATAR_ALLOCATION: std::sync::Mutex<Option<HashMap<String, usize>>> =
     std::sync::Mutex::new(None);
 
-/// Identity → the persona's coherent gender, derived from its NAME at the one
-/// moment name + identity co-occur (voice-session registration).
+/// Identity → a REMOTE/live participant's gender, derived from their display NAME at
+/// the one moment name + identity co-occur (voice-session join).
 ///
-/// [[procedural-persona-genesis]] coherence anchor. A persona's name is the stable,
-/// persisted, user-visible truth; its live `peer_id` is a random tag airc mints
-/// independently (`PeerId::new()`), so the two need not agree in gender. The
-/// stateless selection paths (profile snapshot, live video pump) only ever hold the
-/// peer_id — so left alone they'd fall back to an id-hash gender that can mismatch
-/// the name (a feminine "Asha" on a masculine VRM). By capturing the NAME-derived
-/// gender ONCE, keyed by identity, every later selection (snapshot, pump, voice)
-/// resolves the SAME gender by id — coherent with each other AND with the name.
+/// Scope note (#199): for a LOCAL persona, her gender now comes from her durable
+/// [`PersonaCard`](crate::persona::card), which `registered_gender` consults FIRST —
+/// so this map is no longer our own personas' anchor. It survives for participants we
+/// DON'T host (a peer joining a call from another grid): we have no card for them, so
+/// their display name is the only presentation signal, captured here. A unisex/custom
+/// name (`gender_from_name` → `None`) records nothing → id-hash fallback.
 static PERSONA_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
     std::sync::Mutex::new(None);
 
-/// Capture a persona's name-anchored gender, keyed by its live identity. Call this
-/// when a persona's identity + display name are both in hand (voice-session
-/// registration). A unisex/custom name (`gender_from_name` → `None`) records
-/// nothing, so those fall back to the id-hash gender.
+/// Capture a REMOTE/live participant's name-anchored gender, keyed by their live
+/// identity. Call this when a participant's identity + display name co-occur (voice-
+/// session join) and no local card exists for them. A unisex/custom name
+/// (`gender_from_name` → `None`) records nothing, so those fall back to the id-hash
+/// gender. (Local personas register a durable [`PersonaCard`](crate::persona::card) at
+/// spawn instead — this is not their path.)
 pub fn register_persona_gender(identity: &str, name: &str) {
     if let Some(gender) = crate::persona::name_generator::gender_from_name(name) {
         clog_info!(
@@ -146,9 +146,23 @@ pub fn register_persona_gender(identity: &str, name: &str) {
     }
 }
 
-/// The name-anchored gender for an identity, if one was registered. This is the
-/// coherence source every avatar/voice selection consults FIRST.
+/// The authoritative gender for an identity, if known. The coherence source every
+/// avatar/voice selection consults FIRST, layered by population:
+///
+/// 1. **Local persona** → her durable [`PersonaCard`](crate::persona::card) (persisted
+///    on disk, registered at spawn). This is the "one identity, one card" truth — it
+///    replaced the per-spawn name re-derivation for our OWN personas.
+/// 2. **Remote/live participant** → the name-anchored gender captured at voice-session
+///    join ([`register_persona_gender`]). No local card exists for a peer in a call,
+///    so their display name is the only presentation signal we have.
+///
+/// Callers fall back to `gender_from_identity` when both miss.
 pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
+    // (1) Local persona's durable card wins.
+    if let Some(gender) = crate::persona::card::gender_of(identity) {
+        return Some(gender);
+    }
+    // (2) Remote/live participant name-anchor.
     PERSONA_GENDER
         .lock()
         .unwrap()

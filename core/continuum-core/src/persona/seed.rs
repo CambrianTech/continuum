@@ -48,12 +48,23 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::live::avatar::types::AvatarGender;
+use crate::persona::card::PersonaCard;
+use crate::persona::role_template::RoleId;
+
 /// The on-disk seed record. Schema-versioned so we can evolve
 /// fields without breaking older installs.
+///
+/// v2 promotes the seed from a bare identity mapping to the persona's full,
+/// durable, coherent [`PersonaCard`] — the "one identity, one card" record
+/// ([[persona-is-the-airc-user-one-identity-one-card]]). A v1 row deserializes fine
+/// (serde `tag = "version"`) and is UPGRADED to v2 on the next write
+/// ([`ensure_seed`]), backfilling the card from the persona's current effective
+/// values so nobody shifts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "version")]
 pub enum PersonaSeedFile {
-    /// v1 schema — persona_id + agent_name + created_at.
+    /// v1 schema — persona_id + agent_name + created_at (+ pinned avatar).
     #[serde(rename = "1")]
     V1 {
         /// Stable continuum-side identifier. Drives name + avatar +
@@ -80,31 +91,102 @@ pub enum PersonaSeedFile {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         avatar_vrm: Option<String>,
     },
+    /// v2 schema — the full coherent [`PersonaCard`]. Adds the presentation spine
+    /// (`gender`), the `voice_seed`, and the substrate `role` on top of v1. Pronouns
+    /// are NOT stored — they derive from `gender` (compression; see
+    /// [`PersonaCard::pronouns`]).
+    #[serde(rename = "2")]
+    V2 {
+        persona_id: Uuid,
+        agent_name: String,
+        created_at_ms: u64,
+        /// The presentation spine — avatar, voice, and pronouns all cohere with it.
+        gender: AvatarGender,
+        /// The pinned avatar VRM (sticky, resolve-once — #174). `None` until pinned.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar_vrm: Option<String>,
+        /// The seed the speak path picks a stable, gender-matched voice from (today
+        /// the identity string; a field so voice can later be chosen independently).
+        voice_seed: String,
+        /// The substrate role, when known. `None` before role threading (later slice).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<RoleId>,
+    },
 }
 
 impl PersonaSeedFile {
+    /// Build a v2 seed from a persona's durable [`PersonaCard`].
+    pub fn from_card(card: &PersonaCard) -> Self {
+        Self::V2 {
+            persona_id: card.persona_id,
+            agent_name: card.agent_name.clone(),
+            created_at_ms: card.created_at_ms,
+            gender: card.gender,
+            avatar_vrm: card.avatar_vrm.clone(),
+            voice_seed: card.voice_seed.clone(),
+            role: card.role,
+        }
+    }
+
+    /// The persona's full coherent card. A v2 seed returns its stored card verbatim
+    /// (the durable, editable truth). A v1 seed DERIVES the card via
+    /// [`PersonaCard::genesis`] — which reproduces the exact effective gender the live
+    /// seams computed pre-v2, so reading an un-upgraded v1 shifts nobody.
+    pub fn card(&self) -> PersonaCard {
+        match self {
+            Self::V2 {
+                persona_id,
+                agent_name,
+                created_at_ms,
+                gender,
+                avatar_vrm,
+                voice_seed,
+                role,
+            } => PersonaCard {
+                persona_id: *persona_id,
+                agent_name: agent_name.clone(),
+                created_at_ms: *created_at_ms,
+                gender: *gender,
+                avatar_vrm: avatar_vrm.clone(),
+                voice_seed: voice_seed.clone(),
+                role: *role,
+            },
+            Self::V1 {
+                persona_id,
+                agent_name,
+                created_at_ms,
+                avatar_vrm,
+            } => PersonaCard::genesis(
+                *persona_id,
+                agent_name.clone(),
+                *created_at_ms,
+                avatar_vrm.clone(),
+            ),
+        }
+    }
+
     pub fn persona_id(&self) -> Uuid {
         match self {
-            Self::V1 { persona_id, .. } => *persona_id,
+            Self::V1 { persona_id, .. } | Self::V2 { persona_id, .. } => *persona_id,
         }
     }
 
     pub fn agent_name(&self) -> &str {
         match self {
-            Self::V1 { agent_name, .. } => agent_name,
+            Self::V1 { agent_name, .. } | Self::V2 { agent_name, .. } => agent_name,
         }
     }
 
     pub fn created_at_ms(&self) -> u64 {
         match self {
-            Self::V1 { created_at_ms, .. } => *created_at_ms,
+            Self::V1 { created_at_ms, .. } | Self::V2 { created_at_ms, .. } => *created_at_ms,
         }
     }
 
     /// The pinned avatar VRM filename, if this persona's face has been resolved yet.
     pub fn avatar_vrm(&self) -> Option<&str> {
         match self {
-            Self::V1 { avatar_vrm, .. } => avatar_vrm.as_deref(),
+            Self::V1 { avatar_vrm, .. } | Self::V2 { avatar_vrm, .. } => avatar_vrm.as_deref(),
         }
     }
 
@@ -113,7 +195,7 @@ impl PersonaSeedFile {
     /// thrashes once chosen.
     pub fn set_avatar_vrm(&mut self, vrm: String) {
         match self {
-            Self::V1 { avatar_vrm, .. } => *avatar_vrm = Some(vrm),
+            Self::V1 { avatar_vrm, .. } | Self::V2 { avatar_vrm, .. } => *avatar_vrm = Some(vrm),
         }
     }
 }
@@ -297,22 +379,34 @@ pub async fn ensure_seed(
     agent_name: &str,
     fallback_created_at_ms: u64,
 ) -> Result<(), PersonaSeedError> {
-    // Carry forward BOTH the birth time and the pinned avatar (#174): ensure_seed
-    // rewrites the seed every spawn, so it must preserve a resolved avatar_vrm or the
-    // sticky pin would be wiped each boot — the exact thrash we're killing.
-    let (created_at_ms, avatar_vrm) = match read_seed(seed_path).await {
-        Ok(existing) => (existing.created_at_ms(), existing.avatar_vrm().map(String::from)),
-        // Missing or corrupt → treat fallback as the birth time. (A corrupt seed is
-        // being healed; we can't trust its timestamp, so the live boot stands in.)
-        Err(_) => (fallback_created_at_ms, None),
+    // Resolve the card to persist, self-healing across all three prior states:
+    //
+    // - **existing v2** → the durable card is AUTHORITATIVE + editable. Preserve its
+    //   card fields (gender, voice_seed, role, avatar_vrm, birth time) and drift-heal
+    //   only the live identity + name. Re-deriving gender here would wipe a future
+    //   user override every boot — the same clobber class as the avatar pin (#174).
+    // - **existing v1** → UPGRADE to v2: derive the coherent card via
+    //   `PersonaCard::genesis` from the LIVE identity + name, which reproduces the
+    //   exact effective gender the seams used pre-v2 (no shift), preserving the birth
+    //   time + pinned avatar the v1 row already carried.
+    // - **missing / corrupt** → genesis with the fallback birth time (a corrupt
+    //   seed's timestamp is untrusted, so the live boot stands in).
+    let card = match read_seed(seed_path).await {
+        Ok(existing @ PersonaSeedFile::V2 { .. }) => {
+            let mut card = existing.card();
+            card.persona_id = persona_id;
+            card.agent_name = agent_name.to_string();
+            card
+        }
+        Ok(existing @ PersonaSeedFile::V1 { .. }) => PersonaCard::genesis(
+            persona_id,
+            agent_name,
+            existing.created_at_ms(),
+            existing.avatar_vrm().map(String::from),
+        ),
+        Err(_) => PersonaCard::genesis(persona_id, agent_name, fallback_created_at_ms, None),
     };
-    let seed = PersonaSeedFile::V1 {
-        persona_id,
-        agent_name: agent_name.to_string(),
-        created_at_ms,
-        avatar_vrm,
-    };
-    write_seed_atomic(seed_path, &seed).await
+    write_seed_atomic(seed_path, &PersonaSeedFile::from_card(&card)).await
 }
 
 #[cfg(test)]
@@ -421,6 +515,88 @@ mod tests {
         let read = read_seed(&path).await.unwrap();
         assert_eq!(read.persona_id(), id);
         assert_eq!(read.created_at_ms(), 5555, "corrupt seed's timestamp is untrusted → fallback");
+    }
+
+    // what this catches (#199 migration a): a v1 seed UPGRADES to v2 on the next
+    // ensure_seed WITHOUT shifting the persona — her v2 gender equals the effective
+    // gender the live seams derived from her NAME pre-v2, and her birth time survives.
+    // This is the load-bearing "the existing 8 stabilize, nobody reshuffles" guard.
+    #[tokio::test]
+    async fn ensure_seed_upgrades_v1_to_v2_without_shifting() {
+        use crate::live::avatar::types::AvatarGender;
+        use crate::persona::name_generator::gender_from_name;
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let pid = Uuid::new_v4();
+        // "Asha" is unambiguously in the FEMALE pool — the effective pre-v2 gender.
+        assert_eq!(gender_from_name("Asha"), Some(AvatarGender::Female));
+        let v1 = PersonaSeedFile::V1 {
+            persona_id: pid,
+            agent_name: "Asha".to_string(),
+            created_at_ms: 1_717_200_000_000,
+            avatar_vrm: Some("asha.vrm".to_string()),
+        };
+        write_seed_atomic(&path, &v1).await.unwrap();
+
+        ensure_seed(&path, pid, "Asha", 9_999_999_999_999).await.unwrap();
+        let after = read_seed(&path).await.unwrap();
+        assert!(matches!(after, PersonaSeedFile::V2 { .. }), "v1 must upgrade to v2");
+        let card = after.card();
+        assert_eq!(card.gender, AvatarGender::Female, "gender must NOT shift on upgrade");
+        assert_eq!(card.created_at_ms, 1_717_200_000_000, "birth time preserved");
+        assert_eq!(card.avatar_vrm.as_deref(), Some("asha.vrm"), "pinned face preserved");
+        assert_eq!(card.voice_seed, pid.to_string(), "voice seeds on identity");
+    }
+
+    // what this catches: a v2 card is AUTHORITATIVE + editable — ensure_seed must NOT
+    // re-derive its gender from the name each boot (a future `airc identity set
+    // --gender/--pronouns` override would be wiped otherwise, the same clobber class
+    // as the avatar pin #174). We store a gender that GENESIS would NOT produce and
+    // prove it survives a respawn.
+    #[tokio::test]
+    async fn ensure_seed_preserves_a_v2_card_gender_across_respawn() {
+        use crate::live::avatar::types::AvatarGender;
+        use crate::persona::name_generator::gender_from_name;
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let pid = Uuid::new_v4();
+        // "Niko" is a MALE-pool name, so genesis would derive Male. We deliberately
+        // pin Female (a hypothetical override) and require it to stick.
+        assert_eq!(gender_from_name("Niko"), Some(AvatarGender::Male));
+        let v2 = PersonaSeedFile::V2 {
+            persona_id: pid,
+            agent_name: "Niko".to_string(),
+            created_at_ms: 500,
+            gender: AvatarGender::Female,
+            avatar_vrm: None,
+            voice_seed: pid.to_string(),
+            role: None,
+        };
+        write_seed_atomic(&path, &v2).await.unwrap();
+
+        ensure_seed(&path, pid, "Niko", 9_999).await.unwrap();
+        let after = read_seed(&path).await.unwrap();
+        assert_eq!(
+            after.card().gender,
+            AvatarGender::Female,
+            "a stored v2 gender must be preserved, not re-derived from the name"
+        );
+        assert_eq!(after.created_at_ms(), 500, "birth time preserved on v2 respawn");
+    }
+
+    // what this catches: from_card → write → read → card() is a lossless round-trip,
+    // so the durable card survives a reboot exactly (the whole point of persisting it).
+    #[tokio::test]
+    async fn from_card_round_trips_through_disk() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let pid = Uuid::new_v4();
+        let card = PersonaCard::genesis(pid, "Maya", 4242, Some("maya.vrm".to_string()));
+        write_seed_atomic(&path, &PersonaSeedFile::from_card(&card)).await.unwrap();
+        let read = read_seed(&path).await.unwrap();
+        assert_eq!(read.card(), card, "card must survive the disk round-trip intact");
     }
 
     #[tokio::test]
