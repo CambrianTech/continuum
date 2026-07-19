@@ -158,6 +158,29 @@ impl MediaFrame {
     ) -> Option<Arc<Result<String, String>>> {
         compute.get::<Result<String, String>>(&self.content_hash, DESCRIBE_KEY)
     }
+
+    /// The perceptual-change SIGNATURE cell — a tiny luma fingerprint, computed ONCE per
+    /// content hash and shared. Diffing two frames' signatures is the change monitor that
+    /// gates the expensive describe (universal, any view). Cheap enough to warm alongside
+    /// the thumbnail; the diff itself is inline ([`image_ops::luma_mean_abs_delta`]).
+    pub async fn signature(&self, compute: &SharedCompute) -> Arc<Result<Vec<u8>, String>> {
+        let source = Arc::clone(&self.source);
+        compute
+            .get_or_compute(&self.content_hash, SIGNATURE_KEY, async move {
+                super::image_ops::luma_signature(&source, super::image_ops::SIGNATURE_SIZE)
+            })
+            .await
+    }
+
+    /// NON-BLOCKING read of the already-warmed signature cell — the read-side twin of
+    /// [`signature`]. `Some` only if it has resolved; the change monitor reads this so it
+    /// never awaits on the hot path (a cold signature simply means "can't tell yet").
+    pub fn signature_if_ready(
+        &self,
+        compute: &SharedCompute,
+    ) -> Option<Arc<Result<Vec<u8>, String>>> {
+        compute.get::<Result<Vec<u8>, String>>(&self.content_hash, SIGNATURE_KEY)
+    }
 }
 
 /// sha256-hex of `bytes` — the content address (same hashing spill/vision use).
@@ -177,6 +200,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// description per content hash — the describer/mime don't fork the key because the
 /// bytes fully determine the derivative (the compute-once contract).
 const DESCRIBE_KEY: &str = "describe";
+
+/// The SharedCompute key for the perceptual-change signature cell within a frame's scope.
+/// One fingerprint per content hash — shared by every watcher of the same frame.
+const SIGNATURE_KEY: &str = "signature";
 
 /// The SharedCompute key for one scaled derivative within a frame's scope —
 /// stable and unique per `(crop, dest)` so identical requests share a cell.

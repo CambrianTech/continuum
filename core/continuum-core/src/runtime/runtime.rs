@@ -53,7 +53,14 @@ impl Runtime {
         Self {
             registry: Arc::new(ModuleRegistry::new()),
             bus: Arc::new(MessageBus::new()),
-            compute: Arc::new(SharedCompute::new()),
+            // Adopt the ONE process-global compute-once/share-many cache (not a
+            // private instance) so a module reaching it via `ModuleContext.compute`
+            // and a persona's `MediaPerceptionSource` reaching it via
+            // `shared_compute::global()` share the SAME derivatives — the media
+            // ingest that warms a frame and the perception source that reads it
+            // cannot diverge. Content-addressed + pure, so one shared cache is
+            // correct ([[media-is-compute-once-zero-copy-hardware-grade]]).
+            compute: super::shared_compute::global(),
             concurrency_limits: Arc::new(DashMap::new()),
             provider_registry: Arc::new(super::ProviderRegistry::new()),
         }

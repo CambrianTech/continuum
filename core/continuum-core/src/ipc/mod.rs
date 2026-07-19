@@ -1492,6 +1492,17 @@ pub fn start_server(
         voice_state.resource_lifecycle.clone(),
         gpu_manager.clone(),
     )));
+    // Live-call perception joins as a peer consumer (#56): it holds RAM — the per-source
+    // frame rings every persona perceives from — read live from the process-global
+    // PerceptionRegistry. Under pressure it evicts oldest ring frames, always keeping each
+    // source's head so a live perceiver is never blinded (room-as-now survives a reclaim).
+    // The vision-describe it triggers is SERVING's VRAM, not perception's; this accounts
+    // only what perception owns.
+    resource_daemon.add_consumer(Arc::new(
+        crate::modules::perception_consumer::PerceptionConsumer::new(
+            crate::media::perception_registry(),
+        ),
+    ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
