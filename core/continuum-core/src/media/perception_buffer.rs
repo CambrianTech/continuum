@@ -38,6 +38,15 @@ pub type ParticipantId = String;
 /// persona looks more often, an idle one less.
 pub const AMBIENT_WARM_MIN_INTERVAL_MS: u64 = 500;
 
+/// The MAXIMUM staleness — the slow BASELINE floor a participant is re-looked-at even
+/// with a dead-static scene and no change signal. "Slow cadence, not NO cadence": an
+/// idle observer still refreshes a still participant every few seconds so room-as-now
+/// stays true, just coarse. The warm cadence is a BAND — a relevant change (motion /
+/// scene-change / YOLO, #192) escalates toward the MIN ceiling; its absence decays to
+/// this floor, never to infinity. Attention priority (speaker/actor) shrinks both
+/// bounds later (#173).
+pub const AMBIENT_WARM_BASELINE_INTERVAL_MS: u64 = 5_000;
+
 /// Per-participant warm-cadence gate. Coalescing the latest frame is unconditional
 /// and O(1); only the EXPENSIVE warm (scale + describe) passes through this gate, so
 /// a 30fps ingest coalesces 30 frames/sec into one latest but triggers at most
@@ -85,9 +94,13 @@ pub struct PerceptionBuffer {
     /// Per-participant warm-cadence gates — the seam that keeps the expensive cells off
     /// the media frame rate. See [`WarmGate`] and [`AMBIENT_WARM_MIN_INTERVAL_MS`].
     warm_gates: Mutex<HashMap<ParticipantId, WarmGate>>,
-    /// Minimum ms between warms per participant (the perception sample rate). Field, not
-    /// hardcoded at the call site, so the governor can retune it per persona later (#173).
+    /// The warm cadence BAND, per participant — fields (not call-site constants) so the
+    /// governor retunes them per persona as an attention-priced resolution field (#173):
+    /// `min` = the ceiling (fastest, under change), `baseline` = the floor / max-staleness
+    /// (slowest, static scene). A relevant change escalates toward min; its absence decays
+    /// to baseline, never to infinity.
     min_warm_interval_ms: u64,
+    baseline_warm_interval_ms: u64,
 }
 
 impl PerceptionBuffer {
@@ -97,25 +110,40 @@ impl PerceptionBuffer {
             ambient,
             warm_gates: Mutex::new(HashMap::new()),
             min_warm_interval_ms: AMBIENT_WARM_MIN_INTERVAL_MS,
+            baseline_warm_interval_ms: AMBIENT_WARM_BASELINE_INTERVAL_MS,
         }
     }
 
     /// The warm-cadence DECISION (pure + testable): should this observe launch a cell
     /// warm for `participant` at `now_ms`? Returns the in-flight flag to hold for the
-    /// warm's duration when YES; `None` when the warm is GATED — either one is already
-    /// in flight (never stack), or we warmed within `min_warm_interval_ms` (the frame
-    /// rate outruns the perception sample rate). The 30fps-safety guarantee lives here,
-    /// separated from the spawn so it can be asserted without timing or a runtime.
-    fn should_warm(&self, participant: &str, now_ms: u64) -> Option<Arc<AtomicBool>> {
+    /// warm's duration when YES; `None` when GATED. The cadence is a BAND, not a switch
+    /// ("slow cadence, not NO cadence"):
+    /// - Never while one is already in flight (never stack a slow describe under a fast
+    ///   stream).
+    /// - `changed` (a relevant motion/scene-change/YOLO signal, #192) ESCALATES: warm as
+    ///   soon as the MIN ceiling allows.
+    /// - Absent change, still warm on the slow BASELINE floor — an idle observer refreshes
+    ///   a static participant every few seconds, never zero.
+    ///
+    /// The 30fps-safety guarantee lives here, separated from the spawn so both branches
+    /// (changed→fast, static→slow-floor) are asserted without timing or a runtime.
+    fn should_warm(
+        &self,
+        participant: &str,
+        now_ms: u64,
+        changed: bool,
+    ) -> Option<Arc<AtomicBool>> {
         let mut gates = self.warm_gates.lock().unwrap_or_else(|e| e.into_inner());
         let g = gates.entry(participant.to_string()).or_default();
-        // Never stack a warm on an unfinished one — protects against a describe slower
-        // than the interval under a fast stream.
         if g.in_flight.load(Ordering::Acquire) {
             return None;
         }
+        let elapsed = now_ms.saturating_sub(g.last_warm_ms);
+        // First look always; a relevant change escalates to the MIN ceiling; otherwise
+        // decay to the slow BASELINE floor (never off).
         let due = !g.warmed_once
-            || now_ms.saturating_sub(g.last_warm_ms) >= self.min_warm_interval_ms;
+            || (changed && elapsed >= self.min_warm_interval_ms)
+            || elapsed >= self.baseline_warm_interval_ms;
         if !due {
             return None;
         }
@@ -148,11 +176,16 @@ impl PerceptionBuffer {
             .unwrap_or_else(|e| e.into_inner())
             .insert(participant.clone(), frame.clone());
 
-        // Gate the EXPENSIVE warm to the perception sample rate. A gated tick simply
-        // returns — its frame is already the coalesced latest and will warm on the next
-        // open tick (room-as-now). compute-once per content-hash still applies on top:
-        // re-warming identical bytes is a cache hit.
-        let Some(in_flight) = self.should_warm(&participant, now_ms) else {
+        // Gate the EXPENSIVE warm. A gated tick simply returns — its frame is already the
+        // coalesced latest and will warm on the next open tick (room-as-now). compute-once
+        // per content-hash still applies on top: re-warming identical bytes is a cache hit.
+        //
+        // INTERIM: no change detector wired yet (#192), so treat every coalesced frame as
+        // potentially changed → cadence rides the MIN ceiling. When the cheap
+        // motion/scene-change/YOLO detector lands, its signal replaces this `true`, and a
+        // static scene decays to the BASELINE floor.
+        let changed = true;
+        let Some(in_flight) = self.should_warm(&participant, now_ms, changed) else {
             return;
         };
 
@@ -310,25 +343,59 @@ mod tests {
         let p = "alice";
 
         // First ever frame → warms immediately; holds the in-flight flag.
-        let flag = buffer.should_warm(p, 0).expect("first frame warms");
+        let flag = buffer.should_warm(p, 0, true).expect("first frame warms");
         // Simulate the warm completing so the in-flight guard is not what's under test.
         flag.store(false, Ordering::Release);
 
-        // A distinct frame 10ms later (30fps ≈ 33ms apart) → GATED by cadence.
+        // A CHANGED frame 10ms later (30fps ≈ 33ms apart) → GATED by the MIN ceiling.
         assert!(
-            buffer.should_warm(p, 10).is_none(),
-            "a frame within the interval is gated — perception samples, not mirrors, 30fps"
+            buffer.should_warm(p, 10, true).is_none(),
+            "a changed frame within the min ceiling is gated — perception samples, not mirrors, 30fps"
         );
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS - 1).is_none(),
-            "still within the interval → still gated"
+            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS - 1, true).is_none(),
+            "still within the min ceiling → still gated"
         );
 
-        // Once the interval elapses, the next warm is due again.
+        // Once the min ceiling elapses, a changed frame warms again.
         let flag2 = buffer
-            .should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS)
-            .expect("interval elapsed → warm is due");
+            .should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS, true)
+            .expect("min ceiling elapsed + changed → warm is due");
         flag2.store(false, Ordering::Release);
+    }
+
+    // what this catches: the BAND — "slow cadence, not NO cadence". Absent a change signal a
+    // participant is NOT starved: it decays to the slow BASELINE floor (still warms every few
+    // seconds), while a relevant change escalates it to the fast MIN ceiling.
+    #[test]
+    fn warm_cadence_is_a_band_change_escalates_static_decays_to_floor() {
+        let buffer = PerceptionBuffer::new(AMBIENT);
+        let p = "carol";
+
+        // First look happens regardless.
+        buffer.should_warm(p, 0, false).expect("first look").store(false, Ordering::Release);
+
+        // STATIC (changed=false): gated until the SLOW baseline floor — but NOT forever.
+        assert!(
+            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS, false).is_none(),
+            "static past the min ceiling is still gated — no change, don't spend a describe"
+        );
+        assert!(
+            buffer.should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS - 1, false).is_none(),
+            "static within the baseline floor → still gated"
+        );
+        buffer
+            .should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS, false)
+            .expect("static past the baseline floor → STILL warms (slow cadence, not none)")
+            .store(false, Ordering::Release);
+
+        // CHANGE escalates: a relevant change warms as soon as the MIN ceiling allows,
+        // long before the baseline floor.
+        let t = AMBIENT_WARM_BASELINE_INTERVAL_MS + AMBIENT_WARM_MIN_INTERVAL_MS;
+        buffer
+            .should_warm(p, t, true)
+            .expect("change past the min ceiling → escalates, no need to wait for the floor")
+            .store(false, Ordering::Release);
     }
 
     // what this catches: never STACK a warm — while one is in flight, later observes are
@@ -340,18 +407,18 @@ mod tests {
         let p = "bob";
 
         // Launch a warm and DON'T release it (simulates a describe still running).
-        let _held = buffer.should_warm(p, 0).expect("first warms");
+        let _held = buffer.should_warm(p, 0, true).expect("first warms");
 
         // Even far past the interval, a second warm is refused while one is in flight.
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS * 100).is_none(),
+            buffer.should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS * 100, true).is_none(),
             "in-flight guard blocks stacking regardless of elapsed time"
         );
 
         // Once it completes, the next due tick warms again.
         _held.store(false, Ordering::Release);
         assert!(
-            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS * 100).is_some(),
+            buffer.should_warm(p, AMBIENT_WARM_BASELINE_INTERVAL_MS * 100, true).is_some(),
             "warm reopens after the in-flight one finishes"
         );
     }
