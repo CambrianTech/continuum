@@ -27,6 +27,7 @@
 pub mod frame;
 pub mod image_ops;
 pub mod perception_buffer;
+pub mod perception_ingest;
 pub mod perception_registry;
 pub mod projection;
 

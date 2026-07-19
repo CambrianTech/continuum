@@ -137,6 +137,31 @@ impl VoiceOrchestrator {
 
         ai_participants.iter().map(|p| p.user_id).collect()
     }
+
+    /// Every AI participant in the session — the video VIEWERS (who should SEE the
+    /// call's frames). Unlike [`on_utterance`](Self::on_utterance)'s audio broadcast,
+    /// this is NOT gated on `is_audio_native`: hearing is bridged per audio-capability,
+    /// but VISION is universal — every persona sees, and the system bridges the pixels
+    /// to a description for a non-vision model (the sensory-architecture contract). The
+    /// speaker-skip (a persona not seeing its OWN frame) is applied downstream by the
+    /// ingest fan-out, keyed on identity — here we return the full AI roster. Humans are
+    /// excluded (they see through their own client, not a PerceptionBuffer). Empty for an
+    /// unknown session.
+    pub fn video_viewers(&self, session_id: Uuid) -> Vec<Uuid> {
+        self.session_participants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&session_id)
+            .map(|ps| {
+                ps.iter()
+                    .filter(|p| {
+                        matches!(p.participant_type, SpeakerType::Persona | SpeakerType::Agent)
+                    })
+                    .map(|p| p.user_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +237,61 @@ mod old_tests {
         assert!(responders.contains(&text_ai_id));
         // Audio-native AI excluded (hears via mixer stream)
         assert!(!responders.contains(&audio_native_ai_id));
+    }
+
+    // what this catches: video_viewers returns EVERY AI persona/agent — including
+    // audio-native ones (vision is universal, unlike the audio broadcast which excludes
+    // them) — and EXCLUDES humans (they see through their own client). The speaker-skip
+    // is applied downstream by the ingest fan-out, so a speaker in the roster is still
+    // returned here. If this drifts, personas go blind on a call or a human's video is
+    // wrongly routed into a PerceptionBuffer.
+    #[test]
+    fn video_viewers_are_every_ai_including_audio_native_never_humans() {
+        let orchestrator = VoiceOrchestrator::new();
+        let session_id = Uuid::new_v4();
+        let text_ai = Uuid::new_v4();
+        let audio_native_ai = Uuid::new_v4();
+        let human = Uuid::new_v4();
+
+        orchestrator.register_session(
+            session_id,
+            Uuid::new_v4(),
+            vec![
+                VoiceParticipant {
+                    user_id: text_ai,
+                    display_name: "Helper".into(),
+                    participant_type: SpeakerType::Persona,
+                    expertise: vec![],
+                    is_audio_native: false,
+                },
+                VoiceParticipant {
+                    user_id: audio_native_ai,
+                    display_name: "Gemini".into(),
+                    participant_type: SpeakerType::Persona,
+                    expertise: vec![],
+                    is_audio_native: true,
+                },
+                VoiceParticipant {
+                    user_id: human,
+                    display_name: "Joel".into(),
+                    participant_type: SpeakerType::Human,
+                    expertise: vec![],
+                    is_audio_native: false,
+                },
+            ],
+        );
+
+        let viewers = orchestrator.video_viewers(session_id);
+        assert_eq!(viewers.len(), 2, "both AIs see; the human does not");
+        assert!(viewers.contains(&text_ai));
+        assert!(
+            viewers.contains(&audio_native_ai),
+            "audio-native AIs still SEE — vision is not gated on audio capability"
+        );
+        assert!(!viewers.contains(&human), "humans see via their own client, not a buffer");
+
+        // Unknown session → empty (a frame for a call we don't track goes nowhere).
+        assert!(orchestrator.video_viewers(Uuid::new_v4()).is_empty());
     }
 
     #[test]

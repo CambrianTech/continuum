@@ -18,7 +18,10 @@ use crate::live::session::voice_service::VoiceService;
 use crate::live::transport::bridge_client::LiveKitAgentManager;
 use crate::live::{UtteranceEvent, VoiceParticipant};
 use crate::logging::TimingGuard;
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{
+    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
+    ServiceModule,
+};
 use crate::utils::params::Params;
 use crate::{log_error, log_info};
 use async_trait::async_trait;
@@ -39,6 +42,10 @@ pub struct VoiceState {
     /// Track active session IDs to make register-session idempotent.
     /// Prevents duplicate agent spawns on browser refresh / re-navigate.
     active_sessions: std::sync::Mutex<HashSet<String>>,
+    /// Late-bound command executor for the vision describer the perception-ingest
+    /// drain builds. Installed post-boot by the runtime (the #224 late-bind slot),
+    /// read lazily on the first live-call frame — never present at `initialize`.
+    executor: LateBound<CommandExecutor>,
 }
 
 impl VoiceState {
@@ -54,6 +61,7 @@ impl VoiceState {
             audio_pool,
             resource_lifecycle,
             active_sessions: std::sync::Mutex::new(HashSet::new()),
+            executor: LateBound::new("live::perception_ingest::executor"),
         }
     }
 }
@@ -65,6 +73,65 @@ pub struct VoiceModule {
 impl VoiceModule {
     pub fn new(state: Arc<VoiceState>) -> Self {
         Self { state }
+    }
+}
+
+/// Drains the live-call perception-ingest channel (#192): each decoded frame is fanned
+/// out to every persona-viewer of its call. The vision DESCRIBER is built lazily on the
+/// first frame after the executor is installed (boot-once) and reused, so N viewers of
+/// one frame share ONE describe on the content-addressed cache — the multi-persona
+/// vision moat. Non-blocking per frame: `fan_out` coalesces + gates the warm, so the
+/// ~1 fps ingest never becomes a describe storm and the human video plane is untouched.
+async fn perception_ingest_drain(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::media::perception_ingest::IngestFrame>,
+    state: Arc<VoiceState>,
+) {
+    use crate::media::perception_ingest::FrameIngest;
+
+    let mut ingest: Option<FrameIngest> = None;
+    let mut fanned: u64 = 0;
+
+    while let Some(frame) = rx.recv().await {
+        // Build the fan-out (with its vision describer) once the executor is installed.
+        // Until then — boot only, well before any call joins — drop the frame.
+        if ingest.is_none() {
+            match state.executor.cloned() {
+                Some(executor) => {
+                    let describer = Arc::new(
+                        crate::cognition::vision_describe::VisionDescribeFramer::new(executor),
+                    );
+                    ingest = Some(FrameIngest::new(describer));
+                }
+                None => continue,
+            }
+        }
+
+        let viewers = state.voice_service.video_viewers(&frame.call_id);
+        if viewers.is_empty() {
+            continue;
+        }
+
+        // Fan out: each viewer's PerceptionBuffer coalesces the frame + fires a gated
+        // async warm; compute-once/share-many means one describe across all viewers.
+        ingest.as_ref().expect("ingest built above").fan_out(
+            &frame.speaker_id,
+            &viewers,
+            frame.jpeg,
+            &frame.mime,
+            crate::persona::recall_metadata::now_ms(),
+        );
+
+        fanned += 1;
+        if fanned == 1 || fanned % 120 == 0 {
+            log_info!(
+                "module",
+                "perception_ingest",
+                "fanned {} live-call frames into perception (latest: speaker {} → {} viewers)",
+                fanned,
+                &frame.speaker_id[..8.min(frame.speaker_id.len())],
+                viewers.len()
+            );
+        }
     }
 }
 
@@ -82,11 +149,25 @@ impl ServiceModule for VoiceModule {
         }
     }
 
+    /// Receive the wired command executor at boot (the #224 late-bind slot). The
+    /// perception-ingest drain reads it lazily to build the vision describer.
+    fn install_executor(&self, executor: Arc<CommandExecutor>) {
+        self.state.executor.install(executor);
+    }
+
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         // Spawn idle watcher here (inside tokio runtime), not in VoiceState::new()
         self.state.resource_lifecycle.spawn_idle_watcher();
         // Safety net: detect orphaned sessions (browser crash, lost WebSocket, deploy)
         self.state.resource_lifecycle.spawn_orphan_watchdog();
+
+        // #192: spawn the live-call perception-ingest drain. The bridge reader thread
+        // posts decoded frames onto a process-global mpsc (perception_ingest); this
+        // drain, on the runtime, fans each frame out to every persona-viewer's
+        // PerceptionBuffer. Installed once — a second module init would get None.
+        if let Some(rx) = crate::media::perception_ingest::install_channel() {
+            tokio::spawn(perception_ingest_drain(rx, self.state.clone()));
+        }
         Ok(())
     }
 
