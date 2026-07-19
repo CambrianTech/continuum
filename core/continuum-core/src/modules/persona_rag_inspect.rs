@@ -97,6 +97,8 @@ pub trait PersonaResolver: Send + Sync {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct RagInspectParams {
+    /// Which persona's RAG pipeline to introspect — her name or id (full or the
+    /// short form shown in rosters).
     pub persona: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]

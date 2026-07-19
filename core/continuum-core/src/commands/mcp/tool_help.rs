@@ -24,6 +24,8 @@ use crate::modules::mcp::McpCatalog;
 )]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolHelpParams {
+    /// The exact tool/command name to get the call shape for (e.g. `code/read`) —
+    /// as listed by `commands/list` or `mcp/search-tools`.
     pub tool: String,
 }
 

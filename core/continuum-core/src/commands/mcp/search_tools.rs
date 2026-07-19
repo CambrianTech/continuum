@@ -30,6 +30,8 @@ fn default_limit() -> u64 {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct McpSearchToolsParams {
+    /// What to search for — keywords matched against tool names, descriptions,
+    /// and path segments (e.g. "chat", "read file", "gpu").
     pub query: String,
     #[serde(default = "default_limit")]
     #[ts(type = "number")]

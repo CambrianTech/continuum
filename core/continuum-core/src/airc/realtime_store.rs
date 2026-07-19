@@ -56,6 +56,8 @@ pub struct AircRealtimePublishResult {
     export_to = "../../../protocol/typescript/airc/AircRealtimeReplayParams.ts"
 )]
 pub struct AircRealtimeReplayParams {
+    /// The room (airc channel) id whose realtime state to replay — the room you
+    /// want the snapshot for. Full id or the short form shown in rosters.
     #[ts(type = "string")]
     pub room_id: Uuid,
     #[ts(optional)]
