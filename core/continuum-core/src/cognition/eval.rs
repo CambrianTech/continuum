@@ -995,11 +995,14 @@ impl CognitionEval {
                     placement,
                 } = spawn_gene_eval_lane(gene).await?;
                 placement_evidence = Some(placement);
-                let cycle = crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
-                    .ok_or_else(|| CommandError::NotFound(format!(
-                        "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
-                    )))?;
+                let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
+                    crate::cognition::persona_workspace::global()
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools)
+                })
+                .await
+                .ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                )))?;
                 _eval_lane = Some(lane);
                 cycle
             }
@@ -1014,42 +1017,28 @@ impl CognitionEval {
                     placement,
                 } = spawn_base_eval_lane(base_id).await?;
                 placement_evidence = Some(placement);
-                let cycle = crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
-                    .ok_or_else(|| CommandError::NotFound(format!(
-                        "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
-                    )))?;
+                let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
+                    crate::cognition::persona_workspace::global()
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools)
+                })
+                .await
+                .ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                )))?;
                 _eval_lane = Some(lane);
                 cycle
             }
             // Neither → fork onto her LIVE lane (a plain number on whatever she's served on).
-            // Bounded wait-for-template (the fork race, glass-boxed 2026-07-17): after a
-            // reboot the supervisor's `register_from_cfg` assembles each persona's
-            // fork-template ASYNChronously, so an eval fired seconds after boot can race
-            // ahead of it → "no workspace template". A run a few seconds later succeeded.
-            // Retry a bounded number of times — the template appears as registration
-            // completes — and fail loud only once it's clearly not coming.
-            (None, None) => {
-                let mut forked = None;
-                for attempt in 0..WORKSPACE_TEMPLATE_WAIT_TRIES {
-                    if let Some(c) = crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle(&persona_uuid, needs_tools)
-                    {
-                        forked = Some(c);
-                        break;
-                    }
-                    if attempt == 0 {
-                        tracing::info!(
-                            %persona_uuid,
-                            "eval: workspace template not ready (post-spawn register_from_cfg race) — waiting"
-                        );
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-                forked.ok_or_else(|| CommandError::NotFound(format!(
-                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-                )))?
-            }
+            // Same bounded wait-for-template as the lane branches above (fork_eval_cycle_waiting):
+            // the post-reboot register_from_cfg race hits every fork path identically.
+            (None, None) => fork_eval_cycle_waiting(&persona_uuid, || {
+                crate::cognition::persona_workspace::global()
+                    .fork_eval_cycle(&persona_uuid, needs_tools)
+            })
+            .await
+            .ok_or_else(|| CommandError::NotFound(format!(
+                "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+            )))?,
         };
 
         // GLASS-BOX (task #14): if a capture_dir is pinned, wrap the fork's cognition in the
@@ -1718,6 +1707,33 @@ const MAX_FAIL_RETRIES: u32 = 3;
 /// eval. Covers the post-reboot window where the supervisor's `register_from_cfg` is
 /// still assembling the mind when an eval fires (the fork race, 2026-07-17).
 const WORKSPACE_TEMPLATE_WAIT_TRIES: u32 = 10;
+
+/// Fork a measurement copy, WAITING out the post-reboot template race. After a reboot
+/// `register_from_cfg` assembles each persona's fork-template asynchronously, so an eval
+/// fired seconds after boot can race ahead of it and see `None`. This race is NOT specific
+/// to one lane — it hits the live-lane, base-model-lane, AND gene-lane forks identically —
+/// so ALL of them retry through here (previously only the live-lane branch did, and a
+/// tool-using eval on a base_model_id fired right after `cu reboot` failed loud instead of
+/// waiting). `fork` is the per-lane fork call; retried up to
+/// [`WORKSPACE_TEMPLATE_WAIT_TRIES`] times, 1s apart, then `None` (caller fails loud).
+async fn fork_eval_cycle_waiting(
+    persona_uuid: &Uuid,
+    mut fork: impl FnMut() -> Option<crate::cognition::workspace::WorkspaceCycle>,
+) -> Option<crate::cognition::workspace::WorkspaceCycle> {
+    for attempt in 0..WORKSPACE_TEMPLATE_WAIT_TRIES {
+        if let Some(cycle) = fork() {
+            return Some(cycle);
+        }
+        if attempt == 0 {
+            tracing::info!(
+                %persona_uuid,
+                "eval: workspace template not ready (post-spawn register_from_cfg race) — waiting"
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    None
+}
 
 /// Run a REAL definition-of-done: a shell command in the persona's workspace (cwd). Pass =
 /// exit 0. Returns `(ok, verdict)`; on failure the verdict carries the real stdout+stderr
