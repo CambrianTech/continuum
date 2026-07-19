@@ -24,6 +24,7 @@ crate::action_command! {
     name: "code/git/status",
     access: AiSafe,
     native: true,
+    aliases: &["git_status"],
     params: GitStatusParams,
     output: GitStatusInfo,
     run(this, ctx, _p) => {

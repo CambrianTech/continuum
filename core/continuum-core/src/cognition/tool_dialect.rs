@@ -299,5 +299,12 @@ mod tests {
         // Spot-check the highest-frequency live reflexes (mined 2026-07-19).
         assert_eq!(from_wire_name("file_tree"), "code/tree");
         assert_eq!(from_wire_name("read_file"), "code/read");
+        // Git reflexes declared via the action_command! macro's `aliases:` clause
+        // (#202 Slice 6) — a model reaching for the industry-standard `git_status`
+        // resolves to our `code/git/status`. If the macro's aliases plumbing breaks,
+        // these are the canary.
+        assert_eq!(from_wire_name("git_status"), "code/git/status");
+        assert_eq!(from_wire_name("git_commit"), "code/git/commit");
+        assert_eq!(from_wire_name("git_diff"), "code/git/diff");
     }
 }

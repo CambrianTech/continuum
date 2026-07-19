@@ -32,6 +32,7 @@ crate::action_command! {
     pub struct CodeGitAdd { state: Arc<CodeState> }
     name: "code/git/add",
     access: AiSafe,
+    aliases: &["git_add"],
     params: GitAddParams,
     output: GitAddResult,
     run(this, ctx, p) => {
