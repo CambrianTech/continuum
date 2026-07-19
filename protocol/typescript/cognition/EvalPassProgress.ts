@@ -31,4 +31,11 @@ updatedAtMs: number,
  * accuracy and latency, sampled from the ONE per-machine authority. `null` when
  * VRAM is ungoverned (bare tests) — absence is honest, never a fabricated 0.
  */
-vramFreeGb?: number, };
+vramFreeGb?: number, 
+/**
+ * The run_id producing THIS snapshot, when the pass carries a handle. Lets a
+ * persona-only poll (no run_id arg) tell it's reading ITS run vs a prior one —
+ * the stale-progress trap where a fresh detached run reads as instantly-complete
+ * with the last run's numbers. `null` for a sync/handleless run.
+ */
+runId?: string, };
