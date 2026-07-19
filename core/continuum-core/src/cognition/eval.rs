@@ -326,6 +326,7 @@ async fn spawn_gene_eval_lane(
         }],
         placement: placement_evidence.placement,
     };
+    emit_eval_phase("loading_lane", &format!("cold-loading gene eval lane ({})", gene.name));
     let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
         .await
         .map_err(|e| {
@@ -419,6 +420,9 @@ async fn spawn_base_eval_lane(
         adapters: vec![], // bare base — no gene
         placement: placement_evidence.placement,
     };
+    // The ephemeral lane cold-loads the base model (can be minutes for a 14B+); emit
+    // the phase so positronic layers show "loading <model>…", not a frozen bar.
+    emit_eval_phase("loading_lane", &format!("cold-loading eval lane for {base_id}"));
     let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
         .await
         .map_err(|e| {
@@ -1735,9 +1739,32 @@ async fn fork_eval_cycle_waiting(
                 "eval: workspace template not ready (post-spawn register_from_cfg race) — waiting"
             );
         }
+        // Emit the wait as an EVENT so positronic layers show "preparing…" instead of a
+        // dead spinner — this null-progress window otherwise looked identical to a hang.
+        emit_eval_phase("preparing", &format!("waiting for workspace template ({}s)", attempt + 1));
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
     None
+}
+
+/// Emit an eval LIFECYCLE phase on the bus (+ a probe) so every positronic layer can
+/// show live feedback during the windows where `eval:progress` is silent — lane
+/// spawn, model cold-load, template wait, teardown. Fire-and-forget, Noop when the
+/// bus is unwired (tools/tests): observability at zero hot-path cost
+/// [[observability-as-substrate]]. `eval:progress` carries per-task grading; this
+/// carries the BEFORE/AROUND-generation states that were previously dark.
+pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only(
+            "eval:phase",
+            serde_json::json!({
+                "phase": phase,
+                "detail": detail,
+                "atMs": crate::persona::trace::now_ms(),
+            }),
+        );
+    }
+    crate::probe!(class = "eval.phase", phase = phase, detail = detail, "eval lifecycle phase");
 }
 
 /// Run a REAL definition-of-done: a shell command in the persona's workspace (cwd). Pass =
