@@ -32,8 +32,9 @@
 //! coordinator (CONCURRENCY-STYLE-GUIDE forbidden move #6). It must be invoked from
 //! within a tokio runtime — `observe` spawns the warm — which the live drain task is.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use uuid::Uuid;
 
 use super::frame::{FrameDescriber, MediaFrame};
@@ -84,6 +85,52 @@ impl FrameIngest {
                 now_ms,
             );
         }
+    }
+}
+
+/// One decoded call frame awaiting fan-out — the unit of work crossing the bridge
+/// reader THREAD → tokio DRAIN boundary. The bridge (a blocking `std::thread` with no
+/// reactor) can't call [`FrameIngest::fan_out`] directly (`observe` spawns), so it
+/// hands the already-encoded JPEG across this channel to the drain, which runs on the
+/// runtime. `call_id` is the airc session/room id string; `speaker_id` the airc
+/// identity of whoever the frame is of.
+pub struct IngestFrame {
+    pub call_id: String,
+    pub speaker_id: String,
+    /// The encoded frame bytes (the bridge encodes I420 → JPEG upstream at ~1 fps).
+    pub jpeg: Vec<u8>,
+    /// The encoding of `jpeg` (`image/jpeg`).
+    pub mime: String,
+}
+
+/// The process-global send endpoint of the ingest channel — installed ONCE by the
+/// live module when it spawns the drain. Same `OnceLock` shape as
+/// [`perception_registry`](super::perception_registry) / `shared_compute::global`:
+/// it is a channel handle, not a manager (CONCURRENCY-STYLE-GUIDE: the mpsc "here is
+/// work" primitive). `None` until the drain is up — a frame before then is simply not
+/// perceived, and the human display plane (the LiveKit track) is unaffected regardless.
+static INGEST_SINK: OnceLock<UnboundedSender<IngestFrame>> = OnceLock::new();
+
+/// Create the ingest channel and install its sender globally, returning the receiver
+/// for the drain to own. The live module calls this once at init and spawns a task on
+/// the returned receiver. A second call returns `None` (only one drain owns the stream).
+pub fn install_channel() -> Option<UnboundedReceiver<IngestFrame>> {
+    let (tx, rx) = unbounded_channel();
+    if INGEST_SINK.set(tx).is_ok() {
+        Some(rx)
+    } else {
+        None
+    }
+}
+
+/// Post a decoded frame to the drain — NON-BLOCKING, callable from the bridge reader
+/// thread (which has no tokio runtime): an unbounded `send` neither blocks nor awaits.
+/// Drops silently if no drain is installed yet (boot-only) or the drain has shut down.
+/// This is the ONLY thing the hot bridge thread does with the frame beyond its own
+/// logging — it never scales, describes, or touches the display track.
+pub fn try_enqueue(frame: IngestFrame) {
+    if let Some(tx) = INGEST_SINK.get() {
+        let _ = tx.send(frame);
     }
 }
 

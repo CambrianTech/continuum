@@ -729,27 +729,23 @@ fn handle_bridge_event(
             processors.retain(|k, _| !k.starts_with(&format!("{}:", call_id)));
         }
         BridgeEvent::VideoFrame {
-            call_id: _,
-            speaker_id: _,
+            call_id,
+            speaker_id,
             speaker_name,
             width,
             height,
         } => {
             if let Some(jpeg) = binary {
-                // Store in the VideoFrameCapture singleton (same store the vision system queries).
-                // This replaces the direct LiveKit NativeVideoStream capture that used to
-                // happen inside the monolithic binary.
                 #[cfg(feature = "livekit-webrtc")]
                 {
                     // When livekit-webrtc is enabled, VideoFrameCapture uses LiveKit directly.
                     // The bridge path is for when livekit-webrtc is disabled. Mark the
                     // bridge-path bindings as used so this cfg doesn't emit unused-variable
                     // warnings (which also trip a rustc 1.94 annotate-snippets render ICE here).
-                    let _ = (&speaker_name, &width, &height, &jpeg);
+                    let _ = (&call_id, &speaker_id, &speaker_name, &width, &height, &jpeg);
                 }
                 #[cfg(not(feature = "livekit-webrtc"))]
                 {
-                    // Store snapshot for vision system access
                     static FRAME_COUNT: std::sync::atomic::AtomicU64 =
                         std::sync::atomic::AtomicU64::new(0);
                     let count = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -763,9 +759,21 @@ fn handle_bridge_event(
                             jpeg.len() / 1024
                         );
                     }
-                    // TODO: Store in a shared snapshot cache that vision commands can query.
-                    // The VideoFrameCapture singleton currently requires livekit types.
-                    // Refactor to use bridge-protocol-only snapshot storage.
+                    // #192: hand the already-encoded frame to perception ingest — a
+                    // NON-BLOCKING post from this reader thread (no reactor here) onto
+                    // the drain's mpsc; a tokio task fans it out to each persona-viewer's
+                    // PerceptionBuffer. Drops silently until the drain is installed. This
+                    // is a COPY the bridge already made — the human display plane (the
+                    // LiveKit video track) is never touched, and perception samples it at
+                    // ~2 Hz regardless of the frame rate ([[perceive-the-room-as-it-is-now]]).
+                    crate::media::perception_ingest::try_enqueue(
+                        crate::media::perception_ingest::IngestFrame {
+                            call_id,
+                            speaker_id,
+                            jpeg: jpeg.to_vec(),
+                            mime: "image/jpeg".to_string(),
+                        },
+                    );
                 }
             }
         }

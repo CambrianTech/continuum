@@ -54,6 +54,20 @@ impl VoiceService {
 
         Ok(orchestrator.on_utterance(event))
     }
+
+    /// The AI persona viewers for a live call — who should SEE its video frames.
+    /// Parses the `call_id` string (the airc session id) and returns the session's AI
+    /// roster; empty for a malformed id, an unknown session, or a poisoned lock (a frame
+    /// for a call we don't track simply goes nowhere — never a fabricated viewer).
+    pub fn video_viewers(&self, call_id: &str) -> Vec<Uuid> {
+        let Ok(session_id) = Uuid::parse_str(call_id) else {
+            return Vec::new();
+        };
+        match self.orchestrator.lock() {
+            Ok(orchestrator) => orchestrator.video_viewers(session_id),
+            Err(_) => Vec::new(),
+        }
+    }
 }
 
 impl Default for VoiceService {
