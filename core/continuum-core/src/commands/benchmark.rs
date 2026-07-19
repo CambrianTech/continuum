@@ -467,6 +467,40 @@ impl ActionCommand for BenchmarkRun {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        // BUILD-FROM-SCRATCH → clean workspace (#206). A UI-build benchmark (ui_checks,
+        // no seeded files) must run in an EMPTY dir: create-workspace re-roots her hands
+        // there, the [workspace-map] follows (commit 780348b86), so it reads EMPTY and she
+        // BUILDS the file rather than exploring the core repo she was grounded in (the
+        // webdev-0 discovery-loop). One clean per-benchmark root (evals serialize; the
+        // continuous exam accumulates in it, cleared each run). A persistent named path,
+        // not a TempDir — it must survive a DETACHED run that outlives this handler.
+        let is_from_scratch_build = !sliced_tasks.is_empty()
+            && sliced_tasks.iter().all(|t| {
+                !t.ui_checks.is_empty()
+                    && t.setup_shell.is_none()
+                    && t.dod_shell.is_none()
+                    && t.solution_file.is_none()
+            });
+        let workspace_root = if is_from_scratch_build {
+            let home = std::env::var("CONTINUUM_HOME")
+                .map(std::path::PathBuf::from)
+                .ok()
+                .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
+                .ok_or_else(|| CommandError::Internal("no home dir for eval workspace".into()))?;
+            let root = home.join("eval-workspaces").join(spec.name);
+            // Clean start each run — never grade against a prior run's leftover files.
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).map_err(|e| {
+                CommandError::Internal(format!(
+                    "could not create clean eval workspace at {}: {e}",
+                    root.display()
+                ))
+            })?;
+            Some(root.to_string_lossy().into_owned())
+        } else {
+            None
+        };
+
         // Delegate to the ONE grader (cognition/eval) — never reimplement it here.
         let result = CognitionEval
             .run(
@@ -483,7 +517,7 @@ impl ActionCommand for BenchmarkRun {
                     run_id: None,
                     max_acts: p.max_acts.or(Some(6)),
                     max_retries: Some(0),
-                    workspace_root: None,
+                    workspace_root,
                     capture_dir: None,
                     learn: None,
                     note: Some(match &p.base_model_id {
