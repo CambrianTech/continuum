@@ -48,7 +48,7 @@
 //!   on-disk seed storage.
 
 use std::any::Any;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use airc_core::RoomId;
@@ -154,49 +154,39 @@ impl PersonaInstanceInfo {
     }
 }
 
-/// The controller module.
-pub struct PersonaInstanceManagerModule {
+/// The single **birth core** — the one place a persona is brought into being, shared
+/// by BOTH callers so there is never a parallel spawn implementation
+/// ([[persona-birth-is-a-first-class-handle-command]], compression principle):
+///
+/// - the **boot auto-seed** path (`PersonaSpawnSupervisor::spawn_all` →
+///   `bootstrap_planned` → [`PersonaInstanceManagerModule::bootstrap_one`], which
+///   delegates here), and
+/// - the on-demand **`persona/spawn`** command (holds an `Arc<PersonaBirth>` and calls
+///   [`birth_one`](PersonaBirth::birth_one) directly).
+///
+/// It owns exactly the deps a birth needs — the live registry, the airc daemon socket,
+/// the default room (+ its name, so `Airc::join(name)` derives the canonical channel),
+/// the continuum root where homes are carved, and the late-bound substrate executor.
+/// All are cheap-clone handles (`registry` is an `Arc<DashMap>`; `executor` is an
+/// `Arc<LateBound>`), so the copy the module holds and the copy `PersonaBirth` holds
+/// point at the SAME underlying state — one install of the executor reaches both.
+pub struct PersonaBirth {
     registry: PersonaAircRuntimeRegistry,
     daemon_socket: PathBuf,
     default_room: RoomId,
-    /// Human-readable room name (e.g. `"continuum"`). Used by
-    /// `PersonaAircRuntime::bootstrap` when joining the room, because
-    /// `Airc::join(name)` derives the canonical channel from the
-    /// name. If `None`, bootstrap falls back to joining by the
-    /// channel-UUID-as-string, which derives a NEW channel that
-    /// does NOT match the operator's `airc room` — persona lands in
-    /// the wrong room and can't see the operator's messages. PR #1511
-    /// integration test confirmed this empirically.
     default_room_name: Option<String>,
     continuum_root: PathBuf,
-    /// Substrate-wide command executor — installed by `start_server`
-    /// after the executor is built (task #224 replaced the deleted
-    /// `GLOBAL_EXECUTOR` panic accessor with this dependency-injected
-    /// `OnceLock`). Wrapped in an `Arc` so `commands()` can hand a shared
-    /// install-once handle to `persona/reassign-model` (which composes
-    /// `serving/pin` through it) without cloning the slot itself —
-    /// `LateBound` is install-once, so all holders observe the same
-    /// install that `start_server` performs after the executor is built.
     executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
 }
 
-impl PersonaInstanceManagerModule {
-    /// Construct with explicit dependencies.
-    ///
-    /// `registry` is shared (cheap to clone — internal `Arc<DashMap>`)
-    /// so callers can hand other modules a view of the same roster.
-    /// `daemon_socket`, `default_room`, and `default_room_name` come
-    /// from [`crate::modules::airc::AircModule`]'s discovery:
-    /// [`daemon_socket`] / [`default_room`] / [`default_room_name`].
-    /// `continuum_root` is where persona homes get carved out
-    /// (typically `~/.continuum/`, env-overridable via
-    /// `CONTINUUM_ROOT`).
+impl PersonaBirth {
     pub fn new(
         registry: PersonaAircRuntimeRegistry,
         daemon_socket: PathBuf,
         default_room: RoomId,
         default_room_name: Option<String>,
         continuum_root: PathBuf,
+        executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
     ) -> Self {
         Self {
             registry,
@@ -204,46 +194,26 @@ impl PersonaInstanceManagerModule {
             default_room,
             default_room_name,
             continuum_root,
-            executor: Arc::new(LateBound::new("persona-instance-manager::executor")),
+            executor,
         }
     }
 
-    /// Borrow the underlying registry. Other modules can clone this
-    /// (it's an `Arc<DashMap>` internally) for shared read access.
-    pub fn registry(&self) -> &PersonaAircRuntimeRegistry {
-        &self.registry
-    }
-
-    /// Bootstrap a persona from a [`PersonaIdentityIntent`].
-    ///
-    /// The intent carries the persona_id, agent_name, and source
-    /// (resumed vs freshly-minted). This method:
-    ///
-    /// 1. Calls [`PersonaAircRuntime::bootstrap`] (airc-lib identity
-    ///    ceremony — minting a new Ed25519 keypair if first time,
-    ///    loading the existing one if her home already exists).
-    /// 2. For freshly-minted personas, writes `seed.json` to her
-    ///    home directory so the next boot can resume her — this is
-    ///    what makes citizens persistent across server restarts.
-    ///    Resumed personas already have a seed.json by definition;
-    ///    no rewrite needed.
-    /// 3. Registers the runtime in the `PersonaAircRuntimeRegistry`.
-    ///
-    /// Per the no-backwards-compatibility doctrine
-    /// ([[organization-purity-as-we-migrate]]), the signature
-    /// changed in slice 4 from `()` to `&PersonaIdentityIntent` —
-    /// the single existing caller (boot-wire in `ipc::start_server`)
-    /// gets updated in the same commit.
-    pub async fn bootstrap_one(
+    /// Bring one persona into being from a [`PersonaIdentityIntent`] — the airc-lib
+    /// identity ceremony (mint/load the Ed25519 keypair), seed persist/self-heal +
+    /// V2-card upgrade, durable-card registration, sticky avatar pin, and roster
+    /// registration. Idempotent for a resumed persona. This IS the single birth path;
+    /// see the type docs. (Previously the body of `PersonaInstanceManagerModule::
+    /// bootstrap_one`; extracted so the `persona/spawn` command reuses it verbatim.)
+    pub async fn birth_one(
         &self,
         intent: &PersonaIdentityIntent,
     ) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
         // Task #224: the substrate-wide `CommandExecutor` is installed
         // on PIM by `start_server` after the executor is built. Per
-        // [[no-fallbacks-ever]]: if `bootstrap_one` runs before the
-        // installer (impossible today — the only call path is through a
-        // dispatched command, which means the executor exists), surface
-        // a typed error instead of panicking.
+        // [[no-fallbacks-ever]]: if a birth runs before the installer
+        // (impossible today — the only call paths are a dispatched
+        // command or the executor-gated boot supervisor, both of which
+        // mean the executor exists), surface a typed error not a panic.
         let executor = self
             .executor
             .get()
@@ -264,7 +234,7 @@ impl PersonaInstanceManagerModule {
         .await?;
 
         // Persist (or self-heal) seed.json so this persona resumes as HERSELF next
-        // boot. Runs for EVERY bootstrap — minted AND resumed — not just on mint:
+        // boot. Runs for EVERY birth — minted AND resumed — not just on mint:
         // `ensure_seed` is idempotent for a resumed persona (rewrites the same
         // content, preserving her birth time) and SELF-HEALS a seed that went
         // missing or corrupt while her home (engrams + airc key) survived. Without
@@ -362,6 +332,110 @@ impl PersonaInstanceManagerModule {
         let info = PersonaInstanceInfo::from_runtime(&runtime);
         self.registry.register(runtime);
         Ok(info)
+    }
+}
+
+/// The controller module.
+pub struct PersonaInstanceManagerModule {
+    registry: PersonaAircRuntimeRegistry,
+    /// Where persona homes are carved out — kept on the module because
+    /// `commands()` hands it to `persona/reassign-model`. (The birth deps
+    /// `daemon_socket` / `default_room` / `default_room_name` moved into
+    /// [`PersonaBirth`], the single birth core, and are no longer stored here.)
+    continuum_root: PathBuf,
+    /// Substrate-wide command executor — installed by `start_server`
+    /// after the executor is built (task #224 replaced the deleted
+    /// `GLOBAL_EXECUTOR` panic accessor with this dependency-injected
+    /// `OnceLock`). Wrapped in an `Arc` so `commands()` can hand a shared
+    /// install-once handle to `persona/reassign-model` (which composes
+    /// `serving/pin` through it) without cloning the slot itself —
+    /// `LateBound` is install-once, so all holders observe the same
+    /// install that `start_server` performs after the executor is built.
+    executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
+    /// The single birth core ([`PersonaBirth`]) this module delegates
+    /// `bootstrap_one` to, and hands (via [`birth`](Self::birth)) to the
+    /// `persona/spawn` command so on-demand births go through the SAME path
+    /// as boot auto-seed. Holds clones of the same handles above (same
+    /// registry `Arc<DashMap>`, same executor `Arc<LateBound>`), so one
+    /// executor install reaches both.
+    birth: Arc<PersonaBirth>,
+}
+
+impl PersonaInstanceManagerModule {
+    /// Construct with explicit dependencies.
+    ///
+    /// `registry` is shared (cheap to clone — internal `Arc<DashMap>`)
+    /// so callers can hand other modules a view of the same roster.
+    /// `daemon_socket`, `default_room`, and `default_room_name` come
+    /// from [`crate::modules::airc::AircModule`]'s discovery:
+    /// [`daemon_socket`] / [`default_room`] / [`default_room_name`].
+    /// `continuum_root` is where persona homes get carved out
+    /// (typically `~/.continuum/`, env-overridable via
+    /// `CONTINUUM_ROOT`).
+    pub fn new(
+        registry: PersonaAircRuntimeRegistry,
+        daemon_socket: PathBuf,
+        default_room: RoomId,
+        default_room_name: Option<String>,
+        continuum_root: PathBuf,
+    ) -> Self {
+        let executor = Arc::new(LateBound::new("persona-instance-manager::executor"));
+        let birth = Arc::new(PersonaBirth::new(
+            registry.clone(),
+            daemon_socket, // birth-only dep — moved, not stored on the module
+            default_room,
+            default_room_name, // birth-only dep — moved
+            continuum_root.clone(),
+            executor.clone(),
+        ));
+        Self {
+            registry,
+            continuum_root,
+            executor,
+            birth,
+        }
+    }
+
+    /// The single [`PersonaBirth`] core — handed to the `persona/spawn` command so an
+    /// on-demand birth reuses the SAME path as boot auto-seed (never a parallel spawn).
+    pub fn birth(&self) -> Arc<PersonaBirth> {
+        self.birth.clone()
+    }
+
+    /// Borrow the underlying registry. Other modules can clone this
+    /// (it's an `Arc<DashMap>` internally) for shared read access.
+    pub fn registry(&self) -> &PersonaAircRuntimeRegistry {
+        &self.registry
+    }
+
+    /// Bootstrap a persona from a [`PersonaIdentityIntent`].
+    ///
+    /// The intent carries the persona_id, agent_name, and source
+    /// (resumed vs freshly-minted). This method:
+    ///
+    /// 1. Calls [`PersonaAircRuntime::bootstrap`] (airc-lib identity
+    ///    ceremony — minting a new Ed25519 keypair if first time,
+    ///    loading the existing one if her home already exists).
+    /// 2. For freshly-minted personas, writes `seed.json` to her
+    ///    home directory so the next boot can resume her — this is
+    ///    what makes citizens persistent across server restarts.
+    ///    Resumed personas already have a seed.json by definition;
+    ///    no rewrite needed.
+    /// 3. Registers the runtime in the `PersonaAircRuntimeRegistry`.
+    ///
+    /// Per the no-backwards-compatibility doctrine
+    /// ([[organization-purity-as-we-migrate]]), the signature
+    /// changed in slice 4 from `()` to `&PersonaIdentityIntent` —
+    /// the single existing caller (boot-wire in `ipc::start_server`)
+    /// gets updated in the same commit.
+    pub async fn bootstrap_one(
+        &self,
+        intent: &PersonaIdentityIntent,
+    ) -> Result<PersonaInstanceInfo, PersonaAircRuntimeError> {
+        // Delegate to the single birth core so boot auto-seed (this path, via the
+        // spawner supervisor) and the `persona/spawn` command are literally the same
+        // code ([[persona-birth-is-a-first-class-handle-command]]).
+        self.birth.birth_one(intent).await
     }
 }
 
