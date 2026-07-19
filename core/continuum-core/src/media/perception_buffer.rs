@@ -15,7 +15,7 @@
 //! these percepts under the flexbox RAG budget so perception never dominates context
 //! ([[perception-feedback-must-not-blow-rag]]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -46,6 +46,59 @@ pub const AMBIENT_WARM_MIN_INTERVAL_MS: u64 = 500;
 /// this floor, never to infinity. Attention priority (speaker/actor) shrinks both
 /// bounds later (#173).
 pub const AMBIENT_WARM_BASELINE_INTERVAL_MS: u64 = 5_000;
+
+/// Depth of each source's sliding-window frame ring — how many recent frames are held
+/// per participant. The HEAD is the most-current frame ("latest"); the window (front K)
+/// is what the sliding-window read + change comparison see. Bounded so a 30fps source
+/// costs a fixed handful of `Arc` frame handles, never an unbounded backlog. A field on
+/// the buffer (defaulted from here) so the governor can deepen it for a source under
+/// scrutiny (#173).
+pub const AMBIENT_RING_CAPACITY: usize = 8;
+
+/// A bounded, per-source sliding window of recent frames — the shared "pre-warmed image
+/// cache" for ONE participant. Newest at the FRONT (the head = "latest"); the oldest is
+/// evicted past capacity. Frames are `Arc`-backed handles and their derivatives dedup by
+/// content-hash on the shared cache, so a ring of K frames is cheap and never duplicates
+/// a derivative across viewers. The window is what change-detection (compare consecutive
+/// heads) and "what did I miss" read; the head is the room-as-now view.
+struct FrameRing {
+    /// front = newest, back = oldest.
+    frames: VecDeque<MediaFrame>,
+    capacity: usize,
+}
+
+impl FrameRing {
+    fn with_capacity(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        Self {
+            frames: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Push the newest frame to the front. COALESCE: a re-send of the SAME content as the
+    /// current head (identical hash) is a no-op — the head already IS this frame. Evict the
+    /// oldest past capacity (room-as-now, bounded).
+    fn push(&mut self, frame: MediaFrame) {
+        if self.frames.front().map(|f| f.content_hash()) == Some(frame.content_hash()) {
+            return;
+        }
+        self.frames.push_front(frame);
+        while self.frames.len() > self.capacity {
+            self.frames.pop_back();
+        }
+    }
+
+    /// The most-current frame (room-as-now "latest").
+    fn head(&self) -> Option<&MediaFrame> {
+        self.frames.front()
+    }
+
+    /// The last `k` frames, newest first — the sliding-window read.
+    fn window(&self, k: usize) -> impl Iterator<Item = &MediaFrame> {
+        self.frames.iter().take(k)
+    }
+}
 
 /// Per-participant warm-cadence gate. Coalescing the latest frame is unconditional
 /// and O(1); only the EXPENSIVE warm (scale + describe) passes through this gate, so
@@ -87,10 +140,15 @@ impl Percept {
 /// Non-blocking, room-as-now perception hold. One latest frame per airc participant; cells
 /// warm async on the shared cache; reads take only what's ready.
 pub struct PerceptionBuffer {
-    latest: Mutex<HashMap<ParticipantId, MediaFrame>>,
+    /// One bounded sliding-window ring per participant — the shared pre-warmed store.
+    /// The head is the room-as-now frame; the window is the recent history.
+    rings: Mutex<HashMap<ParticipantId, FrameRing>>,
     /// The ambient forced-look size (~480w default) — the cheap thumbnail cell every tick
     /// warms + reads. Full-res / bigger is the drill-in tool, not the ambient path.
     ambient: DestSize,
+    /// Depth of each participant's ring (defaulted from [`AMBIENT_RING_CAPACITY`]) — a field
+    /// so the governor can deepen a source's window under scrutiny (#173).
+    ring_capacity: usize,
     /// Per-participant warm-cadence gates — the seam that keeps the expensive cells off
     /// the media frame rate. See [`WarmGate`] and [`AMBIENT_WARM_MIN_INTERVAL_MS`].
     warm_gates: Mutex<HashMap<ParticipantId, WarmGate>>,
@@ -106,8 +164,9 @@ pub struct PerceptionBuffer {
 impl PerceptionBuffer {
     pub fn new(ambient: DestSize) -> Self {
         Self {
-            latest: Mutex::new(HashMap::new()),
+            rings: Mutex::new(HashMap::new()),
             ambient,
+            ring_capacity: AMBIENT_RING_CAPACITY,
             warm_gates: Mutex::new(HashMap::new()),
             min_warm_interval_ms: AMBIENT_WARM_MIN_INTERVAL_MS,
             baseline_warm_interval_ms: AMBIENT_WARM_BASELINE_INTERVAL_MS,
@@ -169,12 +228,16 @@ impl PerceptionBuffer {
         mime: &str,
         now_ms: u64,
     ) {
-        // Coalesce ALWAYS: the latest frame per participant wins; the old one is dropped.
-        // Cheap enough for the 30fps media plane — perception samples it, doesn't mirror it.
-        self.latest
+        // Push onto the participant's ring ALWAYS — cheap (an Arc handle + a bounded pop),
+        // safe at the 30fps media plane. The head becomes the room-as-now frame; the ring
+        // retains the recent window (coalescing an identical re-send). Perception samples
+        // this store; it doesn't mirror the frame rate.
+        self.rings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(participant.clone(), frame.clone());
+            .entry(participant.clone())
+            .or_insert_with(|| FrameRing::with_capacity(self.ring_capacity))
+            .push(frame.clone());
 
         // Gate the EXPENSIVE warm. A gated tick simply returns — its frame is already the
         // coalesced latest and will warm on the next open tick (room-as-now). compute-once
@@ -199,26 +262,51 @@ impl PerceptionBuffer {
         });
     }
 
-    /// The perception of the room AS IT IS NOW — one `Percept` per participant, each carrying
-    /// only the cells RESOLVED so far (non-blocking reads via the `_if_ready` twins). NEVER
-    /// awaits; a still-warming cell is simply `None` this tick.
+    /// Non-blocking projection of one frame into a `Percept` — reads ONLY the cells resolved
+    /// so far on the shared cache (the `_if_ready` twins), never awaits, never recomputes.
+    /// The single place a frame becomes a percept, shared by the room-as-now read and the
+    /// windowed read (compression: one projection).
+    fn percept_of(&self, participant: &str, frame: &MediaFrame, compute: &SharedCompute) -> Percept {
+        Percept {
+            participant: participant.to_string(),
+            content_hash: frame.content_hash().to_string(),
+            thumbnail: frame.scaled_if_ready(compute, None, self.ambient),
+            description: frame.description_if_ready(compute),
+        }
+    }
+
+    /// The perception of the room AS IT IS NOW — one `Percept` per participant from each
+    /// ring's HEAD, carrying only cells RESOLVED so far. NEVER awaits; a still-warming cell
+    /// is simply `None` this tick. This is the GROUPED "everyone at a glance" read (the
+    /// human-widget gallery): every source's most-current warm look, shared, zero-copy.
     pub fn current_percepts(&self, compute: &SharedCompute) -> Vec<Percept> {
-        self.latest
+        self.rings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(pid, frame)| Percept {
-                participant: pid.clone(),
-                content_hash: frame.content_hash().to_string(),
-                thumbnail: frame.scaled_if_ready(compute, None, self.ambient),
-                description: frame.description_if_ready(compute),
-            })
+            .filter_map(|(pid, ring)| ring.head().map(|f| self.percept_of(pid, f, compute)))
             .collect()
+    }
+
+    /// The SLIDING-WINDOW read for ONE participant — the last `k` frames as percepts, newest
+    /// first (only resolved cells). This is "what changed / what did I miss" over a source's
+    /// recent history, off the same shared warm store. Empty if the participant is unknown.
+    pub fn window_percepts(&self, participant: &str, k: usize, compute: &SharedCompute) -> Vec<Percept> {
+        self.rings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(participant)
+            .map(|ring| {
+                ring.window(k)
+                    .map(|f| self.percept_of(participant, f, compute))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Drop a participant that left the call.
     pub fn remove(&self, participant: &str) {
-        self.latest
+        self.rings
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(participant);
@@ -226,7 +314,7 @@ impl PerceptionBuffer {
 
     /// Number of participants currently held (for probes/tests).
     pub fn len(&self) -> usize {
-        self.latest.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.rings.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -295,11 +383,17 @@ mod tests {
     async fn current_percepts_surface_cells_only_once_resolved() {
         let buffer = PerceptionBuffer::new(AMBIENT);
         let compute = Arc::new(SharedCompute::new());
-        let describer: Arc<dyn FrameDescriber> = Arc::new(StubDescriber);
         let frame = MediaFrame::from_bytes(png(50, 40));
 
-        // Store WITHOUT warming: read the percept before any cell resolves → all None.
-        buffer.latest.lock().unwrap().insert("alice".into(), frame.clone());
+        // Push onto the ring WITHOUT warming (bypass observe's spawn): read the percept from
+        // the head before any cell resolves → all None.
+        buffer
+            .rings
+            .lock()
+            .unwrap()
+            .entry("alice".into())
+            .or_insert_with(|| FrameRing::with_capacity(AMBIENT_RING_CAPACITY))
+            .push(frame.clone());
         let before = &buffer.current_percepts(&compute)[0];
         assert!(before.thumbnail.is_none() && before.description.is_none(), "cold → nothing rendered");
         assert!(!before.has_any());
@@ -318,6 +412,78 @@ mod tests {
             AMBIENT.width,
             "the ready thumbnail is the ambient size"
         );
+    }
+
+    // what this catches: the ring is a bounded sliding window — newest-first, an identical
+    // re-send of the head coalesces (no dup), and past capacity the oldest is evicted. This is
+    // the "pre-warmed sliding-window cache" the grouped + windowed reads sit on.
+    #[test]
+    fn frame_ring_windows_newest_first_coalesces_head_and_bounds_capacity() {
+        let mut ring = FrameRing::with_capacity(3);
+        assert!(ring.head().is_none(), "empty ring has no head");
+
+        let a = MediaFrame::from_bytes(png(11, 11));
+        let b = MediaFrame::from_bytes(png(12, 12));
+        let c = MediaFrame::from_bytes(png(13, 13));
+        let d = MediaFrame::from_bytes(png(14, 14));
+
+        ring.push(a.clone());
+        ring.push(a.clone()); // identical head → coalesced no-op
+        assert_eq!(ring.window(9).count(), 1, "re-send of the same head coalesces");
+
+        ring.push(b.clone());
+        ring.push(c.clone());
+        ring.push(d.clone()); // capacity 3 → 'a' evicted
+
+        let hashes: Vec<_> = ring.window(9).map(|f| f.content_hash().to_string()).collect();
+        assert_eq!(
+            hashes,
+            vec![
+                d.content_hash().to_string(),
+                c.content_hash().to_string(),
+                b.content_hash().to_string()
+            ],
+            "newest-first, capacity-bounded, oldest ('a') evicted"
+        );
+        assert_eq!(ring.head().unwrap().content_hash(), d.content_hash(), "head = most current");
+        assert_eq!(ring.window(2).count(), 2, "window respects k");
+    }
+
+    // what this catches: the two serving shapes off the ONE shared store — GROUPED (all ring
+    // heads = the human-widget gallery, everyone at a glance) and WINDOWED (one source's recent
+    // history, newest-first). An unknown participant windows to empty.
+    #[tokio::test]
+    async fn grouped_read_is_all_heads_windowed_read_is_one_sources_history() {
+        let buffer = PerceptionBuffer::new(AMBIENT);
+        let compute = Arc::new(SharedCompute::new());
+
+        // alice gets a short history (3 distinct frames), bob one — pushed WITHOUT warming so
+        // the read exercises structure (heads/window), not cell resolution.
+        {
+            let mut rings = buffer.rings.lock().unwrap();
+            let alice = rings
+                .entry("alice".into())
+                .or_insert_with(|| FrameRing::with_capacity(AMBIENT_RING_CAPACITY));
+            for (w, h) in [(11, 11), (12, 12), (13, 13)] {
+                alice.push(MediaFrame::from_bytes(png(w, h)));
+            }
+            rings
+                .entry("bob".into())
+                .or_insert_with(|| FrameRing::with_capacity(AMBIENT_RING_CAPACITY))
+                .push(MediaFrame::from_bytes(png(20, 20)));
+        }
+
+        // GROUPED: one head per source — the gallery of everyone at a glance.
+        let grouped = buffer.current_percepts(&compute);
+        assert_eq!(grouped.len(), 2, "gallery = one head per participant");
+
+        // WINDOWED: the last k of ONE source, newest-first.
+        let win = buffer.window_percepts("alice", 2, &compute);
+        assert_eq!(win.len(), 2, "windowed read = last k of one source");
+        assert!(win.iter().all(|p| p.participant == "alice"), "windowed read is source-scoped");
+
+        // Unknown participant → empty (never a fabricated look).
+        assert!(buffer.window_percepts("nobody", 5, &compute).is_empty());
     }
 
     // what this catches: remove drops a participant who left the call.
