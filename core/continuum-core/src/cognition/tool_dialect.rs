@@ -68,16 +68,66 @@ fn command_to_primary_alias() -> &'static HashMap<&'static str, &'static str> {
     })
 }
 
-/// Rename a spec to the wire dialect: the command's PRIMARY declared alias (the
-/// model's trained reflex), so it acts by instinct instead of learning our name
-/// from a menu (the discovery-tool trap: 14/14 acts on `commands/help`, zero
-/// edits). Identity for a command with no alias — the long tail keeps its
-/// canonical name (reachable, just not reflexive).
-pub fn to_wire_spec(mut spec: NativeToolSpec) -> NativeToolSpec {
-    if let Some(&alias) = command_to_primary_alias().get(spec.name.as_str()) {
-        spec.name = alias.to_string();
-    }
+/// The policy for how a command is NAMED on the wire when OFFERED to a model —
+/// the seam future per-model / per-persona selection plugs into
+/// ([[adaptive-tool-surface-meets-you-in-the-middle]]). Chosen by
+/// [`offer_style_for`]; either way, BOTH the offered form and the trained alias
+/// resolve on the way back in ([`from_wire_name`]), so switching styles never
+/// narrows what a model can call — it only changes what it's SHOWN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferStyle {
+    /// Offer the model's trained reflex — the command's primary alias (`code/read`
+    /// → `read_file`). Meet their training; no menu to learn.
+    TrainedReflex,
+    /// Offer OUR canonical name, charset-legal (`code/read` → `code_read`). Converge
+    /// the model onto our semantically-grouped namespace; the trained alias still
+    /// resolves inbound, so it's meet-in-the-middle, not a hard cutover.
+    Canonical,
+}
+
+/// The offer policy for a served model — THE per-model adapter seam. Today it
+/// returns the global default for every model; the foresight is that a model whose
+/// LoRA is tuned on the trained names could be met with `TrainedReflex` while a
+/// fresh / base model is offered `Canonical` to learn our namespace. That logic
+/// lands HERE, once, instead of scattered at the call sites.
+pub fn offer_style_for(_model: Option<&str>) -> OfferStyle {
+    // Hypothesis under benchmark gate (#202 Slice 5): offering our canonical,
+    // semantically-grouped names (`code_read`, `code_write`, `code_search`) improves
+    // BOTH the objective score AND user/API alignment — one namespace, everywhere —
+    // and the trained alias still resolves inbound so a reflex never breaks. If the
+    // gate ever fails for a model class, branch on `_model` and return TrainedReflex.
+    OfferStyle::Canonical
+}
+
+/// Charset-legal wire form of a canonical command name: `/` → `_` (`code/read` →
+/// `code_read`), matching the OpenAI function-name charset our slashed names
+/// violate. Round-trips: [`from_wire_name`] maps the underscore form back to the
+/// slashed command.
+fn charset_legal(name: &str) -> String {
+    name.replace('/', "_")
+}
+
+/// Rename a spec for the wire under an explicit offer style. Always yields a
+/// charset-legal name (never a raw slash), so the offered surface is wire-valid
+/// regardless of style. See [`OfferStyle`].
+pub fn to_wire_spec_with(mut spec: NativeToolSpec, style: OfferStyle) -> NativeToolSpec {
+    spec.name = match style {
+        OfferStyle::TrainedReflex => command_to_primary_alias()
+            .get(spec.name.as_str())
+            .map(|&alias| alias.to_string())
+            // No trained alias: the long tail is offered under its charset-legal
+            // canonical (reachable, just not a trained reflex) — never a raw slash.
+            .unwrap_or_else(|| charset_legal(&spec.name)),
+        OfferStyle::Canonical => charset_legal(&spec.name),
+    };
     spec
+}
+
+/// Rename a spec for the wire under the DEFAULT offer policy ([`offer_style_for`]
+/// with no model context). The per-model path calls [`to_wire_spec_with`] with the
+/// style resolved from the served model.
+pub fn to_wire_spec(spec: NativeToolSpec) -> NativeToolSpec {
+    to_wire_spec_with(spec, offer_style_for(None))
 }
 
 /// The set of canonical command names — for classifying a wire name as CANONICAL
@@ -155,14 +205,8 @@ pub fn from_wire_name(wire: &str) -> String {
 mod tests {
     use super::*;
 
-    // what this catches: the per-command declarations aggregate into a working
-    // round-trip over the LIVE registry — a hot verb offers under its trained
-    // reflex and maps back to the canonical command. This is the decentralized
-    // replacement for the old global DIALECT table; if a command's ALIASES stops
-    // being read, these break.
-    #[test]
-    fn per_command_aliases_round_trip_through_the_registry() {
-        let spec = |n: &str| NativeToolSpec {
+    fn spec(n: &str) -> NativeToolSpec {
+        NativeToolSpec {
             name: n.to_string(),
             description: String::new(),
             input_schema: crate::ai::types::ToolInputSchema {
@@ -171,8 +215,17 @@ mod tests {
                 required: None,
                 definitions: None,
             },
-        };
-        // The hot verbs declared on their commands: offer under the reflex, map back.
+        }
+    }
+
+    // what this catches: the per-command declarations aggregate into a working
+    // round-trip over the LIVE registry under BOTH offer styles — a hot verb offers
+    // under its trained reflex OR our charset-legal canonical, and EITHER offered
+    // form maps back to the same canonical command. This is the decentralized
+    // replacement for the old global DIALECT table; if a command's ALIASES stops
+    // being read, or the round-trip stops being style-symmetric, these break.
+    #[test]
+    fn per_command_aliases_round_trip_under_both_offer_styles() {
         for (canonical, reflex) in [
             ("code/shell", "bash"),
             ("code/read", "read_file"),
@@ -181,14 +234,42 @@ mod tests {
             ("code/list", "list_files"),
             ("work/claim", "claim_task"),
         ] {
-            assert_eq!(to_wire_spec(spec(canonical)).name, reflex, "offer {canonical} as {reflex}");
+            // TrainedReflex offers the alias; it maps back to canonical.
+            assert_eq!(
+                to_wire_spec_with(spec(canonical), OfferStyle::TrainedReflex).name,
+                reflex,
+                "TrainedReflex offers {canonical} as {reflex}"
+            );
             assert_eq!(from_wire_name(reflex), canonical, "map {reflex} back to {canonical}");
+            // Canonical offers OUR name charset-legal; it maps back to canonical too.
+            let canon_wire = canonical.replace('/', "_");
+            assert_eq!(
+                to_wire_spec_with(spec(canonical), OfferStyle::Canonical).name,
+                canon_wire,
+                "Canonical offers {canonical} as {canon_wire}"
+            );
+            assert_eq!(
+                from_wire_name(&canon_wire),
+                canonical,
+                "map {canon_wire} back to {canonical}"
+            );
         }
         // A canonical name a model emits directly still resolves (never narrows).
         assert_eq!(from_wire_name("code/read"), "code/read");
         // An unknown name passes through — the executor fails it loud with a
         // did-you-mean; the adapter never invents a route.
         assert_eq!(from_wire_name("frobnicate"), "frobnicate");
+    }
+
+    // what this catches: the DEFAULT offer policy (the benchmark-gated #202 Slice 5
+    // hypothesis) is Canonical — a hot verb is offered under OUR name, and the
+    // per-model seam is what a future TrainedReflex exception would flip. If someone
+    // reverts the default this fails loudly, naming the behavior change.
+    #[test]
+    fn default_offer_policy_is_our_canonical_namespace() {
+        assert_eq!(offer_style_for(None), OfferStyle::Canonical);
+        assert_eq!(to_wire_spec(spec("code/read")).name, "code_read");
+        assert_eq!(to_wire_spec(spec("work/claim")).name, "work_claim");
     }
 
     // what this catches: the socket/CLI resolver (used at Runtime::route_command and

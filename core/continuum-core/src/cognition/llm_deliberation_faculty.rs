@@ -317,14 +317,19 @@ impl LlmDeliberationFaculty {
             self.native_specs.clear();
             return;
         }
-        // Offer the working set in the WIRE DIALECT — the conventional names
-        // (bash, read_file, edit_file…) tool-trained models reach for by reflex,
-        // charset-legal per the OpenAI function-name spec our slashed names
-        // violate. Calls map back to canonical commands on return (ONE table:
+        // Offer the working set in the WIRE DIALECT, charset-legal per the OpenAI
+        // function-name spec our slashed names violate. WHICH name a command is
+        // offered under is a per-model POLICY ([`tool_dialect::offer_style_for`],
+        // the adaptive-surface seam): our canonical `code_read` to converge a model
+        // onto our namespace, or its trained reflex `read_file` to meet its tuning.
+        // Either way calls map back to canonical commands on return (ONE section:
         // [`crate::cognition::tool_dialect`]). [[joel-boundary-design-values]]
+        let style = crate::cognition::tool_dialect::offer_style_for(
+            self.binding.load().model.as_deref(),
+        );
         let mut specs: Vec<_> = persona_tools::native_tool_specs()
             .into_iter()
-            .map(crate::cognition::tool_dialect::to_wire_spec)
+            .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
             .collect();
         // ADAPTIVE surface ([[adaptive-tool-surface-meets-you-in-the-middle]]): the full
         // native working set only rides when the served window can afford it. On a small
