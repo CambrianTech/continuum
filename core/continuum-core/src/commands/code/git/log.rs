@@ -32,6 +32,7 @@ crate::action_command! {
     pub struct CodeGitLog { state: Arc<CodeState> }
     name: "code/git/log",
     access: AiSafe,
+    aliases: &["git_log"],
     params: GitLogParams,
     output: GitLogResult,
     run(this, ctx, p) => {

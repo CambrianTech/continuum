@@ -32,6 +32,7 @@ crate::action_command! {
     name: "code/git/commit",
     access: AiSafe,
     native: true,
+    aliases: &["git_commit"],
     params: GitCommitParams,
     output: GitCommitResult,
     run(this, ctx, p) => {

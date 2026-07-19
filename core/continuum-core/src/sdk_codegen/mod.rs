@@ -640,6 +640,7 @@ macro_rules! action_command {
         name: $name:expr,
         access: $access:ident,
         $(native: $native:expr,)?
+        $(aliases: $aliases:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
@@ -647,7 +648,7 @@ macro_rules! action_command {
         $(#[doc = $doc])*
         #[derive(::std::default::Default)]
         $vis struct $cmd;
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], $params, $output, $this, $ctx, $p, $body);
         $crate::register_stateless_command!($cmd);
     };
 
@@ -659,13 +660,14 @@ macro_rules! action_command {
         name: $name:expr,
         access: $access:ident,
         $(native: $native:expr,)?
+        $(aliases: $aliases:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
         $vis struct $cmd { $(pub $field: $fty),+ }
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], $params, $output, $this, $ctx, $p, $body);
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
         // codegen. Its RUNTIME object is constructed with deps by the owning
@@ -674,7 +676,7 @@ macro_rules! action_command {
     };
 
     // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
-    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], [$($aliases:expr)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
         #[::async_trait::async_trait]
         impl $crate::sdk_codegen::ActionCommand for $cmd {
             const NAME: &'static str = $name;
@@ -686,6 +688,10 @@ macro_rules! action_command {
             // `false || <expr>` when present, bare `false` when absent — const-valid, no
             // unused bindings.
             const NATIVE: bool = false $(|| $native)?;
+            // Optional `aliases: &[...],` clause ⟹ ALIASES (the trained/former names a
+            // model reaches for, resolved inbound by tool_dialect). Absent ⇒ the trait
+            // default (empty). Emitted only when present, so the default stands otherwise.
+            $(const ALIASES: &'static [&'static str] = $aliases;)?
             type Params = $params;
             type Output = $output;
             async fn run(

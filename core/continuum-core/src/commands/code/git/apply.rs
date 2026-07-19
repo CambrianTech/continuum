@@ -45,6 +45,7 @@ crate::action_command! {
     name: "code/git/apply",
     access: AiSafe,
     native: true,
+    aliases: &["git_apply"],
     params: GitApplyParams,
     output: GitApplyResult,
     run(this, ctx, p) => {
