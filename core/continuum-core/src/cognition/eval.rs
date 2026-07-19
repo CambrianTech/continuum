@@ -1860,6 +1860,19 @@ async fn perception_grade(
             target.trim_start_matches('/')
         )
     };
+
+    // Local static artifact → the STATIC-HTML eye grades it headless. The eval core has
+    // no browser eye-node connected, so routing `perception/observe` for a file:// target
+    // fails loud ("no adapter to fulfil it") and a correct render scores a false zero
+    // (#206). Her `ui_checks` are structural (tags/roles/text/counts) — a pure html5ever
+    // parse answers them the way a browser's a11y tree would. A remote URL / live surface
+    // still routes to the browser eye below (a persona's real seeing loop).
+    if let Some(path) = target_url.strip_prefix("file://") {
+        let obs = crate::perception::static_html::observe_file(std::path::Path::new(path));
+        let grade = crate::perception::scoring::grade_ui(&obs, checks, threshold);
+        return (grade.passed, grade.summary);
+    }
+
     let params = crate::perception::ObserveParams {
         target: target_url.clone(),
         viewport: None,

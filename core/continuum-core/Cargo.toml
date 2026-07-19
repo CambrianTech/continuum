@@ -249,6 +249,12 @@ objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal cr
 #
 # mlx-rs = { version = "0.25", optional = true }  # phase B
 
+# Static-HTML eye: parse a persona's rendered artifact (index.html) into the
+# perception ProbeNode tree so the headless eval core can grade structural
+# ui_checks (tags/roles/text/counts) WITHOUT a browser eye-node connected.
+# html5ever-backed → parses malformed model output the way a browser would.
+scraper = "0.21"
+
 [features]
 # `metal` is NOT default — earlier comment claimed it was harmless on
 # non-Mac targets, empirically false (2026-04-22 docker CI failure):

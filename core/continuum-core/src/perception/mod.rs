@@ -42,6 +42,14 @@ use ts_rs::TS;
 /// scores the text structure a non-visual model also reads).
 pub mod scoring;
 
+/// Static-HTML eye — parse a rendered `index.html` artifact into a [`ProbeNode`]
+/// tree so the HEADLESS eval core can grade structural `ui_checks` with no browser
+/// eye-node connected. `perception/observe` fails loud when no client provides it;
+/// but a static file's tags/roles/text/counts are a pure-parse question. The full
+/// browser eye stays the path for JS-rendered / dynamic pages (a persona's live
+/// seeing loop) — this is the deterministic grader's eye for a static artifact.
+pub mod static_html;
+
 /// `perception/look` — the LIVE-CALL VIDEO surface: a persona's own eyes on the
 /// call it is in (the observe-only sibling of `perception/observe`, reading the
 /// in-process [`PerceptionBuffer`](crate::media::PerceptionBuffer) à la carte).
