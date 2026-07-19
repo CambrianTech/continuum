@@ -1,88 +1,103 @@
 //! tool_dialect — the ADAPTER between our command namespace and the tool-call
-//! dialect models were actually trained on. [[joel-boundary-design-values]]:
-//! "always adapters — meet the model ergonomically, never hardcode around it."
+//! dialect models were trained on. [[joel-boundary-design-values]]: "always
+//! adapters — meet the model ergonomically, never hardcode around it."
 //!
-//! ## Why (Joel, 2026-07-10: "our tools are a foreign language; theirs is the
-//! model's native tongue")
+//! ## The design (Joel, 2026-07-19): the command owns its own aliases
 //!
-//! Two facts about every tool-trained model (Devstral/OpenHands, Qwen-Coder,
-//! Hermes, the cloud models we cannot fine-tune):
+//! A model reaches for the names it was trained on (`read_file`, `bash`, `grep`)
+//! and for former names of tools that have since moved. Rather than a central
+//! table that drifts, EACH command declares what it answers to — its
+//! [`ALIASES`](crate::sdk_codegen::command::ActionCommand::ALIASES), right in its
+//! own file. A command is then fully portable: rename or move it and its aliases
+//! travel with it; no second source of truth to keep in sync.
 //!
-//! 1. **The OpenAI function-name convention is `[a-zA-Z0-9_-]{1,64}`.** Our
-//!    command names carry slashes (`code/run`, `commands/help`) — a shape no
-//!    model ever saw inside a `tools` array during training, and one the spec
-//!    those models were trained against does not even allow.
-//! 2. **The hot verbs have conventional names** — `bash`, `read_file`,
-//!    `write_file`, `edit_file`, `grep` — burned in by OpenHands/SWE-agent-style
-//!    scaffolds. A model reaches for `bash` by reflex; `code/shell` it must
-//!    learn from a menu (the discovery-tool trap: 14/14 acts on `commands/help`,
-//!    zero edits).
+//! This module just AGGREGATES those per-command declarations into two generated
+//! indices (built once, cached), and is the surface-agnostic core every entry
+//! point shares — the persona tool-call path, the `cu` CLI, MCP. The mapping is
+//! one thing; each surface renders it in its own native form.
 //!
-//! So the WIRE speaks the model's dialect and the SUBSTRATE keeps its canonical
-//! names: specs are renamed on OFFER ([`to_wire_spec`]), calls are mapped back
-//! on RETURN ([`from_wire_name`]) before authorization/execution — the same
-//! trivial-adapter shape the legacy Node personas used. Internal representation
-//! stays OpenAI-shaped (`name/arguments/input_schema`) end to end.
+//! - [`from_wire_name`] — a wire tool-call name → the canonical command. Trained
+//!   reflex / former name resolves; a canonical or unknown name passes through
+//!   untouched (the adapter only ever WIDENS the surface).
+//! - [`to_wire_spec`] — rename a spec to the model's primary reflex on OFFER
+//!   (`code/read` → `read_file`), the name it acts on without learning a menu.
 //!
-//! Canonical names remain first-class on the wire too: [`from_wire_name`] passes
-//! unknown names through untouched, so `code/run` still resolves if a model says
-//! it (MORE surface, never less). One table, one place — the compression rule.
+//! A tool-call name two commands both claim is a build-time panic — the same
+//! fail-loud the registry uses for duplicate command NAMES.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::ai::types::NativeToolSpec;
+use crate::sdk_codegen::command_registry;
 
-/// Our canonical command name ↔ the conventional tool-call alias models were
-/// trained on. ONE table read by both directions; adding a hot verb is one row.
-/// Aliases must match `[a-zA-Z0-9_-]+` (the OpenAI function-name charset).
-const DIALECT: &[(&str, &str)] = &[
-    ("code/shell", "bash"),
-    ("code/read", "read_file"),
-    ("code/write", "write_file"),
-    ("code/edit", "edit_file"),
-    ("code/search", "grep"),
-    ("code/list", "list_files"),
-    ("code/tree", "file_tree"),
-    ("code/run", "run_code"),
-    ("code/git/diff", "git_diff"),
-    ("code/git/status", "git_status"),
-    ("code/git/add", "git_add"),
-    ("code/git/commit", "git_commit"),
-    ("code/git/apply", "git_apply"),
-    ("interface/screenshot", "screenshot"),
-    ("commands/list", "list_commands"),
-    ("commands/help", "help"),
-    ("work/claim", "claim_task"),
-];
+/// alias → canonical command name. Built ONCE from every command's declared
+/// `ALIASES`. A name claimed by two commands panics at init (fail-loud, like the
+/// registry's duplicate-NAME guard) — an ambiguous alias is a bug, not a
+/// silent last-writer-wins.
+fn alias_to_command() -> &'static HashMap<&'static str, &'static str> {
+    static IDX: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    IDX.get_or_init(|| {
+        let mut m: HashMap<&'static str, &'static str> = HashMap::new();
+        for d in command_registry() {
+            for &alias in d.aliases {
+                if let Some(prev) = m.insert(alias, d.name) {
+                    panic!(
+                        "tool_dialect: tool-call name '{alias}' is claimed by both '{prev}' \
+                         and '{}' — a command's ALIASES must be unique across the registry.",
+                        d.name
+                    );
+                }
+            }
+        }
+        m
+    })
+}
 
-/// Rename a spec to the wire dialect. Identity for commands with no alias —
-/// the long tail keeps its canonical name (reachable, just not reflexive).
+/// canonical command name → its PRIMARY offered alias (the FIRST declared) — the
+/// trained reflex we rename to on the wire. Commands with no alias are absent
+/// (offered under their canonical name).
+fn command_to_primary_alias() -> &'static HashMap<&'static str, &'static str> {
+    static IDX: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    IDX.get_or_init(|| {
+        command_registry()
+            .iter()
+            .filter_map(|d| d.aliases.first().map(|&alias| (d.name, alias)))
+            .collect()
+    })
+}
+
+/// Rename a spec to the wire dialect: the command's PRIMARY declared alias (the
+/// model's trained reflex), so it acts by instinct instead of learning our name
+/// from a menu (the discovery-tool trap: 14/14 acts on `commands/help`, zero
+/// edits). Identity for a command with no alias — the long tail keeps its
+/// canonical name (reachable, just not reflexive).
 pub fn to_wire_spec(mut spec: NativeToolSpec) -> NativeToolSpec {
-    if let Some((_, alias)) = DIALECT.iter().find(|(ours, _)| *ours == spec.name) {
-        spec.name = (*alias).to_string();
+    if let Some(&alias) = command_to_primary_alias().get(spec.name.as_str()) {
+        spec.name = alias.to_string();
     }
     spec
 }
 
-/// Map a wire tool-call name back to the canonical command. Pass-through for
-/// names that aren't aliases (canonical names, the long tail) — the adapter
-/// widens the surface, never narrows it.
+/// Map a wire tool-call name back to the canonical command. A trained reflex /
+/// former name resolves to the command that claims it; a canonical or unknown
+/// name passes through untouched — the adapter widens the surface, never narrows
+/// it, so `code/read` still resolves if a model emits it directly.
 pub fn from_wire_name(wire: &str) -> &str {
-    DIALECT
-        .iter()
-        .find(|(_, alias)| *alias == wire)
-        .map(|(ours, _)| *ours)
-        .unwrap_or(wire)
+    alias_to_command().get(wire).copied().unwrap_or(wire)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // what this catches: the adapter contract — hot verbs offer under their
-    // trained conventional names (charset-legal per the OpenAI function-name
-    // spec), wire calls map back to canonical commands, and BOTH canonical and
-    // unknown names pass through untouched (the surface only ever widens).
+    // what this catches: the per-command declarations aggregate into a working
+    // round-trip over the LIVE registry — a hot verb offers under its trained
+    // reflex and maps back to the canonical command. This is the decentralized
+    // replacement for the old global DIALECT table; if a command's ALIASES stops
+    // being read, these break.
     #[test]
-    fn dialect_round_trips_and_never_narrows() {
+    fn per_command_aliases_round_trip_through_the_registry() {
         let spec = |n: &str| NativeToolSpec {
             name: n.to_string(),
             description: String::new(),
@@ -93,26 +108,37 @@ mod tests {
                 definitions: None,
             },
         };
-        // Hot verb: renamed on offer, mapped back on return.
-        assert_eq!(to_wire_spec(spec("code/shell")).name, "bash");
-        assert_eq!(from_wire_name("bash"), "code/shell");
-        // Long tail: identity both ways.
-        assert_eq!(to_wire_spec(spec("cognition/eval")).name, "cognition/eval");
-        assert_eq!(from_wire_name("cognition/eval"), "cognition/eval");
-        // A model emitting the canonical name still resolves.
-        assert_eq!(from_wire_name("code/shell"), "code/shell");
-        // Every alias is charset-legal for the OpenAI function-name convention
-        // — no slash ever reaches the wire from this table.
-        for (_, alias) in DIALECT {
-            assert!(
-                alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
-                "alias {alias} breaks the trained charset"
-            );
+        // The hot verbs declared on their commands: offer under the reflex, map back.
+        for (canonical, reflex) in [
+            ("code/shell", "bash"),
+            ("code/read", "read_file"),
+            ("code/write", "write_file"),
+            ("code/run", "run_code"),
+            ("code/list", "list_files"),
+            ("work/claim", "claim_task"),
+        ] {
+            assert_eq!(to_wire_spec(spec(canonical)).name, reflex, "offer {canonical} as {reflex}");
+            assert_eq!(from_wire_name(reflex), canonical, "map {reflex} back to {canonical}");
         }
-        // Full table round-trips.
-        for (ours, alias) in DIALECT {
-            assert_eq!(to_wire_spec(spec(ours)).name, *alias);
-            assert_eq!(from_wire_name(alias), *ours);
-        }
+        // A canonical name a model emits directly still resolves (never narrows).
+        assert_eq!(from_wire_name("code/read"), "code/read");
+        // An unknown name passes through — the executor fails it loud with a
+        // did-you-mean; the adapter never invents a route.
+        assert_eq!(from_wire_name("frobnicate"), "frobnicate");
+    }
+
+    // what this catches: the index is NON-VACUOUS — the migration actually landed
+    // aliases on commands. A regression that dropped the ALIASES consts (or the
+    // descriptor plumbing) would empty this and silently stop all reflex mapping.
+    #[test]
+    fn the_alias_index_is_populated() {
+        assert!(
+            alias_to_command().len() >= 10,
+            "expected the hot-verb aliases from the migrated commands, got {}",
+            alias_to_command().len()
+        );
+        // Spot-check the highest-frequency live reflexes (mined 2026-07-19).
+        assert_eq!(from_wire_name("file_tree"), "code/tree");
+        assert_eq!(from_wire_name("read_file"), "code/read");
     }
 }

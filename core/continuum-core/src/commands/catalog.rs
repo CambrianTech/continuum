@@ -79,6 +79,7 @@ pub struct CommandsList;
 #[async_trait]
 impl ActionCommand for CommandsList {
     const NAME: &'static str = "commands/list";
+    const ALIASES: &'static [&'static str] = &["list_commands"];
     const NATIVE: bool = true; // discovery pair — the persona reaches the long tail through this
     const DESCRIPTION: &'static str =
         "List the available commands (name, description, access, params type) from the live \
