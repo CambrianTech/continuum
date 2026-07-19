@@ -364,6 +364,15 @@ pub struct BenchmarkRunParams {
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct BenchmarkRunResult {
     pub benchmark: String,
+    /// The run handle. Present on a DETACHED run (the eval spawned; its real result
+    /// lands in the progress ledger) — poll it with `cognition/eval-status --run_id`
+    /// to get THIS run's finalized row, never a prior run's stale live-progress (the
+    /// exact trap: a persona-only poll returns whatever ran last, so a fresh detached
+    /// run reads as instantly "20/20" with the previous run's numbers). None on a
+    /// synchronous run (the score is right here in this result).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
     #[ts(type = "number")]
     pub score: u32,
     #[ts(type = "number")]
@@ -476,6 +485,9 @@ impl ActionCommand for BenchmarkRun {
 
         Ok(BenchmarkRunResult {
             benchmark: spec.name.to_string(),
+            // Surface the eval's run handle so a detached run is pollable by run_id
+            // (the finalized ledger row), not by persona-only live progress.
+            run_id: result.run_id.clone(),
             score: result.score,
             total: result.total,
             pass_rate: result.pass_rate,

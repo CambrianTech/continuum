@@ -78,10 +78,25 @@ impl JsonlPromptCaptureSink {
     /// Open (create + append) the per-persona capture file under `dir`. Errors
     /// only on filesystem failure; the caller degrades to no capture (never fails
     /// persona spawn).
+    ///
+    /// ROTATES on open: `open` is called once per spawn (= once per core session),
+    /// so this is the session boundary. A non-empty existing capture is rolled to
+    /// `<persona_id>.prev.jsonl` and the live file starts fresh. Without this the
+    /// file grew unbounded and a `tail`/read BLENDED turns from sessions hours
+    /// apart — the stale-capture trap that nearly caused a misdiagnosis (a "tools
+    /// don't work" read was last session's ghost). One `.prev` is kept for
+    /// diffing; disk is bounded to two sessions, never an unbounded archive
+    /// ([[disk-is-a-governed-resource]]).
     pub fn open(dir: &Path, persona_id: Uuid) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{persona_id}.jsonl"));
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        if std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
+            // Best-effort roll — a rename failure just means we append to the
+            // existing file (old behavior), never a spawn failure.
+            let prev = dir.join(format!("{persona_id}.prev.jsonl"));
+            let _ = std::fs::rename(&path, &prev);
+        }
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             persona_id,
             file: Mutex::new(file),
