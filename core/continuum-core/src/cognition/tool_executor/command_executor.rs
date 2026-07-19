@@ -800,14 +800,17 @@ mod tests {
             (r.is_error == Some(true), r.content.clone())
         }
 
-        // what this catches (#159): an unknown/mangled tool NAME never silently
+        // what this catches (#159): a GENUINELY unknown tool name never silently
         // no-ops — it comes back as an ERROR result naming what she tried and
         // pointing at discovery, so she recovers instead of narrating a fake
-        // receipt. The exact "write_file / list_files" snake-case vocabulary gap.
+        // receipt. NOTE: `write_file`/`read_file`/`claim_task` are NOT unknown —
+        // they're trained-reflex ALIASES the tool_dialect maps to real commands
+        // (`code/write`, …). Using them here would be the academic mistake of
+        // asserting a real tool "fails". These names are truly not tools.
         #[tokio::test]
         async fn unknown_tool_name_fails_loud_never_silent() {
             let exec = stateless_surface_hands();
-            for bogus in ["write_file", "list_files", "claim_task", "totally/made/up"] {
+            for bogus in ["frobnicate_widget", "delete_everything", "quantum_teleport", "totally/made/up"] {
                 let (is_error, content) = dispatch(&exec, bogus, json!({})).await;
                 assert!(
                     is_error,
