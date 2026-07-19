@@ -177,7 +177,17 @@ pub struct PersonaBirth {
     default_room_name: Option<String>,
     continuum_root: PathBuf,
     executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
+    /// Late-bound event bus — installed from `ModuleContext` in
+    /// [`PersonaInstanceManagerModule::initialize`]. Every completed birth announces
+    /// itself on it as `persona:born`, so a citizen born by boot auto-seed OR by the
+    /// `persona/spawn` command is uniformly observable (the "event spawning" half of
+    /// [[persona-birth-is-a-first-class-handle-command]]). Best-effort: a birth before
+    /// the bus is installed still succeeds, it just doesn't emit.
+    bus: Arc<LateBound<crate::runtime::MessageBus>>,
 }
+
+/// The event a completed birth broadcasts (payload is [`PersonaInstanceInfo`]).
+pub const PERSONA_BORN_EVENT: &str = "persona:born";
 
 impl PersonaBirth {
     pub fn new(
@@ -187,6 +197,7 @@ impl PersonaBirth {
         default_room_name: Option<String>,
         continuum_root: PathBuf,
         executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
+        bus: Arc<LateBound<crate::runtime::MessageBus>>,
     ) -> Self {
         Self {
             registry,
@@ -195,6 +206,7 @@ impl PersonaBirth {
             default_room_name,
             continuum_root,
             executor,
+            bus,
         }
     }
 
@@ -331,6 +343,17 @@ impl PersonaBirth {
 
         let info = PersonaInstanceInfo::from_runtime(&runtime);
         self.registry.register(runtime);
+
+        // Announce the birth — uniformly, whoever triggered it (boot auto-seed or the
+        // `persona/spawn` command). Best-effort: skip silently if the bus isn't
+        // installed yet (a boot-only window); the birth already succeeded.
+        if let Some(bus) = self.bus.get() {
+            match serde_json::to_value(&info) {
+                Ok(payload) => bus.publish_async_only(PERSONA_BORN_EVENT, payload),
+                Err(e) => tracing::warn!(error = %e, "failed to serialize persona:born payload"),
+            }
+        }
+
         Ok(info)
     }
 }
@@ -359,6 +382,10 @@ pub struct PersonaInstanceManagerModule {
     /// registry `Arc<DashMap>`, same executor `Arc<LateBound>`), so one
     /// executor install reaches both.
     birth: Arc<PersonaBirth>,
+    /// The late-bound event bus, installed in [`initialize`](ServiceModule::initialize)
+    /// from `ModuleContext` and shared (same `Arc`) with [`birth`](Self::birth) so
+    /// completed births can emit `persona:born`.
+    bus: Arc<LateBound<crate::runtime::MessageBus>>,
 }
 
 impl PersonaInstanceManagerModule {
@@ -380,6 +407,7 @@ impl PersonaInstanceManagerModule {
         continuum_root: PathBuf,
     ) -> Self {
         let executor = Arc::new(LateBound::new("persona-instance-manager::executor"));
+        let bus = Arc::new(LateBound::new("persona-instance-manager::bus"));
         let birth = Arc::new(PersonaBirth::new(
             registry.clone(),
             daemon_socket, // birth-only dep — moved, not stored on the module
@@ -387,12 +415,14 @@ impl PersonaInstanceManagerModule {
             default_room_name, // birth-only dep — moved
             continuum_root.clone(),
             executor.clone(),
+            bus.clone(),
         ));
         Self {
             registry,
             continuum_root,
             executor,
             birth,
+            bus,
         }
     }
 
@@ -453,7 +483,11 @@ impl ServiceModule for PersonaInstanceManagerModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Capture the event bus so every completed birth (boot auto-seed OR the
+        // `persona/spawn` command) can announce itself as `persona:born`. Shared with
+        // `PersonaBirth` via the same `Arc<LateBound>`.
+        self.bus.install(ctx.bus.clone());
         Ok(())
     }
 
@@ -510,6 +544,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
             self.registry.clone(),
             self.continuum_root.clone(),
             Arc::clone(&self.executor),
+            self.birth(),
         )
     }
 
