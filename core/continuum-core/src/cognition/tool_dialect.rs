@@ -25,10 +25,11 @@
 //! A tool-call name two commands both claim is a build-time panic — the same
 //! fail-loud the registry uses for duplicate command NAMES.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::ai::types::NativeToolSpec;
+use crate::cognition::tool_usage::{record, Outcome};
 use crate::sdk_codegen::command_registry;
 
 /// alias → canonical command name. Built ONCE from every command's declared
@@ -79,12 +80,40 @@ pub fn to_wire_spec(mut spec: NativeToolSpec) -> NativeToolSpec {
     spec
 }
 
-/// Map a wire tool-call name back to the canonical command. A trained reflex /
-/// former name resolves to the command that claims it; a canonical or unknown
-/// name passes through untouched — the adapter widens the surface, never narrows
-/// it, so `code/read` still resolves if a model emits it directly.
-pub fn from_wire_name(wire: &str) -> &str {
-    alias_to_command().get(wire).copied().unwrap_or(wire)
+/// The set of canonical command names — for classifying a wire name as CANONICAL
+/// (a real command) vs a MISS. Built once from the live registry.
+fn command_names() -> &'static HashSet<&'static str> {
+    static NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    NAMES.get_or_init(|| command_registry().iter().map(|d| d.name).collect())
+}
+
+/// Map a wire tool-call name back to the canonical command, and TALLY the outcome
+/// (`cognition::tool_usage`) so a benchmark run surfaces exactly what each model
+/// reached for. Resolves, in order: a declared reflex/former alias; our canonical
+/// name as-is; our charset-legal name (`code_read` → `code/read`). An unknown name
+/// passes through untouched (tallied a MISS; the executor fails it loud with a
+/// did-you-mean) — the adapter widens the surface, never narrows it.
+pub fn from_wire_name(wire: &str) -> String {
+    if let Some(&cmd) = alias_to_command().get(wire) {
+        record(wire, Outcome::Alias);
+        return cmd.to_string();
+    }
+    if command_names().contains(wire) {
+        record(wire, Outcome::Canonical);
+        return wire.to_string();
+    }
+    // Our charset-legal name (`code_read` → `code/read`) — the underscore form of a
+    // real command. Resolving it HERE (not just in the executor's naive replace)
+    // classifies it CANONICAL instead of a false miss.
+    if wire.contains('_') {
+        let slashed = wire.replace('_', "/");
+        if command_names().contains(slashed.as_str()) {
+            record(wire, Outcome::Canonical);
+            return slashed;
+        }
+    }
+    record(wire, Outcome::Miss);
+    wire.to_string()
 }
 
 #[cfg(test)]
