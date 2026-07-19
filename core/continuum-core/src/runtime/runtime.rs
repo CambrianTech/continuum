@@ -346,6 +346,15 @@ impl Runtime {
         params: serde_json::Value,
         caller: Option<crate::routing::CallerIdentity>,
     ) -> Option<Result<CommandResult, String>> {
+        // Meet the caller's dialect: a socket client (cu / IPC / MCP) may reach for
+        // a command's trained alias (`read_file`), former name, or charset-legal
+        // form (`code_read`). Resolve to the canonical name through the SAME
+        // tool_dialect section the persona path uses, so every surface accepts the
+        // same vocabulary. Idempotent on an already-canonical name — a no-op for the
+        // common case. Non-recording (the persona path owns the tool-usage tally).
+        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let command = resolved.as_str();
+
         // Typed path wins: a registered DynCommand object routes DIRECTLY (O(1),
         // lock-free), ahead of the prefix table — same precedence the
         // CommandExecutor uses. This is the live socket route (cu / IPC), so the
@@ -437,6 +446,12 @@ impl Runtime {
         params: serde_json::Value,
         rt_handle: &tokio::runtime::Handle,
     ) -> Option<Result<CommandResult, String>> {
+        // Same dialect resolution as the async route (see route_command): a socket
+        // client's trained alias / former name / charset-legal form maps to the
+        // canonical command before any registry lookup. Idempotent, non-recording.
+        let resolved = crate::cognition::tool_dialect::resolve_wire_name(command);
+        let command = resolved.as_str();
+
         // Typed path wins (see route_command). Bridge the async object dispatch
         // onto rt_handle with the same 60s safety-net timeout the module path uses.
         if let Some(cmd) = self.registry.route_object(command) {

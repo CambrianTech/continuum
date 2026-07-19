@@ -63,11 +63,17 @@ async fn run() -> Result<(), String> {
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
         command => {
+            // Meet the operator's dialect: `cu read_file ...` / `cu code_read ...`
+            // resolve to the canonical `code/read` through the SAME tool_dialect
+            // section personas and the socket route use — so the CLI accepts the
+            // same vocabulary, and help + param-adaptation below key off the real
+            // command name. Idempotent for an already-canonical name.
+            let command = continuum_core::cognition::tool_dialect::resolve_wire_name(command);
             let rest: Vec<String> = args.collect();
             if rest.iter().any(|a| a == "--help" || a == "-h") {
-                help_for(&command.to_string()).await
+                help_for(&command).await
             } else {
-                dispatch(&command.to_string(), rest).await
+                dispatch(&command, rest).await
             }
         }
     }

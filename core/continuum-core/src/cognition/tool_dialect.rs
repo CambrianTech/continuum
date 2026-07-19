@@ -87,20 +87,19 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry().iter().map(|d| d.name).collect())
 }
 
-/// Map a wire tool-call name back to the canonical command, and TALLY the outcome
-/// (`cognition::tool_usage`) so a benchmark run surfaces exactly what each model
-/// reached for. Resolves, in order: a declared reflex/former alias; our canonical
-/// name as-is; our charset-legal name (`code_read` → `code/read`). An unknown name
-/// passes through untouched (tallied a MISS; the executor fails it loud with a
-/// did-you-mean) — the adapter widens the surface, never narrows it.
-pub fn from_wire_name(wire: &str) -> String {
+/// Classify a wire tool-call name into (canonical command, how it resolved) —
+/// the PURE core, no side effects. Resolves, in order: a declared reflex/former
+/// alias; our canonical name as-is; our charset-legal name (`code_read` →
+/// `code/read`). An unknown name passes through untouched (classified a MISS) —
+/// the adapter widens the surface, never narrows it. Idempotent:
+/// `classify(canonical) == (canonical, Canonical)`, so it's safe to apply at
+/// every dispatch seam without changing an already-resolved name.
+fn classify(wire: &str) -> (String, Outcome) {
     if let Some(&cmd) = alias_to_command().get(wire) {
-        record(wire, Outcome::Alias);
-        return cmd.to_string();
+        return (cmd.to_string(), Outcome::Alias);
     }
     if command_names().contains(wire) {
-        record(wire, Outcome::Canonical);
-        return wire.to_string();
+        return (wire.to_string(), Outcome::Canonical);
     }
     // Our charset-legal name (`code_read` → `code/read`) — the underscore form of a
     // real command. Resolving it HERE (not just in the executor's naive replace)
@@ -108,12 +107,31 @@ pub fn from_wire_name(wire: &str) -> String {
     if wire.contains('_') {
         let slashed = wire.replace('_', "/");
         if command_names().contains(slashed.as_str()) {
-            record(wire, Outcome::Canonical);
-            return slashed;
+            return (slashed, Outcome::Canonical);
         }
     }
-    record(wire, Outcome::Miss);
-    wire.to_string()
+    (wire.to_string(), Outcome::Miss)
+}
+
+/// Resolve a wire tool-call name to the canonical command WITHOUT tallying — the
+/// shared resolver every dispatch seam (the `cu` CLI, the IPC/MCP socket route)
+/// funnels through so a trained reflex / former name / charset-legal form resolves
+/// the SAME way it does on the persona path. No recording here: these surfaces
+/// carry infra traffic (`commands/list`, health pings) that would drown the
+/// tool-call signal, and the persona path already tallies at [`from_wire_name`].
+pub fn resolve_wire_name(wire: &str) -> String {
+    classify(wire).0
+}
+
+/// Map a wire tool-call name back to the canonical command, and TALLY the outcome
+/// (`cognition::tool_usage`) so a benchmark run surfaces exactly what each model
+/// reached for. This is the RECORDING resolver — the persona tool-call path uses
+/// it (every miss/alias/canonical is a training + ergonomics signal). Other
+/// surfaces use [`resolve_wire_name`] (same mapping, no tally).
+pub fn from_wire_name(wire: &str) -> String {
+    let (name, outcome) = classify(wire);
+    record(wire, outcome);
+    name
 }
 
 #[cfg(test)]
@@ -154,6 +172,20 @@ mod tests {
         // An unknown name passes through — the executor fails it loud with a
         // did-you-mean; the adapter never invents a route.
         assert_eq!(from_wire_name("frobnicate"), "frobnicate");
+    }
+
+    // what this catches: the socket/CLI resolver (used at Runtime::route_command and
+    // the `cu` entry) maps IDENTICALLY to the persona path — alias, canonical
+    // (idempotent), charset-legal, unknown-passthrough — so `cu` / IPC / MCP accept
+    // the same vocabulary a persona does. Non-recording is a structural guarantee
+    // (resolve_wire_name == classify().0, and classify never calls record), so it's
+    // asserted by construction, not by racy global-tally inspection.
+    #[test]
+    fn resolve_wire_name_maps_like_the_persona_path() {
+        assert_eq!(resolve_wire_name("read_file"), "code/read"); // trained alias
+        assert_eq!(resolve_wire_name("code/read"), "code/read"); // canonical, idempotent
+        assert_eq!(resolve_wire_name("code_read"), "code/read"); // charset-legal
+        assert_eq!(resolve_wire_name("frobnicate"), "frobnicate"); // unknown passes through
     }
 
     // what this catches: the index is NON-VACUOUS — the migration actually landed
