@@ -112,6 +112,17 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "tool-bugfix-rs",
+            description: "TOOL-USING bugfix gym — 3 seeded-bug Rust files the persona must \
+                          read, edit, and recompile WITH HER TOOLS (dod_shell grades her edited \
+                          file, not spoken code). The only benchmark that offers + requires the \
+                          native tool surface — the honest instrument for tool-use (#204).",
+            grader: Grader::Rust,
+            tasks: 3,
+            eval_set: Some("tool-bugfix-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "humaneval",
             description: "OpenAI HumanEval (Python) — the original, 164 tasks.",
             grader: Grader::Python,
