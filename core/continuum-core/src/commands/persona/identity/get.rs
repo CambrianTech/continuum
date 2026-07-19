@@ -7,20 +7,20 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
 use crate::sdk_codegen::CommandError;
 
 use super::{card_view, PersonaCardView};
 
-/// Whose card to read. Omit to read YOUR OWN (the authenticated caller).
+/// Whose card to read. Omit to read YOUR OWN (the authenticated caller). Accepts
+/// the full id OR the 8-char short form a persona is shown in rosters (#164).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/persona/PersonaIdentityGetParams.ts")]
 pub struct PersonaIdentityGetParams {
     #[serde(default)]
     #[ts(type = "string | null")]
-    pub persona_id: Option<Uuid>,
+    pub persona_id: Option<String>,
 }
 
 crate::action_command! {
@@ -34,8 +34,12 @@ crate::action_command! {
     output: PersonaCardView,
     run(this, ctx, p) => {
         let _ = this;
-        let target_id = match p.persona_id {
-            Some(id) => id,
+        // A short/mistyped id a caller quotes back resolves against the personas
+        // this process knows (their registered cards) — the ONE id_resolve
+        // primitive (#164). Omitted → your own card (the authenticated caller).
+        let target_id = match p.persona_id.as_deref() {
+            Some(raw) => crate::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
+                .map_err(CommandError::Invalid)?,
             None => ctx
                 .caller
                 .as_ref()
