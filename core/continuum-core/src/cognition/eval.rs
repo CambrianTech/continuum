@@ -900,6 +900,11 @@ impl CognitionEval {
             }
         };
 
+        // Stamp this pass's run_id onto the live progress snapshot for the whole body
+        // (RAII-cleared on any exit) so a persona-only poll can tell it's reading THIS
+        // run, not a prior one's finished numbers (the stale-progress trap).
+        let _run_scope = RunIdScope::enter(p.run_id.clone());
+
         let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
@@ -1884,6 +1889,38 @@ pub struct EvalPassProgress {
     /// VRAM is ungoverned (bare tests) — absence is honest, never a fabricated 0.
     #[ts(optional, type = "number")]
     pub vram_free_gb: Option<u64>,
+    /// The run_id producing THIS snapshot, when the pass carries a handle. Lets a
+    /// persona-only poll (no run_id arg) tell it's reading ITS run vs a prior one —
+    /// the stale-progress trap where a fresh detached run reads as instantly-complete
+    /// with the last run's numbers. `null` for a sync/handleless run.
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+/// The run_id of the pass currently grading — set at [`run_eval`] entry (RAII), read
+/// by [`report_task_graded`] into the live snapshot. Correct-by-construction because
+/// the eval-preemption lease serializes evals: at most one pass grades at any instant
+/// (the same invariant that makes ONE progress row correct).
+static CURRENT_RUN_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// RAII: stamp the current pass's run_id for the live snapshot; clear on drop so it
+/// rides early-return AND panic (Drop runs on unwind) — never a stale run_id bleeding
+/// into the next pass or an idle board.
+struct RunIdScope;
+impl RunIdScope {
+    fn enter(run_id: Option<String>) -> Self {
+        if let Ok(mut g) = CURRENT_RUN_ID.lock() {
+            *g = run_id;
+        }
+        RunIdScope
+    }
+}
+impl Drop for RunIdScope {
+    fn drop(&mut self) {
+        if let Ok(mut g) = CURRENT_RUN_ID.lock() {
+            *g = None;
+        }
+    }
 }
 
 static EVAL_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<EvalPassProgress>>> =
@@ -1921,6 +1958,7 @@ fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass:
         last_ok: ok,
         updated_at_ms: crate::persona::trace::now_ms(),
         vram_free_gb,
+        run_id: CURRENT_RUN_ID.lock().ok().and_then(|g| g.clone()),
     };
     let _ = eval_progress_tx().send_replace(Some(snap.clone()));
     if let Some(bus) = crate::runtime::MessageBus::global() {
