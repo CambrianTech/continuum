@@ -194,7 +194,7 @@ mod tests {
         let frame = MediaFrame::from_bytes(png(60, 40));
         frame.scaled(&compute, None, AMBIENT).await;
         frame.description(&compute, &StubDescriber, "image/png").await;
-        buffer.observe("alice-peer".into(), frame, compute.clone(), describer, "image/png");
+        buffer.observe("alice-peer".into(), frame, compute.clone(), describer, "image/png", 0);
         (
             MediaPerceptionSource::new(pid, buffer, compute.clone()),
             compute,
@@ -239,6 +239,7 @@ mod tests {
             compute.clone(),
             Arc::new(StubDescriber),
             "image/png",
+            0,
         );
         // (observe spawns a warm task, but we don't await it — read immediately.)
         let src = MediaPerceptionSource::new(pid, buffer, compute);

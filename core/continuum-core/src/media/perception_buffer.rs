@@ -16,6 +16,7 @@
 //! ([[perception-feedback-must-not-blow-rag]]).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::frame::{FrameDescriber, MediaFrame};
@@ -25,6 +26,32 @@ use crate::runtime::SharedCompute;
 /// The airc participant identity (peer id) a frame belongs to. Never a parallel
 /// call/session id — the room roster is the truth.
 pub type ParticipantId = String;
+
+/// The MINIMUM spacing between expensive cell-warms (scale + LLM describe) per
+/// participant — the perception plane's sample rate, DECOUPLED from the media frame
+/// rate. A live call runs 30fps for smooth human video + avatars (the display plane);
+/// a persona does NOT need a fresh vision-encode/description 30×/sec. At ~2 Hz the
+/// ambient "look" stays current while the LLM-describe cost stays bounded regardless
+/// of frame rate ([[multimodal-live-mode-is-a-latency-obsession-cbar-doctrine]],
+/// [[avatar-render-is-a-resolution-field-attention-priced]]). Birth default; the
+/// governor makes this an attention-priced resolution field later (#173) — a focused
+/// persona looks more often, an idle one less.
+pub const AMBIENT_WARM_MIN_INTERVAL_MS: u64 = 500;
+
+/// Per-participant warm-cadence gate. Coalescing the latest frame is unconditional
+/// and O(1); only the EXPENSIVE warm (scale + describe) passes through this gate, so
+/// a 30fps ingest coalesces 30 frames/sec into one latest but triggers at most
+/// ~2 describes/sec, and never stacks a second warm on an unfinished one.
+#[derive(Default)]
+struct WarmGate {
+    /// Monotonic ms of the last warm we launched for this participant.
+    last_warm_ms: u64,
+    /// False until the first warm — so a participant's first frame warms immediately.
+    warmed_once: bool,
+    /// Held `true` for the duration of an in-flight warm task; a concurrent observe
+    /// that sees it set skips (no stacking a slow describe under a fast stream).
+    in_flight: Arc<AtomicBool>,
+}
 
 /// What a persona perceives of ONE participant RIGHT NOW — only the cells that have
 /// RESOLVED. Each field holds the cache's `Arc` (zero-copy); `None` = not-ready-this-tick
@@ -55,6 +82,12 @@ pub struct PerceptionBuffer {
     /// The ambient forced-look size (~480w default) — the cheap thumbnail cell every tick
     /// warms + reads. Full-res / bigger is the drill-in tool, not the ambient path.
     ambient: DestSize,
+    /// Per-participant warm-cadence gates — the seam that keeps the expensive cells off
+    /// the media frame rate. See [`WarmGate`] and [`AMBIENT_WARM_MIN_INTERVAL_MS`].
+    warm_gates: Mutex<HashMap<ParticipantId, WarmGate>>,
+    /// Minimum ms between warms per participant (the perception sample rate). Field, not
+    /// hardcoded at the call site, so the governor can retune it per persona later (#173).
+    min_warm_interval_ms: u64,
 }
 
 impl PerceptionBuffer {
@@ -62,13 +95,43 @@ impl PerceptionBuffer {
         Self {
             latest: Mutex::new(HashMap::new()),
             ambient,
+            warm_gates: Mutex::new(HashMap::new()),
+            min_warm_interval_ms: AMBIENT_WARM_MIN_INTERVAL_MS,
         }
     }
 
+    /// The warm-cadence DECISION (pure + testable): should this observe launch a cell
+    /// warm for `participant` at `now_ms`? Returns the in-flight flag to hold for the
+    /// warm's duration when YES; `None` when the warm is GATED — either one is already
+    /// in flight (never stack), or we warmed within `min_warm_interval_ms` (the frame
+    /// rate outruns the perception sample rate). The 30fps-safety guarantee lives here,
+    /// separated from the spawn so it can be asserted without timing or a runtime.
+    fn should_warm(&self, participant: &str, now_ms: u64) -> Option<Arc<AtomicBool>> {
+        let mut gates = self.warm_gates.lock().unwrap_or_else(|e| e.into_inner());
+        let g = gates.entry(participant.to_string()).or_default();
+        // Never stack a warm on an unfinished one — protects against a describe slower
+        // than the interval under a fast stream.
+        if g.in_flight.load(Ordering::Acquire) {
+            return None;
+        }
+        let due = !g.warmed_once
+            || now_ms.saturating_sub(g.last_warm_ms) >= self.min_warm_interval_ms;
+        if !due {
+            return None;
+        }
+        g.warmed_once = true;
+        g.last_warm_ms = now_ms;
+        g.in_flight.store(true, Ordering::Release);
+        Some(g.in_flight.clone())
+    }
+
     /// Ingest a frame for `participant`: COALESCE to the latest (room-as-now — a newer frame
-    /// replaces the old), then FIRE the ambient cell warms (thumbnail + description) on a
-    /// spawned task and return IMMEDIATELY. Non-blocking — the ingest path never awaits the
-    /// cells. Must be called within a tokio runtime (the live LiveKit ingest path always is).
+    /// replaces the old) UNCONDITIONALLY (an O(1) mutex insert, safe to call at 30fps — the
+    /// media/display plane), then FIRE the ambient cell warms (thumbnail + description) on a
+    /// spawned task ONLY when the cadence gate opens ([`should_warm`](Self::should_warm)) and
+    /// return IMMEDIATELY. Non-blocking — the ingest path never awaits the cells. `now_ms` is
+    /// the caller's monotonic clock (substrate passes time in; no `Instant::now` in the media
+    /// core). Must be called within a tokio runtime (the live LiveKit ingest path always is).
     pub fn observe(
         &self,
         participant: ParticipantId,
@@ -76,20 +139,30 @@ impl PerceptionBuffer {
         compute: Arc<SharedCompute>,
         describer: Arc<dyn FrameDescriber>,
         mime: &str,
+        now_ms: u64,
     ) {
-        // Coalesce: the latest frame per participant wins; the old one is dropped.
+        // Coalesce ALWAYS: the latest frame per participant wins; the old one is dropped.
+        // Cheap enough for the 30fps media plane — perception samples it, doesn't mirror it.
         self.latest
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(participant, frame.clone());
+            .insert(participant.clone(), frame.clone());
 
-        // Fire-and-forget the ambient cells async — compute-once per content-hash, shared to
-        // every viewer; a re-observe of the same bytes is a cache hit (no recompute).
+        // Gate the EXPENSIVE warm to the perception sample rate. A gated tick simply
+        // returns — its frame is already the coalesced latest and will warm on the next
+        // open tick (room-as-now). compute-once per content-hash still applies on top:
+        // re-warming identical bytes is a cache hit.
+        let Some(in_flight) = self.should_warm(&participant, now_ms) else {
+            return;
+        };
+
         let ambient = self.ambient;
         let mime = mime.to_string();
         tokio::spawn(async move {
             let _ = frame.scaled(&compute, None, ambient).await; // warm ~480w thumbnail
             let _ = frame.description(&compute, describer.as_ref(), &mime).await; // warm describe
+            // Release the gate so the next due tick can warm the then-latest frame.
+            in_flight.store(false, Ordering::Release);
         });
     }
 
@@ -171,9 +244,9 @@ mod tests {
 
         let old = MediaFrame::from_bytes(png(40, 40));
         let new = MediaFrame::from_bytes(png(60, 40)); // different bytes → different hash
-        buffer.observe("alice".into(), old.clone(), compute.clone(), describer.clone(), "image/png");
-        buffer.observe("alice".into(), new.clone(), compute.clone(), describer.clone(), "image/png");
-        buffer.observe("bob".into(), MediaFrame::from_bytes(png(20, 20)), compute.clone(), describer.clone(), "image/png");
+        buffer.observe("alice".into(), old.clone(), compute.clone(), describer.clone(), "image/png", 0);
+        buffer.observe("alice".into(), new.clone(), compute.clone(), describer.clone(), "image/png", 1);
+        buffer.observe("bob".into(), MediaFrame::from_bytes(png(20, 20)), compute.clone(), describer.clone(), "image/png", 2);
 
         assert_eq!(buffer.len(), 2, "alice coalesced, bob separate → 2 participants");
         let percepts = buffer.current_percepts(&compute);
@@ -220,9 +293,66 @@ mod tests {
         let buffer = PerceptionBuffer::new(AMBIENT);
         let compute = Arc::new(SharedCompute::new());
         let describer: Arc<dyn FrameDescriber> = Arc::new(StubDescriber);
-        buffer.observe("alice".into(), MediaFrame::from_bytes(png(10, 10)), compute, describer, "image/png");
+        buffer.observe("alice".into(), MediaFrame::from_bytes(png(10, 10)), compute, describer, "image/png", 0);
         assert_eq!(buffer.len(), 1);
         buffer.remove("alice");
         assert!(buffer.is_empty());
+    }
+
+    // what this catches: the 30fps SAFETY guarantee, as a pure decision (no timing/spawn).
+    // The first frame warms; further frames WITHIN the interval are gated even though they
+    // are distinct content (the frame rate outruns the perception sample rate); once the
+    // interval elapses the next warm is due again. This is what keeps a 30fps stream from
+    // triggering 30 LLM describes/sec.
+    #[test]
+    fn warm_cadence_gates_within_the_interval_and_reopens_after() {
+        let buffer = PerceptionBuffer::new(AMBIENT);
+        let p = "alice";
+
+        // First ever frame → warms immediately; holds the in-flight flag.
+        let flag = buffer.should_warm(p, 0).expect("first frame warms");
+        // Simulate the warm completing so the in-flight guard is not what's under test.
+        flag.store(false, Ordering::Release);
+
+        // A distinct frame 10ms later (30fps ≈ 33ms apart) → GATED by cadence.
+        assert!(
+            buffer.should_warm(p, 10).is_none(),
+            "a frame within the interval is gated — perception samples, not mirrors, 30fps"
+        );
+        assert!(
+            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS - 1).is_none(),
+            "still within the interval → still gated"
+        );
+
+        // Once the interval elapses, the next warm is due again.
+        let flag2 = buffer
+            .should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS)
+            .expect("interval elapsed → warm is due");
+        flag2.store(false, Ordering::Release);
+    }
+
+    // what this catches: never STACK a warm — while one is in flight, later observes are
+    // gated even if the interval has elapsed, so a describe slower than the interval under
+    // a fast stream cannot pile up concurrent inferences.
+    #[test]
+    fn warm_gate_never_stacks_an_in_flight_warm() {
+        let buffer = PerceptionBuffer::new(AMBIENT);
+        let p = "bob";
+
+        // Launch a warm and DON'T release it (simulates a describe still running).
+        let _held = buffer.should_warm(p, 0).expect("first warms");
+
+        // Even far past the interval, a second warm is refused while one is in flight.
+        assert!(
+            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS * 100).is_none(),
+            "in-flight guard blocks stacking regardless of elapsed time"
+        );
+
+        // Once it completes, the next due tick warms again.
+        _held.store(false, Ordering::Release);
+        assert!(
+            buffer.should_warm(p, AMBIENT_WARM_MIN_INTERVAL_MS * 100).is_some(),
+            "warm reopens after the in-flight one finishes"
+        );
     }
 }
