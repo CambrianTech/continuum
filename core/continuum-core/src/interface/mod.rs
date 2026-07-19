@@ -124,6 +124,7 @@ pub struct ScreenshotCommand;
 
 impl crate::sdk_codegen::CommandSpec for ScreenshotCommand {
     const NAME: &'static str = "interface/screenshot";
+    const ALIASES: &'static [&'static str] = &["screenshot"];
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // observation parity — seeing the screen is a first-class work verb
     const DESCRIPTION: &'static str =

@@ -156,6 +156,7 @@ pub struct WorkClaimResult {
 #[async_trait]
 impl ActionCommand for WorkClaim {
     const NAME: &'static str = "work/claim";
+    const ALIASES: &'static [&'static str] = &["claim_task"];
     const NATIVE: bool = true; // core room workflow — claiming shared-board work as yourself
     // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
     // self-scoped cooperative act the shared board exists for. It was

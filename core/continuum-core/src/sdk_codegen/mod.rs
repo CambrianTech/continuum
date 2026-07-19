@@ -180,6 +180,11 @@ pub trait CommandSpec {
     /// working set so the schema payload never floods the window — the ~150-tool dump
     /// muted personas (see [`native_tool_specs`](crate::cognition::persona_tools::native_tool_specs)).
     const NATIVE: bool = false;
+    /// The trained/former/expected tool-call names this command ANSWERS TO (see
+    /// [`ActionCommand::ALIASES`](crate::sdk_codegen::command::ActionCommand)). Declared
+    /// by the command in its own file so it stays portable; aggregated into one
+    /// generated inverse index. Defaults to none.
+    const ALIASES: &'static [&'static str] = &[];
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -269,6 +274,11 @@ pub struct CommandDescriptor {
     /// [`CommandSpec::NATIVE`]). The projection [`native_tool_specs`] filters the
     /// registry on this — so the native set is derived, never a hand-kept list.
     pub native: bool,
+    /// The trained/former/expected tool-call names this command answers to (from
+    /// [`CommandSpec::ALIASES`]). Aggregated into the one generated inverse index
+    /// (`cognition::tool_dialect`) that maps a model's reflex name back to this
+    /// command. Empty for most commands.
+    pub aliases: &'static [&'static str],
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -314,6 +324,7 @@ impl CommandDescriptor {
             description: C::DESCRIPTION,
             wire: C::WIRE,
             native: C::NATIVE,
+            aliases: C::ALIASES,
             params,
             params_schema: C::params_schema(),
             result,

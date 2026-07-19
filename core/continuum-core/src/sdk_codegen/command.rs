@@ -160,6 +160,14 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// (catalog-only); a core agentic command overrides it to `true` — and then it's
     /// offered natively AUTOMATICALLY, no central list. See [`CommandSpec::NATIVE`].
     const NATIVE: bool = false;
+    /// The trained/former/expected names this command ANSWERS TO — the conventional
+    /// tool-call names a model reaches for (`read_file`, `bash`), plus any FORMER
+    /// name this command carried before it moved. Declared HERE, on the command
+    /// itself, so a command is fully portable: rename/move it and its aliases
+    /// travel with it — no central table to keep in sync. Aggregated into one
+    /// generated inverse index ([`crate::cognition::tool_dialect`]); a name two
+    /// commands both claim is a build-time panic. Defaults to none.
+    const ALIASES: &'static [&'static str] = &[];
 
     /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
     /// is derived automatically (no hand-authoring) and exposed to every SDK.
@@ -179,6 +187,7 @@ impl<T: ActionCommand> CommandSpec for T {
     const ACCESS_LEVEL: AccessLevel = <T as ActionCommand>::ACCESS;
     const DESCRIPTION: &'static str = <T as ActionCommand>::DESCRIPTION;
     const NATIVE: bool = <T as ActionCommand>::NATIVE;
+    const ALIASES: &'static [&'static str] = <T as ActionCommand>::ALIASES;
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;
