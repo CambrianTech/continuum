@@ -18,7 +18,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
 use crate::modules::persona_instance_manager::PersonaInstanceInfo;
 use crate::persona::PersonaAircRuntimeRegistry;
@@ -68,6 +67,7 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     // what this catches: name/access wiring — a single-entry roster lookup is
     // read-only, so it is AiSafe.

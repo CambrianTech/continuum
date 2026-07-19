@@ -155,6 +155,20 @@ pub fn get(identity: &str) -> Option<PersonaCard> {
         .and_then(|m| m.get(identity).cloned())
 }
 
+/// Every registered card's persona_id — the candidate set for resolving a
+/// short/mistyped persona id a caller quotes back (`persona/identity/{get,set}`
+/// via [`crate::id_resolve::resolve`], #164). Cards register at spawn and on
+/// every identity edit, so this is "the personas this process knows about" — the
+/// same role `PersonaAircRuntimeRegistry::ids()` plays for the runtime verbs.
+pub fn ids() -> Vec<Uuid> {
+    CARD_REGISTRY
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.values().map(|c| c.persona_id).collect())
+        .unwrap_or_default()
+}
+
 /// The registered card's gender for an identity, if present. The seam
 /// `registered_gender` calls before falling back to the remote-participant
 /// name-anchor and finally the id-hash.
@@ -195,6 +209,28 @@ mod tests {
         assert_eq!(card.persona_id, id);
         assert_eq!(card.created_at_ms, 1000);
         assert!(card.role.is_none(), "role unknown at genesis");
+    }
+
+    // what this catches: ids() reports every REGISTERED card's persona_id — the
+    // candidate set that lets a short/mistyped persona id a caller quotes back
+    // resolve via id_resolve (#164). Membership, not equality: the registry is a
+    // process-global shared with other tests, so we only assert OUR two ids appear
+    // (and remove them after) rather than pinning the whole set.
+    #[test]
+    fn ids_reports_registered_cards() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        register(PersonaCard::genesis(a, "Asha", 1, None));
+        register(PersonaCard::genesis(b, "Niko", 2, None));
+        let registered = ids();
+        assert!(
+            registered.contains(&a) && registered.contains(&b),
+            "both registered ids are candidates"
+        );
+        remove(&a.to_string());
+        remove(&b.to_string());
+        let after = ids();
+        assert!(!after.contains(&a) && !after.contains(&b), "removed ids drop out");
     }
 
     // what this catches: a unisex/custom name (not in either gendered pool) falls

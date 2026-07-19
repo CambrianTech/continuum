@@ -34,7 +34,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::sdk_codegen::CommandError;
@@ -78,13 +77,16 @@ crate::action_command! {
     params: PersonaDespawnParams,
     output: DespawnReport,
     run(this, _ctx, p) => {
-        // 1. The id must be a well-formed persona Uuid — never abort on a typo.
-        let persona_id = Uuid::parse_str(&p.persona_id).map_err(|e| {
-            CommandError::Invalid(format!(
-                "persona_id '{}' is not a valid uuid: {e} — call persona/instances/list",
-                p.persona_id
-            ))
-        })?;
+        // 1. Resolve the id — a clean UUID passes through; the 8-char SHORT form a
+        //    caller was shown (rosters DISPLAY short ids) or a one-char-mistyped
+        //    UUID expands against who's online. The ONE shared id_resolve primitive
+        //    (#164), candidates = the live runtime registry — same as instances/get.
+        let persona_id = crate::id_resolve::resolve(
+            &p.persona_id,
+            &this.registry.ids(),
+            "persona",
+        )
+        .map_err(|e| CommandError::Invalid(format!("{e} — call persona/instances/list")))?;
 
         // 2. Orderly shutdown: abort + drain the service loop, drop the slot
         //    (cascades to leaving the room). Returns None if she was not online.
@@ -110,6 +112,7 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     // what this catches: the wire name mirrors the file path — the routing
     // contract that lets the typed registry dispatch `persona/instances/despawn`

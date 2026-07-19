@@ -30,7 +30,6 @@ use std::path::PathBuf;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use uuid::Uuid;
 
 use crate::context::citizen_home_path;
 use crate::identity::IdentityKind;
@@ -51,9 +50,10 @@ use super::{card_view, PersonaCardView};
 pub struct PersonaIdentitySetParams {
     /// Whose identity to edit. Omit to edit YOUR OWN (the authenticated caller). A
     /// persona may only edit herself; an operator may target any persona by id.
+    /// Accepts the full id OR the 8-char short form shown in rosters (#164).
     #[serde(default)]
     #[ts(type = "string | null")]
-    pub persona_id: Option<Uuid>,
+    pub persona_id: Option<String>,
     /// New gender: `male` | `female` | `neutral` (aka they/them). Presentation facet —
     /// avatar/voice are NOT auto-re-derived (they're independently editable below).
     #[serde(default)]
@@ -140,9 +140,12 @@ crate::action_command! {
     output: PersonaCardView,
     run(this, ctx, p) => {
         // Resolve WHO is being edited. Default to the authenticated caller (self-edit).
+        // A short/mistyped id resolves against the personas this process knows
+        // (their registered cards) — the ONE id_resolve primitive (#164).
         let caller = ctx.caller.as_ref();
-        let target_id = match p.persona_id {
-            Some(id) => id,
+        let target_id = match p.persona_id.as_deref() {
+            Some(raw) => crate::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
+                .map_err(CommandError::Invalid)?,
             None => caller
                 .map(|c| c.peer_id.as_uuid())
                 .ok_or_else(|| CommandError::Invalid(
@@ -198,6 +201,7 @@ crate::action_command! {
 mod tests {
     use super::*;
     use crate::sdk_codegen::ActionCommand;
+    use uuid::Uuid;
 
     fn base_card() -> PersonaCard {
         // "Niko" ∈ MALE pool → gender Male; a deterministic starting card.
