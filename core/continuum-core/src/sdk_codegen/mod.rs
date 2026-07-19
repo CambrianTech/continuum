@@ -168,6 +168,17 @@ pub trait CommandSpec {
     /// TS emitter. Defaults to empty; the tool projection falls back to a
     /// name-based description when unset, so existing commands need no change.
     const DESCRIPTION: &'static str = "";
+    /// Whether this command joins the persona's NATIVE tool surface — the bounded set
+    /// handed to the model as first-class structured tool-call *schemas* every turn.
+    /// (Distinct from the compact catalog, which already lists EVERY authorized command
+    /// by name for on-demand `commands/help` expansion — awareness of all commands is
+    /// automatic regardless of this flag.) Declared HERE, by the command in its own
+    /// file, so a new command joins the native surface AUTOMATICALLY on registration —
+    /// never by editing a central list ([[commands-do-real-work-and-return-receipts-not-promise-slop]]).
+    /// Defaults `false` (catalog-only): the native set stays the small core agentic
+    /// working set so the schema payload never floods the window — the ~150-tool dump
+    /// muted personas (see [`native_tool_specs`](crate::cognition::persona_tools::native_tool_specs)).
+    const NATIVE: bool = false;
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -253,6 +264,10 @@ pub struct CommandDescriptor {
     pub description: &'static str,
     /// The handler's real wire convention (decides envelope wrapping).
     pub wire: WireShape,
+    /// Whether the command opts into the persona's native tool surface (from
+    /// [`CommandSpec::NATIVE`]). The projection [`native_tool_specs`] filters the
+    /// registry on this — so the native set is derived, never a hand-kept list.
+    pub native: bool,
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -297,6 +312,7 @@ impl CommandDescriptor {
             access_level: C::ACCESS_LEVEL,
             description: C::DESCRIPTION,
             wire: C::WIRE,
+            native: C::NATIVE,
             params,
             params_schema: C::params_schema(),
             result,
@@ -611,6 +627,7 @@ macro_rules! action_command {
         $vis:vis struct $cmd:ident;
         name: $name:expr,
         access: $access:ident,
+        $(native: $native:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
@@ -618,7 +635,7 @@ macro_rules! action_command {
         $(#[doc = $doc])*
         #[derive(::std::default::Default)]
         $vis struct $cmd;
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], $params, $output, $this, $ctx, $p, $body);
         $crate::register_stateless_command!($cmd);
     };
 
@@ -629,13 +646,14 @@ macro_rules! action_command {
         $vis:vis struct $cmd:ident { $($field:ident : $fty:ty),+ $(,)? }
         name: $name:expr,
         access: $access:ident,
+        $(native: $native:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
         $vis struct $cmd { $(pub $field: $fty),+ }
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], $params, $output, $this, $ctx, $p, $body);
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
         // codegen. Its RUNTIME object is constructed with deps by the owning
@@ -644,7 +662,7 @@ macro_rules! action_command {
     };
 
     // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
-    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
         #[::async_trait::async_trait]
         impl $crate::sdk_codegen::ActionCommand for $cmd {
             const NAME: &'static str = $name;
@@ -652,6 +670,10 @@ macro_rules! action_command {
             // Doc comment ⟹ model-facing DESCRIPTION. Each `///` line keeps its
             // leading space, so concatenation separates lines naturally; no docs ⇒ "".
             const DESCRIPTION: &'static str = ::std::concat!($($doc),*);
+            // Optional `native: <bool>,` clause ⟹ NATIVE; absent ⇒ false (catalog-only).
+            // `false || <expr>` when present, bare `false` when absent — const-valid, no
+            // unused bindings.
+            const NATIVE: bool = false $(|| $native)?;
             type Params = $params;
             type Output = $output;
             async fn run(

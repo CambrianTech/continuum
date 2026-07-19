@@ -329,6 +329,7 @@ pub struct CodeReadParams {
 #[async_trait]
 impl ActionCommand for CodeRead {
     const NAME: &'static str = "code/read";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Read a file from the workspace, optionally a line range. Returns content plus line metadata.";
     type Params = CodeReadParams;
@@ -363,6 +364,7 @@ pub struct CodeWriteParams {
 #[async_trait]
 impl ActionCommand for CodeWrite {
     const NAME: &'static str = "code/write";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Create or overwrite a file with new content. Tracked in the change history (undoable).";
     type Params = CodeWriteParams;
@@ -537,6 +539,7 @@ fn reject_placeholder_path(file_path: &str) -> Result<(), CommandError> {
 #[async_trait]
 impl ActionCommand for CodeEdit {
     const NAME: &'static str = "code/edit";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Edit an existing file: line-range replace, search/replace, insert-at, or append. Undoable.";
     type Params = CodeEditParams;
@@ -572,6 +575,7 @@ pub struct CodeListParams {
 #[async_trait]
 impl ActionCommand for CodeList {
     const NAME: &'static str = "code/list";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "List a directory (flat, non-recursive): names, kinds, and sizes. Use code/tree for recursion.";
     type Params = CodeListParams;
@@ -778,6 +782,7 @@ pub struct CodeTreeParams {
 #[async_trait]
 impl ActionCommand for CodeTree {
     const NAME: &'static str = "code/tree";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Print a recursive directory tree (bounded depth) — the project's structure at a glance.";
     type Params = CodeTreeParams;
@@ -836,6 +841,7 @@ pub struct CodeSearchParams {
 #[async_trait]
 impl ActionCommand for CodeSearch {
     const NAME: &'static str = "code/search";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Search file contents for a pattern across the workspace (grep). Returns file:line matches.";
     type Params = CodeSearchParams;
@@ -1043,6 +1049,7 @@ fn shell_response(s: &crate::code::shell_session::ExecutionState) -> ShellExecut
 #[async_trait]
 impl ActionCommand for CodeShell {
     const NAME: &'static str = "code/shell";
+    const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     // Privileged → Trusted tier: arbitrary execution is for high-trust local
     // citizens (a local persona / a trusted node), never a Provisional remote peer.
     const ACCESS: AccessLevel = AccessLevel::Privileged;

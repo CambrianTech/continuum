@@ -342,7 +342,16 @@ impl LlmDeliberationFaculty {
             .unwrap_or(0);
         let native_surface_min_ctx = full_surface_tokens.saturating_mul(SURFACE_MAX_WINDOW_SHARE);
         if self.binding.load().context_window < native_surface_min_ctx {
-            specs.truncate(2); // ["commands/list", commands/help] lead the list by contract
+            // Tight window: shrink to the DISCOVERY PAIR (commands/list, then commands/help),
+            // selected BY NAME in that order — NOT by list position. The native surface is
+            // registry-DERIVED now (sorted by name, so `commands/help` sorts before
+            // `commands/list`), so a `truncate(2)` would grab the alphabetically-first two,
+            // not the discovery pair. These two reach the long tail by name.
+            specs = ["commands/list", persona_tools::TOOL_HELP_NAME]
+                .iter()
+                .filter_map(|n| persona_tools::spec_for_command(n))
+                .map(crate::cognition::tool_dialect::to_wire_spec)
+                .collect();
         }
         self.native_specs = specs;
     }

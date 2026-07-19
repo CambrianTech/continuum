@@ -302,6 +302,7 @@ pub struct CommandsHelp;
 #[async_trait]
 impl ActionCommand for CommandsHelp {
     const NAME: &'static str = "commands/help";
+    const NATIVE: bool = true; // discovery pair — the on-demand "how do I call this?" tool
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Show how to CALL a command: the exact tool-call format to emit + its arguments. \

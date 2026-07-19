@@ -362,52 +362,24 @@ pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
 /// her. Only includes a spec that actually resolves in the registry (fail-closed:
 /// a missing command is omitted, never fabricated — [[fallbacks-are-illegal-fail-loud]]).
 pub fn native_tool_specs() -> Vec<NativeToolSpec> {
-    // The discovery pair (reaches the long tail by name) PLUS the core agentic-coding arc
-    // as REAL native specs. A model TRAINED to tool-call (Devstral, Qwen-Coder) emits native
-    // tool_calls — given only the discovery pair it loops forever on `commands/help{code/search}`
-    // and never acts (glass-boxed: 14/14 SWE acts were `commands/help`, 0 edits, 0 score). Offering
-    // the working set directly lets it search→read→edit→write→run→verify without the help detour,
-    // while a weak model that can't emit native tool_calls still falls back to the text menu +
-    // narrated-call recovery. Bounded (~11 schemas, ~1-2k tokens) so it never overflows the window
-    // the way a full ~150-tool dump did. Only specs that actually resolve are included (fail-closed).
+    // DERIVED, not a hand-kept list: the native surface is every command that DECLARES
+    // itself native (`CommandSpec::NATIVE = true`, in its OWN file) — so adding a command
+    // and marking it native offers it here AUTOMATICALLY, no central array to edit. This
+    // is the dynamic-discovery contract, not a switch statement (CLAUDE.md §Anti-Pattern).
+    //
+    // Why a bounded native set at all (rather than every AiSafe command): a model TRAINED
+    // to tool-call (Devstral, Qwen-Coder) emits native tool_calls, and given the FULL
+    // ~150-tool schema dump it was muted (glass-boxed: window overflow). Given ONLY the
+    // discovery pair it loops on `commands/help{code/search}` and never acts (14/14 SWE
+    // acts were `commands/help`, 0 edits). So the core agentic working set opts into
+    // NATIVE while the long tail stays reachable BY NAME through the compact catalog +
+    // `commands/help`. The `native` flag is per-command; this projection just collects it.
     // [[adaptive-tool-surface-meets-you-in-the-middle]] [[local-first-tool-call-robustness-is-the-differentiator]]
-    const NATIVE: &[&str] = &[
-        "commands/list",
-        TOOL_HELP_NAME,
-        "code/search",
-        "code/read",
-        "code/list",
-        "code/tree",
-        "code/edit",
-        "code/write",
-        "code/run",
-        "code/shell",
-        "code/git/diff",
-        // The consolidation rail (2026-07-11): status/commit/apply are how
-        // parallel workspaces converge — diff→post→apply, the loop the Conway
-        // team invented socially before the rails existed.
-        "code/git/status",
-        "code/git/commit",
-        "code/git/apply",
-        // Observation parity (Joel 2026-07-11): seeing the screen is a first-class
-        // work verb, not a special capability — "if they can observe like we do,
-        // they can build like we do." Routed to a client adapter (WireShape::
-        // Provided); fails loud when no UI adapter is connected, never fabricates.
-        "interface/screenshot",
-        // Perception Surface (#187): observe = SEE + REASON — pixels AND the
-        // structure tree to aim actions at an element, not a pixel. The enriched
-        // sibling of screenshot; also Provided (fails loud with no eye-node).
-        "perception/observe",
-        // Perception Surface (#187), live-call video sibling: look = a persona's
-        // OWN eyes on the video call it's in — pull a current image of one
-        // participant or everyone, thumbnail or full. Substrate-served off the
-        // in-process perception buffer; empties/teaches when not in a call.
-        "perception/look",
-        // The shared-board lifecycle: claiming work as yourself is core to the
-        // room workflow (rides the wire as `claim_task` via the dialect).
-        "work/claim",
-    ];
-    NATIVE.iter().filter_map(|n| spec_for_command(n)).collect()
+    command_registry()
+        .iter()
+        .filter(|d| d.native)
+        .map(descriptor_to_tool_spec)
+        .collect()
 }
 
 /// Look up one command by name and project it to a full tool spec — the on-demand
@@ -593,6 +565,52 @@ pub struct ToolSurfaceReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the native surface is DERIVED from each command's declared
+    // `NATIVE` flag, not a hand-kept list — a command that declares `native: true` is
+    // offered automatically, and a sibling AiSafe command that does NOT (e.g. code/glob)
+    // is excluded. This is the anti-switch-statement contract: add a command, mark it
+    // native in its OWN file, and it appears here with zero edits to this function. If
+    // someone reintroduces a hardcoded array, or the flag stops being read, this breaks.
+    #[test]
+    fn native_surface_is_derived_from_the_per_command_native_flag() {
+        let specs = native_tool_specs();
+        let names: std::collections::HashSet<&str> =
+            specs.iter().map(|s| s.name.as_str()).collect();
+
+        // The declared core agentic working set is present (each opted in at its own site).
+        for expected in [
+            "commands/list",
+            "commands/help",
+            "code/search",
+            "code/read",
+            "code/edit",
+            "code/write",
+            "code/run",
+            "code/shell",
+            "code/git/status",
+            "interface/screenshot",
+            "perception/observe",
+            "perception/look",
+            "work/claim",
+        ] {
+            assert!(names.contains(expected), "native surface must include declared-native {expected}");
+        }
+
+        // A sibling AiSafe command that did NOT opt in is EXCLUDED — proving this is a
+        // filter on the flag, not "every AiSafe command" (which would re-flood the window).
+        assert!(
+            !names.contains("code/glob"),
+            "code/glob is AiSafe but not declared native — must stay catalog-only, not native"
+        );
+
+        // And it stays BOUNDED (the muting guardrail) — nowhere near the full registry.
+        assert!(
+            names.len() < 40,
+            "native set stayed bounded ({} tools); a full dump would re-mute personas",
+            names.len()
+        );
+    }
 
     fn spec(name: &str) -> NativeToolSpec {
         NativeToolSpec {

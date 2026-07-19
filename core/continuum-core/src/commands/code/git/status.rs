@@ -23,6 +23,7 @@ crate::action_command! {
     pub struct CodeGitStatus { state: Arc<CodeState> }
     name: "code/git/status",
     access: AiSafe,
+    native: true,
     params: GitStatusParams,
     output: GitStatusInfo,
     run(this, ctx, _p) => {

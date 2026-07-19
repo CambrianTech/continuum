@@ -204,6 +204,7 @@ pub struct LookCommand;
 #[async_trait]
 impl ActionCommand for LookCommand {
     const NAME: &'static str = "perception/look";
+    const NATIVE: bool = true; // live-call eyes — offered natively beside perception/observe
     const DESCRIPTION: &'static str =
         "Look at the live video call you are in — get a current image of the people on \
          the call. Pass `participant` (an id) to see one person, or omit it to see \
