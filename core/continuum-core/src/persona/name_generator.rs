@@ -114,11 +114,16 @@ pub fn agent_name_from_identity(identity: &str) -> &'static str {
 
 /// Resolve a persona's gender from its NAME — which gendered pool the name belongs
 /// to. This is the coherence ANCHOR ([[procedural-persona-genesis]]): a persona's
-/// name is chosen before its keypair exists and is the stable, persisted,
-/// user-visible truth, whereas the live `peer_id` is a random tag assigned later
-/// (`airc-identity` mints `PeerId::new()`, independent of the name). So the name —
-/// not the peer_id — is what avatar/voice must cohere WITH, or a feminine "Asha"
-/// ends up with a masculine face. Returns `None` for a name in BOTH pools (a
+/// name is the stable, persisted, user-visible truth (and, unlike gender, is
+/// self-editable), so the name — not the raw id — is what avatar/voice must cohere
+/// WITH, or a feminine "Asha" ends up with a masculine face.
+///
+/// Post-#199 Slice 1b a FRESHLY-born persona's `peer_id` IS the seed her name was
+/// derived from (continuum supplies `persona_id` to airc's mint as the peer_id via
+/// `attach_as_with_peer_id`), so for her the name and id agree by construction. But
+/// this name-anchor is still the right resolver: a persona may RENAME herself, and
+/// pre-Slice-1b / custom / imported names never derived from the id — so the name,
+/// not the id, remains authoritative. Returns `None` for a name in BOTH pools (a
 /// genuinely unisex draw, e.g. a Neutral persona) or NEITHER (custom/legacy name),
 /// letting the caller fall back to an id-hash gender for those.
 pub fn gender_from_name(name: &str) -> Option<AvatarGender> {
@@ -134,6 +139,7 @@ pub fn gender_from_name(name: &str) -> Option<AvatarGender> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::collections::HashSet;
 

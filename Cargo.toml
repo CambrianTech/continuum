@@ -134,18 +134,32 @@ exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"
 # `peer_identity_index_converges_across_scopes_via_coordinator_store`. The
 # general scope-home scoped_state (tool.mode/wall/coordination) is unchanged.
 # Additive — no ABI change. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+#
+# 2026-07-19 bump f41d786 → 3655e3c (feat/persona-peer-id-mint, #199 Slice 1b):
+# adds the peer_id-adopting identity mint — `Airc::attach_as_with_peer_id` /
+# `open_as_with_peer_id` (+ `LocalIdentity::{generate_and_save_as,
+# load_or_generate_as}_with_peer_id`). A host that derives an actor's id
+# BEFORE attach (a Continuum persona, whose agent_name + home are projected
+# from a `persona_id`) hands that id in so `airc.peer_id() == persona_id` — a
+# coherent identity from birth, no throwaway-uuid divergence to collapse.
+# Purely additive: the existing `attach_as` / `open_as` still mint a random
+# peer_id (`generate_and_save_as` delegates with `PeerId::new()`), and a
+# RESUMED identity ignores a supplied id (never a rotation) — so the 8 living
+# personas load their stored peer_id unchanged. This SHA is on the
+# feat/persona-peer-id-mint branch, not canary — reconcile to the canary SHA
+# when the airc PR lands. Re-validate persona attach on bump.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "3655e3c" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "3655e3c" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "3655e3c" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "3655e3c" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "3655e3c" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "3655e3c" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
