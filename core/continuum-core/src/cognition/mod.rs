@@ -65,6 +65,7 @@ pub mod focus_policy;
 pub mod recall_faculty;
 pub mod recall_ranker;
 pub mod tool_dialect;
+pub mod tool_usage;
 pub mod resolution;
 pub mod prefill_throttle;
 pub mod resolution_bench;
