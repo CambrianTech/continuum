@@ -259,9 +259,22 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
             .filter(|d| d.access_level == AccessLevel::AiSafe)
             .map(|d| d.name)
             .collect();
-        let suggestions = crate::commands::help::did_you_mean(&normalized, &ai_names);
-        if let ([best, ..], Some(manual)) =
-            (suggestions.as_slice(), suggestions.first().and_then(|b| manual_for(b)))
+        // Candidates = canonical AiSafe names PLUS every command's trained aliases,
+        // so a reflex like `grep_files` finds `grep` (our `code/search`) — not just a
+        // canonical-name match. Each suggestion is mapped BACK to the canonical
+        // command it answers to (an alias hit → its real command), then deduped, so
+        // the teach message names what actually runs. This is the alias-aware face of
+        // the ONE tool_dialect section [[tool-naming-meet-their-training-alias-or-redirect]].
+        let mut candidates = ai_names.clone();
+        candidates.extend_from_slice(crate::cognition::tool_dialect::ai_safe_aliases());
+        let mut seen = std::collections::HashSet::new();
+        let suggestions: Vec<String> = crate::commands::help::did_you_mean(&normalized, &candidates)
+            .into_iter()
+            .map(crate::cognition::tool_dialect::resolve_wire_name)
+            .filter(|canonical| seen.insert(canonical.clone()))
+            .collect();
+        if let (Some(best), Some(manual)) =
+            (suggestions.first(), suggestions.first().and_then(|b| manual_for(b)))
         {
             let list = suggestions
                 .iter()
@@ -538,6 +551,28 @@ mod tests {
         assert!(
             out.contains("retry with this shape"),
             "must inline the top match's manual so the retry needs no detour: {out}"
+        );
+    }
+
+    // what this catches: a reflexive tool name that matches a command's trained
+    // ALIAS (not its canonical name) still gets pointed at the right command —
+    // `grep_files` → `grep` (our `code/search`). did_you_mean's candidates include
+    // aliases now, and the suggestion is mapped back to the canonical command so the
+    // teach names what actually runs. Without alias-aware candidates this was a bare
+    // "not a tool you can call" with no direction. (#202 Slice 3)
+    #[test]
+    fn unknown_command_maps_a_trained_alias_reflex_to_its_canonical_command() {
+        let raw = "no Rust module handles command: 'grep_files'.".to_string();
+        let out = persona_tool_error("grep_files", raw);
+        assert!(
+            out.contains("code/search"),
+            "a `grep`-family reflex must resolve to the canonical code/search: {out}"
+        );
+        // The canonical command is named, never the raw alias, so the retry shape is
+        // the real one.
+        assert!(
+            out.contains("retry with this shape"),
+            "must inline the canonical command's manual: {out}"
         );
     }
 

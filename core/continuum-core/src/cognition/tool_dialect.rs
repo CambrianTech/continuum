@@ -87,6 +87,23 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry().iter().map(|d| d.name).collect())
 }
 
+/// Every declared alias whose command is AiSafe — the trained-reflex vocabulary a
+/// persona might reach for. Used to WIDEN did-you-mean candidates on a miss, so a
+/// reflex like `grep_files` finds `grep` (→ `code/search`) instead of no match.
+/// The caller maps a suggested alias back to its canonical command with
+/// [`resolve_wire_name`]. Static, built once from the live registry.
+pub fn ai_safe_aliases() -> &'static [&'static str] {
+    static IDX: OnceLock<Vec<&'static str>> = OnceLock::new();
+    IDX.get_or_init(|| {
+        command_registry()
+            .iter()
+            .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::AiSafe)
+            .flat_map(|d| d.aliases.iter().copied())
+            .collect()
+    })
+    .as_slice()
+}
+
 /// Classify a wire tool-call name into (canonical command, how it resolved) —
 /// the PURE core, no side effects. Resolves, in order: a declared reflex/former
 /// alias; our canonical name as-is; our charset-legal name (`code_read` →
