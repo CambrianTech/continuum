@@ -104,6 +104,24 @@ impl FrameRing {
     fn window(&self, k: usize) -> impl Iterator<Item = &MediaFrame> {
         self.frames.iter().take(k)
     }
+
+    /// RAM held by this ring: the sum of frame source bytes (Arc-shared, but this ring is
+    /// the owner that can drop them). The honest footprint perception can reclaim.
+    fn resident_bytes(&self) -> u64 {
+        self.frames.iter().map(|f| f.source().len() as u64).sum()
+    }
+
+    /// Evict oldest frames (from the back) to free ~`want_bytes`, but ALWAYS keep the head
+    /// (the room-as-now frame — never blind the persona). Returns bytes actually freed.
+    fn evict_oldest(&mut self, want_bytes: u64) -> u64 {
+        let mut freed = 0u64;
+        while self.frames.len() > 1 && freed < want_bytes {
+            if let Some(f) = self.frames.pop_back() {
+                freed += f.source().len() as u64;
+            }
+        }
+        freed
+    }
 }
 
 /// Per-participant warm-cadence gate. Coalescing the latest frame is unconditional
@@ -424,6 +442,44 @@ impl PerceptionBuffer {
             });
         }
         out
+    }
+
+    /// Total RAM held by this buffer's rings (frame source bytes) — the honest footprint
+    /// perception owns and can reclaim. Derivatives (thumbnails/descriptions/signatures)
+    /// live in the SHARED compute cache, not here, so they are not double-counted.
+    pub fn resident_bytes(&self) -> u64 {
+        self.rings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(|r| r.resident_bytes())
+            .sum()
+    }
+
+    /// Evict oldest ring frames across sources to free ~`want_bytes` (keeping each source's
+    /// head — room-as-now). Returns bytes ACTUALLY freed (honest, never over-reports).
+    pub fn evict_at_least(&self, want_bytes: u64) -> u64 {
+        let mut rings = self.rings.lock().unwrap_or_else(|e| e.into_inner());
+        let mut freed = 0u64;
+        for ring in rings.values_mut() {
+            if freed >= want_bytes {
+                break;
+            }
+            freed += ring.evict_oldest(want_bytes - freed);
+        }
+        freed
+    }
+
+    /// Test-only: push a frame directly onto a source's ring without spawning warms — lets
+    /// sibling-module tests (e.g. `modules::perception_consumer`) seed known residency.
+    #[cfg(test)]
+    pub(crate) fn seed_frame_for_test(&self, source: &str, frame: MediaFrame) {
+        self.rings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(source.to_string())
+            .or_insert_with(|| FrameRing::with_capacity(self.ring_capacity))
+            .push(frame);
     }
 
     /// Drop a participant that left the call.

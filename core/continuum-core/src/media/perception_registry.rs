@@ -82,6 +82,39 @@ impl PerceptionRegistry {
             .expect("perception registry mutex poisoned by a prior panic")
             .remove(persona_id);
     }
+
+    /// Total RAM held across every persona's perception rings — the perception subsystem's
+    /// footprint reported to the resource governor (see `modules::perception_consumer`).
+    pub fn total_resident_bytes(&self) -> u64 {
+        self.buffers
+            .lock()
+            .expect("perception registry mutex poisoned by a prior panic")
+            .values()
+            .map(|b| b.resident_bytes())
+            .sum()
+    }
+
+    /// Evict oldest ring frames across every persona to free ~`want_bytes` (each source keeps
+    /// its head). Returns bytes actually freed — the governor's reclaim honored honestly.
+    pub fn evict_at_least(&self, want_bytes: u64) -> u64 {
+        // Clone the Arcs out so we don't hold the registry lock while each buffer locks its
+        // own rings (no nested lock, no lock across the per-buffer work).
+        let buffers: Vec<Arc<PerceptionBuffer>> = self
+            .buffers
+            .lock()
+            .expect("perception registry mutex poisoned by a prior panic")
+            .values()
+            .cloned()
+            .collect();
+        let mut freed = 0u64;
+        for b in buffers {
+            if freed >= want_bytes {
+                break;
+            }
+            freed += b.evict_at_least(want_bytes - freed);
+        }
+        freed
+    }
 }
 
 /// Process-global perception registry. Same `OnceLock` shape as
