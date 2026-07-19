@@ -1788,8 +1788,8 @@ pub fn start_server(
         log_info!(
             "ipc",
             "server",
-            "PersonaInstanceManagerModule registered — citizens can be bootstrapped via \
-             `persona/instances/bootstrap`"
+            "PersonaInstanceManagerModule registered — citizens can be spawned via \
+             `persona/spawn`"
         );
 
         // `grid/grant/issue`: the owner mints capability grants signed by a running
@@ -2051,7 +2051,7 @@ pub fn start_server(
                             error = %e,
                             "ResumeOrMintProvider construction failed — server up, no \
                              citizens online. Resolve continuum_root permissions + \
-                             restart, or fire `persona/instances/bootstrap` manually."
+                             restart, or fire `persona/spawn` manually."
                         );
                         return;
                     }

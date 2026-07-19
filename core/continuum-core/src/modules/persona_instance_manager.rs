@@ -64,7 +64,7 @@ use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySo
 use crate::persona::resume_or_mint_provider::now_ms;
 use crate::persona::seed::ensure_seed;
 use crate::persona::{
-    agent_name_from_identity, PersonaAircRuntime, PersonaAircRuntimeError,
+    PersonaAircRuntime, PersonaAircRuntimeError,
     PersonaAircRuntimeRegistry,
 };
 use crate::runtime::{
@@ -493,28 +493,17 @@ impl ServiceModule for PersonaInstanceManagerModule {
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
+            // RETIRED: `persona/instances/bootstrap` is superseded by the typed,
+            // handle-based `persona/spawn` (#200), which births over the SAME
+            // `PersonaBirth` core (no parallel spawn implementation). Fail loud with
+            // the pointer rather than keep a redundant second birth surface.
             "persona/instances/bootstrap" => {
-                // Mint a fresh intent for this explicit-bootstrap path.
-                // (The boot-wire path uses ResumeOrMintProvider directly
-                // so resumed personas are handled there; this command
-                // is for ad-hoc "spawn me a new citizen" invocations
-                // from tests, operators, or future explicit-add flows.)
-                let _ = params; // future: accept name/theme/genome overrides
-                let persona_id = Uuid::new_v4();
-                let agent_name =
-                    agent_name_from_identity(&persona_id.to_string()).to_string();
-                let intent = PersonaIdentityIntent {
-                    persona_id,
-                    agent_name,
-                    source: PersonaIdentitySource::FreshlyMinted,
-                };
-                let info = self
-                    .bootstrap_one(&intent)
-                    .await
-                    .map_err(|e| format!("bootstrap failed: {e}"))?;
-                let json = serde_json::to_value(&info)
-                    .map_err(|e| format!("serialize PersonaInstanceInfo: {e}"))?;
-                Ok(CommandResult::Json(json))
+                let _ = params;
+                Err(
+                    "persona/instances/bootstrap is retired — use `persona/spawn` \
+                     (typed, handle-based, params: name?/count?; births over the same core)"
+                        .to_string(),
+                )
             }
 
             // list + get migrated onto the typed DynCommand registry (#62):

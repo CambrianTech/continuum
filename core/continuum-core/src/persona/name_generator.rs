@@ -51,6 +51,15 @@ const FEMALE_NAMES: &[&str] = &[
     "Pia", "Senna", "Aoi", "Nadia", "Renee", "Anais", "Tikva", "Mara",
     "Paige", "Imani", "Sahar", "Daria", "Tova", "Suri", "Beck", "Niamh",
     "Linnea", "Yael", "Anika", "Petra",
+    // Widened pool (#200 follow-up): the name is a cosmetic projection of the unique
+    // peer_id — collisions are harmless, but a bigger pool makes births feel varied
+    // ([[persona-birth-is-a-first-class-handle-command]]). Kept disjoint from MALE_NAMES
+    // (a dual-pool name breaks `gender_from_name`) — pinned by `pools_are_disjoint`.
+    "Naima", "Freya", "Leila", "Priya", "Rania", "Suki", "Delia", "Marisol",
+    "Chiara", "Noor", "Amara", "Sinead", "Talia", "Rosa", "Ingrid", "Fatima",
+    "Elodie", "Kira", "Sana", "Yara", "Dalia", "Bruna", "Aiko", "Livia",
+    "Neve", "Zuri", "Halima", "Ondine", "Mirela", "Saanvi", "Thea", "Lucia",
+    "Esme", "Runa", "Cleo", "Aisha", "Nyla", "Isolde", "Ambika", "Soraya",
 ];
 
 /// Male-tagged name pool. Same diversity criteria, same blending of
@@ -65,6 +74,12 @@ const MALE_NAMES: &[&str] = &[
     "Theo", "Zane", "Otto", "Rafe", "Aris", "Atlas", "Ivar", "Linus",
     "Erik", "Solomon", "Yuto", "Clu", "Dyson", "Tomi", "Hiroshi", "Senan",
     "Amari", "Bao", "Vidar", "Eitan", "Pax", "Rhys", "Tiago",
+    // Widened pool (#200 follow-up) — see FEMALE_NAMES note. Disjoint from FEMALE_NAMES.
+    "Ravi", "Bjorn", "Dmitri", "Hassan", "Omar", "Nikolai", "Tobias", "Emeka",
+    "Rashid", "Lucas", "Mikael", "Arjun", "Cormac", "Dario", "Elias", "Finnian",
+    "Gideon", "Hamza", "Isamu", "Joaquin", "Kwame", "Lorcan", "Marek", "Nestor",
+    "Osman", "Pietro", "Quinlan", "Ronan", "Silas", "Taavi", "Ulf", "Viktor",
+    "Xavier", "Yannick", "Zoltan", "Amadou", "Ciaran", "Desmond", "Ephraim", "Malik",
 ];
 
 /// Pick the persona's name from their identity.
@@ -186,6 +201,23 @@ mod tests {
                 ),
             }
         }
+    }
+
+    // what this catches: the two gender pools must be DEDUPED and DISJOINT. A name in
+    // both pools makes `gender_from_name` return `None` (ambiguous) — silently breaking
+    // the card's name↔gender coherence for that name. A dup within a pool skews the
+    // deterministic draw. This guards every future pool widening.
+    #[test]
+    fn pools_are_disjoint_and_deduped() {
+        let f: HashSet<&&str> = FEMALE_NAMES.iter().collect();
+        let m: HashSet<&&str> = MALE_NAMES.iter().collect();
+        assert_eq!(f.len(), FEMALE_NAMES.len(), "duplicate name within FEMALE_NAMES");
+        assert_eq!(m.len(), MALE_NAMES.len(), "duplicate name within MALE_NAMES");
+        let overlap: Vec<&&str> = FEMALE_NAMES.iter().filter(|n| m.contains(n)).collect();
+        assert!(
+            overlap.is_empty(),
+            "names in BOTH pools break gender_from_name coherence: {overlap:?}"
+        );
     }
 
     #[test]
