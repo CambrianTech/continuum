@@ -8,6 +8,7 @@ export type PersonaIdentitySetParams = {
 /**
  * Whose identity to edit. Omit to edit YOUR OWN (the authenticated caller). A
  * persona may only edit herself; an operator may target any persona by id.
+ * Accepts the full id OR the 8-char short form shown in rosters (#164).
  */
 personaId: string | null, 
 /**
