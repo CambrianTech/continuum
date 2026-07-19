@@ -398,6 +398,11 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
         // structure tree to aim actions at an element, not a pixel. The enriched
         // sibling of screenshot; also Provided (fails loud with no eye-node).
         "perception/observe",
+        // Perception Surface (#187), live-call video sibling: look = a persona's
+        // OWN eyes on the video call it's in — pull a current image of one
+        // participant or everyone, thumbnail or full. Substrate-served off the
+        // in-process perception buffer; empties/teaches when not in a call.
+        "perception/look",
         // The shared-board lifecycle: claiming work as yourself is core to the
         // room workflow (rides the wire as `claim_task` via the dialect).
         "work/claim",

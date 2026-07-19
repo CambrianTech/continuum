@@ -42,6 +42,11 @@ use ts_rs::TS;
 /// scores the text structure a non-visual model also reads).
 pub mod scoring;
 
+/// `perception/look` — the LIVE-CALL VIDEO surface: a persona's own eyes on the
+/// call it is in (the observe-only sibling of `perception/observe`, reading the
+/// in-process [`PerceptionBuffer`](crate::media::PerceptionBuffer) à la carte).
+pub mod look;
+
 /// Render size for an observation, in the surface's pixels (CSS px for a UI,
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
