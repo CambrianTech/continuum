@@ -33,6 +33,7 @@ pub mod scripted_conversation;
 pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod allocator;
+pub mod card;
 pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;

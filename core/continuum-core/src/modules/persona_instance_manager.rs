@@ -305,16 +305,25 @@ impl PersonaInstanceManagerModule {
             );
         }
 
-        // Register the persona's NAME-anchored gender at SPAWN, keyed by its identity
-        // (persona_id == peer_id, the same string the live avatar/voice sites key on).
-        // This makes the profile snapshot + every avatar/voice selection coherent with
-        // the visible name from BIRTH — not only once the persona joins a voice session
-        // ([[procedural-persona-genesis]] coherence anchor; the profile pic is shown in
-        // rosters/tiles with no call in play).
-        crate::live::avatar::selection::register_persona_gender(
-            &runtime.persona_id().to_string(),
-            runtime.agent_name(),
-        );
+        // Register the persona's durable CARD in the live card registry, keyed by its
+        // identity (persona_id == peer_id, the string every avatar/voice seam keys on).
+        // This is the authoritative gender/presentation source — `registered_gender`
+        // consults it FIRST — so the profile snapshot + every avatar/voice selection
+        // cohere with her persisted identity from BIRTH, not a per-boot re-derivation
+        // from her name ([[persona-is-the-airc-user-one-identity-one-card]]). Registered
+        // BEFORE the avatar pin below so the pin resolves THIS card's gender.
+        // (`register_persona_gender` survives only for REMOTE live participants — a peer
+        // in a call, resolved from their display name, for whom no local card exists.)
+        match crate::persona::seed::read_seed(&seed_path).await {
+            Ok(seed) => crate::persona::card::register(seed.card()),
+            Err(e) => tracing::warn!(
+                error = %e,
+                persona_id = %runtime.persona_id(),
+                agent_name = %runtime.agent_name(),
+                "failed to read seed for card registration — avatar/voice gender may \
+                 fall back to the id-hash this boot"
+            ),
+        }
 
         // Resolve + PIN her avatar VRM ONCE, now that the gender is registered (warm)
         // so the selection is correct (#174). STICKY: only when unset — a live pin is
@@ -336,6 +345,9 @@ impl PersonaInstanceManagerModule {
                         "failed to pin avatar_vrm — her face may re-derive on a cold render"
                     );
                 } else {
+                    // Re-register the card so the live registry reflects the freshly
+                    // pinned face (the earlier registration saw avatar_vrm = None).
+                    crate::persona::card::register(seed.card());
                     tracing::info!(
                         persona_id = %runtime.persona_id(),
                         agent_name = %runtime.agent_name(),
