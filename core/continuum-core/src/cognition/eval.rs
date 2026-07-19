@@ -2128,10 +2128,28 @@ async fn run_pass(
         // settlement: she may act (run code, read a file, search), observe the
         // result as memory, and re-perceive — the live act→observe motion, paced
         // by the grader because the eval room has no metronome.
+        // Pose the task as an EXAMINER'S REQUEST TO HER, not a bare imperative. The
+        // shared [Conversational Presence] block answers "a task → answer it now" only
+        // when the model RECOGNIZES the message as asking something OF IT; a terse gym
+        // imperative ("Implement `fn eval`…") reads to a coder model as ambient text
+        // "about" a task, so it takes the pleasantry-rest PASS hatch and scores 0
+        // WITHOUT ATTEMPTING (glass-boxed 2026-07-19: hard-rs settled to Decision::Pass
+        // twice with the task fully in view; humaneval — whose prompt already says
+        // "Give your final answer as…" — engaged and scored 10/10). `directed=true`
+        // alone no longer withholds the hatch since the directed block was softened for
+        // live spiral-breaking, so the examiner must pose the ask itself. This is the
+        // examiner doing its job — stating the question clearly so the exam measures
+        // CAPABILITY, not whether the model happened to read a terse line as directed —
+        // and it standardizes at ONE seam the imperative framing the stronger gym prompts
+        // already carry inline. Verbatim task preserved; only a directed preamble added.
+        let framed_prompt = format!(
+            "This is a task for you to complete now. Provide your complete solution:\n\n{}",
+            t.prompt.trim()
+        );
         let task_delivery = crate::persona::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
             items: vec![crate::persona::rag_budget::RagItem {
-                content: t.prompt.clone(),
+                content: framed_prompt,
                 tokens: 0,
                 metadata: serde_json::json!({
                     "peer_id": "peer",
