@@ -3,4 +3,9 @@
 /**
  * Params for `mcp/search-tools`: the query plus an optional result cap.
  */
-export type McpSearchToolsParams = { query: string, limit: number, };
+export type McpSearchToolsParams = { 
+/**
+ * What to search for — keywords matched against tool names, descriptions,
+ * and path segments (e.g. "chat", "read file", "gpu").
+ */
+query: string, limit: number, };

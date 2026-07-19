@@ -3,4 +3,9 @@
 /**
  * Params for `mcp/tool-help`: the tool to describe (any accepted name form).
  */
-export type McpToolHelpParams = { tool: string, };
+export type McpToolHelpParams = { 
+/**
+ * The exact tool/command name to get the call shape for (e.g. `code/read`) —
+ * as listed by `commands/list` or `mcp/search-tools`.
+ */
+tool: string, };

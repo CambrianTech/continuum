@@ -120,8 +120,54 @@ pub fn audit_tool_conformance() -> Vec<ToolConformanceViolation> {
                     .to_string(),
             });
         }
+
+        // 4. DOCUMENTED REQUIRED args — every field a command REQUIRES must tell the
+        //    model what to put there. This reaches the whole surface, including the
+        //    dep-holding commands a dispatch exam can't cheaply reach: the schema is
+        //    available for every command. An undocumented required arg is the fumble
+        //    that wastes a turn — she has to GUESS the value, gets it wrong, retries.
+        //    Conservative: only flag a required field that has an INLINE object
+        //    property with no/empty `description`. A field described via `$ref`/
+        //    `allOf` (a nested type) carries its doc on the referenced type, which
+        //    this shallow check can't resolve, so it's skipped rather than
+        //    false-flagged.
+        for field in required_fields(&d.params_schema) {
+            if let Some(prop) = d
+                .params_schema
+                .get("properties")
+                .and_then(|p| p.get(&field))
+                .filter(|p| p.is_object())
+            {
+                let uses_ref = prop.get("$ref").is_some() || prop.get("allOf").is_some();
+                let described = prop
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if !uses_ref && !described {
+                    violations.push(ToolConformanceViolation {
+                        tool: d.name.to_string(),
+                        rule: "required-arg-documented",
+                        detail: format!(
+                            "required param `{field}` has no description — a persona must GUESS \
+                             what to put there; add a `///` doc on the field"
+                        ),
+                    });
+                }
+            }
+        }
     }
     violations
+}
+
+/// The names of a params schema's REQUIRED fields (the JSON Schema `required`
+/// array), or empty when the command has no required params.
+fn required_fields(schema: &serde_json::Value) -> Vec<String> {
+    schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

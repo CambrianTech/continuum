@@ -46,7 +46,10 @@ pub(crate) struct SearchOutput {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct VectorSearchInput {
+    /// The query embedding to rank the corpus against — one vector of floats.
     pub query_vector: Vec<f64>,
+    /// The corpus embeddings to rank — one float vector per candidate item, each
+    /// the same dimensionality as `queryVector`.
     pub corpus_vectors: Vec<Vec<f64>>,
     #[serde(default = "default_true")]
     pub normalize: bool,
