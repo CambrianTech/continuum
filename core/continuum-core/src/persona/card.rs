@@ -42,6 +42,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use std::collections::BTreeMap;
+
 use uuid::Uuid;
 
 use crate::live::avatar::gender::{gender_from_identity, pronouns_for_gender, PronounSet};
@@ -72,6 +74,15 @@ pub struct PersonaCard {
     /// The substrate role, when known. `None` on a card minted before role threading
     /// (that lands in a later #199 slice); the persona still functions.
     pub role: Option<RoleId>,
+    /// The OPEN, self-authored part of the identity — arbitrary key→value facets the
+    /// persona (or a human with permission) writes about herself: `bio`, `goals`,
+    /// `desires`, `interests`, `blog`, `pronouns` (an explicit override), … The typed
+    /// fields above are the small coherent SPINE (the facets that must agree —
+    /// gender↔avatar↔voice); this map is everything else, extensible without a schema
+    /// change so the identity is an open profile, not a fixed struct
+    /// ([[persona-identity-is-fully-self-editable-except-the-id]]). Empty at genesis;
+    /// grows as she authors herself. Deterministic on-disk order (`BTreeMap`).
+    pub profile: BTreeMap<String, String>,
 }
 
 impl PersonaCard {
@@ -110,6 +121,7 @@ impl PersonaCard {
             avatar_vrm,
             voice_seed: id_str,
             role: None,
+            profile: BTreeMap::new(),
         }
     }
 }

@@ -26,6 +26,7 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod allocate;
 pub mod catalog;
+pub mod identity;
 pub mod instances;
 pub mod rag_inspect;
 pub mod reassign_model;
@@ -51,10 +52,12 @@ pub fn command_objects(
     let mut objects = instances::command_objects(registry.clone());
     objects.extend(wall::command_objects(registry));
     objects.push(Arc::new(PersonaReassignModel {
-        continuum_root,
+        continuum_root: continuum_root.clone(),
         executor,
     }));
     // `persona/spawn` — on-demand birth over the SAME core as boot auto-seed.
     objects.push(Arc::new(PersonaSpawn { birth }));
+    // `persona/identity/*` — the persona's self-authored, editable card.
+    objects.extend(identity::command_objects(continuum_root));
     objects
 }

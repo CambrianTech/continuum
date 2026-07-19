@@ -111,6 +111,11 @@ pub enum PersonaSeedFile {
         /// The substrate role, when known. `None` before role threading (later slice).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<RoleId>,
+        /// The OPEN self-authored profile (bio/goals/desires/interests/blog/…). Empty
+        /// by default; `#[serde(default)]` so a V2 row written before this field
+        /// deserializes cleanly (empty), and an empty map is skipped on write.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        profile: std::collections::BTreeMap<String, String>,
     },
 }
 
@@ -125,6 +130,7 @@ impl PersonaSeedFile {
             avatar_vrm: card.avatar_vrm.clone(),
             voice_seed: card.voice_seed.clone(),
             role: card.role,
+            profile: card.profile.clone(),
         }
     }
 
@@ -142,6 +148,7 @@ impl PersonaSeedFile {
                 avatar_vrm,
                 voice_seed,
                 role,
+                profile,
             } => PersonaCard {
                 persona_id: *persona_id,
                 agent_name: agent_name.clone(),
@@ -150,6 +157,7 @@ impl PersonaSeedFile {
                 avatar_vrm: avatar_vrm.clone(),
                 voice_seed: voice_seed.clone(),
                 role: *role,
+                profile: profile.clone(),
             },
             Self::V1 {
                 persona_id,
@@ -573,6 +581,7 @@ mod tests {
             avatar_vrm: None,
             voice_seed: pid.to_string(),
             role: None,
+            profile: Default::default(),
         };
         write_seed_atomic(&path, &v2).await.unwrap();
 
