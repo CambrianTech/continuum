@@ -56,6 +56,7 @@ use ts_rs::{Config, Dependency, TS};
 /// Nothing live consumes its output; the headless command framework below is
 /// always compiled. See the `ts-codegen` feature note in Cargo.toml.
 pub mod command;
+pub mod conformance;
 #[cfg(feature = "ts-codegen")]
 pub mod emit;
 pub mod events;
