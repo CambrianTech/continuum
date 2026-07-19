@@ -797,7 +797,26 @@ impl EphemeralServingLane {
         let port = first_free_port(base_port);
         let root = format!("http://{}:{}", DEFAULT_HOST, port);
         let proc = LlamaServerProcess::with_root(root);
-        proc.serve(target).await?;
+        // HARD wall-clock cap on the WHOLE bring-up. `wait_ready`'s READY_TIMEOUT only
+        // bounds the /health poll, and its deadline is checked BETWEEN attempts — so a
+        // hang INSIDE an attempt (a stalled `decode_smoke_ok`, a wedged model-mmap, a
+        // process-launch that never returns) can wait past it indefinitely. Glass-boxed
+        // 2026-07-19: an ephemeral eval lane hung 11 min with no process and free VRAM,
+        // no timeout ever firing — a silent glacial wedge that violated fail-loud. This
+        // net guarantees the eval fails LOUD after the daemon's own load budget instead.
+        // On timeout `proc` drops → its `Drop` kills any child it launched. Eval lanes
+        // only; the live lane keeps its own (fail-loud-not-fast) bring-up policy.
+        match tokio::time::timeout(DEFAULT_SERVING_WAIT, proc.serve(target)).await {
+            Ok(res) => res?,
+            Err(_) => {
+                return Err(LlamaServerError::NotReady(
+                    DEFAULT_SERVING_WAIT,
+                    "ephemeral eval lane bring-up exceeded the wall-clock budget \
+                     (launch / port-bind / model-mmap / health-probe hang)"
+                        .to_string(),
+                ));
+            }
+        }
         Ok(Self { proc, port })
     }
 
