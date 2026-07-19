@@ -104,6 +104,16 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// the reconcile. A healthy 14B answers a 1-token request in well under a second.
 const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
+/// The failure mode this guards is the intermittently-wedged fresh lane that answers
+/// EVERY request with ~2 tokens then stops (observed on ephemeral eval lanes: same
+/// base+gene generated 82 tok/task on one spawn, 2 tok/task on the next, silently
+/// scoring the whole benchmark 0). An HTTP-200-only probe with `max_tokens: 1` cannot
+/// tell that lane from a healthy one — so the probe now forces a prompt a healthy model
+/// MUST answer with many tokens and asserts it did. `5` sits comfortably above the
+/// ~2-token wedge and far below the ~20+ a healthy "count to 20" yields.
+const MIN_SMOKE_DECODE_TOKENS: u64 = 5;
+
 /// Everything the launcher needs to bring a model up, GROUPED so adding a new
 /// serving knob is a field here — never a new param threaded down the call chain
 /// ([[pass-the-model-struct-no-param-hell]]). The [`Model`] carries its own id,
@@ -932,19 +942,24 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn decode_smoke_ok(&self) -> bool {
-        // The cheapest possible generation: one token, no tools, no stream,
-        // deterministic. Success (HTTP 200) proves the Metal/GPU decode path is
-        // live; a 500 "Compute error" (the wedged-orphan signature) returns
-        // false. We DON'T read the body — the status is the whole signal. The
-        // `--alias` id is what the server answers to; reuse the live v1 url.
+        // A REAL multi-token generation, not just HTTP 200. A wedged lane (the
+        // "~2 tokens then stop for EVERY request" failure mode, observed intermittently
+        // on fresh ephemeral eval lanes) still answers a `max_tokens: 1` request with
+        // 200 — so a status-only probe passes it, and every downstream task then decodes
+        // ~2 tokens and silently scores 0. The probe now forces a prompt a healthy model
+        // MUST answer with many tokens and asserts the completion actually produced
+        // several (`usage.completion_tokens >= MIN_SMOKE_DECODE_TOKENS`). That is the
+        // difference between "the server binds" and "the decode path truly generates".
+        // A 500 "Compute error" (the wedged-orphan signature) still fails fast on status.
+        // The `--alias` id is what the server answers to; reuse the live v1 url.
         let url = format!("{}/chat/completions", self.v1_url);
         let body = serde_json::json!({
-            "messages": [{ "role": "user", "content": "ping" }],
-            "max_tokens": 1,
+            "messages": [{ "role": "user", "content": "Count from 1 to 20, separated by spaces." }],
+            "max_tokens": 48,
             "stream": false,
             "temperature": 0.0,
         });
-        match self
+        let resp = match self
             .client
             .post(&url)
             .timeout(DECODE_SMOKE_TIMEOUT)
@@ -952,9 +967,19 @@ impl LlamaServerControl for LlamaServerProcess {
             .send()
             .await
         {
-            Ok(resp) => resp.status().is_success(),
-            Err(_) => false,
-        }
+            Ok(resp) if resp.status().is_success() => resp,
+            _ => return false,
+        };
+        // Read the completion-token count; a wedged lane yields ~2, a healthy one 20+.
+        let Ok(v) = resp.json::<serde_json::Value>().await else {
+            return false;
+        };
+        let out_tokens = v
+            .get("usage")
+            .and_then(|u| u.get("completion_tokens"))
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0);
+        out_tokens >= MIN_SMOKE_DECODE_TOKENS
     }
 
     fn owns_child(&self) -> bool {
