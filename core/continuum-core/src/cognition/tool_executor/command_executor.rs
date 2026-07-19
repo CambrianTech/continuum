@@ -765,6 +765,133 @@ mod tests {
         );
     }
 
+    /// Behavioral conformance exams (#163 Slice 2) — the DISPATCH half of the tool
+    /// AI-usability harness. The static audit (`sdk_codegen::conformance`) proves a
+    /// tool is discoverable + learnable; these prove it BEHAVES when a model fumbles
+    /// the call: a mangled/unknown name fails LOUD (never a silent no-op that forges
+    /// a receipt, #159), and a real command given the wrong args fails LOUD with the
+    /// fix inline. Run over the REAL self-contained command surface: `ModuleRegistry
+    /// ::new()` auto-seeds every stateless command object (no module wiring, no live
+    /// state, no daemon), so this exercises production commands through the
+    /// production persona-hands path, safely and deterministically.
+    mod behavioral_conformance {
+        use super::*;
+        use crate::sdk_codegen::{command_registry, stateless_command_objects, AccessLevel};
+        use std::collections::HashSet;
+
+        /// Persona hands over the FULL stateless command surface (every
+        /// self-registering command, dep-free). The real `for_persona` path.
+        fn stateless_surface_hands() -> CommandToolExecutor {
+            exec_over(Arc::new(ModuleRegistry::new()), Uuid::new_v4())
+        }
+
+        /// Dispatch one native call and return its (is_error, content).
+        async fn dispatch(exec: &CommandToolExecutor, name: &str, input: Value) -> (bool, String) {
+            let calls = vec![NativeToolCall {
+                id: "x".to_string(),
+                name: name.to_string(),
+                input,
+            }];
+            let out = exec
+                .execute_native_batch(&calls, &ctx(), 8000)
+                .await
+                .expect("batch itself succeeds — a failed CALL is a result, not a batch error");
+            let r = &out.results[0];
+            (r.is_error == Some(true), r.content.clone())
+        }
+
+        // what this catches (#159): an unknown/mangled tool NAME never silently
+        // no-ops — it comes back as an ERROR result naming what she tried and
+        // pointing at discovery, so she recovers instead of narrating a fake
+        // receipt. The exact "write_file / list_files" snake-case vocabulary gap.
+        #[tokio::test]
+        async fn unknown_tool_name_fails_loud_never_silent() {
+            let exec = stateless_surface_hands();
+            for bogus in ["write_file", "list_files", "claim_task", "totally/made/up"] {
+                let (is_error, content) = dispatch(&exec, bogus, json!({})).await;
+                assert!(
+                    is_error,
+                    "'{bogus}' must fail LOUD (is_error), never a silent no-op: {content}"
+                );
+                // The recovery affordance rides back in the same observation.
+                assert!(
+                    content.contains("commands/help") || content.contains("not a tool"),
+                    "'{bogus}' feedback must point at discovery so she recovers: {content}"
+                );
+            }
+        }
+
+        // what this catches (#163/#159): a REAL command given the WRONG args (empty
+        // when it requires some) fails LOUD, never runs a degenerate no-op. Swept
+        // over every stateless AiSafe command that DECLARES required params — a
+        // living exam that grows with the surface, not a hand-picked list. Dispatch
+        // is safe: a missing required field fails at the params boundary BEFORE the
+        // command body runs, so nothing mutates.
+        #[tokio::test]
+        async fn required_args_missing_fails_loud_across_the_stateless_surface() {
+            let exec = stateless_surface_hands();
+            let stateless: HashSet<&'static str> =
+                stateless_command_objects().iter().map(|c| c.name()).collect();
+
+            let mut examined = 0usize;
+            for d in command_registry()
+                .into_iter()
+                .filter(|d| d.access_level == AccessLevel::AiSafe && stateless.contains(d.name))
+            {
+                // Only commands that DECLARE required params — those MUST reject `{}`.
+                let requires = d
+                    .params_schema
+                    .get("required")
+                    .and_then(|r| r.as_array())
+                    .map(|a| !a.is_empty())
+                    .unwrap_or(false);
+                if !requires {
+                    continue;
+                }
+                examined += 1;
+                let (is_error, content) = dispatch(&exec, d.name, json!({})).await;
+                assert!(
+                    is_error,
+                    "`{}` requires params but ran on empty input `{{}}` without erroring — \
+                     a silent no-op a persona would mistake for success: {content}",
+                    d.name
+                );
+            }
+            // Non-vacuity: the sweep must have actually exercised commands.
+            assert!(
+                examined >= 1,
+                "no stateless AiSafe command with required params was examined — the filter \
+                 is broken; the exam checked nothing"
+            );
+        }
+
+        // what this catches (#164 as a UNIVERSAL invariant, end-to-end): a persona
+        // verb resolves the 8-char SHORT id she's shown, through the real hands +
+        // real command, not just in the id_resolve unit test. Seeds a card so the
+        // candidate set is non-empty, then reads it back by short id.
+        #[tokio::test]
+        async fn persona_verb_resolves_a_short_id_end_to_end() {
+            use crate::persona::card::{self, PersonaCard};
+            let id = Uuid::new_v4();
+            card::register(PersonaCard::genesis(id, "Asha", 1000, None));
+            let short: String = id.simple().to_string().chars().take(8).collect();
+
+            let exec = stateless_surface_hands();
+            let (is_error, content) =
+                dispatch(&exec, "persona/identity/get", json!({ "personaId": short })).await;
+            card::remove(&id.to_string());
+
+            assert!(
+                !is_error,
+                "a persona verb must resolve the short id it was shown ({short}): {content}"
+            );
+            assert!(
+                content.contains(&id.to_string()),
+                "resolved card carries the full id: {content}"
+            );
+        }
+    }
+
     /// Concurrency + load proofs. Gated behind `stress-tests` per the test
     /// doctrine (timing/multi-thread tests are compile-time gated, not `#[ignore]`).
     /// Run them: `cargo test -p continuum-core --features stress-tests \
