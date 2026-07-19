@@ -450,7 +450,7 @@ impl PersonaSpawnSupervisor {
                     reason = reason,
                     "PersonaSpawnSupervisor: attach_service_loop failed; \
                      spawned task drained. Persona registered but unattended — \
-                     fire `persona/instances/bootstrap` to retry."
+                     fire `persona/spawn` to retry."
                 );
                 summary.failures.push(BootSlotFailure {
                     slot_index: slot_idx,

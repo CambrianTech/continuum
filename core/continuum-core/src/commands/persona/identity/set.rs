@@ -41,6 +41,8 @@ use crate::persona::seed::{write_seed_atomic, PersonaSeedFile};
 use crate::routing::CallerSource;
 use crate::sdk_codegen::CommandError;
 
+use super::{card_view, PersonaCardView};
+
 /// The edits to apply. All optional — supply only the facets you're changing. Omitted
 /// facets are untouched. `profile` entries MERGE (an empty value DELETES that key).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -71,30 +73,6 @@ pub struct PersonaIdentitySetParams {
     pub profile: BTreeMap<String, String>,
 }
 
-/// A read-friendly view of a persona's identity card, echoed after the edit.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaCardView.ts")]
-pub struct PersonaCardView {
-    #[ts(type = "string")]
-    pub persona_id: Uuid,
-    pub agent_name: String,
-    pub gender: String,
-    pub pronouns: String,
-    pub avatar_vrm: Option<String>,
-    pub voice_seed: String,
-    pub role: Option<String>,
-    pub profile: BTreeMap<String, String>,
-}
-
-fn gender_str(g: AvatarGender) -> &'static str {
-    match g {
-        AvatarGender::Male => "male",
-        AvatarGender::Female => "female",
-        AvatarGender::Neutral => "neutral",
-    }
-}
-
 fn parse_gender(s: &str) -> Result<AvatarGender, CommandError> {
     match s.trim().to_lowercase().as_str() {
         "male" | "man" | "m" => Ok(AvatarGender::Male),
@@ -118,19 +96,6 @@ fn parse_role(s: &str) -> Result<RoleId, CommandError> {
         other => Err(CommandError::Invalid(format!(
             "unknown role '{other}' — use helper | coder | sentinel | designer | custom"
         ))),
-    }
-}
-
-fn card_view(card: &PersonaCard) -> PersonaCardView {
-    PersonaCardView {
-        persona_id: card.persona_id,
-        agent_name: card.agent_name.clone(),
-        gender: gender_str(card.gender).to_string(),
-        pronouns: card.pronouns().short(),
-        avatar_vrm: card.avatar_vrm.clone(),
-        voice_seed: card.voice_seed.clone(),
-        role: card.role.map(|r| r.as_str().to_string()),
-        profile: card.profile.clone(),
     }
 }
 

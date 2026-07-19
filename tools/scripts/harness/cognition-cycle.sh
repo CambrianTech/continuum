@@ -119,7 +119,7 @@ if [[ -z "$PID" ]]; then
 fi
 [[ -n "$PID" ]] || die "no live persona '$PERSONA'. Online now:
 $(jq -r '.personas[] | "    \(.name)  \(.persona_id)"' <<<"$PERSONAS")
-  Spawn one with:  $CU persona/instances/bootstrap"
+  Spawn one with:  $CU persona/spawn"
 
 EVAL_PATH="$REPO_ROOT/$EVAL_SET"
 [[ -f "$EVAL_PATH" ]] || die "eval set not found: $EVAL_PATH"
