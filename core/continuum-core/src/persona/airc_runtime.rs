@@ -53,7 +53,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use airc_core::{EventId, RoomId};
+use airc_core::{EventId, PeerId, RoomId};
 use airc_lib::{Airc, AircError, HeartbeatTask, DEFAULT_HEARTBEAT_INTERVAL};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -259,47 +259,52 @@ impl PersonaAircRuntime {
             .await
             .map_err(|e| PersonaAircRuntimeError::HomeCreate(home.clone(), e))?;
 
-        let airc = Airc::attach_as(home.clone(), agent_name.clone(), daemon_socket)
-            .await
-            .map_err(|source| PersonaAircRuntimeError::Attach {
-                agent_name: agent_name.clone(),
-                home: home.clone(),
-                source,
-            })?;
+        // ── #199 Slice 1b: supply persona_id AS the airc peer_id ─────────
+        //
+        // Continuum derives the persona's `agent_name` (and thus her home
+        // dir) from `persona_id` BEFORE attach. By handing `persona_id` to
+        // airc's identity mint (`attach_as_with_peer_id`), airc adopts it as
+        // the peer_id on a FRESH mint, so `airc.peer_id() == persona_id ==
+        // the seed her name was derived from` — coherent identity from birth
+        // ([[airc-peer-id-is-random-stored-not-keypair-derived]]). A RESUMED
+        // persona (key + row already on disk) loads her STORED peer_id and
+        // the supplied id is ignored — never a rotation — so the living
+        // personas keep their identity across this change.
+        let airc = Airc::attach_as_with_peer_id(
+            home.clone(),
+            agent_name.clone(),
+            daemon_socket,
+            PeerId::from_uuid(persona_id),
+        )
+        .await
+        .map_err(|source| PersonaAircRuntimeError::Attach {
+            agent_name: agent_name.clone(),
+            home: home.clone(),
+            source,
+        })?;
 
-        // ── Slice 1B of #142: collapse persona_id := peer_id ─────────────
+        // ── The persona_id == peer_id invariant (guardrail) ──────────────
         //
-        // Per [[persona-identity-derives-from-source-id]] +
-        // [[airc-is-the-session-not-a-feature]]: the substrate has ONE
-        // unique identifier per actor — the airc peer_id (Ed25519
-        // keypair Uuid). The continuum-side `persona_id` originally
-        // minted via `Uuid::new_v4()` pre-bootstrap is the historical
-        // artifact; airc-lib is the source of cryptographic truth.
-        //
-        // Post-bootstrap, the runtime stores `persona_id` as the
-        // peer_id. Callers using `runtime.persona_id()` as a registry
-        // key are then safe to also reach for `ctx.identity().id`
-        // (= peer_id) from the Context trait without divergence.
-        //
-        // The input `persona_id` parameter is retained for API
-        // continuity (callers shouldn't break) but its value is
-        // logged-then-discarded. Divergence is at `debug!` level —
-        // for fresh mints the divergence is the NORMAL case
-        // (`ResumeOrMintProvider::mint_fresh_intent` allocates
-        // `Uuid::new_v4()` before the keypair is generated, so the
-        // two Uuids are statistically guaranteed to differ for every
-        // fresh persona). Logging it at `warn!` would spam operators
-        // at every boot. A future API cleanup drops the parameter
-        // entirely and removes this branch.
+        // The substrate keys everything downstream of bootstrap (the command
+        // inbound pump, roster presence, registry) by `runtime.persona_id()`,
+        // which MUST equal the airc peer_id the pump's envelopes address. Post
+        // Slice 1b a FRESH mint satisfies this by construction (we supplied
+        // persona_id as the peer_id, so the reseat below is a proven no-op),
+        // and a RESUMED persona already stored `persona_id == peer_id` at her
+        // first mint, so it is a no-op there too. The reseat remains as the
+        // guardrail: if a home's stored identity ever diverges from the
+        // supplied id (manual tampering, a pre-Slice-1b legacy divergence),
+        // the runtime keys by the ACTUAL cryptographic identity, never a
+        // stale input. It fires at `debug!` — silent in the coherent case.
         let peer_id_uuid = airc.peer_id().as_uuid();
         if persona_id != peer_id_uuid {
             tracing::debug!(
                 input_persona_id = %persona_id,
                 peer_id = %peer_id_uuid,
                 agent_name = %agent_name,
-                "PersonaAircRuntime::bootstrap: persona_id parameter ignored — \
-                 runtime collapses persona_id := peer_id per Slice 1B of #142. \
-                 Expected for fresh mints; a future API cleanup drops the parameter."
+                "PersonaAircRuntime::bootstrap: supplied persona_id diverges from the \
+                 stored peer_id (a resumed home minted before Slice 1b) — keying by the \
+                 cryptographic peer_id per the persona_id == peer_id invariant."
             );
         }
         let persona_id = peer_id_uuid;
