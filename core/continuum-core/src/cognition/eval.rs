@@ -1207,7 +1207,7 @@ impl CognitionEval {
         // separate, deliberate decision, never a side effect of measuring it.
         if let Some(gene) = &p.gene {
             cycle.page_out();
-            let (base_score, _) = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await;
+            let (base_score, _) = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await;
 
             // Both arms start each task from the pre-eval memory frame — `run_pass`
             // rewinds the admission frame before EVERY task (per-task isolation), so
@@ -1220,7 +1220,7 @@ impl CognitionEval {
                 scale: gene.scale.unwrap_or(1.0),
             }]);
             let (gene_score, gene_results) =
-                run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await;
+                run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await;
             cycle.page_out();
 
             // Guard drops here: her memory frame + real persistence sink restored.
@@ -1311,7 +1311,7 @@ impl CognitionEval {
             drop(reviewer_iso);
             out
         } else {
-            run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await
+            run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await
         };
         drop(isolation);
 
@@ -1820,6 +1820,7 @@ async fn perception_grade(
     target: &str,
     checks: &[crate::perception::scoring::UiCheck],
     threshold: f32,
+    workspace_root: Option<&str>,
 ) -> (bool, String) {
     let acting = match cycle.acting() {
         Some(a) => a,
@@ -1832,15 +1833,32 @@ async fn perception_grade(
             )
         }
     };
-    // Absolutize a workspace-relative target to a `file://` URL (she wrote her UI into her
-    // workspace root = core cwd, where `code/write` sandboxes); pass an explicit URL through.
+    // Absolutize a workspace-relative target to a `file://` URL. She wrote her UI through
+    // `code/write`, whose hands were rooted at `workspace_root` when the caller pinned one
+    // (the from-scratch build path: a clean per-benchmark dir) — so grade the file THERE,
+    // not at the core cwd. Without a pin she uses the default root (core cwd) exactly as the
+    // hands do. Writer and grader MUST agree on the root or a correct artifact scores a false
+    // zero (the #49 dual-root gap). An explicit URL passes through untouched.
     let target_url = if target.contains("://") {
         target.to_string()
     } else {
-        match std::env::current_dir() {
-            Ok(cwd) => format!("file://{}/{}", cwd.display(), target.trim_start_matches('/')),
-            Err(e) => return (false, format!("could not resolve workspace cwd for target '{target}': {e}")),
-        }
+        let base = match workspace_root {
+            Some(root) => std::path::PathBuf::from(root),
+            None => match std::env::current_dir() {
+                Ok(cwd) => cwd,
+                Err(e) => {
+                    return (
+                        false,
+                        format!("could not resolve workspace cwd for target '{target}': {e}"),
+                    )
+                }
+            },
+        };
+        format!(
+            "file://{}/{}",
+            base.display(),
+            target.trim_start_matches('/')
+        )
     };
     let params = crate::perception::ObserveParams {
         target: target_url.clone(),
@@ -2036,6 +2054,11 @@ async fn run_pass(
     room: Uuid,
     max_acts: usize,
     max_retries: u32,
+    // The pinned workspace root the persona's hands were rooted at (from-scratch build /
+    // SWE-bench). UI grading MUST observe the artifact HERE, where she wrote it — not the
+    // core cwd — or a correct render scores a false zero (#49 dual-root gap). `None` = the
+    // hands used the default root (core cwd) and grading follows.
+    workspace_root: Option<&str>,
 ) -> (u32, Vec<EvalTaskResult>) {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
@@ -2182,7 +2205,7 @@ async fn run_pass(
             // reads too. Default target `index.html`; default threshold 1.0 ("it works").
             let target = t.target.as_deref().unwrap_or("index.html");
             let threshold = t.ui_pass_threshold.unwrap_or(1.0);
-            perception_grade(cycle, target, &t.ui_checks, threshold).await
+            perception_grade(cycle, target, &t.ui_checks, threshold, workspace_root).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
