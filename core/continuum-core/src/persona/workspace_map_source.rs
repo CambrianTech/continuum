@@ -118,27 +118,31 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
 /// semantics of the tools — it never names which directory holds the answer.
 fn render_layout(layout: &WorkspaceLayout) -> String {
     let count = layout.top_level_dirs.len();
-    let dirs = if layout.top_level_dirs.is_empty() {
-        "(none)".to_string()
-    } else {
-        layout.top_level_dirs.join(", ")
-    };
-    // When the workspace HAS directories, explicitly refute the stale "workspace is
-    // empty" confabulation (glass-boxed 2026-07-14: a persona kept RECALLING a past
-    // "the workspace is empty" note and acting on it over this live ground truth,
-    // never re-checking). The map is the authority on workspace state; a memory that
-    // contradicts it is stale by definition. Silent when genuinely empty (never claim
-    // non-empty falsely). [[empty-workspace-is-a-confabulation-not-infra]]
-    let not_empty = if count > 0 {
-        format!(
-            "\nThis workspace is NOT empty: it has {count} top-level directories (above) \
-             and many files. If a memory or earlier note says the workspace is empty, that \
-             note is STALE — trust THIS live layout, and re-run code/list before concluding \
-             anything is missing."
-        )
-    } else {
-        String::new()
-    };
+
+    // EMPTY workspace: reading/listing/globbing an empty space finds nothing, yet a
+    // native-tool model reflexively reaches for `code/list`/`code/tree`/`read_file`
+    // and loops on the void instead of BUILDING (glass-boxed 2026-07-19: a from-scratch
+    // web-dev task scored 0 because the persona explored an empty tree and never wrote
+    // the file — the image-feedback loop can't start until the WRITE fires). Ground the
+    // truth of an empty space: there is nothing to read; produce first. Truthful, not
+    // steering — it says "write to create", never WHAT to build. [[empty-workspace-is-a-confabulation-not-infra]]
+    if count == 0 {
+        return format!(
+            "This workspace is rooted at: {root}\n\
+             It is EMPTY — there are no files or directories here yet. There is nothing \
+             to read, list, or search; `read_file`/`code/list`/`code/tree`/`grep` on an \
+             empty workspace return nothing. To build something, CREATE files directly \
+             with `code/write` (paths are relative to this root). Produce first, then read \
+             back or observe what you made.",
+            root = layout.root.display(),
+        );
+    }
+
+    let dirs = layout.top_level_dirs.join(", ");
+    // A NON-empty workspace: explicitly refute the stale "workspace is empty"
+    // confabulation (glass-boxed 2026-07-14: a persona kept RECALLING a past "the
+    // workspace is empty" note and acting on it over this live ground truth, never
+    // re-checking). The map is the authority; a memory that contradicts it is stale.
     format!(
         "This workspace is a real checkout rooted at: {root}\n\
          Top-level directories (the actual layout — ground truth): {dirs}\n\
@@ -146,7 +150,11 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
          depth — e.g. `**/*.rs` finds files anywhere, regardless of which \
          directory holds them. Do NOT assume source lives under one particular \
          top-level directory (such as `src/`); check this layout, or drill in \
-         with code/list and code/tree.{not_empty}",
+         with code/list and code/tree.\n\
+         This workspace is NOT empty: it has {count} top-level directories (above) \
+         and many files. If a memory or earlier note says the workspace is empty, that \
+         note is STALE — trust THIS live layout, and re-run code/list before concluding \
+         anything is missing.",
         root = layout.root.display(),
         dirs = dirs,
     )
@@ -440,14 +448,29 @@ mod tests {
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
-    // what this catches: an empty workspace (no dirs) still renders a valid block
-    // that says "(none)" rather than an empty/garbled list.
+    // what this catches: an empty workspace grounds WRITE-FIRST — it states the space
+    // is empty, that reading/listing it finds nothing, and to CREATE with code/write.
+    // This counters the native-tool discovery-loop (explore-a-void instead of building)
+    // that scored a from-scratch web-dev task 0. Truthful (it IS empty) + non-steering
+    // (never says WHAT to build). Regression for #206.
     #[tokio::test]
-    async fn empty_layout_renders_none() {
+    async fn empty_layout_grounds_write_first() {
         let source = WorkspaceMapSource::new(persona(), Arc::new(StubReader::ok(&[])));
         let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 1);
-        assert!(delivery.items[0].content.contains("(none)"));
+        let content = &delivery.items[0].content;
+        assert!(content.contains("EMPTY"), "states it's empty: {content}");
+        assert!(content.contains("code/write"), "points at creation, not exploration: {content}");
+        assert!(
+            content.contains("nothing to read"),
+            "explicitly counters the read-a-void reflex: {content}"
+        );
+        // Non-steering: it must not name WHAT to build.
+        let lc = content.to_lowercase();
+        assert!(
+            !lc.contains("index.html") && !lc.contains("login") && !lc.contains("button"),
+            "grounds the empty state, never dictates the artifact: {content}"
+        );
     }
 
     // what this catches: an absurdly tiny budget never overspends — either no
