@@ -421,9 +421,19 @@ impl ServingDaemonModule {
         // the serving_plan fixpoint). The pin fit-gate still uses `live_host_budget`'s raw
         // 0.80 directly — "can this model physically fit" is a different question than "how
         // much should the shared base claim now." [[verify-real-device-numbers-not-a-clamp-premise]]
+        // The governed VRAM board is the ONE authority for available VRAM: its `available`
+        // is free-VRAM ALREADY netted over every measured consumer + external pressure AND
+        // already ≤ physical VRAM. Trust it directly — do NOT `.min()` it against the raw
+        // system-RAM "available" figure. On UMA (Apple Silicon) macOS's vm_stat under-reports
+        // available RAM (wired/cached/compressed counted as used) FAR below the VRAM the GPU
+        // can actually use, so the old `available.min(vram_ceiling)` starved a 42.7GB governed
+        // budget down to macOS's 18GB reading — LESS than Devstral's own 14GB weights — and
+        // floored a 128k-capable model to MIN_SERVE_CTX (2048) with ~28GB sitting free
+        // (glass-boxed 2026-07-20). The raw-probe-overriding-the-board clamp is exactly the
+        // anti-pattern the memory-authority arc exists to kill. Pressure sensing stays live
+        // via the drive mode below (which still reads system available for the fraction).
         let available = self.system.snapshot().memory.available_bytes;
-        let vram_ceiling = governed_vram_ceiling(&self.resource_daemon).unwrap_or(0);
-        let live = available.min(vram_ceiling);
+        let live = governed_vram_ceiling(&self.resource_daemon).unwrap_or(0);
         let mode = crate::provisioning::serving_mode_for_pressure(available);
         // Observability: emit ONLY on a mode TRANSITION so the dynamic scaling is visible
         // without spamming the hot plan tick ([[never-blind-feedback-driven-iteration]]).
@@ -910,13 +920,17 @@ pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
 /// and the `serving/pin` fit-gate derive the budget from the ONE source — a pin's
 /// "will it fit" can never disagree with what the next tick would actually do.
 pub fn live_host_budget(
-    system: &SystemResourceMonitor,
+    _system: &SystemResourceMonitor,
     resource_daemon: &ResourceDaemon,
 ) -> HostBudget {
-    let available = system.snapshot().memory.available_bytes;
+    // Board-authoritative, same as the autonomic tick: the governed VRAM `available`
+    // is the ONE source. We deliberately do NOT min it against `system` RAM
+    // available — on UMA that raw vm_stat figure under-reports and would reject a model
+    // that physically fits (the same clamp that floored the served window to 2048;
+    // glass-boxed 2026-07-20). `_system` stays in the signature for call-site stability.
     let vram_ceiling = governed_vram_ceiling(resource_daemon).unwrap_or(0);
     host_budget_from(&HostBudgetInputs {
-        available_bytes: available,
+        available_bytes: vram_ceiling,
         total_vram_bytes: vram_ceiling,
         perf_cores: perf_cores(),
     })
