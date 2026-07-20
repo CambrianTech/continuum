@@ -862,10 +862,19 @@ impl LlmDeliberationFaculty {
         // registry — one seam to add a fact, a `perception.fact` probe per
         // fact per tick, and `FactPolicy` toggles as A/B arms. Each fact's
         // full history and doctrine lives on its impl in perception_facts.rs.
-        // Appended as the NEWEST user content so facts always survive the
-        // newest-first budget fit and sit adjacent to the moment of reply.
-        // Facts, never instructions ([[no-hardcoded-heuristics-to-steer-
-        // cognition]]).
+        // Facts, never instructions ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        //
+        // Facts are GROUNDING, not the ask — so they go just BEFORE the final user
+        // turn (the actionable message she's answering), never after it. A model
+        // continues the LAST thing it sees; when bracketed meta-facts sat last, the
+        // model parroted them instead of answering — glass-boxed 2026-07-20: Devstral
+        // echoed the [context]/[steps]/working-memory scaffold verbatim into a
+        // finish=length loop and scored 0/50 on humaneval-rs because the ask was buried
+        // BEFORE the facts. Inserting before the final user turn keeps every property the
+        // trailing placement wanted (still the newest grounding, still survives the
+        // newest-first budget fit, still adjacent to the reply, still out of the cacheable
+        // system prefix) while leaving the ask last, where she answers it. Proven by
+        // bisect: ask-last → clean code; facts-last → parrot loop.
         let spoken = super::deliberation_budget::recent_own_speech(
             crate::identity::PeerId::from_uuid(self.persona_id),
         );
@@ -874,11 +883,20 @@ impl LlmDeliberationFaculty {
             own_speech: &spoken,
             working_memory: self.working_memory.as_ref(),
         };
-        for fact in super::perception_facts::render_facts(
+        let facts = super::perception_facts::render_facts(
             &fact_cx,
             &super::perception_facts::FactPolicy::default(),
-        ) {
-            messages.push(ChatMessage::text("user", fact));
+        );
+        if !facts.is_empty() {
+            // Before the LAST user turn (the ask). No user turn (a pure self-tick with only
+            // assistant history) → append at the end; there is no ask to displace.
+            let before_ask = messages
+                .iter()
+                .rposition(|m| m.role == "user")
+                .map_or(messages.len(), |i| i);
+            for (offset, fact) in facts.into_iter().enumerate() {
+                messages.insert(before_ask + offset, ChatMessage::text("user", fact));
+            }
         }
 
         // TRAILING proprioception (#205): contributions marked [`Contribution::trailing`]
@@ -1925,7 +1943,20 @@ mod tests {
                 "the persona's own turn must not be self-prefixed: {assistant:?}"
             );
             assert!(view.messages[0].content_text().starts_with("Joel: "));
-            assert!(view.messages[2].content_text().starts_with("Joel: "));
+            // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
+            // turn), so the ask stays LAST where the model answers it — not the bracketed
+            // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
+            // the layout is [Joel, Asha(assistant), [context]-fact, Joel-ask]: the grounding
+            // sits at [2], the ask is last.
+            assert!(
+                view.messages[2].content_text().starts_with("[context]"),
+                "grounding fact sits just before the ask: {:?}",
+                view.messages[2]
+            );
+            assert!(
+                view.messages.last().unwrap().content_text().starts_with("Joel: "),
+                "the ask (last peer turn) stays LAST, after the grounding facts"
+            );
         }
 
         // what this catches: the near-dup render drop (live specimen 2026-07-11 —
