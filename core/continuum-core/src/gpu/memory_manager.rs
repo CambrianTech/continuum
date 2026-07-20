@@ -1,10 +1,14 @@
 //! GpuMemoryManager — singleton VRAM tracker with Metal/CUDA detection.
 //!
-//! Budget allocation (startup defaults):
-//!   Inference: 75%  — model weights, KV cache, LoRA adapters
-//!   TTS:       10%  — TTS model weights
-//!   Rendering: 10%  — Bevy render targets, avatar models
-//!   Reserve:    5%  — headroom to prevent OOM
+//! Budget model:
+//!   Reserve: 5% — driver/OS headroom, held back from the usable pool.
+//!   Every subsystem (inference / tts / rendering) shares the FULL usable pool;
+//!   there is NO static per-subsystem partition. Contention is arbitrated live by
+//!   the dynamic pressure gate below — a subsystem is admitted while total physical
+//!   pressure sits under its priority's threshold, not because it fits a fixed slice.
+//!   (The old static 75/10/10 split was demand-blind and the soft-limit path already
+//!   ignored it; see the constants comment. Full convergence to leases from the one
+//!   ResourceDaemon authority is task #56.)
 //!
 //! Pressure levels:
 //!   0-60%   Normal   — no action
@@ -173,11 +177,20 @@ impl SubsystemBudget {
 // GPU MEMORY MANAGER
 // =============================================================================
 
-/// Budget allocation percentages (of usable VRAM after reserve).
-const INFERENCE_BUDGET_PCT: f64 = 0.75;
-const TTS_BUDGET_PCT: f64 = 0.10;
-const RENDERING_BUDGET_PCT: f64 = 0.10;
+/// Driver/OS headroom held back from the usable pool unconditionally.
 const RESERVE_PCT: f64 = 0.05;
+
+// The old static 75/10/10 inference/tts/rendering partition is GONE (memory-authority
+// slice 4, `[[memory-system-is-fully-dynamic-nothing-static]]`). It was a demand-blind
+// split of `usable` that the real admission path already ignored: `SubsystemBudget`
+// is a SOFT limit ("allocation proceeds even if over-budget" — see `SubsystemBudget::allocate`),
+// and the only hard gate is the DYNAMIC pressure gate (`new_pressure >= priority.pressure_gate()`
+// in `allocate`), read off the same physical GpuMonitor the one-authority board reads.
+// So a static fraction never governed anything — it only skewed a warning log + telemetry,
+// and it lied that inference could never exceed 75% of VRAM while TTS/rendering sat idle.
+// Every subsystem now draws from the FULL shared `usable` pool; the pressure gate arbitrates
+// contention live. (The full convergence — Bevy/TTS/inference LEASE from the ResourceDaemon
+// board instead of keeping this parallel pressure ledger — is task #56.)
 
 // CPU_FALLBACK_RAM_PCT removed (#964 series PR #3 / #980 GPU-fallback
 // audit). Per Joel's architectural rule "lack of GPU integration is
@@ -226,16 +239,10 @@ impl GpuMemoryManager {
         let reserve_bytes = (total_bytes as f64 * RESERVE_PCT) as u64;
         let usable = total_bytes.saturating_sub(reserve_bytes);
 
-        let inference_budget = (usable as f64 * INFERENCE_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-        let tts_budget = (usable as f64 * TTS_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-        let rendering_budget = (usable as f64 * RENDERING_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-
         let (pressure_tx, pressure_rx) = watch::channel(0.0f32);
 
         let total_mb = total_bytes / (1024 * 1024);
-        let inference_mb = inference_budget / (1024 * 1024);
-        let tts_mb = tts_budget / (1024 * 1024);
-        let rendering_mb = rendering_budget / (1024 * 1024);
+        let usable_mb = usable / (1024 * 1024);
         let reserve_mb = reserve_bytes / (1024 * 1024);
 
         log_info!(
@@ -248,20 +255,21 @@ impl GpuMemoryManager {
         log_info!(
             "gpu",
             "manager",
-            "Budget: inference={}MB, tts={}MB, rendering={}MB, reserve={}MB",
-            inference_mb,
-            tts_mb,
-            rendering_mb,
+            "Shared usable pool: {}MB (reserve {}MB) — no static per-subsystem split; \
+             the dynamic pressure gate arbitrates inference/tts/rendering contention",
+            usable_mb,
             reserve_mb
         );
 
         Self {
             total_vram_bytes: total_bytes,
             gpu_name,
+            // No static partition: every subsystem may draw the full shared `usable`
+            // pool; the pressure gate is the live arbiter (see the constants comment).
             subsystems: [
-                SubsystemBudget::new(rendering_budget), // index 0
-                SubsystemBudget::new(inference_budget), // index 1
-                SubsystemBudget::new(tts_budget),       // index 2
+                SubsystemBudget::new(usable), // index 0 — rendering
+                SubsystemBudget::new(usable), // index 1 — inference
+                SubsystemBudget::new(usable), // index 2 — tts
             ],
             reserve_bytes,
             pressure_tx,
@@ -435,7 +443,9 @@ impl GpuMemoryManager {
         &self.gpu_name
     }
 
-    /// Inference subsystem budget in bytes.
+    /// Inference subsystem soft budget in bytes. With the static partition gone this
+    /// is the full shared usable pool (unless a test/command narrowed it via
+    /// `set_budget`); the pressure gate, not this number, is the real admission bound.
     pub fn inference_budget_bytes(&self) -> u64 {
         self.subsystems[GpuSubsystem::Inference.index()].budget()
     }
@@ -469,17 +479,14 @@ impl GpuMemoryManager {
     pub fn simulated(gpu_name: &str, total_vram_bytes: u64) -> Self {
         let reserve_bytes = (total_vram_bytes as f64 * RESERVE_PCT) as u64;
         let usable = total_vram_bytes.saturating_sub(reserve_bytes);
-        let inference_budget = (usable as f64 * INFERENCE_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-        let tts_budget = (usable as f64 * TTS_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-        let rendering_budget = (usable as f64 * RENDERING_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
         let (pressure_tx, pressure_rx) = watch::channel(0.0f32);
         Self {
             total_vram_bytes,
             gpu_name: gpu_name.to_string(),
             subsystems: [
-                SubsystemBudget::new(rendering_budget),
-                SubsystemBudget::new(inference_budget),
-                SubsystemBudget::new(tts_budget),
+                SubsystemBudget::new(usable),
+                SubsystemBudget::new(usable),
+                SubsystemBudget::new(usable),
             ],
             reserve_bytes,
             pressure_tx,
@@ -955,19 +962,15 @@ mod tests {
         let reserve_bytes = (total_bytes as f64 * RESERVE_PCT) as u64;
         let usable = total_bytes - reserve_bytes;
 
-        let inference_budget = (usable as f64 * INFERENCE_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-        let tts_budget = (usable as f64 * TTS_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-        let rendering_budget = (usable as f64 * RENDERING_BUDGET_PCT / (1.0 - RESERVE_PCT)) as u64;
-
         let (pressure_tx, pressure_rx) = watch::channel(0.0f32);
 
         Arc::new(GpuMemoryManager {
             total_vram_bytes: total_bytes,
             gpu_name: "Test GPU".to_string(),
             subsystems: [
-                SubsystemBudget::new(rendering_budget),
-                SubsystemBudget::new(inference_budget),
-                SubsystemBudget::new(tts_budget),
+                SubsystemBudget::new(usable),
+                SubsystemBudget::new(usable),
+                SubsystemBudget::new(usable),
             ],
             reserve_bytes,
             pressure_tx,
@@ -1049,34 +1052,34 @@ mod tests {
         assert_eq!(mgr.subsystems[GpuSubsystem::Tts.index()].used(), 0);
     }
 
+    // what this catches: the static 75/10/10 partition is GONE (memory-authority slice 4).
+    // Every subsystem's soft budget is the FULL shared usable pool (~95% of total after
+    // the driver reserve), not a demand-blind fraction — so inference is never falsely
+    // capped at 75% while tts/rendering sit idle. Contention is arbitrated live by the
+    // pressure gate, not by a fixed split. Regresses the "nothing static" invariant.
     #[test]
-    fn test_budget_percentages() {
+    fn test_no_static_partition_all_subsystems_share_the_usable_pool() {
         let mgr = test_manager(36_864); // 36GB
         let stats = mgr.stats();
 
-        // Inference should be ~75% of usable
-        let inference_pct = stats.inference.budget_mb / stats.total_vram_mb;
-        assert!(
-            inference_pct > 0.70 && inference_pct < 0.80,
-            "Inference should be ~75%, got {:.1}%",
-            inference_pct * 100.0
-        );
+        let usable_pct = (1.0 - RESERVE_PCT) as f32; // ~0.95
+        for (name, budget_mb) in [
+            ("inference", stats.inference.budget_mb),
+            ("tts", stats.tts.budget_mb),
+            ("rendering", stats.rendering.budget_mb),
+        ] {
+            let pct = budget_mb / stats.total_vram_mb;
+            assert!(
+                (pct - usable_pct).abs() < 0.01,
+                "{name} should draw the full usable pool (~{:.0}%), got {:.1}%",
+                usable_pct * 100.0,
+                pct * 100.0
+            );
+        }
 
-        // TTS should be ~10%
-        let tts_pct = stats.tts.budget_mb / stats.total_vram_mb;
-        assert!(
-            tts_pct > 0.08 && tts_pct < 0.12,
-            "TTS should be ~10%, got {:.1}%",
-            tts_pct * 100.0
-        );
-
-        // Rendering should be ~10%
-        let rendering_pct = stats.rendering.budget_mb / stats.total_vram_mb;
-        assert!(
-            rendering_pct > 0.08 && rendering_pct < 0.12,
-            "Rendering should be ~10%, got {:.1}%",
-            rendering_pct * 100.0
-        );
+        // And they are equal — one shared pool, no per-subsystem carve-up.
+        assert!((stats.inference.budget_mb - stats.tts.budget_mb).abs() < 1.0);
+        assert!((stats.inference.budget_mb - stats.rendering.budget_mb).abs() < 1.0);
     }
 
     #[test]
@@ -1132,20 +1135,26 @@ mod tests {
         assert!(rx.has_changed().unwrap_or(false) || *rx.borrow() > 0.0);
     }
 
+    // what this catches: SubsystemBudget is a SOFT limit — exceeding it does NOT reject
+    // the allocation; only the dynamic pressure gate does. With the static partition gone,
+    // the soft budget defaults to the full usable pool, so we shrink it explicitly via
+    // set_budget to prove the soft-vs-hard distinction still holds: over the soft budget
+    // but well under the Realtime pressure gate → still succeeds.
     #[test]
     fn test_over_budget_soft_limit() {
         let mgr = test_manager(1024);
-        let budget = mgr.inference_budget_bytes();
+        // Pin a tiny soft budget so the next allocation is over it, yet far under the
+        // physical pressure gate (200MB / ~972MB usable ≈ 0.21 ≪ 0.95 Realtime gate).
+        mgr.set_budget(GpuSubsystem::Inference, 100 * 1024 * 1024);
 
-        // Allocate more than budget — should succeed (soft limit) at Realtime priority
         let guard = mgr.allocate(
             GpuSubsystem::Inference,
-            budget + 100 * 1024 * 1024,
+            200 * 1024 * 1024,
             GpuPriority::Realtime,
         );
         assert!(
             guard.is_ok(),
-            "Over-budget allocation should succeed (soft limit)"
+            "Over-soft-budget allocation should succeed — only the pressure gate rejects"
         );
     }
 
