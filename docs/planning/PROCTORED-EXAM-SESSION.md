@@ -120,15 +120,35 @@ be graded as a miss. Two fault-injection unit tests pin both halves. NOT yet don
 the full re-verify+retry inside team mode (it classifies + aborts) and the A/B two-arm path
 (runs on an EphemeralServingLane that decode-verifies at spawn) — both scoped follow-ups.
 
-### Slice C — adequate window (kills the churn source, axis 2)
+### Slice C — adequate window (kills the churn source, axis 2) — ✅ ALREADY SATISFIED (audit 2026-07-20)
 The served window must satisfy **concurrent-worst-case**:
-`window × active_slots × kv_per_token ≤ free_after_weights`. Today grow-back sizes for
-empty slots, so adding the exam slot (or an N-persona LiveKit huddle) overflows KV → the
-decode-failure self-heal that flips the lane not-ready. Fixing this removes the main reason
-the shared lane isn't stable under an exam.
-- Files: `cognition/serving_plan.rs` (window sizing), `serving_daemon` reconcile.
-- Test: extend `serving_plan` tests with the concurrent-worst-case invariant (mirrors
-  `placement::huddle_counts_kv_for_every_concurrent_slot`).
+`window × active_slots × kv_per_token ≤ free_after_weights` (+ the window-scaled prefill
+compute buffer per lane).
+
+**Audit finding: this is already enforced — do NOT reinvent it.** `plan_serving`
+(`cognition/serving_plan.rs:362-379`) sizes the served window by SOLVING THE FULL FIXPOINT
+`after_weights ≥ l·(kv_per_token·C + compute_floor + compute_rate·C)` where `l = lanes =
+n_seq_max`, so every one of the `l` slots can hold a FULL-window context AND prefill
+concurrently — the concurrent-worst-case invariant verbatim. The plan's original premise
+("grow-back sizes for empty slots") was stale: #213 (2-lane floor) and #214 (grow-back
+recompute UP) already fixed the specific bugs, and `a_squeeze_sheds_a_lane_rather_than_
+flooring_every_mind` shows the degrade path sheds a lane (queue) rather than shrinking the
+window under the floor. The invariant is pinned by
+`served_window_footprint_fits_effective_budget_including_window_scaled_compute` (the exact
+test this slice asked for, already green). Per-slot overflow (a single prompt+generation
+exceeding the served window) is a budget-at-assembly concern, already handled by
+`reconcile_window_to_served` (`a9b6f13a4`: the LIVE served per-slot window is the budgeting
+authority, up AND down).
+
+**Why the exam is stable under this:** `run_eval` holds a fleet-quiesce lease
+(`quiesce_all`) for the whole measurement, so live personas stop self-ticking — concurrent
+demand DURING a quiesced exam is low (the exam slot + any directed replies), well within a
+window sized for the live `demand_lanes`. The residual axis-2 risk (an N-persona LiveKit
+huddle spiking concurrency beyond the sized lane count) is a LIVE self-scaling concern
+(#126 / demand_lanes must track the huddle roster), NOT an exam-dependability gap.
+
+**Net:** no code change needed for the exam's stability. The remaining Proctored-Exam work
+is the LIVE re-measure below and Slice A (preempt) for heavy live load / the grid.
 
 ### Slice A — dependable context via preempt (the strongest guarantee)
 `ExamServingContext::acquire(persona, demand) -> Result<Handle, Reason>` executing the
