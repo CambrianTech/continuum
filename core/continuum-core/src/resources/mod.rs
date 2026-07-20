@@ -187,7 +187,7 @@ pub use broker::{
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
 pub use capacity::{CapacitySource, GpuCapacitySource, MockCapacitySource};
-pub use daemon::{DaemonConfig, LeasePoolView, ResourceDaemon};
+pub use daemon::{DaemonConfig, LeaseGuard, LeasePoolView, ResourceDaemon};
 pub use governor::{GovernorConfig, PlannedReclaim, ResourceGovernor};
 pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
