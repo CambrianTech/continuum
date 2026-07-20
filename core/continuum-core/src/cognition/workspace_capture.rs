@@ -49,6 +49,14 @@ struct BidRecord {
     content: String,
     /// True for the deliberation faculty's verdict bid (the one carrying a Decision).
     is_decision: bool,
+    /// The model's VERBATIM generation for a verdict bid — the raw response text
+    /// before the tool-call/PASS parser lifted the `decision` above (#210). Present
+    /// only on the deliberation verdict; omitted from the line for every context bid.
+    /// This is what makes a fumbled artifact (a stray `<<!DOCTYPE`, a malformed tool
+    /// envelope) attributable to the MODEL vs the HARNESS from a single capture line:
+    /// compare `raw_generation` (what it emitted) against `decision` (what we parsed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_generation: Option<String>,
 }
 
 impl From<&Contribution> for BidRecord {
@@ -59,6 +67,7 @@ impl From<&Contribution> for BidRecord {
             reasoning: c.reasoning.clone(),
             content: c.content.clone(),
             is_decision: c.decision.is_some(),
+            raw_generation: c.raw_generation.clone(),
         }
     }
 }
@@ -195,6 +204,7 @@ mod tests {
             metrics: None,
             stable: false,
             fault: None,
+            raw_generation: None,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -208,6 +218,9 @@ mod tests {
             metrics: None,
             stable: false,
             fault: None,
+            // #210: the verbatim generation carries a leading-char fumble the parser
+            // tolerated — the capture must preserve it so model-vs-harness is decidable.
+            raw_generation: Some("<Let's roll back the migration.".to_string()),
         };
         let trace = WorkspaceTrace {
             world_state: "teammate: what should we do about the red deploy?".to_string(),
@@ -257,6 +270,21 @@ mod tests {
         assert_eq!(v["context"].as_array().unwrap().len(), 1);
         // The decision round-trips with its kebab tag.
         assert_eq!(v["decision"]["kind"], "speak");
+        // #210: the verdict bid's VERBATIM generation round-trips (raw + parsed in ONE
+        // line), so a fumbled artifact is attributable to the model vs the harness; a
+        // context bid (recall) carries no raw_generation and the field is omitted there.
+        assert!(
+            bids.iter().any(|b| b["is_decision"] == true
+                && b["raw_generation"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with('<'))),
+            "verdict raw_generation must be captured verbatim: {bids:?}"
+        );
+        assert!(
+            bids.iter()
+                .any(|b| b["faculty"] == "recall" && b["raw_generation"].is_null()),
+            "context bids must omit raw_generation: {bids:?}"
+        );
         // Per-faculty timing (the speed axis) round-trips: the deliberation tier is
         // captured and flagged, so "where did the turn's latency go?" is answerable.
         let timings = v["timings"].as_array().unwrap();

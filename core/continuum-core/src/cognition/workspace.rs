@@ -266,6 +266,16 @@ pub struct Contribution {
     /// distinct `InferenceFailed` outcome instead of a lying `Passed`. `None` on
     /// every healthy contribution.
     pub fault: Option<String>,
+    /// The model's **verbatim generation** for this verdict — the raw response text
+    /// EXACTLY as the model emitted it, BEFORE the tool-call/PASS parser lifted a
+    /// [`Decision`] from it. Set ONLY by the deliberation faculty on its verdict
+    /// contribution (peer to [`metrics`](Self::metrics)); `None` on every context
+    /// contribution and every non-model finding. Rides the broadcast so the ONE
+    /// glass-box seam (the workspace capture, e.g. the eval's `--capture_dir`) holds
+    /// raw AND parsed together — a fumbled artifact (a stray `<<!DOCTYPE`, a malformed
+    /// tool envelope) is then attributable to the MODEL vs the HARNESS from a single
+    /// record, never inferred by cross-referencing two files by timestamp (#210).
+    pub raw_generation: Option<String>,
 }
 
 impl Contribution {
@@ -286,6 +296,7 @@ impl Contribution {
             metrics: None,
             stable: false,
             fault: None,
+            raw_generation: None,
         }
     }
 
@@ -309,6 +320,7 @@ impl Contribution {
             // A verdict is the volatile output of THIS turn; never standing framing.
             stable: false,
             fault: None,
+            raw_generation: None,
         }
     }
 
@@ -332,6 +344,7 @@ impl Contribution {
             metrics: None,
             stable: false,
             fault: Some(error),
+            raw_generation: None,
         }
     }
 
@@ -339,6 +352,18 @@ impl Contribution {
     /// deliberation faculty can do `self.verdict(...).with_metrics(m)`).
     pub fn with_metrics(mut self, metrics: TurnMetrics) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// Stamp the model's **verbatim generation** onto this verdict (builder form,
+    /// peer to [`with_metrics`](Self::with_metrics)) — the raw response text before
+    /// the parser lifted a [`Decision`], so the glass box holds raw + parsed in one
+    /// record (#210). Empty text stays `None` (nothing to attribute).
+    pub fn with_raw_generation(mut self, raw: impl Into<String>) -> Self {
+        let raw = raw.into();
+        if !raw.is_empty() {
+            self.raw_generation = Some(raw);
+        }
         self
     }
 

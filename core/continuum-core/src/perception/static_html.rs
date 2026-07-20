@@ -232,6 +232,38 @@ mod tests {
         assert_eq!(btn.role.as_deref(), Some("button"));
     }
 
+    // what this catches (#210): a single fumbled leading char must not zero an otherwise
+    // correct page. Live capture showed a `<<!DOCTYPE html>` emission (a stray `<` before the
+    // doctype). html5ever is the browser's own tolerant parser — it treats the stray `<` as
+    // text and still builds the real DOM — so the grader MUST see the body's elements and
+    // score them, exactly as a browser would. A leading typo is a model quirk to attribute
+    // (raw-gen capture), never a harness false-zero.
+    #[test]
+    fn leading_stray_char_before_doctype_still_grades_the_body() {
+        let html = "<<!DOCTYPE html><html><head><title>Login</title></head>\
+        <body>\
+          <h1>Sign in</h1>\
+          <form action=\"/submit\" method=\"post\">\
+            <input type=\"email\" name=\"email\" required>\
+            <input type=\"password\" name=\"password\" required>\
+            <button type=\"submit\">Submit</button>\
+          </form>\
+        </body></html>";
+        let obs = observe_html(html, None);
+        assert!(obs.success, "tolerant parse must still succeed despite the stray leading char");
+        let checks = vec![
+            check(Some("h1"), None, Some("sign in"), 1),
+            check(Some("input"), None, None, 2),
+            check(None, Some("button"), Some("submit"), 1),
+        ];
+        let grade = grade_ui(&obs, &checks, 1.0);
+        assert!(
+            grade.passed,
+            "a leading stray char must not zero a correct page, got: {}",
+            grade.summary
+        );
+    }
+
     // what this catches: a missing/unbuilt artifact must score a MISS, never a false
     // pass — a benchmark that grades a page that isn't there is worthless.
     #[test]

@@ -526,6 +526,10 @@ impl LlmDeliberationFaculty {
             format!("{} chose to act", self.persona_name),
         )
         .with_metrics(metrics_from(resp))
+        // #210: carry the verbatim generation so the glass box can attribute a fumbled
+        // tool envelope to the model, not the parser. The Act's `intent` is only the
+        // model's `<think>` reasoning; the raw text is the actual emitted call bytes.
+        .with_raw_generation(resp.text.clone())
     }
 
     /// Turn the model's final text into a participation verdict. `salience` is
@@ -544,7 +548,12 @@ impl LlmDeliberationFaculty {
                 ),
             ),
         };
-        Contribution::verdict(decision, salience, reasoning).with_metrics(metrics_from(resp))
+        Contribution::verdict(decision, salience, reasoning)
+            .with_metrics(metrics_from(resp))
+            // #210: for a Speak, the raw text IS the artifact (the `<<!DOCTYPE` HTML she
+            // wrote to the room / a file); carrying it verbatim lets the glass box show a
+            // leading-char fumble is the model's, distinct from the parsed decision.
+            .with_raw_generation(resp.text.clone())
     }
 
     /// Render the assembled context (the phase-1 winners that hold the workspace)
