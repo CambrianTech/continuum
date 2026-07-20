@@ -356,42 +356,50 @@ pub fn plan_serving(
     let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
     let after_weights = effective.saturating_sub(model.weights_bytes);
     let compute_floor = model.compute_buffer_per_lane();
-    let per_lane_floor = model
-        .kv_at(MIN_SERVE_CTX)
-        .saturating_add(compute_floor)
-        .max(1);
-    let kv_lanes = (after_weights / per_lane_floor) as u32;
-    let lanes = demand_lanes
+    let compute_rate = model.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+    let per_token_cost = model.kv_per_token.saturating_add(compute_rate).max(1);
+
+    // The LARGEST context each of `l` lanes can hold once weights + every lane's compute
+    // buffer are reserved (the full fixpoint — KV *and* the window-scaled prefill graph,
+    // worst case all lanes prefill at once):
+    //   after_weights ≥ l · (kv_per_token·C + compute_floor + compute_rate·C)
+    //   C ≤ (after_weights − l·compute_floor) / (l · (kv_per_token + compute_rate))
+    // Capped at the model's trained ceiling. Over-reserve → smaller window (safe);
+    // under-reserve → OOM (fatal), so `compute_rate` rounds UP. `0` when `l` lanes can't
+    // even hold one token — adding that lane would starve every lane.
+    let window_for = |l: u64| -> u32 {
+        if l == 0 {
+            return 0;
+        }
+        if model.kv_per_token == 0 {
+            return model.context_window;
+        }
+        let after_compute = after_weights.saturating_sub(compute_floor.saturating_mul(l));
+        (((after_compute / l) / per_token_cost).min(u32::MAX as u64) as u32).min(model.context_window)
+    };
+
+    // THE DAEMON'S PURPOSE, made concrete (#213): serve as many concurrent minds as DEMAND
+    // wants — but ONLY while each still gets a window big enough to THINK in. Concurrency is
+    // worthless if it collapses every lane to the MIN_SERVE_CTX floor: a 2048-token mind
+    // can't hold its own memory + the task, so 1 lane @ 30k beats 2 lanes @ 2k. The old
+    // math capped lanes by what fit at the FLOOR window (`kv_at(MIN_SERVE_CTX)`), so it
+    // admitted N lanes and let the window collapse — a lane-count target chased off a cliff.
+    // Instead, pick the LARGEST lane count (≤ demand, ≤ cores, ≤ MAX_LANES) whose per-lane
+    // window still clears the floor. Fall back to 1 only when the host is genuinely too small
+    // for even one real window — honest starvation (surfaced downstream), never a silent
+    // collapse. Same lanes-follow-demand-on-a-roomy-host / degrade-on-a-small-one behavior,
+    // but the degrade path now SHEDS LANES (queue) instead of shrinking the mind to nothing
+    // ([[never-thrash-sticky-hysteresis-on-every-lane]], [[situation-aware-focuser]]).
+    let lane_cap = demand_lanes
         .max(1)
-        .min(kv_lanes)
         .min(host.perf_cores.max(1))
         .min(MAX_LANES)
         .max(1);
-
-    // Served window: expand each lane to the LARGEST context its share of the
-    // post-weights budget affords — AFTER reserving every lane's compute buffer (worst
-    // case: all lanes prefill at once, the wake-briefing burst). Capped at the model's
-    // own trained ceiling and floored at MIN_SERVE_CTX. Derived from (model ∩ host),
-    // never a constant — this is the serving window everyone downstream reads (task #50).
-    // SOLVE THE FIXPOINT. The prefill compute buffer is NOT a constant — llama.cpp
-    // sizes the graph for the FULL served window, so the buffer grows with C. Model it
-    // as `compute_floor + compute_rate·C` per lane and solve for the largest C where KV
-    // AND compute fit every lane at once (the worst case: all lanes prefill together):
-    //   after_weights ≥ lanes · (kv_per_token·C + compute_floor + compute_rate·C)
-    //   C ≤ (after_weights − lanes·compute_floor) / (lanes · (kv_per_token + compute_rate))
-    // A window-independent reserve (the old `compute_per_lane × lanes`) under-provisions
-    // exactly as the window grows — the 53k prefill OOM. Over-reserve → smaller window
-    // (safe); under-reserve → OOM (fatal), so `compute_rate` rounds UP.
-    let lanes64 = lanes as u64;
-    let compute_rate = model.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
-    let per_token_cost = model.kv_per_token.saturating_add(compute_rate).max(1);
-    let fit_ctx = if model.kv_per_token == 0 {
-        model.context_window
-    } else {
-        let after_compute_floor = after_weights.saturating_sub(compute_floor.saturating_mul(lanes64));
-        ((after_compute_floor / lanes64) / per_token_cost).min(u32::MAX as u64) as u32
-    };
-    let served_context_window = fit_ctx.min(model.context_window).max(MIN_SERVE_CTX);
+    let lanes = (1..=lane_cap)
+        .rev()
+        .find(|&l| window_for(l as u64) > MIN_SERVE_CTX)
+        .unwrap_or(1);
+    let served_context_window = window_for(lanes as u64).max(MIN_SERVE_CTX);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -713,6 +721,37 @@ mod tests {
         assert!(demand99.lanes <= MAX_LANES);
         // …and a zero demand is defensively floored at one lane.
         assert_eq!(plan_serving(host, &candidates(), 0).unwrap().lanes, 1);
+    }
+
+    // what this catches: #213 — the daemon must not chase a lane-count target off a cliff.
+    // When a mid-session VRAM squeeze (an eval lane spinning up, a game) leaves room for
+    // only ONE real window, demand for 2 concurrent lanes must SHED a lane (queue) rather
+    // than collapse BOTH minds to the MIN_SERVE_CTX floor — a 2048-token mind can't hold its
+    // own memory + the task. Live specimen 2026-07-20: Devstral re-homed to 2 lanes @ 2048
+    // with the eval lane resident, while 1 lane would have served ~30k. The old math capped
+    // lanes by what fit at the FLOOR window, so it admitted 2 and let the window collapse;
+    // the fix picks the largest lane count whose per-lane window still clears the floor.
+    #[test]
+    fn a_squeeze_sheds_a_lane_rather_than_flooring_every_mind() {
+        let devstral = fp("devstral-24b", 14, 175_000, 131_072, 3);
+        // Budget where ONE lane serves a real window but TWO would floor (eval lane resident).
+        let squeezed = HostBudget { usable_bytes: 19 * GB, perf_cores: 6 };
+        let plan = plan_serving(squeezed, std::slice::from_ref(&devstral), 2).unwrap();
+        assert_eq!(plan.lanes, 1, "2 lanes would floor → shed to 1 real lane, not 2 @ 2048");
+        assert!(
+            plan.served_context_window > 4096,
+            "the surviving lane gets a window big enough to think in, got {}",
+            plan.served_context_window,
+        );
+        // And when there IS room, demand is honored at real windows — concurrency preserved.
+        let roomy = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let plan2 = plan_serving(roomy, std::slice::from_ref(&devstral), 2).unwrap();
+        assert_eq!(plan2.lanes, 2, "roomy host serves both minds concurrently");
+        assert!(
+            plan2.served_context_window > 32_768,
+            "each mind at a real window, got {}",
+            plan2.served_context_window,
+        );
     }
 
     // what this catches: the M5 Pro must use its headroom — pick the most
