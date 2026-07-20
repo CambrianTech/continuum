@@ -204,6 +204,41 @@ impl ModelFootprint {
         self.weights_bytes
             .saturating_add(self.kv_at(served_window).saturating_mul(lanes.max(1) as u64))
     }
+
+    /// The concurrent-prefill compute reserve across all lanes AT the served window —
+    /// the ONE formula the serving plan's fixpoint sizes against ([`plan_serving`]'s
+    /// `compute_reserve`) and the SAME number the board must attribute (E=mc²: one
+    /// compute-reserve decision, one place). Per lane the buffer is NOT a constant:
+    /// llama.cpp sizes the prefill graph for the FULL served window, so it grows with C
+    /// as `compute_floor + compute_rate·C` (`compute_rate = kv_per_token /
+    /// PREFILL_COMPUTE_KV_DIVISOR`). Worst case — every lane prefills at once (the
+    /// wake-briefing burst) — so multiply by lanes. A window-INDEPENDENT reserve
+    /// under-provisions exactly as the window grows (the 53k prefill OOM), so this
+    /// window-scales.
+    pub fn prefill_compute_reserve(&self, served_window: u32, lanes: u32) -> u64 {
+        let compute_rate = self.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+        self.compute_buffer_per_lane()
+            .saturating_add(compute_rate.saturating_mul(served_window as u64))
+            .saturating_mul(lanes.max(1) as u64)
+    }
+
+    /// The PEAK on-device residency serving can hit — [`resident_bytes`] (weights +
+    /// per-lane KV) PLUS the concurrent-prefill compute reserve of every lane
+    /// ([`prefill_compute_reserve`]). This equals the serving plan's `chosen_cost`
+    /// exactly, so it is the honest number serving reports to the resource authority as
+    /// its `footprint()` (#56/G5): `resident_bytes` alone omits the transient compute
+    /// buffer, so the board over-reports free VRAM by the compute reserve and any OTHER
+    /// consumer (the ephemeral eval lane, a LoRA-train job) reads those phantom-free
+    /// bytes and grabs exactly what serving needs for its next prefill → the
+    /// concurrent-OOM. Reserving the peak is what lets the box run a big coder + a
+    /// benchmark lane + training WITHOUT the second consumer stepping on serving's
+    /// compute buffer. The plan already sizes the window to fit this reserve within its
+    /// budget; this is the CROSS-consumer attribution so the board's `available` tells
+    /// everyone else the truth.
+    pub fn peak_resident_bytes(&self, served_window: u32, lanes: u32) -> u64 {
+        self.resident_bytes(served_window, lanes)
+            .saturating_add(self.prefill_compute_reserve(served_window, lanes))
+    }
 }
 
 /// The serving decision for this host.
@@ -358,10 +393,10 @@ pub fn plan_serving(
     };
     let served_context_window = fit_ctx.min(model.context_window).max(MIN_SERVE_CTX);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
-    // reused by the packing math below so resident accounting can't under-charge it.
-    let compute_reserve = compute_floor
-        .saturating_add(compute_rate.saturating_mul(served_context_window as u64))
-        .saturating_mul(lanes64);
+    // reused by the packing math below AND reported to the board via
+    // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
+    // could drift so resident accounting can't under-charge it.
+    let compute_reserve = model.prefill_compute_reserve(served_context_window, lanes);
 
     // Resident models: pack the smallest other candidates (each at its minimum
     // runnable footprint) into whatever is left after the chosen base + its lanes'
@@ -530,6 +565,52 @@ mod tests {
         assert_eq!(f.resident_bytes(11_008, 0), 9 * GB + per_lane_kv);
         // No window served yet → weights only (KV term is zero).
         assert_eq!(f.resident_bytes(0, 4), 9 * GB);
+    }
+
+    // what this catches: #56/G5 — the footprint serving REPORTS to the board is the PEAK
+    // (weights + per-lane KV + per-lane prefill compute reserve), and it equals the plan's
+    // `chosen_cost` EXACTLY via ONE shared `prefill_compute_reserve` formula. If peak dropped
+    // the compute term (the pre-G5 bug: footprint == resident_bytes), the board would
+    // over-report free VRAM by the prefill buffer and a second consumer (eval lane, train
+    // job) would grab the bytes serving needs for its next prefill → the concurrent-OOM.
+    #[test]
+    fn peak_resident_equals_plan_chosen_cost_including_window_scaled_compute() {
+        let f = fp("coder-sentinel-14b", 9, 90_000, 262_144, 3);
+        let c = 11_008u32;
+        let lanes = 4u32;
+        // The reserve is window-SCALED: floor + compute_rate·C, times lanes.
+        let compute_rate = 90_000u64 / PREFILL_COMPUTE_KV_DIVISOR;
+        let expect_reserve =
+            (f.compute_buffer_per_lane() + compute_rate * c as u64) * lanes as u64;
+        assert_eq!(f.prefill_compute_reserve(c, lanes), expect_reserve);
+        // Peak = resident + reserve — strictly greater than resident (the pre-G5 report).
+        assert_eq!(
+            f.peak_resident_bytes(c, lanes),
+            f.resident_bytes(c, lanes) + expect_reserve
+        );
+        assert!(f.peak_resident_bytes(c, lanes) > f.resident_bytes(c, lanes));
+
+        // The keystone invariant: what serving REPORTS (peak) is what the plan SIZED
+        // against (chosen_cost) — never two figures that drift. Plan a real serving shape
+        // and assert peak_resident_bytes at the plan's own (window, lanes) reproduces the
+        // budget the fixpoint consumed for the chosen model.
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        let plan = plan_serving(host, std::slice::from_ref(&devstral), 4).unwrap();
+        let chosen_cost = devstral.weights_bytes
+            + devstral.kv_at(plan.served_context_window) * plan.lanes as u64
+            + devstral.prefill_compute_reserve(plan.served_context_window, plan.lanes);
+        assert_eq!(
+            devstral.peak_resident_bytes(plan.served_context_window, plan.lanes),
+            chosen_cost,
+            "the footprint serving reports == the plan's chosen_cost (one formula)"
+        );
+        // A lane-less / no-window snapshot still charges the per-lane compute floor.
+        assert_eq!(
+            f.prefill_compute_reserve(0, 0),
+            f.compute_buffer_per_lane(),
+            "zero window + zero lanes → one lane's compute floor, never zero"
+        );
     }
 
     // what this catches: the "alive" OOM (2026-07-16). The served window's FULL live

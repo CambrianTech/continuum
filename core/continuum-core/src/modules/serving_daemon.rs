@@ -352,7 +352,11 @@ impl ServingDaemonModule {
                 servable_candidates(&snap, &**sup, &pin)
                     .into_iter()
                     .map(|f| {
-                        let resident_bytes = f.resident_bytes(window, lanes);
+                        // Peak (weights + KV + prefill compute reserve), the SAME number
+                        // the board attributes to serving — so a shrink target's freed
+                        // bytes are measured against serving's true footprint, not a
+                        // resident figure that omits the compute buffer (#56/G5).
+                        let resident_bytes = f.peak_resident_bytes(window, lanes);
                         crate::modules::serving_tier_down::TierCandidate {
                             model_id: f.model_id,
                             capability_rank: f.capability_rank,
@@ -938,21 +942,24 @@ pub fn perf_cores() -> u32 {
 /// precision we give it without changing shape.
 /// The [`FootprintFn`] serving hands the [`ResourceGovernor`](crate::resources):
 /// resolve an active model id + its live serving shape (served per-slot window,
-/// lane count) → total resident bytes in VRAM, from the SAME live catalog +
+/// lane count) → total PEAK resident bytes in VRAM, from the SAME live catalog +
 /// [`footprint_for`] estimator the serving plan uses (one footprint authority,
 /// not two). An id the catalog doesn't know, or a model with no on-disk weights,
-/// resolves to `0` — nothing resident to attribute. This reports the FULL
-/// residency: weights PLUS the KV-cache of every lane at the served window
-/// (`weights + lanes × kv_at(served_window)`, #79). Folding in the KV term is
-/// what stops serving's own KV from masquerading as external/contention on the
-/// board — the governor's drift probe now sees serving's true footprint.
+/// resolves to `0` — nothing resident to attribute. This reports the FULL PEAK
+/// (#56/G5): weights + the KV-cache of every lane at the served window + the
+/// concurrent-prefill compute reserve of every lane — i.e. `peak_resident_bytes`,
+/// which equals the plan's `chosen_cost` exactly. Folding in the KV term (#79)
+/// stopped serving's own KV masquerading as external; folding in the compute
+/// reserve (G5) stops the board over-reporting free VRAM by the prefill buffer,
+/// which is the bytes a SECOND consumer (the eval lane, a train job) would grab
+/// out from under serving's next prefill → the concurrent-OOM.
 fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
     Arc::new(move |id: &str, served_window: u32, lanes: u32| {
         catalog
             .snapshot()
             .get(id)
             .and_then(|live| footprint_for(&live.model))
-            .map(|fp| fp.resident_bytes(served_window, lanes))
+            .map(|fp| fp.peak_resident_bytes(served_window, lanes))
             .unwrap_or(0)
     })
 }
@@ -2135,19 +2142,34 @@ mod tests {
         gguf.flush().expect("flush");
         assert!(catalog.attach_local_artifact(id, gguf.path().to_path_buf(), None));
 
-        // Same resolver, same live catalog → now reports the real resident bytes:
-        // weights (4096) PLUS the KV of every lane at the served window. kv_per_token
-        // floors at 20_000, so 2 lanes × 20_000 × 8192 tokens of KV on top of 4096
-        // weights. Charging that KV is what stops it masquerading as external (#79).
-        let kv_per_token = 20_000u64; // (4096 / 20_000).max(20_000)
-        let expect = 4096 + 2 * kv_per_token * 8192;
+        // Same resolver, same live catalog → now reports the real PEAK resident bytes:
+        // weights (4096) + the KV of every lane at the served window + the concurrent-
+        // prefill compute reserve of every lane (#56/G5). kv_per_token floors at 20_000,
+        // so 2 lanes × 20_000 × 8192 tokens of KV on top of 4096 weights, PLUS the
+        // window-scaled compute reserve. Charging the KV stops it masquerading as
+        // external (#79); charging the compute reserve stops the board over-reporting
+        // free by the prefill buffer (G5). The compute-reserve term comes from the
+        // footprint's own method so this expectation can't drift from the plan's sizing.
+        let fp = footprint_from_parts(id, 4096, 8192, false).expect("footprint");
+        let kv_per_token = 20_000u64; // (4096 / 80_000).max(20_000)
+        let expect = 4096 + 2 * kv_per_token * 8192 + fp.prefill_compute_reserve(8192, 2);
         assert_eq!(
             resolve(id, 8192, 2),
             expect,
-            "resolves real weights + per-lane KV at the served window, no reboot"
+            "resolves real weights + per-lane KV + prefill compute reserve (peak), no reboot"
         );
-        // A no-window snapshot (nothing served yet) charges weights only.
-        assert_eq!(resolve(id, 0, 2), 4096, "no served window → weights only");
+        assert_eq!(
+            resolve(id, 8192, 2),
+            fp.peak_resident_bytes(8192, 2),
+            "resolver reports peak_resident_bytes — the plan's chosen_cost, not resident-only"
+        );
+        // A no-window snapshot (nothing served yet) still charges weights + every lane's
+        // compute-buffer FLOOR (the reserve exists even before a window is chosen).
+        assert_eq!(
+            resolve(id, 0, 2),
+            4096 + fp.prefill_compute_reserve(0, 2),
+            "no served window → weights + per-lane compute floor",
+        );
     }
 
     // what this catches: THE slice-1 production-wiring gap — ServingConsumer was
