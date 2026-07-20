@@ -75,4 +75,18 @@ target?: string,
  * Fraction of `ui_checks` that must hold to PASS (`1.0` = every criterion; the fractional
  * score always rides along in the grade line). Defaults to `1.0` — "the UI works".
  */
-ui_pass_threshold?: number, };
+ui_pass_threshold?: number, 
+/**
+ * Does answering this task REQUIRE tools — regardless of how it's graded? The derived
+ * default (see [`needs_tools`](Self::needs_tools)) keys off the GRADING modality: a task
+ * whose grade reads a file she wrote (`solution_file`), a workspace DoD (`dod_shell`), a
+ * pinned repo (`workspace_root`), or a rendered UI (`ui_checks`) obviously needs hands.
+ * But a MOUTH-graded task (`expect`/`test`) can ALSO require tools to PRODUCE the answer —
+ * a repo-navigation exam ("Which file defines `fn build_workspace_burst`?") is graded by a
+ * spoken substring yet is unanswerable without `code/search`/`code/read`. The derived
+ * signal misses that, so the whole gym runs speak-only and scores a SILENT 0 for every
+ * model (#208, coder-eval). This EXPLICIT declaration overrides the default: `Some(true)`
+ * forces tools on for the run; `Some(false)` pins a task speak-only even if it looks
+ * hands-graded. `None` (the common case) falls back to the grading-modality derivation.
+ */
+needs_tools?: boolean, };
