@@ -690,17 +690,21 @@ impl Faculty for WorkingMemoryFaculty {
         //
         // We deliberately do NOT prefix each trace with a relative "(turn -N)" label.
         // That offset rewrites every act (what was -1 becomes -2 when a new trace
-        // appends), which mutates the whole block from its first byte — so the
-        // KV-cache prefix breaks at [working-memory] on every settle-act and the
-        // entire dynamic tail re-prefills (measured: ~538 tokens re-prefilled per
-        // act, the dominant within-task prefill cost). Append-only formatting keeps
-        // prior entries byte-identical, so a settle-act re-prefills only its one new
-        // trace + the user turn. Each trace already carries its own stable absolute
-        // marker (e.g. "[action #41]"); recency needs no per-act-mutating annotation.
+        // appends), mutating the whole block from its first byte. Combined with this
+        // whole contribution now rendering as a TRAILING turn nearest generation
+        // (`Contribution::trailing`, #205) rather than inside the system message, the
+        // append-only formatting finally pays off: a settle-act appends its one new
+        // trace to the very end of the token stream, so the entire system prefix AND
+        // the prior conversation keep their KV cache and only the new tail re-prefills.
+        // (Before #205 this block sat in the system message, so appending a trace
+        // shifted every conversation token after it — the append-only property was
+        // defeated by position and ~4000 tokens re-prefilled per act.) Each trace
+        // already carries its own stable absolute marker (e.g. "[action #41]");
+        // recency needs no per-act-mutating annotation.
         let n = recent.len();
         let mut sections: Vec<String> = Vec::new();
-        // The append-only reasoning/action trail (may be empty if the only live content is
-        // dispatched background work).
+        // The append-only reasoning/action trail (may be empty if the only live content
+        // is dispatched background work).
         if !recent.is_empty() {
             let body = recent
                 .iter()
@@ -752,15 +756,21 @@ impl Faculty for WorkingMemoryFaculty {
                 "Commands you dispatched (background, by handle):\n{lines}"
             ));
         }
-        Some(Contribution::context(
-            Self::faculty_id(),
-            sections.join("\n\n"),
-            WORKING_MEMORY_SALIENCE,
-            format!(
-                "working memory: {n} trace(s), {} dispatched",
-                dispatched.len()
-            ),
-        ))
+        Some(
+            Contribution::context(
+                Self::faculty_id(),
+                sections.join("\n\n"),
+                WORKING_MEMORY_SALIENCE,
+                format!(
+                    "working memory: {n} trace(s), {} dispatched",
+                    dispatched.len()
+                ),
+            )
+            // Proprioception that grows each act — renders as a trailing turn nearest
+            // generation, never in the system message, so the KV prefix stays stable
+            // across a settle-act (#205). See [`Contribution::trailing`].
+            .trailing(),
+        )
     }
 }
 
@@ -1245,6 +1255,39 @@ mod tests {
         assert!(
             after.starts_with(&before),
             "appending a trace must leave prior traces byte-identical (cacheable prefix);\n  before={before:?}\n  after={after:?}"
+        );
+    }
+
+    // what this catches: #205 — the working-memory faculty's contribution is marked
+    // TRAILING, so the deliberation faculty renders it nearest generation as a
+    // conversation turn (not in the system message). That is what keeps the cacheable
+    // system prefix byte-stable across a settle-act instead of re-prefilling the whole
+    // tail. The proprioceptive content (its own thinking + the [action #n] receipt
+    // trail) is unchanged — only WHERE it lands moved. regression for #205
+    #[tokio::test]
+    async fn working_memory_contribution_is_marked_trailing() {
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.record("I should write the login form first, then style it.");
+        wm.record_receipt("I ran code/write({\"file_path\":\"login.html\"}) Result: ok, 812 bytes");
+        let faculty = WorkingMemoryFaculty::new(Arc::clone(&wm));
+        let c = faculty
+            .contribute(&Workspace::new("build a login form"))
+            .await
+            .expect("recent content → a contribution");
+        assert!(
+            c.trailing,
+            "working-memory proprioception must render nearest generation, not in the system prefix (#205)"
+        );
+        // Content is unchanged by the move — the mind still perceives its own hands.
+        assert!(
+            c.content.contains("write the login form first"),
+            "the reasoning trail survives: {}",
+            c.content
+        );
+        assert!(
+            c.content.contains("[action #1]"),
+            "the action receipt survives — this faculty IS the proprioception channel: {}",
+            c.content
         );
     }
 }
