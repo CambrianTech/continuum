@@ -569,6 +569,13 @@ pub trait LlamaServerControl: Send + Sync {
 pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
+    // Force a decode SMOKE-PROBE even on a child we own, bypassing the "trusted
+    // thereafter" short-circuit. The serving daemon's liveness heartbeat sets this after
+    // it has already seen the live lane fail the decode probe on a slow cadence
+    // (#175): a Metal-OOM-poisoned backend answers `/v1/models` 200 while every decode
+    // 500s, so without re-proving decode the owned-child trust would re-adopt the wedged
+    // lane forever. `false` is the steady state (no per-tick decode load).
+    force_probe: bool,
 ) -> EnsureOutcome {
     let active = match ctrl.active_model().await {
         Ok(active) => active,
@@ -595,14 +602,20 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
             // `/v1/models` while every `llama_decode` 500s — so prove decode
             // before adopting it. A wedged orphan fails the probe and falls
             // through to `serve()`, which reaps it and spawns fresh.
-            if ctrl.owns_child() || ctrl.decode_smoke_ok().await {
+            // Trust a child WE spawned without a per-tick decode probe (it was
+            // decode-verified at `wait_ready`) — UNLESS `force_probe` is set, in which
+            // case the liveness heartbeat has flagged it wedged and we must re-prove
+            // decode before re-adopting (#175). A non-owned orphan is always probed.
+            if (ctrl.owns_child() && !force_probe) || ctrl.decode_smoke_ok().await {
                 return EnsureOutcome::AlreadyServing;
             }
             crate::probe!(
                 class = "serving.adopt_rejected",
                 model = target.model_id(),
-                "orphan answers /v1/models but fails the decode smoke-probe \
-                 (compute-wedged); reaping + respawning a fresh lane",
+                owned = ctrl.owns_child(),
+                force_probe,
+                "lane answers /v1/models but fails the decode smoke-probe (compute-wedged \
+                 — a poisoned Metal backend / OOM, #175); reaping + respawning a fresh lane",
             );
             // fall through to relaunch.
         }
@@ -1465,7 +1478,7 @@ mod tests {
     #[tokio::test]
     async fn already_serving_does_not_relaunch() {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())));
-        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when already serving");
     }
@@ -1480,13 +1493,43 @@ mod tests {
     #[tokio::test]
     async fn wedged_orphan_rejected_and_respawned() {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into()))).decode_wedged();
-        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(
             outcome,
             EnsureOutcome::Spawned { model: "coder-14b".into() },
             "a compute-wedged orphan must be rejected and respawned, never adopted"
         );
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "wedged orphan → fresh spawn");
+    }
+
+    // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode
+    // probe fails while /v1/models still 200s — the Metal-GPU-OOM poison) is normally
+    // TRUSTED forever ("decode-verified at wait_ready, trusted thereafter, no per-tick
+    // decode load"). Once the serving daemon's liveness heartbeat has flagged it,
+    // `force_probe=true` makes `ensure_model_serving` re-prove decode EVEN on an owned
+    // child, so the wedged lane is reaped + respawned instead of re-adopted. Regression
+    // here re-bricks the persona substrate on any transient GPU OOM. regression for #175
+    #[tokio::test]
+    async fn force_probe_relaunches_an_owned_but_wedged_lane() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .decode_wedged();
+        // Baseline (the blindness we fix): an owned child is trusted despite the wedge.
+        let trusted = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert_eq!(
+            trusted,
+            EnsureOutcome::AlreadyServing,
+            "an owned child is trusted without force_probe (the pre-#175 blindness)"
+        );
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch without force");
+        // With force_probe: re-prove decode → fails → reap + respawn a fresh backend.
+        let healed = ensure_model_serving(&ctrl, &target("coder-14b"), true).await;
+        assert_eq!(
+            healed,
+            EnsureOutcome::Spawned { model: "coder-14b".into() },
+            "force_probe relaunches an owned wedged lane — the #175 self-heal"
+        );
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "exactly one respawn");
     }
 
     // what this catches: a child WE spawned (owns_child) is decode-verified once
@@ -1500,7 +1543,7 @@ mod tests {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .owned()
             .decode_wedged();
-        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(
             outcome,
             EnsureOutcome::AlreadyServing,
@@ -1513,7 +1556,7 @@ mod tests {
     #[tokio::test]
     async fn wrong_model_triggers_relaunch() {
         let ctrl = FakeControl::probe(Ok(Some("general-4b".into())));
-        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1);
     }
@@ -1527,7 +1570,7 @@ mod tests {
             .with_active_adapters(vec!["/genes/a.gguf".into(), "/genes/b.gguf".into()]);
         // Desired set equal but given out of order — adapter_paths() sorts, so it matches.
         let outcome =
-            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/b.gguf", "/genes/a.gguf"]))
+            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/b.gguf", "/genes/a.gguf"]), false)
                 .await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when genome set matches");
@@ -1542,7 +1585,7 @@ mod tests {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()]);
         let outcome =
-            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]))
+            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]), false)
                 .await;
         assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "new gene must relaunch to repopulate the catalog");
@@ -1553,7 +1596,7 @@ mod tests {
     #[tokio::test]
     async fn unreachable_means_spawn_not_degrade() {
         let ctrl = FakeControl::probe(Err("connection refused"));
-        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1);
     }
@@ -1563,7 +1606,7 @@ mod tests {
     #[tokio::test]
     async fn serve_failure_degrades_with_reason() {
         let ctrl = FakeControl::probe(Ok(None)).serve_fails();
-        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         match outcome {
             EnsureOutcome::Degraded { reason } => assert!(reason.contains("boom"), "reason: {reason}"),
             other => panic!("expected Degraded, got {other:?}"),

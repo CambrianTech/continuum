@@ -42,7 +42,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -58,6 +58,25 @@ const SERVING_BUDGET_FRACTION: f64 = 0.80;
 /// next slice makes the re-plan also fire on PressureBroker watch edges so it
 /// reacts faster than the cadence under sudden pressure.
 const TICK: Duration = Duration::from_secs(5);
+
+/// Slow liveness HEARTBEAT cadence (#175 self-heal): reconcile ticks between decode
+/// smoke-probes of the LIVE lane. The reconcile fast-path trusts the published `ready`
+/// snapshot and never re-probes a child it owns ([`crate::inference::llama_server`] —
+/// "trusted thereafter, no per-tick decode load"), so a Metal-GPU-OOM-POISONED backend —
+/// which answers every control-plane read (`/health`, `/v1/models`, `/props`) with 200
+/// while every `llama_decode` 500s (`kIOGPUCommandBufferCallbackErrorOutOfMemory`) — stays
+/// `ready:true` FOREVER and the persona substrate is bricked until a human reboots. This
+/// heartbeat re-verifies the actual COMPUTE path on a cadence far slower than [`TICK`], so
+/// it costs one tiny generation per minute, not one per tick.
+const HEALTH_PROBE_EVERY_TICKS: u64 = 12; // 12 × 5s ≈ 60s
+
+/// Consecutive failed heartbeats before the lane is declared WEDGED and flipped
+/// not-ready (which the reconcile turns into a kill+respawn). Pure hysteresis: ONE failed
+/// probe can be a merely-BUSY lane (a saturated slot times out the 10s decode probe during
+/// a wake burst), and reaping a healthy-but-busy lane is the exact thrash that got the
+/// prior watchdog reverted (commit 93753d812). Two consecutive failures ≈ 2 minutes of
+/// sustained no-decode = genuinely poisoned, not transiently loaded.
+const HEALTH_FAILS_TO_RELAUNCH: u8 = 2;
 
 /// Bus topic the live [`ServingSnapshot`] is emitted on whenever it changes.
 /// Subscribers (embedding, supervisor, inference_session, ai_provider) declare
@@ -131,6 +150,22 @@ pub struct ServingDaemonModule {
     /// in flight. A tick that finds a reconcile already running skips — no
     /// stacked relaunches thrashing the GPU.
     reconciling: Arc<AtomicBool>,
+    /// Reconcile-tick counter driving the slow liveness HEARTBEAT (fires when
+    /// `% HEALTH_PROBE_EVERY_TICKS == 0`). See [`Self::spawn_health_heartbeat_if_due`].
+    health_ticks: Arc<AtomicU64>,
+    /// Consecutive failed decode heartbeats — the hysteresis counter that keeps a
+    /// merely-BUSY lane from being reaped. Reset to 0 on any passing probe or when the
+    /// lane isn't believed-ready. Relaunch only once it reaches [`HEALTH_FAILS_TO_RELAUNCH`].
+    health_fails: Arc<AtomicU8>,
+    /// At most one heartbeat decode-probe in flight (a probe can take up to
+    /// `DECODE_SMOKE_TIMEOUT` under load, longer than one [`TICK`]); a tick that finds one
+    /// running skips, exactly like `reconciling`.
+    health_probing: Arc<AtomicBool>,
+    /// Set by the liveness heartbeat when it declares the live lane WEDGED, read+cleared by
+    /// the next [`Self::reconcile_to_plan`]. It forces `ensure_model_serving`'s decode probe
+    /// even on a child we own — otherwise the "trusted thereafter" short-circuit would
+    /// re-adopt the poisoned-but-alive lane forever instead of relaunching it (#175).
+    force_relaunch: Arc<AtomicBool>,
     /// The message bus, captured at `initialize`. Set once; `None` in tests
     /// constructed via `with_control` without a live runtime, so the emit is a
     /// silent no-op there. The daemon publishes [`ServingSnapshot`] changes on
@@ -220,6 +255,10 @@ impl ServingDaemonModule {
             server,
             serving_tx,
             reconciling: Arc::new(AtomicBool::new(false)),
+            health_ticks: Arc::new(AtomicU64::new(0)),
+            health_fails: Arc::new(AtomicU8::new(0)),
+            health_probing: Arc::new(AtomicBool::new(false)),
+            force_relaunch: Arc::new(AtomicBool::new(false)),
             bus: OnceLock::new(),
             // Production resolver: the global registry. `try_global` (not the
             // panicking `global`) so a not-yet-initialized registry resolves to
@@ -591,12 +630,17 @@ impl ServingDaemonModule {
             return None;
         }
 
+        // Consume any pending force-relaunch the liveness heartbeat raised: it means the
+        // heartbeat already saw the live lane fail decode, so this reconcile must re-prove
+        // decode even on a child we own (else the owned-child trust re-adopts the wedged
+        // lane forever, #175). Read+clear here so exactly one reconcile acts on it.
+        let force_probe = self.force_relaunch.swap(false, Ordering::AcqRel);
         let server = self.server.clone();
         let serving_tx = self.serving_tx.clone();
         let reconciling = self.reconciling.clone();
         let bus = self.bus.get().cloned();
         Some(tokio::spawn(async move {
-            let outcome = ensure_model_serving(server.as_ref(), &target).await;
+            let outcome = ensure_model_serving(server.as_ref(), &target, force_probe).await;
             // For a ready outcome, read the REAL per-slot window the running
             // server serves from its own `/props` — the authoritative model
             // metadata every persona budgets its prompt to. llama.cpp pads the
@@ -646,6 +690,92 @@ impl ServingDaemonModule {
             Self::emit_serving(bus.as_ref(), &snapshot);
             let _ = serving_tx.send_replace(snapshot);
             reconciling.store(false, Ordering::Release);
+        }))
+    }
+
+    /// The liveness HEARTBEAT (#175 self-heal). On a cadence far slower than [`TICK`],
+    /// decode-probe the LIVE lane the daemon currently believes is `ready`. The reconcile
+    /// fast-path trusts that published `ready` and never re-probes a child it owns, so a
+    /// Metal-GPU-OOM-POISONED backend — which answers every control-plane read (`/health`,
+    /// `/v1/models`, `/props`) with 200 while every `llama_decode` 500s
+    /// (`kIOGPUCommandBufferCallbackErrorOutOfMemory`) — stays `ready:true` forever and the
+    /// persona substrate is bricked until a human reboots. This re-verifies the actual
+    /// COMPUTE path and, after [`HEALTH_FAILS_TO_RELAUNCH`] CONSECUTIVE failures (hysteresis
+    /// so a merely-busy lane is never reaped), flips the published snapshot to not-ready.
+    /// The very next [`Self::reconcile_to_plan`] sees `ready == false`, skips its no-op
+    /// guard, and kill+respawns the lane — the ONLY recovery llama.cpp offers ("recreate
+    /// the backend to recover"). Runs off the tick as its own bounded task so a slow decode
+    /// never stalls the 5s tick; returns the handle so tests can await it. `None` when it
+    /// isn't a heartbeat tick, nothing ready is believed live, or a reconcile/probe is
+    /// already in flight (never race the reconcile's own kill/swap).
+    fn spawn_health_heartbeat_if_due(&self) -> Option<JoinHandle<()>> {
+        // Slow-cadence gate: only every Nth tick runs a probe.
+        if self.health_ticks.fetch_add(1, Ordering::Relaxed) % HEALTH_PROBE_EVERY_TICKS != 0 {
+            return None;
+        }
+        // Only meaningful when we BELIEVE we have a ready live lane to verify. Not-ready
+        // (booting / mid-relaunch) → nothing to probe; reset the streak so a fresh lane
+        // that becomes ready starts clean.
+        let believe_ready = {
+            let s = self.serving_tx.borrow();
+            s.ready && s.active_model.is_some()
+        };
+        if !believe_ready {
+            self.health_fails.store(0, Ordering::Relaxed);
+            return None;
+        }
+        // Never race the reconcile's own spawn/kill/swap, and never stack heartbeat probes.
+        if self.reconciling.load(Ordering::Acquire) {
+            return None;
+        }
+        if self.health_probing.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let server = self.server.clone();
+        let serving_tx = self.serving_tx.clone();
+        let health_fails = self.health_fails.clone();
+        let health_probing = self.health_probing.clone();
+        let force_relaunch = self.force_relaunch.clone();
+        let bus = self.bus.get().cloned();
+        Some(tokio::spawn(async move {
+            // A real one-token generation through the live slots — the ONLY probe that
+            // distinguishes a healthy lane from an OOM-poisoned one (control-plane reads
+            // stay 200 on a wedged backend). `decode_smoke_ok` is already bounded by
+            // `DECODE_SMOKE_TIMEOUT`, so a wedged compute path resolves to `false` fast.
+            let ok = server.decode_smoke_ok().await;
+            if ok {
+                health_fails.store(0, Ordering::Relaxed);
+                health_probing.store(false, Ordering::Release);
+                return;
+            }
+            let n = health_fails.fetch_add(1, Ordering::Relaxed) + 1;
+            crate::probe!(
+                class = "serving.health",
+                ok = false,
+                consecutive = n as u64,
+                threshold = HEALTH_FAILS_TO_RELAUNCH as u64,
+                "live lane failed the decode heartbeat (control-plane may still 200 — a \
+                 poisoned Metal backend); #175 self-heal",
+            );
+            if n >= HEALTH_FAILS_TO_RELAUNCH {
+                // Sustained no-decode = wedged, not transiently busy. Arm the force-probe
+                // (so the next reconcile re-proves decode instead of re-adopting the owned
+                // wedged child) AND publish not-ready (so the reconcile's no-op guard is
+                // skipped). Reset the streak so we don't re-trigger before the relaunch
+                // lands and republishes ready.
+                force_relaunch.store(true, Ordering::Release);
+                health_fails.store(0, Ordering::Relaxed);
+                let empty = ServingSnapshot::empty();
+                Self::emit_serving(bus.as_ref(), &empty);
+                let _ = serving_tx.send_replace(empty);
+                crate::probe!(
+                    class = "serving.health",
+                    action = "relaunch",
+                    "flipped serving snapshot not-ready after sustained decode failure — \
+                     reconcile will kill+respawn the wedged lane (#175 self-heal)",
+                );
+            }
+            health_probing.store(false, Ordering::Release);
         }))
     }
 
@@ -1040,6 +1170,12 @@ impl ServiceModule for ServingDaemonModule {
         // the tick, so the tick never blocks on model load.
         self.recompute();
         let _ = self.reconcile_to_plan();
+        // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
+        // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
+        // `ready` forever and would never notice an OOM-poisoned backend otherwise. Off the
+        // tick, hysteresis-gated; a sustained failure flips not-ready and the next reconcile
+        // respawns the lane.
+        let _ = self.spawn_health_heartbeat_if_due();
         // The cheap knob on the reaction ladder (#56): re-derive the concurrent-prefill
         // grant from the board's LIVE VRAM availability (lock-free watch read, already net
         // of external pressure + grants). Flexes both directions every tick — the instant
@@ -1243,6 +1379,21 @@ mod tests {
     struct FakeServer {
         serves: Arc<AtomicUsize>,
         ok: bool,
+        /// Drives [`LlamaServerControl::decode_smoke_ok`] so a test can wedge the lane's
+        /// COMPUTE path (probe → false) independently of its control plane. Defaults true
+        /// (a healthy lane decodes). See [`FakeServer::healthy`].
+        smoke_ok: Arc<AtomicBool>,
+    }
+
+    impl FakeServer {
+        /// A healthy fake: serve() outcome = `ok`, decode heartbeat passes.
+        fn healthy(serves: Arc<AtomicUsize>, ok: bool) -> Self {
+            Self {
+                serves,
+                ok,
+                smoke_ok: Arc::new(AtomicBool::new(true)),
+            }
+        }
     }
 
     #[async_trait]
@@ -1268,10 +1419,10 @@ mod tests {
             Ok(11008)
         }
         async fn decode_smoke_ok(&self) -> bool {
-            // The daemon-wiring tests never adopt an orphan (active_model is
-            // Unreachable → always serve), so this is only reached if the adopt
-            // path is exercised; a healthy fake decodes.
-            true
+            // Driven by `smoke_ok` so a test can wedge the COMPUTE path (the #175
+            // liveness-heartbeat tests) independently of the control plane; defaults
+            // true (a healthy fake decodes).
+            self.smoke_ok.load(Ordering::Relaxed)
         }
     }
 
@@ -1411,7 +1562,7 @@ mod tests {
         use std::io::Write;
 
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves, ok: true }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves, true)));
         let id = "suppress-probe";
 
         // Land a Ready model so it IS a candidate to begin with.
@@ -1470,7 +1621,7 @@ mod tests {
         use std::io::Write;
 
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves, ok: true }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves, true)));
         let id = "opponent-probe";
 
         let mut opponent = fake_model(id);
@@ -1604,7 +1755,7 @@ mod tests {
     #[tokio::test]
     async fn reconcile_brings_planned_model_up() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
 
         // Publish a plan (most-capable fitting model = coder-14b).
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
@@ -1626,7 +1777,7 @@ mod tests {
     #[tokio::test]
     async fn reconcile_is_noop_when_already_serving() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
 
         // Pretend coder-14b is already up and ready.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
@@ -1645,6 +1796,135 @@ mod tests {
         assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch");
     }
 
+    /// Believe-ready snapshot fixture for the liveness-heartbeat tests.
+    fn ready_snapshot() -> ServingSnapshot {
+        ServingSnapshot {
+            active_model: Some("coder-14b".into()),
+            ready: true,
+            base_url: serving_v1_url(),
+            adapters: Vec::new(),
+            served_context_window: 11008,
+            lanes: 4,
+        }
+    }
+
+    // what this catches: #175 self-heal (detection + recovery). A lane the daemon believes
+    // is `ready` but whose COMPUTE path is wedged — the decode heartbeat fails while the
+    // control plane still 200s, the exact Metal-OOM-poison shape — is flipped NOT-ready
+    // after HEALTH_FAILS_TO_RELAUNCH consecutive heartbeats (which the reconcile then turns
+    // into a kill+respawn). Before this the owned lane was trusted forever and the persona
+    // substrate stayed bricked until a human reboot. regression for #175
+    #[tokio::test]
+    async fn health_heartbeat_flips_ready_after_sustained_decode_failure() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let smoke = Arc::new(AtomicBool::new(false)); // wedged compute path
+        let daemon = daemon_with(Arc::new(FakeServer {
+            serves,
+            ok: true,
+            smoke_ok: smoke.clone(),
+        }));
+        let _ = daemon.serving_tx.send_replace(ready_snapshot());
+
+        // First heartbeat (tick 0) fails once — hysteresis holds, still ready.
+        if let Some(h) = daemon.spawn_health_heartbeat_if_due() {
+            h.await.unwrap();
+        }
+        assert!(
+            daemon.serving_tx.borrow().ready,
+            "one failed probe is not enough — a merely-busy lane must not be reaped"
+        );
+
+        // Force the NEXT call to be a heartbeat tick; the second failure reaches threshold.
+        daemon.health_ticks.store(0, Ordering::Relaxed);
+        if let Some(h) = daemon.spawn_health_heartbeat_if_due() {
+            h.await.unwrap();
+        }
+        let s = daemon.serving_tx.borrow();
+        assert!(
+            !s.ready,
+            "sustained decode failure flips the lane not-ready so the reconcile respawns it (#175)"
+        );
+        assert!(
+            s.active_model.is_none(),
+            "not-ready is published as the empty gap the reconcile relaunches from"
+        );
+    }
+
+    // what this catches: hysteresis RESET. A lane that fails a heartbeat once then RECOVERS
+    // (probe passes) must have its failure streak cleared — so an isolated failure minutes
+    // later never accumulates with a stale one into a spurious reap.
+    #[tokio::test]
+    async fn health_heartbeat_streak_resets_on_a_passing_probe() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let smoke = Arc::new(AtomicBool::new(false));
+        let daemon = daemon_with(Arc::new(FakeServer {
+            serves,
+            ok: true,
+            smoke_ok: smoke.clone(),
+        }));
+        let _ = daemon.serving_tx.send_replace(ready_snapshot());
+
+        // Fail once.
+        if let Some(h) = daemon.spawn_health_heartbeat_if_due() {
+            h.await.unwrap();
+        }
+        assert!(daemon.serving_tx.borrow().ready);
+
+        // Lane recovers; next heartbeat passes → streak resets.
+        smoke.store(true, Ordering::Relaxed);
+        daemon.health_ticks.store(0, Ordering::Relaxed);
+        if let Some(h) = daemon.spawn_health_heartbeat_if_due() {
+            h.await.unwrap();
+        }
+        assert!(daemon.serving_tx.borrow().ready);
+
+        // Fail once more — because the streak reset, this is the FIRST failure again, so
+        // it must NOT reap.
+        smoke.store(false, Ordering::Relaxed);
+        daemon.health_ticks.store(0, Ordering::Relaxed);
+        if let Some(h) = daemon.spawn_health_heartbeat_if_due() {
+            h.await.unwrap();
+        }
+        assert!(
+            daemon.serving_tx.borrow().ready,
+            "a passing probe reset the streak — one later failure is not 'sustained'"
+        );
+    }
+
+    // what this catches: the SLOW cadence. The heartbeat must NOT probe every tick (that
+    // would burn one GPU decode per 5s tick, the load-per-tick the trust short-circuit
+    // exists to avoid); it fires only every HEALTH_PROBE_EVERY_TICKS.
+    #[tokio::test]
+    async fn health_heartbeat_only_fires_on_the_slow_cadence() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let smoke = Arc::new(AtomicBool::new(false));
+        let daemon = daemon_with(Arc::new(FakeServer {
+            serves,
+            ok: true,
+            smoke_ok: smoke.clone(),
+        }));
+        let _ = daemon.serving_tx.send_replace(ready_snapshot());
+
+        // Tick 0 is due.
+        let first = daemon.spawn_health_heartbeat_if_due();
+        assert!(first.is_some(), "tick 0 probes");
+        if let Some(h) = first {
+            h.await.unwrap();
+        }
+        // The next HEALTH_PROBE_EVERY_TICKS-1 ticks must NOT probe, so one failure can't be
+        // compounded to the reap threshold faster than the cadence.
+        for _ in 1..HEALTH_PROBE_EVERY_TICKS {
+            assert!(
+                daemon.spawn_health_heartbeat_if_due().is_none(),
+                "non-heartbeat ticks skip the probe"
+            );
+        }
+        assert!(
+            daemon.serving_tx.borrow().ready,
+            "only one probe ran across the cadence window → hysteresis holds"
+        );
+    }
+
     // what this catches: a lane whose per-slot window froze at ≤ HALF the
     // currently-planned window gets RE-HOMED (relaunched) even though model +
     // genome match. A server spawned under transient memory pressure (a scratch
@@ -1655,7 +1935,7 @@ mod tests {
     #[tokio::test]
     async fn reconcile_re_homes_a_starved_window_but_holds_within_hysteresis() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
 
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -1705,7 +1985,7 @@ mod tests {
     #[tokio::test]
     async fn no_plan_publishes_empty_snapshot() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
 
         // Seed a live snapshot, then publish an empty plan → must clear to empty.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
@@ -1732,7 +2012,7 @@ mod tests {
     #[tokio::test]
     async fn degraded_reconcile_clears_gate_and_publishes_empty() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: false }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), false)));
 
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -1757,7 +2037,7 @@ mod tests {
     #[tokio::test]
     async fn reconcile_emits_snapshot_on_the_bus() {
         let serves = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
         let bus = Arc::new(MessageBus::new());
         let _ = daemon.bus.set(bus.clone());
 
