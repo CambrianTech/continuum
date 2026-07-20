@@ -528,6 +528,33 @@ pub struct EvalTask {
     #[serde(default, alias = "uiPassThreshold", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ui_pass_threshold: Option<f32>,
+    /// Does answering this task REQUIRE tools — regardless of how it's graded? The derived
+    /// default (see [`needs_tools`](Self::needs_tools)) keys off the GRADING modality: a task
+    /// whose grade reads a file she wrote (`solution_file`), a workspace DoD (`dod_shell`), a
+    /// pinned repo (`workspace_root`), or a rendered UI (`ui_checks`) obviously needs hands.
+    /// But a MOUTH-graded task (`expect`/`test`) can ALSO require tools to PRODUCE the answer —
+    /// a repo-navigation exam ("Which file defines `fn build_workspace_burst`?") is graded by a
+    /// spoken substring yet is unanswerable without `code/search`/`code/read`. The derived
+    /// signal misses that, so the whole gym runs speak-only and scores a SILENT 0 for every
+    /// model (#208, coder-eval). This EXPLICIT declaration overrides the default: `Some(true)`
+    /// forces tools on for the run; `Some(false)` pins a task speak-only even if it looks
+    /// hands-graded. `None` (the common case) falls back to the grading-modality derivation.
+    #[serde(default, alias = "needsTools", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub needs_tools: Option<bool>,
+}
+
+impl EvalTask {
+    /// Whether answering THIS task requires the persona's hands. An explicit
+    /// [`needs_tools`](Self::needs_tools) declaration wins; otherwise it's derived from the
+    /// GRADING modality — a grade that reads a written file / DoD / rendered UI needs hands.
+    /// The run-level decision is `any task needs tools` (tools are offered to the whole run),
+    /// so a mixed gym with one repo-nav task correctly arms tools for all. See #208.
+    pub fn needs_tools(&self) -> bool {
+        self.needs_tools.unwrap_or_else(|| {
+            self.solution_file.is_some() || self.dod_shell.is_some() || !self.ui_checks.is_empty()
+        })
+    }
 }
 
 /// A gene to page in for the candidate arm of an A/B. The persona runs the eval
@@ -650,6 +677,21 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub learn: Option<bool>,
+    /// REPRODUCIBLE-ABSOLUTE mode (#207): suppress the fork's episodic recall so a
+    /// self-contained proctored exam scores the SAME absolute number run-to-run. Each eval
+    /// re-forks from her LIVING durable engram store, which grows as she lives between runs;
+    /// injecting it into a self-contained task (HumanEval, a repo-nav question, a from-scratch
+    /// UI build) recalls unrelated room chatter that drifts the prompt — noise AND
+    /// nondeterminism, unrelated to sampling (greedy is already pinned) or serving. `true`
+    /// omits the recall faculty from the fork; system + task + grounding (roster/doctrine/
+    /// workspace-map) remain. The LIFT (base vs gene in one fork) is reproducible either way;
+    /// this pins the ABSOLUTE baseline so today's number compares to last week's. `None`/false =
+    /// memories intact (the natural persona), unchanged for every existing path. NOT a life
+    /// knob — a benchmark control, sibling of the greedy-temperature and directed-turn pins.
+    /// [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]]
+    #[serde(default, alias = "suppressRecall", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub suppress_recall: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -964,14 +1006,19 @@ impl CognitionEval {
         // pinned repo she edits (`workspace_root`), or a UI she BUILDS and we OBSERVE
         // (`ui_checks`) needs tools — she must `code/write` the file, then can
         // `perception/observe` her own render and iterate (the image-feedback loop).
-        // A purely spoken-graded task (`test`/`expect`) does not — and offering tools
-        // there is a net TAX: a native-tool-call model loops on the discovery pair
-        // (`commands/help`) and never speaks (the isolator's Devstral 100%→0%). Match
-        // the surface to the modality.
-        let needs_tools = p.workspace_root.is_some()
-            || tasks.iter().any(|t| {
-                t.solution_file.is_some() || t.dod_shell.is_some() || !t.ui_checks.is_empty()
-            });
+        // A purely spoken KNOWLEDGE task (`test`/`expect`, answerable from the model's own
+        // weights) does not — and offering tools there is a net TAX: a native-tool-call model
+        // loops on the discovery pair (`commands/help`) and never speaks (the isolator's
+        // Devstral 100%→0%). Match the surface to the need. But "graded by mouth" ≠ "needs no
+        // tools": a repo-nav exam is spoken-graded yet unanswerable without `code/search`, so
+        // each task decides via `EvalTask::needs_tools()` (explicit declaration, else derived
+        // from the grading modality) — closing the #208 silent-0 where coder-eval ran the whole
+        // repo-nav gym speak-only. Run-level = any task needs tools (offered to the whole run).
+        let needs_tools = p.workspace_root.is_some() || tasks.iter().any(EvalTask::needs_tools);
+
+        // #207: suppress the fork's drifting episodic recall for a reproducible ABSOLUTE
+        // baseline. Opt-in; default false = memories intact (the natural persona).
+        let suppress_recall = p.suppress_recall.unwrap_or(false);
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
         // copy while the LIVING persona keeps living (heartbeat beating, present in
@@ -1006,7 +1053,7 @@ impl CognitionEval {
                 placement_evidence = Some(placement);
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref())
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -1028,7 +1075,7 @@ impl CognitionEval {
                 placement_evidence = Some(placement);
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref())
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -1042,7 +1089,7 @@ impl CognitionEval {
             // the post-reboot register_from_cfg race hits every fork path identically.
             (None, None) => fork_eval_cycle_waiting(&persona_uuid, || {
                 crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref())
+                    .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
             })
             .await
             .ok_or_else(|| CommandError::NotFound(format!(
@@ -1301,7 +1348,7 @@ impl CognitionEval {
         let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
         let (score, results) = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref())
+                .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;

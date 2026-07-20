@@ -1,13 +1,13 @@
-{"id":"build_workspace_burst","prompt":"Which file defines `fn build_workspace_burst` in this repo? Reply with just the path.","expect":"service_loop.rs"}
-{"id":"render_ai_help","prompt":"Which file defines `fn render_ai_help`? Reply with just the path.","expect":"help.rs"}
-{"id":"workspace_cycle","prompt":"Which file defines the struct `WorkspaceCycle`? Reply with just the path.","expect":"workspace.rs"}
-{"id":"from_captures","prompt":"Which file implements the `dataset/from-captures` command? Reply with just the path.","expect":"dataset.rs"}
-{"id":"self_tick_val","prompt":"What integer value is the SELF_TICK_MS constant set to in this repo? Answer with just the number.","expect":"3000"}
-{"id":"max_iter_val","prompt":"In core/continuum-core/src/cognition/act_observe.rs, is the number of act→observe cycles bounded by an internal constant the faculty picks, or by an external budget the observer passes in? Name that budget parameter.","expect":"max_acts"}
-{"id":"captures_ext","prompt":"What file extension does the dataset/from-captures command read from the captures directory? Answer with the extension.","expect":"jsonl"}
-{"id":"drop_kind","prompt":"Besides an empty response, what kind of response does capture_to_example drop from training data? Answer in a couple words.","expect":"tool"}
-{"id":"decision_variant","prompt":"Name the Decision variant a persona uses to raise something unprompted (initiative, not a reply to a message).","expect":"RaiseUnprompted"}
-{"id":"external_fp_excludes","prompt":"In `fn external_fingerprint`, whose posts are excluded from the change-detection hash — the persona's own, or other peers'? Answer 'own' or 'peers'.","expect":"own"}
-{"id":"why_focused_query","prompt":"Read fn focused_query in core/continuum-core/src/cognition/recall_faculty.rs and explain WHY it exists — what problem does conditioning recall on the whole burst cause? Answer in one sentence.","expect":"dilut"}
-{"id":"causal_external_fp","prompt":"Read fn external_fingerprint in core/continuum-core/src/persona/service_loop.rs. What would break if it hashed the persona's OWN posts too? Answer in one sentence.","expect":"self"}
-{"id":"why_repeat_guard","prompt":"In core/continuum-core/src/cognition/act_observe.rs, re-running a tool call with identical observation content forms no new memory. What mechanism in the memory layer causes that? Answer in one sentence.","expect":"dedup"}
+{"id": "build_workspace_burst", "prompt": "Which file defines `fn build_workspace_burst` in this repo? Reply with just the path.", "expect": "service_loop.rs", "needs_tools": true}
+{"id": "render_ai_help", "prompt": "Which file defines `fn render_ai_help`? Reply with just the path.", "expect": "help.rs", "needs_tools": true}
+{"id": "workspace_cycle", "prompt": "Which file defines the struct `WorkspaceCycle`? Reply with just the path.", "expect": "workspace.rs", "needs_tools": true}
+{"id": "from_captures", "prompt": "Which file implements the `dataset/from-captures` command? Reply with just the path.", "expect": "dataset.rs", "needs_tools": true}
+{"id": "self_tick_val", "prompt": "What integer value is the SELF_TICK_MS constant set to in this repo? Answer with just the number.", "expect": "3000", "needs_tools": true}
+{"id": "max_iter_val", "prompt": "In core/continuum-core/src/cognition/act_observe.rs, is the number of act→observe cycles bounded by an internal constant the faculty picks, or by an external budget the observer passes in? Name that budget parameter.", "expect": "max_acts", "needs_tools": true}
+{"id": "captures_ext", "prompt": "What file extension does the dataset/from-captures command read from the captures directory? Answer with the extension.", "expect": "jsonl", "needs_tools": true}
+{"id": "drop_kind", "prompt": "Besides an empty response, what kind of response does capture_to_example drop from training data? Answer in a couple words.", "expect": "tool", "needs_tools": true}
+{"id": "decision_variant", "prompt": "Name the Decision variant a persona uses to raise something unprompted (initiative, not a reply to a message).", "expect": "RaiseUnprompted", "needs_tools": true}
+{"id": "external_fp_excludes", "prompt": "In `fn external_fingerprint`, whose posts are excluded from the change-detection hash — the persona's own, or other peers'? Answer 'own' or 'peers'.", "expect": "own", "needs_tools": true}
+{"id": "why_focused_query", "prompt": "Read fn focused_query in core/continuum-core/src/cognition/recall_faculty.rs and explain WHY it exists — what problem does conditioning recall on the whole burst cause? Answer in one sentence.", "expect": "dilut", "needs_tools": true}
+{"id": "causal_external_fp", "prompt": "Read fn external_fingerprint in core/continuum-core/src/persona/service_loop.rs. What would break if it hashed the persona's OWN posts too? Answer in one sentence.", "expect": "self", "needs_tools": true}
+{"id": "why_repeat_guard", "prompt": "In core/continuum-core/src/cognition/act_observe.rs, re-running a tool call with identical observation content forms no new memory. What mechanism in the memory layer causes that? Answer in one sentence.", "expect": "dedup", "needs_tools": true}
