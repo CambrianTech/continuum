@@ -688,7 +688,24 @@ impl ServingDaemonModule {
         let serving_tx = self.serving_tx.clone();
         let reconciling = self.reconciling.clone();
         let bus = self.bus.get().cloned();
+        // RAII gate-clear (#214): the `reconciling` flag was set `true` at the top of this
+        // reconcile and MUST clear even if the relaunch task panics or is cancelled
+        // mid-await — otherwise ONE failed relaunch (an OOM spawn under a memory squeeze, a
+        // subprocess error, a panic in `ensure_model_serving`) strands the flag `true`, and
+        // then EVERY future reconcile skips at the `swap(true)` gate above, freezing serving
+        // at its current (possibly floored) window forever. Glass-boxed 2026-07-20: after a
+        // benchmark squeeze released and VRAM returned to 55GB free, serving stayed frozen at
+        // 2048 because the gate leaked on the churn's failed relaunch. `Drop` runs on panic
+        // AND on the happy path, so the gate self-heals by construction — a stuck flag can
+        // never outlive the task that set it.
+        struct GateClear(Arc<AtomicBool>);
+        impl Drop for GateClear {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
         Some(tokio::spawn(async move {
+            let _gate = GateClear(reconciling);
             let outcome = ensure_model_serving(server.as_ref(), &target, force_probe).await;
             // For a ready outcome, read the REAL per-slot window the running
             // server serves from its own `/props` — the authoritative model
@@ -738,7 +755,8 @@ impl ServingDaemonModule {
             // then update the in-process watch view.
             Self::emit_serving(bus.as_ref(), &snapshot);
             let _ = serving_tx.send_replace(snapshot);
-            reconciling.store(false, Ordering::Release);
+            // `_gate` (GateClear) clears `reconciling` on drop here — and, crucially, also
+            // on any panic/cancel above, which the explicit store used to miss.
         }))
     }
 
