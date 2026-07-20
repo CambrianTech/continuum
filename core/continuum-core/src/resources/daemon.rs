@@ -164,6 +164,15 @@ pub struct ResourceDaemon {
     /// identical drift re-logged 1/sec is noise, not a new event — the live board still
     /// carries the current drift for readers every tick.
     last_drift_bytes: Mutex<[u64; 3]>,
+    /// The base "decide under the authority's tick" pattern (MEMORY-AUTHORITY-DAEMON):
+    /// closures that run EVERY tick with the authoritative fresh board. A consumer whose
+    /// job needs a memory DECISION — serving's lane plan (model / lanes / window), an eval
+    /// lane's window — registers here via [`on_tick`] instead of sampling memory on its own
+    /// hot path, computes its allocation from THIS board, and publishes it on its own
+    /// `watch` for its subscribers. One authority owns the tick; everyone else reacts to
+    /// what it decides. Grows after startup (no restart), like `consumers`; each observer is
+    /// panic-isolated so one broken consumer can't abort the reconcile tick.
+    tick_observers: RwLock<Vec<Arc<dyn Fn(&LeaseBoard) + Send + Sync>>>,
 }
 
 static GLOBAL_RESOURCE_DAEMON: std::sync::OnceLock<std::sync::Arc<ResourceDaemon>> =
@@ -216,6 +225,7 @@ impl ResourceDaemon {
             evict_rx: Mutex::new(evict_rx),
             config,
             last_drift_bytes: Mutex::new([0; 3]),
+            tick_observers: RwLock::new(Vec::new()),
         });
 
         // The canonical runner owns the loop: interval + Skip + PER-TICK
@@ -298,6 +308,21 @@ impl ResourceDaemon {
         self.quarantine.lock().clear(&id);
         self.consumers.write().push(consumer);
         clog_info!("🧮 ResourceDaemon: consumer '{id}' registered");
+    }
+
+    /// Register a closure to run EVERY reconcile tick with the authoritative fresh
+    /// board — the base "decide under the authority's tick" pattern
+    /// (MEMORY-AUTHORITY-DAEMON). This is how a consumer whose job needs a memory
+    /// DECISION — serving's lane plan (model / lanes / window), an eval lane's window —
+    /// computes it in the ONE place that owns memory, WITHOUT sampling memory on its own
+    /// hot path: it reads the passed `&LeaseBoard` (the live truth, netted over every
+    /// measured consumer + external pressure) and publishes its allocation on its own
+    /// `watch` for its subscribers. Code the pattern once here; every consumer that
+    /// registers gets a smarter base for free as the authority improves. No restart
+    /// (registrable after startup, like [`add_consumer`]); each observer is panic-isolated
+    /// on the tick.
+    pub fn on_tick(&self, observer: Arc<dyn Fn(&LeaseBoard) + Send + Sync>) {
+        self.tick_observers.write().push(observer);
     }
 
     /// The ids of every registered leaseholder, in registration order. A cheap
@@ -479,6 +504,23 @@ impl ResourceDaemon {
                         drift_bytes = drift,
                         "untracked residency: measured exceeds leased"
                     );
+                }
+            }
+        }
+
+        // Fan the fresh board out to every tick-observer BEFORE publishing it — the
+        // "decide under the authority's tick" pattern. A consumer's memory DECISION
+        // (serving's lane plan, an eval lane's window) runs HERE, on the one authority's
+        // tick, reading THIS board — never sampling memory on its own hot path. Arcs are
+        // cloned out from under the lock so the (possibly non-trivial) closures never hold
+        // it; each is panic-isolated so one broken consumer can't abort the reconcile tick,
+        // exactly like the `footprint()` poll above.
+        {
+            let observers: Vec<Arc<dyn Fn(&LeaseBoard) + Send + Sync>> =
+                self.tick_observers.read().iter().cloned().collect();
+            for obs in &observers {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| obs(&board))).is_err() {
+                    clog_warn!("🧮 ResourceDaemon: a tick-observer panicked — skipped this tick");
                 }
             }
         }
@@ -942,6 +984,46 @@ mod tests {
 
         assert_eq!(daemon.board().leases.len(), 0, "drop released the reservation — no leak");
         assert_eq!(vram_available(&daemon), 10_000, "the full ceiling is free again after drop");
+    }
+
+    // what this catches: the base "decide under the authority's tick" pattern
+    // (MEMORY-AUTHORITY-DAEMON). A registered `on_tick` observer runs EVERY reconcile
+    // tick with the authoritative fresh board and can read the live VRAM available — the
+    // seam that lets serving/eval compute their memory decision in the ONE authority
+    // instead of sampling memory on their own hot path. Regresses dropping the fan-out.
+    #[tokio::test]
+    async fn on_tick_runs_observers_with_the_live_board() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
+        let daemon = ResourceDaemon::start(
+            vec![src],
+            vec![],
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+        let seen_vram = Arc::new(AtomicU64::new(0));
+        let sink = seen_vram.clone();
+        daemon.on_tick(Arc::new(move |board: &LeaseBoard| {
+            // Runs UNDER the authority's tick with the live board — reads the memory
+            // truth, never samples memory itself.
+            let vram = board
+                .kinds
+                .iter()
+                .find(|k| k.kind == ResourceKind::Vram)
+                .map(|k| k.available_bytes)
+                .unwrap_or(0);
+            sink.store(vram, Ordering::SeqCst);
+        }));
+        // The daemon's own tick fans the board out to the observer within a few ticks.
+        let fired = wait_until(&daemon, |_| seen_vram.load(Ordering::SeqCst) > 0).await;
+        assert!(fired, "an on_tick observer must run under the authority's reconcile tick");
+        assert_eq!(
+            seen_vram.load(Ordering::SeqCst),
+            10_000,
+            "the observer saw the live board's VRAM available — the authority's memory truth"
+        );
     }
 
     // Poll the board until a predicate holds or we exhaust attempts (the daemon
