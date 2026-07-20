@@ -189,6 +189,9 @@ impl TrainingCompletionSentinel {
                 workspace_root: None,
                 capture_dir: None,
                 learn: None,
+                // #207: L3 auto-eval measures LIFT (base vs gene in one fork), which is
+                // reproducible regardless of recall; keep memories intact (default).
+                suppress_recall: None,
                 note: Some(format!(
                     "L3 auto-eval (gene={}, base={}, provider={})",
                     job.trait_kind, job.base_model, job.handle.provider_id

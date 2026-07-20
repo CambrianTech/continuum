@@ -114,6 +114,20 @@ pub struct PersonaBrainConfig {
     ///
     /// [`reproject_to_now`]: super::deferred_faculty::reproject_to_now
     pub defer_grounding: bool,
+    /// SUPPRESS the recall faculty entirely — the fork's mind carries system + task +
+    /// grounding (roster/doctrine/workspace-map) but injects NO episodic recall. `false`
+    /// on every live path and by default (memories intact — the natural persona). `true`
+    /// ONLY for a reproducible ABSOLUTE benchmark baseline: a self-contained proctored task
+    /// (HumanEval, a repo-nav question, a from-scratch UI build) is answerable from the
+    /// system+task alone, so injecting her durable episodic store — which GROWS as she lives
+    /// between runs — makes the exam prompt drift run-to-run (unrelated room chatter recalled
+    /// into a self-contained task = noise AND nondeterminism). The LIFT (base vs gene in one
+    /// fork) is reproducible regardless; this pins the ABSOLUTE number so today's run compares
+    /// to last week's. NOT a life-path knob — a benchmark-reproducibility control, sibling of
+    /// the greedy-temperature and directed-turn pins. See #207,
+    /// [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]],
+    /// [[redaction-makes-exam-learning-honest]].
+    pub suppress_recall: bool,
 }
 
 /// Whether a grounding source must run synchronously on the inference loop, or
@@ -327,7 +341,16 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // served into another. Eval forks + harnesses keep recall SYNCHRONOUS
     // (`defer_recall == false`): their tight settle-loops never yield to the
     // worker, so deferral there would measure a recall-starved mind.
-    if cfg.defer_recall {
+    // #207: a reproducible ABSOLUTE benchmark fork suppresses recall entirely — a
+    // self-contained proctored task wants system + task + grounding only, never the
+    // drifting episodic store. The living persona and every life path keep recall (default
+    // false). The faculty is simply not built into the cycle; nothing downstream depends on
+    // its presence (the arbiter integrates whatever bids exist).
+    if cfg.suppress_recall {
+        // constructed above (it wired the recency channel + working-memory share); dropped
+        // here so those wirings are torn down cleanly rather than left half-attached.
+        drop(recall);
+    } else if cfg.defer_recall {
         faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(recall))));
     } else {
         faculties.push(Arc::new(recall));
@@ -617,9 +640,11 @@ impl PersonaWorkspaceRegistry {
         persona_id: &Uuid,
         with_tools: bool,
         workspace_root: Option<&str>,
+        suppress_recall: bool,
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
+        cfg.suppress_recall = suppress_recall;
         repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // The eval fork runs recall + grounding SYNCHRONOUSLY: drive_to_settle's
         // tight loop never yields to a background prefetch worker, so deferral would
@@ -670,11 +695,13 @@ impl PersonaWorkspaceRegistry {
         context_window: u32,
         with_tools: bool,
         workspace_root: Option<&str>,
+        suppress_recall: bool,
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
+        cfg.suppress_recall = suppress_recall;
         repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
@@ -907,6 +934,9 @@ mod tests {
             // satisfy. Deferral is a live-path concern, tested in deferred_faculty.rs.
             defer_recall: false,
             defer_grounding: false,
+            // Harness/test cycles keep recall (they assert on its bids); suppression is a
+            // benchmark-reproducibility knob set only by the eval fork.
+            suppress_recall: false,
         }
     }
 
@@ -1228,7 +1258,7 @@ mod tests {
 
         // Spoken exam (no hands): the workspace-map must not reach her mind.
         let spoken = registry
-            .fork_eval_cycle(&persona, false, None)
+            .fork_eval_cycle(&persona, false, None, false)
             .expect("template retained");
         let ws = spoken.run("proctor: reverse a string in Rust").await;
         assert!(
@@ -1245,13 +1275,44 @@ mod tests {
 
         // Handed exam: the map is real guidance and must be delivered.
         let handed = registry
-            .fork_eval_cycle(&persona, true, None)
+            .fork_eval_cycle(&persona, true, None, false)
             .expect("template retained");
         let ws = handed.run("proctor: reverse a string in Rust").await;
         assert!(
             ws.perceived().contains(HANDS_MARKER),
             "handed fork must keep the workspace-map:\n{}",
             ws.perceived()
+        );
+    }
+
+    // what this catches (#207): the reproducible-absolute benchmark knob. A default fork keeps
+    // the recall faculty (memories intact — the natural persona), so its ABSOLUTE score can
+    // drift as her durable engram store grows between runs; a `suppress_recall` fork OMITS
+    // recall entirely (system + task + grounding only), pinning the absolute baseline. The two
+    // forks must differ by exactly the recall faculty — the whole point of the knob.
+    #[tokio::test]
+    async fn suppress_recall_omits_the_recall_faculty_from_the_eval_fork() {
+        use crate::cognition::workspace::FacultyId;
+        let registry = PersonaWorkspaceRegistry::new();
+        let persona = Uuid::new_v4();
+        registry.register_from_cfg(cfg_for(persona));
+
+        let with_recall = registry
+            .fork_eval_cycle(&persona, false, None, false)
+            .expect("template retained");
+        assert!(
+            with_recall.faculty_ids().contains(&FacultyId::Recall),
+            "default fork must keep recall (memories intact): {:?}",
+            with_recall.faculty_ids()
+        );
+
+        let suppressed = registry
+            .fork_eval_cycle(&persona, false, None, true)
+            .expect("template retained");
+        assert!(
+            !suppressed.faculty_ids().contains(&FacultyId::Recall),
+            "suppress_recall fork must OMIT recall for a reproducible absolute baseline: {:?}",
+            suppressed.faculty_ids()
         );
     }
 

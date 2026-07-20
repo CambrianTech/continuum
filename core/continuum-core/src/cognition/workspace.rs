@@ -1439,6 +1439,14 @@ impl WorkspaceCycle {
         }
     }
 
+    /// The faculty ids composed into this cycle, in order — the observable a test uses to
+    /// assert a faculty was included or (as with #207's recall suppression) deliberately
+    /// omitted. Test-only: production cognition never introspects its own faculty roster.
+    #[cfg(test)]
+    pub(crate) fn faculty_ids(&self) -> Vec<FacultyId> {
+        self.faculties.iter().map(|f| f.id()).collect()
+    }
+
     /// Install a capture sink (recording / on-disk replay / in-flight inspection).
     pub fn with_capture(mut self, capture: Arc<dyn WorkspaceCaptureSink>) -> Self {
         self.capture = capture;

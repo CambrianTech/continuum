@@ -185,6 +185,7 @@ mod tests {
             ui_checks: Vec::new(),
             target: None,
             ui_pass_threshold: None,
+            needs_tools: None,
         }
     }
 
