@@ -1147,6 +1147,10 @@ pub fn start_server(
         resource_daemon.clone(),
         model_catalog.clone(),
     ));
+    // The lane plan is a MEMORY decision, so it runs on the ONE memory authority's tick,
+    // not serving's own (MEMORY-AUTHORITY-DAEMON slice 1b). Serving's tick only reconciles
+    // the llama-server to the authority-published plan.
+    serving_daemon.register_planner_on_authority_tick();
     runtime.register(serving_daemon.clone());
 
     // #79: expose the one per-machine resource authority's accounting board as a typed
