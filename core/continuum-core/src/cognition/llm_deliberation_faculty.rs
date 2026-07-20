@@ -327,38 +327,31 @@ impl LlmDeliberationFaculty {
         let style = crate::cognition::tool_dialect::offer_style_for(
             self.binding.load().model.as_deref(),
         );
-        let mut specs: Vec<_> = persona_tools::native_tool_specs()
+        // The native surface is the DERIVED, bounded agentic core — every command that
+        // declares `native: true` at its own site (~a dozen tools), projected once by
+        // `native_tool_specs()`. It is offered in FULL, always, in the model's wire dialect.
+        //
+        // NO second filter here. There used to be a window-vs-surface CLIFF that amputated
+        // this set to a two-tool "discovery pair" on a tight window. That is a clamp, and the
+        // worst kind: a native-tool-call model can ONLY emit calls for tools in its offered
+        // specs (the "long tail reachable by name" is a text-model affordance it lacks), so the
+        // discovery-pair-only surface stranded it in a `commands/help(code/write)` loop and
+        // wrote nothing (glass-boxed #206). Worse, the threshold sat at the served window's
+        // knife-edge, so the SAME model flipped 10/10 ↔ 0/6 on a token — benchmark noise from
+        // the filter, not signal from the model.
+        //
+        // Fitting the surface to the window is ONE decision, and it already lives in exactly
+        // one place: `prompt_view_within`, which reserves THESE specs' tokens up front
+        // (`describe_tool_tokens`, counted dynamically off this very set) and trims the VOLATILE
+        // context (recall/RAG) last — protecting the hands, never amputating them. Filtering the
+        // tool surface a second time here, on a whim, is the replicated-logic clamp that breeds
+        // brittleness and tanks benchmark hygiene. So it is gone; the budget owns the fit.
+        // [[filter-once-centrally-multiple-adhoc-filters-are-clamps-that-tank-benchmarks]]
+        // [[budget-at-assembly-never-clamp-the-prompt]]
+        self.native_specs = persona_tools::native_tool_specs()
             .into_iter()
             .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
             .collect();
-        // ADAPTIVE surface ([[adaptive-tool-surface-meets-you-in-the-middle]]): the full
-        // native working set only rides when the served window can afford it. On a small
-        // window it would crowd out the prompt itself and break the prompt-fit invariant,
-        // so we shrink to the discovery pair — the long tail stays reachable by name, just
-        // not natively. The threshold is DERIVED from the surface's ACTUAL rendered token
-        // cost, never a baked constant (task #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]):
-        // offer the full set only when it would claim at most 1/`SURFACE_MAX_WINDOW_SHARE`
-        // of the window, leaving the rest for prompt + reply. Self-calibrating — as the
-        // native tool set grows or shrinks, the threshold tracks it, instead of an 8192
-        // that silently mismatched a re-sized surface.
-        const SURFACE_MAX_WINDOW_SHARE: u32 = 3;
-        let full_surface_tokens = serde_json::to_string(&specs)
-            .map(|j| crate::cognition::token_budget::estimate_prompt_tokens(&j))
-            .unwrap_or(0);
-        let native_surface_min_ctx = full_surface_tokens.saturating_mul(SURFACE_MAX_WINDOW_SHARE);
-        if self.binding.load().context_window < native_surface_min_ctx {
-            // Tight window: shrink to the DISCOVERY PAIR (commands/list, then commands/help),
-            // selected BY NAME in that order — NOT by list position. The native surface is
-            // registry-DERIVED now (sorted by name, so `commands/help` sorts before
-            // `commands/list`), so a `truncate(2)` would grab the alphabetically-first two,
-            // not the discovery pair. These two reach the long tail by name.
-            specs = ["commands/list", persona_tools::TOOL_HELP_NAME]
-                .iter()
-                .filter_map(|n| persona_tools::spec_for_command(n))
-                .map(crate::cognition::tool_dialect::to_wire_spec)
-                .collect();
-        }
-        self.native_specs = specs;
     }
 
     /// Set the effective served context window (tokens) this faculty must keep its
