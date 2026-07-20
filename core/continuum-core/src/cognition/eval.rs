@@ -1768,31 +1768,78 @@ impl ActionCommand for CognitionEvalStatus {
     ) -> Result<CognitionEvalStatusResult, CommandError> {
         // The live scoreboard rides on EVERY poll — with or without a run_id.
         let progress = subscribe_eval_progress().borrow().clone();
-        let (Some(persona_id), Some(run_id)) = (p.persona_id, p.run_id) else {
+        let Some(run_id) = p.run_id else {
             // No run handle → live progress only (the "how's it going" poll).
             return Ok(CognitionEvalStatusResult { complete: false, row: None, progress });
         };
-        let home = std::env::var("HOME")
-            .map_err(|_| CommandError::Internal("HOME unset — no progress ledger".into()))?;
-        let path = std::path::PathBuf::from(home)
-            .join(".continuum/progress")
-            .join(format!("{persona_id}.jsonl"));
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            // No ledger yet = no completed runs for this persona = pending.
-            return Ok(CognitionEvalStatusResult { complete: false, row: None, progress });
+        // run_id is a globally-unique UUID, so it is a SUFFICIENT key on its own. With a
+        // persona_id we read that persona's ledger directly (the fast path); WITHOUT one
+        // we scan every persona's ledger for the row rather than silently degrading to
+        // "live progress only" — a poller that holds only the run handle (a benchmark/matrix
+        // driver) must still resolve to the terminal row, never hang forever on a false
+        // `complete:false` (the exact footgun a load-test poll hit 2026-07-20).
+        let row = match &p.persona_id {
+            Some(pid) => find_run_row_for_persona(pid, &run_id),
+            None => find_run_row_any_persona(&run_id),
         };
-        for line in text.lines().rev() {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if v.get("runId").and_then(|r| r.as_str()) == Some(run_id.as_str()) {
-                    return Ok(CognitionEvalStatusResult { complete: true, row: Some(v), progress });
-                }
-            }
+        match row {
+            Some(v) => Ok(CognitionEvalStatusResult { complete: true, row: Some(v), progress }),
+            None => Ok(CognitionEvalStatusResult { complete: false, row: None, progress }),
         }
-        Ok(CognitionEvalStatusResult { complete: false, row: None, progress })
     }
 }
 
 crate::register_stateless_command!(CognitionEvalStatus);
+
+/// The progress-ledger directory (`~/.continuum/progress`), the ONE place
+/// [`append_progress_ledger`] writes and `cognition/eval-status` reads.
+fn progress_ledger_dir() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".continuum/progress"))
+}
+
+/// The terminal ledger row for `run_id` in a KNOWN persona's ledger, newest-first.
+/// `None` = no such row yet (the run is still in flight, or the id is wrong).
+fn find_run_row_for_persona(persona_id: &str, run_id: &str) -> Option<serde_json::Value> {
+    let path = progress_ledger_dir()?.join(format!("{persona_id}.jsonl"));
+    let text = std::fs::read_to_string(&path).ok()?;
+    row_with_run_id(&text, run_id)
+}
+
+/// The terminal ledger row for `run_id` across EVERY persona's ledger — the poll
+/// path when the caller holds only the (globally-unique) run handle. Scans each
+/// `*.jsonl` in the progress dir; returns the first match (a run_id lives in exactly
+/// one persona's ledger). Keeps run_id a sufficient key so a matrix/CI poller never
+/// hangs on a false pending just because it didn't also thread the persona_id.
+fn find_run_row_any_persona(run_id: &str) -> Option<serde_json::Value> {
+    let dir = progress_ledger_dir()?;
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Some(row) = row_with_run_id(&text, run_id) {
+                return Some(row);
+            }
+        }
+    }
+    None
+}
+
+/// Scan a jsonl ledger body newest-first for the row whose `runId` matches. Pure
+/// (text in, Value out) so the match logic is unit-testable without the filesystem.
+fn row_with_run_id(text: &str, run_id: &str) -> Option<serde_json::Value> {
+    for line in text.lines().rev() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if v.get("runId").and_then(|r| r.as_str()) == Some(run_id) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
 
 /// Write a FAILED run row to the progress ledger so `cognition/eval-status` surfaces
 /// the error (keyed on `run_id`) instead of returning `null` forever. The poll surface
@@ -2784,6 +2831,33 @@ mod tests {
         // Exactly at the margin edge counts as fitting (>= margin).
         let (p, _) = choose_lane_placement(Some(3 * GB + GPU_PLACEMENT_MARGIN_BYTES), Some(3 * GB));
         assert_eq!(p, LanePlacement::Gpu, "free == footprint+margin fits on GPU");
+    }
+
+    // what this catches: eval-status resolves a terminal ledger row by run_id NEWEST-first
+    // and only on an exact match — so `benchmark/run`'s completed row is found, not a
+    // prior run's stale line, and an in-flight/unknown run resolves to None (pending), not
+    // a wrong row. This is the matcher behind the run_id-only poll fix (2026-07-20): the
+    // load test hit a false `complete:false` because the poll lacked persona_id; run_id is
+    // globally unique, so it must be a sufficient key. Guards the "hang forever on a false
+    // pending" footgun a matrix/CI poller would otherwise trip.
+    #[test]
+    fn eval_status_row_matches_run_id_newest_first() {
+        let ledger = concat!(
+            r#"{"runId":"aaa","score":3,"total":10}"#,
+            "\n",
+            r#"{"runId":"bbb","score":7,"total":10}"#,
+            "\n",
+            r#"{"runId":"bbb","score":10,"total":10}"#, // a later row for bbb wins
+            "\n",
+        );
+        let hit = row_with_run_id(ledger, "bbb").expect("bbb row present");
+        assert_eq!(hit.get("score").and_then(|s| s.as_i64()), Some(10), "newest bbb row wins");
+        let first = row_with_run_id(ledger, "aaa").expect("aaa row present");
+        assert_eq!(first.get("score").and_then(|s| s.as_i64()), Some(3));
+        // An unknown / still-in-flight run → None (pending), never a wrong row.
+        assert!(row_with_run_id(ledger, "ccc").is_none(), "no row → pending, not a mismatch");
+        // A malformed line is skipped, not fatal.
+        assert!(row_with_run_id("not json\n{bad\n", "bbb").is_none());
     }
 
     // what this catches: TurnMetrics throughput + accumulation, the per-turn cost
