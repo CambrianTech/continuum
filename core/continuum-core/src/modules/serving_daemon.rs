@@ -33,7 +33,7 @@ use crate::inference::llama_server::{
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
 use crate::model_registry::types::{Capability, Model};
-use crate::resources::{ResourceDaemon, ResourceKind};
+use crate::resources::{LeaseBoard, ResourceDaemon, ResourceKind};
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -282,6 +282,25 @@ impl ServingDaemonModule {
     }
 
     /// The current lane demand (≥ 1).
+    /// Register serving's autonomic PLANNER to run on the memory authority's tick
+    /// (MEMORY-AUTHORITY-DAEMON slice 1b). The lane plan — which model, how many lanes,
+    /// what per-slot window — is a MEMORY decision, so it must be computed in the ONE
+    /// place that owns memory (the `ResourceDaemon` tick), NOT on serving's own tick
+    /// sampling `host_budget()`. `recompute()` (compute the plan from the live host +
+    /// publish it to `plan_tx`) now runs as an `on_tick` observer; serving's own tick
+    /// keeps only `reconcile_to_plan()` (bring llama-server in line with the published
+    /// plan — reacting to the authority's decision, not deciding). Weak handle so the
+    /// observer never keeps the module alive past shutdown. Called once at wiring time,
+    /// after the module is Arc-wrapped.
+    pub fn register_planner_on_authority_tick(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        self.resource_daemon.on_tick(Arc::new(move |_board: &LeaseBoard| {
+            if let Some(module) = weak.upgrade() {
+                module.recompute();
+            }
+        }));
+    }
+
     fn lane_demand(&self) -> u32 {
         self.lane_demand.load(Ordering::Relaxed).max(1)
     }
@@ -1215,10 +1234,11 @@ impl ServiceModule for ServingDaemonModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
-        // Re-decide the plan (fast), then bring the running server in line with
-        // it. The reconcile is fast-to-decide and spawns the slow relaunch off
-        // the tick, so the tick never blocks on model load.
-        self.recompute();
+        // The plan is DECIDED on the memory authority's tick now (MEMORY-AUTHORITY-DAEMON:
+        // `register_planner_on_authority_tick` runs `recompute()` as an `on_tick` observer,
+        // publishing to `plan_tx`) — serving no longer samples memory on its own tick. This
+        // tick only RECONCILES: bring the running server in line with the authority's
+        // published plan. Fast-to-decide; the slow relaunch spawns off the tick.
         let _ = self.reconcile_to_plan();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
