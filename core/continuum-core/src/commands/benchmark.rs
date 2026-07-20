@@ -520,6 +520,9 @@ impl ActionCommand for BenchmarkRun {
                     workspace_root,
                     capture_dir: None,
                     learn: None,
+                    // #207: benchmark keeps recall by default (unchanged behavior); the
+                    // reproducible-absolute knob is opt-in on cognition/eval directly.
+                    suppress_recall: None,
                     note: Some(match &p.base_model_id {
                         Some(m) => format!("benchmark/run {} on {m}", spec.name),
                         None => format!("benchmark/run {}", spec.name),

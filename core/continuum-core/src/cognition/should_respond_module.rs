@@ -164,6 +164,7 @@ mod tests {
             // Harness: synchronous perception (deferral is a live-path concern).
             defer_recall: false,
             defer_grounding: false,
+            suppress_recall: false,
         });
         registry
     }

@@ -904,6 +904,9 @@ pub async fn materialize_adapters(
                 // enriching framing. Doctrine (ColdStartCritical) stays synchronous
                 // regardless. Eval/harness override to false.
                 defer_grounding: true,
+                // The LIVING persona always keeps her memories — suppression is a
+                // benchmark-reproducibility knob, never a life-path setting (#207).
+                suppress_recall: false,
             },
         );
 
