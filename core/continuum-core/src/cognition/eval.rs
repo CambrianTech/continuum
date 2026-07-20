@@ -1161,6 +1161,15 @@ impl CognitionEval {
         // holds the bytes would flash them as "available" and re-open the grab race.
         let mut _eval_vram_lease: Option<crate::resources::LeaseGuard> = None;
         let mut _eval_lane: Option<crate::inference::llama_server::EphemeralServingLane> = None;
+        // Holds the LIVE serving lane steady when the eval runs ON it (the `(None, None)`
+        // living-persona case = `placement::Placement::ShareLane`: same base already
+        // resident, so she is measured as a co-tenant decode slot on her real lane, NOT a
+        // second weight copy). While held, the daemon skips the grow-back re-home that
+        // would relaunch the lane and connection-refuse the exam mid-flight (hard-rs 0/8,
+        // 2026-07-20). None for the ephemeral-lane branches — those own an isolated lane
+        // the serving daemon never touches. Dropped when `run` returns (grow-back resumes).
+        let mut _serving_steady_hold: Option<crate::modules::serving_daemon::ServingSteadyHold> =
+            None;
         // GPU-first placement evidence for the gene's measurement lane — surfaced on
         // the result so the harness shows which device the A/B was scored on. None in
         // single-pass mode (that forks onto her LIVE lane, which is already GPU).
@@ -1212,17 +1221,25 @@ impl CognitionEval {
                 _eval_lane = Some(lane);
                 cycle
             }
-            // Neither → fork onto her LIVE lane (a plain number on whatever she's served on).
-            // Same bounded wait-for-template as the lane branches above (fork_eval_cycle_waiting):
+            // Neither → the living-persona benchmark: she is served on THIS base already,
+            // so the admission decision is `placement::Placement::ShareLane` — measure her
+            // as a co-tenant decode slot on her REAL lane (her genome, her window), no
+            // second weight copy. Hold the lane STEADY for the run so the grow-back re-home
+            // can't relaunch it and connection-refuse the exam mid-flight (the hard-rs 0/8
+            // bounce, 2026-07-20). Same bounded wait-for-template as the lane branches above;
             // the post-reboot register_from_cfg race hits every fork path identically.
-            (None, None) => fork_eval_cycle_waiting(&persona_uuid, || {
-                crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
-            })
-            .await
-            .ok_or_else(|| CommandError::NotFound(format!(
-                "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-            )))?,
+            (None, None) => {
+                _serving_steady_hold =
+                    Some(crate::modules::serving_daemon::ServingSteadyHold::acquire());
+                fork_eval_cycle_waiting(&persona_uuid, || {
+                    crate::cognition::persona_workspace::global()
+                        .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                })
+                .await
+                .ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                )))?
+            }
         };
 
         // GLASS-BOX (task #14): if a capture_dir is pinned, wrap the fork's cognition in the

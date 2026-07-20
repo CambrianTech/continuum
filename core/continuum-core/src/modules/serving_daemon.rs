@@ -42,7 +42,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -645,6 +645,22 @@ impl ServingDaemonModule {
                 if !starved {
                     return None;
                 }
+                // A living-persona eval is a co-tenant decode slot on THIS lane
+                // (`ShareLane`). Growing its window means a relaunch, and a relaunch
+                // connection-refuses the exam's in-flight generations (hard-rs 0/8,
+                // 2026-07-20). The grow-back is OPTIONAL headroom; the exam is not.
+                // Hold the lane steady until the eval drops its guard — a model/genome
+                // change or a pressure shrink above still runs (this only gates the
+                // starved GROW re-home). [[benchmark-is-a-governor-preemption-lease]]
+                if serving_held_steady() {
+                    crate::probe!(
+                        class = "serving.reconcile",
+                        live_window = live.served_context_window,
+                        plan_window = served_ctx,
+                        "grow-back re-home suppressed: an eval holds the lane steady (co-tenant slot, no relaunch)",
+                    );
+                    return None;
+                }
                 crate::probe!(
                     class = "serving.reconcile",
                     live_window = live.served_context_window,
@@ -978,6 +994,43 @@ pub fn live_host_budget(
 /// Board-only (no `SystemResourceMonitor` needed), so any consumer holding the
 /// `Arc<ResourceDaemon>` sizes a lane through the SAME `plan_serving` the autonomic serving
 /// plan uses — one budget, one authority, no duplicate calc.
+/// Process-global count of active "hold the live serving lane STEADY" requests. A
+/// living-persona benchmark/eval runs ON the shared lane as a co-tenant decode slot —
+/// `resources::placement::Placement::ShareLane` (same base already resident ⇒ no second
+/// weight copy). The one thing that breaks it is a grow-back RE-HOME relaunch mid-exam:
+/// it connection-refuses every in-flight generation (glass-boxed 2026-07-20: hard-rs 0/8,
+/// zero output tokens, the lane bounced under the exam). While any hold is active the
+/// daemon SKIPS the OPTIONAL grow-back re-home for an already-correctly-served lane. It
+/// does NOT suppress a model/genome CHANGE or a pressure-driven shrink — a real resource
+/// emergency still preempts (rare, correct). Zero-cost when no eval runs.
+static SERVING_STEADY_HOLDS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII: hold the live serving lane steady (suppress the grow-back re-home) until dropped.
+/// A living-persona eval binds one for its whole run — the concrete form of `ShareLane`'s
+/// "pin the lane for the demand's duration" clause ([[benchmark-is-a-governor-preemption-lease]],
+/// the co-tenant/steady case: no second weight copy, just don't bounce the lane).
+#[must_use = "the hold releases the instant this guard drops — bind it for the eval's lifetime"]
+pub struct ServingSteadyHold(());
+
+impl ServingSteadyHold {
+    pub fn acquire() -> Self {
+        SERVING_STEADY_HOLDS.fetch_add(1, Ordering::AcqRel);
+        Self(())
+    }
+}
+
+impl Drop for ServingSteadyHold {
+    fn drop(&mut self) {
+        SERVING_STEADY_HOLDS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// True while at least one caller holds the live lane steady — the reconcile's grow-back
+/// re-home is suppressed for an already-correctly-served lane.
+pub fn serving_held_steady() -> bool {
+    SERVING_STEADY_HOLDS.load(Ordering::Acquire) > 0
+}
+
 pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
     let available = governed_vram_ceiling(resource_daemon).unwrap_or(0);
     host_budget_from(&HostBudgetInputs {
@@ -1362,6 +1415,26 @@ mod tests {
     use super::*;
 
     const GB: u64 = 1_000_000_000;
+
+    // what this catches: the ServingSteadyHold RAII gauge — acquiring sets
+    // serving_held_steady() true; dropping clears it; nesting is reference-counted so a
+    // concurrent second eval doesn't release the first's hold. This is the gate that stops
+    // the grow-back re-home from relaunching the lane under a running eval (hard-rs 0/8).
+    // regression for the 2026-07-20 shared-lane bounce.
+    #[test]
+    fn serving_steady_hold_is_refcounted_and_raii() {
+        assert!(!serving_held_steady(), "no hold at rest");
+        {
+            let _h1 = ServingSteadyHold::acquire();
+            assert!(serving_held_steady(), "one hold ⇒ steady");
+            {
+                let _h2 = ServingSteadyHold::acquire();
+                assert!(serving_held_steady(), "two holds ⇒ still steady");
+            }
+            assert!(serving_held_steady(), "inner drop must not release the outer hold");
+        }
+        assert!(!serving_held_steady(), "all holds dropped ⇒ grow-back resumes");
+    }
 
     // what this catches: the budget is LIVE (tracks free memory, not capacity),
     // capped at physical VRAM, with headroom, cores floored at 1 — the organic
