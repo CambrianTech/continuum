@@ -347,33 +347,16 @@ impl LlmDeliberationFaculty {
             .unwrap_or(0);
         let native_surface_min_ctx = full_surface_tokens.saturating_mul(SURFACE_MAX_WINDOW_SHARE);
         if self.binding.load().context_window < native_surface_min_ctx {
-            // Tight window: shrink toward the discovery pair (commands/list + commands/help),
-            // selected BY NAME — the registry-derived surface is name-sorted, so a
-            // `truncate(2)` would grab the wrong two.
-            //
-            // BUT keep the core ACTION verbs too. A native-tool-call model (Devstral/Qwen)
-            // can ONLY emit calls for tools in its offered native specs — the "long tail
-            // reachable by name" is a TEXT-model affordance it does not have. A
-            // discovery-pair-ONLY surface therefore STRANDS it: wanting to write, the closest
-            // it can emit is `commands/help(code/write)` — docs, not execution — and it loops
-            // forever (glass-boxed 2026-07-19: 43× help(code/write), 0 files written, webdev
-            // 0/6; and the dominant live "help-filler" dysfunction, ~56% of turns). The
-            // discovery pair alone cannot DO work. So the shrink preserves the create/inspect/
-            // run hands a hands-enabled turn needs; the long tail past these still loads by
-            // name via commands/list→help. Offered in the model's WIRE DIALECT (`style`) like
-            // the full set — a native model needs its trained names, and the old shrink
-            // dropped the styling too. Execution-time ACL still gates actual use.
-            specs = [
-                "commands/list",
-                persona_tools::TOOL_HELP_NAME,
-                "code/write",
-                "code/read",
-                "code/shell",
-            ]
-            .iter()
-            .filter_map(|n| persona_tools::spec_for_command(n))
-            .map(|s| crate::cognition::tool_dialect::to_wire_spec_with(s, style))
-            .collect();
+            // Tight window: shrink to the DISCOVERY PAIR (commands/list, then commands/help),
+            // selected BY NAME in that order — NOT by list position. The native surface is
+            // registry-DERIVED now (sorted by name, so `commands/help` sorts before
+            // `commands/list`), so a `truncate(2)` would grab the alphabetically-first two,
+            // not the discovery pair. These two reach the long tail by name.
+            specs = ["commands/list", persona_tools::TOOL_HELP_NAME]
+                .iter()
+                .filter_map(|n| persona_tools::spec_for_command(n))
+                .map(crate::cognition::tool_dialect::to_wire_spec)
+                .collect();
         }
         self.native_specs = specs;
     }
