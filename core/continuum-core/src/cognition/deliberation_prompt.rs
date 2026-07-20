@@ -125,8 +125,20 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
 /// analyzing a transcript; otherwise small models outline the situation instead of
 /// participating. The activity is NOT hardcoded (it is recipe-defined): the room's
 /// operating doctrine in the context specializes HOW to participate (chat /
-/// coordination / game / code / art / …). This block only says "respond as yourself,
-/// in your own voice, not as an analysis."
+/// coordination / game / code / art / …). This block is SITUATION-AWARE and posture-
+/// neutral: it says "take your turn as yourself — the contribution the moment calls for,
+/// in full", where the contribution is words when the moment wants words and the finished
+/// deliverable (a function, a design, a written piece) when the task asks for one. The
+/// deliverable-truth is UNCONDITIONAL here (not gated on tools like `[Acting]`): a
+/// speak-graded coding turn offers no tools, so if this block only said "just say your
+/// piece" the model would be left with pure chat framing and fight a coding task —
+/// glass-boxed 2026-07-20: Devstral, handed an expression-evaluator on a no-tools gym,
+/// fell into the RLHF chat attractor (chatty preamble / scaffold parrot) and scored 0/8,
+/// while the SAME model wrote the same function cleanly once the block named the
+/// finished work as the turn. The anti-rambling guard stays ("do not narrate/outline
+/// what you are ABOUT to do — a plan is not the work"); what changed is it no longer
+/// hardcodes CHAT as the only shape of a turn. Working WITH the base model's chat/instruct
+/// duality, not against it ([[situation-aware-focuser]], [[turn-renders-by-modality-tools-are-transcript]]).
 ///
 /// The block stays posture-NEUTRAL: the ambient participation default + the silence
 /// affordance both live in the ONE appended [`SILENCE_AFFORDANCE_BLOCK`]
@@ -144,13 +156,17 @@ fn taking_your_turn_block(name: &str) -> String {
          The conversation below is the recent activity in this space, as a thread \
          of turns: `user` turns are messages from OTHER participants; any \
          `assistant` turns are YOUR OWN earlier messages, already sent — do not \
-         repeat, rephrase, or re-explain them. You are {name}. Write ONLY your own \
-         single next message, in first person, in your own voice, the way you \
-         would actually say it. Do NOT write or invent anyone else's lines, do \
-         NOT continue or replay the transcript, do NOT prefix your message with \
-         your name, do NOT write an outline, analysis, or narration of what you \
-         are doing — just say your piece. Let the context above (including the \
-         room's operating doctrine, if any) shape how you participate.",
+         repeat, rephrase, or re-explain them. You are {name}. Take your turn now, \
+         as yourself, in the first person: the contribution the moment calls for, \
+         in full. If the moment wants words, say your piece; if it asks for a \
+         concrete deliverable — a function, a design, a written piece — the \
+         finished work itself IS your turn: produce it directly and completely, \
+         not a description of what you would produce. Do NOT write or invent \
+         anyone else's lines, do NOT continue or replay the transcript, do NOT \
+         prefix your message with your name, and do NOT narrate or outline what \
+         you are ABOUT to do (a plan is not the work). Let the context above — \
+         especially the room's operating doctrine — shape what kind of \
+         contribution fits.",
         name = name,
     );
     s
