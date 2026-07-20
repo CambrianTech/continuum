@@ -1082,12 +1082,25 @@ impl Faculty for LlmDeliberationFaculty {
         // provisioned window; the next ready tick re-reads. Model + adapter stay the same atomic
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
         let binding = {
-            let live = crate::inference::llama_server::current_serving();
-            let effective = Self::reconcile_window_to_served(
-                loaded.context_window,
-                live.ready,
-                live.served_context_window,
-            );
+            // A DEDICATED-lane fork (an eval's `EphemeralServingLane`) is its OWN window
+            // authority: `loaded.context_window` was pinned from THAT lane's `/props` at
+            // spawn. The GLOBAL `current_serving()` describes only the LIVING persona lane
+            // — a different server at a different (often tiny, multi-slot) per-slot window.
+            // Reconciling a dedicated fork against it clamps a roomy 32k eval lane down to
+            // the live lane's ~3k per-slot and STARVES long agentic prompts (webdev-rs 0/6,
+            // glass-boxed 2026-07-20). So only reconcile shared-gateway adapters; a
+            // dedicated lane keeps its own provisioned window (its own #175 overflow
+            // protection sized it). Same exemption the readiness guard already makes.
+            let effective = if loaded.adapter.serves_dedicated_lane() {
+                loaded.context_window
+            } else {
+                let live = crate::inference::llama_server::current_serving();
+                Self::reconcile_window_to_served(
+                    loaded.context_window,
+                    live.ready,
+                    live.served_context_window,
+                )
+            };
             if effective == loaded.context_window {
                 loaded
             } else {

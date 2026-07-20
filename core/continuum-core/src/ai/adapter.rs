@@ -400,6 +400,23 @@ pub trait AIProviderAdapter: Send + Sync {
         ApiStyle::Local
     }
 
+    /// True when this adapter points at a DEDICATED serving lane it owns (an
+    /// eval fork's `EphemeralServingLane`), not the shared single-resident
+    /// gateway. A dedicated lane is its OWN authority: it was launched with
+    /// exactly this model at a known window and confirmed ready at spawn, so the
+    /// GLOBAL `current_serving()` snapshot — which only describes the living
+    /// persona lane — is the WRONG thing to consult for BOTH the readiness guard
+    /// (`generate_text`) AND the per-turn window reconciliation (the deliberation
+    /// faculty). Default `false` (shared-gateway adapters reconcile to the global
+    /// snapshot as before); the local `/v1` adapter overrides it when a dedicated
+    /// lane is pinned. Without this, an eval fork on a roomy 32k dedicated lane
+    /// gets its prompt clamped to the LIVE lane's tiny per-slot window → long
+    /// agentic prompts (a from-scratch web-dev build) are starved and she can't
+    /// act (glass-boxed 2026-07-20: webdev-rs 0/6 while short coder prompts pass).
+    fn serves_dedicated_lane(&self) -> bool {
+        false
+    }
+
     /// Get default model for this provider
     fn default_model(&self) -> &str;
 
