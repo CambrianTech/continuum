@@ -212,6 +212,99 @@ fn plan_to_fit(
     }
 }
 
+// ============================================================================
+// Grid-aware admission — the SAME model-aware kernel, across nodes that come and go.
+// ============================================================================
+//
+// `capacity::grid` owns the grid SUBSTRATE (#176): the gossiped [`GridSnapshot`], the
+// deterministic sim, and the resilience invariants (a `reachable` verdict per peer,
+// stranded-lane detection, per-node OOM). But its `LocalFirstFitPolicy` places lanes
+// MODEL-BLIND — by free bytes — so it would spill a lane to the peer with the most free
+// RAM even when another peer already has that base model WARM, paying a needless cold-load
+// + weight transfer. This is the grid's version of the single-node incident: it doesn't
+// know that "same base already resident" is nearly free.
+//
+// `plan_grid_placement` is the convergence: it runs the model-aware [`plan_placement`]
+// kernel per reachable node and routes by AFFINITY FIRST — a node that already holds the
+// weights (`ShareLane`) beats a node with more free bytes every time. `capacity::grid`'s
+// `GridPlacementPolicy` becomes a thin adapter over this once its `GridSnapshot` carries
+// each node's resident models (the integration slice) — NOT a third parallel allocator.
+
+/// One node in the grid's live view: its physical ceiling + what it already serves +
+/// the network's `reachable` verdict THIS instant. An unreachable node is a memory, not
+/// an offer ([[seamless-persona-failover-model-and-genome]]) — mirrors `capacity::grid::PeerCapacity`.
+#[derive(Clone, Debug)]
+pub struct GridNode {
+    pub node_id: String,
+    pub capacity: u64,
+    pub resident: Vec<ResidentLane>,
+    /// The network's verdict right now. `false` ⇒ not an offer (peer-loss / partition).
+    pub reachable: bool,
+    /// The local node — no network hop, no weight transfer. Tie-break toward it.
+    pub local: bool,
+}
+
+impl GridNode {
+    /// Free bytes on this node right now = ceiling − everything resident.
+    pub fn free(&self) -> u64 {
+        self.capacity
+            .saturating_sub(self.resident.iter().map(ResidentLane::footprint).sum())
+    }
+}
+
+/// Where a demand lands on the grid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GridPlacement {
+    /// Host on `node_id` via the model-aware per-node decision (share / spawn / cpu-spill).
+    Place { node_id: String, placement: Placement },
+    /// No node is reachable at all (a total partition with not even a local offer — a
+    /// defensive case; the local node is normally always reachable). Never returned just
+    /// because the grid is full: a full grid still returns the best node's `CpuSpill`
+    /// (honest, slow), because the fabric NEVER blocks ([[capacity-fabric-live-never-block-sim-as-gym]]).
+    NoNodeReachable,
+}
+
+/// Rank a per-node decision: cheapest/least-disruptive first.
+fn placement_rank(p: &Placement) -> u8 {
+    match p {
+        Placement::ShareLane { .. } => 0,                          // weights already warm — no cold-load, no transfer
+        Placement::SpawnLane { reclaim } if reclaim.is_empty() => 1, // fits fresh, disturbs nothing
+        Placement::SpawnLane { .. } => 2,                          // fits only after tiering lower tiers down
+        Placement::CpuSpill { .. } => 3,                           // last resort — slow but never blocks
+    }
+}
+
+/// THE grid admission planner. Pure. Runs [`plan_placement`] on every REACHABLE node and
+/// picks the best by: affinity/least-disruption first (share > clean-spawn > preempt >
+/// cpu-spill), then local before remote, then most-free. A joined node simply appears in
+/// `nodes` and becomes eligible; a departed node has `reachable=false` and is ignored, so
+/// re-planning a stranded demand fails it over to a live node — all derived from the live
+/// `nodes` snapshot, never held ([[grid-agreements-swappable-policy-deterministic-rails]]).
+pub fn plan_grid_placement(nodes: &[GridNode], demand: &LaneDemand) -> GridPlacement {
+    let mut evals: Vec<(&GridNode, Placement)> = nodes
+        .iter()
+        .filter(|n| n.reachable)
+        .map(|n| (n, plan_placement(n.capacity, &n.resident, demand)))
+        .collect();
+
+    if evals.is_empty() {
+        return GridPlacement::NoNodeReachable;
+    }
+
+    evals.sort_by(|(na, pa), (nb, pb)| {
+        placement_rank(pa)
+            .cmp(&placement_rank(pb))
+            .then_with(|| nb.local.cmp(&na.local)) // local (true) before remote (false)
+            .then_with(|| nb.free().cmp(&na.free())) // most free first
+    });
+
+    let (node, placement) = evals.into_iter().next().expect("non-empty checked above");
+    GridPlacement::Place {
+        node_id: node.node_id.clone(),
+        placement,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +435,98 @@ mod tests {
         assert!(one_slot.footprint() <= capacity);
         assert!(d.footprint() > capacity);
         assert!(matches!(plan_placement(capacity, &[], &d), Placement::CpuSpill { .. }));
+    }
+
+    // ---- grid scenarios: nodes coming online / going offline --------------------
+
+    fn node(id: &str, capacity_gib: u64, resident: Vec<ResidentLane>, reachable: bool, local: bool) -> GridNode {
+        GridNode {
+            node_id: id.into(),
+            capacity: capacity_gib * GIB,
+            resident,
+            reachable,
+            local,
+        }
+    }
+
+    // what this catches: THE MoE-affinity win. A demand routes to the node that already has
+    // the weights WARM (ShareLane) even when another reachable node has far MORE free bytes.
+    // The model-blind byte-fill (LocalFirstFitPolicy) would pick the emptier node and pay a
+    // needless cold-load + weight transfer — this is the grid version of the 2nd-copy incident.
+    #[test]
+    fn affinity_routes_to_the_node_that_already_holds_the_weights() {
+        let empty_big = node("big", 80, vec![], true, false); // huge + empty, but cold for devstral
+        let warm = node("warm", 40, vec![lane("warm-live", "devstral", 1, 8192, DemandTier::Live, true)], true, false);
+        let d = demand("devstral", 1, 8192, DemandTier::Eval);
+        match plan_grid_placement(&[empty_big, warm], &d) {
+            GridPlacement::Place { node_id, placement } => {
+                assert_eq!(node_id, "warm", "must route to the node with devstral warm, not the emptier one");
+                assert!(matches!(placement, Placement::ShareLane { .. }));
+            }
+            other => panic!("expected affinity Place on warm, got {other:?}"),
+        }
+    }
+
+    // what this catches: a JOINED node absorbs demand the busy local node can't fit. Before
+    // the peer appears the demand cpu-spills locally; the instant it's in the snapshot,
+    // reachable, the demand goes there on GPU. The grid GROWS with no held state.
+    #[test]
+    fn a_joined_node_absorbs_demand_the_local_node_cannot_fit() {
+        // Local is nearly full with a pinned Live devstral lane; a fresh DIFFERENT base won't fit.
+        let local_full = node("local", 24, vec![lane("l", "devstral", 1, 20480, DemandTier::Live, true)], true, true);
+        let d = demand("qwen-coder-14b", 1, 16384, DemandTier::Live);
+
+        // Before the join: only the full local node → best it can do is CPU spill.
+        match plan_grid_placement(std::slice::from_ref(&local_full), &d) {
+            GridPlacement::Place { node_id, placement } => {
+                assert_eq!(node_id, "local");
+                assert!(matches!(placement, Placement::CpuSpill { .. }), "local can't GPU-host it");
+            }
+            other => panic!("expected local CpuSpill pre-join, got {other:?}"),
+        }
+
+        // A peer joins with room → the demand lands there on GPU (SpawnLane), no reclaim.
+        let joined = node("peer-new", 48, vec![], true, false);
+        match plan_grid_placement(&[local_full, joined], &d) {
+            GridPlacement::Place { node_id, placement } => {
+                assert_eq!(node_id, "peer-new", "the joined node must absorb it");
+                assert_eq!(placement, Placement::SpawnLane { reclaim: vec![] });
+            }
+            other => panic!("expected Place on joined peer, got {other:?}"),
+        }
+    }
+
+    // what this catches: peer-loss FAILOVER. The node that HELD the weights goes unreachable;
+    // it must stop being an offer (its warm affinity is a memory, not an offer), and re-planning
+    // the stranded demand routes it to a live node — never stalls on the dead one.
+    #[test]
+    fn a_departed_node_is_not_an_offer_demand_fails_over() {
+        // 'dead' has devstral warm (affinity) but is unreachable; 'live' is empty + reachable.
+        let dead = node("dead", 40, vec![lane("d", "devstral", 1, 8192, DemandTier::Live, true)], false, false);
+        let live = node("live", 48, vec![], true, false);
+        let d = demand("devstral", 1, 8192, DemandTier::Eval);
+        match plan_grid_placement(&[dead, live], &d) {
+            GridPlacement::Place { node_id, .. } => {
+                assert_eq!(node_id, "live", "must fail over to the reachable node, not the dead affinity node");
+            }
+            other => panic!("expected failover Place on live, got {other:?}"),
+        }
+    }
+
+    // what this catches: total PARTITION degrades to local-only and never blocks. All peers
+    // unreachable → only the local node is an offer; it serves what it honestly fits.
+    #[test]
+    fn total_partition_degrades_to_local_only() {
+        let local = node("local", 64, vec![], true, true);
+        let gone_a = node("a", 80, vec![], false, false);
+        let gone_b = node("b", 80, vec![], false, false);
+        let d = demand("devstral", 1, 8192, DemandTier::Live);
+        match plan_grid_placement(&[local, gone_a, gone_b], &d) {
+            GridPlacement::Place { node_id, placement } => {
+                assert_eq!(node_id, "local");
+                assert_eq!(placement, Placement::SpawnLane { reclaim: vec![] });
+            }
+            other => panic!("expected local-only Place under partition, got {other:?}"),
+        }
     }
 }
