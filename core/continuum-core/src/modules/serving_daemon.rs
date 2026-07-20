@@ -534,6 +534,22 @@ impl ServingDaemonModule {
     /// Recompute the plan from the live host snapshot + on-disk models, publish
     /// it, and log the decision. Idempotent — safe to call on init and tick.
     fn recompute(&self) {
+        // Don't re-plan while a relaunch of the serving lane is IN FLIGHT (#216). During the
+        // kill→respawn, the GPU scan (`physical_used`) transiently drops as the old lane exits
+        // and rises as the new one loads, so `host_budget()` — which reads the board's
+        // `available = capacity − max(granted, physical_used)` — sees a PHANTOM free-VRAM
+        // spike/dip. A plan recomputed off that transient flaps the window and triggers ANOTHER
+        // relaunch: the thrash loop (glass-boxed 2026-07-20 — board available swung 12.9↔41GB,
+        // window 44800↔7680, back-to-back relaunches). Serving's own in-flight churn must not
+        // feed back into its own plan. Hold the last plan until the reconcile settles; the gate
+        // clears via RAII (#214) the instant the relaunch finishes OR fails, so re-planning
+        // resumes promptly against the STABLE post-relaunch budget — no thrash, no stall. (The
+        // deeper fix — serving holding an explicit board lease so `granted` pins its residency
+        // and the scan transient never reaches `available` at all — is the #56 consumers-LEASE
+        // residual; this breaks the feedback loop cleanly in the meantime.)
+        if self.reconciling.load(Ordering::Acquire) {
+            return;
+        }
         let budget = self.host_budget();
         self.publish_plan(budget, &self.live_candidates());
     }
