@@ -402,6 +402,13 @@ pub struct BenchmarkRunResult {
     #[serde(rename = "meanOutputTokensPerTask")]
     #[ts(type = "number")]
     pub mean_output_tokens_per_task: f64,
+    /// Set ONLY when the serving lane failed mid-exam and never recovered (the Proctored
+    /// Exam Session's void-flag). When present, `score`/`pass_rate` are VOID — this is NOT
+    /// "she scored 0", it is "the harness never gave her a verified lane". Absent = a real,
+    /// trustworthy number. [[proctored-exam-session-dependable-benchmark]]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub infra_unavailable: Option<crate::cognition::eval::InfraUnavailable>,
 }
 
 /// `benchmark/run` — compete a persona on a named benchmark. Thin wrapper over
@@ -545,6 +552,9 @@ impl ActionCommand for BenchmarkRun {
             } else {
                 0.0
             },
+            // Propagate the void-flag: a benchmark that ran on a dead lane returns
+            // InfraUnavailable, never a fake pass-rate the matrix would publish as a real 0%.
+            infra_unavailable: result.infra_unavailable.clone(),
         })
     }
 }
