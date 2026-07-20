@@ -89,7 +89,7 @@ Four phases, deterministic, fail-loud, repeatable. NOT a shell wrapper.
 
 ## Slices (build order)
 
-### Slice B — trustworthy result (keystone, FIRST)
+### Slice B — trustworthy result (keystone, FIRST) — ✅ LANDED (`f25c76087`)
 Make the *number* trustworthy even before preemption exists.
 - Eval result becomes an outcome: `Scored { pass_rate, … } | InfraUnavailable { reason, tasks_attempted }`.
   `benchmark/run` + `cognition/eval-status` surface it; a fake `passRate: 0.0` on an
@@ -106,6 +106,19 @@ Make the *number* trustworthy even before preemption exists.
 - Test: fault-injection — a lane that flips not-ready mid-run yields `InfraUnavailable`,
   never `passRate 0.0`; a genuinely-wrong answer on a verified lane yields `Scored` with the
   0 counted.
+
+**As landed (`f25c76087`):** `PassOutcome { pass, results, infra_faults, infra_reason }`
+replaces the bare `(pass, results)` tuple from `run_pass`/`run_pass_team`. On an
+`inference_error`, `run_pass` re-verifies the lane (`await_ready_serving`) and retries the
+SAME task up to `INFRA_FAULT_RETRIES=3` (the retried generation IS the decode proof); an
+unrecoverable fault records the row, marks the run void, and ABORTS the loop.
+`infra_verdict(&PassOutcome) -> Option<InfraUnavailable>` (pure, one decision point) drives
+the new `CognitionEvalResult.infra_unavailable` field → ledger row `infraUnavailable`,
+`BenchmarkRunResult.infra_unavailable`, and a LEARN-mode guard (never learn from a dead-lane
+run). The old grading-match `inference_error` arm is deleted — an infra fault can no longer
+be graded as a miss. Two fault-injection unit tests pin both halves. NOT yet done in B:
+the full re-verify+retry inside team mode (it classifies + aborts) and the A/B two-arm path
+(runs on an EphemeralServingLane that decode-verifies at spawn) — both scoped follow-ups.
 
 ### Slice C — adequate window (kills the churn source, axis 2)
 The served window must satisfy **concurrent-worst-case**:
