@@ -1395,6 +1395,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         ApiStyle::OpenAI
     }
 
+    /// True when this adapter was pinned to a dedicated lane it owns (an eval
+    /// fork's `EphemeralServingLane`) via [`with_dedicated_lane`]. Mirrors the
+    /// `!self.dedicated_lane` readiness-guard exemption above: the same lane is the
+    /// window authority too, so the deliberation faculty must NOT clamp this fork's
+    /// prompt to the GLOBAL serving snapshot.
+    fn serves_dedicated_lane(&self) -> bool {
+        self.dedicated_lane
+    }
+
     /// Reports the LoRA capability the endpoint DISCOVERED about itself (via the
     /// `GET /lora-adapters` probe), never a declared per-provider table. Reads
     /// the cached probe result: `Supported` only after a 200 catalog response,
