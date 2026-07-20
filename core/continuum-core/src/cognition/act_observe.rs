@@ -719,6 +719,33 @@ pub async fn drive_to_settle(
     // task's TOTAL speed/latency (a multi-act task pays for every generation).
     let mut metrics = TurnMetrics::default();
 
+    // Signature of a tick's tool batch for loop-detection: `name|args` per call, the random
+    // per-call `id` excluded, sorted so batch order doesn't matter. Two ticks with the same
+    // signature emitted the byte-identical action.
+    fn calls_signature(calls: &[ToolCall]) -> String {
+        let mut parts: Vec<String> = calls
+            .iter()
+            .map(|c| format!("{}|{}", c.name, serde_json::to_string(&c.input).unwrap_or_default()))
+            .collect();
+        parts.sort();
+        parts.join(",")
+    }
+    // BOUNDED STUCK-ACT BACKSTOP (#206). The escalating repeat-proprioception makes a looping
+    // model's perception genuinely shift, but a determined greedy model can still re-emit the
+    // SAME act every tick (glass-boxed: `commands/help` ×54, then after the escalation fix an
+    // identical `code/write` ×8) — each a dedup no-op the short-circuit guard already refuses
+    // to execute, burning the whole act budget on nothing. This bounds that: after
+    // STUCK_LIMIT consecutive byte-identical acts, stop GRANTING acts (`may_act=false`) so she
+    // must settle into a Speak/Pass from what she has. It is NOT a steer — it never says WHAT
+    // to do, exactly like the `max_acts` budget cutoff; it only stops feeding a detected
+    // fixed-point loop, and it's personhood-POSITIVE: it returns her to think→speech instead
+    // of hammering. GENUINE iteration is untouched — a refined write has a DIFFERENT signature,
+    // so the counter resets; only a fixed point (identical batch, over and over) trips it.
+    // [[repetition-brick-fires-but-does-not-break-the-loop]], [[no-hardcoded-heuristics-to-steer-cognition]].
+    const STUCK_LIMIT: usize = 3;
+    let mut prev_sig: Option<String> = None;
+    let mut stuck = 0usize;
+
     loop {
         // ONE settlement step through the SHARED primitive the live heartbeat uses
         // (`settle_step`). The only thing this driver adds is the LOOP — because the
@@ -737,8 +764,12 @@ pub async fn drive_to_settle(
         } else {
             Situation::PostAction
         };
+        // may_act gates ACTING (not speaking): past the act budget OR once she is provably
+        // stuck re-emitting the identical act, a fresh Act is returned un-driven and she must
+        // settle into a Speak/Pass. Speaking is never gated.
+        let may_act = acts < max_acts && stuck < STUCK_LIMIT;
         let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), room_id, acts < max_acts, framing, situation).await;
+            settle_step(cycle, burst.clone(), room_id, may_act, framing, situation).await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -753,8 +784,27 @@ pub async fn drive_to_settle(
                     inference_error: None,
                 };
             }
-            SettleStep::Acted { .. } => {
+            SettleStep::Acted { calls, .. } => {
                 acts += 1;
+                // Loop-detection: a byte-identical batch back-to-back is the fixed point the
+                // backstop bounds (the short-circuit guard already refused to re-execute it).
+                // A genuinely different act resets the counter, so real iteration is free.
+                let sig = calls_signature(&calls);
+                if prev_sig.as_deref() == Some(sig.as_str()) {
+                    stuck += 1;
+                    if stuck >= STUCK_LIMIT {
+                        crate::probe!(
+                            class = "persona.settle.stuck_backstop",
+                            room_id = %room_id,
+                            acts = acts,
+                            stuck = stuck,
+                            "identical act repeated to the stuck limit — withholding further acts so she settles into speech (#206 backstop)"
+                        );
+                    }
+                } else {
+                    stuck = 0;
+                }
+                prev_sig = Some(sig);
                 // The observation re-enters perception through MEMORY + the volatile
                 // working-memory recency channel — `apply_act` admitted it and
                 // recorded a stamped proprioception trace, and the next `settle_step`
@@ -1647,6 +1697,38 @@ mod tests {
         assert!(
             matches!(outcome.decision, Decision::Act { .. }),
             "returns the un-driven Act as honest 'did not finish'"
+        );
+    }
+
+    // what this catches (#206 backstop): a model stuck re-emitting the IDENTICAL act must be
+    // cut off WELL BEFORE the full act budget — the bounded stuck-act backstop stops granting
+    // acts after STUCK_LIMIT consecutive byte-identical batches, so she settles instead of
+    // burning the whole budget hammering (help ×54 / identical write ×8 live). `AlwaysAct`
+    // emits the same tool_call() every tick — the exact fixed point. With a generous budget
+    // of 20, the backstop must stop her far sooner (at STUCK_LIMIT+1 = 4 acts), returning the
+    // un-driven Act honestly. Genuine iteration (different acts) would reset the counter and is
+    // NOT bounded — only a fixed point trips this.
+    #[tokio::test]
+    async fn drive_to_settle_backstops_a_stuck_identical_act_loop_before_the_budget() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "...".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+
+        // Budget of 20 acts, but she loops on the identical call — the backstop must fire long
+        // before, at 4 acts (3 consecutive identical repeats + the first).
+        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 20, TurnFraming::ambient()).await;
+
+        assert_eq!(
+            outcome.acts, 4,
+            "backstop stops the identical-act loop at STUCK_LIMIT+1, not the full budget"
+        );
+        assert!(
+            matches!(outcome.decision, Decision::Act { .. }) && outcome.spoken.is_none(),
+            "the pathological never-speak faculty returns un-driven — honest 'stuck, did not finish'"
         );
     }
 
