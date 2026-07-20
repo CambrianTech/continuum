@@ -385,15 +385,22 @@ impl ServingDaemonModule {
     /// Delegates to the free [`live_host_budget`] so the autonomic tick and the
     /// `serving/pin` fit-gate compute the budget from the ONE source.
     fn host_budget(&self) -> HostBudget {
-        let raw = live_host_budget(&self.system, &self.resource_daemon);
-        // Reserve headroom per the machine drive mode so the autonomic plan LEAVES room
-        // for the other personas' KV + render + LiveKit — the resiliency fix that keeps a
-        // crowded call from OOM-ing the shared pool. The mode is driven from LIVE pressure
-        // (Eco when free memory is tight, Comfort at normal headroom) so the base reserves
-        // harder exactly when the pool is strained — auto-downshift. (The pin fit-gate
-        // keeps the RAW budget via `live_host_budget` directly — "can this model fit at
-        // all" is a different question than "how much should the shared base claim now".)
+        // The autonomic plan's VRAM budget = the LIVE governed available (net of every
+        // external consumer + the 512MB driver reserve the GpuCapacitySource already holds)
+        // × the pressure-adaptive drive mode. ONE reserve, the DYNAMIC one: Performance
+        // (hard task + room) floors the whole GPU (1.0), Comfort is the everyday 0.80, and
+        // Eco (memory starved — a game opened, a crowded call) drops to 0.55 so the base
+        // claims less and the rest of the call's KV + render still fit. #56/G8: we do NOT
+        // ALSO apply the static SERVING_BUDGET_FRACTION here — stacking it under the mode
+        // fraction double-discounted the everyday budget to ~0.64 (24.5GB of a 38GB board)
+        // and left the more-capable 32B coder + full context unused, WITHOUT buying safety
+        // (the concurrent-prefill compute buffer is reserved separately, window-scaled, in
+        // the serving_plan fixpoint). The pin fit-gate still uses `live_host_budget`'s raw
+        // 0.80 directly — "can this model physically fit" is a different question than "how
+        // much should the shared base claim now." [[verify-real-device-numbers-not-a-clamp-premise]]
         let available = self.system.snapshot().memory.available_bytes;
+        let vram_ceiling = governed_vram_ceiling(&self.resource_daemon).unwrap_or(0);
+        let live = available.min(vram_ceiling);
         let mode = crate::provisioning::serving_mode_for_pressure(available);
         // Observability: emit ONLY on a mode TRANSITION so the dynamic scaling is visible
         // without spamming the hot plan tick ([[never-blind-feedback-driven-iteration]]).
@@ -408,8 +415,8 @@ impl ServingDaemonModule {
             }
         }
         HostBudget {
-            usable_bytes: (raw.usable_bytes as f64 * mode.serving_fraction()) as u64,
-            perf_cores: raw.perf_cores,
+            usable_bytes: (live as f64 * mode.serving_fraction()) as u64,
+            perf_cores: perf_cores(),
         }
     }
 
