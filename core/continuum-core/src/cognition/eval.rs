@@ -121,6 +121,12 @@ struct EvalLane {
     served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     placement: PlacementEvidence,
+    /// The governed VRAM reservation this lane holds while it runs (#56/G1). RAII:
+    /// released the moment this struct drops — declared LAST so it releases AFTER
+    /// `lane`'s process is killed (free the physical bytes, THEN the accounting).
+    /// `None` on a CPU-spilled lane or an ungoverned node. Held so a concurrent
+    /// serving tick sees the eval's bytes as taken and won't tier up into them.
+    _vram_lease: Option<crate::resources::LeaseGuard>,
 }
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
@@ -135,6 +141,14 @@ const EVAL_LANE_BASE_PORT: u16 = 58_200;
 /// doing it right. Fill in GPU lanes first"). This keeps us off the exact cliff;
 /// it is NOT a conservative reserve that idles the GPU.
 const GPU_PLACEMENT_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Wall-clock TTL for the eval lane's governed VRAM lease (#56/G1). Generous — a
+/// cold 14B+ load plus a full benchmark run. RAII ([`crate::resources::LeaseGuard`])
+/// releases the bytes the instant the lane drops; this TTL is ONLY the self-healing
+/// backstop that returns the reservation to the board if the whole PROCESS is
+/// SIGKILLed mid-eval without ever running `Drop` — no stranded reservation, nothing
+/// static ([[memory-system-is-fully-dynamic-nothing-static]]).
+const EVAL_LANE_LEASE_TTL_MS: u64 = 30 * 60 * 1000;
 
 /// Where a coexisting eval lane runs + WHY. Rides out on the eval result so a CPU
 /// placement is VISIBLE in the harness (a CPU-pinned lane is ~10× slower; surfacing
@@ -200,17 +214,29 @@ fn decide_eval_lane_placement(
     base: &crate::model_registry::Model,
     served_ctx: u32,
     context: &str,
-) -> PlacementEvidence {
+) -> (PlacementEvidence, Option<crate::resources::LeaseGuard>) {
     // Q4_K_M GGUF file bytes ≈ resident weight bytes; ×1.25 covers KV cache +
     // scratch at the bounded eval ctx. None → couldn't size (treated optimistically
     // as GPU-first below).
     let footprint = crate::model_registry::artifacts::resolve_gguf_for_model(base)
         .and_then(|p| std::fs::metadata(&p).ok())
         .map(|m| (m.len() as f64 * 1.25) as u64);
-    // Live "what's free RIGHT NOW" — already accounts for the resident living lane.
-    // None → no GPU monitor on this node.
-    let free_vram = crate::gpu::monitor::detect().map(|m| m.free_bytes());
-    let (placement, reason) = choose_lane_placement(free_vram, footprint);
+
+    // #56/G1 — ASK THE ONE GOVERNOR FOR THE SLOT, don't read raw free and race.
+    // The eval lane is the top concurrent-OOM source: it stands up a SECOND
+    // llama-server, and it used to place GPU-vs-CPU off `gpu::monitor::detect()`'s
+    // raw free bytes — which count serving's RESERVED-but-not-yet-allocated prefill
+    // buffer as "free", so the eval placed on GPU and serving's next prefill OOM'd.
+    // Now it `acquire`s a real VRAM lease of its footprint from the resource
+    // authority: an atomic check-and-reserve against the GOVERNED available (physical
+    // free minus every other consumer's guarantee, now peak-accurate after G5).
+    //   granted  → GPU, and HOLD the lease so a concurrent serving tick sees these
+    //              bytes as taken and won't tier up into them
+    //   refused  → the governed GPU is full → spill to CPU (VISIBLE, ~10× slower,
+    //              never an OOM) — "pressure, not OOM"
+    //   ungoverned node (no daemon) → the ORIGINAL raw-free probe, unchanged
+    let (placement, reason, lease, free_vram) =
+        acquire_eval_lane_slot(footprint);
     let device = match placement {
         LanePlacement::Gpu => "gpu",
         LanePlacement::Cpu => "cpu",
@@ -239,13 +265,102 @@ fn decide_eval_lane_placement(
         footprint_bytes = ?footprint,
         "eval-lane placement"
     );
-    PlacementEvidence {
-        placement,
-        device: device.to_string(),
-        reason: reason.to_string(),
-        free_vram_bytes: free_vram,
-        footprint_bytes: footprint,
+    (
+        PlacementEvidence {
+            placement,
+            device: device.to_string(),
+            reason: reason.clone(),
+            free_vram_bytes: free_vram,
+            footprint_bytes: footprint,
+        },
+        lease,
+    )
+}
+
+/// Ask the ONE resource authority for this eval lane's VRAM slot (#56/G1) and
+/// decide GPU/CPU from the answer. Returns `(placement, reason, held-lease,
+/// observed-free-vram)`. Split out so the acquire/refuse/ungoverned branching is
+/// unit-testable and `decide_eval_lane_placement` stays about capturing evidence.
+///
+/// - governed + sized → `acquire_guarded`: Ok ⇒ GPU + hold the lease; refused ⇒ CPU
+/// - governed + unsized (GGUF unstatable) → optimistic GPU, ungoverned (rare; the
+///   model likely won't load anyway) — surfaced in the reason
+/// - ungoverned node (no `ResourceDaemon::global()`) → the original raw-free probe
+fn acquire_eval_lane_slot(
+    footprint: Option<u64>,
+) -> (LanePlacement, String, Option<crate::resources::LeaseGuard>, Option<u64>) {
+    use crate::resources::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
+    match (ResourceDaemon::global(), footprint) {
+        (Some(daemon), Some(fp)) => {
+            let req = LeaseRequest {
+                consumer_id: "eval-lane".to_string(),
+                kind: ResourceKind::Vram,
+                bytes: fp,
+                ttl_ms: EVAL_LANE_LEASE_TTL_MS,
+                // A bounded, first-class measurement lane is not yanked mid-eval
+                // ([[first-class-citizens-even-during-benchmarks]]); the RAII guard
+                // returns the bytes the moment the lane finishes. Graceful yield-
+                // under-pressure (the eval negotiating early release) is the piece-3
+                // follow-up, not this slice.
+                reclaim_policy: ReclaimPolicy::Pinned,
+            };
+            match daemon.acquire_guarded(&req) {
+                Ok(guard) => {
+                    let remaining = governed_vram_available();
+                    (
+                        LanePlacement::Gpu,
+                        "GPU-first: governor granted a VRAM lease for this lane".to_string(),
+                        Some(guard),
+                        remaining,
+                    )
+                }
+                Err(LeaseError::InsufficientCapacity { available, .. }) => (
+                    LanePlacement::Cpu,
+                    format!(
+                        "GPU full (governed): available {available}B < lane footprint {fp}B \
+                         — spilling this lane to CPU",
+                    ),
+                    None,
+                    Some(available),
+                ),
+                Err(e) => (
+                    // Any non-capacity lease error is unexpected. Fail SAFE to CPU
+                    // (never place on GPU ungoverned behind the governor's back) and
+                    // say why — a slow CPU lane is recoverable, a blind GPU OOM is not.
+                    LanePlacement::Cpu,
+                    format!("governor lease error ({e:?}) — spilling to CPU rather than placing ungoverned"),
+                    None,
+                    None,
+                ),
+            }
+        }
+        (Some(_), None) => (
+            LanePlacement::Gpu,
+            "GPU-first: lane footprint unknown, offloading to GPU (ungoverned — could not size to lease)"
+                .to_string(),
+            None,
+            None,
+        ),
+        (None, _) => {
+            // Ungoverned node: the ORIGINAL raw-free probe, behavior unchanged.
+            let free_vram = crate::gpu::monitor::detect().map(|m| m.free_bytes());
+            let (placement, reason) = choose_lane_placement(free_vram, footprint);
+            (placement, reason.to_string(), None, free_vram)
+        }
     }
+}
+
+/// The governed VRAM `available` right now (the board's Vram lease-headroom), or
+/// `None` when VRAM is ungoverned. Local read for placement evidence; mirrors the
+/// serving daemon's `governed_vram_ceiling` (same board field, read-only).
+fn governed_vram_available() -> Option<u64> {
+    crate::resources::ResourceDaemon::global().and_then(|d| {
+        d.board()
+            .kinds
+            .iter()
+            .find(|k| k.kind == crate::resources::ResourceKind::Vram)
+            .map(|k| k.available_bytes)
+    })
 }
 
 /// Stand up an EPHEMERAL serving lane on the gene's OWN forged base (with the gene
@@ -310,7 +425,7 @@ async fn spawn_gene_eval_lane(
     //     then pack the GPU unless it genuinely can't hold this lane. EVIDENCED — the
     //     chosen device + headroom ride out on the result so a CPU spill is VISIBLE in
     //     the harness, not a silent slow path.
-    let placement_evidence =
+    let (placement_evidence, vram_lease) =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane gene:{}", gene.name));
 
     // 4. Bring the lane up: forged base + the gene loaded via `--lora` (loadable;
@@ -386,6 +501,7 @@ async fn spawn_gene_eval_lane(
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
         placement: placement_evidence,
+        _vram_lease: vram_lease,
     })
 }
 
@@ -411,7 +527,7 @@ async fn spawn_base_eval_lane(
             ))
         })?;
     let lane_ctx = plan_eval_lane_ctx(&base);
-    let placement_evidence =
+    let (placement_evidence, vram_lease) =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
     let target = ServingTarget {
         model: base.clone(),
@@ -449,6 +565,7 @@ async fn spawn_base_eval_lane(
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
         placement: placement_evidence,
+        _vram_lease: vram_lease,
     })
 }
 
@@ -1036,6 +1153,13 @@ impl CognitionEval {
         // touched (#59). The lane is kept alive in `_eval_lane` for the whole run and
         // dropped — its server killed — when `run` returns. No gene → fork onto her
         // live lane as before (a plain coder number on whatever she's served on).
+        // The governed VRAM reservation for the eval lane (#56/G1). Held for the WHOLE
+        // run so the board sees the eval's bytes as taken; released (RAII) when `run`
+        // returns. Declared BEFORE `_eval_lane` so — locals drop in REVERSE order — it
+        // drops SECOND: the lane's server is killed first (physical VRAM freed), THEN the
+        // accounting reservation is released. Releasing the lease while the process still
+        // holds the bytes would flash them as "available" and re-open the grab race.
+        let mut _eval_vram_lease: Option<crate::resources::LeaseGuard> = None;
         let mut _eval_lane: Option<crate::inference::llama_server::EphemeralServingLane> = None;
         // GPU-first placement evidence for the gene's measurement lane — surfaced on
         // the result so the harness shows which device the A/B was scored on. None in
@@ -1049,8 +1173,10 @@ impl CognitionEval {
                     adapter,
                     served_ctx,
                     placement,
+                    _vram_lease,
                 } = spawn_gene_eval_lane(gene).await?;
                 placement_evidence = Some(placement);
+                _eval_vram_lease = _vram_lease;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1071,8 +1197,10 @@ impl CognitionEval {
                     adapter,
                     served_ctx,
                     placement,
+                    _vram_lease,
                 } = spawn_base_eval_lane(base_id).await?;
                 placement_evidence = Some(placement);
+                _eval_vram_lease = _vram_lease;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)

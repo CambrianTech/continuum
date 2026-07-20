@@ -256,6 +256,27 @@ impl ResourceDaemon {
         Ok(lease)
     }
 
+    /// [`acquire`](Self::acquire), but hand back an RAII [`LeaseGuard`] that
+    /// releases the bytes when it drops. This is the OS-`malloc`/RAII shape for a
+    /// consumer that reserves VRAM/RAM for a BOUNDED job — an ephemeral eval lane,
+    /// a forge run: ask the board for the slot, and if granted, hold the guard for
+    /// the job's lifetime. The bytes return to the board automatically on an early
+    /// `?` return, a normal end, or a panic — no manual `release` to forget. The
+    /// lease TTL is the backstop if the whole PROCESS dies (SIGKILL) without ever
+    /// running the guard's `Drop`. An `Err(InsufficientCapacity)` is the honest
+    /// "no room" answer the caller uses to spill to CPU or defer — never an OOM.
+    pub fn acquire_guarded(
+        self: &std::sync::Arc<Self>,
+        req: &LeaseRequest,
+    ) -> Result<LeaseGuard, LeaseError> {
+        let lease = self.acquire(req)?;
+        Ok(LeaseGuard {
+            daemon: std::sync::Arc::clone(self),
+            lease_id: lease.lease_id,
+            released: false,
+        })
+    }
+
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
         let now = now_ms();
         let mut g = self.governor.lock();
@@ -560,6 +581,64 @@ impl ResourceDaemon {
     }
 }
 
+/// RAII grant handle from [`ResourceDaemon::acquire_guarded`]: the held bytes
+/// return to the board when this drops. The byte-residency companion to a scope
+/// guard — a bounded consumer (eval lane, forge run) holds it for the job and the
+/// reservation is released on any exit path (early `?`, normal end, panic). The
+/// lease's TTL backstops a process death that never runs `Drop` (SIGKILL). Not
+/// `Clone` (one guard per grant); dropping releases exactly once.
+pub struct LeaseGuard {
+    daemon: std::sync::Arc<ResourceDaemon>,
+    lease_id: String,
+    released: bool,
+}
+
+impl LeaseGuard {
+    /// The board-visible id of the held lease — for evidence/telemetry lines.
+    pub fn lease_id(&self) -> &str {
+        &self.lease_id
+    }
+
+    /// The bytes this guard holds, read live off the board (0 if already gone).
+    pub fn bytes(&self) -> u64 {
+        self.daemon
+            .board()
+            .leases
+            .iter()
+            .find(|l| l.lease_id == self.lease_id)
+            .map(|l| l.bytes)
+            .unwrap_or(0)
+    }
+
+    /// Release the reservation early (idempotent). `Drop` calls this if the guard
+    /// is dropped without an explicit release.
+    pub fn release(mut self) {
+        self.release_inner();
+    }
+
+    fn release_inner(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        // Best-effort: a MissingLease (already released / TTL-expired and swept)
+        // is benign — the bytes are already back on the board. Fail-loud in the
+        // log, never panic on a drop path.
+        if let Err(e) = self.daemon.release(&self.lease_id) {
+            clog_warn!(
+                "🧮 LeaseGuard: release of lease '{}' failed (likely already expired): {e:?}",
+                self.lease_id
+            );
+        }
+    }
+}
+
+impl Drop for LeaseGuard {
+    fn drop(&mut self) {
+        self.release_inner();
+    }
+}
+
 #[async_trait]
 impl Daemon for ResourceDaemon {
     type Snapshot = LeaseBoard;
@@ -810,6 +889,59 @@ mod tests {
             ttl_ms,
             reclaim_policy: policy,
         }
+    }
+
+    // what this catches: the RAII lease guard (#56/G1) — `acquire_guarded` reserves
+    // bytes that show on the board, and dropping the guard returns them WITHOUT a
+    // manual `release`. This is the primitive the ephemeral eval lane holds for its
+    // lifetime; if Drop didn't release, every eval would permanently leak its VRAM
+    // reservation off the board and the box would starve after a few benchmarks.
+    // Also pins the honest refusal: a request past the ceiling is InsufficientCapacity,
+    // not an over-grant (the "pressure, not OOM" answer the caller spills to CPU on).
+    #[tokio::test]
+    async fn lease_guard_reserves_then_releases_on_drop() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
+        let daemon = ResourceDaemon::start(
+            vec![src],
+            vec![],
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+        let vram_available = |d: &ResourceDaemon| {
+            d.board()
+                .kinds
+                .iter()
+                .find(|k| k.kind == ResourceKind::Vram)
+                .map(|k| k.available_bytes)
+                .unwrap_or(0)
+        };
+        assert_eq!(vram_available(&daemon), 10_000, "starts with the full ceiling free");
+
+        {
+            let guard = daemon
+                .acquire_guarded(&req("eval-lane", 6_000, 60_000, ReclaimPolicy::Pinned))
+                .expect("6GB fits under the 10GB ceiling");
+            assert_eq!(guard.bytes(), 6_000, "guard reports the held bytes");
+            assert_eq!(daemon.board().leases.len(), 1, "the reservation is on the board");
+            assert_eq!(vram_available(&daemon), 4_000, "available drops by the held bytes");
+
+            // A second ask that exceeds the remaining 4GB is refused HONESTLY (the
+            // caller spills to CPU on exactly this) — never an over-grant.
+            match daemon.acquire_guarded(&req("eval-lane-2", 5_000, 60_000, ReclaimPolicy::Pinned)) {
+                Err(LeaseError::InsufficientCapacity { available, requested, .. }) => {
+                    assert_eq!(available, 4_000);
+                    assert_eq!(requested, 5_000);
+                }
+                Err(e) => panic!("expected InsufficientCapacity, got a different error: {e:?}"),
+                Ok(_) => panic!("expected InsufficientCapacity — the board over-granted past its ceiling"),
+            }
+        } // guard drops here → release
+
+        assert_eq!(daemon.board().leases.len(), 0, "drop released the reservation — no leak");
+        assert_eq!(vram_available(&daemon), 10_000, "the full ceiling is free again after drop");
     }
 
     // Poll the board until a predicate holds or we exhaust attempts (the daemon
