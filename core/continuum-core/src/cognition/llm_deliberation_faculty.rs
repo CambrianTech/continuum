@@ -578,12 +578,12 @@ impl LlmDeliberationFaculty {
                 class = "delib.context.render",
                 persona = %self.persona_name,
                 budget_tokens = 0usize,
-                received = ws.broadcast.iter().filter(|c| c.decision.is_none()).count(),
+                received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
                     .broadcast
                     .iter()
-                    .filter(|c| c.decision.is_none())
+                    .filter(|c| c.decision.is_none() && !c.trailing)
                     .map(|c| c.faculty.as_str())
                     .collect::<Vec<_>>()
                     .join(","),
@@ -591,10 +591,15 @@ impl LlmDeliberationFaculty {
             );
             return String::new();
         }
+        // TRAILING contributions (working-memory proprioception that grows each act)
+        // are excluded HERE — they render as trailing conversation turns nearest
+        // generation ([`messages_within`]), NOT in the system message, so a settle-act
+        // never shifts the cacheable system prefix (#205). Only standing framing and
+        // byte-stable grounding (roster, doctrine, map, recall) belong in `system`.
         let mut ctx: Vec<_> = ws
             .broadcast
             .iter()
-            .filter(|c| c.decision.is_none())
+            .filter(|c| c.decision.is_none() && !c.trailing)
             .collect();
         ctx.sort_by(|a, b| {
             b.salience
@@ -903,6 +908,26 @@ impl LlmDeliberationFaculty {
             &super::perception_facts::FactPolicy::default(),
         ) {
             messages.push(ChatMessage::text("user", fact));
+        }
+
+        // TRAILING proprioception (#205): contributions marked [`Contribution::trailing`]
+        // — the working-memory reasoning trail, the FULL most-recent action result,
+        // dispatched background handles — render as the NEWEST user content, after the
+        // conversation AND the perception facts, so the full result sits nearest
+        // generation (most actionable) and every act's growth appends to the very end
+        // of the token stream. They are deliberately absent from the system message
+        // (see `render_assembled_context_within`), which is what keeps the cacheable
+        // system prefix byte-stable across a settle-act instead of re-prefilling the
+        // whole tail. Broadcast insertion order preserved (one trailing contributor
+        // today: the working-memory faculty).
+        for c in ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && c.trailing)
+        {
+            if !c.content.trim().is_empty() {
+                messages.push(ChatMessage::text("user", c.content.clone()));
+            }
         }
 
         // An empty conversation is a legitimate state (a quiet room on a
@@ -1632,6 +1657,95 @@ mod tests {
                 roster_at < recall_at,
                 "stable framing must serialize before higher-salience volatile recall \
              (roster@{roster_at} should precede recall@{recall_at})\n{block}"
+            );
+        }
+
+        // what this catches: #205 re-prefill. A `trailing` contribution (working-memory
+        // proprioception that grows each act) must render as a trailing conversation
+        // turn nearest generation, NEVER in the system message — so growing it
+        // act-over-act leaves the cacheable system prefix BYTE-IDENTICAL and only the
+        // appended tail re-prefills. Before this the working-memory block lived in the
+        // system message's volatile tail, so each act shifted every conversation token
+        // after it (~4000 tokens / ~30s of pure re-prefill — the eval-lane crawl). The
+        // stable framing stays in the system message; the trailing proprioception does
+        // not. regression for #205
+        #[test]
+        fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
+            use crate::ai::types::MessageContent;
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+                // Ample window so budget pressure never perturbs what renders — this
+                // isolates POSITION (system vs trailing), not truncation.
+                .with_context_window(8192);
+
+            let mut ws = Workspace::new("build me a login form");
+            // Standing framing belongs in the system message.
+            ws.broadcast.push(
+                Contribution::context(
+                    FacultyId::Custom("room-roster".to_string()),
+                    "ROSTER: alice, bob present",
+                    0.5,
+                    "framing",
+                )
+                .session_stable(),
+            );
+            // Act #1: one working-memory trace, marked TRAILING (as the working-memory
+            // faculty now bids it).
+            ws.broadcast.push(
+                Contribution::context(
+                    FacultyId::Custom("working-memory".to_string()),
+                    "Your recent thinking (working memory):\n- I wrote login.html first",
+                    0.7,
+                    "wm",
+                )
+                .trailing(),
+            );
+            let v1 = faculty.prompt_view(&ws);
+
+            // The framing IS in the system message; the trailing proprioception is NOT.
+            assert!(
+                v1.system.contains("ROSTER: alice, bob"),
+                "stable framing must stay in the system prefix:\n{}",
+                v1.system
+            );
+            assert!(
+                !v1.system.contains("I wrote login.html first"),
+                "trailing proprioception must NOT sit in the system prefix (#205):\n{}",
+                v1.system
+            );
+            // …it renders as a trailing user turn.
+            let in_tail = |v: &DeliberationPromptView, needle: &str| {
+                v.messages.iter().any(|m| {
+                    matches!(&m.content, MessageContent::Text(t) if t.contains(needle))
+                })
+            };
+            assert!(
+                in_tail(&v1, "I wrote login.html first"),
+                "trailing proprioception must render as a conversation turn"
+            );
+
+            // Act #2: working memory GROWS (a second trace appends). The faculty re-bids
+            // the grown contribution; the system PREFIX must be byte-identical.
+            ws.broadcast.pop();
+            ws.broadcast.push(
+                Contribution::context(
+                    FacultyId::Custom("working-memory".to_string()),
+                    "Your recent thinking (working memory):\n- I wrote login.html first\n- Then I read it back to verify",
+                    0.7,
+                    "wm",
+                )
+                .trailing(),
+            );
+            let v2 = faculty.prompt_view(&ws);
+
+            assert_eq!(
+                v1.system, v2.system,
+                "growing working memory must NOT mutate the system prefix — that IS the #205 re-prefill"
+            );
+            assert!(
+                in_tail(&v2, "Then I read it back to verify"),
+                "the new act must append to the trailing turn"
             );
         }
 

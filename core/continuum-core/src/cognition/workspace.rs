@@ -276,6 +276,22 @@ pub struct Contribution {
     /// tool envelope) is then attributable to the MODEL vs the HARNESS from a single
     /// record, never inferred by cross-referencing two files by timestamp (#210).
     pub raw_generation: Option<String>,
+    /// **Render nearest generation, as a trailing conversation turn — NOT in the
+    /// system message.** Standing framing and byte-stable grounding (roster, doctrine,
+    /// map, recall) belong in the system prompt where they anchor the cacheable
+    /// KV-prefix. But proprioception that GROWS every act within one settling loop —
+    /// the working-memory action ledger, the full most-recent result — must not live
+    /// in the system message: the system prompt precedes the whole conversation, so
+    /// appending one `[action #n]` line there shifts every conversation token after
+    /// it and the KV prefix breaks at the working-memory block, re-prefilling the
+    /// entire tail (~4000 tokens / ~30s per act — the #205 eval-lane crawl). A
+    /// `trailing` contribution is instead emitted AFTER the conversation turns, so a
+    /// settle-act only appends to the very end of the token stream and only that
+    /// small new tail re-prefills. The append-only formatting the working-memory
+    /// faculty already uses (see its `contribute`) finally pays off, because the
+    /// growing block is now genuinely last. Defaults `false` (system-message context);
+    /// set via [`trailing`](Self::trailing).
+    pub trailing: bool,
 }
 
 impl Contribution {
@@ -297,6 +313,7 @@ impl Contribution {
             stable: false,
             fault: None,
             raw_generation: None,
+            trailing: false,
         }
     }
 
@@ -321,6 +338,7 @@ impl Contribution {
             stable: false,
             fault: None,
             raw_generation: None,
+            trailing: false,
         }
     }
 
@@ -345,6 +363,7 @@ impl Contribution {
             stable: false,
             fault: Some(error),
             raw_generation: None,
+            trailing: false,
         }
     }
 
@@ -373,6 +392,17 @@ impl Contribution {
     /// contributions into the cacheable KV-prefix region (see [`Contribution::stable`]).
     pub fn session_stable(mut self) -> Self {
         self.stable = true;
+        self
+    }
+
+    /// Mark this contribution as **trailing proprioception** — content that GROWS
+    /// each act within one settling loop (the working-memory ledger, the full
+    /// most-recent result) and so must render nearest generation, as a trailing
+    /// conversation turn, NOT in the system message. Builder form so a faculty can do
+    /// `Contribution::context(...).trailing()`. See [`Contribution::trailing`] for
+    /// the KV-prefix rationale (#205).
+    pub fn trailing(mut self) -> Self {
+        self.trailing = true;
         self
     }
 }
