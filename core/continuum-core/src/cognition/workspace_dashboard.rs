@@ -195,6 +195,7 @@ mod tests {
             metrics: None,
             stable: false,
             fault: None,
+            raw_generation: None,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -212,6 +213,7 @@ mod tests {
             }),
             stable: false,
             fault: None,
+            raw_generation: None,
         };
         let trace = WorkspaceTrace {
             world_state: "what's the call?".to_string(),
