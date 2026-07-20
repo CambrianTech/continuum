@@ -93,7 +93,13 @@ If a genuinely new concern is ever needed, it is born via `just scaffold-module`
 - Gate: no thrash (`[[never-thrash-sticky-hysteresis-on-every-lane]]`); a game-quit grows the lane within one authority+serving tick.
 
 **Slice 4 — converge the accounting planes.**
-- Fold `gpu/memory_manager.rs` + the separate `governor/` module into the `resources/` authority so `available` is one number from one ledger (the `[[memory-system-is-fully-dynamic-nothing-static]]` audit's endgame). Then delete the remaining static fractions: `budget = available` directly.
+
+*State after the 2026-07-20 investigation (corrects the original framing):*
+
+- **The decision plane is already one number.** After slices 1b/2, serving+eval read the `ResourceDaemon` board, whose `GpuCapacitySource` reports `ceiling = total − reserve` and `used = total − free`. `used` **physically nets out everything** Bevy/TTS/inference allocate (they're resident, so they lower `free`). There is NO static fraction on the governed budget: `available = ceiling − used`, one number, one ledger. "Make available one number" — the doc's original slice-4 headline — was already achieved where a real budget decision is made.
+- **`gpu/memory_manager.rs` is a *separate* admission ledger, not a second budget on the decision path.** Its per-subsystem "budget" is a **soft** limit (`SubsystemBudget::allocate` returns a bool but the allocation proceeds regardless); the only hard gate is the **dynamic pressure gate** (`new_pressure >= priority.pressure_gate()`), read off the *same* physical `GpuMonitor` the board reads. So the two planes never conflict — they're two views of one physical signal.
+- **DONE (2026-07-20): deleted the static `INFERENCE_BUDGET_PCT 0.75 / TTS 0.10 / RENDERING 0.10` partition.** It was a demand-blind split of `usable` that the soft-limit path already ignored, and it *lied* that inference could never exceed 75% while TTS/rendering sat idle. Every subsystem now draws the full shared `usable` pool; the pressure gate arbitrates contention live. This is the literal "delete the remaining static fractions" endgame, applied to the residual plane. (`gpu/memory_manager.rs`, validated: 101 gpu + 25 commands::gpu + 116 resources tests green.)
+- **REMAINING (task #56, not this doc):** the full fold — Bevy/TTS/inference become *lease consumers* against the one `ResourceDaemon` board (retiring the parallel pressure-gate ledger entirely) — is a multi-subsystem migration that needs the live avatar/TTS path up to validate. It is #56's "peer consumers that LEASE," done as its own arc, not rushed here. The `governor/` module (DVFS/policy) is a policy layer, not a second accounting ledger; it does not gate the board's `available`.
 
 ---
 
