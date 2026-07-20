@@ -1395,13 +1395,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         ApiStyle::OpenAI
     }
 
-    /// True when this adapter was pinned to a dedicated lane it owns (an eval
-    /// fork's `EphemeralServingLane`) via [`with_dedicated_lane`]. Mirrors the
-    /// `!self.dedicated_lane` readiness-guard exemption above: the same lane is the
-    /// window authority too, so the deliberation faculty must NOT clamp this fork's
-    /// prompt to the GLOBAL serving snapshot.
-    fn serves_dedicated_lane(&self) -> bool {
-        self.dedicated_lane
+    /// The live served window of the lane THIS adapter is bound to (the one source
+    /// cognition sizes its prompt to). A DEDICATED lane (`with_dedicated_lane`, an
+    /// eval fork's `EphemeralServingLane`) is its own authority — its window was
+    /// pinned from ITS `/props` at spawn and rides on the binding, so report `None`
+    /// and let that stand; the GLOBAL gateway snapshot describes a DIFFERENT server.
+    /// A shared single-resident gateway reports the gateway's CURRENT served slot
+    /// (the live `/props` truth), tracked up AND down, so a relaunch is followed
+    /// without a clamp. A not-ready / zero snapshot → `None` (the binding window
+    /// stands until the next ready tick). Mirrors the `!self.dedicated_lane`
+    /// readiness-guard exemption above — same lane, same authority.
+    fn live_served_window(&self) -> Option<u32> {
+        if self.dedicated_lane || !self.config.single_resident_model {
+            return None;
+        }
+        let s = crate::inference::llama_server::current_serving();
+        (s.ready && s.served_context_window > 0).then_some(s.served_context_window)
     }
 
     /// Reports the LoRA capability the endpoint DISCOVERED about itself (via the

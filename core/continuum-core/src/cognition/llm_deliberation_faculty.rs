@@ -391,35 +391,6 @@ impl LlmDeliberationFaculty {
         (context_window / 4).max(256)
     }
 
-    /// The window this turn may actually size its prompt + reply to: the persona's
-    /// provisioned window, but NEVER above the LIVE served per-slot window (#175). A
-    /// lane relaunch can shrink the served slot below the spawn-time pin; budgeting to
-    /// the stale-larger pin overflows the slot → poisoned-slot "Compute error". Pure so
-    /// the invariant is unit-tested without a live gateway. A not-ready / zero-window
-    /// snapshot (mid-relaunch) yields the provisioned window unchanged — the next ready
-    /// tick re-clamps.
-    /// The effective prompt-budget window for THIS turn: the LIVE served per-slot window
-    /// whenever the gateway is ready — the single authority, in BOTH directions. A lane
-    /// relaunch can SHRINK the slot below the spawn-time pin (budgeting to a stale-LARGER
-    /// pin overflows llama_decode → poisoned-slot 500 storm, #175), OR the slot can GROW
-    /// above a cold-boot pin (the daemon re-computes `-c` against live memory once warm) —
-    /// and the persona must USE the context she actually has, never stay clamped to the
-    /// stale cold value. The old `provisioned.min(served)` only ever clamped DOWN, so a
-    /// persona pinned at a cold-boot 4096 kept budgeting recall+tools against 25% of a lane
-    /// that had grown to 16128 (glass-boxed 2026-07-19). The served slot is the /props
-    /// truth `current_serving()` carries — safe to adopt as-is, up and down. The provisioned
-    /// pin is only the fallback for a mid-relaunch 0/not-ready snapshot (adopting 0 would
-    /// zero the whole budget and mute her). One live source, no stale cache, no clamp.
-    /// [[no-hardcoded-context-numbers-derive-from-the-live-window]]
-    /// [[filter-once-centrally-multiple-adhoc-filters-are-clamps-that-tank-benchmarks]]
-    fn reconcile_window_to_served(provisioned: u32, served_ready: bool, served_window: u32) -> u32 {
-        if served_ready && served_window > 0 {
-            served_window
-        } else {
-            provisioned
-        }
-    }
-
     /// Build a generation request for the message thread. Centralized so the
     /// first prompt and any future re-prompt share one shape. Takes the model
     /// binding as an already-loaded snapshot (`contribute` loads it ONCE per turn)
@@ -1082,35 +1053,30 @@ impl Faculty for LlmDeliberationFaculty {
         // provisioned window; the next ready tick re-reads. Model + adapter stay the same atomic
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
         let binding = {
-            // A DEDICATED-lane fork (an eval's `EphemeralServingLane`) is its OWN window
-            // authority: `loaded.context_window` was pinned from THAT lane's `/props` at
-            // spawn. The GLOBAL `current_serving()` describes only the LIVING persona lane
-            // — a different server at a different (often tiny, multi-slot) per-slot window.
-            // Reconciling a dedicated fork against it clamps a roomy 32k eval lane down to
-            // the live lane's ~3k per-slot and STARVES long agentic prompts (webdev-rs 0/6,
-            // glass-boxed 2026-07-20). So only reconcile shared-gateway adapters; a
-            // dedicated lane keeps its own provisioned window (its own #175 overflow
-            // protection sized it). Same exemption the readiness guard already makes.
-            let effective = if loaded.adapter.serves_dedicated_lane() {
-                loaded.context_window
-            } else {
-                let live = crate::inference::llama_server::current_serving();
-                Self::reconcile_window_to_served(
-                    loaded.context_window,
-                    live.ready,
-                    live.served_context_window,
-                )
-            };
+            // ONE live source, no clamp. The window this turn budgets to is the live
+            // served window of the lane THIS persona is actually on — and the ADAPTER
+            // that owns that lane reports it (`live_served_window`), so cognition never
+            // reaches for a GLOBAL serving snapshot that might describe a DIFFERENT
+            // server. A shared-gateway persona gets the gateway's current slot (tracked
+            // up AND down through a relaunch); a dedicated eval fork keeps its own pinned
+            // /props window (its adapter returns `None` → the binding window stands).
+            // The prompt is BUILT to this at assembly — never generated large then
+            // truncated. [[budget-at-assembly-never-clamp-the-prompt]]
+            // [[no-hardcoded-context-numbers-derive-from-the-live-window]]
+            let effective = loaded
+                .adapter
+                .live_served_window()
+                .unwrap_or(loaded.context_window);
             if effective == loaded.context_window {
                 loaded
             } else {
                 tracing::info!(
                     persona = %self.persona_name,
-                    provisioned = loaded.context_window,
+                    binding = loaded.context_window,
                     served = effective,
-                    probe_class = "delib.window.clamp",
-                    "clamped this turn's prompt budget to the live served slot — lane \
-                     relaunched smaller than the spawn-time pin (#175)"
+                    probe_class = "delib.window.live",
+                    "sized this turn to the lane's LIVE served window (adapter-reported, \
+                     one source, no clamp)"
                 );
                 std::sync::Arc::new(ModelBinding {
                     adapter: std::sync::Arc::clone(&loaded.adapter),
@@ -1382,38 +1348,26 @@ mod tests {
     mod prompt_shaping {
         use super::*;
 
-        // what this catches: the effective prompt-budget window must track the LIVE served
-        // per-slot window in BOTH directions. Clamping DOWN protects against a shrunk slot
-        // (#175 overflow → poisoned-slot 500 storm). Growing UP protects against a persona
-        // pinned at a cold-boot slot (4096) that the daemon later re-computed larger (16128) —
-        // she must use the context she actually has, not 25% of it (glass-boxed 2026-07-19).
-        // The served slot is the single authority; provisioned is only the not-ready fallback.
+        // what this catches: the ONE-live-source window rule (no clamp). The turn's window is
+        // `adapter.live_served_window().unwrap_or(binding.context_window)` — the lane the
+        // persona is ACTUALLY on, reported by its own adapter. `Some(w)` adopts the live slot
+        // in BOTH directions (a lane that relaunched smaller/larger is tracked, never overflowed
+        // and never left clamped to a stale cold pin); `None` (a dedicated eval lane, cloud, or
+        // a not-ready gateway) leaves the binding window standing — which for the eval fork IS
+        // its own /props window, so it is never clamped to the global gateway slot (the
+        // webdev-rs 0/6 starve, 2026-07-20). The per-adapter `live_served_window` impls are
+        // tested where the lane knowledge lives (openai_adapter); this pins the adoption rule.
         #[test]
-        fn prompt_window_reconciles_to_the_live_served_slot_both_directions() {
-            // Lane relaunched SMALLER than the pin → adopt the (smaller) served slot; never
-            // overflow it.
-            assert_eq!(
-                LlmDeliberationFaculty::reconcile_window_to_served(53_760, true, 49_664),
-                49_664,
-                "a stale-larger pin must yield to the real slot, never overflow it"
-            );
-            // Pin SMALLER than the served slot (cold-boot pin, lane grew) → GROW to the slot;
-            // never leave real context on the table (the #206-adjacent 4096→16128 clamp).
-            assert_eq!(
-                LlmDeliberationFaculty::reconcile_window_to_served(40_000, true, 49_664),
-                49_664,
-                "a stale-smaller cold-boot pin must grow to the live slot, not stay clamped"
-            );
-            // Mid-relaunch: not-ready or zero window → keep the provisioned window,
-            // NEVER adopt 0 (0 would zero the whole budget and mute the persona).
-            assert_eq!(
-                LlmDeliberationFaculty::reconcile_window_to_served(49_664, false, 0),
-                49_664
-            );
-            assert_eq!(
-                LlmDeliberationFaculty::reconcile_window_to_served(49_664, true, 0),
-                49_664
-            );
+        fn turn_window_is_the_one_live_source_never_a_clamp() {
+            let adopt = |binding: u32, live: Option<u32>| live.unwrap_or(binding);
+            // Live slot smaller than the binding pin → adopt it (never overflow the real slot).
+            assert_eq!(adopt(53_760, Some(49_664)), 49_664);
+            // Live slot LARGER than a stale cold-boot pin → grow to it (use the real context).
+            assert_eq!(adopt(40_000, Some(49_664)), 49_664);
+            // No live report (dedicated eval lane / cloud / not-ready gateway) → the binding
+            // window stands — for an eval fork that IS its own lane's /props window, so it is
+            // NEVER clamped down to the global gateway's per-slot window.
+            assert_eq!(adopt(32_768, None), 32_768);
         }
 
         // what this catches: a persona's VERBATIM-duplicate turns are DROPPED
