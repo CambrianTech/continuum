@@ -400,21 +400,29 @@ pub trait AIProviderAdapter: Send + Sync {
         ApiStyle::Local
     }
 
-    /// True when this adapter points at a DEDICATED serving lane it owns (an
-    /// eval fork's `EphemeralServingLane`), not the shared single-resident
-    /// gateway. A dedicated lane is its OWN authority: it was launched with
-    /// exactly this model at a known window and confirmed ready at spawn, so the
-    /// GLOBAL `current_serving()` snapshot — which only describes the living
-    /// persona lane — is the WRONG thing to consult for BOTH the readiness guard
-    /// (`generate_text`) AND the per-turn window reconciliation (the deliberation
-    /// faculty). Default `false` (shared-gateway adapters reconcile to the global
-    /// snapshot as before); the local `/v1` adapter overrides it when a dedicated
-    /// lane is pinned. Without this, an eval fork on a roomy 32k dedicated lane
-    /// gets its prompt clamped to the LIVE lane's tiny per-slot window → long
-    /// agentic prompts (a from-scratch web-dev build) are starved and she can't
-    /// act (glass-boxed 2026-07-20: webdev-rs 0/6 while short coder prompts pass).
-    fn serves_dedicated_lane(&self) -> bool {
-        false
+    /// The LIVE served context window (tokens) of the lane THIS adapter serves on,
+    /// or `None` when the adapter's own binding window is already authoritative.
+    ///
+    /// This is the single source of truth cognition budgets its prompt against — the
+    /// window of the persona's ACTUAL lane, read live, never a global snapshot and
+    /// never a post-hoc clamp ([[budget-at-assembly-never-clamp-the-prompt]],
+    /// [[no-hardcoded-context-numbers-derive-from-the-live-window]]). Each adapter
+    /// knows which lane it is bound to, so each answers for itself:
+    /// - shared single-resident gateway → the gateway's current served slot (the live
+    ///   `/props` truth for the one resident model), so a lane that relaunched
+    ///   smaller/larger is tracked in BOTH directions;
+    /// - a DEDICATED lane an adapter owns (an eval fork's `EphemeralServingLane`) →
+    ///   `None`: its window was pinned from ITS OWN `/props` at spawn and is carried on
+    ///   the binding; the global gateway snapshot describes a DIFFERENT server and must
+    ///   never be consulted for it (glass-boxed 2026-07-20: reading the global slot
+    ///   starved an eval fork's prompt to the live lane's per-slot window → webdev-rs
+    ///   0/6 while short coder prompts passed);
+    /// - cloud / in-process → `None`: the declared binding window stands.
+    ///
+    /// Default `None` — the binding window is authoritative unless an adapter has a
+    /// live lane to report.
+    fn live_served_window(&self) -> Option<u32> {
+        None
     }
 
     /// Get default model for this provider
