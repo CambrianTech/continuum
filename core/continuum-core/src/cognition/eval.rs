@@ -86,22 +86,22 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// the two-phase device-aware sizing rides with #56's `ResourceGovernor`.
 fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
     use crate::cognition::serving_plan::{plan_serving, MIN_SERVE_CTX};
-    use crate::modules::serving_daemon::{footprint_for, host_budget_from, perf_cores, HostBudgetInputs};
+    use crate::modules::serving_daemon::{footprint_for, governed_host_budget};
 
-    let plan = match (crate::gpu::monitor::detect(), footprint_for(base)) {
-        (Some(mon), Some(footprint)) => {
-            // Live free VRAM (net of the resident living lane) against physical VRAM,
-            // scaled by the serving headroom fraction — the coexistence-safe budget.
-            // One measurement stream, no batching → demand_lanes = 1.
-            let budget = host_budget_from(&HostBudgetInputs {
-                available_bytes: mon.free_bytes(),
-                total_vram_bytes: mon.total_bytes(),
-                perf_cores: perf_cores(),
-            });
+    let plan = match (crate::resources::ResourceDaemon::global(), footprint_for(base)) {
+        (Some(daemon), Some(footprint)) => {
+            // Size against the GOVERNED live board — the ONE memory authority's pre-staged
+            // snapshot (Vram available netted over every measured consumer + external
+            // pressure), NOT a raw GPU probe on this spawn path (which over-reports by
+            // serving's reserved-but-unallocated prefill, the G5 phantom bytes). Via the
+            // SAME `plan_serving` the autonomic serving plan uses; no duplicate budget calc,
+            // no un-governed read (MEMORY-AUTHORITY-DAEMON slice 2). One measurement stream,
+            // no batching → demand_lanes = 1.
+            let budget = governed_host_budget(&daemon);
             plan_serving(budget, std::slice::from_ref(&footprint), 1)
         }
-        // CPU-only host or unsizable base: the model's own trained window, floored —
-        // never a fresh invented cap.
+        // No authority (ungoverned host) or unsizable base: the model's own trained window,
+        // floored — never a fresh invented cap.
         _ => None,
     };
     plan.map(|p| p.served_context_window)
