@@ -398,9 +398,23 @@ impl LlmDeliberationFaculty {
     /// the invariant is unit-tested without a live gateway. A not-ready / zero-window
     /// snapshot (mid-relaunch) yields the provisioned window unchanged — the next ready
     /// tick re-clamps.
-    fn clamp_window_to_served(provisioned: u32, served_ready: bool, served_window: u32) -> u32 {
+    /// The effective prompt-budget window for THIS turn: the LIVE served per-slot window
+    /// whenever the gateway is ready — the single authority, in BOTH directions. A lane
+    /// relaunch can SHRINK the slot below the spawn-time pin (budgeting to a stale-LARGER
+    /// pin overflows llama_decode → poisoned-slot 500 storm, #175), OR the slot can GROW
+    /// above a cold-boot pin (the daemon re-computes `-c` against live memory once warm) —
+    /// and the persona must USE the context she actually has, never stay clamped to the
+    /// stale cold value. The old `provisioned.min(served)` only ever clamped DOWN, so a
+    /// persona pinned at a cold-boot 4096 kept budgeting recall+tools against 25% of a lane
+    /// that had grown to 16128 (glass-boxed 2026-07-19). The served slot is the /props
+    /// truth `current_serving()` carries — safe to adopt as-is, up and down. The provisioned
+    /// pin is only the fallback for a mid-relaunch 0/not-ready snapshot (adopting 0 would
+    /// zero the whole budget and mute her). One live source, no stale cache, no clamp.
+    /// [[no-hardcoded-context-numbers-derive-from-the-live-window]]
+    /// [[filter-once-centrally-multiple-adhoc-filters-are-clamps-that-tank-benchmarks]]
+    fn reconcile_window_to_served(provisioned: u32, served_ready: bool, served_window: u32) -> u32 {
         if served_ready && served_window > 0 {
-            provisioned.min(served_window)
+            served_window
         } else {
             provisioned
         }
@@ -1020,21 +1034,22 @@ impl Faculty for LlmDeliberationFaculty {
         // `.await` below; a swap that happens after this load takes effect on the
         // NEXT turn. See [`ModelBinding`].
         let loaded = self.binding.load_full();
-        // #175: never size this turn's {prompt + reply reserve} above the LIVE served
-        // per-slot window. A lane relaunch can shrink the slot BELOW this persona's
-        // spawn-time pin (the daemon re-computes `-c` against live memory and the
-        // per-slot window drifts), and a prompt over the slot overflows `llama_decode`
-        // → 500 "Compute error" that POISONS the slot for EVERY later request (the
-        // wedge storm this whole task chased). Both the prompt budget (`prompt_view`)
+        // Size this turn's {prompt + reply reserve} to the LIVE served per-slot window —
+        // in BOTH directions. If the lane relaunched SMALLER than this persona's spawn-time
+        // pin, a prompt over the slot overflows `llama_decode` → 500 "Compute error" that
+        // POISONS the slot for every later request (#175, the wedge storm). If the lane grew
+        // LARGER (a cold-boot 4096 slot that the daemon re-computed to 16128 once warm), she
+        // must budget against what she actually has, not stay clamped at the stale cold value
+        // (glass-boxed 2026-07-19: recall + tools squeezed into 25% of the real window; it was
+        // even mis-triggering the tool-surface shrink). Both the prompt budget (`prompt_view`)
         // and the completion reserve (`build_request`) derive from THIS one
-        // `binding.context_window`, so clamping here keeps them in agreement AND makes
-        // overflow impossible by construction — the fix for the ROOT, not a restart of
-        // the symptom. A 0/not-ready snapshot (mid-relaunch) leaves the provisioned
-        // window; the next ready tick re-clamps. Model + adapter stay the same atomic
+        // `binding.context_window`, so reconciling here keeps them in agreement AND makes
+        // overflow impossible by construction. A 0/not-ready snapshot (mid-relaunch) leaves the
+        // provisioned window; the next ready tick re-reads. Model + adapter stay the same atomic
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
         let binding = {
             let live = crate::inference::llama_server::current_serving();
-            let effective = Self::clamp_window_to_served(
+            let effective = Self::reconcile_window_to_served(
                 loaded.context_window,
                 live.ready,
                 live.served_context_window,
@@ -1320,33 +1335,36 @@ mod tests {
     mod prompt_shaping {
         use super::*;
 
-        // what this catches (#175 root fix): a persona's prompt+reply must NEVER be
-        // budgeted above the LIVE served per-slot window. A lane relaunch can shrink
-        // the slot below the spawn-time pin; budgeting to the stale-larger pin
-        // overflows llama_decode → poisoned-slot "Compute error" storm. The clamp is
-        // the invariant: min-to-served when a real window is known, provisioned
-        // otherwise (a mid-relaunch 0/not-ready snapshot must never clamp to 0).
+        // what this catches: the effective prompt-budget window must track the LIVE served
+        // per-slot window in BOTH directions. Clamping DOWN protects against a shrunk slot
+        // (#175 overflow → poisoned-slot 500 storm). Growing UP protects against a persona
+        // pinned at a cold-boot slot (4096) that the daemon later re-computed larger (16128) —
+        // she must use the context she actually has, not 25% of it (glass-boxed 2026-07-19).
+        // The served slot is the single authority; provisioned is only the not-ready fallback.
         #[test]
-        fn prompt_window_is_clamped_to_the_live_served_slot() {
-            // Lane relaunched SMALLER than the pin → clamp DOWN to the served slot.
+        fn prompt_window_reconciles_to_the_live_served_slot_both_directions() {
+            // Lane relaunched SMALLER than the pin → adopt the (smaller) served slot; never
+            // overflow it.
             assert_eq!(
-                LlmDeliberationFaculty::clamp_window_to_served(53_760, true, 49_664),
+                LlmDeliberationFaculty::reconcile_window_to_served(53_760, true, 49_664),
                 49_664,
-                "a stale-larger pin must be clamped to the real slot, never overflow it"
+                "a stale-larger pin must yield to the real slot, never overflow it"
             );
-            // Pin already fits the slot → unchanged (never grow past what's served).
+            // Pin SMALLER than the served slot (cold-boot pin, lane grew) → GROW to the slot;
+            // never leave real context on the table (the #206-adjacent 4096→16128 clamp).
             assert_eq!(
-                LlmDeliberationFaculty::clamp_window_to_served(40_000, true, 49_664),
-                40_000
+                LlmDeliberationFaculty::reconcile_window_to_served(40_000, true, 49_664),
+                49_664,
+                "a stale-smaller cold-boot pin must grow to the live slot, not stay clamped"
             );
             // Mid-relaunch: not-ready or zero window → keep the provisioned window,
-            // NEVER clamp to 0 (0 would zero the whole budget and mute the persona).
+            // NEVER adopt 0 (0 would zero the whole budget and mute the persona).
             assert_eq!(
-                LlmDeliberationFaculty::clamp_window_to_served(49_664, false, 0),
+                LlmDeliberationFaculty::reconcile_window_to_served(49_664, false, 0),
                 49_664
             );
             assert_eq!(
-                LlmDeliberationFaculty::clamp_window_to_served(49_664, true, 0),
+                LlmDeliberationFaculty::reconcile_window_to_served(49_664, true, 0),
                 49_664
             );
         }
