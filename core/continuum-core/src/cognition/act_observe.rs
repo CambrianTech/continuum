@@ -335,6 +335,35 @@ pub async fn apply_act(
     // the earlier "I should ANSWER the question now" phrasing being obeyed literally:
     // she settled with a diagnosis instead of trying the repair edit). Context
     // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]].
+    // ESCALATING loop-awareness for the SHORT-CIRCUIT paths, mirroring the executed
+    // path's `max_repeat` warning (line ~546). A satisfied/redundant call is demoted
+    // (never re-executed) and previously recorded a byte-IDENTICAL static nudge every
+    // tick. `record_fact` doesn't dedup but the recency window is capacity-bounded, so
+    // identical-nudge spam EVICTS the useful result receipt and leaves a window of clones
+    // — and off unchanged perception a greedy (temp-0) model re-emits the identical call
+    // FOREVER (#206, glass-boxed: `commands/help(code/write)` ×54, the "already ran" nudge
+    // fired 104× and never broke the loop). Bumping the DURABLE fingerprint counter here
+    // and embedding the count makes each demotion DISTINCT and monotonically climbing — the
+    // perception genuinely shifts every tick, which is what lets cognition move on. Only the
+    // short-circuit branches (which early-return, never reaching line ~546) call this, so
+    // the executed path's own bump is never double-counted. Honest proprioception, never a
+    // steer toward a specific next act ([[no-hardcoded-heuristics-to-steer-cognition]],
+    // [[repetition-brick-fires-but-does-not-break-the-loop]]).
+    let bump_repeat = || {
+        calls
+            .iter()
+            .map(|c| {
+                let fp = format!(
+                    "{}|{}",
+                    c.name,
+                    serde_json::to_string(&c.input).unwrap_or_default()
+                );
+                body.working_memory.note_action_fingerprint(&fp)
+            })
+            .max()
+            .unwrap_or(0)
+    };
+
     let recent = body.working_memory.recent();
     if all_calls_already_satisfied(&recent, calls) {
         let names = calls
@@ -345,11 +374,12 @@ pub async fn apply_act(
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let n = bump_repeat();
         let nudge = format!(
-            "I already ran {names} this turn — the result is in my working memory above, \
-             and re-running the identical call returns nothing new. Whatever I do next \
-             must be something DIFFERENT: a different action, or an answer built from \
-             what I already have."
+            "I have now issued {names} {n} times this turn — the result is already in my \
+             working memory above, and re-running the identical call returns nothing new. \
+             Repeating it will not progress; whatever I do next must be something DIFFERENT: \
+             a different action, or an answer built from what I already have."
         );
         body.working_memory.record_fact(&nudge);
         crate::probe!(
@@ -379,11 +409,13 @@ pub async fn apply_act(
             .map(|c| c.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
+        let n = bump_repeat();
         let nudge = format!(
-            "I already surveyed this concern — my tool menu and the workspace map are \
-             in my working memory above, and running {names} again returns the same \
-             survey and changes nothing. My next move must be something DIFFERENT: read \
-             a SPECIFIC file, make an edit, run something, or answer from what I have."
+            "I have now run orientation ({names}) {n} times this concern — my tool menu and \
+             the workspace map are already in my working memory above, and running it again \
+             returns the same survey and changes nothing. My next move must be something \
+             DIFFERENT: read a SPECIFIC file, make an edit, run something, or answer from \
+             what I have."
         );
         body.working_memory.record_fact(&nudge);
         crate::probe!(
@@ -1882,13 +1914,34 @@ mod tests {
             .await
             .expect("short-circuit still returns Some — it counts as an act, honestly");
         assert!(
-            second.contains("already ran"),
-            "records explicit answer-now proprioception instead of another result: {second}"
+            second.contains("issued") && second.contains("times"),
+            "records explicit repeat-count proprioception instead of another result: {second}"
         );
         assert_eq!(
             exec.results.lock().unwrap().len(),
             1,
             "the identical call NEVER reached the hand a second time (queue undrained)"
+        );
+
+        // #206 ESCALATION: a THIRD identical call must produce a DISTINCT, higher count
+        // than the second — the proprioception climbs rather than repeating byte-identical
+        // text. Without this, static-nudge spam evicts the useful receipt from the bounded
+        // recency window and a greedy (temp-0) model re-emits the identical call forever.
+        let third = apply_act(&cycle, &[tool_call()], "check the math", room)
+            .await
+            .expect("still short-circuits");
+        assert_ne!(
+            second, third,
+            "the repeat proprioception must ESCALATE (distinct text), not repeat verbatim"
+        );
+        assert!(
+            third.contains("3 times"),
+            "the third identical call perceives itself as the 3rd, breaking the fixed point: {third}"
+        );
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "still never re-executed"
         );
     }
 
@@ -2002,8 +2055,8 @@ mod tests {
             .await
             .expect("demotion still returns Some — it counts as an act, honestly");
         assert!(
-            second.contains("already surveyed"),
-            "records redundant-orientation proprioception, not another catalog: {second}"
+            second.contains("orientation") && second.contains("times"),
+            "records escalating redundant-orientation proprioception, not another catalog: {second}"
         );
         assert_eq!(
             exec.results.lock().unwrap().len(),
