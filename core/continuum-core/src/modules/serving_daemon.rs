@@ -336,16 +336,44 @@ impl ServingDaemonModule {
     /// estimator that feeds the serving plan, so there is ONE footprint authority
     /// on the box, not two.
     fn register_as_consumer(&self) {
+        // The live servable-model candidates, sized to whatever shape serving is running,
+        // so the tier-down ranker re-homes only to a model the autonomic plan itself could
+        // serve (same suppress/pin/eligibility filter → one catalog, never two). Reads the
+        // catalog snapshot + suppress/pin watches at reclaim time; no lock held across the
+        // async handshake (it returns an owned Vec).
+        let catalog = self.catalog.clone();
+        let suppressed_rx = self.suppressed.subscribe();
+        let pinned_rx = self.pinned.subscribe();
+        let candidates: crate::modules::serving_tier_down::TierCandidatesFn =
+            Arc::new(move |window: u32, lanes: u32| {
+                let snap = catalog.snapshot();
+                let sup = suppressed_rx.borrow();
+                let pin = pinned_rx.borrow();
+                servable_candidates(&snap, &**sup, &pin)
+                    .into_iter()
+                    .map(|f| {
+                        let resident_bytes = f.resident_bytes(window, lanes);
+                        crate::modules::serving_tier_down::TierCandidate {
+                            model_id: f.model_id,
+                            capability_rank: f.capability_rank,
+                            resident_bytes,
+                        }
+                    })
+                    .collect()
+            });
         let consumer = ServingConsumer::new(
             self.subscribe_serving(),
             self.suppress_sender(),
             self.pin_sender(),
             serving_footprint_fn(self.catalog.clone()),
-            // No tier-down selection intelligence is authored yet, so the only
-            // lever is a full unload. `DeclineTierDown` is that honest current
-            // capability — swapping in a catalog/persona/ML policy is a one-line
-            // change here, with zero change to the consumer's handshake (#79).
-            Arc::new(crate::modules::serving_tier_down::DeclineTierDown),
+            // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
+            // shrink to the most-capable smaller model that frees enough — "take our own
+            // capacity down to yield, keep answering" — instead of the whole-lease dark.
+            // The autonomic plan grows back up when pressure clears. Falls through to a
+            // full unload only when no smaller model frees enough.
+            Arc::new(crate::modules::serving_tier_down::CatalogTierDownPolicy::new(
+                candidates,
+            )),
         );
         self.resource_daemon.add_consumer(Arc::new(consumer));
     }
@@ -396,26 +424,7 @@ impl ServingDaemonModule {
     fn live_candidates(&self) -> Vec<ModelFootprint> {
         let suppressed = self.suppressed.borrow();
         let pinned = self.pinned.borrow();
-        let snapshot = self.catalog.snapshot();
-        // Benchmark/opponent rows carry Ready GGUFs but are NOT persona-servable:
-        // without this gate the autonomic tick picks "largest Ready artifact" and
-        // conscripted Hermes-4.3 as the citizens' model twice (#142). An explicit
-        // pin BYPASSES eligibility — pinning IS operator consent (how the matrix
-        // serves an opponent on purpose); the autonomic path never is.
-        let ineligible: HashSet<String> = snapshot
-            .models
-            .values()
-            .filter(|live| !live.model.persona_serving_eligible)
-            .map(|live| live.model.id.clone())
-            .collect();
-        candidates_from_snapshot(&snapshot)
-            .into_iter()
-            .filter(|c| !suppressed.contains(&c.model_id))
-            .filter(|c| match pinned.as_ref() {
-                Some(p) => p == &c.model_id,
-                None => !ineligible.contains(&c.model_id),
-            })
-            .collect()
+        servable_candidates(&self.catalog.snapshot(), &**suppressed, &pinned)
     }
 
     /// A clone of the suppress-set writer, for the `serving/unload` ·
@@ -1005,6 +1014,33 @@ fn footprint_from_parts(
 /// actually serve right now. The footprint resolves through the live model's
 /// `gguf_local_path` (which `resolve_gguf` prefers when present), so the bytes
 /// counted are the bytes that will be loaded.
+/// The servable candidate set for THIS host right now: on-disk models, minus the
+/// operator-suppressed set, minus the persona-ineligible benchmark/opponent rows (a
+/// PIN bypasses eligibility — pinning IS operator consent, #142). The ONE definition of
+/// "what the autonomic plan may serve," shared by [`ServingDaemonModule::live_candidates`]
+/// (the plan) and the tier-down ranker (#56, so a shrink can only re-home to a model the
+/// plan would itself have picked — never a divergent second catalog).
+fn servable_candidates(
+    snapshot: &CatalogSnapshot,
+    suppressed: &HashSet<String>,
+    pinned: &Option<String>,
+) -> Vec<ModelFootprint> {
+    let ineligible: HashSet<String> = snapshot
+        .models
+        .values()
+        .filter(|live| !live.model.persona_serving_eligible)
+        .map(|live| live.model.id.clone())
+        .collect();
+    candidates_from_snapshot(snapshot)
+        .into_iter()
+        .filter(|c| !suppressed.contains(&c.model_id))
+        .filter(|c| match pinned.as_ref() {
+            Some(p) => p == &c.model_id,
+            None => !ineligible.contains(&c.model_id),
+        })
+        .collect()
+}
+
 pub fn candidates_from_snapshot(snapshot: &CatalogSnapshot) -> Vec<ModelFootprint> {
     snapshot
         .models
