@@ -287,6 +287,98 @@ pub fn prepare_base_for_mlx(
     Ok(changes)
 }
 
+/// Generous wall-clock TTL for the training job's governed VRAM/UMA lease (#56/G2).
+/// A LoRA forge can run many minutes to hours; the RAII guard releases the moment
+/// `run_mlx_train` returns (the child has exited by then). This TTL is ONLY the
+/// self-healing backstop that returns the reservation to the board if the whole
+/// PROCESS is SIGKILLed mid-train without running `Drop`.
+const FORGE_TRAIN_LEASE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// Multiplier on the base weight bytes to estimate a LoRA/DoRA training job's peak
+/// UMA residency: the base is loaded resident, plus optimizer moments for the LoRA
+/// params (small) and forward/backward activations. Coarse-but-honest, the sibling
+/// of the eval lane's ×1.25 — over-estimating spills the job to "wait", never OOM.
+const TRAIN_FOOTPRINT_FACTOR: f64 = 1.3;
+
+/// Estimate a training job's peak UMA footprint from the base model on disk: sum of
+/// the base dir's `*.safetensors` bytes (≈ resident weight bytes) × [`TRAIN_FOOTPRINT_FACTOR`].
+/// `None` when the dir has no safetensors to size against (an un-normalized or empty
+/// base) — the caller treats that as "can't size, proceed ungoverned" rather than
+/// blocking a job whose cost is unknown.
+fn estimate_train_footprint_bytes(base_model_dir: &std::path::Path) -> Option<u64> {
+    let mut weight_bytes = 0u64;
+    let entries = std::fs::read_dir(base_model_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("safetensors") {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                weight_bytes = weight_bytes.saturating_add(meta.len());
+            }
+        }
+    }
+    if weight_bytes == 0 {
+        return None;
+    }
+    Some((weight_bytes as f64 * TRAIN_FOOTPRINT_FACTOR) as u64)
+}
+
+/// Ask the ONE resource authority for a training job's VRAM/UMA slot (#56/G2), the
+/// forge sibling of the eval lane's `acquire_eval_lane_slot`. A `mlx_lm.lora` job
+/// loads the FULL base into unified memory — on a UMA box that is VRAM contention
+/// with the live persona lanes, and it used to launch with ZERO governor check
+/// (invisible pressure that could OOM a live video-chat mid-forge). Now it leases:
+///   granted  → hold the guard for the whole run so serving sees the bytes as taken
+///   refused  → fail LOUD with the governed numbers (a background forge must not OOM
+///              the machine — retry when pressure clears; the L3 flywheel re-attempts)
+///   unsized / ungoverned → proceed unleased (can't size, or no daemon on this node)
+fn acquire_train_slot(
+    base_model_dir: &std::path::Path,
+) -> Result<Option<crate::resources::LeaseGuard>, String> {
+    use crate::resources::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
+    let Some(daemon) = ResourceDaemon::global() else {
+        return Ok(None); // ungoverned node — proceed unleased, behavior unchanged
+    };
+    let Some(footprint) = estimate_train_footprint_bytes(base_model_dir) else {
+        crate::probe!(
+            class = "forge.mlx_train.govern",
+            base = %base_model_dir.display(),
+            "could not size training footprint (no safetensors) — proceeding UNGOVERNED"
+        );
+        return Ok(None);
+    };
+    let req = LeaseRequest {
+        consumer_id: "forge-train".to_string(),
+        kind: ResourceKind::Vram,
+        bytes: footprint,
+        ttl_ms: FORGE_TRAIN_LEASE_TTL_MS,
+        // A bare lease with no preemption handler must stay Pinned: the RAII guard is
+        // the real release, so the board must never free the accounting while the
+        // subprocess still holds the UMA. Real yield-under-pressure (checkpoint + pause
+        // the forge when live serving needs the bytes) is the piece-3 follow-up.
+        reclaim_policy: ReclaimPolicy::Pinned,
+    };
+    match daemon.acquire_guarded(&req) {
+        Ok(guard) => {
+            crate::probe!(
+                class = "forge.mlx_train.govern",
+                footprint_bytes = footprint,
+                "governor granted a training lease"
+            );
+            Ok(Some(guard))
+        }
+        Err(LeaseError::InsufficientCapacity { available, requested, .. }) => Err(format!(
+            "governor refused the training lease: needs {requested}B of VRAM/UMA but only \
+             {available}B is available (live serving + other consumers hold the rest). \
+             Refusing to launch mlx_lm.lora rather than OOM the machine mid-forge — free \
+             VRAM (quit a game, let a benchmark lane finish) and retry."
+        )),
+        Err(e) => Err(format!(
+            "governor lease error acquiring a training slot ({e:?}) — refusing to launch \
+             ungoverned rather than risk an OOM"
+        )),
+    }
+}
+
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,
 /// normalize the base for mlx ([`prepare_base_for_mlx`]), write the LoRA config,
 /// spawn `mlx_lm.lora`, and verify the adapter landed. Fail-loud on every
@@ -359,6 +451,14 @@ pub fn run_mlx_train(
     let config_path = spec.adapter_out.join("mlx_train_config.yaml");
     std::fs::write(&config_path, build_lora_config_yaml(spec))
         .map_err(|e| format!("write MLX train config {}: {e}", config_path.display()))?;
+
+    // --- ask the ONE governor for this job's VRAM/UMA slot BEFORE spawning (#56/G2) ---
+    // A `mlx_lm.lora` job loads the full base into unified memory; on a UMA box that is
+    // real contention with the live persona lanes. Held for the WHOLE run (dropped when
+    // this fn returns, AFTER `child.wait()` below — free the process, then the accounting)
+    // so a concurrent serving tick sees the training bytes as taken and won't tier up into
+    // them. Fails LOUD if the governor can't fit it — never OOM a live video-chat mid-forge.
+    let _train_lease = acquire_train_slot(&spec.base_model_dir)?;
 
     // --- spawn the trainer, STREAMING stdout for live progress ---
     // mlx_lm.lora prints `Iter N: Train loss X, …` lines as it trains; we parse them
@@ -455,6 +555,30 @@ mod tests {
         );
         assert_eq!(parse_mlx_progress("Starting training..."), None);
         assert_eq!(parse_mlx_progress("Iter oops: Train loss 1.0"), None);
+    }
+
+    // what this catches: #56/G2 — a training job's governed footprint is sized from the
+    // base's on-disk safetensors × the activation/optimizer factor, so the governor can
+    // refuse a forge that wouldn't fit alongside live serving instead of OOMing the box.
+    // A dir with no safetensors sizes to None → "can't size, proceed ungoverned" (never
+    // block a job whose cost is unknown); non-safetensors files are ignored.
+    #[test]
+    fn train_footprint_sums_safetensors_times_factor() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("tmp");
+        // 1000 + 3000 bytes of "weights" across two shards, plus noise the sizer ignores.
+        let mut a = std::fs::File::create(dir.path().join("model-00001.safetensors")).unwrap();
+        a.write_all(&vec![0u8; 1000]).unwrap();
+        let mut b = std::fs::File::create(dir.path().join("model-00002.safetensors")).unwrap();
+        b.write_all(&vec![0u8; 3000]).unwrap();
+        std::fs::write(dir.path().join("config.json"), b"{}").unwrap(); // ignored
+        let est = estimate_train_footprint_bytes(dir.path()).expect("sizes");
+        assert_eq!(est, (4000.0 * TRAIN_FOOTPRINT_FACTOR) as u64, "sum(safetensors) × factor");
+
+        // No safetensors → None (can't size → proceed ungoverned, never block).
+        let empty = tempfile::tempdir().unwrap();
+        std::fs::write(empty.path().join("config.json"), b"{}").unwrap();
+        assert_eq!(estimate_train_footprint_bytes(empty.path()), None);
     }
 
     fn spec() -> MlxTrainSpec {
