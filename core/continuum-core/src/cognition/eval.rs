@@ -2060,6 +2060,28 @@ fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass:
     );
 }
 
+/// Remove every entry INSIDE `root` (files + subdirs) but keep `root` itself, so a persona
+/// whose hands are rooted there keeps a valid, EMPTY working directory. Used by the eval to
+/// give each from-scratch build task a clean slate (#209): a correct render on task N must
+/// never be graded against task N-1's leftover files. A missing root is not an error (nothing
+/// to clean); a genuine IO failure propagates so the caller can warn without aborting the run.
+fn clean_dir_contents(root: &str) -> std::io::Result<()> {
+    let p = std::path::Path::new(root);
+    if !p.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(p)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     isolation: &crate::cognition::workspace::EvalIsolation,
@@ -2092,6 +2114,33 @@ async fn run_pass(
     cycle.reset_working_memory();
     isolation.rewind();
     for t in tasks {
+        // #209 — per-task CLEAN WORKSPACE for from-scratch build gyms. A from-scratch build
+        // task (ui_checks present, and NO setup/dod/solution that establishes or depends on
+        // prior repo state) is graded by observing the artifact the persona just wrote into
+        // the pinned workspace_root. If the PREVIOUS task's files still sit there, this task's
+        // grade observes a stale/foreign artifact — the exact cross-task contamination that
+        // scored webdev 0/6 while she built a correct page each time (harness noise, not a
+        // capability miss). Wipe the pinned root's CONTENTS (not the dir itself — her hands are
+        // rooted at it) so every task grades EXACTLY the artifact it produced. Only from-scratch
+        // build tasks are cleaned; setup/dod/solution tasks OWN their state and are never wiped.
+        // No pinned root (hands on the core cwd) → nothing to clean.
+        let from_scratch_build = !t.ui_checks.is_empty()
+            && t.setup_shell.is_none()
+            && t.dod_shell.is_none()
+            && t.solution_file.is_none();
+        if from_scratch_build {
+            if let Some(root) = workspace_root {
+                if let Err(e) = clean_dir_contents(root) {
+                    tracing::warn!(
+                        probe_class = "eval.task.clean_workspace",
+                        root = root,
+                        error = %e,
+                        "failed to clean the pinned workspace before a from-scratch build task \
+                         — grading may observe a stale artifact (#209)"
+                    );
+                }
+            }
+        }
         // Task-state SETUP (gym/mine tasks re-break their checkout so runs are
         // repeatable). A failed setup is a NAMED infra grade — the persona is
         // never examined against a workspace in an unknown state.
