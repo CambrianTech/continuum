@@ -216,6 +216,7 @@ fn emit_teach_progress(done: usize, total: usize, task_id: &str, solved: bool, w
         bus.publish_async_only(
             "genome:teach:progress",
             serde_json::json!({
+                "phase": "task",
                 "done": done,
                 "total": total,
                 "task": task_id,
@@ -230,6 +231,27 @@ fn emit_teach_progress(done: usize, total: usize, task_id: &str, solved: bool, w
         done, total, task = task_id, solved, with_correction,
         "teach task graded"
     );
+}
+
+/// A lifecycle MILESTONE event — `started` (carries `total`, the progress bar's
+/// denominator, before any work) and `completed` (the terminal fill). Every milestone
+/// emits an event so a UI can render a real progress bar: `started` sizes it, the
+/// per-task `emit_teach_progress` increments it, `completed` closes it. Same seam as
+/// the per-task events. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
+fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only(
+            "genome:teach:progress",
+            serde_json::json!({
+                "phase": phase,
+                "done": done,
+                "total": total,
+                "solved": solved,
+                "atMs": crate::persona::trace::now_ms(),
+            }),
+        );
+    }
+    tracing::info!(target: "genome::teach", phase, done, total, solved, "teach milestone");
 }
 
 /// Convert a validated trajectory (the full write→error→fix→pass turn sequence) into
@@ -348,6 +370,10 @@ pub async fn synthesize_remediation(
         ));
     }
 
+    // MILESTONE: started — carries the denominator so a progress bar can size itself
+    // before the first (slow) generation.
+    emit_teach_milestone("started", 0, tasks.len(), 0);
+
     for task in tasks {
         // Only test-graded tasks can be validated → become corpus. A task with no
         // `test` is dropped with a named reason, never silently passed.
@@ -431,6 +457,9 @@ pub async fn synthesize_remediation(
         // Stream progress so the run is watchable live (events, not black-box wait).
         emit_teach_progress(outcomes.len(), tasks.len(), &task.id, solved, with_correction);
     }
+
+    // MILESTONE: completed — the terminal fill, so the bar closes even on a 0-yield run.
+    emit_teach_milestone("completed", outcomes.len(), tasks.len(), examples.len());
 
     Ok(RemediationCorpus {
         examples,
