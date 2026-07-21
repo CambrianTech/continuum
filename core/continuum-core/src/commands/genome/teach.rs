@@ -67,17 +67,6 @@ const DEFAULT_DATASET_NAME: &str = "coder-reflex-teacher";
 /// default — one place decides how many fixes a lesson gets, command or loop.
 pub(crate) const DEFAULT_MAX_FIX_ITERS: u32 = 4;
 
-/// Hard ceiling on ONE teacher generation. A healthy coder generation on the local
-/// served lane runs well under this even at low tok/s; exceeding it means the lane
-/// wedged (mid-reconcile, torn down under the request, or 500'd) and the HTTP call
-/// would otherwise HANG THE WHOLE JOB FOREVER — the 2026-07-21 stall: teach launched
-/// while serving was relaunching the live lane, the first `generate_text` hit a
-/// not-ready lane, and the job parked at 0% with no dataset. A timeout turns an
-/// infinite hang into a per-task failure (recorded, the run continues), and
-/// `await_ready_serving` before the loop makes the hit rare in the first place.
-/// [[benchmark-jitter-was-eval-lane-race-not-model-nondeterminism]]
-const TEACHER_GEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-
 /// Teacher decoding temperature default — low, because we want correct code, and a
 /// fix turn should converge on the error, not wander. `pub(crate)` for the same
 /// single-source reason as [`DEFAULT_MAX_FIX_ITERS`].
@@ -467,27 +456,17 @@ pub async fn synthesize_remediation(
         let mut last_error: Option<String> = None;
         let mut solved = false;
 
-        // First generation + up to `max_fix_iters` corrections.
+        // First generation + up to `max_fix_iters` corrections. Readiness is an EVENT
+        // (await_ready_serving above waits on the serving watch — a push, not a poll), so
+        // the generation runs against a lane that IS up; a dead lane surfaces as an adapter
+        // error (a push from the transport), not an indefinite hang. No wall-clock timeout
+        // — a timeout is a guess about health, and guessing is the smell we're removing.
+        // [[command-async-shape-prefer-stream-never-block]]
         for _ in 0..=max_fix_iters {
-            // TIMEOUT the generation — a wedged lane must drop THIS task, not hang the
-            // whole job (2026-07-21 stall). On timeout/error, record the reason and move
-            // on; the run stays productive and the shortfall is diagnosable.
-            let answer = match tokio::time::timeout(
-                TEACHER_GEN_TIMEOUT,
-                teacher_generate(teacher_model, trajectory.clone(), temperature),
-            )
-            .await
-            {
-                Ok(Ok(a)) => a,
-                Ok(Err(e)) => {
+            let answer = match teacher_generate(teacher_model, trajectory.clone(), temperature).await {
+                Ok(a) => a,
+                Err(e) => {
                     last_error = Some(format!("teacher generation failed: {e}"));
-                    break;
-                }
-                Err(_) => {
-                    last_error = Some(format!(
-                        "teacher generation exceeded {}s — the serving lane wedged; task dropped",
-                        TEACHER_GEN_TIMEOUT.as_secs()
-                    ));
                     break;
                 }
             };
