@@ -1274,8 +1274,41 @@ impl CognitionEval {
                 // fall back to the co-tenant SHARE hold — degrade, never OOM or hard-fail.
                 let active = crate::inference::llama_server::current_serving().active_model;
                 let dedicated = match &active {
-                    Some(base) => spawn_base_eval_lane(base).await.ok(),
-                    None => None,
+                    Some(base) => match spawn_base_eval_lane(base).await {
+                        Ok(lane) => Some(lane),
+                        // NEVER swallow the spawn failure — a silent `.ok()` degrade to the
+                        // co-tenant SHARE path is a fail-loud violation ([[fallbacks-are-illegal-fail-loud]])
+                        // AND it hides the exact reason the isolated lane didn't come up. The
+                        // co-tenant path is unreliable (it STARVES behind live turns → per-task
+                        // deadline → dropped tasks → a meaningless low score, glass-boxed
+                        // 2026-07-21 run B). We still degrade rather than hard-fail (a share
+                        // score beats no score), but the reason is now VISIBLE in the eval phase
+                        // stream and the log, so we can actually fix the lane instead of guessing.
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "cognition::eval",
+                                base = %base,
+                                error = %e,
+                                "dedicated eval lane failed to come up — DEGRADING to co-tenant share (unreliable: may starve behind live turns). Fix the lane; do not trust a shared-lane score."
+                            );
+                            emit_eval_phase(
+                                "dedicated_lane_failed",
+                                &format!("isolated eval lane failed ({e}) — falling back to shared live lane"),
+                            );
+                            None
+                        }
+                    },
+                    None => {
+                        tracing::warn!(
+                            target: "cognition::eval",
+                            "no active served model in the serving snapshot — cannot stand up a dedicated eval lane, DEGRADING to co-tenant share"
+                        );
+                        emit_eval_phase(
+                            "no_active_model",
+                            "serving snapshot has no active model — falling back to shared live lane",
+                        );
+                        None
+                    }
                 };
                 match dedicated {
                     Some(EvalLane { lane, adapter, served_ctx, placement, _vram_lease }) => {
