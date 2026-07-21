@@ -84,28 +84,25 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// placement spills this lane to CPU, the window is still sized off the GPU free-VRAM
 /// budget (under-sizes for the rare CPU-spilled eval) — acceptable for short prompts;
 /// the two-phase device-aware sizing rides with #56's `ResourceGovernor`.
-fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
-    use crate::cognition::serving_plan::{plan_serving, MIN_SERVE_CTX};
-    use crate::modules::serving_daemon::{footprint_for, governed_host_budget};
+/// The eval lane's context window is FIXED, NOT sized to the live free-VRAM budget. A lane
+/// sized against the governed board got a different `-c` every run (placement captures swung
+/// 2872 ↔ 99371), and a different n_ctx changes llama.cpp's KV/tensor shapes enough that even
+/// GREEDY argmax flips on borderline tokens — so the SAME task passed one run and failed the
+/// next, making the ABSOLUTE score MEANINGLESS (glass-boxed 2026-07-21: which of 3 tasks failed
+/// swapped run-to-run under greedy). A benchmark must hold n_ctx constant so the same prompt
+/// yields the same tokens every time. This value is generous for a self-contained coder exam
+/// (prompt + a function + reasoning fit far under it) yet constant, and capped at the model's
+/// trained window (never invent a bigger one). Determinism beats adaptivity for a MEASUREMENT
+/// lane — the opposite priority from a live persona lane. [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]]
+const EXAM_LANE_CTX: u32 = 16384;
 
-    let plan = match (crate::resources::ResourceDaemon::global(), footprint_for(base)) {
-        (Some(daemon), Some(footprint)) => {
-            // Size against the GOVERNED live board — the ONE memory authority's pre-staged
-            // snapshot (Vram available netted over every measured consumer + external
-            // pressure), NOT a raw GPU probe on this spawn path (which over-reports by
-            // serving's reserved-but-unallocated prefill, the G5 phantom bytes). Via the
-            // SAME `plan_serving` the autonomic serving plan uses; no duplicate budget calc,
-            // no un-governed read (MEMORY-AUTHORITY-DAEMON slice 2). One measurement stream,
-            // no batching → demand_lanes = 1.
-            let budget = governed_host_budget(&daemon);
-            plan_serving(budget, std::slice::from_ref(&footprint), 1)
-        }
-        // No authority (ungoverned host) or unsizable base: the model's own trained window,
-        // floored — never a fresh invented cap.
-        _ => None,
-    };
-    plan.map(|p| p.served_context_window)
-        .unwrap_or_else(|| base.context_window.max(MIN_SERVE_CTX))
+fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
+    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    // Fixed, capped at the model's trained window, floored at the serving minimum — a constant
+    // the same for every run on the same model, so the exam is reproducible. Fit is decided
+    // downstream (decide_eval_lane_placement): if this window won't fit, the lane spawn fails
+    // and the (None,None) caller degrades to a co-tenant SHARE — never an OOM.
+    EXAM_LANE_CTX.min(base.context_window).max(MIN_SERVE_CTX)
 }
 
 /// A stood-up ephemeral measurement lane plus everything the eval loop needs to fork
