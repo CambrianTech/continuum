@@ -2340,6 +2340,21 @@ pub fn start_server(
             "TrainingCompletionSentinel: registered (L3 train-done → eval → lift>0 → page-in)"
         );
 
+        // GenomeFitnessSentinel: the self-evolving genome's fitness daemon. On a slow
+        // (5-min) Background tick it measures each resident layer's value-density
+        // (lift/GB, from the manifest + eval ledger) and GLASS-BOXES the ranking +
+        // retire-candidates — OBSERVE-ONLY, no eviction (earn the emergent version:
+        // validate the fitness signal against ground truth before it ever evicts,
+        // SELF-EVOLVING-GENOME.md §5). Stateless; reads fresh each tick.
+        runtime.register(Arc::new(
+            crate::modules::genome_fitness_sentinel::GenomeFitnessSentinel::new(),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "GenomeFitnessSentinel: registered (observe-only value-density fitness landscape, 5-min tick)"
+        );
+
         // TrainingTriggerModule: substrate-native batching coordinator
         // sitting between curriculum producers (teacher persona's
         // synthesis, hippocampus's noteworthy drain, operator submits)
