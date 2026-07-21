@@ -104,6 +104,17 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// the reconcile. A healthy 14B answers a 1-token request in well under a second.
 const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// A same-model/same-genome relaunch is required when the target per-slot window
+/// exceeds the running server's served window by MORE than this. llama.cpp has no
+/// hot-resize API, so a genuine window GROW can only be honored by a relaunch —
+/// exactly like an adapter-set change. The margin absorbs llama.cpp's internal
+/// 256-multiple padding of the launch `-c/--parallel` window (served ≈ round-up-256
+/// of the launched per-slot value), so a padded steady-state window never reads as
+/// a spurious grow and re-triggers a relaunch every tick. Comfortably above one
+/// 256-pad; the daemon only sends a grow target when it is ≥ 2× the served window
+/// (its `starved` gate), so this margin never masks a real grow.
+const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
+
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
 /// The failure mode this guards is the intermittently-wedged fresh lane that answers
 /// EVERY request with ~2 tokens then stops (observed on ephemeral eval lanes: same
@@ -633,29 +644,60 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
         let desired = target.adapter_paths();
         let active_adapters = ctrl.active_adapters().await.unwrap_or_default();
         if active_adapters == desired {
-            // Right model, right genome — but is the COMPUTE path alive? A child
-            // we spawned ourselves was decode-verified at `wait_ready` and is
-            // trusted thereafter (no per-tick decode load). A server we did NOT
-            // spawn (an orphan reclaimed from a dead core) can answer
-            // `/v1/models` while every `llama_decode` 500s — so prove decode
-            // before adopting it. A wedged orphan fails the probe and falls
-            // through to `serve()`, which reaps it and spawns fresh.
-            // Trust a child WE spawned without a per-tick decode probe (it was
-            // decode-verified at `wait_ready`) — UNLESS `force_probe` is set, in which
-            // case the liveness heartbeat has flagged it wedged and we must re-prove
-            // decode before re-adopting (#175). A non-owned orphan is always probed.
-            if (ctrl.owns_child() && !force_probe) || ctrl.decode_smoke_ok().await {
-                return EnsureOutcome::AlreadyServing;
+            // Right model, right genome — but does the running server's per-slot
+            // WINDOW match the target? llama.cpp cannot hot-resize, so a target
+            // window that meaningfully EXCEEDS the served window is a real mismatch
+            // only a relaunch can honor — exactly like the adapter-set change below.
+            // Without this, a daemon-decided starved grow-back (2048→31k, same model
+            // + same genome) short-circuits to AlreadyServing and the lane stays
+            // frozen at the boot floor FOREVER, while the daemon re-decides "starved"
+            // and logs "re-homing" every tick — a relaunch that never happens
+            // (glass-boxed 2026-07-20: window pinned 2048 vs a 31k plan, benchmarks
+            // blocked). Grow-only: a down-plan is kept by the daemon's sticky window
+            // and never reaches here; a `/props` read failure (served 0/Err) is
+            // treated as "window OK" so a probe error never spuriously relaunches.
+            let window_ok = match ctrl.served_context_window().await {
+                Ok(served) => {
+                    served == 0
+                        || target.context_window
+                            <= served.saturating_add(WINDOW_RELAUNCH_TOLERANCE)
+                }
+                Err(_) => true,
+            };
+            if !window_ok {
+                crate::probe!(
+                    class = "serving.window_grow",
+                    model = target.model_id(),
+                    target_window = target.context_window,
+                    "served window is below the target beyond padding tolerance — \
+                     relaunching to grow (llama.cpp has no hot-resize; a genome-set \
+                     match alone must not strand a starved lane at the boot floor)",
+                );
+                // fall through to relaunch at the larger window.
+            } else {
+                // Window matches. Is the COMPUTE path alive? A child we spawned
+                // ourselves was decode-verified at `wait_ready` and is trusted
+                // thereafter (no per-tick decode load). A server we did NOT spawn (an
+                // orphan reclaimed from a dead core) can answer `/v1/models` while
+                // every `llama_decode` 500s — so prove decode before adopting it. A
+                // wedged orphan fails the probe and falls through to `serve()`, which
+                // reaps it and spawns fresh. Trust an owned child without a per-tick
+                // decode probe — UNLESS `force_probe` is set, in which case the
+                // liveness heartbeat flagged it wedged and we must re-prove decode
+                // before re-adopting (#175). A non-owned orphan is always probed.
+                if (ctrl.owns_child() && !force_probe) || ctrl.decode_smoke_ok().await {
+                    return EnsureOutcome::AlreadyServing;
+                }
+                crate::probe!(
+                    class = "serving.adopt_rejected",
+                    model = target.model_id(),
+                    owned = ctrl.owns_child(),
+                    force_probe,
+                    "lane answers /v1/models but fails the decode smoke-probe (compute-wedged \
+                     — a poisoned Metal backend / OOM, #175); reaping + respawning a fresh lane",
+                );
+                // fall through to relaunch.
             }
-            crate::probe!(
-                class = "serving.adopt_rejected",
-                model = target.model_id(),
-                owned = ctrl.owns_child(),
-                force_probe,
-                "lane answers /v1/models but fails the decode smoke-probe (compute-wedged \
-                 — a poisoned Metal backend / OOM, #175); reaping + respawning a fresh lane",
-            );
-            // fall through to relaunch.
         }
         // else: genome set differs → fall through to relaunch.
     }
@@ -1363,6 +1405,11 @@ mod tests {
         /// an adopted orphan (the conservative default that exercises the
         /// smoke-probe gate).
         owns: bool,
+        /// The per-slot window the fake's `/props` reports. Defaults to the tests'
+        /// target window so the window-grow relaunch check (which only fires when
+        /// target > served + tolerance) is a no-op for the model/adapter/decode
+        /// tests; a grow-relaunch test sets it BELOW the target explicitly.
+        served_window: u32,
     }
 
     impl FakeControl {
@@ -1374,7 +1421,14 @@ mod tests {
                 serves: AtomicUsize::new(0),
                 decode_ok: true,
                 owns: false,
+                served_window: 32768,
             }
+        }
+        /// Model a lane whose live per-slot window is SMALLER than the plan target —
+        /// the starved boot-floor case the window-grow relaunch must catch.
+        fn with_served_window(mut self, n: u32) -> Self {
+            self.served_window = n;
+            self
         }
         fn serve_fails(mut self) -> Self {
             self.serve_ok = false;
@@ -1418,10 +1472,11 @@ mod tests {
             }
         }
         async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
-            // Canned per-slot window: the reconcile-decision tests don't probe a
-            // live /props; a fixed value stands in for "the server reports its
-            // real window." Non-zero so a ready outcome publishes a ready snapshot.
-            Ok(11008)
+            // The per-slot window the fake's /props reports (configurable via
+            // `with_served_window`). Non-zero so a ready outcome publishes a ready
+            // snapshot; defaults to the target window so the window-grow relaunch
+            // check is a no-op unless a test deliberately floors it.
+            Ok(self.served_window)
         }
         async fn decode_smoke_ok(&self) -> bool {
             self.decode_ok
@@ -1519,6 +1574,46 @@ mod tests {
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when already serving");
+    }
+
+    // what this catches: a same-model / same-genome lane whose live per-slot window
+    // is STARVED far below the plan target (the 2048 boot-floor vs a 31k plan) must
+    // RELAUNCH to grow — llama.cpp has no hot-resize. Regression here (returning
+    // AlreadyServing on a genome-set match alone) strands the lane at the boot floor
+    // forever while the daemon logs "re-homing starved" every tick and never grows
+    // it — glass-boxed 2026-07-20, blocked all benchmark runs (prompts overflowed
+    // 2048). The daemon's `starved` gate only sends a target ≥ 2× the served window,
+    // so the grow is unambiguous.
+    #[tokio::test]
+    async fn starved_window_relaunches_to_grow() {
+        // Owned + decode-healthy: the ONLY thing wrong is the window (2048 ≪ 32768).
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_window(2048);
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert!(
+            matches!(outcome, EnsureOutcome::Spawned { .. }),
+            "a starved window must relaunch to grow, got {outcome:?}"
+        );
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            1,
+            "exactly one relaunch to the larger window"
+        );
+    }
+
+    // what this catches: the window-grow check must NOT fire on llama.cpp's 256-pad
+    // (served slightly BELOW target after internal rounding is normal) — only a real
+    // step-change grow relaunches. A served window one pad under target stays
+    // AlreadyServing; regression would relaunch every tick on padding noise.
+    #[tokio::test]
+    async fn padded_window_within_tolerance_does_not_relaunch() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_window(32768 - 256); // one 256-pad under the 32768 target
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert_eq!(outcome, EnsureOutcome::AlreadyServing);
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "padding noise must not relaunch");
     }
 
     // what this catches: an orphan that answers /v1/models with the RIGHT model
