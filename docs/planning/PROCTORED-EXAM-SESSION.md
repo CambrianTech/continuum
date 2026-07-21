@@ -150,7 +150,48 @@ huddle spiking concurrency beyond the sized lane count) is a LIVE self-scaling c
 **Net:** no code change needed for the exam's stability. The remaining Proctored-Exam work
 is the LIVE re-measure below and Slice A (preempt) for heavy live load / the grid.
 
-### Slice A — dependable context via preempt (the strongest guarantee)
+### Slice A1 — ExamServingContext (the strategic ACQUIRE) — ✅ LANDED (`9b511f51d`)
+The living-persona benchmark's `(None,None)` branch no longer grabs a blind `ServingSteadyHold`
+and *assume* it's a share — it runs the model-aware `plan_placement` kernel explicitly.
+`cognition/exam_serving.rs::ExamServingContext::acquire(capacity, resident, demand)` builds the
+resident set + demand from the live serving snapshot (`current_serving` + `governed_host_budget`
++ `footprint_for`), decides `ShareLane`/`Spawn`/`CpuSpill`, holds the live lane steady (RAII,
+reusing `ServingSteadyHold`) on a share, and CARRIES the verdict (`ExamAcquire`) for the ledger
+/ curriculum. `steady_fallback()` preserves the historical hold when inputs are unresolvable
+(never regresses). 3 unit tests over the placement oracle. Behavior-preserving on single-GPU
+(her base is resident ⇒ ShareLane — the live re-measure confirmed the lane holds); the value is
+the explicit, observable, capturable strategic decision — "an algorithm, not a haphazard chaotic
+mess." This is the seam a DIFFERENT-base exam or a grid placement computes `Spawn`/preempt at.
+
+### Slice A2 — grid affinity convergence (SCOPED, deliberately deferred — audit 2026-07-20)
+Make grid placement route by MODEL AFFINITY (a node already holding the base warm beats a
+node with more free bytes) instead of the model-blind byte-fill.
+
+**Audit finding — this is sim-only design work, not a live win yet, and a bigger build than
+"a thin adapter":**
+- `capacity/grid::{GridPlacementPolicy, LocalFirstFitPolicy}` have **no production consumer** —
+  they are exercised only by `capacity/sim.rs`. So A2 changes a simulator/design artifact; it
+  does not affect any live serving path today. The live grid-serving consumer (the thing that
+  would actually benefit) is a separate, larger integration (#180 MoE expert-affinity paging /
+  the grid serving path).
+- The two placement models differ in SHAPE: `resources::placement::plan_grid_placement` picks
+  ONE node for ONE model-aware lane (`GridPlacement::Place{node, ShareLane/Spawn}`);
+  `capacity/grid::GridPlacementPolicy` spreads `want_concurrency` lanes ACROSS nodes
+  (`Placement{local_lanes, remote}`, byte-oriented). So the convergence is NOT a literal adapter
+  over `plan_grid_placement` — it's a new `AffinityFitPolicy` that applies the same affinity-first
+  node RANKING within the `GridPlacementPolicy` shape.
+- It needs a schema thread with real blast radius: `warm_bases: Vec<String>` onto `DeviceCapacity`
+  (15 construction sites) + `base_model_id: Option<String>` onto `LeaseRequest` (25 sites), then
+  the `AffinityFitPolicy`, then a `capacity/sim.rs` outlier test (a peer that HOLDS the base warm
+  but has less free RAM must win over an emptier cold peer — the byte-fill's blind spot), then
+  retire the byte-fill default.
+
+**Decision:** build A2 deliberately alongside the live grid-serving consumer (so the affinity
+policy is validated against a real path, not only the gym) — churning 40 construction sites for a
+simulator artifact with no live payoff is the wrong trade to rush. The kernel it will use
+(`plan_grid_placement`, affinity-first, 4 grid scenario tests) is already built + green.
+
+### Slice A (original, superseded by A1+A2 above) — dependable context via preempt (the strongest guarantee)
 `ExamServingContext::acquire(persona, demand) -> Result<Handle, Reason>` executing the
 `plan_placement` decision: acquire steady-hold and/or drive the preemption (tier live
 serving down via the existing `serving_tier_down::CatalogTierDownPolicy` +
