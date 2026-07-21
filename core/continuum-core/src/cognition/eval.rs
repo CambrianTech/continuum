@@ -1199,15 +1199,15 @@ impl CognitionEval {
         // holds the bytes would flash them as "available" and re-open the grab race.
         let mut _eval_vram_lease: Option<crate::resources::LeaseGuard> = None;
         let mut _eval_lane: Option<crate::inference::llama_server::EphemeralServingLane> = None;
-        // Holds the LIVE serving lane steady when the eval runs ON it (the `(None, None)`
-        // living-persona case = `placement::Placement::ShareLane`: same base already
-        // resident, so she is measured as a co-tenant decode slot on her real lane, NOT a
-        // second weight copy). While held, the daemon skips the grow-back re-home that
-        // would relaunch the lane and connection-refuse the exam mid-flight (hard-rs 0/8,
-        // 2026-07-20). None for the ephemeral-lane branches — those own an isolated lane
-        // the serving daemon never touches. Dropped when `run` returns (grow-back resumes).
-        let mut _serving_steady_hold: Option<crate::modules::serving_daemon::ServingSteadyHold> =
-            None;
+        // The Proctored Exam Session's ACQUIRE for the LIVE-lane case (the `(None, None)`
+        // living-persona benchmark): an EXPLICIT `plan_placement` decision (Slice A), not a
+        // blind steady-hold. Her base is already resident ⇒ the verdict is `ShareLane` — she
+        // is measured as a co-tenant decode slot on her real lane (NO second weight copy),
+        // and while the context is held the daemon skips the grow-back re-home that would
+        // relaunch the lane and connection-refuse the exam mid-flight (hard-rs 0/8,
+        // 2026-07-20). None for the ephemeral-lane branches — those own an isolated lane the
+        // serving daemon never touches. Dropped when `run` returns (RAII → grow-back resumes).
+        let mut _exam_serving: Option<crate::cognition::exam_serving::ExamServingContext> = None;
         // GPU-first placement evidence for the gene's measurement lane — surfaced on
         // the result so the harness shows which device the A/B was scored on. None in
         // single-pass mode (that forks onto her LIVE lane, which is already GPU).
@@ -1267,8 +1267,9 @@ impl CognitionEval {
             // bounce, 2026-07-20). Same bounded wait-for-template as the lane branches above;
             // the post-reboot register_from_cfg race hits every fork path identically.
             (None, None) => {
-                _serving_steady_hold =
-                    Some(crate::modules::serving_daemon::ServingSteadyHold::acquire());
+                // Slice A: the strategic ACQUIRE — an explicit `plan_placement` decision
+                // (ShareLane for her own base) + RAII hold, not a blind steady-hold.
+                _exam_serving = Some(acquire_exam_serving_context());
                 fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1950,6 +1951,68 @@ fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str)
 /// never falsely claimed clean). This is the honesty stamp: a number carries whether
 /// it was measured contended, on the durable row, so `cognition/observe` can light a
 /// CLEAN/UNKNOWN chip instead of anyone inferring it. [[benchmark-numbers-carry-gpu-provenance]]
+/// Build the Proctored Exam Session's serving context for the living-persona benchmark:
+/// read the live serving snapshot + the governed budget, construct the resident set and the
+/// exam's `LaneDemand`, and run the strategic [`ExamServingContext::acquire`] admission
+/// decision. For the living-persona exam she is served on this base already, so the verdict
+/// is `SharedLane` — she is measured as a co-tenant slot on her real lane (no second weight
+/// copy) and the lane is held steady for the run. Making it an EXPLICIT decision (not the
+/// old blind steady-hold) is the strategic layer plugged in at the exam seam
+/// ([[lane-admission-planner-scenario-driven]]). When the live inputs aren't resolvable
+/// (ungoverned host, model row missing, lane not yet ready) it falls back to holding the
+/// lane steady on the historical share assumption — behavior never regresses, but the gap
+/// is marked so it's visible. [[proctored-exam-session-dependable-benchmark]]
+fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServingContext {
+    use crate::cognition::exam_serving::ExamServingContext;
+    use crate::resources::placement::{DemandTier, LaneDemand, ResidentLane};
+
+    let snap = crate::inference::llama_server::current_serving();
+    let (Some(active), true) = (snap.active_model.as_deref(), snap.ready) else {
+        return ExamServingContext::steady_fallback();
+    };
+    let Some(model) = crate::model_registry::try_global().and_then(|r| r.model(active).cloned())
+    else {
+        return ExamServingContext::steady_fallback();
+    };
+    let Some(fp) = crate::modules::serving_daemon::footprint_for(&model) else {
+        return ExamServingContext::steady_fallback();
+    };
+    // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
+    // consumer + external pressure), the same source `plan_serving` sizes against — never a
+    // raw GPU probe. No authority (ungoverned host) or a zero budget ⇒ fall back.
+    let Some(capacity) = crate::resources::ResourceDaemon::global()
+        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .filter(|c| *c > 0)
+    else {
+        return ExamServingContext::steady_fallback();
+    };
+    let window = snap.served_context_window.max(1);
+    let compute_buffer = fp.compute_buffer_per_lane();
+    let resident = ResidentLane {
+        lane_id: "live".to_string(),
+        base_model_id: active.to_string(),
+        weights_bytes: fp.weights_bytes,
+        slots: snap.lanes.max(1),
+        window,
+        kv_per_token: fp.kv_per_token,
+        compute_buffer,
+        tier: DemandTier::Live,
+        pinned: true,
+    };
+    // The exam demand: her SAME base (⇒ share, not a second copy), one measured decode slot,
+    // at the live served window, at Eval tier (preemptible by live work, never preempts it).
+    let demand = LaneDemand {
+        base_model_id: active.to_string(),
+        weights_bytes: fp.weights_bytes,
+        slots: 1,
+        window,
+        kv_per_token: fp.kv_per_token,
+        compute_buffer,
+        tier: DemandTier::Eval,
+    };
+    ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand)
+}
+
 fn append_progress_ledger(
     result: &CognitionEvalResult,
     note: Option<&str>,
