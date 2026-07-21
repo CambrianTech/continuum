@@ -43,6 +43,7 @@ pub mod dispatch_listener;
 pub mod dream_consolidation;
 pub mod embedding;
 pub mod eval;
+pub mod exam_serving;
 pub mod experience;
 pub mod faculty_pulse;
 pub mod inference_session;

@@ -856,6 +856,33 @@ pub struct EvalTaskResult {
     pub decode_ms: u64,
 }
 
+/// Why a run could NOT produce a trustworthy score — the serving lane never held a
+/// verified, decode-capable context for the whole exam. This is NOT "she failed": the
+/// harness never gave her a working lane, so the accuracy signal is meaningless. A run
+/// carrying this is reported as infra-unavailable, and `score`/`pass_rate`/`results`
+/// MUST be read as void, never as a real "she scored 0" — the exact fake-zero the
+/// Proctored Exam Session exists to make impossible.
+/// [[proctored-exam-session-dependable-benchmark]] [[benchmark-needs-its-own-serving-lane]]
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct InfraUnavailable {
+    /// Human cause: which axis broke (not-ready / connect-refused / not-the-served-model
+    /// / compute-error / stream-idle timeout), naming the task it broke on. Display-only
+    /// — the classification that produced it is [`SettleOutcome::inference_error`], never
+    /// re-parsed from this string.
+    pub reason: String,
+    /// How many tasks were attempted before the run aborted. The exam is INCOMPLETE — a
+    /// non-zero `score` over `tasks_attempted` is still void (some attempts phantom-failed
+    /// on a dead lane), which is why the presence of this whole struct — not the count —
+    /// is the void flag.
+    #[ts(type = "number")]
+    pub tasks_attempted: u32,
+    /// How many attempted tasks hit an UNRECOVERABLE infra fault (the lane never returned
+    /// to decode-ready within the bounded re-verify+retry budget). ≥1 ⇒ the lane died
+    /// mid-exam and continuing would only accrue more phantom zeros.
+    #[ts(type = "number")]
+    pub infra_faults: u32,
+}
+
 #[derive(Debug, Clone, Serialize, TS, Default)]
 pub struct CognitionEvalResult {
     /// The run handle (#86): present on a detached ack AND on the ledger row, so the
@@ -951,6 +978,17 @@ pub struct CognitionEvalResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub lane_estimated_footprint_bytes: Option<u64>,
+    /// Set ONLY when infra prevented a trustworthy measurement (the shared serving lane
+    /// flipped not-ready / refused / compute-errored and never recovered within the
+    /// re-verify+retry budget). When present, `score`/`pass_rate`/`results` are VOID —
+    /// the run never completed on a verified lane, and reading `pass_rate: 0.0` as "she
+    /// scored 0" is precisely the fake-zero this guards against. Absent = a real, scored
+    /// run whose number can be trusted. Every human-facing render site (ledger row,
+    /// eval-status, benchmark/run) branches on this before showing a pass-rate.
+    /// [[proctored-exam-session-dependable-benchmark]]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub infra_unavailable: Option<InfraUnavailable>,
 }
 
 /// The gym command. Stateless: it reaches the persona's live cognition through the
@@ -1161,6 +1199,15 @@ impl CognitionEval {
         // holds the bytes would flash them as "available" and re-open the grab race.
         let mut _eval_vram_lease: Option<crate::resources::LeaseGuard> = None;
         let mut _eval_lane: Option<crate::inference::llama_server::EphemeralServingLane> = None;
+        // The Proctored Exam Session's ACQUIRE for the LIVE-lane case (the `(None, None)`
+        // living-persona benchmark): an EXPLICIT `plan_placement` decision (Slice A), not a
+        // blind steady-hold. Her base is already resident ⇒ the verdict is `ShareLane` — she
+        // is measured as a co-tenant decode slot on her real lane (NO second weight copy),
+        // and while the context is held the daemon skips the grow-back re-home that would
+        // relaunch the lane and connection-refuse the exam mid-flight (hard-rs 0/8,
+        // 2026-07-20). None for the ephemeral-lane branches — those own an isolated lane the
+        // serving daemon never touches. Dropped when `run` returns (RAII → grow-back resumes).
+        let mut _exam_serving: Option<crate::cognition::exam_serving::ExamServingContext> = None;
         // GPU-first placement evidence for the gene's measurement lane — surfaced on
         // the result so the harness shows which device the A/B was scored on. None in
         // single-pass mode (that forks onto her LIVE lane, which is already GPU).
@@ -1212,17 +1259,26 @@ impl CognitionEval {
                 _eval_lane = Some(lane);
                 cycle
             }
-            // Neither → fork onto her LIVE lane (a plain number on whatever she's served on).
-            // Same bounded wait-for-template as the lane branches above (fork_eval_cycle_waiting):
+            // Neither → the living-persona benchmark: she is served on THIS base already,
+            // so the admission decision is `placement::Placement::ShareLane` — measure her
+            // as a co-tenant decode slot on her REAL lane (her genome, her window), no
+            // second weight copy. Hold the lane STEADY for the run so the grow-back re-home
+            // can't relaunch it and connection-refuse the exam mid-flight (the hard-rs 0/8
+            // bounce, 2026-07-20). Same bounded wait-for-template as the lane branches above;
             // the post-reboot register_from_cfg race hits every fork path identically.
-            (None, None) => fork_eval_cycle_waiting(&persona_uuid, || {
-                crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
-            })
-            .await
-            .ok_or_else(|| CommandError::NotFound(format!(
-                "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-            )))?,
+            (None, None) => {
+                // Slice A: the strategic ACQUIRE — an explicit `plan_placement` decision
+                // (ShareLane for her own base) + RAII hold, not a blind steady-hold.
+                _exam_serving = Some(acquire_exam_serving_context().await);
+                fork_eval_cycle_waiting(&persona_uuid, || {
+                    crate::cognition::persona_workspace::global()
+                        .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                })
+                .await
+                .ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                )))?
+            }
         };
 
         // GLASS-BOX (task #14): if a capture_dir is pinned, wrap the fork's cognition in the
@@ -1382,7 +1438,10 @@ impl CognitionEval {
         // separate, deliberate decision, never a side effect of measuring it.
         if let Some(gene) = &p.gene {
             cycle.page_out();
-            let (base_score, _) = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await;
+            // A/B LIFT arms consume `.pass`/`.results`; the infra-fault accounting rides
+            // on the EphemeralServingLane path (decode-verified at spawn) as a scoped
+            // follow-up — the shared-lane single-pass below is what Slice B makes honest.
+            let base_score = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await.pass;
 
             // Both arms start each task from the pre-eval memory frame — `run_pass`
             // rewinds the admission frame before EVERY task (per-task isolation), so
@@ -1394,8 +1453,9 @@ impl CognitionEval {
                 domain: String::new(),
                 scale: gene.scale.unwrap_or(1.0),
             }]);
-            let (gene_score, gene_results) =
+            let gene_outcome =
                 run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await;
+            let (gene_score, gene_results) = (gene_outcome.pass, gene_outcome.results);
             cycle.page_out();
 
             // Guard drops here: her memory frame + real persistence sink restored.
@@ -1433,8 +1493,13 @@ impl CognitionEval {
                 lane_estimated_footprint_bytes: placement_evidence
                     .as_ref()
                     .and_then(|e| e.footprint_bytes),
+                // A/B runs on its OWN EphemeralServingLane (gene/base copy), which
+                // decode-verifies at spawn — a different failure surface than the shared
+                // live lane. Threading the infra-fault classification through the two-arm
+                // LIFT assembly is a scoped follow-up; the shared-lane single-pass (the
+                // fake-zero incident) is what Slice B makes trustworthy first.
+                infra_unavailable: None,
             };
-            result.run_id = p.run_id.clone();
             result.run_id = p.run_id.clone();
         append_progress_ledger(
             &result,
@@ -1474,7 +1539,7 @@ impl CognitionEval {
         // (reviewers>=1, live single-pass only) forks a second copy of the same persona
         // as a reviewer and grades the reviewed answer — same model, +1 teammate.
         let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
-        let (score, results) = if want_team {
+        let outcome = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
                 .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -1490,12 +1555,20 @@ impl CognitionEval {
         };
         drop(isolation);
 
+        // The Proctored Exam Session verdict (Slice B): ≥1 UNRECOVERABLE infra fault ⇒ the
+        // shared serving lane died mid-exam and this score is VOID. Build the marker BEFORE
+        // moving `results`; when set, every render site reports InfraUnavailable instead of a
+        // fake `pass_rate: 0.0`. [[proctored-exam-session-dependable-benchmark]]
+        let infra_unavailable = infra_verdict(&outcome);
+        let (score, results) = (outcome.pass, outcome.results);
+
         // LEARN mode: the exam just taught her — carry the redacted lesson back to the
         // LIVING self. She keeps the experience of having been asked and how she did; the
         // held-out answer key is scrubbed so she can never memorize it (redaction, not
         // forget-context: keep the memory, excise the crib sheet). The exam ran on the fork
         // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
-        if p.learn.unwrap_or(false) && p.gene.is_none() {
+        // NEVER learn from an infra-unavailable run — a dead-lane "failure" is not a lesson.
+        if p.learn.unwrap_or(false) && p.gene.is_none() && infra_unavailable.is_none() {
             let transferred = transfer_redacted_lessons(&persona_uuid, room, &tasks, &results);
             tracing::info!(
                 persona = %persona_uuid,
@@ -1535,6 +1608,7 @@ impl CognitionEval {
                 .to_string(),
             lane_free_vram_bytes: None,
             lane_estimated_footprint_bytes: None,
+            infra_unavailable,
         };
         result.run_id = p.run_id.clone();
         append_progress_ledger(
@@ -1877,6 +1951,68 @@ fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str)
 /// never falsely claimed clean). This is the honesty stamp: a number carries whether
 /// it was measured contended, on the durable row, so `cognition/observe` can light a
 /// CLEAN/UNKNOWN chip instead of anyone inferring it. [[benchmark-numbers-carry-gpu-provenance]]
+/// Build the Proctored Exam Session's serving context for the living-persona benchmark:
+/// read the live serving snapshot + the governed budget, construct the resident set and the
+/// exam's `LaneDemand`, and run the strategic [`ExamServingContext::acquire`] admission
+/// decision. For the living-persona exam she is served on this base already, so the verdict
+/// is `SharedLane` — she is measured as a co-tenant slot on her real lane (no second weight
+/// copy) and the lane is held steady for the run. Making it an EXPLICIT decision (not the
+/// old blind steady-hold) is the strategic layer plugged in at the exam seam
+/// ([[lane-admission-planner-scenario-driven]]). When the live inputs aren't resolvable
+/// (ungoverned host, model row missing, lane not yet ready) it falls back to holding the
+/// lane steady on the historical share assumption — behavior never regresses, but the gap
+/// is marked so it's visible. [[proctored-exam-session-dependable-benchmark]]
+async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServingContext {
+    use crate::cognition::exam_serving::ExamServingContext;
+    use crate::resources::placement::{DemandTier, LaneDemand, ResidentLane};
+
+    let snap = crate::inference::llama_server::current_serving();
+    let (Some(active), true) = (snap.active_model.as_deref(), snap.ready) else {
+        return ExamServingContext::ludicrous_fallback().await;
+    };
+    let Some(model) = crate::model_registry::try_global().and_then(|r| r.model(active).cloned())
+    else {
+        return ExamServingContext::ludicrous_fallback().await;
+    };
+    let Some(fp) = crate::modules::serving_daemon::footprint_for(&model) else {
+        return ExamServingContext::ludicrous_fallback().await;
+    };
+    // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
+    // consumer + external pressure), the same source `plan_serving` sizes against — never a
+    // raw GPU probe. No authority (ungoverned host) or a zero budget ⇒ fall back.
+    let Some(capacity) = crate::resources::ResourceDaemon::global()
+        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .filter(|c| *c > 0)
+    else {
+        return ExamServingContext::ludicrous_fallback().await;
+    };
+    let window = snap.served_context_window.max(1);
+    let compute_buffer = fp.compute_buffer_per_lane();
+    let resident = ResidentLane {
+        lane_id: "live".to_string(),
+        base_model_id: active.to_string(),
+        weights_bytes: fp.weights_bytes,
+        slots: snap.lanes.max(1),
+        window,
+        kv_per_token: fp.kv_per_token,
+        compute_buffer,
+        tier: DemandTier::Live,
+        pinned: true,
+    };
+    // The exam demand: her SAME base (⇒ share, not a second copy), one measured decode slot,
+    // at the live served window, at Eval tier (preemptible by live work, never preempts it).
+    let demand = LaneDemand {
+        base_model_id: active.to_string(),
+        weights_bytes: fp.weights_bytes,
+        slots: 1,
+        window,
+        kv_per_token: fp.kv_per_token,
+        compute_buffer,
+        tier: DemandTier::Eval,
+    };
+    ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand).await
+}
+
 fn append_progress_ledger(
     result: &CognitionEvalResult,
     note: Option<&str>,
@@ -1913,6 +2049,10 @@ fn append_progress_ledger(
         "lift": result.lift,
         "note": note,
         "runId": result.run_id,
+        // The Proctored Exam Session void-flag: when present, the row's score/passRate are
+        // VOID (the lane died mid-exam), and every reader MUST report infra-unavailable
+        // instead of a real pass-rate. [[proctored-exam-session-dependable-benchmark]]
+        "infraUnavailable": result.infra_unavailable,
     });
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -2304,6 +2444,71 @@ fn clean_dir_contents(root: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The outcome of running a whole task set once — the pass count and per-task rows,
+/// PLUS the infra-fault accounting that decides whether the number is trustworthy.
+/// The keystone of the Proctored Exam Session (Slice B): an inference call that FAILS
+/// (lane not-ready / connect-refused / "not the active served model" / compute-error /
+/// stream-idle) is an INFRA fault, never a wrong answer. A transient fault is re-verified
+/// and retried; an UNRECOVERABLE one (lane never returns to decode-ready) makes the run
+/// [`InfraUnavailable`] — the caller reports that, NEVER a fake `pass_rate: 0.0`.
+/// [[proctored-exam-session-dependable-benchmark]]
+struct PassOutcome {
+    /// Tasks that PASSED (graded on a verified lane).
+    pass: u32,
+    /// Per-task rows (includes any infra-graded row for forensics).
+    results: Vec<EvalTaskResult>,
+    /// How many tasks hit an UNRECOVERABLE infra fault — the lane never came back to
+    /// decode-ready within the re-verify+retry budget. ≥1 ⇒ the run is void.
+    infra_faults: u32,
+    /// The cause of the FIRST unrecoverable infra fault, naming its task — the reason the
+    /// whole run aborts as [`InfraUnavailable`]. `None` when every task reached a verdict.
+    infra_reason: Option<String>,
+}
+
+/// The Proctored Exam Session verdict: does a completed pass constitute a trustworthy
+/// score, or did the serving lane die mid-exam? ≥1 unrecoverable infra fault ⇒ the run is
+/// VOID and reported [`InfraUnavailable`] (never a fake `pass_rate: 0.0`). Pure so the
+/// fault-injection test pins it directly, and ONE place decides void-ness for every render
+/// site. [[proctored-exam-session-dependable-benchmark]]
+fn infra_verdict(outcome: &PassOutcome) -> Option<InfraUnavailable> {
+    (outcome.infra_faults > 0).then(|| InfraUnavailable {
+        reason: outcome
+            .infra_reason
+            .clone()
+            .unwrap_or_else(|| "serving lane never recovered".to_string()),
+        tasks_attempted: outcome.results.len() as u32,
+        infra_faults: outcome.infra_faults,
+    })
+}
+
+/// How many times a task that INFRA-FAULTED (the model call itself failed, not a wrong
+/// answer) is re-verified and retried before it counts as unrecoverable. This is the
+/// bounded recovery a transient lane bounce (grow-back relaunch, brief not-ready) gets —
+/// distinct from `max_acts` (the persona's OWN act→observe budget) and MAX_FAIL_RETRIES
+/// (agentic recovery from a WRONG answer). 3 covers a full not-ready→relaunch→ready cycle
+/// without letting a genuinely-dead lane spin the exam forever.
+const INFRA_FAULT_RETRIES: u32 = 3;
+
+/// Bound for a between-attempt lane re-verify. A grow-back relaunch or a #175 self-heal
+/// respawn brings the lane back within tens of seconds; this waits out that window before
+/// spending a retry, and its expiry (lane still not snapshot-ready) is itself the signal
+/// the fault is unrecoverable. Generous vs a warm lane's instant readiness; it only ever
+/// elapses on a genuinely down lane.
+const LANE_REVERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Re-verify that the live serving lane is READY to decode before retrying an infra-faulted
+/// task. Returns the ready snapshot's active model, or `None` if the lane never returned to
+/// ready within [`LANE_REVERIFY_TIMEOUT`] (⇒ the fault is unrecoverable). Snapshot-ready is
+/// the cheap gate; the retried TASK is itself the real decode proof (a genuine generation),
+/// so this is not status-optimism — a lane that answers ready but can't decode simply
+/// infra-faults again on the retry and exhausts the budget. Slice A upgrades this to a
+/// decode smoke-probe at ACQUIRE time; Slice B verifies via the real task attempt.
+async fn reverify_lane() -> Option<String> {
+    crate::inference::llama_server::await_ready_serving(LANE_REVERIFY_TIMEOUT)
+        .await
+        .and_then(|s| s.active_model)
+}
+
 async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     isolation: &crate::cognition::workspace::EvalIsolation,
@@ -2316,9 +2521,11 @@ async fn run_pass(
     // core cwd — or a correct render scores a false zero (#49 dual-root gap). `None` = the
     // hands used the default root (core cwd) and grading follows.
     workspace_root: Option<&str>,
-) -> (u32, Vec<EvalTaskResult>) {
+) -> PassOutcome {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
+    let mut infra_faults = 0u32;
+    let mut infra_reason: Option<String> = None;
     // THE NATURAL PROCTORED EXAM (Joel: "we use our own persona as naturally as possible, as
     // if these are proctored exams... natural personas even in tests, with memories intact").
     // She sits down ONCE: rewind to the pre-eval frame at PASS start (each A/B arm still
@@ -2433,17 +2640,21 @@ async fn run_pass(
         };
         // own_peer/agent_name attribute the persona's OWN past posts; a single-task
         // exam has none, so they're inert here (the item's peer_id "peer" ≠ "").
-        let burst = crate::cognition::workspace::Burst::from_turns(
-            room,
-            crate::persona::service_loop::build_workspace_turns(
-                std::slice::from_ref(&task_delivery),
-                "",
-                "",
-                // A single-task exam IS the stimulus — the task delivery is the
-                // whole thread; there is no out-of-band trigger to anchor.
-                None,
-            ),
-        );
+        // A CLOSURE, not a value: an infra-faulted task is retried (below), and
+        // `drive_to_settle` consumes the burst, so each attempt mints a fresh one.
+        let make_burst = || {
+            crate::cognition::workspace::Burst::from_turns(
+                room,
+                crate::persona::service_loop::build_workspace_turns(
+                    std::slice::from_ref(&task_delivery),
+                    "",
+                    "",
+                    // A single-task exam IS the stimulus — the task delivery is the
+                    // whole thread; there is no out-of-band trigger to anchor.
+                    None,
+                ),
+            )
+        };
         // `directed = true`: an exam question is put TO the persona — it is not
         // ambient room chatter she may let pass. This withholds the bare-PASS silence
         // escape (the [Conversational Presence] block) for the eval turn, the same kind of
@@ -2465,42 +2676,110 @@ async fn run_pass(
         // humaneval; minutes across act cycles on the harder tiers), so slow-but-valid
         // work is never cut; it fires only on a true wedge. Not a latency policy.
         const PER_TASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
-        let settled = match tokio::time::timeout(
-            PER_TASK_DEADLINE,
-            crate::cognition::act_observe::drive_to_settle(
-                cycle,
-                burst,
-                room,
-                max_acts,
-                crate::cognition::workspace::TurnFraming::directed(),
-            ),
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(_) => {
-                tracing::warn!(
-                    probe_class = "eval.task.timeout",
-                    deadline_s = PER_TASK_DEADLINE.as_secs(),
-                    "eval task exceeded the per-task deadline — grading infra-fail and \
-                     advancing, NOT hanging the run (serving wedged mid-generation)"
+        // BOUNDED INFRA-FAULT RECOVERY (Proctored Exam Session, Slice B). Drive to
+        // settlement; if the model call itself FAILS (`inference_error`: lane not-ready /
+        // connect-refused / "not the active served model" / compute-error / deadline-wedge)
+        // that is an INFRA fault, never a wrong answer. Re-verify the lane and retry the
+        // SAME task — the retried generation is itself the real decode proof — up to
+        // INFRA_FAULT_RETRIES. A transient bounce (grow-back relaunch, brief not-ready)
+        // recovers here and the task grades normally. Exhaustion means the lane is dead:
+        // `settled` still carries the error and the abort below marks the run
+        // InfraUnavailable, so a phantom generation on a dead lane can NEVER be published
+        // as `pass_rate: 0.0`. [[proctored-exam-session-dependable-benchmark]]
+        let mut settled;
+        let mut infra_attempt = 0u32;
+        loop {
+            settled = match tokio::time::timeout(
+                PER_TASK_DEADLINE,
+                crate::cognition::act_observe::drive_to_settle(
+                    cycle,
+                    make_burst(),
+                    room,
+                    max_acts,
+                    crate::cognition::workspace::TurnFraming::directed(),
+                ),
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    tracing::warn!(
+                        probe_class = "eval.task.timeout",
+                        deadline_s = PER_TASK_DEADLINE.as_secs(),
+                        "eval task exceeded the per-task deadline — treating as an infra fault \
+                         (serving wedged mid-generation), NOT a wrong answer"
+                    );
+                    crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
+                        "per-task deadline exceeded ({}s) — serving wedged mid-generation",
+                        PER_TASK_DEADLINE.as_secs()
+                    ))
+                }
+            };
+            let Some(cause) = settled.inference_error.clone() else {
+                break; // reached a verdict (answer OR graded-wrong) on a working lane
+            };
+            infra_attempt += 1;
+            if infra_attempt > INFRA_FAULT_RETRIES {
+                crate::probe!(
+                    class = "eval.task.infra_fault.exhausted",
+                    task = %t.id,
+                    attempts = infra_attempt,
+                    cause = %cause,
+                    "infra fault survived re-verify+retry — lane unrecoverable; run will abort InfraUnavailable"
                 );
-                crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
-                    "per-task deadline exceeded ({}s) — serving wedged mid-generation",
-                    PER_TASK_DEADLINE.as_secs()
-                ))
+                break; // `settled` carries the error → unrecoverable-infra abort below
             }
-        };
+            tracing::warn!(
+                probe_class = "eval.task.infra_fault",
+                task = %t.id,
+                attempt = infra_attempt,
+                cause = %cause,
+                "inference infra fault (not a wrong answer) — re-verifying the lane and retrying the task"
+            );
+            // Re-verify the lane is snapshot-ready before spending the retry. If it never
+            // returns to ready within the budget the next attempt simply infra-faults again
+            // and exhausts the retries → InfraUnavailable, never a phantom score.
+            let _ = reverify_lane().await;
+        }
+        // UNRECOVERABLE infra fault: the lane never returned to a decode-ready state across
+        // INFRA_FAULT_RETRIES re-verify+retry cycles. Record the row for forensics, mark the
+        // run void, and ABORT — every remaining task would only accrue more phantom zeros on
+        // a dead lane. The caller reports InfraUnavailable, NEVER a fake pass_rate.
+        if let Some(cause) = &settled.inference_error {
+            infra_faults += 1;
+            if infra_reason.is_none() {
+                infra_reason = Some(format!("task '{}': {cause}", t.id));
+            }
+            results.push(EvalTaskResult {
+                id: t.id.clone(),
+                ok: false,
+                grade: format!("infra unavailable (lane never recovered): {cause}"),
+                acts: 0,
+                answer: String::new(),
+                latency_ms: 0,
+                output_tokens: 0,
+                tokens_per_second: 0.0,
+                decode_tokens_per_second: 0.0,
+                cache_hit_rate: 0.0,
+                prefill_ms: 0,
+                decode_ms: 0,
+            });
+            tracing::warn!(
+                probe_class = "eval.run.infra_unavailable",
+                task = %t.id,
+                attempted = results.len(),
+                cause = %cause,
+                "aborting run as InfraUnavailable — serving lane never recovered; refusing to \
+                 publish a phantom score over a dead lane"
+            );
+            break;
+        }
         let answer = settled.spoken.clone().unwrap_or_default();
-        let (ok, grade) = if let Some(cause) = &settled.inference_error {
-            // The model call FAILED (timeout, 5xx, a serving lane refusing a model it
-            // isn't hosting) — NOT a wrong answer. Grade it a named infra failure so a
-            // serving hiccup never masquerades as a capability miss and corrupts the
-            // accuracy signal ([[self-improvement-is-a-control-loop]]: the reward is
-            // only as trustworthy as the metric). `ok = false`, but the grade tells the
-            // truth instead of a misleading "no match".
-            (false, format!("inference failed: {cause}"))
-        } else if !t.ui_checks.is_empty() {
+        // `settled.inference_error` is None here — the abort above consumed every infra
+        // fault, so this grades a REAL verdict (a working lane produced an answer, right or
+        // wrong). No `inference_error` arm remains: an infra fault can no longer masquerade
+        // as a graded miss.
+        let (ok, grade) = if !t.ui_checks.is_empty() {
             // FUNCTIONAL WEB-DEV: grade what her UI ACTUALLY RENDERED. Observe `target` through
             // her own eyes (the eye-node path) and score the element tree — the money signal for
             // "can a persona build a UI that works", judged on the structure a non-visual model
@@ -2560,7 +2839,7 @@ async fn run_pass(
         });
         report_task_graded(&t.id, ok, total_acts, m.latency_ms, pass, results.len(), tasks.len());
     }
-    (pass, results)
+    PassOutcome { pass, results, infra_faults, infra_reason }
 }
 
 /// One deliberation on a forked cycle: deliver `prompt` through the SAME live burst formatter
@@ -2619,9 +2898,11 @@ async fn run_pass_team(
     tasks: &[EvalTask],
     room: Uuid,
     max_acts: usize,
-) -> (u32, Vec<EvalTaskResult>) {
+) -> PassOutcome {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
+    let mut infra_faults = 0u32;
+    let mut infra_reason: Option<String> = None;
     // Natural proctored exam, team edition: both teammates sit down ONCE (rewind to the
     // pre-eval frame at pass start) and then work the sheet CONTINUOUSLY — the writer carries
     // what she learned on earlier tasks; the reviewer builds a sense of the writer's habits.
@@ -2656,12 +2937,41 @@ async fn run_pass_team(
         let r = eval_settle(reviewer, room, &review_prompt, max_acts).await;
         let answer = r.spoken.clone().unwrap_or_default();
 
+        // Infra fault on EITHER teammate's generation → the lane failed, not a wrong
+        // answer. Team mode has no per-task retry loop (the solo run_pass owns bounded
+        // recovery); here we classify + ABORT so an infra fault never fake-zeros the team
+        // number. Threading the full re-verify+retry into the two-solver loop is a scoped
+        // follow-up. [[proctored-exam-session-dependable-benchmark]]
+        if let Some(cause) = r.inference_error.clone().or_else(|| w.inference_error.clone()) {
+            infra_faults += 1;
+            if infra_reason.is_none() {
+                infra_reason = Some(format!("task '{}': {cause}", t.id));
+            }
+            results.push(EvalTaskResult {
+                id: t.id.clone(),
+                ok: false,
+                grade: format!("infra unavailable (lane never recovered): {cause}"),
+                acts: 0,
+                answer: String::new(),
+                latency_ms: 0,
+                output_tokens: 0,
+                tokens_per_second: 0.0,
+                decode_tokens_per_second: 0.0,
+                cache_hit_rate: 0.0,
+                prefill_ms: 0,
+                decode_ms: 0,
+            });
+            tracing::warn!(
+                probe_class = "eval.run.infra_unavailable",
+                task = %t.id,
+                attempted = results.len(),
+                cause = %cause,
+                "aborting team run as InfraUnavailable — serving lane failed mid-exam"
+            );
+            break;
+        }
         // Grade the FINAL (reviewer's) answer — SAME branches as solo run_pass.
-        let (ok, grade) = if let Some(cause) =
-            r.inference_error.clone().or_else(|| w.inference_error.clone())
-        {
-            (false, format!("inference failed: {cause}"))
-        } else if let Some(dod) = &t.dod_shell {
+        let (ok, grade) = if let Some(dod) = &t.dod_shell {
             run_dod(dod).await
         } else if let Some(test) = &t.test {
             test_grade(&answer, t.lang.as_deref().unwrap_or("rust"), test).await
@@ -2690,7 +3000,7 @@ async fn run_pass_team(
         });
         report_task_graded(&t.id, ok, acts, m.latency_ms, pass, results.len(), tasks.len());
     }
-    (pass, results)
+    PassOutcome { pass, results, infra_faults, infra_reason }
 }
 
 // Stateless → self-register onto the ONE registry (descriptor + runtime object).
@@ -2738,6 +3048,83 @@ mod tests {
             prefill_ms: 0,
             decode_ms: 0,
         }
+    }
+
+    /// A graded row with an explicit ok, for building fault-injection PassOutcomes.
+    fn graded_row(id: &str, ok: bool, grade: &str) -> EvalTaskResult {
+        EvalTaskResult {
+            id: id.into(),
+            ok,
+            grade: grade.into(),
+            acts: 0,
+            answer: String::new(),
+            latency_ms: 10,
+            output_tokens: 5,
+            tokens_per_second: 0.5,
+            decode_tokens_per_second: 0.5,
+            cache_hit_rate: 0.0,
+            prefill_ms: 1,
+            decode_ms: 9,
+        }
+    }
+
+    // what this catches (Proctored Exam Session, Slice B): the fake-zero. A run whose
+    // serving lane died mid-exam (≥1 unrecoverable infra fault) must resolve to
+    // InfraUnavailable, NAMING the task and cause — NEVER a scored `pass_rate: 0.0` that
+    // reads as "she got them all wrong". If infra_verdict ever returned None on a faulted
+    // run, the harness would publish a phantom 0% over a dead lane again — the exact
+    // untrustworthy-by-construction bug this slice exists to kill.
+    // [[proctored-exam-session-dependable-benchmark]]
+    #[test]
+    fn infra_faulted_run_is_infra_unavailable_never_a_fake_zero() {
+        // Two tasks graded, then the lane died on the third and never came back.
+        let outcome = PassOutcome {
+            pass: 1,
+            results: vec![
+                graded_row("t1", true, "tests passed"),
+                graded_row("t2", false, "no match"),
+                graded_row(
+                    "t3",
+                    false,
+                    "infra unavailable (lane never recovered): model 'X' is not the active served model",
+                ),
+            ],
+            infra_faults: 1,
+            infra_reason: Some(
+                "task 't3': model 'X' is not the active served model (serving: <none>, ready: false)"
+                    .into(),
+            ),
+        };
+        let verdict = infra_verdict(&outcome).expect("a run with an infra fault must be InfraUnavailable");
+        assert_eq!(verdict.infra_faults, 1);
+        assert_eq!(verdict.tasks_attempted, 3, "attempted-so-far, exam incomplete");
+        assert!(
+            verdict.reason.contains("t3") && verdict.reason.contains("active served model"),
+            "the reason names the task + the infra cause: {}",
+            verdict.reason
+        );
+    }
+
+    // what this catches: the OTHER half of trustworthiness — a genuinely-wrong answer on a
+    // WORKING lane is a REAL 0, counted, NOT masked as infra. If infra_verdict fired on any
+    // failed task (rather than only on unrecoverable inference faults), we'd hide real
+    // capability misses behind "infra unavailable" and the number would over-report. Zero
+    // infra faults ⇒ Scored, the wrong answers counted.
+    #[test]
+    fn wrong_answers_on_a_working_lane_are_scored_not_infra() {
+        let outcome = PassOutcome {
+            pass: 0,
+            results: vec![
+                graded_row("t1", false, "no match"),
+                graded_row("t2", false, "assertion failed"),
+            ],
+            infra_faults: 0,
+            infra_reason: None,
+        };
+        assert!(
+            infra_verdict(&outcome).is_none(),
+            "a real 0 on a verified lane is Scored, never InfraUnavailable"
+        );
     }
 
     // what this catches: LEARN mode's lesson keeps the EXPERIENCE (what she was

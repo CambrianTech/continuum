@@ -174,6 +174,7 @@ pub mod daemon;
 pub mod governor;
 pub mod ledger;
 pub mod lease;
+pub mod placement;
 
 pub use crate::cognition::{
     ResourceClass, TargetSilicon, ThroughputLease, ThroughputLeaseError, ThroughputLeaseRegistry,

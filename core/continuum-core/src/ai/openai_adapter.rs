@@ -1254,6 +1254,22 @@ struct OpenAITimings {
 /// total-request timeout that killed legitimately-long generations.
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 
+/// A local single-resident lane can be RELAUNCHED out from under an in-flight POST —
+/// grow-back (#214), a genome page-in, or memory pressure all bounce the llama-server
+/// process, and the published serving snapshot can lag at `ready=true` for the ~seconds
+/// the socket is actually refused (the pre-flight guard trusts the `watch` snapshot; the
+/// socket is the ground truth, and a watch channel is inherently slightly behind the
+/// process). A `connect` error is therefore "the lane is mid-relaunch", not "the lane is
+/// gone": the connection never opened, so nothing was streamed to the sink, and
+/// re-sending the SAME lane/model is idempotent — resilience, NOT a fallback
+/// ([[fallbacks-are-illegal-fail-loud]]). Retry the connect with linear backoff
+/// (1s, 2s, … ≈ 21s total) to ride out a relaunch, then fail loud if it never returns.
+/// Scoped to the local resident lane — remote endpoints don't relaunch under us.
+/// Glass-boxed 2026-07-20: one legitimate grow-back relaunch zeroed hard-rs 0/8, every
+/// task `Connection refused (os error 61)` to :58057 mid-eval.
+const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
+const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// One streamed SSE frame from an OpenAI-compatible `/v1/chat/completions` with
 /// `stream: true`. Each frame carries an incremental `delta`; `usage` arrives only
 /// on the final frame (requires `stream_options.include_usage`).
@@ -1914,31 +1930,67 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        let send_start = Instant::now();
-        let response = request_builder.json(&body).send().await.map_err(|e| {
-            // reqwest::Error's top-level Display often collapses the
-            // real cause (timeout vs connect vs body-write) into a
-            // generic "error sending request" string. Walk the error
-            // source chain so the log shows the actual terminal
-            // reason — critical for debugging stalls where the
-            // outer message alone is useless.
-            let mut chain: Vec<String> = vec![e.to_string()];
-            let mut cur: &dyn std::error::Error = &e;
-            while let Some(src) = cur.source() {
-                chain.push(src.to_string());
-                cur = src;
+        // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
+        // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
+        // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
+        // bounded linear backoff, then fail loud. `request_builder` carries no body yet
+        // (`.json` is applied per attempt below), so `try_clone` always succeeds.
+        let mut connect_retries: u32 = 0;
+        let response = loop {
+            let send_start = Instant::now();
+            let attempt_builder = request_builder
+                .try_clone()
+                .expect("bodyless request builder is always cloneable");
+            match attempt_builder.json(&body).send().await {
+                Ok(resp) => break resp,
+                Err(e)
+                    if e.is_connect()
+                        && self.config.single_resident_model
+                        && connect_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+                {
+                    connect_retries += 1;
+                    let backoff = LANE_RELAUNCH_RETRY_BASE * connect_retries;
+                    crate::probe!(
+                        class = "inference.lane_relaunch_retry",
+                        provider = self.config.provider_id.as_str(),
+                        attempt = connect_retries,
+                        backoff_ms = backoff.as_millis() as u64,
+                        "local lane refused the connection (mid-relaunch) — retrying the same lane",
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Err(e) => {
+                    // reqwest::Error's top-level Display often collapses the
+                    // real cause (timeout vs connect vs body-write) into a
+                    // generic "error sending request" string. Walk the error
+                    // source chain so the log shows the actual terminal
+                    // reason — critical for debugging stalls where the
+                    // outer message alone is useless.
+                    let mut chain: Vec<String> = vec![e.to_string()];
+                    let mut cur: &dyn std::error::Error = &e;
+                    while let Some(src) = cur.source() {
+                        chain.push(src.to_string());
+                        cur = src;
+                    }
+                    return Err(format!(
+                        "{} POST failed after {}ms{}: {} (kind: timeout={}, connect={}, request={}, body={})",
+                        self.config.name,
+                        send_start.elapsed().as_millis(),
+                        if connect_retries > 0 {
+                            format!(" ({connect_retries} connect-retries exhausted — lane never came back)")
+                        } else {
+                            String::new()
+                        },
+                        chain.join(" -> "),
+                        e.is_timeout(),
+                        e.is_connect(),
+                        e.is_request(),
+                        e.is_body()
+                    ));
+                }
             }
-            format!(
-                "{} POST failed after {}ms: {} (kind: timeout={}, connect={}, request={}, body={})",
-                self.config.name,
-                send_start.elapsed().as_millis(),
-                chain.join(" -> "),
-                e.is_timeout(),
-                e.is_connect(),
-                e.is_request(),
-                e.is_body()
-            )
-        })?;
+        };
 
         if !response.status().is_success() {
             let status = response.status();
