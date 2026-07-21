@@ -122,6 +122,18 @@ pub struct GenomeTeachParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub split_ratio: Option<f64>,
+    /// Fire-and-stream (#86): true runs the corpus-gen in the CORE and returns a `run_id`
+    /// HANDLE immediately — the client never blocks for the many-minute run, the work
+    /// survives disconnect, progress streams as events, and the terminal result lands in
+    /// a run ledger polled by `genome/teach-status --run_id`. Default false (inline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// The run handle. Minted by the command when omitted; the detached ack AND the ledger
+    /// row carry it, so the two halves of fire-and-poll join on one id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 /// Per-task outcome — so a low yield is diagnosable (which tasks the teacher never
@@ -143,10 +155,19 @@ pub struct GenomeTeachTaskOutcome {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachResult.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachResult {
+    /// True = this is a fire-and-stream JOB HANDLE (#86), NOT a completed run: teach was
+    /// spawned detached and its real result is in the run ledger (poll `genome/teach-status
+    /// --run_id`), not in the fields below (which are defaulted on the ack).
+    #[serde(default)]
+    pub detached: bool,
+    /// The run handle — present on a detached ack AND on the ledger row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
     /// The dataset name written.
     pub dataset: String,
     /// The teacher model used (resolved, so the trend row is attributable).
@@ -239,6 +260,43 @@ pub fn subscribe_teach_progress() -> tokio::sync::watch::Receiver<Option<TeachPr
 
 fn set_teach_progress(p: TeachProgress) {
     let _ = teach_progress_tx().send(Some(p));
+}
+
+/// The run ledger for a detached teach job — one JSON row per `run_id`, the DURABLE half of
+/// fire-and-stream (#86). The watch cell + bus carry PROGRESS (push, live); this file carries
+/// the terminal RESULT, cross-process and surviving the run, so `genome/teach-status --run_id`
+/// resolves to complete+result (or a failed row) regardless of who's watching or when.
+fn teach_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
+    std::env::var("HOME").ok().map(|h| {
+        std::path::PathBuf::from(h)
+            .join(".continuum")
+            .join("progress")
+            .join("teach")
+            .join(format!("{run_id}.json"))
+    })
+}
+
+/// Write the terminal row for a detached run — success carries the full result, failure
+/// carries the loud error keyed on the SAME run_id (a poller sees the failure, never waits
+/// on a corpse — the eval `append_failed_ledger` lesson). [[fallbacks-are-illegal-fail-loud]]
+fn write_teach_ledger(run_id: &str, result: Result<&GenomeTeachResult, String>) {
+    let Some(path) = teach_ledger_path(run_id) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let row = match result {
+        Ok(r) => serde_json::json!({ "runId": run_id, "complete": true, "ok": true, "result": r }),
+        Err(e) => serde_json::json!({ "runId": run_id, "complete": true, "ok": false, "error": e }),
+    };
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&row).unwrap_or_default());
+}
+
+fn read_teach_ledger(run_id: &str) -> Option<serde_json::Value> {
+    let path = teach_ledger_path(run_id)?;
+    let txt = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&txt).ok()
 }
 
 /// Emit ONE teach progress event to the message bus, so a UI / the operator can WATCH
@@ -535,6 +593,47 @@ impl ActionCommand for GenomeTeach {
     type Output = GenomeTeachResult;
 
     async fn run(&self, _ctx: &Ctx, p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+        // Fire-and-stream (#86): `detach` runs the many-minute corpus-gen IN THE CORE and
+        // returns a run_id HANDLE immediately — never blocking the client, surviving its
+        // disconnect. Progress streams as events (genome:teach:progress); the terminal
+        // result lands in the run ledger, polled by `genome/teach-status --run_id`. This is
+        // the pattern for every long run — mirrors cognition/eval's detach exactly.
+        // [[command-async-shape-prefer-stream-never-block]]
+        if p.detach.unwrap_or(false) {
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let mut inner = p.clone();
+            inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
+            let ledger_run = run_id.clone();
+            tokio::spawn(async move {
+                let res = GenomeTeach::run_teach(inner).await;
+                write_teach_ledger(&ledger_run, res.as_ref().map_err(|e| e.to_string()));
+                match res {
+                    Ok(r) => tracing::info!(
+                        run_id = %ledger_run, solved = r.tasks_solved, total = r.tasks_total,
+                        "genome/teach detached run complete — result in run ledger"
+                    ),
+                    Err(e) => tracing::error!(run_id = %ledger_run, error = %e, "genome/teach detached run failed"),
+                }
+            });
+            return Ok(GenomeTeachResult {
+                detached: true,
+                run_id: Some(run_id),
+                ..Default::default()
+            });
+        }
+        GenomeTeach::run_teach(p).await
+    }
+}
+
+impl GenomeTeach {
+    /// The corpus-gen body — ctx-free so it runs inline OR from a detached `tokio::spawn`
+    /// (#86 fire-and-stream). Owns its params; reaches serving + dataset packaging via their
+    /// global seams, needing neither `self` nor `ctx`.
+    async fn run_teach(p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
         // Task source: inline → teach_set JSONL → committed default. A missing
         // explicit path is a loud error (don't silently teach an empty set).
         let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
@@ -602,6 +701,8 @@ impl ActionCommand for GenomeTeach {
 
         let tasks_solved = examples.len();
         Ok(GenomeTeachResult {
+            detached: false,
+            run_id: p.run_id.clone(),
             dataset: name,
             teacher_model,
             dataset_dir: dataset_dir.display().to_string(),
@@ -633,14 +734,29 @@ pub struct GenomeTeachStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusParams.ts")]
-pub struct GenomeTeachStatusParams {}
+#[serde(rename_all = "camelCase")]
+pub struct GenomeTeachStatusParams {
+    /// The detached run's handle. With it, the terminal RESULT resolves from the run ledger
+    /// (complete + result/error). Omit for LIVE progress only (the "how's it going" poll).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema, Default)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusResult.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachStatusResult {
-    /// Live progress of the teach run in this process, or null if none has run yet.
-    /// Check `updatedAtMs` for staleness on a long-finished run.
+    /// True once the run's ledger row exists (the detached run finished — check
+    /// `result.ok`). Always false when polled without a run_id (live-progress only).
+    pub complete: bool,
+    /// The terminal ledger row `{ok, result|error}` when complete, else null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub result: Option<serde_json::Value>,
+    /// Live progress of the currently-running teach — the mid-run scoreboard a progress
+    /// bar renders (done/total/currentTask/solved). Null until the first milestone fires;
+    /// check `updatedAtMs` for staleness on a long-finished run.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub progress: Option<TeachProgress>,
@@ -651,19 +767,25 @@ impl ActionCommand for GenomeTeachStatus {
     const NAME: &'static str = "genome/teach-status";
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Poll the LIVE progress of a running genome/teach: {done, total, currentTask, solved}. \
-         The observable surface for a many-minute corpus-gen run — a UI renders it as a progress \
-         bar, an operator sees which task it's on, a poller knows it's alive vs wedged.";
+        "Poll a detached genome/teach by run_id: {complete, result} from the run ledger + LIVE \
+         {done, total, currentTask, solved} progress. The observable half of fire-and-stream — a \
+         UI renders it as a progress bar, a poller knows alive-vs-done, without holding a \
+         connection open across the many-minute run.";
     type Params = GenomeTeachStatusParams;
     type Output = GenomeTeachStatusResult;
 
     async fn run(
         &self,
         _ctx: &Ctx,
-        _p: GenomeTeachStatusParams,
+        p: GenomeTeachStatusParams,
     ) -> Result<GenomeTeachStatusResult, CommandError> {
+        // Live progress rides on EVERY poll (with or without a run_id).
+        let progress = subscribe_teach_progress().borrow().clone();
+        let row = p.run_id.as_deref().and_then(read_teach_ledger);
         Ok(GenomeTeachStatusResult {
-            progress: subscribe_teach_progress().borrow().clone(),
+            complete: row.is_some(),
+            result: row,
+            progress,
         })
     }
 }
