@@ -49,7 +49,7 @@ use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::gym_grader::test_grade;
 use crate::cognition::inference_session::resolve_model;
-use crate::inference::llama_server::PROVIDER_ID;
+use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT, PROVIDER_ID};
 use crate::modules::ai_provider::global_registry;
 use crate::modules::dataset::DatasetService;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
@@ -66,6 +66,17 @@ const DEFAULT_DATASET_NAME: &str = "coder-reflex-teacher";
 /// `pub(crate)` so the [`curriculum`](super::curriculum) synthesizer reuses the same
 /// default — one place decides how many fixes a lesson gets, command or loop.
 pub(crate) const DEFAULT_MAX_FIX_ITERS: u32 = 4;
+
+/// Hard ceiling on ONE teacher generation. A healthy coder generation on the local
+/// served lane runs well under this even at low tok/s; exceeding it means the lane
+/// wedged (mid-reconcile, torn down under the request, or 500'd) and the HTTP call
+/// would otherwise HANG THE WHOLE JOB FOREVER — the 2026-07-21 stall: teach launched
+/// while serving was relaunching the live lane, the first `generate_text` hit a
+/// not-ready lane, and the job parked at 0% with no dataset. A timeout turns an
+/// infinite hang into a per-task failure (recorded, the run continues), and
+/// `await_ready_serving` before the loop makes the hit rare in the first place.
+/// [[benchmark-jitter-was-eval-lane-race-not-model-nondeterminism]]
+const TEACHER_GEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Teacher decoding temperature default — low, because we want correct code, and a
 /// fix turn should converge on the error, not wander. `pub(crate)` for the same
@@ -195,6 +206,32 @@ fn message_text(m: &ChatMessage) -> String {
     }
 }
 
+/// Emit ONE teach progress event to the message bus, so a UI / the operator can WATCH
+/// corpus generation live instead of black-box-waiting for the final result (the whole
+/// point of long jobs being observable — the same `MessageBus` seam `emit_eval_phase`
+/// uses for `eval:phase`). Feedback is a first-class cross-modality dimension: this
+/// long job streams its own progress. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
+fn emit_teach_progress(done: usize, total: usize, task_id: &str, solved: bool, with_correction: usize) {
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only(
+            "genome:teach:progress",
+            serde_json::json!({
+                "done": done,
+                "total": total,
+                "task": task_id,
+                "solved": solved,
+                "withCorrection": with_correction,
+                "atMs": crate::persona::trace::now_ms(),
+            }),
+        );
+    }
+    tracing::info!(
+        target: "genome::teach",
+        done, total, task = task_id, solved, with_correction,
+        "teach task graded"
+    );
+}
+
 /// Convert a validated trajectory (the full write→error→fix→pass turn sequence) into
 /// the ShareGPT `{"messages":[{role,content},...]}` shape `dataset/*` + `mlx_lm.lora`
 /// consume. Order is preserved — that ordering IS the lesson (task → attempt →
@@ -296,6 +333,21 @@ pub async fn synthesize_remediation(
     let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
     let mut with_correction = 0usize;
 
+    // WAIT for the served teacher model to be READY before the first generation. The
+    // teacher runs on the local serving lane; if teach launches while serving is
+    // relaunching that lane (a genome page-in, a window grow-back), the first
+    // `generate_text` hits a not-ready lane and — with no readiness gate and no
+    // timeout — HANGS FOREVER, parking the whole job at 0% with no dataset (glass-boxed
+    // 2026-07-21). This is the same race the eval lane fixed; the teacher path needs
+    // the same discipline. A timeout (below) still recovers if the lane wedges mid-run.
+    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
+        return Err(CommandError::Internal(
+            "no served model became ready within the serving-wait budget — cannot run the teacher. \
+             Bring up serving (ai/inference/serve) before genome/teach."
+                .to_string(),
+        ));
+    }
+
     for task in tasks {
         // Only test-graded tasks can be validated → become corpus. A task with no
         // `test` is dropped with a named reason, never silently passed.
@@ -322,7 +374,28 @@ pub async fn synthesize_remediation(
 
         // First generation + up to `max_fix_iters` corrections.
         for _ in 0..=max_fix_iters {
-            let answer = teacher_generate(teacher_model, trajectory.clone(), temperature).await?;
+            // TIMEOUT the generation — a wedged lane must drop THIS task, not hang the
+            // whole job (2026-07-21 stall). On timeout/error, record the reason and move
+            // on; the run stays productive and the shortfall is diagnosable.
+            let answer = match tokio::time::timeout(
+                TEACHER_GEN_TIMEOUT,
+                teacher_generate(teacher_model, trajectory.clone(), temperature),
+            )
+            .await
+            {
+                Ok(Ok(a)) => a,
+                Ok(Err(e)) => {
+                    last_error = Some(format!("teacher generation failed: {e}"));
+                    break;
+                }
+                Err(_) => {
+                    last_error = Some(format!(
+                        "teacher generation exceeded {}s — the serving lane wedged; task dropped",
+                        TEACHER_GEN_TIMEOUT.as_secs()
+                    ));
+                    break;
+                }
+            };
             attempts += 1;
             trajectory.push(ChatMessage::text("assistant", &answer));
 
@@ -355,6 +428,8 @@ pub async fn synthesize_remediation(
             attempts,
             last_error: if solved { None } else { last_error },
         });
+        // Stream progress so the run is watchable live (events, not black-box wait).
+        emit_teach_progress(outcomes.len(), tasks.len(), &task.id, solved, with_correction);
     }
 
     Ok(RemediationCorpus {
