@@ -77,6 +77,21 @@ const PORT_SCAN_WINDOW: u16 = 64;
 /// launch can't hang the daemon's reconcile forever.
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Readiness budget for an EPHEMERAL lane ([`EphemeralServingLane`]) — the eval /
+/// teacher measurement lanes. These cold-load a SECOND large GGUF (a 24B Devstral)
+/// on a Metal GPU that ALREADY holds the live persona lane's copy, so the weight
+/// mmap + the first-decode Metal graph/command-buffer warmup runs under GPU
+/// co-residency and legitimately exceeds the live lane's 90s budget. Glass-boxed
+/// 2026-07-21: a co-resident cold Devstral-24B teacher lane answered `/health` 200
+/// but its decode smoke-probe was still warming at the 90s cap — a PREMATURE FALSE
+/// FAILURE (the lane served completions immediately after), which then dropped the
+/// teacher onto the live LoRA lane and yielded 0 corpus. Same doctrine as the
+/// 30→90 live-lane bump (see [`DEFAULT_SERVING_WAIT`]): fail LOUD, not FAST — a
+/// generous bound that covers the real physical event, still bounded so a truly
+/// wedged lane fails loud. Scoped to ephemeral lanes via `is_live_lane` so the live
+/// lane's tighter fail-loud budget is untouched.
+const EPHEMERAL_READY_TIMEOUT: Duration = Duration::from_secs(240);
+
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 const READY_POLL: Duration = Duration::from_millis(500);
 
@@ -804,8 +819,17 @@ impl LlamaServerProcess {
     /// the adopt path in `ensure_model_serving` TRUST a child we own without
     /// re-probing every reconcile tick.)
     async fn wait_ready(&self) -> Result<(), LlamaServerError> {
+        // The live lane keeps the tight 90s fail-loud budget; an ephemeral
+        // measurement lane gets the co-resident cold-large-model budget (it loads a
+        // SECOND large GGUF beside the live one — the warmup legitimately runs
+        // longer). Scoped by `is_live_lane` so a wedged LIVE lane still fails fast.
+        let budget = if self.is_live_lane {
+            READY_TIMEOUT
+        } else {
+            EPHEMERAL_READY_TIMEOUT
+        };
         let health = format!("{}/health", self.root);
-        let deadline = Instant::now() + READY_TIMEOUT;
+        let deadline = Instant::now() + budget;
         let mut last = String::from("no response");
         loop {
             match self.client.get(&health).timeout(PROBE_TIMEOUT).send().await {
@@ -822,7 +846,7 @@ impl LlamaServerProcess {
                 Err(e) => last = e.to_string(),
             }
             if Instant::now() >= deadline {
-                return Err(LlamaServerError::NotReady(READY_TIMEOUT, last));
+                return Err(LlamaServerError::NotReady(budget, last));
             }
             tokio::time::sleep(READY_POLL).await;
         }
@@ -900,16 +924,22 @@ impl EphemeralServingLane {
         let port = first_free_port(base_port);
         let root = format!("http://{}:{}", DEFAULT_HOST, port);
         let proc = LlamaServerProcess::with_root(root);
-        // HARD wall-clock cap on the WHOLE bring-up. `wait_ready`'s READY_TIMEOUT only
+        // HARD wall-clock cap on the WHOLE bring-up. `wait_ready`'s budget only
         // bounds the /health poll, and its deadline is checked BETWEEN attempts — so a
         // hang INSIDE an attempt (a stalled `decode_smoke_ok`, a wedged model-mmap, a
         // process-launch that never returns) can wait past it indefinitely. Glass-boxed
         // 2026-07-19: an ephemeral eval lane hung 11 min with no process and free VRAM,
         // no timeout ever firing — a silent glacial wedge that violated fail-loud. This
-        // net guarantees the eval fails LOUD after the daemon's own load budget instead.
+        // net guarantees the eval fails LOUD after the lane's own load budget instead.
         // On timeout `proc` drops → its `Drop` kills any child it launched. Eval lanes
         // only; the live lane keeps its own (fail-loud-not-fast) bring-up policy.
-        match tokio::time::timeout(DEFAULT_SERVING_WAIT, proc.serve(target)).await {
+        // MUST exceed the ephemeral `wait_ready` budget (EPHEMERAL_READY_TIMEOUT) + margin
+        // so the INNER deadline fires first with its specific `/health`/decode reason —
+        // otherwise this coarse net pre-empts the diagnostic error (glass-boxed 2026-07-21:
+        // a co-resident cold 24B warmup exceeded the old 90s inner budget; the fix raised
+        // the inner budget, so this outer cap must follow or it clips the warmup at 120s).
+        let spawn_cap = EPHEMERAL_READY_TIMEOUT + Duration::from_secs(30);
+        match tokio::time::timeout(spawn_cap, proc.serve(target)).await {
             Ok(res) => res?,
             Err(_) => {
                 return Err(LlamaServerError::NotReady(

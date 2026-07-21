@@ -109,11 +109,14 @@ fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
 /// a cognition copy onto it. Named fields, NOT a positional 4-tuple, so a new piece of
 /// lane state threads as ONE field instead of a fifth positional slot every caller
 /// must re-destructure in the right order ([[structs-by-reference-not-massive-param-lists]]).
-struct EvalLane {
+pub(crate) struct EvalLane {
     /// The throwaway server; kills its process on drop (#59).
     lane: crate::inference::llama_server::EphemeralServingLane,
-    /// Adapter pinned to THIS lane (never the global serving root).
-    adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+    /// Adapter pinned to THIS lane (never the global serving root). `pub(crate)` so the
+    /// teacher path (`genome/teach`) can generate against a DEDICATED bare-base lane —
+    /// the same isolation that makes the eval score trustworthy — instead of the live
+    /// multi-LoRA serving lane that OOMs the Metal backend on a real generation (#175).
+    pub(crate) adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     /// The lane's REAL served `/props` window — what the fork's cognition budgets against.
     served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
@@ -516,7 +519,7 @@ async fn spawn_gene_eval_lane(
 /// It's what makes the same-model matrix — hold the harness fixed, vary the model — fall
 /// out of one command, with no serving-pin race. Fails loud (never a substitute base) if
 /// the id isn't in the registry or the lane won't come up.
-async fn spawn_base_eval_lane(
+pub(crate) async fn spawn_base_eval_lane(
     base_id: &str,
 ) -> Result<EvalLane, CommandError> {
     use crate::ai::adapter::AIProviderAdapter;

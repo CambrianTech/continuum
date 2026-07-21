@@ -419,10 +419,16 @@ fn build_sharegpt(messages: &[ChatMessage]) -> Value {
     json!({ "messages": msgs })
 }
 
-/// One teacher generation. Resolves the adapter the canonical way (no injected
-/// state — mirrors `cognition/generate_response`), acquiring + dropping the registry
-/// read guard within the call so it's never held across the multi-task loop.
+/// One teacher generation. When `dedicated` is `Some`, it generates against a DEDICATED
+/// bare-base measurement lane (the same isolation `cognition/eval` uses) — never the live
+/// multi-LoRA serving lane, which OOMs the Metal backend on a real generation (#175: the
+/// live lane's 5 co-resident genome LoRAs + big window can't sustain a 300-token decode; a
+/// tiny readiness smoke-decode passes but the real generation wedges → reap/respawn churn →
+/// a 0-corpus teach). When `dedicated` is `None` (the clean lane couldn't be stood up) it
+/// degrades to the live serving lane via the registry — resolved the canonical way, guard
+/// acquired + dropped within the call so it's never held across the multi-task loop.
 async fn teacher_generate(
+    dedicated: Option<&std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
     model: &str,
     messages: Vec<ChatMessage>,
     temperature: f32,
@@ -452,6 +458,20 @@ async fn teacher_generate(
         persona_id: None,
     };
 
+    // Dedicated clean lane: generate directly against its pinned adapter. This is the
+    // path that WORKS — the eval lane proves a bare-base lane sustains real generations
+    // (28/44 on hard-rs) where the live multi-LoRA lane wedges.
+    if let Some(adapter) = dedicated {
+        let response: TextGenerationResponse = adapter
+            .generate_text(request)
+            .await
+            .map_err(CommandError::Internal)?;
+        return Ok(response.text);
+    }
+
+    // Degrade path: no clean lane came up — resolve the live serving adapter the
+    // canonical way. May inherit the #175 OOM, but a shared-lane attempt beats no
+    // attempt, and the reason we're here was already warned loud at spawn.
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
     let (_provider_id, adapter) = registry
@@ -523,6 +543,30 @@ pub async fn synthesize_remediation(
         ));
     }
 
+    // Stand up a DEDICATED bare-base measurement lane for the teacher — the SAME isolation
+    // `cognition/eval` uses to score reliably. The live serving lane carries the persona's
+    // co-resident genome LoRAs + a big window; a real 300-token teacher generation OOMs the
+    // Metal backend there (#175), the daemon reaps+respawns, a tiny readiness smoke-decode
+    // re-passes, and the next generation wedges again → churn → a 0-corpus teach. A clean
+    // lane (no LoRA, eval-sized window) sustains the generation exactly as the eval lane
+    // does. Held for the whole loop; its process is killed on drop (#59). On spawn failure
+    // we DEGRADE-LOUD to the live lane (a shared attempt beats no attempt), mirroring the
+    // eval branch's degrade — the reason is visible, never a silent `.ok()`.
+    let dedicated_lane = match crate::cognition::eval::spawn_base_eval_lane(teacher_model).await {
+        Ok(lane) => Some(lane),
+        Err(e) => {
+            tracing::warn!(
+                target: "genome::teach",
+                teacher_model = %teacher_model,
+                error = %e,
+                "dedicated teacher lane failed to come up — DEGRADING to the live serving lane \
+                 (may inherit the #175 multi-LoRA OOM). Fix the lane; a shared-lane teach may yield 0."
+            );
+            None
+        }
+    };
+    let teacher_adapter = dedicated_lane.as_ref().map(|l| l.adapter.clone());
+
     // MILESTONE: started — carries the denominator so a progress bar can size itself
     // before the first (slow) generation.
     emit_teach_milestone("started", 0, tasks.len(), 0);
@@ -558,7 +602,7 @@ pub async fn synthesize_remediation(
         // — a timeout is a guess about health, and guessing is the smell we're removing.
         // [[command-async-shape-prefer-stream-never-block]]
         for _ in 0..=max_fix_iters {
-            let answer = match teacher_generate(teacher_model, trajectory.clone(), temperature).await {
+            let answer = match teacher_generate(teacher_adapter.as_ref(), teacher_model, trajectory.clone(), temperature).await {
                 Ok(a) => a,
                 Err(e) => {
                     last_error = Some(format!("teacher generation failed: {e}"));
