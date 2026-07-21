@@ -163,9 +163,28 @@ reusing `ServingSteadyHold`) on a share, and CARRIES the verdict (`ExamAcquire`)
 the explicit, observable, capturable strategic decision — "an algorithm, not a haphazard chaotic
 mess." This is the seam a DIFFERENT-base exam or a grid placement computes `Spawn`/preempt at.
 
-### Slice A2 — grid affinity convergence (SCOPED, deliberately deferred — audit 2026-07-20)
+### Slice A2 — grid affinity convergence — ✅ LANDED (sim-validated, `d68703198`)
 Make grid placement route by MODEL AFFINITY (a node already holding the base warm beats a
 node with more free bytes) instead of the model-blind byte-fill.
+
+**As landed:** `capacity/grid::AffinityFitPolicy` implements `GridPlacementPolicy` — ranks
+candidate nodes affinity-first (warm > free), then local (no hop), then most-free, with NO
+local floor (a fully-warm peer takes the whole demand, leaving the local accelerator free for
+live work — the "video + benchmark at once" answer). Two tests: the outlier
+(`affinity_routes_to_the_warm_peer_over_an_emptier_cold_node` — a warm peer with LESS free RAM
+beats an emptier cold local node; byte-fill routes local+cold-load, affinity routes to the warm
+peer with `local_lanes=0`) and the no-signal fallback (degrades to locality-then-free — a strict
+superset of byte-fill, resilience invariants intact). LocalFirstFit stays as the model-blind
+baseline/negative control it beats. All 7 grid tests green.
+
+**Deliberately deferred (with the live consumer, #180):** the warm-base map is carried on the
+policy (per-scenario) rather than threaded onto the widely-built `GridSnapshot`/`LeaseRequest`
+(`warm_bases` onto `DeviceCapacity`, which is `Copy`, + `base_model_id` onto `LeaseRequest` — a
+~48-site schema change across prod files). That churn buys nothing while these policies are
+simulator-only; it lands when the live grid-serving path actually consumes the policy. The
+affinity IDEA is proven in the gym now.
+
+**Original scoping (kept for the deferred schema work):**
 
 **Audit finding — this is sim-only design work, not a live win yet, and a bigger build than
 "a thin adapter":**
