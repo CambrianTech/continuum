@@ -47,14 +47,23 @@ static PATTERN_THINKING_CONTENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?si)<think(?:ing)?>(.*?)</think(?:ing)?>").expect("thinking content regex")
 });
 
-/// Our OWN internal perception-frame section labels. Some models, asked to reflect,
-/// emit this deliberation scaffold as VISIBLE text instead of a clean turn — glass-boxed
-/// live 2026-07-14: a persona posted `[working-memory] … [analysis] … [what I propose] …
-/// [example] "…"` straight into the room. That's #158 reserved-vocabulary mimicry: she
-/// mirrored the framing we feed her back as speech. This is not a turn; it's leaked
-/// internals.
-const SCAFFOLD_LABELS: [&str; 8] = [
+/// Our OWN internal perception-frame section labels — the reserved block headers the
+/// substrate feeds INTO the prompt (deliberation scaffold + perception blocks). A persona
+/// must NEVER emit these: when they appear in output the model is regurgitating its own
+/// context scaffolding as speech. Glass-boxed live twice:
+///   2026-07-14: a persona posted `[working-memory] … [analysis] … [what I propose] …` as a turn.
+///   2026-07-21: Devstral answered coding tasks with `[TOOL_CALLS][workspace] (no files…) <code>`
+///     and whole `[room-roster]` / `[workspace-map]` block echoes — burying real code under
+///     chaos, or (worse) spending the whole token budget echoing scaffolding and emitting no
+///     code at all. That's #158 reserved-vocabulary mimicry: the model mirrors the framing we
+///     feed it back as its answer. This is not a turn; it's leaked internals.
+/// The perception headers here MUST match the forms actually emitted into the prompt
+/// (`[room-roster]`, `[workspace-map]`, `[workspace]`, `[recall]`, `[context]`, `[actions]`,
+/// `[room-purpose]`, `[no-acts]`) — a header we render but omit here sails through uncaught,
+/// which is exactly the gap this closes.
+const SCAFFOLD_LABELS: [&str; 17] = [
     "[working-memory]",
+    "[working memory]",
     "[your recent messages]",
     "[recent messages]",
     "[analysis]",
@@ -62,7 +71,53 @@ const SCAFFOLD_LABELS: [&str; 8] = [
     "[what changed]",
     "[perception]",
     "[your recent acts]",
+    "[room-roster]",
+    "[workspace-map]",
+    "[workspace]",
+    "[recall]",
+    "[context]",
+    "[actions]",
+    "[room-purpose]",
+    "[no-acts]",
 ];
+
+/// Strip a leaked leading native tool-call control token. `[TOOL_CALLS]` is the
+/// Mistral/Devstral marker that PRECEDES a tool-call payload; when no tool call parses after
+/// it (the model just leaked the reserved marker), a leading occurrence is noise — remove it
+/// and recover the real content beneath. Idempotent: absent marker → unchanged.
+fn strip_leading_tool_call_marker(s: &str) -> &str {
+    s.trim_start()
+        .strip_prefix("[TOOL_CALLS]")
+        .map(str::trim_start)
+        .unwrap_or(s)
+}
+
+/// Strip contiguous LEADING lines that ARE a reserved scaffold header (optionally carrying an
+/// inline body on the same line, e.g. `[workspace] (no files open)`). Recovers the real answer
+/// a model buried under a regurgitated scaffold prefix — the `has_close_elements` code in leak
+/// #2 (2026-07-21) sat directly under a `[workspace] (no files…)` line. Conservative: only
+/// leading, only whole header-lines; stops at the first line that is real content, so a code
+/// fence or prose sentence is never touched. Pure-echo (2+ headers) is handled upstream by the
+/// suppression gate; this recovers the single-header-prefix case.
+fn strip_leading_scaffold_lines(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        let line_end = s.find('\n').unwrap_or(s.len());
+        let line_lower = s[..line_end].to_lowercase();
+        if SCAFFOLD_LABELS
+            .iter()
+            .any(|h| line_lower.trim_start().starts_with(h))
+        {
+            s = if line_end < s.len() {
+                &s[line_end + 1..]
+            } else {
+                ""
+            };
+        } else {
+            return s;
+        }
+    }
+}
 
 /// Is this response a leaked deliberation scaffold rather than a turn? Trigger only on
 /// TWO+ distinct internal labels — one alone ("my [analysis] shows…") can be legitimate
@@ -104,6 +159,12 @@ pub fn clean_response(response: &str) -> CleanResult {
     let after_thinking = PATTERN_THINKING.replace_all(response, "");
     let mut cleaned = after_thinking.trim();
 
+    // Phase 0.4: strip a leaked native `[TOOL_CALLS]` control-token prefix. Devstral/Mistral
+    // emit it before a tool payload; a bare leading occurrence (no parseable call after) is
+    // the reserved marker leaking as speech — remove it before the scaffold checks so a
+    // `[TOOL_CALLS][workspace]…` prefix is seen for the scaffold echo it is. (#158, 2026-07-21)
+    cleaned = strip_leading_tool_call_marker(cleaned);
+
     // Phase 0.5: a LEAKED deliberation scaffold is not a turn — suppress it. Preserve the
     // whole block as thinking (hippocampus still learns from the reasoning) and return
     // empty text so the caller posts nothing; she re-turns cleanly next tick. Better a
@@ -116,6 +177,12 @@ pub fn clean_response(response: &str) -> CleanResult {
             thinking: Some(leaked.join("\n\n")),
         };
     }
+
+    // Phase 0.6: a SINGLE leaked scaffold block as a PREFIX (below the 2+ suppression bar) —
+    // strip the header line(s) and recover the real answer beneath. This is what saves a
+    // correct solution the model wrote under a `[workspace] (no files…)` echo, instead of
+    // grading the chaos. (#158, 2026-07-21)
+    cleaned = strip_leading_scaffold_lines(cleaned);
 
     // Phase 1-4: Apply prefix patterns in priority order
     if let Some(m) = PATTERN_TIMESTAMP_NAME.find(cleaned) {
@@ -348,6 +415,59 @@ mod tests {
     #[test]
     fn normal_turn_untouched_by_scaffold_gate() {
         let msg = "Sure — I'll open models.rs and summarize how providers are wired.";
+        assert_eq!(clean_response(msg).text, msg);
+    }
+
+    // ─── Scaffold-echo leak recovery (#158, glass-boxed live 2026-07-21) ────────
+
+    /// what this catches: leak #2 — Devstral wrote CORRECT code but prefixed it with the
+    /// native marker + a regurgitated `[workspace]` block. The single-header prefix must be
+    /// stripped and the real code recovered, so the gym grades the solution, not the chaos.
+    #[test]
+    fn tool_calls_plus_workspace_prefix_recovers_code() {
+        let leaked = "[TOOL_CALLS][workspace] (no files or repositories are open right now)\n\
+            You're asking me to implement a Rust function. Here's my implementation:\n\n\
+            ```rust\nfn has_close_elements(n: Vec<f64>) -> bool { false }\n```";
+        let out = clean_response(leaked).text;
+        assert!(
+            out.starts_with("You're asking me"),
+            "scaffold prefix must be stripped, got: {out:?}"
+        );
+        assert!(out.contains("```rust"), "the real code must survive: {out:?}");
+        assert!(!out.contains("[TOOL_CALLS]"), "marker must be gone");
+        assert!(!out.contains("[workspace]"), "leaked block header must be gone");
+    }
+
+    /// what this catches: leak #1 — a PURE scaffolding echo (native marker + `[room-roster]`
+    /// body + `[workspace-map]` body, no real content). Two+ reserved headers ⇒ suppress the
+    /// whole turn; nothing posts, the frame is preserved as thinking. Before this fix neither
+    /// perception header was in SCAFFOLD_LABELS so the echo sailed through as the answer.
+    #[test]
+    fn pure_scaffold_echo_with_perception_headers_is_suppressed() {
+        let leaked = "[TOOL_CALLS][room-roster]\nAsha (yourself)\nNando\n\n\
+            [workspace-map]\nThis workspace is a real checkout rooted at: /repo\n\
+            Top-level directories: src, docs";
+        let out = clean_response(leaked);
+        assert_eq!(out.text, "", "pure scaffold echo must not post");
+        assert!(
+            out.thinking.as_deref().unwrap_or("").contains("workspace-map"),
+            "the leaked frame is preserved as thinking"
+        );
+    }
+
+    /// what this catches: the marker with NO scaffold body — bare `[TOOL_CALLS]` leading a
+    /// normal answer. Strip the marker, keep the prose.
+    #[test]
+    fn bare_tool_calls_marker_stripped_prose_kept() {
+        let out = clean_response("[TOOL_CALLS]The answer is 42.").text;
+        assert_eq!(out, "The answer is 42.");
+    }
+
+    /// what this catches: a legitimate code answer that merely OPENS with a fence must never
+    /// be touched by the scaffold strippers (no marker, no header lines).
+    #[test]
+    fn clean_code_answer_untouched() {
+        let msg = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```";
         assert_eq!(clean_response(msg).text, msg);
     }
 }
