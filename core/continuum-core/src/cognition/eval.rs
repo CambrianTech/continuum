@@ -1661,14 +1661,26 @@ impl CognitionEval {
             gene_id: None,
             base_pass_rate: None,
             lift: None,
-            // Single-pass forks onto her LIVE lane, which serves on the GPU
-            // (LanePlacement::Gpu default). No throwaway lane was placed, so there's
-            // no free/footprint decision to report — the device is hers.
-            lane_placement: "gpu (live persona lane)".to_string(),
-            lane_placement_reason: "single-pass: measured on the living persona's GPU lane"
-                .to_string(),
-            lane_free_vram_bytes: None,
-            lane_estimated_footprint_bytes: None,
+            // TRUTHFUL placement report — thread the actual decision, don't hardcode a
+            // lie. The (None,None) default benchmark tries to stand up a DEDICATED
+            // throwaway lane (isolated window + slot → reliable, reproducible); only on
+            // spawn failure does it co-tenant the live persona lane (unreliable — starves
+            // behind live turns). A hardcoded "live persona lane" string made the two
+            // indistinguishable in the result, so a wedge-prone shared-lane score looked
+            // identical to a trusted isolated one and glass-boxing was impossible
+            // (2026-07-21). Now the report says which lane actually ran the exam, so a
+            // shared-lane score is visibly flagged as not-to-be-trusted.
+            // [[dedicated-eval-lane-must-keep-its-own-window]]
+            lane_placement: match &placement_evidence {
+                Some(ev) => format!("{} (dedicated eval lane)", ev.device),
+                None => "gpu (SHARED live persona lane — co-tenant, unreliable)".to_string(),
+            },
+            lane_placement_reason: match &placement_evidence {
+                Some(ev) => ev.reason.clone(),
+                None => "no dedicated lane could be placed — measured as a co-tenant on the living persona's GPU lane (may starve behind live turns)".to_string(),
+            },
+            lane_free_vram_bytes: placement_evidence.as_ref().and_then(|e| e.free_vram_bytes),
+            lane_estimated_footprint_bytes: placement_evidence.as_ref().and_then(|e| e.footprint_bytes),
             infra_unavailable,
         };
         result.run_id = p.run_id.clone();
