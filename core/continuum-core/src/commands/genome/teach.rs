@@ -222,7 +222,7 @@ fn message_text(m: &ChatMessage) -> String {
 /// bus events are fire-and-forget (a UI subscribes), but a STATUS you can query is what
 /// lets an operator or a poller see where a run actually is. Clean harness = you know
 /// what's going on. [[self-test-via-command-feedback-surface-never-blind]]
-#[derive(Debug, Clone, Serialize, TS, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/TeachProgress.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct TeachProgress {
@@ -299,6 +299,39 @@ fn read_teach_ledger(run_id: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&txt).ok()
 }
 
+/// The run_id of the teach pass executing NOW — set at `run_teach` entry so the emit
+/// helpers can write LIVE progress to that run's ledger file WITHOUT threading run_id
+/// through synthesize_remediation. Cross-process observability needs the file (the
+/// in-process watch cell is invisible to a client-side `teach-status`); this is how the
+/// progress bar advances for any poller/widget. Mirrors eval's CURRENT_RUN_ID.
+static CURRENT_TEACH_RUN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn set_current_teach_run(run_id: Option<String>) {
+    if let Ok(mut g) = CURRENT_TEACH_RUN.lock() {
+        *g = run_id;
+    }
+}
+
+/// Write a LIVE progress row (complete:false) to the current run's ledger — overwritten
+/// each milestone/task, then replaced by the terminal row on completion (last write wins).
+fn write_teach_progress_ledger(prog: &TeachProgress) {
+    let run_id = match CURRENT_TEACH_RUN.lock() {
+        Ok(g) => match g.clone() {
+            Some(r) => r,
+            None => return,
+        },
+        Err(_) => return,
+    };
+    let Some(path) = teach_ledger_path(&run_id) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let row = serde_json::json!({ "runId": run_id, "complete": false, "progress": prog });
+    let _ = std::fs::write(&path, serde_json::to_string(&row).unwrap_or_default());
+}
+
 /// Emit ONE teach progress event to the message bus, so a UI / the operator can WATCH
 /// corpus generation live instead of black-box-waiting for the final result (the whole
 /// point of long jobs being observable — the same `MessageBus` seam `emit_eval_phase`
@@ -312,14 +345,16 @@ fn emit_teach_progress(
     solved_count: usize,
     with_correction: usize,
 ) {
-    set_teach_progress(TeachProgress {
+    let prog = TeachProgress {
         phase: "task".to_string(),
         done,
         total,
         solved: solved_count,
         current_task: Some(task_id.to_string()),
         updated_at_ms: crate::persona::trace::now_ms(),
-    });
+    };
+    write_teach_progress_ledger(&prog); // cross-process (file) so teach-status shows it
+    set_teach_progress(prog); // in-process watch (same-process subscribers)
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(
             "genome:teach:progress",
@@ -347,14 +382,16 @@ fn emit_teach_progress(
 /// per-task `emit_teach_progress` increments it, `completed` closes it. Same seam as
 /// the per-task events. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
 fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
-    set_teach_progress(TeachProgress {
+    let prog = TeachProgress {
         phase: phase.to_string(),
         done,
         total,
         solved,
         current_task: None,
         updated_at_ms: crate::persona::trace::now_ms(),
-    });
+    };
+    write_teach_progress_ledger(&prog);
+    set_teach_progress(prog);
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(
             "genome:teach:progress",
@@ -634,6 +671,9 @@ impl GenomeTeach {
     /// (#86 fire-and-stream). Owns its params; reaches serving + dataset packaging via their
     /// global seams, needing neither `self` nor `ctx`.
     async fn run_teach(p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+        // Bind this pass's run_id so the emit helpers write LIVE progress to its ledger
+        // (cross-process, so `teach-status --run_id` and any widget see the bar advance).
+        set_current_teach_run(p.run_id.clone());
         // Task source: inline → teach_set JSONL → committed default. A missing
         // explicit path is a loud error (don't silently teach an empty set).
         let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
@@ -779,12 +819,25 @@ impl ActionCommand for GenomeTeachStatus {
         _ctx: &Ctx,
         p: GenomeTeachStatusParams,
     ) -> Result<GenomeTeachStatusResult, CommandError> {
-        // Live progress rides on EVERY poll (with or without a run_id).
-        let progress = subscribe_teach_progress().borrow().clone();
+        // The ledger FILE is the cross-process truth (the in-process watch cell is
+        // invisible to a client-side status). A row is either LIVE (complete:false, carries
+        // `progress`) or TERMINAL (complete:true, carries `result`/`error`).
         let row = p.run_id.as_deref().and_then(read_teach_ledger);
+        let complete = row
+            .as_ref()
+            .and_then(|r| r.get("complete"))
+            .and_then(|c| c.as_bool())
+            .unwrap_or(false);
+        // Live progress: prefer the ledger row (cross-process), fall back to the in-process
+        // watch (same-process subscribers, or a handleless "how's it going" poll).
+        let progress = row
+            .as_ref()
+            .and_then(|r| r.get("progress"))
+            .and_then(|pr| serde_json::from_value::<TeachProgress>(pr.clone()).ok())
+            .or_else(|| subscribe_teach_progress().borrow().clone());
         Ok(GenomeTeachStatusResult {
-            complete: row.is_some(),
-            result: row,
+            complete,
+            result: if complete { row } else { None },
             progress,
         })
     }
