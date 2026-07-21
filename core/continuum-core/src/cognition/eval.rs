@@ -1999,8 +1999,13 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
         tier: DemandTier::Live,
         pinned: true,
     };
-    // The exam demand: her SAME base (⇒ share, not a second copy), one measured decode slot,
-    // at the live served window, at Eval tier (preemptible by live work, never preempts it).
+    // The exam demand: her SAME base, one measured decode slot, at the live served window, at
+    // Eval tier (preemptible by live work, never preempts it) — and ISOLATED. An exam is a
+    // hard, disruption-intolerant task: a co-tenant slot on the live persona lane starves it
+    // behind their turns (glass-boxed 2026-07-21 — looked like the model "spinning" but was the
+    // lane taken away mid-thought). `isolate: true` makes the planner give it its OWN dedicated
+    // lane when a fresh copy fits (autonomic — no `base_model_id` hand-holding), falling back to
+    // a co-tenant share only under real memory pressure. See `LaneDemand::isolate`.
     let demand = LaneDemand {
         base_model_id: active.to_string(),
         weights_bytes: fp.weights_bytes,
@@ -2009,6 +2014,7 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
         kv_per_token: fp.kv_per_token,
         compute_buffer,
         tier: DemandTier::Eval,
+        isolate: true,
     };
     ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand).await
 }
