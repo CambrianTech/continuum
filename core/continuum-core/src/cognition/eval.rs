@@ -2006,11 +2006,32 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     // lane taken away mid-thought). `isolate: true` makes the planner give it its OWN dedicated
     // lane when a fresh copy fits (autonomic — no `base_model_id` hand-holding), falling back to
     // a co-tenant share only under real memory pressure. See `LaneDemand::isolate`.
+    // Size the DEDICATED exam lane's window to what actually fits beside the resident live
+    // lane, instead of mirroring the live window. A fresh copy's KV at the full served window
+    // (e.g. 47872 × 1 slot ≈ 8 GB) on top of the resident lane (2 slots at that window ≈ 30 GB)
+    // can exceed the free budget — which forced the isolate demand back to a co-tenant SHARE
+    // that then STARVED the exam behind live turns (glass-boxed 2026-07-21: dedicated lane never
+    // spawned, 0/3 graded in 12 min). Compute the largest window whose fresh copy fits the free
+    // space; a self-contained coder task needs far less than the live chat window, so this keeps
+    // its OWN lane (the isolation is the point) at a window matched to the budget. If not even a
+    // floor-sized copy fits, `isolate` still degrades to SHARE in plan_placement (never an OOM).
+    let free = capacity.saturating_sub(resident.footprint());
+    let kv_budget = free.saturating_sub(fp.weights_bytes.saturating_add(compute_buffer));
+    let max_fit_window = if fp.kv_per_token > 0 {
+        (kv_budget / fp.kv_per_token).min(u32::MAX as u64) as u32
+    } else {
+        window
+    };
+    // Floor: enough for a self-contained hard-rs task (short prompt + a function + reasoning);
+    // derived from the served window, never a hardcoded ceiling — capped at the live window so
+    // the exam never asks for MORE context than the persona actually has.
+    const EXAM_WINDOW_FLOOR: u32 = 8192;
+    let exam_window = window.min(max_fit_window.max(EXAM_WINDOW_FLOOR));
     let demand = LaneDemand {
         base_model_id: active.to_string(),
         weights_bytes: fp.weights_bytes,
         slots: 1,
-        window,
+        window: exam_window,
         kv_per_token: fp.kv_per_token,
         compute_buffer,
         tier: DemandTier::Eval,
