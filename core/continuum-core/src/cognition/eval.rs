@@ -1267,17 +1267,48 @@ impl CognitionEval {
             // bounce, 2026-07-20). Same bounded wait-for-template as the lane branches above;
             // the post-reboot register_from_cfg race hits every fork path identically.
             (None, None) => {
-                // Slice A: the strategic ACQUIRE — an explicit `plan_placement` decision
-                // (ShareLane for her own base) + RAII hold, not a blind steady-hold.
-                _exam_serving = Some(acquire_exam_serving_context().await);
-                fork_eval_cycle_waiting(&persona_uuid, || {
-                    crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
-                })
-                .await
-                .ok_or_else(|| CommandError::NotFound(format!(
-                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-                )))?
+                // The default benchmark. Prefer a DEDICATED throwaway lane on her own base — the
+                // exam must not co-tenant the live persona lane, where it STARVES behind live
+                // turns (glass-boxed 2026-07-21: 0/3 graded in 12 min, the isolate verdict was
+                // computed but never acted on — the branch forked onto the live lane anyway).
+                // Reuse the SAME governor-leased ephemeral-lane spawn `base_model_id` rides
+                // (proven: 17.9 GB footprint fits beside the live lane per the placement
+                // captures). On ANY failure (won't fit, no active model, template not ready)
+                // fall back to the co-tenant SHARE hold — degrade, never OOM or hard-fail.
+                let active = crate::inference::llama_server::current_serving().active_model;
+                let dedicated = match &active {
+                    Some(base) => spawn_base_eval_lane(base).await.ok(),
+                    None => None,
+                };
+                match dedicated {
+                    Some(EvalLane { lane, adapter, served_ctx, placement, _vram_lease }) => {
+                        placement_evidence = Some(placement);
+                        _eval_vram_lease = _vram_lease;
+                        let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
+                            crate::cognition::persona_workspace::global()
+                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                        })
+                        .await
+                        .ok_or_else(|| CommandError::NotFound(format!(
+                            "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                        )))?;
+                        _eval_lane = Some(lane);
+                        cycle
+                    }
+                    None => {
+                        // A dedicated lane won't fit / isn't available → co-tenant SHARE on her
+                        // live lane, held steady for the run (the historical behavior).
+                        _exam_serving = Some(acquire_exam_serving_context().await);
+                        fork_eval_cycle_waiting(&persona_uuid, || {
+                            crate::cognition::persona_workspace::global()
+                                .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                        })
+                        .await
+                        .ok_or_else(|| CommandError::NotFound(format!(
+                            "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                        )))?
+                    }
+                }
             }
         };
 
