@@ -133,6 +133,16 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Deploy-verification (#194). `continuum-core-server --build-sha` prints the git commit
+    // THIS binary was built from and exits immediately (before any tracing/socket/side-effect),
+    // so `cu reboot` can prove the running core is the freshly-built one — not a stale cached
+    // binary that answered on the same socket and reported success. A reboot that silently runs
+    // old code is a lie; this makes it impossible.
+    if std::env::args().nth(1).as_deref() == Some("--build-sha") {
+        println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
+        return Ok(());
+    }
+
     // Substrate-canonical tracing stack: UriCapture + ProbeRouter +
     // optional JsonlProbeFileSink + fmt-to-stderr governed by
     // RUST_LOG (default `info`). See
