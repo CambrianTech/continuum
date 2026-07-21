@@ -467,6 +467,44 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     }
 }
 
+/// Wait until the served window has SETTLED after a serving-mode change that may have triggered
+/// a grow-relaunch (e.g. an exam declaring Ludicrous/Performance). The caller must be able to
+/// pin the lane WITHOUT bouncing in-flight work, so it must know the relaunch is DONE — not
+/// merely that the lane was ready a moment ago (it may be about to relaunch on the next 5s plan
+/// tick). Returns the settled per-slot window, or `None` on timeout / no serving state.
+///
+/// Two phases, watch-driven (no polling, no time-based stability guessing):
+///  1. Within `settle_grace` (must exceed the daemon's `TICK`, so a re-plan can fire), watch for
+///     the lane to go NOT-ready — the signature of a relaunch. If it never does, no relaunch was
+///     needed (the window was already at target) → return the current window immediately.
+///  2. A relaunch happened → wait (bounded by `timeout`) for the lane to come back decode-ready
+///     at its new window.
+pub async fn wait_for_serving_window_settle(
+    settle_grace: Duration,
+    timeout: Duration,
+) -> Option<u32> {
+    let mut rx = SERVING_STATE.get()?.clone();
+    let start = std::time::Instant::now();
+    // Phase 1: did a relaunch start (lane went not-ready) within the grace window?
+    let relaunched = tokio::time::timeout(settle_grace, rx.wait_for(|s| !s.ready))
+        .await
+        .is_ok();
+    if !relaunched {
+        // No relaunch — the window was already at target. Return it if ready.
+        let s = rx.borrow_and_update();
+        return s.ready.then_some(s.served_context_window);
+    }
+    // Phase 2: wait for the relaunched lane to come back decode-ready. Bind the timeout result
+    // before matching so its `watch::Ref` temporary drops before `rx` does (else E0597).
+    let remaining = timeout.saturating_sub(start.elapsed());
+    let waited =
+        tokio::time::timeout(remaining, rx.wait_for(|s| s.ready && s.active_model.is_some())).await;
+    match waited {
+        Ok(Ok(guard)) => Some(guard.served_context_window),
+        _ => None,
+    }
+}
+
 /// Typed serving-control failures. The only string is a display-only leaf
 /// detail — never parsed back into control flow ([[protocols-prevent-pain]]).
 #[derive(Debug, thiserror::Error)]

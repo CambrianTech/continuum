@@ -1269,7 +1269,7 @@ impl CognitionEval {
             (None, None) => {
                 // Slice A: the strategic ACQUIRE — an explicit `plan_placement` decision
                 // (ShareLane for her own base) + RAII hold, not a blind steady-hold.
-                _exam_serving = Some(acquire_exam_serving_context());
+                _exam_serving = Some(acquire_exam_serving_context().await);
                 fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1962,20 +1962,20 @@ fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str)
 /// (ungoverned host, model row missing, lane not yet ready) it falls back to holding the
 /// lane steady on the historical share assumption — behavior never regresses, but the gap
 /// is marked so it's visible. [[proctored-exam-session-dependable-benchmark]]
-fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServingContext {
+async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServingContext {
     use crate::cognition::exam_serving::ExamServingContext;
     use crate::resources::placement::{DemandTier, LaneDemand, ResidentLane};
 
     let snap = crate::inference::llama_server::current_serving();
     let (Some(active), true) = (snap.active_model.as_deref(), snap.ready) else {
-        return ExamServingContext::steady_fallback();
+        return ExamServingContext::ludicrous_fallback().await;
     };
     let Some(model) = crate::model_registry::try_global().and_then(|r| r.model(active).cloned())
     else {
-        return ExamServingContext::steady_fallback();
+        return ExamServingContext::ludicrous_fallback().await;
     };
     let Some(fp) = crate::modules::serving_daemon::footprint_for(&model) else {
-        return ExamServingContext::steady_fallback();
+        return ExamServingContext::ludicrous_fallback().await;
     };
     // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
     // consumer + external pressure), the same source `plan_serving` sizes against — never a
@@ -1984,7 +1984,7 @@ fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServing
         .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
         .filter(|c| *c > 0)
     else {
-        return ExamServingContext::steady_fallback();
+        return ExamServingContext::ludicrous_fallback().await;
     };
     let window = snap.served_context_window.max(1);
     let compute_buffer = fp.compute_buffer_per_lane();
@@ -2010,7 +2010,7 @@ fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServing
         compute_buffer,
         tier: DemandTier::Eval,
     };
-    ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand)
+    ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand).await
 }
 
 fn append_progress_ledger(
