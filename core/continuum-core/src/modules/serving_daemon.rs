@@ -434,7 +434,16 @@ impl ServingDaemonModule {
         // via the drive mode below (which still reads system available for the fraction).
         let available = self.system.snapshot().memory.available_bytes;
         let live = governed_vram_ceiling(&self.resource_daemon).unwrap_or(0);
-        let mode = crate::provisioning::serving_mode_for_pressure(available);
+        // LUDICROUS override: a declared benchmark/exam intent floors the whole GPU
+        // (Performance, fraction 1.0) — the biggest window the model+machine allow, past the
+        // conservative pressure read (which on UMA under-reports free memory). The drive mode
+        // follows the ACTIVITY, not just the pressure. Otherwise the live pressure-adaptive
+        // mode (a game opening still drops us to Eco). [[serving-mode-follows-activity-ludicrous-to-dream]]
+        let mode = if serving_ludicrous_active() {
+            crate::provisioning::model_catalog::PowerMode::Performance
+        } else {
+            crate::provisioning::serving_mode_for_pressure(available)
+        };
         // Observability: emit ONLY on a mode TRANSITION so the dynamic scaling is visible
         // without spamming the hot plan tick ([[never-blind-feedback-driven-iteration]]).
         // This is the seam a learned / LLM policy will report through — watch it kick down
@@ -1031,6 +1040,44 @@ pub fn serving_held_steady() -> bool {
     SERVING_STEADY_HOLDS.load(Ordering::Acquire) > 0
 }
 
+/// LUDICROUS mode (Joel 2026-07-21: "extreme mode for benchmarks or ludicrous lol"). A
+/// benchmark / project / "the fight" wants the biggest window the model+machine can give —
+/// not the timid pressure-derived fraction. While any caller holds this, [`host_budget`]
+/// forces `PowerMode::Performance` (fraction 1.0 — "floors the whole GPU"), OVERRIDING
+/// `serving_mode_for_pressure`'s conservative read (which on UMA under-reports free memory
+/// and floored a 47872-capable model to 2048 with ~28GB idle). This is the drive mode
+/// following the ACTIVITY, not just the pressure: a declared Ludicrous intent → serve
+/// maximal. Non-thrashing: one grow-relaunch when the hold is taken, one shrink when it
+/// drops — bookends around the exam, not a flap. Zero-cost when nothing holds it.
+/// [[serving-mode-follows-activity-ludicrous-to-dream]] [[benchmark-window-must-be-big-not-a-clamped-prompt]]
+static SERVING_LUDICROUS_HOLDS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII: while held, serving plans at `PowerMode::Performance` (the whole GPU, biggest
+/// window). A benchmark binds one for its whole run so the exam is measured on the largest
+/// window the model+machine allow — never a starved boot-window. Drop reverts to the live
+/// pressure-adaptive mode.
+#[must_use = "the Ludicrous hold releases the instant this guard drops — bind it for the benchmark's lifetime"]
+pub struct ServingLudicrousHold(());
+
+impl ServingLudicrousHold {
+    pub fn acquire() -> Self {
+        SERVING_LUDICROUS_HOLDS.fetch_add(1, Ordering::AcqRel);
+        Self(())
+    }
+}
+
+impl Drop for ServingLudicrousHold {
+    fn drop(&mut self) {
+        SERVING_LUDICROUS_HOLDS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// True while at least one caller demands Ludicrous (Performance) serving — [`host_budget`]
+/// pins `PowerMode::Performance` regardless of the pressure read.
+pub fn serving_ludicrous_active() -> bool {
+    SERVING_LUDICROUS_HOLDS.load(Ordering::Acquire) > 0
+}
+
 pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
     let available = governed_vram_ceiling(resource_daemon).unwrap_or(0);
     host_budget_from(&HostBudgetInputs {
@@ -1434,6 +1481,27 @@ mod tests {
             assert!(serving_held_steady(), "inner drop must not release the outer hold");
         }
         assert!(!serving_held_steady(), "all holds dropped ⇒ grow-back resumes");
+    }
+
+    // what this catches: the ServingLudicrousHold RAII gauge — while held, serving plans at
+    // PowerMode::Performance (the whole GPU, biggest window), overriding the timid pressure
+    // read; refcounted so concurrent benchmarks compose; RAII-released so serving reverts to
+    // the live pressure-adaptive mode. This is the "extreme mode for benchmarks" gate that
+    // stops a starved eco boot-window from being what the exam is measured on.
+    // [[serving-mode-follows-activity-ludicrous-to-dream]]
+    #[test]
+    fn serving_ludicrous_hold_is_refcounted_and_raii() {
+        assert!(!serving_ludicrous_active(), "no ludicrous demand at rest");
+        {
+            let _h1 = ServingLudicrousHold::acquire();
+            assert!(serving_ludicrous_active(), "one hold ⇒ Performance override active");
+            {
+                let _h2 = ServingLudicrousHold::acquire();
+                assert!(serving_ludicrous_active(), "two holds ⇒ still active");
+            }
+            assert!(serving_ludicrous_active(), "inner drop must not release the outer hold");
+        }
+        assert!(!serving_ludicrous_active(), "all holds dropped ⇒ back to pressure-adaptive mode");
     }
 
     // what this catches: the budget is LIVE (tracks free memory, not capacity),
