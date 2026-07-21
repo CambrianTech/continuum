@@ -206,12 +206,73 @@ fn message_text(m: &ChatMessage) -> String {
     }
 }
 
+/// Live teach progress — the queryable snapshot `genome/teach-status` returns, so a
+/// long corpus-gen run is OBSERVABLE (poll `done/total/currentTask`) instead of a
+/// black-box wait or an autopsy of CPU%. Mirrors eval's `EvalPassProgress` watch cell —
+/// bus events are fire-and-forget (a UI subscribes), but a STATUS you can query is what
+/// lets an operator or a poller see where a run actually is. Clean harness = you know
+/// what's going on. [[self-test-via-command-feedback-surface-never-blind]]
+#[derive(Debug, Clone, Serialize, TS, JsonSchema, Default)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/TeachProgress.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct TeachProgress {
+    /// `started` (denominator set, no work yet) | `task` (one graded) | `completed`.
+    pub phase: String,
+    /// Tasks graded so far.
+    #[ts(type = "number")]
+    pub done: usize,
+    /// Total tasks in the set (the progress-bar denominator, known at `started`).
+    #[ts(type = "number")]
+    pub total: usize,
+    /// Validated (test-passing) trajectories so far — the corpus yield.
+    #[ts(type = "number")]
+    pub solved: usize,
+    /// The task just graded (None at `started`/`completed`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub current_task: Option<String>,
+    /// Wall-clock stamp — a poller checks this for staleness on a long-dead run.
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+static TEACH_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<TeachProgress>>> =
+    std::sync::OnceLock::new();
+
+fn teach_progress_tx() -> &'static tokio::sync::watch::Sender<Option<TeachProgress>> {
+    TEACH_PROGRESS.get_or_init(|| tokio::sync::watch::channel(None).0)
+}
+
+/// Subscribe to live teach progress — the watch `genome/teach-status` reads.
+pub fn subscribe_teach_progress() -> tokio::sync::watch::Receiver<Option<TeachProgress>> {
+    teach_progress_tx().subscribe()
+}
+
+fn set_teach_progress(p: TeachProgress) {
+    let _ = teach_progress_tx().send(Some(p));
+}
+
 /// Emit ONE teach progress event to the message bus, so a UI / the operator can WATCH
 /// corpus generation live instead of black-box-waiting for the final result (the whole
 /// point of long jobs being observable — the same `MessageBus` seam `emit_eval_phase`
 /// uses for `eval:phase`). Feedback is a first-class cross-modality dimension: this
 /// long job streams its own progress. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
-fn emit_teach_progress(done: usize, total: usize, task_id: &str, solved: bool, with_correction: usize) {
+fn emit_teach_progress(
+    done: usize,
+    total: usize,
+    task_id: &str,
+    solved: bool,
+    solved_count: usize,
+    with_correction: usize,
+) {
+    set_teach_progress(TeachProgress {
+        phase: "task".to_string(),
+        done,
+        total,
+        solved: solved_count,
+        current_task: Some(task_id.to_string()),
+        updated_at_ms: crate::persona::trace::now_ms(),
+    });
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(
             "genome:teach:progress",
@@ -239,6 +300,14 @@ fn emit_teach_progress(done: usize, total: usize, task_id: &str, solved: bool, w
 /// per-task `emit_teach_progress` increments it, `completed` closes it. Same seam as
 /// the per-task events. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
 fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
+    set_teach_progress(TeachProgress {
+        phase: phase.to_string(),
+        done,
+        total,
+        solved,
+        current_task: None,
+        updated_at_ms: crate::persona::trace::now_ms(),
+    });
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(
             "genome:teach:progress",
@@ -455,7 +524,7 @@ pub async fn synthesize_remediation(
             last_error: if solved { None } else { last_error },
         });
         // Stream progress so the run is watchable live (events, not black-box wait).
-        emit_teach_progress(outcomes.len(), tasks.len(), &task.id, solved, with_correction);
+        emit_teach_progress(outcomes.len(), tasks.len(), &task.id, solved, examples.len(), with_correction);
     }
 
     // MILESTONE: completed — the terminal fill, so the bar closes even on a 0-yield run.
@@ -571,6 +640,56 @@ impl ActionCommand for GenomeTeach {
 
 // Stateless → self-register onto the ONE registry (descriptor + runtime object).
 crate::register_stateless_command!(GenomeTeach);
+
+/// `genome/teach-status` — the poll half of a long corpus-gen run. `genome/teach` runs
+/// for many minutes (write→grade→fix over a whole task set); this returns the LIVE
+/// `{done, total, currentTask, solved}` snapshot so an operator, a poller, or a UI
+/// progress bar can SEE where it is — instead of guessing from CPU%. Read-only, ai-safe,
+/// no params: the substrate serializes teach runs, so there's one live board to read.
+/// The queryable companion to the fire-and-forget `genome:teach:progress` bus events —
+/// a status you can ask beats a light you can only hope someone's watching.
+/// [[self-test-via-command-feedback-surface-never-blind]]
+#[derive(Default)]
+pub struct GenomeTeachStatus;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusParams.ts")]
+pub struct GenomeTeachStatusParams {}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema, Default)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct GenomeTeachStatusResult {
+    /// Live progress of the teach run in this process, or null if none has run yet.
+    /// Check `updatedAtMs` for staleness on a long-finished run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub progress: Option<TeachProgress>,
+}
+
+#[async_trait]
+impl ActionCommand for GenomeTeachStatus {
+    const NAME: &'static str = "genome/teach-status";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Poll the LIVE progress of a running genome/teach: {done, total, currentTask, solved}. \
+         The observable surface for a many-minute corpus-gen run — a UI renders it as a progress \
+         bar, an operator sees which task it's on, a poller knows it's alive vs wedged.";
+    type Params = GenomeTeachStatusParams;
+    type Output = GenomeTeachStatusResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: GenomeTeachStatusParams,
+    ) -> Result<GenomeTeachStatusResult, CommandError> {
+        Ok(GenomeTeachStatusResult {
+            progress: subscribe_teach_progress().borrow().clone(),
+        })
+    }
+}
+
+crate::register_stateless_command!(GenomeTeachStatus);
 
 #[cfg(test)]
 mod tests {
