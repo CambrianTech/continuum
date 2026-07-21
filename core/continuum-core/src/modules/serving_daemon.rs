@@ -502,22 +502,23 @@ impl ServingDaemonModule {
     pub fn pin_fit_checker(&self) -> PinFitChecker {
         let system = self.system.clone();
         let resource_daemon = self.resource_daemon.clone();
+        // Read the incumbent so a pin's fit-check models the SWAP it performs, not
+        // co-residence (below).
+        let serving_tx = self.serving_tx.clone();
+        let model_resolver = self.model_resolver.clone();
         Arc::new(move |model: &Model| {
-            let budget = live_host_budget(&system, &resource_daemon);
-            let budget_bytes = budget.usable_bytes;
-            let footprint = footprint_for(model);
-            let weights_bytes = footprint.as_ref().map(|f| f.weights_bytes).unwrap_or(0);
-            // footprint None = no GGUF on disk → not servable at all (plan None).
-            // footprint Some but over budget → plan_serving degrades honestly
-            // with fits_on_gpu=false, which the command reads to refuse loud.
-            // Fit verdict at ONE lane — "can this model hold a lane at all";
-            // the live plan sizes lanes from demand separately.
-            let plan = footprint.and_then(|f| plan_serving(budget, std::slice::from_ref(&f), 1));
-            PinFit {
-                plan,
-                weights_bytes,
-                budget_bytes,
-            }
+            let base = live_host_budget(&system, &resource_daemon);
+            // The incumbent a pin would EVICT — its footprint credits back into the
+            // budget (see [`pin_fit_decision`]). `live_host_budget` reads the live
+            // system, so the eviction-crediting fit logic is split into a pure,
+            // unit-testable helper below.
+            let incumbent = serving_tx
+                .borrow()
+                .active_model
+                .clone()
+                .and_then(|id| (model_resolver)(&id))
+                .and_then(|m| footprint_for(&m));
+            pin_fit_decision(base, footprint_for(model), incumbent.as_ref())
         })
     }
 
@@ -970,6 +971,40 @@ pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
     HostBudget {
         usable_bytes: usable,
         perf_cores: inputs.perf_cores.max(1),
+    }
+}
+
+/// Pure pin fit-decision — split from the live-budget read so it is unit-testable.
+/// A pin SWAPS: `serve()` kills the incumbent llama-server child, THEN launches the
+/// candidate — never co-resident — so the candidate only needs to fit AFTER the
+/// incumbent's VRAM is reclaimed. `base` is the live budget WITH the incumbent's
+/// weights still counted as USED; crediting `incumbent`'s weights back models the
+/// eviction. Without it, a swap DOWN to a model that fits alone but not alongside
+/// the outgoing one is falsely denied (glass-boxed 2026-07-21: pin Devstral 14.3GB
+/// refused at "budget ~12.1GB" while a 32B teacher was resident, though evicting it
+/// frees ~20GB — the stronger-teacher swap-and-back the Academy needs). WEIGHTS
+/// only (deterministic): the incumbent's variable KV is freed too, so this stays
+/// conservative — a `fits_on_gpu` verdict here always holds in the real
+/// post-eviction budget. `candidate = None` ⇒ no GGUF on disk ⇒ not servable.
+fn pin_fit_decision(
+    mut base: HostBudget,
+    candidate: Option<ModelFootprint>,
+    incumbent: Option<&ModelFootprint>,
+) -> PinFit {
+    if let Some(inc) = incumbent {
+        base.usable_bytes = base.usable_bytes.saturating_add(inc.weights_bytes);
+    }
+    let budget_bytes = base.usable_bytes;
+    let weights_bytes = candidate.as_ref().map(|f| f.weights_bytes).unwrap_or(0);
+    // Fit verdict at ONE lane — "can this model hold a lane at all"; the live plan
+    // sizes lanes from demand separately. footprint None → not servable (plan None);
+    // footprint Some but over budget → plan_serving degrades with fits_on_gpu=false,
+    // which `serving/pin` reads to refuse loud.
+    let plan = candidate.and_then(|f| plan_serving(base, std::slice::from_ref(&f), 1));
+    PinFit {
+        plan,
+        weights_bytes,
+        budget_bytes,
     }
 }
 
@@ -1462,6 +1497,46 @@ mod tests {
     use super::*;
 
     const GB: u64 = 1_000_000_000;
+
+    // what this catches: a pin SWAPS — serve() kills the incumbent llama-server
+    // child, THEN launches the candidate (never co-resident) — so the fit-check must
+    // credit the outgoing model's weights back into the budget. Without it, swapping
+    // DOWN to a model that fits ALONE but not ALONGSIDE the incumbent is falsely
+    // denied (glass-boxed 2026-07-21: pin Devstral 14GB refused while a 20GB 32B
+    // teacher was resident, though evicting it frees enough). Regression for the
+    // stronger-teacher swap-and-back the Academy needs.
+    #[test]
+    fn pin_swap_down_credits_the_evicted_incumbents_weights() {
+        let base = HostBudget { usable_bytes: 12 * GB, perf_cores: 10 };
+        let footprint = |id: &str, weights_gb: u64, rank: u8| ModelFootprint {
+            model_id: id.into(),
+            weights_bytes: weights_gb * GB,
+            kv_per_token: 100_000, // ~0.2GB KV at 2048 ctx — small, not the binding term
+            context_window: 32768,
+            capability_rank: rank,
+        };
+        let candidate = footprint("devstral-24b", 14, 8);
+        let incumbent = footprint("qwen-32b", 20, 10);
+
+        // No incumbent credited → the 14GB candidate does NOT fit the raw 12GB budget.
+        let no_credit = pin_fit_decision(base, Some(candidate.clone()), None);
+        assert!(
+            no_credit.plan.map(|p| !p.fits_on_gpu).unwrap_or(true),
+            "candidate must not fit the raw 12GB budget"
+        );
+
+        // Crediting the evicted 20GB incumbent lifts the budget to 32GB → it fits.
+        let credited = pin_fit_decision(base, Some(candidate), Some(&incumbent));
+        assert_eq!(
+            credited.budget_bytes,
+            12 * GB + 20 * GB,
+            "the evicted incumbent's weights are credited back into the pin budget"
+        );
+        assert!(
+            credited.plan.expect("a plan is produced").fits_on_gpu,
+            "candidate must fit its lane once the incumbent is evicted"
+        );
+    }
 
     // what this catches: the ServingSteadyHold RAII gauge — acquiring sets
     // serving_held_steady() true; dropping clears it; nesting is reference-counted so a
