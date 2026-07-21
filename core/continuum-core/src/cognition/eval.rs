@@ -1968,14 +1968,14 @@ fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServing
 
     let snap = crate::inference::llama_server::current_serving();
     let (Some(active), true) = (snap.active_model.as_deref(), snap.ready) else {
-        return ExamServingContext::ludicrous_fallback();
+        return ExamServingContext::steady_fallback();
     };
     let Some(model) = crate::model_registry::try_global().and_then(|r| r.model(active).cloned())
     else {
-        return ExamServingContext::ludicrous_fallback();
+        return ExamServingContext::steady_fallback();
     };
     let Some(fp) = crate::modules::serving_daemon::footprint_for(&model) else {
-        return ExamServingContext::ludicrous_fallback();
+        return ExamServingContext::steady_fallback();
     };
     // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
     // consumer + external pressure), the same source `plan_serving` sizes against — never a
@@ -1984,7 +1984,7 @@ fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamServing
         .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
         .filter(|c| *c > 0)
     else {
-        return ExamServingContext::ludicrous_fallback();
+        return ExamServingContext::steady_fallback();
     };
     let window = snap.served_context_window.max(1);
     let compute_buffer = fp.compute_buffer_per_lane();

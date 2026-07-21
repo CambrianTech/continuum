@@ -5,10 +5,9 @@
 //! it was measuring a co-tenant slot on the persona's own lane. The comment said
 //! "= `Placement::ShareLane`" but nothing computed it — the strategic decision was
 //! implicit. This module makes it real: it runs the model-aware admission kernel
-//! ([`plan_placement`]) against the live resident set, serves the lane LUDICROUS
-//! (`PowerMode::Performance` — the biggest window the model+machine allow) when the verdict
-//! is a share, and CARRIES the verdict so the decision is observable + capturable (the
-//! curriculum tie-in) instead of a silent assumption.
+//! ([`plan_placement`]) against the live resident set, HOLDS the lane steady when the
+//! verdict is a share, and CARRIES the verdict so the decision is observable + capturable
+//! (the curriculum tie-in) instead of a silent assumption.
 //!
 //! This is the seam the strategic layer plugs into. For the single-GPU living-persona exam
 //! the verdict is deterministically `ShareLane` (her base is already resident — sharing is
@@ -19,7 +18,7 @@
 //! path owns the spawn), so a strategic verdict is never missing again.
 //! [[proctored-exam-session-dependable-benchmark]] [[lane-admission-planner-scenario-driven]]
 
-use crate::modules::serving_daemon::ServingLudicrousHold;
+use crate::modules::serving_daemon::ServingSteadyHold;
 use crate::resources::placement::{plan_placement, LaneDemand, Placement, ResidentLane};
 
 /// The verdict the exam ACQUIRE reached — carried for observability + the curriculum
@@ -27,10 +26,9 @@ use crate::resources::placement::{plan_placement, LaneDemand, Placement, Residen
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExamAcquire {
     /// The exam base is already resident → she is measured as a co-tenant decode slot on
-    /// the live lane (`lane_id`), NO second weight copy. The lane is served LUDICROUS for the
-    /// exam (Performance mode → biggest window; also keeps the plan stable, no mid-exam
-    /// relaunch). The validated single-GPU path. `reclaim` names any lower-tier lanes the
-    /// daemon should tier down first (empty in the common case).
+    /// the live lane (`lane_id`), NO second weight copy. The lane is held steady for the
+    /// exam (grow-back relaunch suppressed). The validated single-GPU path. `reclaim` names
+    /// any lower-tier lanes the daemon should tier down first (empty in the common case).
     SharedLane { lane_id: String, reclaim: Vec<String> },
     /// The exam base is NOT resident → a fresh copy is needed (its own weights). This
     /// node's ACQUIRE does not spawn it here — the caller's ephemeral-lane / grid path owns
@@ -53,20 +51,15 @@ impl ExamAcquire {
     }
 }
 
-/// A held exam serving context. While alive, an exam that shares the live lane serves in
-/// LUDICROUS mode — `PowerMode::Performance`, the biggest window the model+machine allow —
-/// so the exam is never starved by a timid pressure-derived boot-window (the 2048-eco
-/// incident). Ludicrous also keeps the plan STABLE at max (nothing bigger to grow-back to,
-/// pressure-shrink overridden), so it subsumes the old steady-hold's job of preventing a
-/// mid-exam relaunch — WITHOUT pinning a too-small window. One grow-relaunch when acquired,
-/// one shrink when dropped (RAII) — bookends, not a flap. Non-share verdicts hold nothing
-/// (the caller's lane owns them), but the DECISION is explicit either way.
-/// [[serving-mode-follows-activity-ludicrous-to-dream]] [[benchmark-window-must-be-big-not-a-clamped-prompt]]
+/// A held exam serving context. While alive, an exam that shares the live lane keeps it
+/// steady — no grow-back relaunch can connection-refuse the measurement mid-flight (the
+/// hard-rs 0/8 bounce). Dropping restores normal serving (RAII). Non-share verdicts hold
+/// nothing (the caller's lane owns them), but the DECISION is explicit either way.
 pub struct ExamServingContext {
     acquire: ExamAcquire,
-    /// `Some` only for a `SharedLane` verdict: the RAII Ludicrous (Performance) hold. Dropped
-    /// with the context, reverting serving to the live pressure-adaptive mode.
-    _hold: Option<ServingLudicrousHold>,
+    /// `Some` only for a `SharedLane` verdict: the RAII grow-back suppressor. Dropped with
+    /// the context, restoring the daemon's normal re-home behavior.
+    _hold: Option<ServingSteadyHold>,
 }
 
 impl ExamServingContext {
@@ -83,36 +76,35 @@ impl ExamServingContext {
             Placement::SpawnLane { reclaim } => ExamAcquire::Spawn { reclaim },
             Placement::CpuSpill { reason } => ExamAcquire::CpuSpill { reason },
         };
-        // Go LUDICROUS ONLY for a share — the case measured on the live lane, which must be
-        // served at the biggest window the model+machine allow (Performance), never a starved
-        // boot-window. Spawn/spill run on a separate (ephemeral / peer) lane sized at its own
-        // spawn — this override targets the shared live lane.
-        let hold = matches!(acquire, ExamAcquire::SharedLane { .. }).then(ServingLudicrousHold::acquire);
+        // Hold the lane steady ONLY for a share — that's the case measured on the live lane,
+        // where a grow-back relaunch mid-exam is the failure. Spawn/spill run on a separate
+        // (ephemeral / peer) lane the daemon never re-homes.
+        let hold = matches!(acquire, ExamAcquire::SharedLane { .. }).then(ServingSteadyHold::acquire);
         crate::probe!(
             class = "exam.acquire",
             verdict = acquire.tag(),
-            ludicrous = hold.is_some(),
+            held_steady = hold.is_some(),
             "proctored exam serving context acquired (strategic admission decision)"
         );
         Self { acquire, _hold: hold }
     }
 
     /// The live serving inputs weren't resolvable (ungoverned host, model row missing, or
-    /// the lane isn't ready yet) — fall back to serving the live lane in LUDICROUS mode on
-    /// the assumption it's a share, but MARK the verdict `unresolved` so the gap is visible
-    /// rather than silently assumed. Still gives the exam the biggest window the machine
-    /// allows; the strategic decision is just recorded as "couldn't compute the placement".
-    pub fn ludicrous_fallback() -> Self {
+    /// the lane isn't ready yet) — fall back to the historical behavior: hold the live lane
+    /// steady on the assumption it's a share, but MARK the verdict `unresolved` so the gap is
+    /// visible rather than silently assumed. Behavior never regresses vs the old blind
+    /// steady-hold; the strategic decision is just recorded as "couldn't compute" this time.
+    pub fn steady_fallback() -> Self {
         crate::probe!(
             class = "exam.acquire.fallback",
-            "exam serving inputs unresolved — serving the live lane LUDICROUS on the share assumption"
+            "exam serving inputs unresolved — holding the live lane steady on the share assumption"
         );
         Self {
             acquire: ExamAcquire::SharedLane {
                 lane_id: "live(unresolved)".to_string(),
                 reclaim: Vec::new(),
             },
-            _hold: Some(ServingLudicrousHold::acquire()),
+            _hold: Some(ServingSteadyHold::acquire()),
         }
     }
 
@@ -121,9 +113,8 @@ impl ExamServingContext {
         &self.acquire
     }
 
-    /// True while the live lane is held in Ludicrous mode (a share verdict). False for
-    /// spawn/spill.
-    pub fn holds_ludicrous(&self) -> bool {
+    /// True while the live lane is held steady (a share verdict). False for spawn/spill.
+    pub fn holds_steady(&self) -> bool {
         self._hold.is_some()
     }
 }
@@ -131,7 +122,7 @@ impl ExamServingContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::serving_daemon::serving_ludicrous_active;
+    use crate::modules::serving_daemon::serving_held_steady;
     use crate::resources::placement::DemandTier;
 
     const GIB: u64 = 1 << 30;
@@ -174,10 +165,10 @@ mod tests {
         let resident = [live_lane("devstral-24b")];
         let ctx = ExamServingContext::acquire(40 * GIB, &resident, &exam_demand("devstral-24b"));
         assert!(matches!(ctx.verdict(), ExamAcquire::SharedLane { lane_id, .. } if lane_id == "live"));
-        assert!(ctx.holds_ludicrous(), "a shared-lane exam must hold the live lane steady");
-        assert!(serving_ludicrous_active(), "the global steady gauge reflects the held exam");
+        assert!(ctx.holds_steady(), "a shared-lane exam must hold the live lane steady");
+        assert!(serving_held_steady(), "the global steady gauge reflects the held exam");
         drop(ctx);
-        assert!(!serving_ludicrous_active(), "dropping the context restores grow-back (RAII)");
+        assert!(!serving_held_steady(), "dropping the context restores grow-back (RAII)");
     }
 
     // what this catches: a DIFFERENT-base exam does NOT try to co-tenant her lane — the
@@ -190,7 +181,7 @@ mod tests {
         // Room for a second copy → SpawnLane with no reclaim (a bigger box).
         let ctx = ExamServingContext::acquire(64 * GIB, &resident, &exam_demand("qwen-coder-32b"));
         assert!(matches!(ctx.verdict(), ExamAcquire::Spawn { reclaim } if reclaim.is_empty()));
-        assert!(!ctx.holds_ludicrous(), "a spawn verdict holds no local steady-hold");
+        assert!(!ctx.holds_steady(), "a spawn verdict holds no local steady-hold");
     }
 
     // what this catches: when even a share can't be made to fit (a tiny device already full
@@ -204,6 +195,6 @@ mod tests {
         let capacity = resident[0].footprint().saturating_sub(GIB);
         let ctx = ExamServingContext::acquire(capacity, &resident, &exam_demand("devstral-24b"));
         assert!(matches!(ctx.verdict(), ExamAcquire::CpuSpill { .. }));
-        assert!(!ctx.holds_ludicrous(), "a spill holds no steady-hold");
+        assert!(!ctx.holds_steady(), "a spill holds no steady-hold");
     }
 }
