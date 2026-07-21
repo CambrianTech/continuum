@@ -1272,7 +1272,21 @@ impl CognitionEval {
                 // (proven: 17.9 GB footprint fits beside the live lane per the placement
                 // captures). On ANY failure (won't fit, no active model, template not ready)
                 // fall back to the co-tenant SHARE hold — degrade, never OOM or hard-fail.
-                let active = crate::inference::llama_server::current_serving().active_model;
+                // WAIT for a READY served model, don't snapshot instantaneously. The
+                // instantaneous `current_serving().active_model` is None in the window right
+                // after a reboot while the live lane is still cold-loading its base + LoRAs —
+                // so the dedicated-lane decision raced the boot, saw None, and fell to a SHARED
+                // lane that ALSO wasn't ready yet → wedge ("lane never recovered: per-task
+                // deadline", glass-boxed 2026-07-21: the same 3-task set scored 2/3 when the
+                // dedicated lane spawned and 0/3 when this race dropped it to share). Awaiting
+                // readiness makes active_model reliably Some, so the isolated lane spawns every
+                // run and the score is trustworthy. Bounded by the spawner's own load budget;
+                // on timeout (genuinely no served model) active stays None and we degrade loud.
+                let active = crate::inference::llama_server::await_ready_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
+                .await
+                .and_then(|s| s.active_model);
                 let dedicated = match &active {
                     Some(base) => match spawn_base_eval_lane(base).await {
                         Ok(lane) => Some(lane),
