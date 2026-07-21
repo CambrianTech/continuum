@@ -184,6 +184,31 @@ that A is only needed under heavy live load / on the grid.
 
 ---
 
+## Live validation (2026-07-20) — the fake-zero is dead
+
+Deployed the B binary (`npm start`, pid-verified, #194 freshness-guarded) and ran a live
+hard-rs on Asha (Devstral-Small-24B, lane at the 2048 floor). The progress ledger carries
+the before/after in two rows:
+
+| runId | binary | passRate | score/total | outputTokens | infraUnavailable |
+|---|---|---|---|---|---|
+| `bf7bb829` | pre-B | `0.0` | 0/8 | **0** | *(field absent)* |
+| `97719703` | **B** | **`0.5`** | **1/2** | **855** | **`null`** |
+
+The SAME benchmark that returned `0/8, 0 tokens` (the fake zero) all session now returns a
+REAL `1/2, 855 tokens` — Asha genuinely solved one of two hard tasks on a verified lane
+(19 tok/s decode, ~29.7s mean latency), `infraUnavailable: null`. The new `infraUnavailable`
+key is present-and-null on the B row and absent on the pre-B row: proof the schema shipped
+and the verdict ran. The lane HELD (quiesced exam ⇒ low concurrent demand ⇒ Slice C's
+existing windowing sufficed), so we got a `Scored` result rather than `InfraUnavailable`.
+
+**Decision on Slice A:** the re-measure shows a quiesced single-GPU exam is stable enough
+that A (preempt) is NOT needed for the exam's dependability — it is the heavy-live-load /
+grid-general answer, exactly as the build order predicted. The `InfraUnavailable` path is
+unit-proven (`infra_faulted_run_is_infra_unavailable_never_a_fake_zero`); it did not need to
+fire live because the lane never failed. Build A when the grid / a busy live fleet demands a
+dedicated preempted context; for the single-machine benchmark, B is sufficient and shipped.
+
 ## The curriculum tie-in (why this matters beyond one number)
 
 Every ACQUIRE decision (`plan_placement` verdict + the live demand/resident context) and its
