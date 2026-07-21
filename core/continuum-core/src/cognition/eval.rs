@@ -131,6 +131,12 @@ struct EvalLane {
 /// step over — the living persona's lane.
 const EVAL_LANE_BASE_PORT: u16 = 58_200;
 
+/// How much of a graded answer to persist in the result. A coder answer (code + reasoning)
+/// fits far under this; the generous bound exists ONLY to cap a pathological loop-to-length
+/// generation (which is captured up to here, still a diagnosable signal). The old 200-char
+/// cap stored only the preamble and blinded every failure diagnosis + correction-corpus mine.
+const ANSWER_CAPTURE_CHARS: usize = 24_000;
+
 /// Small headroom (bytes) kept free on the GPU so a lane placed right at the edge
 /// can't trip Metal's decode-time command-buffer OOM. Deliberately SMALL: the
 /// policy is GPU-FIRST — fill the accelerator, aim for ~100% GPU utilization
@@ -819,8 +825,13 @@ pub struct EvalTaskResult {
     /// How many times she acted (ran code / read / searched) before settling.
     #[ts(type = "number")]
     pub acts: u32,
-    /// The first 200 chars of what she SPOKE once settled (empty if she ran out of
-    /// the act budget mid-action — an honest "did not finish", never fabricated).
+    /// What she SPOKE once settled — the COMPLETE generation (empty if she ran out of
+    /// the act budget mid-action — an honest "did not finish", never fabricated). For a
+    /// coder exam the answer IS the code, so this must carry the whole thing: a 200-char
+    /// cap stored only the "Sure, I can help..." preamble and made every failure
+    /// undiagnosable AND un-minable for a correction corpus (2026-07-21). Bounded by
+    /// ANSWER_CAPTURE_CHARS against a pathological loop-to-length, which is itself a
+    /// signal worth capturing up to the cap.
     pub answer: String,
     /// Wall-clock latency to SETTLE this task: the summed deliberation-generation
     /// time across every act→observe tick (the model's own measured request time,
@@ -2942,7 +2953,7 @@ async fn run_pass(
             ok,
             grade,
             acts: total_acts,
-            answer: answer.chars().take(200).collect(),
+            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),
@@ -3103,7 +3114,7 @@ async fn run_pass_team(
             ok,
             grade,
             acts,
-            answer: answer.chars().take(200).collect(),
+            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),
