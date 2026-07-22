@@ -46,6 +46,18 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
+    /// Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
+    /// handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
+    /// `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation
+    /// acts) outlives the IPC client timeout — a Devstral write→compile→fix loop took 12 min —
+    /// so a Terminal-Bench/SWE-bench harness MUST fire-and-poll, never block on the socket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// Correlation id for a detached run (echoed in the ack + the result file). Omit → minted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
@@ -64,6 +76,13 @@ pub struct AgentSolveResult {
     pub patch: String,
     /// Paths she touched (from `git diff --name-only`).
     pub files_changed: Vec<String>,
+    /// True when this is the immediate ACK of a detached run (`acts`/`patch` empty — poll the
+    /// result file `agent-solve-<run_id>.json` for the real outcome).
+    pub detached: bool,
+    /// The run's correlation id (set on a detached ack + the written result file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 /// `agent/solve` — headless single-task agent run. Pure orchestration over the eval drive
@@ -85,6 +104,79 @@ impl ActionCommand for AgentSolve {
     type Output = AgentSolveResult;
 
     async fn run(&self, _ctx: &Ctx, p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
+        // Fire-and-poll (#86): a real agentic drive outlives the IPC client timeout, so `detach`
+        // spawns the body on the runtime, writes the finished result to a poll file + emits a
+        // terminal event, and returns a run_id NOW. The body is ctx-free (reaches the persona via
+        // the global workspace registry), so it runs identically inline or detached.
+        if p.detach.unwrap_or(false) {
+            let run_id = p.run_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+            let run_id_ack = run_id.clone();
+            let (persona_ack, model_ack) = (p.persona_id.clone(), p.base_model_id.clone());
+            let mut inner = p;
+            inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
+            tokio::spawn(async move {
+                let path = agent_solve_ledger_path(&run_id);
+                match AgentSolve::solve_body(inner).await {
+                    Ok(r) => {
+                        if let (Some(path), Ok(json)) =
+                            (path.as_ref(), serde_json::to_string_pretty(&r))
+                        {
+                            let _ = std::fs::write(path, json);
+                        }
+                        if let Some(bus) = crate::runtime::MessageBus::global() {
+                            if let Ok(v) = serde_json::to_value(&r) {
+                                bus.publish_async_only("agent:solve:complete", v);
+                            }
+                        }
+                        tracing::info!(run_id = %run_id, acts = r.acts, "agent/solve detached run complete");
+                    }
+                    Err(e) => {
+                        // Fail LOUD on the poll surface too — a detached run that dies must leave a
+                        // diagnosable marker, never an empty file forever.
+                        if let Some(path) = path {
+                            let _ = std::fs::write(
+                                &path,
+                                serde_json::json!({"failed": true, "run_id": run_id, "error": e.to_string()})
+                                    .to_string(),
+                            );
+                        }
+                        tracing::error!(run_id = %run_id, error = %e, "agent/solve detached run failed");
+                    }
+                }
+            });
+            return Ok(AgentSolveResult {
+                persona_id: persona_ack,
+                model: model_ack,
+                acts: 0,
+                spoken: String::new(),
+                patch: String::new(),
+                files_changed: Vec::new(),
+                detached: true,
+                run_id: Some(run_id_ack),
+            });
+        }
+        Self::solve_body(p).await
+    }
+}
+
+/// Result file for a detached solve run, polled after the ack (mirrors the eval/competition
+/// progress-ledger convention: `~/.continuum/progress/agent-solve-<run_id>.json`).
+fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
+    let dir = base.join("progress");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join(format!("agent-solve-{run_id}.json")))
+}
+
+impl AgentSolve {
+    /// The solve body — deliberately ctx-free (reaches the persona via the global workspace
+    /// registry), so it runs inline OR spawned detached with the same code path.
+    async fn solve_body(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
+        let run_id = p.run_id.clone();
         let persona_uuid = Uuid::parse_str(p.persona_id.trim())
             .map_err(|_| CommandError::Invalid(format!("persona_id '{}' is not a UUID", p.persona_id)))?;
         let workspace = p.workspace.trim().to_string();
@@ -189,6 +281,8 @@ impl ActionCommand for AgentSolve {
             spoken: settled.spoken.unwrap_or_default(),
             patch,
             files_changed,
+            detached: false,
+            run_id,
         })
     }
 }

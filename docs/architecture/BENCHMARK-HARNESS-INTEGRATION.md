@@ -57,11 +57,17 @@ model is only ever a labeled FLOOR line, never a peer.
 All are `/v1`-compatible → same CompetitorAgent adapter pattern (subprocess or `/v1`) as Hermes.
 
 ## Build sequence
-1. **`continuum-agent` headless entrypoint** (`cu agent solve` or a thin bin): given a cwd/task in a
-   sandbox, drive a persona's full cognition to completion (files edited, patch produced, terminal
-   actions taken) and exit. The keystone — everything else composes on it. Never strips faculties.
+1. **`agent/solve` headless entrypoint** — ✅ DONE + live-proven (2026-07-22, commits `4664ad7ac`
+   + rooting `0e9686e86` + detach). `cu agent/solve --persona-id … --base-model-id … --task … --workspace …`
+   drives a persona's FULL cognition (tools on, recall on, genome on the measurement lane) to
+   completion in the sandbox cwd and returns `{acts, spoken, patch (git diff), files_changed}`.
+   Never strips faculties. Her hands are rooted at the caller's cwd via the shared
+   `root_acting_workspace` seam (fail-loud). Long agentic drives use `--detach true` → instant ack
+   with a `run_id`, real result polled from `~/.continuum/progress/agent-solve-<run_id>.json`
+   (#86 fire-and-poll; a Devstral drive took 12 min — MUST NOT block the socket).
 2. **`ContinuumAgent` Terminal-Bench adapter** (`benchmarks/terminal-bench/continuum_agent.py`) →
-   `tb run` gives us Terminal-Bench + SWE-bench Verified + DevEval + EvoEval + AppWorld.
+   `tb run` gives us Terminal-Bench + SWE-bench Verified + DevEval + EvoEval + AppWorld. **← NEXT.**
+   Shells `cu agent/solve --detach` in the sandbox, polls the ledger, applies the patch.
 3. **Model matrix** = LiteLLM → served {Qwen3-Coder-30B, Devstral, …}. **Agent matrix** = {Continuum,
    Hermes, Aider, OpenHands, OpenCode} + bare-model floor. Same harness, same tasks, same grader.
 4. **Aider Polyglot** track (Docker harness) + **SWE-bench Pro** (mini-SWE-agent harness) for the

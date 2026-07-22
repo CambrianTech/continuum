@@ -22,4 +22,16 @@ workspace: string,
 /**
  * Max act→observe cycles (default 12).
  */
-max_acts?: number, };
+max_acts?: number, 
+/**
+ * Fire-and-poll (#86): when true, the solve is spawned DETACHED — `run` returns a job
+ * handle NOW (arms empty, `detached: true`) and the REAL result (patch + acts) lands in
+ * `~/.continuum/progress/agent-solve-<run_id>.json`. A real agentic drive (N full-generation
+ * acts) outlives the IPC client timeout — a Devstral write→compile→fix loop took 12 min —
+ * so a Terminal-Bench/SWE-bench harness MUST fire-and-poll, never block on the socket.
+ */
+detach?: boolean, 
+/**
+ * Correlation id for a detached run (echoed in the ack + the result file). Omit → minted.
+ */
+run_id?: string, };

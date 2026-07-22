@@ -18,4 +18,13 @@ patch: string,
 /**
  * Paths she touched (from `git diff --name-only`).
  */
-files_changed: Array<string>, };
+files_changed: Array<string>, 
+/**
+ * True when this is the immediate ACK of a detached run (`acts`/`patch` empty — poll the
+ * result file `agent-solve-<run_id>.json` for the real outcome).
+ */
+detached: boolean, 
+/**
+ * The run's correlation id (set on a detached ack + the written result file).
+ */
+run_id?: string, };
