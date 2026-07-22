@@ -58,6 +58,17 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub run_id: Option<String>,
+    /// DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
+    /// durable episodic/semantic recall is suppressed for this run — the same probe
+    /// `cognition/eval` exposes ([[eval-measures-the-true-full-being-not-a-stripped-copy]]).
+    /// Its ONLY legitimate use is glass-boxing session contamination: run a failing task
+    /// with recall OFF — PASS ⇒ the failure is recall-mediated (stale/cross-task engrams
+    /// surfacing), STILL FAIL ⇒ the failure is deeper (pipeline/model). NEVER a scoring
+    /// mode — a benchmark number produced with recall off measures a stripped copy, not the
+    /// being ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub suppress_recall: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
@@ -202,7 +213,7 @@ impl AgentSolve {
                 lane.served_ctx,
                 true,             // with_tools — her hands are ON
                 Some(&workspace), // roots the ToolExecutor at the sandbox cwd
-                false,            // suppress_recall = false — her memory/RAG is ON
+                p.suppress_recall.unwrap_or(false), // memory/RAG ON by default; the diagnostic knob
             );
             if cycle.is_some() {
                 break;

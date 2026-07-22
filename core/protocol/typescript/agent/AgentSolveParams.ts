@@ -34,4 +34,15 @@ detach?: boolean,
 /**
  * Correlation id for a detached run (echoed in the ack + the result file). Omit → minted.
  */
-run_id?: string, };
+run_id?: string, 
+/**
+ * DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
+ * durable episodic/semantic recall is suppressed for this run — the same probe
+ * `cognition/eval` exposes ([[eval-measures-the-true-full-being-not-a-stripped-copy]]).
+ * Its ONLY legitimate use is glass-boxing session contamination: run a failing task
+ * with recall OFF — PASS ⇒ the failure is recall-mediated (stale/cross-task engrams
+ * surfacing), STILL FAIL ⇒ the failure is deeper (pipeline/model). NEVER a scoring
+ * mode — a benchmark number produced with recall off measures a stripped copy, not the
+ * being ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+ */
+suppress_recall?: boolean, };
