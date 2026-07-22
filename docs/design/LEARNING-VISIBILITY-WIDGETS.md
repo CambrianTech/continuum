@@ -140,6 +140,16 @@ Every event in this feed already exists in tree today (probe classes + capture J
 ledger rows). The brain view is a renderer, not a new telemetry system — same v1 rule
 as everything else in this doc.
 
+## Dream pacing is a governor profile (Joel, 2026-07-22)
+
+`cognition/dream-now` is the manual flywheel button; the productized form is a
+**pacing profile** on the substrate governor, user-configurable: **Eco** (today's
+default — material-driven, pressure-gated, gentle on user machines) → **Fast** →
+**Ludicrous** (factory/business mode: continuous consolidation whenever material +
+headroom exist — a fleet whose minds compound 24/7). Same region, same single-flight
+and pressure guards, different policy — DVFS for dreams. Businesses will run
+Ludicrous; the learning-visibility widgets are how they watch it pay.
+
 ## Principles (carried from the session that birthed this doc)
 
 1. **Receipts, not vibes.** Every widget cell links to its receipt — the ledger, the

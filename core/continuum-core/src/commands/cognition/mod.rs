@@ -65,6 +65,7 @@ pub mod validate_response_decision;
 pub mod vision_describe;
 
 use admit_inbox_message::AdmitInboxMessage;
+use dream_now::DreamNow;
 use forget_context::ForgetContext;
 use redact_memory::RedactMemory;
 use cache_message::CacheMessage;
@@ -190,6 +191,9 @@ pub fn command_objects(
             state: state.clone(),
         }),
         Arc::new(AdmitInboxMessage {
+            state: state.clone(),
+        }),
+        Arc::new(DreamNow {
             state: state.clone(),
         }),
         Arc::new(ForgetContext {
