@@ -395,6 +395,41 @@ fn refuse_eval_lane_under_memory_pressure() -> Result<(), CommandError> {
     )
 }
 
+/// How long a lane bringup will WAIT for a transient pressure spike to clear
+/// before failing loud. Sized for the real spikes observed live (2026-07-22): a
+/// `cu reboot` cargo build or a sibling model cold-load pushes used/total past
+/// 0.90 for a couple of minutes, then the machine returns to Normal. Deferring
+/// briefly turns "battery wiped out by a build" into "battery ran 3 minutes
+/// later"; a SUSTAINED squeeze still fails loud at the deadline.
+const EVAL_LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// The deferring form of the memory veto: poll until pressure clears or the
+/// bounded deadline lapses (then fail loud with the veto's own error). The
+/// veto's error message says "retry when pressure clears" — for a DETACHED
+/// solve/eval there is no operator watching to retry, so the system honors its
+/// own advice for one bounded window. Never a silent wait: each deferred tick
+/// probes, so a stall is visible in the trace, not a mystery hang.
+async fn await_eval_lane_memory_headroom() -> Result<(), CommandError> {
+    let deadline = tokio::time::Instant::now() + EVAL_LANE_PRESSURE_WAIT;
+    loop {
+        let verdict = refuse_eval_lane_under_memory_pressure();
+        match verdict {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                crate::probe!(
+                    class = "eval.lane.pressure_defer",
+                    level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
+                    "eval lane bringup deferred — waiting for a transient memory spike to clear"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
 /// The pure veto decision — split from the static reads so it's unit-testable
 /// without mutating process-global pressure state (same split rationale as
 /// [`acquire_eval_lane_slot`]).
@@ -517,7 +552,7 @@ async fn spawn_gene_eval_lane(
         AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
     };
 
-    refuse_eval_lane_under_memory_pressure()?;
+    await_eval_lane_memory_headroom().await?;
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
         .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
@@ -667,7 +702,7 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
-    refuse_eval_lane_under_memory_pressure()?;
+    await_eval_lane_memory_headroom().await?;
     let base = crate::model_registry::try_global()
         .and_then(|r| r.model(base_id).cloned())
         .ok_or_else(|| {
