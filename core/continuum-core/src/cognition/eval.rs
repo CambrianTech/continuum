@@ -1599,15 +1599,23 @@ impl CognitionEval {
             return Ok(result);
         }
 
-        // Readiness gate (single-pass on her LIVE lane): refuse to grade a COLD
-        // serving lane. After a core/llama-server relaunch the model is not resident
-        // for ~tens of seconds; firing tasks at it returns empty generations that the
-        // grader would silently record as 0-token "no match" failures — a phantom
-        // score produced in an invisible degraded mode. Wait (bounded) for the lane to
-        // actually be able to generate; fail loud if it never is, naming the cause.
-        // (The gene A/B path above stands up its own EphemeralServingLane and waits on
-        // spawn, so this guards only the live-lane single pass.)
-        {
+        // Readiness gate — ONLY for a true LIVE-lane single pass. Refuse to grade a COLD
+        // serving lane: after a core/llama-server relaunch the model is not resident for
+        // ~tens of seconds; firing tasks at it returns empty generations the grader would
+        // silently record as 0-token "no match" failures — a phantom score in an invisible
+        // degraded mode. Wait (bounded) for the live lane to be able to generate; fail loud
+        // if it never is.
+        //
+        // This gate guards the LIVE lane (`await_ready_serving` reads the live serving
+        // snapshot). BOTH the `gene` A/B path (returned above) AND a `base_model_id` run
+        // stand up their OWN `EphemeralServingLane`, which decode-verifies at spawn
+        // (`spawn_base_eval_lane` → `wait_ready` with the ephemeral budget) — they never
+        // touch the live lane, so gating them on live-lane readiness is spurious: a
+        // base_model_id run flakily aborted whenever the UNRELATED live lane happened not
+        // to be snapshot-ready within 90s (glass-boxed 2026-07-21: Qwen-7B webdev 0/0 while
+        // its own dedicated lane was fine; Hermes passed the same gate only by live-lane
+        // luck). Skip the gate when a dedicated lane owns the run.
+        if p.base_model_id.is_none() {
             const LANE_WARMUP: std::time::Duration = std::time::Duration::from_secs(90);
             if crate::inference::llama_server::await_ready_serving(LANE_WARMUP)
                 .await
@@ -2305,12 +2313,50 @@ async fn run_dod(cmd: &str) -> (bool, String) {
 /// ([[dispatch-path-purity-and-load-harness]]). The core is headless and cannot render, so a
 /// perception task requires a connected eye-node adapter; with none, the observe call fails LOUD
 /// and the task grades an honest infra-fail, never a fabricated pass ([[fallbacks-are-illegal-fail-loud]]).
+/// Extract an HTML artifact the persona SPOKE — the last ```html (or doctype/`<html`)
+/// fenced block, or a bare page answer — for the mouth-or-hands web-dev capture below.
+/// Returns the inner HTML, or `None` when her answer carries no page.
+///
+/// The last qualifying fence wins: across a multi-turn build, the FINAL page she emitted
+/// is the one to grade (earlier fences are superseded drafts).
+fn html_artifact_from_answer(answer: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+    let mut rest = answer;
+    while let Some(open) = rest.find("```") {
+        let after = &rest[open + 3..];
+        let nl = after.find('\n').unwrap_or(after.len());
+        let lang = after[..nl].trim().to_ascii_lowercase();
+        let body_area = if nl < after.len() { &after[nl + 1..] } else { "" };
+        let Some(close) = body_area.find("```") else { break };
+        let body = body_area[..close].trim();
+        let head = body.trim_start().to_ascii_lowercase();
+        let looks_html = lang.starts_with("html")
+            || head.starts_with("<!doctype")
+            || head.starts_with("<html");
+        if looks_html && !body.is_empty() {
+            best = Some(body.to_string()); // keep the LAST qualifying fence
+        }
+        rest = &body_area[close + 3..];
+    }
+    if best.is_some() {
+        return best;
+    }
+    // No fence — the whole answer may itself be the page.
+    let trimmed = answer.trim();
+    let head = trimmed.to_ascii_lowercase();
+    if head.starts_with("<!doctype") || head.starts_with("<html") {
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
 async fn perception_grade(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     target: &str,
     checks: &[crate::perception::scoring::UiCheck],
     threshold: f32,
     workspace_root: Option<&str>,
+    answer: &str,
 ) -> (bool, String) {
     let acting = match cycle.acting() {
         Some(a) => a,
@@ -2358,7 +2404,38 @@ async fn perception_grade(
     // parse answers them the way a browser's a11y tree would. A remote URL / live surface
     // still routes to the browser eye below (a persona's real seeing loop).
     if let Some(path) = target_url.strip_prefix("file://") {
-        let obs = crate::perception::static_html::observe_file(std::path::Path::new(path));
+        let p = std::path::Path::new(path);
+        // MOUTH-OR-HANDS capture (#206/#143 fence→act gap). The web-dev grade observes the
+        // file she was told to write. A capable model often EMITS a complete, correct page in
+        // a ```html fence but never routes it through `code/write` — so no file exists and a
+        // model that BUILT the UI perfectly scores 0, measuring tool-routing instead of
+        // ability (glass-boxed 2026-07-21: Qwen2.5-Coder-7B wrote a flawless login form in a
+        // fence, wrote no file, scored 0/6 — below a weaker model). If she did NOT write the
+        // file with her hands but SPOKE a page, materialize it so the grade measures what she
+        // built. A real `code/write` ALWAYS wins (a present, non-empty file is left untouched),
+        // so this only rescues the spoken-artifact case and never overrides her hands. The
+        // deeper fix (make her actually call the tool) is the fence→act cognition work; this
+        // makes the benchmark a fair CAPABILITY measure meanwhile.
+        let wrote_with_hands = std::fs::read_to_string(p)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !wrote_with_hands {
+            if let Some(html) = html_artifact_from_answer(answer) {
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(p, html.as_bytes()) {
+                    return (
+                        false,
+                        format!(
+                            "web-dev grade: persona spoke an HTML artifact but materializing it \
+                             to '{path}' for observation failed: {e}"
+                        ),
+                    );
+                }
+            }
+        }
+        let obs = crate::perception::static_html::observe_file(p);
         let grade = crate::perception::scoring::grade_ui(&obs, checks, threshold);
         return (grade.passed, grade.summary);
     }
@@ -2914,7 +2991,7 @@ async fn run_pass(
             // reads too. Default target `index.html`; default threshold 1.0 ("it works").
             let target = t.target.as_deref().unwrap_or("index.html");
             let threshold = t.ui_pass_threshold.unwrap_or(1.0);
-            perception_grade(cycle, target, &t.ui_checks, threshold, workspace_root).await
+            perception_grade(cycle, target, &t.ui_checks, threshold, workspace_root, &answer).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
@@ -3137,6 +3214,35 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the web-dev mouth-or-hands capture (#206/#143 fence→act gap).
+    // A capable model that emits a complete page in a ```html fence but never calls
+    // code/write must still be graded on what it BUILT — else the benchmark scores
+    // tool-routing, not ability (Qwen2.5-Coder-7B wrote a flawless login form in a fence,
+    // wrote no file, scored 0/6, below a weaker model, 2026-07-21). Regression pins:
+    // last fence wins, doctype/`<html` detected with or without a lang tag, and a
+    // prose-only answer yields None (nothing to materialize → honest miss).
+    #[test]
+    fn html_artifact_extracts_the_spoken_page_or_nothing() {
+        // tagged ```html fence
+        let a = "Here is the page:\n```html\n<!DOCTYPE html><html><body><h1>Sign in</h1></body></html>\n```\nDone.";
+        assert_eq!(
+            html_artifact_from_answer(a).as_deref(),
+            Some("<!DOCTYPE html><html><body><h1>Sign in</h1></body></html>")
+        );
+        // untagged fence whose body is a page (doctype sniff)
+        let b = "```\n<html><body><form></form></body></html>\n```";
+        assert!(html_artifact_from_answer(b).unwrap().contains("<form>"));
+        // last qualifying fence wins (a corrected draft supersedes the first)
+        let c = "```html\n<html>OLD</html>\n```\nfixed:\n```html\n<html>NEW</html>\n```";
+        assert_eq!(html_artifact_from_answer(c).as_deref(), Some("<html>NEW</html>"));
+        // bare page answer, no fence
+        let d = "<!doctype html>\n<html><h1>Hi</h1></html>";
+        assert_eq!(html_artifact_from_answer(d).as_deref(), Some(d.trim()));
+        // prose-only / a rust fence → nothing to materialize
+        assert_eq!(html_artifact_from_answer("I would build a login form with an h1."), None);
+        assert_eq!(html_artifact_from_answer("```rust\nfn main() {}\n```"), None);
+    }
 
     // what this catches: the mid-run scoreboard's poll surface (#123/#141). One
     // report_task_graded call must land on the watch every reader shares — done/total/
