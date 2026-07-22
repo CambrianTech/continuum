@@ -126,6 +126,15 @@ impl ActionCommand for AgentSolve {
             ))
         })?;
 
+        // 2b) Root her HANDS at the sandbox cwd. `fork_eval_cycle_with_adapter`'s `workspace_root`
+        //     only repoints what she SEES (the workspace-map RAG block) — her `ToolExecutor` still
+        //     writes to her durable per-persona workspace. Without this she writes reverse.py to
+        //     `<home>/citizens/peers/<id>/workspace/` and our `git diff` on the sandbox scores a
+        //     false ZERO (glass-boxed 2026-07-22: Devstral did 2 real acts, wrote the correct file,
+        //     patch was empty). Same fail-loud mechanism cognition/eval uses to root a measurement
+        //     persona at a target repo.
+        crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace).await?;
+
         // 3) Layer the task into her situation as a directed request (same framing eval uses so
         //    a coder model engages rather than taking the silent PASS hatch), and DRIVE her to
         //    settlement — read → edit → compile → fix, her real act→observe loop.
