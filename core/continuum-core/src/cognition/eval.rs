@@ -2224,6 +2224,17 @@ fn append_progress_ledger(
     {
         let _ = writeln!(f, "{row}");
     }
+    // TERMINAL completion event (the fire-and-stream close, #86). Every finished eval —
+    // gene A/B, base-model, single-pass — funnels through here, so this ONE publish gives a
+    // monitoring widget/persona "done + final score + per-task detail" as a single push
+    // instead of inferring completion from `done==total` on the last `eval:progress`. Same
+    // payload as the durable ledger row: score/total/passRate/runId/geneId/lift/
+    // infraUnavailable + the per-task array carrying `outputTokens`, so the CLEAN / SUSPECT /
+    // VOID classification a tile renders comes straight off the wire, no post-hoc ledger read.
+    // [[long-runs-are-handle-plus-events-never-poll-or-timeout]]
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only("eval:complete", row);
+    }
 }
 
 /// Run the full task set once through the persona's LIVE cognition, returning the
@@ -2552,6 +2563,12 @@ pub struct EvalPassProgress {
     pub current_task: String,
     /// Whether it passed.
     pub last_ok: bool,
+    /// Output tokens the model produced for this task. A near-zero value on a FAILED
+    /// task is the decline/wedge signature (a bare "PASS" is ~2 tokens) — this is the
+    /// LIVE signal a monitoring widget/persona needs to light a cell SUSPECT (harness
+    /// noise) vs a real wrong answer, in real time instead of post-hoc from the ledger.
+    #[ts(type = "number")]
+    pub output_tokens: u32,
     /// Receiver-clock ms — staleness signal for readers (a row older than a task's
     /// typical latency means the pass ended or died; the ledger row is the truth).
     #[ts(type = "number")]
@@ -2609,7 +2626,7 @@ pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPass
 
 /// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
 /// team) — one reporter, no drift.
-fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass: u32, done: usize, total: usize) {
+fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, output_tokens: u32, pass: u32, done: usize, total: usize) {
     // Efficiency axis: sample the live board (lock-free watch read) so every graded
     // task carries the VRAM state it ran under — the tuning signal for knobs like
     // max_acts / context budget / lane count ([[self-improvement-is-a-control-loop]]:
@@ -2628,6 +2645,7 @@ fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass:
         pass,
         current_task: task_id.to_string(),
         last_ok: ok,
+        output_tokens,
         updated_at_ms: crate::persona::trace::now_ms(),
         vram_free_gb,
         run_id: CURRENT_RUN_ID.lock().ok().and_then(|g| g.clone()),
@@ -3144,7 +3162,7 @@ async fn run_pass(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
-        report_task_graded(&t.id, ok, total_acts, m.latency_ms, pass, results.len(), tasks.len());
+        report_task_graded(&t.id, ok, total_acts, m.latency_ms, m.output_tokens, pass, results.len(), tasks.len());
     }
     PassOutcome { pass, results, infra_faults, infra_reason }
 }
@@ -3305,7 +3323,7 @@ async fn run_pass_team(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
-        report_task_graded(&t.id, ok, acts, m.latency_ms, pass, results.len(), tasks.len());
+        report_task_graded(&t.id, ok, acts, m.latency_ms, m.output_tokens, pass, results.len(), tasks.len());
     }
     PassOutcome { pass, results, infra_faults, infra_reason }
 }
@@ -3353,7 +3371,7 @@ mod tests {
     // runs go dark again (the exact gap Joel called out mid-run 2026-07-16).
     #[test]
     fn report_task_graded_lands_on_the_progress_watch() {
-        report_task_graded("HumanEval/7", true, 2, 45_000, 6, 7, 164);
+        report_task_graded("HumanEval/7", true, 2, 45_000, 128, 6, 7, 164);
         let snap = subscribe_eval_progress()
             .borrow()
             .clone()
