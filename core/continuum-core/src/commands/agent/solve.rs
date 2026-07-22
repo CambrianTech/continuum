@@ -298,19 +298,48 @@ impl AgentSolve {
     }
 }
 
-/// Unified diff of every change in the workspace (tracked edits + new files), and the touched
-/// paths. `git add -N` stages new files as intent-to-add so `git diff` includes them without
-/// committing content; non-repo or git-less environments return empty (honest — no hands artifact).
+/// Git pathspecs excluding the universal never-a-solution byproducts a verification run leaves
+/// behind — Python bytecode/caches, tool caches, JS deps, OS cruft. Glass-boxed 2026-07-22: a
+/// `python3 -c "from calc import ..."` verify step left `__pycache__/calc.cpython-314.pyc` in the
+/// patch, polluting the graded artifact — real SWE-bench/aider patches are SOURCE-only. These are
+/// never a solution, so they're excluded from both the diff and files_changed; anything a task
+/// might legitimately produce (incl. `build`/`dist`/`target`) is kept.
+const PATCH_EXCLUDES: &[&str] = &[
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.pyc",
+    ":(exclude,glob)**/*.pyo",
+    ":(exclude,glob)**/.pytest_cache/**",
+    ":(exclude,glob)**/.mypy_cache/**",
+    ":(exclude,glob)**/.ruff_cache/**",
+    ":(exclude,glob)**/node_modules/**",
+    ":(exclude,glob)**/.DS_Store",
+];
+
+/// Unified diff of the SOLUTION changes in the workspace (tracked edits + new files), and the
+/// touched paths — build/cache byproducts ([`PATCH_EXCLUDES`]) filtered out so the graded artifact
+/// is source-only. `git add -N` stages new files as intent-to-add so `git diff` includes them
+/// without committing content; the same excludes keep junk from being intent-added in the first
+/// place. Non-repo or git-less environments return empty (honest — no hands artifact).
 async fn workspace_patch(workspace: &str) -> (String, Vec<String>) {
     let git = |args: &[&str]| {
         let mut c = tokio::process::Command::new("git");
         c.arg("-C").arg(workspace).args(args);
         c
     };
+    // Build the `-- . :(exclude…)` pathspec tail shared by add-N and both diffs.
+    let mut pathspec: Vec<&str> = vec!["--", "."];
+    pathspec.extend_from_slice(PATCH_EXCLUDES);
+    let with_paths = |head: &[&str]| -> Vec<String> {
+        head.iter().chain(pathspec.iter()).map(|s| s.to_string()).collect()
+    };
     // Non-fatal: a bare (non-git) workspace just yields no patch.
-    let _ = git(&["add", "-A", "-N"]).output().await;
-    let diff = git(&["diff"]).output().await.ok();
-    let names = git(&["diff", "--name-only"]).output().await.ok();
+    let _ = git(&with_paths(&["add", "-A", "-N"]).iter().map(String::as_str).collect::<Vec<_>>())
+        .output()
+        .await;
+    let diff_args = with_paths(&["diff"]);
+    let names_args = with_paths(&["diff", "--name-only"]);
+    let diff = git(&diff_args.iter().map(String::as_str).collect::<Vec<_>>()).output().await.ok();
+    let names = git(&names_args.iter().map(String::as_str).collect::<Vec<_>>()).output().await.ok();
     let patch = diff
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -374,6 +403,31 @@ mod tests {
         assert!(files.iter().any(|f| f == "tracked.txt"));
         assert!(files.iter().any(|f| f == "brand_new.rs"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: verification byproducts (Python bytecode, __pycache__) must NOT pollute
+    // the graded patch — glass-boxed 2026-07-22 when a `python3 -c "from calc import ..."` verify
+    // step left calc.cpython-314.pyc in the diff. Source is kept; the cache junk is filtered.
+    #[tokio::test]
+    async fn workspace_patch_excludes_build_byproducts() {
+        let dir = std::env::temp_dir().join(format!("cu-agent-solve-junk-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("__pycache__")).unwrap();
+        git(&dir, &["init", "-q"]).await;
+        git(&dir, &["config", "user.email", "t@t"]).await;
+        git(&dir, &["config", "user.name", "t"]).await;
+        // her solution + the byproducts a verify run leaves behind
+        std::fs::write(dir.join("calc.py"), "def add(a, b):\n    return a + b\n").unwrap();
+        std::fs::write(dir.join("__pycache__/calc.cpython-314.pyc"), b"\x00\x01bytecode").unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/x")).unwrap();
+        std::fs::write(dir.join("node_modules/x/index.js"), "module.exports={}").unwrap();
+
+        let (patch, files) = workspace_patch(dir.to_str().unwrap()).await;
+        assert!(patch.contains("calc.py"), "the solution source must be in the patch:\n{patch}");
+        assert!(!patch.contains(".pyc"), "bytecode must be excluded:\n{patch}");
+        assert!(!patch.contains("__pycache__"), "cache dir must be excluded:\n{patch}");
+        assert!(!patch.contains("node_modules"), "deps must be excluded:\n{patch}");
+        assert_eq!(files, vec!["calc.py".to_string()], "only source is a changed file: {files:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
