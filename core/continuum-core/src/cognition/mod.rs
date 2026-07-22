@@ -41,6 +41,7 @@ pub mod deliberation_parse;
 pub mod deliberation_prompt;
 pub mod dispatch_listener;
 pub mod dream_consolidation;
+pub mod competitor;
 pub mod embedding;
 pub mod eval;
 pub mod exam_serving;
