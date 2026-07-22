@@ -2204,7 +2204,11 @@ fn append_progress_ledger(
         // design: every task carries id/ok/acts; only FAILED tasks carry the grade verdict
         // + answer head, so the row stays lean on a mostly-passing large benchmark.
         "tasks": result.results.iter().map(|r| {
-            let mut t = serde_json::json!({ "id": r.id, "ok": r.ok, "acts": r.acts });
+            // `outputTokens` disambiguates a FAILED task with an empty answer: >0 means she
+            // GENERATED (and the empty answer is a Pass/silence cognition decision or an
+            // unparseable turn); 0 means the LANE returned nothing (empty generation / wedge).
+            // Without it the two read identical in the ledger and get hand-diagnosed each time.
+            let mut t = serde_json::json!({ "id": r.id, "ok": r.ok, "acts": r.acts, "outputTokens": r.output_tokens });
             if !r.ok {
                 t["grade"] = serde_json::json!(r.grade.chars().take(LEDGER_FAIL_GRADE_CHARS).collect::<String>());
                 t["answerHead"] = serde_json::json!(r.answer.chars().take(LEDGER_FAIL_ANSWER_CHARS).collect::<String>());
