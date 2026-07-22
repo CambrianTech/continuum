@@ -13,6 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::cognition::competitor::{
+    classify, optional_arms, run_competition, ArmClass, ArmTaskResult, DEFAULT_ENDPOINT,
+};
 use crate::cognition::eval::{CognitionEval, CognitionEvalParams};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -741,6 +744,235 @@ impl ActionCommand for BenchmarkMatrix {
     }
 }
 crate::register_stateless_command!(BenchmarkMatrix);
+
+// ── benchmark/competition — the product-vs-product scoreboard ────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkCompetitionParams.ts")]
+pub struct BenchmarkCompetitionParams {
+    /// Benchmark name (see `benchmark/list`). Its tasks are posed IDENTICALLY to every arm.
+    pub name: String,
+    /// The persona (UUID, must be spawned) whose LIVE cognition is the Continuum arm.
+    pub persona_id: String,
+    /// The shared weights EVERY arm runs — Continuum forks a measurement lane on it, and
+    /// the external arms hit an endpoint serving it. Product vs product on ONE model.
+    pub base_model_id: String,
+    /// OpenAI-compatible endpoint the EXTERNAL arms target. Omit → the default local
+    /// location; the operator/serving system provisions a dedicated opponent lane and
+    /// passes its `base_url` ([[benchmark-needs-its-own-serving-lane]]). Hermes needs this
+    /// lane to serve ≥64K or it refuses at startup and its cell reads VOID (fail loud).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub endpoint: Option<String>,
+    /// Max tasks to run (default 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub limit: Option<u32>,
+    /// Which external arms to run by name (e.g. `["hermes","raw-oneshot"]`). Omit → every
+    /// available optional arm. An unknown name is an ERROR (fail loud, never a silent skip).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub arms: Option<Vec<String>>,
+}
+
+/// One arm's cell on the competition scoreboard.
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../protocol/typescript/benchmark/CompetitionCell.ts")]
+pub struct CompetitionCell {
+    pub arm: String,
+    #[ts(type = "number")]
+    pub score: u32,
+    #[ts(type = "number")]
+    pub total: u32,
+    /// `CLEAN` / `SUSPECT` / `VOID` — the trust triage. A SUSPECT/VOID cell is NOT a
+    /// capability number; it is flagged so harness noise never publishes as a result.
+    pub class: String,
+    /// Extra context: the noisy-task count (SUSPECT) or the reason (VOID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detail: Option<String>,
+}
+
+/// The scoreboard: every arm, same benchmark tasks, same grader, on one model.
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkCompetitionResult.ts")]
+pub struct BenchmarkCompetitionResult {
+    pub benchmark: String,
+    pub model: String,
+    pub endpoint: String,
+    pub arms: Vec<CompetitionCell>,
+    /// External arms skipped because their CLI/dep was absent — surfaced, never faked.
+    pub skipped: Vec<String>,
+}
+
+/// `benchmark/competition` — run a benchmark through Continuum's native cognition AND
+/// external agent harnesses on the SAME model, graded identically, each cell trust-classified.
+/// The product-vs-product scoreboard ([[hermes-agent-is-a-runnable-benchmark-opponent-arm]]).
+///
+/// Pure orchestration: it never hand-spawns a llama-server (that is the serving system's
+/// lifecycle, [[system-owns-its-lifecycle-never-hand-manage-processes]]). Continuum runs
+/// through the ONE grader (`cognition/eval`); the external arms hit the given `endpoint`.
+#[derive(Default)]
+pub struct BenchmarkCompetition;
+
+#[async_trait]
+impl ActionCommand for BenchmarkCompetition {
+    const NAME: &'static str = "benchmark/competition";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Product-vs-product coding scoreboard: run a benchmark's tasks through Continuum's \
+         native cognition AND external agent harnesses (Hermes, raw one-shot) on the SAME \
+         weights, graded by the SAME rustc grader, each cell trust-classified CLEAN/SUSPECT/\
+         VOID. External arms hit `endpoint` (default local); provision a dedicated ≥64K \
+         opponent lane for the Hermes arm.";
+    type Params = BenchmarkCompetitionParams;
+    type Output = BenchmarkCompetitionResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: BenchmarkCompetitionParams,
+    ) -> Result<BenchmarkCompetitionResult, CommandError> {
+        // 1) Resolve the benchmark and slice its tasks — posed identically to every arm.
+        let spec = known_benchmarks().iter().find(|b| b.name == p.name).ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "unknown benchmark '{}'. Known: {}. Call benchmark/list.",
+                p.name,
+                known_benchmarks().iter().map(|b| b.name).collect::<Vec<_>>().join(", "),
+            ))
+        })?;
+        let eval_set = spec.eval_set.ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "benchmark '{}' is catalogued but not yet runnable through the grader.",
+                spec.name
+            ))
+        })?;
+        let (gym_name, content) =
+            crate::cognition::gym::resolve_gym(eval_set).map_err(CommandError::Invalid)?;
+        let limit = p.limit.unwrap_or(20) as usize;
+        let tasks: Vec<crate::cognition::eval::EvalTask> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .take(limit)
+            .enumerate()
+            .map(|(n, l)| {
+                serde_json::from_str(l).map_err(|e| {
+                    CommandError::Invalid(format!(
+                        "benchmark '{}' gym ({gym_name}) line {}: malformed EvalTask: {e}",
+                        spec.name,
+                        n + 1,
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let total = tasks.len() as u32;
+        let resolved_endpoint = p
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+
+        let mut cells: Vec<CompetitionCell> = Vec::new();
+
+        // 2) The Continuum native arm — through the ONE grader (cognition/eval), converted
+        //    onto the same scoreboard + SAME trust triage. Never reimplement cognition here.
+        let cont_params = CognitionEvalParams {
+            persona_id: p.persona_id.clone(),
+            gene: None,
+            room_id: None,
+            tasks: Some(tasks.clone()),
+            eval_set: None,
+            base_model_id: Some(p.base_model_id.clone()),
+            reviewers: None,
+            max_acts: None,
+            max_retries: None,
+            note: Some(format!("competition:{}", spec.name)),
+            detach: Some(false),
+            run_id: None,
+            workspace_root: None,
+            capture_dir: None,
+            learn: Some(false),
+            suppress_recall: None,
+        };
+        let cont_cell = match CognitionEval.run(ctx, cont_params).await {
+            Ok(r) => {
+                let class = if r.infra_unavailable.is_some() {
+                    ArmClass::Void {
+                        reason: "infra unavailable — measurement lane never verified".into(),
+                    }
+                } else {
+                    let signals: Vec<ArmTaskResult> = r
+                        .results
+                        .iter()
+                        .map(|t| ArmTaskResult {
+                            task_id: t.id.clone(),
+                            ok: t.ok,
+                            output_tokens: t.output_tokens,
+                            latency_ms: t.latency_ms,
+                            grade: t.grade.clone(),
+                            errored: false,
+                        })
+                        .collect();
+                    classify(&signals)
+                };
+                cell("continuum", r.score, r.total, &class)
+            }
+            Err(e) => CompetitionCell {
+                arm: "continuum".into(),
+                score: 0,
+                total,
+                class: "VOID".into(),
+                detail: Some(format!("eval error: {e}")),
+            },
+        };
+        cells.push(cont_cell);
+
+        // 3) The external arms — filtered by name if given, else every available optional arm.
+        let mut external = optional_arms();
+        if let Some(names) = &p.arms {
+            for n in names {
+                if !external.iter().any(|a| a.name() == n) {
+                    return Err(CommandError::Invalid(format!(
+                        "unknown arm '{n}'. Available: {}.",
+                        external.iter().map(|a| a.name()).collect::<Vec<_>>().join(", "),
+                    )));
+                }
+            }
+            external.retain(|a| names.iter().any(|n| n == a.name()));
+        }
+        let board = run_competition(&p.base_model_id, p.endpoint.as_deref(), &tasks, external).await;
+        for a in &board.arms {
+            cells.push(cell(&a.arm, a.score as u32, a.total as u32, &a.class));
+        }
+
+        Ok(BenchmarkCompetitionResult {
+            benchmark: spec.name.to_string(),
+            model: p.base_model_id,
+            endpoint: resolved_endpoint,
+            arms: cells,
+            skipped: board.skipped,
+        })
+    }
+}
+
+/// `ArmClass` + counts → a scoreboard cell (the trust triage projected for the wire).
+fn cell(arm: &str, score: u32, total: u32, class: &ArmClass) -> CompetitionCell {
+    let detail = match class {
+        ArmClass::Clean => None,
+        ArmClass::Suspect { noisy } => {
+            Some(format!("{noisy} declined/errored task(s) — not a capability number"))
+        }
+        ArmClass::Void { reason } => Some(reason.clone()),
+    };
+    CompetitionCell {
+        arm: arm.into(),
+        score,
+        total,
+        class: class.label().into(),
+        detail,
+    }
+}
+
+crate::register_stateless_command!(BenchmarkCompetition);
 
 /// Pure render: ledger rows → one markdown table per benchmark (models down, harness
 /// arms across, `resolved/total (rate)` cells aggregated over contributing rows) + a

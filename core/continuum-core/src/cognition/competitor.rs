@@ -456,7 +456,9 @@ pub struct Scoreboard {
 /// Classify a cell from its per-task ledger — the CLEAN/SUSPECT/VOID triage that keeps
 /// harness noise from masquerading as a capability number. A task is "noisy" if its
 /// solve errored, or it failed with ≤ [`DECLINE_TOKEN_MAX`] tokens (a decline/wedge).
-fn classify(results: &[ArmTaskResult]) -> ArmClass {
+/// Public so the command layer can classify Continuum's native arm (run through
+/// `cognition/eval`) on the SAME triage as the external arms.
+pub fn classify(results: &[ArmTaskResult]) -> ArmClass {
     if results.is_empty() {
         return ArmClass::Void {
             reason: "no tasks graded".to_string(),
