@@ -36,6 +36,14 @@ detach?: boolean,
  */
 run_id?: string, 
 /**
+ * GLASS-BOX (opt-in): directory for the JSONL turn-capture sink — every tick's bids +
+ * DECISION + timings append to `<dir>/<persona_id>.jsonl`, same sink `cognition/eval`
+ * wires (task #14). THE tool for diagnosing an acts=1 silent settle: the capture says
+ * whether she chose Act/Respond/Pass and why, where the bare ledger only shows the
+ * aftermath. Fork-only, never her live mind.
+ */
+capture_dir?: string, 
+/**
  * DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
  * durable episodic/semantic recall is suppressed for this run — the same probe
  * `cognition/eval` exposes ([[eval-measures-the-true-full-being-not-a-stripped-copy]]).

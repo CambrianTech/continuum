@@ -58,6 +58,14 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub run_id: Option<String>,
+    /// GLASS-BOX (opt-in): directory for the JSONL turn-capture sink — every tick's bids +
+    /// DECISION + timings append to `<dir>/<persona_id>.jsonl`, same sink `cognition/eval`
+    /// wires (task #14). THE tool for diagnosing an acts=1 silent settle: the capture says
+    /// whether she chose Act/Respond/Pass and why, where the bare ledger only shows the
+    /// aftermath. Fork-only, never her live mind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capture_dir: Option<String>,
     /// DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
     /// durable episodic/semantic recall is suppressed for this run — the same probe
     /// `cognition/eval` exposes ([[eval-measures-the-true-full-being-not-a-stripped-copy]]).
@@ -237,6 +245,24 @@ impl AgentSolve {
         //     patch was empty). Same fail-loud mechanism cognition/eval uses to root a measurement
         //     persona at a target repo.
         crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace).await?;
+
+        // GLASS-BOX (same seam as cognition/eval, task #14): opt-in JSONL turn capture on
+        // the fork — bids + DECISION + timings per tick, the instrument that turns an
+        // acts=1 silent settle from a mystery into a mechanism.
+        let cycle = match &p.capture_dir {
+            Some(dir) => cycle.with_capture(std::sync::Arc::new(
+                crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink::open(
+                    std::path::Path::new(dir),
+                    persona_uuid,
+                )
+                .map_err(|e| {
+                    CommandError::Internal(format!(
+                        "failed to open agent/solve capture_dir '{dir}': {e}"
+                    ))
+                })?,
+            )),
+            None => cycle,
+        };
 
         // 3) Layer the task into her situation as a directed, TOOL-FORCING request. The dominant
         //    misfit-coder failure (glass-boxed 2026-07-22): a 7B answers with the code in a message
