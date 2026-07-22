@@ -3020,6 +3020,67 @@ async fn run_pass(
             );
             break;
         }
+        // DIRECTED-EXAM ANSWER GUARD. An exam question is DIRECTED and the examiner poses it
+        // imperatively (see `framed_prompt`), yet a capable coder BASE can still settle on a
+        // bare "PASS" — parsed as `Decision::Pass` → an EMPTY answer graded as a capability
+        // miss (glass-boxed 2026-07-21 via the per-task ledger: Qwen2.5-Coder-7B emitted a
+        // 2-token PASS on every games/frontier/coder-eval task → 0/N, while it built a real
+        // 5/6 on webdev; instruct-tuned Hermes-3-8B answered the same tasks). Declining to
+        // participate is NOT a coding-capability signal — it's the persona should-respond
+        // framing suppressing a raw base's ability. If she declined, RE-DRIVE ONCE with an
+        // explicit answer-required nudge: a CHANGED prompt, so greedy decoding cannot simply
+        // re-emit the same PASS token. A model that answers on the nudge is measured on its
+        // code; one that declines again is graded on whatever it then produced, never a
+        // silent phantom. Bounded (one extra drive), and the nudge is the examiner insisting,
+        // not a crib. [[benchmarks-are-proctored-exams-of-the-natural-living-persona]]
+        if matches!(settled.decision, crate::cognition::workspace::Decision::Pass) {
+            crate::probe!(
+                class = "eval.task.declined_redrive",
+                task = %t.id,
+                "directed exam question was DECLINED (settled PASS) — re-driving once with an answer-required nudge"
+            );
+            let nudge_delivery = crate::persona::rag_budget::RagDelivery {
+                source_id: "airc".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: format!(
+                        "You did not answer. This is a GRADED exam question and you must answer it \
+                         now — do NOT reply PASS or stay silent. Provide your complete solution:\n\n{}",
+                        t.prompt.trim()
+                    ),
+                    tokens: 0,
+                    metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
+                }],
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            };
+            let nudge_burst = crate::cognition::workspace::Burst::from_turns(
+                room,
+                crate::persona::service_loop::build_workspace_turns(
+                    std::slice::from_ref(&nudge_delivery),
+                    "",
+                    "",
+                    None,
+                ),
+            );
+            if let Ok(re) = tokio::time::timeout(
+                PER_TASK_DEADLINE,
+                crate::cognition::act_observe::drive_to_settle(
+                    cycle,
+                    nudge_burst,
+                    room,
+                    max_acts,
+                    crate::cognition::workspace::TurnFraming::directed(),
+                ),
+            )
+            .await
+            {
+                // Take the re-drive only if it produced a real turn (not an infra fault).
+                if re.inference_error.is_none() {
+                    settled = re;
+                }
+            }
+        }
         let answer = settled.spoken.clone().unwrap_or_default();
         // `settled.inference_error` is None here — the abort above consumed every infra
         // fault, so this grades a REAL verdict (a working lane produced an answer, right or
