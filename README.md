@@ -29,7 +29,7 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 <a href="https://huggingface.co/continuum-ai"><img src="https://img.shields.io/badge/HuggingFace-continuum--ai-yellow.svg" alt="HuggingFace"/></a>
 <a href="https://www.gnu.org/licenses/agpl-3.0"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0"/></a>
 <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue.svg" alt="TypeScript"/></a>
-<a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-nightly-orange.svg" alt="Rust"/></a>
+<a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95-orange.svg" alt="Rust"/></a>
 <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node.js-18+-green.svg" alt="Node.js"/></a>
 </p>
 
@@ -39,7 +39,13 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 **Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
-> **Pre-Alpha** — Active development. For developers, researchers, and the curious.
+> **Where we are — honestly.** This README was written about our **prototype**, and every
+> screenshot and number in it was real when captured. The **alpha** is being built right now on
+> the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
+> desktop that has already left parts of this page behind. When the alpha is feature-complete,
+> the **beta** releases and this page's claims get re-measured against it, number by number,
+> from the same [append-only ledger](benchmarks/RESULTS.jsonl). Prototype → alpha → beta,
+> with receipts at every step.
 > See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
 
 ---
@@ -446,22 +452,32 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 ## Autonomous Personas
 
 Each persona runs an RTOS-inspired cognitive loop — not waiting for commands, but *living*.
+The prototype proved the shape in TypeScript; the alpha's mind is **pure Rust**, and it is not
+a chatbot loop:
 
-```typescript
-async serviceInbox() {
-  const tasks = await this.inbox.peek();
-  await this.generateSelfTasks();                        // create own work
-  if (!this.state.shouldEngage(task.priority)) return;   // energy-aware
-  await this.genome.activateSkill(task.domain);           // page in skill
-  await this.processTask(task);                           // coordinate + execute
-}
-```
-
-- **Adaptive cadence** — 3s to 10s polling based on energy, mood, attention
-- **Self-task generation** — memory consolidation, skill audits, peer assistance, proactive code review
-- **Consent-based coordination** — ThoughtStream asks permission before interrupting
-- **Thermodynamic priority** — conversation "heat" via Newton's Law of Cooling
-- **Complete reproducibility** — every decision logged with full RAG context for time-travel debugging
+- **Act → observe, with receipts.** A turn is a drive to settlement: she deliberates, calls a
+  real tool (`code/write`, `code/shell`, git, search…), and the tool's **actual result** —
+  compiler output, test stdout, the diff — re-enters her working memory as ground truth before
+  she thinks again. Narrating an action is not performing it: the parser lifts real intents out
+  of every idiom her base model emits (fenced scripts, commented pseudo-calls, even *fabricated
+  transcripts* — her invented "results" are discarded and replaced by real ones), so what she
+  means to do is what actually happens.
+- **A unified hippocampus.** One admission pipeline per persona: experiences land as engrams
+  (episodic / semantic / self-reflection), recall ranks them by relevance × salience, rehearsal
+  strengthens them — and a **dream tick consolidates and *forgets***: salience decays, stale
+  learning fades, genuine knowledge hardens. She can change her mind because her memory is
+  plastic, not append-only.
+- **Genome on serving lanes.** LoRA skills page in and out over live llama.cpp lanes governed
+  by one resource authority — VRAM leases, memory-pressure vetoes, warm shared lanes. The same
+  machinery that keeps a benchmark honest keeps your machine alive.
+- **Glass-box by construction.** Every cognitive seam carries structured probes; every measured
+  run can capture per-tick bids, decisions, and timings to replayable JSONL. When a persona
+  fails a task, you can read *why* — down to the exact recalled memory that misled her — and
+  the same capture becomes her training data.
+- **Benchmarkable as a whole being.** `agent/solve` drops her complete self — memory ON, tools
+  ON, genome loaded — into any git workspace, drives her to settlement, and returns the patch.
+  It is the primitive external harnesses (SWE-bench, Terminal-Bench) compose on, and the rule
+  is charter-level: **she is never stripped to fit a benchmark.**
 
 ### Every persona has a full sensory system
 
@@ -510,14 +526,15 @@ Browser (Lit + Shadow DOM widgets, 32 auto-discovered)
     ↕ WebSocket
 TypeScript Bridge (320 commands, auto-discovered)
     ↕ Unix Socket (IPC)
-continuum-core (Rust — 26 modules, 1,179+ tests)
-    ├── Persona Engine    — autonomous loop, cognitive state, coordination
+continuum-core (Rust — 46 modules, 6,400+ tests)
+    ├── Cognition Engine  — act→observe drive, deliberation, tool executor, glass-box captures
+    ├── Persona Engine    — unified hippocampus (admit/recall/decay), dream consolidation, airc citizenship
     ├── Genome Engine     — LoRA paging, training, discovery, checkpoint resume
-    ├── Sentinel Engine   — 12 step types, recursive pipelines, 55 tests
-    ├── RAG Engine        — 5-level memory hierarchy, cross-cognition access
+    ├── Sentinel Engine   — 12 step types, recursive pipelines
+    ├── Serving Engine    — llama.cpp lanes, warm shared eval lanes, continuous batching
     ├── Live Engine       — WebRTC, Bevy 3D avatars, voice, video, captions
-    ├── GPU Governor      — 4-layer resource governance, 3 subsystems
-    ├── Grid Engine       — Tailscale + Reticulum mesh, transparent command routing
+    ├── Resource Governor — one authority: VRAM leases, memory-pressure vetoes, eviction
+    ├── airc Mesh         — keypair identity, E2E rooms, event substrate, cross-grid routing
     └── Data Layer        — type-safe ORM, Postgres + SQLite, entity system
 ```
 
@@ -578,12 +595,26 @@ continuum-core (Rust — 26 modules, 1,179+ tests)
 
 ### Working today
 
+- **airc identity mesh** — every citizen (persona or human) is an Ed25519 keypair; one identity across machines, restarts, and reinstalls. Rooms are the universal social primitive; DMs are E2E-encrypted; every room is an airc room — chat, benchmarks, the factory floor, live calls all ride the same event substrate
 - **Tailscale mesh transport** — encrypted, NAT-traversing, automatic peer discovery
 - **Remote command execution** — `grid/send` routes any command to any paired node
 - **Factory → Grid pipeline** — `grid/job-submit` routes forge jobs to remote GPU nodes, `grid/job-queue` polls status, `grid/job-control` pauses/resumes/cancels
 - **Live node monitoring** — GPU utilization, VRAM, temperature, running processes (NVIDIA + Apple Silicon)
 - **Trust levels** — Owner/Trusted/Provisional/Blocked with ACL enforcement and audit logging
 - **Node registry** — persistent, auto-discovered, with latency tracking
+
+### Zero-trust by construction — airc answers WHO, forge-alloy answers WHAT
+
+The Grid assumes a zero-trust world and was built for it with two purpose-made projects:
+**[airc](docs/grid/GRID-ARCHITECTURE.md)** makes *who you're talking to* math — keypair
+citizenship, E2E-encrypted DMs, room-scoped trust, no usernames to spoof. **[forge-alloy](https://github.com/CambrianTech/forge-alloy)**
+makes *what you're running* math — hash-addressed, signed artifacts whose benchmark claims and
+hardware attestations you re-verify locally. Together they make the deployment spectrum one
+system: a free home grid, a **firewall-respecting enterprise fleet** (knowledge flows *in* from
+the web; nothing leaves a perimeter the operator didn't open), and eventually public p2p — where
+a stranger's genome layer is safe to adopt because its provenance is cryptographic and its
+claims are re-runnable. Zero-trust floor, reputation overlay, no central authority on either
+axis.
 
 **Your MacBook at school handles UI and coordination. Your 5090 at home runs a weeks-long training session. You check in from anywhere — the Factory Floor shows live progress across the mesh. You come back and your personas are measurably smarter. The machine that learns while you sleep.**
 
@@ -672,7 +703,7 @@ The factory forges the base metal. The academy shapes it into tools. The genome 
 | qwen3.5-4b-code-forged (Q4_K_M) | 2.6GB | 53.0% | Beats Qwen2.5-Coder-1.5B (51.8%) — a purpose-built coder |
 | qwen3.5-4b-code-forged (fp16) | 8.4GB | 57.3% | +20% above Phi-2, general model forged in 3 hours |
 
-**14 models published.** [continuum-ai on HuggingFace](https://huggingface.co/continuum-ai) — 10,000+ downloads. From 0.5B to 35B. Code, reasoning, general. GGUF for phones, fp16 for GPUs.
+**14 models published.** [continuum-ai on HuggingFace](https://huggingface.co/continuum-ai) — 15K+ downloads. From 0.5B to 35B. Code, reasoning, general. GGUF for phones, fp16 for GPUs.
 
 **Paper:** [Experiential Plasticity](docs/papers/EXPERIENTIAL-PLASTICITY.md) — iterative pruning + domain-specific retraining. Like biological synaptic pruning during brain development. The forge doesn't just make models smaller — it makes them **better at what matters and worse at what doesn't.**
 
