@@ -2785,6 +2785,21 @@ async fn run_pass(
             && t.dod_shell.is_none()
             && t.solution_file.is_none();
         if from_scratch_build {
+            // Independent build task → reset the COGNITION context, not just the workspace
+            // (#209's missing sibling). These tasks are UNRELATED (login-form vs todo-list vs
+            // pricing-cards) and each produces a LARGE artifact. The continuous-session design
+            // (reset once at pass start, then carry task-to-task) accumulates every prior
+            // task's big spoken page into working memory + episodic recall, so by task 2+ the
+            // composed prompt overflows the lane's window → per-slot compute error → the slot
+            // WEDGES and returns empty 0-token generations for every later task, graded as
+            // phantom 0-score misses (glass-boxed 2026-07-21: task 1 real 14133ms gen, tasks
+            // 2-6 empty ~461ms → 0/N checks with empty answers). A from-scratch task must start
+            // from a clean cognitive slate exactly as its workspace is wiped clean — carrying
+            // an unrelated prior page is only noise AND the overflow trigger. The "continuous
+            // student" thesis applies to RELATED tasks that build on each other, not an
+            // independent-UI-build battery. [[llama-compute-error-wedge-is-per-slot-context-overflow]]
+            cycle.reset_working_memory();
+            isolation.rewind();
             if let Some(root) = workspace_root {
                 if let Err(e) = clean_dir_contents(root) {
                     tracing::warn!(
