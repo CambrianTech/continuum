@@ -417,13 +417,13 @@ The persona's COMPLETE self — memory ON, genome loaded, tools ON, **never stri
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **60% (6/10)** | — | — | — | — |
+| **Qwen2.5-Coder-7B** | — | **53% (8/15)** | — | — | — | — |
 
 **Agent-Solve Tier 2** — whole-being — multi-file root-cause, invariants, implement-from-spec
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **20% (2/10)** | — | — | — | — |
+| **Qwen2.5-Coder-7B** | — | **0% (0/15)** | — | — | — | — |
 
 ### Fast verifiable gyms (regression + training signal)
 
