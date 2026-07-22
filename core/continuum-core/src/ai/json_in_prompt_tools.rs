@@ -631,8 +631,16 @@ impl ToolCallFormat for CliFlagFormat {
             // failed lift falls through to the flag grammar (a paren inside a
             // flag VALUE — `--path "x(y).txt"` — is not a call shape).
             // The `[Action #N]` prefix strip meets Atlas's fake-transcript
-            // idiom (below) in its single-line form too.
-            let line = strip_action_bracket_prefix(line);
+            // idiom (below) in its single-line form too; the assignment strip
+            // meets her script idiom (`result = code/read({...})` — Atlas live
+            // 2026-07-22 ×2: subtract narrated it and asked us to run it;
+            // multiply's whole call-script got WRITTEN INTO mathlib.py as file
+            // content by the narrated-write path, correct fix trapped inside a
+            // string). Stripping the binding makes the CALL lift here, and
+            // format order does the rest: this format precedes NarratedWrite,
+            // so a fence containing liftable call lines is a SCRIPT to
+            // execute, never content to write.
+            let line = strip_assignment_prefix(strip_action_bracket_prefix(line));
             if line.ends_with(')') {
                 if let Some(call) = lift_sole_paren_call(line) {
                     out.push(call);
@@ -724,6 +732,46 @@ fn strip_action_bracket_prefix(line: &str) -> &str {
     let Some(rest) = line.strip_prefix('[') else { return line };
     let Some(close) = rest.find(']') else { return line };
     let after = rest[close + 1..].trim_start();
+    let looks_like_call = after
+        .find('(')
+        .map(|p| {
+            let name = after[..p].trim();
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-')
+        })
+        .unwrap_or(false);
+    if looks_like_call {
+        after
+    } else {
+        line
+    }
+}
+
+/// Strip a simple `ident = ` binding from a line ONLY when a paren-call shape
+/// follows (`result = code/read({...})` → `code/read({...})`). The binding is
+/// python fiction — there is no return-value plumbing; the observation enters
+/// working memory — but the CALL is real intent. A slash-token name can never
+/// be legit python anyway (`code/read` parses as division), and no-slash names
+/// still pass the registry-resolution guard downstream, so ordinary
+/// assignments (`x = compute(y)`, `new_content = """..."""`) stay speech.
+fn strip_assignment_prefix(line: &str) -> &str {
+    let Some(eq) = line.find('=') else { return line };
+    let lhs = line[..eq].trim();
+    let simple_ident = !lhs.is_empty()
+        && lhs.len() <= 32
+        && lhs.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !lhs.chars().next().is_some_and(|c| c.is_ascii_digit());
+    if !simple_ident {
+        return line;
+    }
+    // `==` comparison is not a binding.
+    let after = line[eq + 1..].trim_start();
+    if after.starts_with('=') {
+        return line;
+    }
     let looks_like_call = after
         .find('(')
         .map(|p| {
@@ -2842,5 +2890,66 @@ The bug has been fixed."#;
         assert!(parse_tool_calls("[recall] she mentioned utils.py earlier").is_empty());
         // Opens like a call but never closes → no lift.
         assert!(parse_tool_calls("[Action #2] edit_file({\n  \"file_path\": \"x.py\",\nand then some prose").is_empty());
+    }
+
+    // what this catches: Atlas's EXACT live script idiom (glass-boxed
+    // 2026-07-22 twice — subtract narrated it; on multiply the whole script
+    // got WRITTEN INTO mathlib.py as content, the correct fix trapped in a
+    // string variable). An assignment-bound call (`result = code/read({...})`)
+    // is real intent behind python fiction: the binding strips, the call
+    // lifts. Sibling lines hold the guards: the `code/write` whose args
+    // reference an UNQUOTED variable (`new_content`) refuses (invalid JSON —
+    // she must read for real first), `print(...)` and `new_content = """..."""`
+    // stay speech. And because CliFlagFormat precedes NarratedWrite, the fence
+    // is a SCRIPT — parse_tool_calls yields the calls, never a file-write of
+    // the script text.
+    #[test]
+    fn assignment_bound_calls_lift_from_live_script_emission() {
+        let live = r#"Let's fix the bug in `mathlib.py`:
+
+```python
+# Read the existing content of mathlib.py
+result = code/read({"file_path": "mathlib.py"})
+print(result["content"])
+
+# Fix the bug in the multiply function
+new_content = """
+def multiply(a, b):
+    return a * b
+"""
+code/write({"content": new_content, "file_path": "mathlib.py"})
+
+# Confirm the fix by running the code
+result = code/shell({"cmd": "python mathlib.py"})
+print(result["stdout"])
+```
+
+Please run this script."#;
+        let calls = parse_tool_calls(live);
+        assert_eq!(
+            calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["code/read", "code/shell"],
+            "read + shell lift; the variable-arg write refuses: {calls:?}"
+        );
+        assert_eq!(calls[0].input["file_path"], "mathlib.py");
+        assert_eq!(calls[1].input["cmd"], "python mathlib.py");
+    }
+
+    // what this catches: the assignment strip is NARROW — ordinary python
+    // bindings whose callee resolves in NO registry stay speech, comparisons
+    // are not bindings, and a dotted/complex lhs is left alone.
+    #[test]
+    fn assignment_strip_stays_narrow() {
+        for speech in [
+            "x = compute({\"y\": 1})",
+            "if x == is_even({\"n\": 2}): pass",
+            "self.result = code_read({\"file_path\": \"x\"})",
+            "new_content = \"\"\"\ndef f():\n    pass\n\"\"\"",
+        ] {
+            assert!(
+                parse_tool_calls(speech).is_empty(),
+                "must stay speech: {speech}"
+            );
+        }
     }
 }
