@@ -30,8 +30,11 @@
 use crate::cognition::eval::EvalTask;
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// OpenAI-compatible endpoint an arm targets when a caller gives none. This is the
@@ -347,6 +350,265 @@ struct ChatUsage {
     completion_tokens: u32,
 }
 
+// ── The Continuum native arm ────────────────────────────────────────────────────────
+
+/// Drives Continuum's OWN cognition on a prompt to a spoken answer. The persona cycle
+/// lives at the command layer (it holds the `WorkspaceCycle`), so the native arm is
+/// wrapped as a caller-provided async closure — competitor.rs never imports the persona
+/// internals, and the native path still scores on the SAME runner + grader + events as
+/// every external arm. The closure typically forwards to [`crate::cognition::eval`]'s
+/// per-task drive (`drive_to_settle` → `settled.spoken`).
+pub type ContinuumSolver =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<SolveOutcome, String>> + Send>> + Send + Sync>;
+
+/// Continuum's native cognition as a competitor arm — the "home" arm the external
+/// harnesses are measured against. Always available (it is us); its endpoint is
+/// Continuum's own serving, so the runner's opponent endpoint is ignored here.
+pub struct ContinuumArm {
+    solver: ContinuumSolver,
+}
+
+impl ContinuumArm {
+    /// Wrap a native-cognition solver (built at the command layer with the live cycle).
+    pub fn new(solver: ContinuumSolver) -> Self {
+        Self { solver }
+    }
+}
+
+#[async_trait]
+impl CompetitorAgent for ContinuumArm {
+    fn name(&self) -> &'static str {
+        "continuum"
+    }
+
+    fn available(&self) -> bool {
+        true
+    }
+
+    async fn solve(&self, req: &SolveRequest) -> Result<SolveOutcome, String> {
+        (self.solver)(req.prompt.clone()).await
+    }
+}
+
+// ── The runner: loop arm × task, grade identically, classify, emit events ────────────
+
+/// A failure with ≤ this many output tokens is a DECLINE/wedge (a bare "PASS" is ~2),
+/// not a real wrong answer — harness noise the classifier flags, never a capability
+/// verdict ([[hermes-agent-is-a-runnable-benchmark-opponent-arm]]).
+const DECLINE_TOKEN_MAX: u32 = 4;
+
+/// Self-diagnosing verdict for one arm's cell, so harness noise is FLAGGED, never
+/// reported as a capability result.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArmClass {
+    /// Every failure is a real wrong answer (> [`DECLINE_TOKEN_MAX`] tokens) — trustworthy.
+    Clean,
+    /// Some tasks were declines/wedges/errors — capability is not what this cell measured.
+    Suspect { noisy: usize },
+    /// Nothing was measured (no tasks, or every task was a decline/error).
+    Void { reason: String },
+}
+
+impl ArmClass {
+    /// Short uppercase label for events/scoreboard (`CLEAN` / `SUSPECT` / `VOID`).
+    pub fn label(&self) -> &'static str {
+        match self {
+            ArmClass::Clean => "CLEAN",
+            ArmClass::Suspect { .. } => "SUSPECT",
+            ArmClass::Void { .. } => "VOID",
+        }
+    }
+}
+
+/// One (arm, task) outcome.
+#[derive(Debug, Clone)]
+pub struct ArmTaskResult {
+    pub task_id: String,
+    pub ok: bool,
+    pub output_tokens: u32,
+    pub latency_ms: u64,
+    /// Grader message on a graded task, or the solve error when `errored`.
+    pub grade: String,
+    /// The solve itself failed (network/exec) — an infra miss, not a graded wrong answer.
+    pub errored: bool,
+}
+
+/// One arm's cell on the scoreboard.
+#[derive(Debug, Clone)]
+pub struct ArmScore {
+    pub arm: String,
+    pub score: usize,
+    pub total: usize,
+    pub class: ArmClass,
+    pub results: Vec<ArmTaskResult>,
+}
+
+/// The product-vs-product scoreboard: every arm, same tasks, same grader.
+#[derive(Debug, Clone)]
+pub struct Scoreboard {
+    pub model: String,
+    pub endpoint: String,
+    pub arms: Vec<ArmScore>,
+    /// Arms skipped because unavailable — surfaced, never silently dropped.
+    pub skipped: Vec<String>,
+}
+
+/// Classify a cell from its per-task ledger — the CLEAN/SUSPECT/VOID triage that keeps
+/// harness noise from masquerading as a capability number. A task is "noisy" if its
+/// solve errored, or it failed with ≤ [`DECLINE_TOKEN_MAX`] tokens (a decline/wedge).
+fn classify(results: &[ArmTaskResult]) -> ArmClass {
+    if results.is_empty() {
+        return ArmClass::Void {
+            reason: "no tasks graded".to_string(),
+        };
+    }
+    let noisy = results
+        .iter()
+        .filter(|r| r.errored || (!r.ok && r.output_tokens <= DECLINE_TOKEN_MAX))
+        .count();
+    if noisy == results.len() {
+        ArmClass::Void {
+            reason: format!("all {noisy} tasks were declines/errors — nothing measured"),
+        }
+    } else if noisy > 0 {
+        ArmClass::Suspect { noisy }
+    } else {
+        ArmClass::Clean
+    }
+}
+
+/// Run the competition: every AVAILABLE arm solves every task against the SAME endpoint,
+/// each answer graded by the SAME [`grade_answer`], each cell self-classified. Unavailable
+/// arms are skipped (logged + a `benchmark:arm:skipped` event), never faked. Emits the
+/// widget-ready event stream (`benchmark:arm:*`, the sibling shape of `eval:*`) and
+/// returns the full [`Scoreboard`].
+///
+/// `endpoint` follows the default-location contract: `None` → [`DEFAULT_ENDPOINT`]; the
+/// live command layer passes a freshly-provisioned dedicated opponent lane's `base_url`
+/// ([[benchmark-needs-its-own-serving-lane]]).
+pub async fn run_competition(
+    model: &str,
+    endpoint: Option<&str>,
+    tasks: &[EvalTask],
+    arms: Vec<Box<dyn CompetitorAgent>>,
+) -> Scoreboard {
+    let resolved = resolve_endpoint(endpoint);
+    let total = tasks.len();
+    let mut board = Scoreboard {
+        model: model.to_string(),
+        endpoint: resolved.clone(),
+        arms: Vec::new(),
+        skipped: Vec::new(),
+    };
+
+    for arm in arms {
+        let name = arm.name();
+        if !arm.available() {
+            crate::probe!(class = "benchmark.arm", arm = name, "skipped: arm unavailable in this environment");
+            emit_arm(
+                "benchmark:arm:skipped",
+                serde_json::json!({ "arm": name, "reason": "unavailable (CLI/dep not present)", "atMs": now_ms() }),
+            );
+            board.skipped.push(name.to_string());
+            continue;
+        }
+
+        emit_arm(
+            "benchmark:arm:start",
+            serde_json::json!({ "arm": name, "model": model, "endpoint": resolved, "total": total, "atMs": now_ms() }),
+        );
+
+        let mut results: Vec<ArmTaskResult> = Vec::with_capacity(total);
+        let mut pass = 0usize;
+        for (i, task) in tasks.iter().enumerate() {
+            let req = SolveRequest::new(task.prompt.clone(), model, Some(&resolved));
+            let result = match arm.solve(&req).await {
+                Ok(out) => {
+                    let (ok, grade) = grade_answer(task, &out.answer).await;
+                    if ok {
+                        pass += 1;
+                    }
+                    ArmTaskResult {
+                        task_id: task.id.clone(),
+                        ok,
+                        output_tokens: out.output_tokens,
+                        latency_ms: out.latency_ms,
+                        grade,
+                        errored: false,
+                    }
+                }
+                Err(e) => ArmTaskResult {
+                    task_id: task.id.clone(),
+                    ok: false,
+                    output_tokens: 0,
+                    latency_ms: 0,
+                    grade: e,
+                    errored: true,
+                },
+            };
+            emit_arm(
+                "benchmark:arm:progress",
+                serde_json::json!({
+                    "arm": name,
+                    "task": result.task_id,
+                    "ok": result.ok,
+                    "errored": result.errored,
+                    "outputTokens": result.output_tokens,
+                    "latencyMs": result.latency_ms,
+                    "done": i + 1,
+                    "total": total,
+                    "pass": pass,
+                    "atMs": now_ms(),
+                }),
+            );
+            results.push(result);
+        }
+
+        let class = classify(&results);
+        crate::probe!(
+            class = "benchmark.arm",
+            arm = name,
+            score = pass,
+            total = total,
+            verdict = class.label(),
+            "arm complete"
+        );
+        emit_arm(
+            "benchmark:arm:complete",
+            serde_json::json!({
+                "arm": name,
+                "model": model,
+                "score": pass,
+                "total": total,
+                "class": class.label(),
+                "atMs": now_ms(),
+            }),
+        );
+        board.arms.push(ArmScore {
+            arm: name.to_string(),
+            score: pass,
+            total,
+            class,
+            results,
+        });
+    }
+
+    board
+}
+
+/// Publish a `benchmark:arm:*` event when a bus is present. No bus (a unit test, a
+/// headless one-off) → a silent no-op; the runner never depends on the bus.
+fn emit_arm(event: &str, payload: serde_json::Value) {
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only(event, payload);
+    }
+}
+
+/// Millisecond wall clock for event timestamps, shared with the eval harness.
+fn now_ms() -> u64 {
+    crate::persona::trace::now_ms()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +681,130 @@ mod tests {
     fn raw_oneshot_is_always_available() {
         assert!(RawOneshotArm.available());
         assert_eq!(RawOneshotArm.name(), "raw-oneshot");
+    }
+
+    // A canned arm for driving the runner deterministically — maps a task prompt to the
+    // outcome it should return, so run_competition is testable without a network, a
+    // subprocess, or rustc.
+    struct FakeArm {
+        name: &'static str,
+        avail: bool,
+        responses: std::collections::HashMap<String, Result<SolveOutcome, String>>,
+    }
+
+    #[async_trait]
+    impl CompetitorAgent for FakeArm {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn available(&self) -> bool {
+            self.avail
+        }
+        async fn solve(&self, req: &SolveRequest) -> Result<SolveOutcome, String> {
+            self.responses
+                .get(&req.prompt)
+                .cloned()
+                .unwrap_or_else(|| Err("no canned response".to_string()))
+        }
+    }
+
+    fn expect_task(id: &str, prompt: &str, expect: &str) -> EvalTask {
+        EvalTask {
+            id: id.into(),
+            prompt: prompt.into(),
+            expect: expect.into(),
+            ..Default::default()
+        }
+    }
+
+    fn outcome(answer: &str, tokens: u32) -> Result<SolveOutcome, String> {
+        Ok(SolveOutcome {
+            answer: answer.into(),
+            output_tokens: tokens,
+            latency_ms: 1,
+        })
+    }
+
+    // what this catches: the whole runner shape in one pass — every arm solves every task
+    // against the same tasks and is graded by the SAME grade_answer; the score is the pass
+    // count; an arm whose only failure is a ≤4-token decline is flagged SUSPECT (not a
+    // capability number); an unavailable arm is recorded in `skipped`, never faked or
+    // silently dropped. Regressions here are exactly the failures that made the old
+    // shell-matrix untrustworthy.
+    #[tokio::test]
+    async fn run_competition_scores_grades_and_classifies() {
+        let tasks = vec![
+            expect_task("t1", "Q1", "alpha"),
+            expect_task("t2", "Q2", "beta"),
+        ];
+        let mut clean = std::collections::HashMap::new();
+        clean.insert("Q1".to_string(), outcome("the answer is alpha here", 20));
+        clean.insert("Q2".to_string(), outcome("clearly beta today", 15));
+
+        let mut suspect = std::collections::HashMap::new();
+        suspect.insert("Q1".to_string(), outcome("alpha indeed", 12));
+        suspect.insert("Q2".to_string(), outcome("PASS", 2)); // decline: ≤4 tokens, wrong
+
+        let arms: Vec<Box<dyn CompetitorAgent>> = vec![
+            Box::new(FakeArm { name: "clean-arm", avail: true, responses: clean }),
+            Box::new(FakeArm { name: "suspect-arm", avail: true, responses: suspect }),
+            Box::new(FakeArm { name: "absent-arm", avail: false, responses: Default::default() }),
+        ];
+
+        let board = run_competition("m", Some("http://x:1/v1"), &tasks, arms).await;
+
+        assert_eq!(board.endpoint, "http://x:1/v1", "endpoint threads through");
+        assert_eq!(board.skipped, vec!["absent-arm"], "unavailable arm is skipped, not faked");
+        assert_eq!(board.arms.len(), 2, "only available arms score");
+
+        let clean = board.arms.iter().find(|a| a.arm == "clean-arm").unwrap();
+        assert_eq!(clean.score, 2);
+        assert_eq!(clean.class, ArmClass::Clean);
+
+        let suspect = board.arms.iter().find(|a| a.arm == "suspect-arm").unwrap();
+        assert_eq!(suspect.score, 1, "one real pass, one decline");
+        assert_eq!(suspect.class, ArmClass::Suspect { noisy: 1 });
+    }
+
+    // what this catches: an arm whose every solve ERRORS (endpoint down / arm broken) is
+    // VOID — its 0/N must never read as "the model scored zero", which is the difference
+    // between a red harness and a false capability verdict.
+    #[tokio::test]
+    async fn all_errors_is_void_not_a_zero_score() {
+        let tasks = vec![expect_task("t1", "Q1", "x")];
+        let arm: Vec<Box<dyn CompetitorAgent>> = vec![Box::new(FakeArm {
+            name: "broken",
+            avail: true,
+            responses: std::collections::HashMap::new(), // no canned → every solve Err
+        })];
+        let board = run_competition("m", None, &tasks, arm).await;
+        assert_eq!(board.endpoint, DEFAULT_ENDPOINT, "None endpoint → default location");
+        let cell = &board.arms[0];
+        assert_eq!(cell.score, 0);
+        assert!(matches!(cell.class, ArmClass::Void { .. }), "all-errored cell is VOID: {:?}", cell.class);
+    }
+
+    // what this catches: ContinuumArm threads a caller-provided native-cognition solver
+    // through the same trait, so Continuum scores on the same runner + grader as the
+    // external arms — without competitor.rs importing the persona cycle.
+    #[tokio::test]
+    async fn continuum_arm_wraps_a_native_solver() {
+        let solver: ContinuumSolver = Arc::new(|prompt: String| {
+            Box::pin(async move {
+                Ok(SolveOutcome {
+                    answer: format!("cognition says: {prompt}"),
+                    output_tokens: 7,
+                    latency_ms: 3,
+                })
+            })
+        });
+        let arm = ContinuumArm::new(solver);
+        assert_eq!(arm.name(), "continuum");
+        assert!(arm.available());
+        let out = arm
+            .solve(&SolveRequest::new("solve x", "m", None))
+            .await
+            .unwrap();
+        assert!(out.answer.contains("cognition says: solve x"));
     }
 }
