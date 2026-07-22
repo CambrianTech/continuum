@@ -61,6 +61,12 @@ pub struct DistilledFact {
     /// Union of the sources' recall keys (first-seen order), so the fact is
     /// retrievable by the same keys its sources were.
     pub tags: Vec<String>,
+    /// Prior-belief engrams the MODEL judged replaced/contradicted by this new
+    /// fact (#221 slice 2 — supersession). Populated only when the distillation
+    /// was shown prior beliefs to review; the caller demotes these to the
+    /// salience floor so the fresh belief out-ranks them in recall. Empty =
+    /// nothing superseded (the common case).
+    pub supersedes: Vec<Uuid>,
 }
 
 /// Why a distillation could not be produced. Typed + loud — there is no silent
@@ -202,7 +208,7 @@ impl SemanticDistiller {
         persona_id: Option<Uuid>,
         sources: &[Engram],
     ) -> Result<DistilledFact, DistillError> {
-        self.distill_with(LENS_CONSOLIDATOR, persona_id, sources).await
+        self.distill_reviewing(LENS_CONSOLIDATOR, persona_id, sources, &[]).await
     }
 
     /// Distill through a specific [`Lens`] — the generalized wanderer pass.
@@ -214,6 +220,26 @@ impl SemanticDistiller {
         persona_id: Option<Uuid>,
         sources: &[Engram],
     ) -> Result<DistilledFact, DistillError> {
+        self.distill_reviewing(lens, persona_id, sources, &[]).await
+    }
+
+    /// [`distill_with`](Self::distill_with) plus a SUPERSESSION REVIEW (#221
+    /// slice 2): the model is additionally shown up to a handful of the
+    /// persona's PRIOR consolidated beliefs (retrieved by recall-key overlap —
+    /// mechanics, like recall itself) and asked, as part of the SAME single
+    /// generation, which if any are replaced or contradicted by the new
+    /// understanding. The JUDGMENT is the model's — never a similarity
+    /// threshold ([[cognition-is-always-ml-never-heuristic]]). Its verdict
+    /// comes back as a trailing `SUPERSEDES: <numbers>` line that is parsed
+    /// OUT of the fact content and mapped to engram ids in
+    /// [`DistilledFact::supersedes`]. No priors → identical to `distill_with`.
+    pub async fn distill_reviewing(
+        &self,
+        lens: Lens,
+        persona_id: Option<Uuid>,
+        sources: &[Engram],
+        prior_beliefs: &[Engram],
+    ) -> Result<DistilledFact, DistillError> {
         if sources.is_empty() {
             return Err(DistillError::NoSources);
         }
@@ -224,8 +250,19 @@ impl SemanticDistiller {
         // fed the distillation; provenance (source_ids/tags) must reflect ONLY those,
         // so the dropped engrams stay unconsolidated and get another pass in a smaller
         // future cluster ([[budget-at-assembly-never-clamp-the-prompt]]).
-        let (block, kept_n) = Self::observations_block(sources, self.max_observation_chars);
+        let (mut block, kept_n) = Self::observations_block(sources, self.max_observation_chars);
         let kept = &sources[..kept_n];
+        if !prior_beliefs.is_empty() {
+            block.push_str(
+                "\n\nPRIOR BELIEFS you consolidated earlier (numbered). If your NEW \
+                 understanding above replaces or contradicts any of them, end your reply \
+                 with a final line exactly like `SUPERSEDES: 2` (comma-separate several: \
+                 `SUPERSEDES: 1,3`). If none are replaced, do not write that line.\n",
+            );
+            for (i, b) in prior_beliefs.iter().enumerate() {
+                block.push_str(&format!("{}. {}\n", i + 1, b.content.trim()));
+            }
+        }
         if kept_n < sources.len() {
             tracing::info!(
                 probe_class = "dream.cluster.budgeted",
@@ -274,6 +311,12 @@ impl SemanticDistiller {
         if raw.is_empty() {
             return Err(DistillError::EmptyDistillation);
         }
+        // Lift the model's supersession verdict OUT of the fact text (the fact
+        // must read as knowledge, not as a grading transcript).
+        let (raw, supersedes) = parse_supersedes_line(raw, prior_beliefs);
+        if raw.is_empty() {
+            return Err(DistillError::EmptyDistillation);
+        }
         // Provenance is prefixed at the ONE synthesis point (see distill_with
         // docs): a tagged lens's output always reads as typed inner speech.
         let content = if lens.tag_output {
@@ -286,6 +329,7 @@ impl SemanticDistiller {
             content,
             source_ids: kept.iter().map(|e| e.id).collect(),
             tags: Self::union_recall_keys(kept),
+            supersedes,
         })
     }
 
@@ -361,6 +405,13 @@ pub struct PersonaReflector {
 
 /// Default recall window: scan the last N engrams for undigested experience.
 const DEFAULT_RECALL_WINDOW: usize = 64;
+
+/// How many related prior beliefs the supersession review shows the distiller
+/// per cluster (#221 slice 2). Small on purpose: the review rides the SAME
+/// generation as the distillation, so this bounds prompt growth; the most
+/// recent related beliefs are the likeliest supersession targets, and beliefs
+/// missed this dream get reviewed by a future one (the dream is periodic).
+const SUPERSESSION_REVIEW_LIMIT: usize = 6;
 /// Default minimum cluster size — below this an episode is not yet a pattern
 /// worth generalizing into a fact.
 const DEFAULT_MIN_CLUSTER: usize = 2;
@@ -585,11 +636,23 @@ async fn dream_pass(
         .with_observation_budget(obs_budget_chars);
     let mut published = 0usize;
     for cluster in &clusters {
+            // #221 slice 2 — SUPERSESSION REVIEW: alongside the cluster, show
+            // the distiller the persona's most related PRIOR beliefs (lexical
+            // recall-key retrieval — mechanics; the model judges). Its verdict
+            // rides the same single generation, so supersession costs zero
+            // extra inference.
+            let prior_beliefs = reflector.admission.semantic_beliefs_matching(
+                &SemanticDistiller::union_recall_keys(cluster),
+                SUPERSESSION_REVIEW_LIMIT,
+            );
             // Distill the cluster into one durable fact. Fail LOUD per cluster:
             // a distillation error is logged and the cluster's episodics stay
             // un-consolidated (so a future dream retries them), never silently
             // swallowed (`[[fallbacks-are-illegal-fail-loud]]`).
-            let fact = match distiller.distill(Some(persona_id), cluster).await {
+            let fact = match distiller
+                .distill_reviewing(LENS_CONSOLIDATOR, Some(persona_id), cluster, &prior_beliefs)
+                .await
+            {
                 Ok(fact) => fact,
                 Err(err) => {
                     tracing::warn!(
@@ -605,6 +668,25 @@ async fn dream_pass(
                 Ok(AdmissionDecision::Admit { .. }) => {
                     published += 1;
                     mark_consolidated(&consolidated, persona_id, cluster);
+                    // Apply the model's supersession verdict (#221 slice 2):
+                    // the replaced beliefs drop to the salience floor NOW —
+                    // the new fact out-ranks them in recall immediately, and
+                    // the decay drain owns them from here. Applied ONLY on a
+                    // successful admit: if the new fact didn't land, the old
+                    // beliefs keep their standing (never orphan her knowledge).
+                    if !fact.supersedes.is_empty() {
+                        let now = crate::persona::trace::now_ms();
+                        for id in &fact.supersedes {
+                            reflector.admission.recall_metadata().demote_to_floor(*id, now);
+                        }
+                        crate::probe!(
+                            class = "hippocampus.supersede",
+                            persona = %persona_id,
+                            superseded = fact.supersedes.len(),
+                            "dream: stale beliefs demoted to the salience floor — \
+                             replaced by a newly consolidated fact (the plastic mind)"
+                        );
+                    }
                 }
                 Ok(AdmissionDecision::Drop { .. }) => {
                     // Content-hash dedup already has this fact (e.g. a
@@ -676,6 +758,34 @@ async fn dream_pass(
         probe_class = "persona.dream.pass_complete",
         "dream: pass complete — durable facts + historian thought admitted"
     );
+}
+
+/// Parse (and strip) a trailing `SUPERSEDES: 1,3` verdict line, mapping the
+/// model's 1-based indices onto the presented prior-belief ids. Tolerant by
+/// design: no line / `SUPERSEDES: none` / out-of-range indices → no
+/// supersessions from that fragment; the line is removed from the fact text
+/// either way when present. Only the LAST line is consulted — a fact whose
+/// body legitimately mentions the word "supersedes" is untouched.
+fn parse_supersedes_line(raw: &str, prior_beliefs: &[Engram]) -> (String, Vec<Uuid>) {
+    let Some(last) = raw.lines().last() else {
+        return (raw.trim().to_string(), Vec::new());
+    };
+    let trimmed = last.trim();
+    let Some(rest) = trimmed
+        .strip_prefix("SUPERSEDES:")
+        .or_else(|| trimmed.strip_prefix("Supersedes:"))
+        .or_else(|| trimmed.strip_prefix("supersedes:"))
+    else {
+        return (raw.trim().to_string(), Vec::new());
+    };
+    let body = raw[..raw.len() - last.len()].trim().to_string();
+    let ids = rest
+        .split(',')
+        .filter_map(|t| t.trim().parse::<usize>().ok())
+        .filter_map(|i| i.checked_sub(1).and_then(|i| prior_beliefs.get(i)))
+        .map(|e| e.id)
+        .collect();
+    (body, ids)
 }
 
 /// Episodics not yet folded into a fact for this persona.
@@ -1267,5 +1377,54 @@ mod tests {
                 "consolidation is the being's own inner work, never reactive stimulus-response",
             );
         }
+    }
+
+    // what this catches: the supersession verdict parse (#221 slice 2) — the
+    // model's trailing `SUPERSEDES: n[,m]` line maps 1-based indices onto the
+    // PRESENTED prior beliefs and is stripped from the fact text (a belief must
+    // read as knowledge, not a grading transcript). Tolerant: no line → no
+    // supersessions; junk/out-of-range indices ignored; the word "supersedes"
+    // in the fact BODY never triggers.
+    #[test]
+    fn parse_supersedes_line_maps_indices_and_strips() {
+        let mk = |content: &str| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: crate::persona::engram::EngramKind::Semantic,
+            content: content.to_string(),
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: Uuid::nil(),
+            },
+            recall_keys: vec![],
+            admitted_at_ms: 1,
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let priors = vec![mk("old belief one"), mk("old belief two"), mk("old three")];
+
+        let (body, ids) = parse_supersedes_line(
+            "The project is python; mathlib.py is the target.\nSUPERSEDES: 1,3",
+            &priors,
+        );
+        assert_eq!(body, "The project is python; mathlib.py is the target.");
+        assert_eq!(ids, vec![priors[0].id, priors[2].id]);
+
+        // No verdict line → untouched, nothing superseded.
+        let (body, ids) = parse_supersedes_line("A plain fact, nothing replaced.", &priors);
+        assert_eq!(body, "A plain fact, nothing replaced.");
+        assert!(ids.is_empty());
+
+        // 'supersedes' in the BODY (not last line) never triggers.
+        let (body, ids) = parse_supersedes_line(
+            "This supersedes: nothing, really.\nJust a two-line fact.",
+            &priors,
+        );
+        assert!(body.contains("supersedes"));
+        assert!(ids.is_empty());
+
+        // Out-of-range + junk indices are ignored, valid ones kept.
+        let (_body, ids) =
+            parse_supersedes_line("fact\nSUPERSEDES: 0, 2, 9, banana", &priors);
+        assert_eq!(ids, vec![priors[1].id], "only the in-range index maps");
     }
 }

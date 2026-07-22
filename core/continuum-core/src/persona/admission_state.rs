@@ -706,6 +706,38 @@ impl AdmissionState {
     /// "Newest first" = reverse insertion order in the in-memory v1 store.
     /// PR-6 will swap to ORM-backed storage indexed by `admitted_at_ms`
     /// for the same ordering guarantee under restart.
+    /// The persona's existing consolidated BELIEFS related to a set of recall
+    /// keys — the dream's supersession-review candidates (#221 slice 2). Pure
+    /// RETRIEVAL by lexical key overlap (the same mechanics recall uses), never
+    /// a judgment: the distiller model decides which, if any, of these a newly
+    /// consolidated fact supersedes. Newest-first, capped at `limit`, Semantic
+    /// only (episodics are experience, not beliefs — they decay, they aren't
+    /// superseded). Keys shorter than 4 chars are skipped as noise.
+    pub fn semantic_beliefs_matching(&self, keys: &[String], limit: usize) -> Vec<Engram> {
+        let needles: Vec<String> = keys
+            .iter()
+            .map(|k| k.trim().to_lowercase())
+            .filter(|k| k.len() >= 4)
+            .collect();
+        if needles.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        let mut hits: Vec<Engram> = engrams
+            .iter()
+            .rev() // newest-first (insertion order store)
+            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| {
+                let content = e.content.to_lowercase();
+                needles.iter().any(|n| content.contains(n.as_str()))
+            })
+            .take(limit)
+            .cloned()
+            .collect();
+        hits.shrink_to_fit();
+        hits
+    }
+
     pub fn recall_recent(&self, limit: usize) -> Vec<Engram> {
         if limit == 0 {
             return Vec::new();
@@ -2525,5 +2557,47 @@ mod tests {
             recalled.iter().any(|e| e.content == baseline),
             "the pre-eval baseline reality is preserved (mirror, not sterilize)"
         );
+    }
+
+    // what this catches: the supersession-review retrieval (#221 slice 2) is
+    // RETRIEVAL, not judgment — Semantic-only (episodics are experience, not
+    // beliefs), matched by recall-key overlap on content, short keys skipped as
+    // noise, capped. If this ever returned episodics, the dream would ask the
+    // model to "supersede" raw experience — plasticity eating her history
+    // instead of her stale conclusions.
+    #[test]
+    fn semantic_beliefs_matching_is_semantic_only_key_overlap() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mk = |kind: EngramKind, content: &str| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind,
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection { parent_engram_id: Uuid::new_v4() },
+            recall_keys: vec![],
+            admitted_at_ms: 1,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let stale_belief = mk(EngramKind::Semantic, "You work with main.rs and wordstats.rs");
+        let other_belief = mk(EngramKind::Semantic, "The team prefers ranked-choice votes");
+        let episode = mk(EngramKind::Episodic, "I edited main.rs and it compiled");
+        let stale_id = stale_belief.id;
+        for e in [stale_belief, other_belief, episode] {
+            state.engrams.lock().unwrap().push(e);
+        }
+        let hits = state.semantic_beliefs_matching(
+            &["main.rs".to_string(), "rs".to_string()], // "rs" = noise, skipped
+            8,
+        );
+        assert_eq!(hits.len(), 1, "semantic-only, key-matched: {hits:?}");
+        assert_eq!(hits[0].id, stale_id);
+        // Cap respected; empty needles → empty.
+        assert!(state.semantic_beliefs_matching(&[], 8).is_empty());
+        assert!(state
+            .semantic_beliefs_matching(&["main.rs".to_string()], 0)
+            .is_empty());
     }
 }
