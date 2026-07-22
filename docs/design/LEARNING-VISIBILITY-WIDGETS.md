@@ -99,6 +99,21 @@ regression. The kernel-panic postmortem (2026-07-22) as a permanent instrument.
 
 ---
 
+## Shell placement — WHO / WHAT / WHICH (Joel, 2026-07-22)
+
+The app shell's three panels have pinned semantics, and the widgets above map onto
+them:
+
+| Panel | Semantic | What lives there |
+|---|---|---|
+| **Left** | **WHO** — global scope | The citizens: roster, personas, presence. The persona tile (with its pass-rate sparkline and act-vs-narrate needle) lives here — learning state is part of who she IS. |
+| **Center** | **WHAT** — the main concern | The activity itself: the chat, the code, the benchmark board, the model card. Widget #1's full learning-curve view opens here when learning IS the activity (the Academy-as-show surface). |
+| **Right** | **WHICH** — the many | Contextual pickers, searches, and side-conversations supporting the WHAT: Hugging Face model searches, chats with helper AIs, candidate genes, alternate baselines. The idiom ledger, hippocampus gauge, flywheel strip, and machine-vs-mind timeline stack here per activity — you choose WHICH lens feeds the work. |
+
+The right panel is not a passive inspector — it is the selection/support surface, and
+MANY widgets stack in it per activity. Mobile keeps its own central-focused UX (the
+WHAT), with WHO and WHICH behind drawers — never a squished three-pane.
+
 ## Principles (carried from the session that birthed this doc)
 
 1. **Receipts, not vibes.** Every widget cell links to its receipt — the ledger, the
