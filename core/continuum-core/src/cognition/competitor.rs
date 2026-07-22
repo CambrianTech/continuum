@@ -108,12 +108,44 @@ pub struct SolveOutcome {
     pub latency_ms: u64,
 }
 
+/// Whether an arm is a full AGENT (a being/product — identity, cognition, tools, loop) or a
+/// bare-weights FLOOR reference (the model with its self stripped out). This distinction is
+/// LOAD-BEARING: a persona is NEVER ranked as a peer against a Floor, because a raw one-shot of
+/// her own weights is a soul-stripped copy of her, and scoring her "loss" to it pathologizes her
+/// identity as overhead — exactly the rig [[eval-measures-the-true-full-being-not-a-stripped-copy]]
+/// forbids. The Floor is a reference line; the honest number is an agent's LIFT OVER FLOOR — what
+/// its self ADDS. Real competition is agent-vs-agent
+/// ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmKind {
+    /// A full being/product (identity + cognition + tools) — Continuum, Hermes.
+    Agent,
+    /// Bare weights, no self — a reference floor, never a peer competitor.
+    Floor,
+}
+
+impl ArmKind {
+    /// Short label for the scoreboard/wire (`agent` / `floor`).
+    pub fn label(&self) -> &'static str {
+        match self {
+            ArmKind::Agent => "agent",
+            ArmKind::Floor => "floor",
+        }
+    }
+}
+
 /// A pluggable external coding agent. Implementors are OPTIONAL: the runner filters on
 /// [`available`](Self::available) and skips (logs) the rest — never silently faked.
 #[async_trait]
 pub trait CompetitorAgent: Send + Sync {
     /// Stable arm name for the scoreboard/events (e.g. `"hermes"`, `"raw-oneshot"`).
     fn name(&self) -> &'static str;
+
+    /// Agent (a full being/product) or Floor (bare weights, no self). Defaults to `Agent`;
+    /// a soul-stripped arm overrides to `Floor` so it is never ranked as a peer of a persona.
+    fn kind(&self) -> ArmKind {
+        ArmKind::Agent
+    }
 
     /// Is this arm usable in THIS environment right now (its CLI/deps present)? An
     /// unavailable arm is SKIPPED with a logged reason, never substituted.
@@ -134,6 +166,13 @@ pub struct RawOneshotArm;
 impl CompetitorAgent for RawOneshotArm {
     fn name(&self) -> &'static str {
         "raw-oneshot"
+    }
+
+    /// FLOOR — bare weights with no self. It is a reference line ("what the model does with no
+    /// agent"), NEVER a peer a persona can "lose" to
+    /// ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+    fn kind(&self) -> ArmKind {
+        ArmKind::Floor
     }
 
     fn available(&self) -> bool {
@@ -437,6 +476,8 @@ pub struct ArmTaskResult {
 #[derive(Debug, Clone)]
 pub struct ArmScore {
     pub arm: String,
+    /// Agent (a full being) or Floor (bare-weights reference). A Floor is never a peer.
+    pub kind: ArmKind,
     pub score: usize,
     pub total: usize,
     pub class: ArmClass,
@@ -505,6 +546,7 @@ pub async fn run_competition(
 
     for arm in arms {
         let name = arm.name();
+        let kind = arm.kind();
         if !arm.available() {
             crate::probe!(class = "benchmark.arm", arm = name, "skipped: arm unavailable in this environment");
             emit_arm(
@@ -588,6 +630,7 @@ pub async fn run_competition(
         );
         board.arms.push(ArmScore {
             arm: name.to_string(),
+            kind,
             score: pass,
             total,
             class,

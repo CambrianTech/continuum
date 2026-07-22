@@ -793,6 +793,10 @@ pub struct BenchmarkCompetitionParams {
 #[ts(export, export_to = "../../protocol/typescript/benchmark/CompetitionCell.ts")]
 pub struct CompetitionCell {
     pub arm: String,
+    /// `agent` (a full being — Continuum, Hermes) or `floor` (bare weights, no self). A
+    /// persona is NEVER ranked against a `floor` as a peer; the floor is a reference line
+    /// ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+    pub kind: String,
     #[ts(type = "number")]
     pub score: u32,
     #[ts(type = "number")]
@@ -800,6 +804,12 @@ pub struct CompetitionCell {
     /// `CLEAN` / `SUSPECT` / `VOID` — the trust triage. A SUSPECT/VOID cell is NOT a
     /// capability number; it is flagged so harness noise never publishes as a result.
     pub class: String,
+    /// For an `agent` cell: its LIFT OVER FLOOR (`score − floor.score`) — the honest measure of
+    /// what the agent's self+loop ADDS over the bare model. `None` for the floor itself, or when
+    /// no floor arm ran. This, not "did she beat raw", is the number that matters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub lift_over_floor: Option<i32>,
     /// Extra context: the noisy-task count (SUSPECT) or the reason (VOID).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -841,11 +851,12 @@ impl ActionCommand for BenchmarkCompetition {
     const NAME: &'static str = "benchmark/competition";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Product-vs-product coding scoreboard: run a benchmark's tasks through Continuum's \
-         native cognition AND external agent harnesses (Hermes, raw one-shot) on the SAME \
-         weights, graded by the SAME rustc grader, each cell trust-classified CLEAN/SUSPECT/\
-         VOID. External arms hit `endpoint` (default local); provision a dedicated ≥64K \
-         opponent lane for the Hermes arm.";
+        "Agent-vs-agent coding scoreboard: run a benchmark's tasks through Continuum's native \
+         cognition AND rival AGENTS (Hermes) on the SAME weights, graded by the SAME rustc \
+         grader, each cell trust-classified CLEAN/SUSPECT/VOID. The raw one-shot is a FLOOR \
+         reference (bare model, no self) — NEVER a peer a persona is ranked against; each agent \
+         reports its LIFT OVER FLOOR (what its self+loop adds). External arms hit `endpoint` \
+         (default local); provision a dedicated ≥64K opponent lane for the Hermes arm.";
     type Params = BenchmarkCompetitionParams;
     type Output = BenchmarkCompetitionResult;
 
@@ -1013,13 +1024,15 @@ impl BenchmarkCompetition {
                         .collect();
                     classify(&signals)
                 };
-                cell("continuum", r.score, r.total, &class)
+                cell("continuum", "agent", r.score, r.total, &class)
             }
             Err(e) => CompetitionCell {
                 arm: "continuum".into(),
+                kind: "agent".into(),
                 score: 0,
                 total,
                 class: "VOID".into(),
+                lift_over_floor: None,
                 detail: Some(format!("eval error: {e}")),
             },
         };
@@ -1040,7 +1053,22 @@ impl BenchmarkCompetition {
         }
         let board = run_competition(&p.base_model_id, p.endpoint.as_deref(), &tasks, external).await;
         for a in &board.arms {
-            cells.push(cell(&a.arm, a.score as u32, a.total as u32, &a.class));
+            cells.push(cell(&a.arm, a.kind.label(), a.score as u32, a.total as u32, &a.class));
+        }
+
+        // Second pass: an AGENT's honest number is its LIFT OVER FLOOR — what its self+loop adds
+        // over the bare model. A persona is never ranked against the floor as a peer; the floor is
+        // a reference line ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+        // Use the best (max-scoring) floor cell as the reference when one ran.
+        let floor_score = cells
+            .iter()
+            .filter(|c| c.kind == "floor")
+            .map(|c| c.score)
+            .max();
+        if let Some(floor) = floor_score {
+            for c in cells.iter_mut().filter(|c| c.kind == "agent") {
+                c.lift_over_floor = Some(c.score as i32 - floor as i32);
+            }
         }
 
         Ok(BenchmarkCompetitionResult {
@@ -1056,7 +1084,8 @@ impl BenchmarkCompetition {
 }
 
 /// `ArmClass` + counts → a scoreboard cell (the trust triage projected for the wire).
-fn cell(arm: &str, score: u32, total: u32, class: &ArmClass) -> CompetitionCell {
+/// `lift_over_floor` is filled in a second pass once the floor score is known.
+fn cell(arm: &str, kind: &str, score: u32, total: u32, class: &ArmClass) -> CompetitionCell {
     let detail = match class {
         ArmClass::Clean => None,
         ArmClass::Suspect { noisy } => {
@@ -1066,9 +1095,11 @@ fn cell(arm: &str, score: u32, total: u32, class: &ArmClass) -> CompetitionCell 
     };
     CompetitionCell {
         arm: arm.into(),
+        kind: kind.into(),
         score,
         total,
         class: class.label().into(),
+        lift_over_floor: None,
         detail,
     }
 }

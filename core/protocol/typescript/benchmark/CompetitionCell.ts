@@ -3,12 +3,24 @@
 /**
  * One arm's cell on the competition scoreboard.
  */
-export type CompetitionCell = { arm: string, score: number, total: number, 
+export type CompetitionCell = { arm: string, 
+/**
+ * `agent` (a full being — Continuum, Hermes) or `floor` (bare weights, no self). A
+ * persona is NEVER ranked against a `floor` as a peer; the floor is a reference line
+ * ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+ */
+kind: string, score: number, total: number, 
 /**
  * `CLEAN` / `SUSPECT` / `VOID` — the trust triage. A SUSPECT/VOID cell is NOT a
  * capability number; it is flagged so harness noise never publishes as a result.
  */
 class: string, 
+/**
+ * For an `agent` cell: its LIFT OVER FLOOR (`score − floor.score`) — the honest measure of
+ * what the agent's self+loop ADDS over the bare model. `None` for the floor itself, or when
+ * no floor arm ran. This, not "did she beat raw", is the number that matters.
+ */
+lift_over_floor?: number, 
 /**
  * Extra context: the noisy-task count (SUSPECT) or the reason (VOID).
  */
