@@ -466,6 +466,33 @@ impl DreamConsolidationRegion {
             return sleep();
         };
 
+        // DRAIN — the other half of the source/drain pair
+        // ([[source-drain-is-the-universal-pattern]]). Admission is the source (runs every turn);
+        // this decay sweep is the drain, and it had ZERO live callers before now — engram salience
+        // NEVER decayed in a running persona, so nothing ever fell out of memory and personas got
+        // "set in their ways" (glass-boxed 2026-07-22: Atlas held 4,336 engrams incl. stale
+        // consolidations — "you work with main.rs/life.rs/wordstats.rs" — recalling into and
+        // misleading unrelated tasks; agent/solve battery 1/5 vs a fresh persona's PASS). The dream
+        // sentinel is the doctrine-correct home (sleep region, off the hot path, RTOS style). Run
+        // the sweep for a live persona each dream tick, BEFORE the consolidation rest-gates, so
+        // stale memory fades even when there's nothing new to dream about. Idempotent + cheap
+        // (`last_decayed_ms` guards double-decay); NOT stripping memory — salience decays, genuine
+        // rehearsed knowledge (high access_count) stays strong.
+        let decay = crate::persona::decay_tick::apply_decay_sweep(
+            reflector.admission.recall_metadata(),
+            now_ms(),
+        );
+        if decay.engrams_decayed > 0 {
+            crate::probe!(
+                class = "hippocampus.decay",
+                persona = %persona_id,
+                scanned = decay.engrams_scanned,
+                decayed = decay.engrams_decayed,
+                protected = decay.engrams_protected,
+                "dream drain: decayed the hippocampus (the source/drain pair is now complete)"
+            );
+        }
+
         // Read recent experience; only EPISODIC engrams are raw lived
         // experience to consolidate (Semantic facts are already distilled;
         // Tool/other kinds aren't the dream's material).
@@ -1064,6 +1091,34 @@ mod tests {
         // clusters those sharing a recall key, distills the cluster via the
         // adapter, and admits the result as a durable Semantic engram that
         // recall then surfaces — the whole consolidation arc end-to-end.
+        // what this catches: the source/drain regression that started this whole arc —
+        // `apply_decay_sweep` had ZERO live callers, so engram salience NEVER decayed in a
+        // running persona and she got "set in her ways" (glass-boxed 2026-07-22). The dream tick
+        // must now run the decay drain: a decayable engram in the hippocampus decays after ONE
+        // tick, so nothing accumulates forever. regression for the plastic-memory fix (#221).
+        #[tokio::test]
+        async fn dream_tick_runs_the_decay_drain() {
+            use crate::persona::recall_metadata::RecallMetadata;
+            let persona = Uuid::from_u128(7);
+            // A single episodic so there's a live reflective surface (below min_cluster → the
+            // consolidation itself sleeps, which is the point: decay runs BEFORE that gate).
+            let admission = seeded_admission(&[episodic(Uuid::from_u128(1), "one memory", &["k"])]);
+            // An unprotected, decayable engram sitting in the hippocampus (salience 0.8, never
+            // decayed, no novelty-protection window).
+            let decayable = Uuid::from_u128(99);
+            admission.recall_metadata().admit(
+                decayable,
+                RecallMetadata { salience: 0.8, last_decayed_ms: 0, protected_until_ms: 0, ..Default::default() },
+            );
+            let region = region_over(persona, admission.clone());
+
+            region.tick(&RegionContext::for_persona(0, persona)).await;
+
+            let after = admission.recall_metadata().get(decayable).expect("engram still tracked");
+            assert!(after.last_decayed_ms > 0, "the dream tick must have run the decay sweep");
+            assert!(after.salience < 0.8, "salience must have decayed, got {}", after.salience);
+        }
+
         #[tokio::test]
         async fn dream_distills_fresh_cluster_into_semantic_fact() {
             let persona = Uuid::from_u128(7);
