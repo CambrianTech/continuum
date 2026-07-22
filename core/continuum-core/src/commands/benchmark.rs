@@ -773,6 +773,19 @@ pub struct BenchmarkCompetitionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub arms: Option<Vec<String>>,
+    /// Fire-and-poll (#86): a wide run (many tasks × the Continuum eval-lane + the Hermes
+    /// agent loop) runs far past any IPC client timeout. `true` spawns it on the runtime,
+    /// returns a `run_id` NOW, and writes the finished scoreboard to
+    /// `~/.continuum/progress/competition-<run_id>.json` (+ a `benchmark:competition:complete`
+    /// event) — the run survives the client disconnecting. Default `false` (inline) is fine
+    /// only for a small `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// Correlation id for a detached run (echoed in the ack + the result file). Omit → minted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 /// One arm's cell on the competition scoreboard.
@@ -803,6 +816,14 @@ pub struct BenchmarkCompetitionResult {
     pub arms: Vec<CompetitionCell>,
     /// External arms skipped because their CLI/dep was absent — surfaced, never faked.
     pub skipped: Vec<String>,
+    /// True when this is the immediate ACK of a detached run (arms empty — poll the result
+    /// file `competition-<run_id>.json` for the real scoreboard).
+    #[serde(default)]
+    pub detached: bool,
+    /// The run's correlation id (set on a detached ack + the written result file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 /// `benchmark/competition` — run a benchmark through Continuum's native cognition AND
@@ -830,7 +851,83 @@ impl ActionCommand for BenchmarkCompetition {
 
     async fn run(
         &self,
-        ctx: &Ctx,
+        _ctx: &Ctx,
+        p: BenchmarkCompetitionParams,
+    ) -> Result<BenchmarkCompetitionResult, CommandError> {
+        // Fire-and-poll (#86): a wide run outlives any IPC client timeout, so `detach`
+        // spawns the body on the runtime, writes the finished scoreboard to a result file
+        // + emits a terminal event, and returns a run_id NOW.
+        if p.detach.unwrap_or(false) {
+            let run_id = p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let run_id_ack = run_id.clone();
+            let endpoint_ack = p
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+            let (name_ack, model_ack) = (p.name.clone(), p.base_model_id.clone());
+            let mut inner = p;
+            inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
+            tokio::spawn(async move {
+                let path = competition_ledger_path(&run_id);
+                match BenchmarkCompetition::run_body(inner).await {
+                    Ok(mut r) => {
+                        r.run_id = Some(run_id.clone());
+                        if let (Some(path), Ok(json)) =
+                            (path.as_ref(), serde_json::to_string_pretty(&r))
+                        {
+                            let _ = std::fs::write(path, json);
+                        }
+                        if let Some(bus) = crate::runtime::MessageBus::global() {
+                            if let Ok(v) = serde_json::to_value(&r) {
+                                bus.publish_async_only("benchmark:competition:complete", v);
+                            }
+                        }
+                        tracing::info!(run_id = %run_id, "benchmark/competition detached run complete");
+                    }
+                    Err(e) => {
+                        // Fail LOUD on the poll surface too, not only the log — a detached run
+                        // that dies must leave a diagnosable marker, never an empty file forever.
+                        if let Some(path) = path {
+                            let _ = std::fs::write(
+                                &path,
+                                serde_json::json!({"failed": true, "run_id": run_id, "error": e.to_string()})
+                                    .to_string(),
+                            );
+                        }
+                        tracing::error!(run_id = %run_id, error = %e, "benchmark/competition detached run failed");
+                    }
+                }
+            });
+            return Ok(BenchmarkCompetitionResult {
+                benchmark: name_ack,
+                model: model_ack,
+                endpoint: endpoint_ack,
+                arms: Vec::new(),
+                skipped: Vec::new(),
+                detached: true,
+                run_id: Some(run_id_ack),
+            });
+        }
+        Self::run_body(p).await
+    }
+}
+
+/// Result file for a detached competition run, polled after the ack.
+fn competition_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
+    let dir = base.join("progress");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join(format!("competition-{run_id}.json")))
+}
+
+impl BenchmarkCompetition {
+    /// The competition body — deliberately ctx-free (CognitionEval ignores ctx; it reaches
+    /// the persona via the global workspace registry), so it runs inline OR spawned detached.
+    async fn run_body(
         p: BenchmarkCompetitionParams,
     ) -> Result<BenchmarkCompetitionResult, CommandError> {
         // 1) Resolve the benchmark and slice its tasks — posed identically to every arm.
@@ -893,7 +990,9 @@ impl ActionCommand for BenchmarkCompetition {
             learn: Some(false),
             suppress_recall: None,
         };
-        let cont_cell = match CognitionEval.run(ctx, cont_params).await {
+        // CognitionEval ignores ctx (reaches cognition via the global registry), so a
+        // default Ctx is correct here and keeps run_body ctx-free (spawnable when detached).
+        let cont_cell = match CognitionEval.run(&Ctx::default(), cont_params).await {
             Ok(r) => {
                 let class = if r.infra_unavailable.is_some() {
                     ArmClass::Void {
@@ -950,6 +1049,8 @@ impl ActionCommand for BenchmarkCompetition {
             endpoint: resolved_endpoint,
             arms: cells,
             skipped: board.skipped,
+            detached: false,
+            run_id: None,
         })
     }
 }

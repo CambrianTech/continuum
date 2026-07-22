@@ -29,4 +29,17 @@ limit?: number,
  * Which external arms to run by name (e.g. `["hermes","raw-oneshot"]`). Omit → every
  * available optional arm. An unknown name is an ERROR (fail loud, never a silent skip).
  */
-arms?: Array<string>, };
+arms?: Array<string>, 
+/**
+ * Fire-and-poll (#86): a wide run (many tasks × the Continuum eval-lane + the Hermes
+ * agent loop) runs far past any IPC client timeout. `true` spawns it on the runtime,
+ * returns a `run_id` NOW, and writes the finished scoreboard to
+ * `~/.continuum/progress/competition-<run_id>.json` (+ a `benchmark:competition:complete`
+ * event) — the run survives the client disconnecting. Default `false` (inline) is fine
+ * only for a small `limit`.
+ */
+detach?: boolean, 
+/**
+ * Correlation id for a detached run (echoed in the ack + the result file). Omit → minted.
+ */
+run_id?: string, };

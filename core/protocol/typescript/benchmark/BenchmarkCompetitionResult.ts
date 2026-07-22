@@ -8,4 +8,13 @@ export type BenchmarkCompetitionResult = { benchmark: string, model: string, end
 /**
  * External arms skipped because their CLI/dep was absent — surfaced, never faked.
  */
-skipped: Array<string>, };
+skipped: Array<string>, 
+/**
+ * True when this is the immediate ACK of a detached run (arms empty — poll the result
+ * file `competition-<run_id>.json` for the real scoreboard).
+ */
+detached: boolean, 
+/**
+ * The run's correlation id (set on a detached ack + the written result file).
+ */
+run_id?: string, };
