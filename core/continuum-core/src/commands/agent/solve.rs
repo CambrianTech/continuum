@@ -275,12 +275,21 @@ impl AgentSolve {
         //    and honest (it states the real I/O contract; it does not hand her the answer). Then
         //    DRIVE her to settlement (read → edit → run → fix, her real act→observe loop).
         let room = Uuid::nil();
+        // The workspace-grounding sentence counters the observed "new project ritual"
+        // (glass-boxed 2026-07-22 via turn capture: her first act on a seeded task was
+        // code/create-workspace("my_stack_project") + a Rust hello-world + git/commit —
+        // her habitual onboarding sequence replaying from memory — which re-roots her
+        // hands OFF the graded tree, then she passes to a silent settle). Honest
+        // contract language, same class as the tool-forcing framing: it states where
+        // the work IS, it does not hand her the answer or gate her tools.
         let framed = format!(
             "This is a task you must COMPLETE NOW by USING YOUR TOOLS in your workspace — writing \
              files with code/write, running commands with code/shell, etc. Only what your tools \
              actually do takes effect: code shown in a message, or a claim that you saved a file, \
              does NOT create or change anything — the workspace is graded on the files your tools \
-             write. Do the work with tool calls, then stop.\n\nTask:\n{}",
+             write. You are ALREADY in the task's workspace: work on the files that are here. Do \
+             not create a new workspace or start a new project — grading only sees this one. Do \
+             the work with tool calls, then stop.\n\nTask:\n{}",
             p.task.trim()
         );
         let task_delivery = crate::persona::rag_budget::RagDelivery {
