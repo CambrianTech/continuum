@@ -374,6 +374,45 @@ fn decide_eval_lane_placement(
     )
 }
 
+/// Refuse to stand up a measurement lane while the MACHINE is already drowning.
+///
+/// The VRAM ledger (#56/G1) accounts what the governor GRANTED — but on unified
+/// memory the machine can be compressor-deep in swap from everything the ledger
+/// doesn't meter (builds, apps, page compression), and the arithmetic still says
+/// yes. That exact gap kernel-panicked the dev machine (2026-07-22: watchdog
+/// timeout, compressed-pages 100%, 5 swapfiles) while a benchmark battery stood
+/// up an eval lane. `PressureLevel`'s own contract already names the rule —
+/// High: "aggressive eviction", Critical: "refuse new allocations" — and Whisper
+/// honors it before loading its model; a multi-GB ELECTIVE lane must too. Veto at
+/// >= High or while the sustained-pressure gate is closed. Fail-loud, never a
+/// silent degrade: the detached ledger carries this exact string, and the harness
+/// retries when pressure clears. Live serving is untouched — it has its own
+/// shedding machinery; this gates only the deferrable measurement load.
+fn refuse_eval_lane_under_memory_pressure() -> Result<(), CommandError> {
+    eval_lane_memory_veto(
+        crate::system_resources::MemoryPressureMonitor::current_level(),
+        crate::system_resources::is_memory_gate_closed(),
+    )
+}
+
+/// The pure veto decision — split from the static reads so it's unit-testable
+/// without mutating process-global pressure state (same split rationale as
+/// [`acquire_eval_lane_slot`]).
+fn eval_lane_memory_veto(
+    level: crate::system_resources::PressureLevel,
+    gate_closed: bool,
+) -> Result<(), CommandError> {
+    use crate::system_resources::PressureLevel;
+    if level >= PressureLevel::High || gate_closed {
+        return Err(CommandError::Internal(format!(
+            "refusing to stand up an eval lane under system memory pressure \
+             (level={level:?}, sustained_gate_closed={gate_closed}) — a measurement \
+             lane is deferrable load; retry when pressure clears"
+        )));
+    }
+    Ok(())
+}
+
 /// Ask the ONE resource authority for this eval lane's VRAM slot (#56/G1) and
 /// decide GPU/CPU from the answer. Returns `(placement, reason, held-lease,
 /// observed-free-vram)`. Split out so the acquire/refuse/ungoverned branching is
@@ -478,6 +517,7 @@ async fn spawn_gene_eval_lane(
         AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
     };
 
+    refuse_eval_lane_under_memory_pressure()?;
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
         .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
@@ -627,6 +667,7 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
+    refuse_eval_lane_under_memory_pressure()?;
     let base = crate::model_registry::try_global()
         .and_then(|r| r.model(base_id).cloned())
         .ok_or_else(|| {
@@ -3720,6 +3761,49 @@ mod tests {
             acc.decode_tokens_per_second(),
             20.0,
             "30 tok / 1.5s lane decode = 20 tok/s real"
+        );
+    }
+
+    // what this catches: the memory veto that was MISSING when the dev machine
+    // kernel-panicked (2026-07-22, watchdog timeout, compressed-pages 100%) — an
+    // eval lane must be REFUSED at High/Critical system pressure or a closed
+    // sustained-pressure gate, and must pass at Normal/Warning so ordinary load
+    // never blocks measurement. Pure-core test; no process-global mutation.
+    #[test]
+    fn eval_lane_memory_veto_refuses_at_high_pressure_or_closed_gate() {
+        use crate::system_resources::PressureLevel;
+        assert!(eval_lane_memory_veto(PressureLevel::Normal, false).is_ok());
+        assert!(eval_lane_memory_veto(PressureLevel::Warning, false).is_ok());
+        assert!(eval_lane_memory_veto(PressureLevel::High, false).is_err());
+        assert!(eval_lane_memory_veto(PressureLevel::Critical, false).is_err());
+        // Sustained gate closed vetoes even when the instantaneous level looks calm
+        // (the gate encodes "we were drowning seconds ago — don't re-load yet").
+        assert!(eval_lane_memory_veto(PressureLevel::Normal, true).is_err());
+        let err = eval_lane_memory_veto(PressureLevel::Critical, false).unwrap_err();
+        assert!(
+            err.to_string().contains("memory pressure"),
+            "refusal must name the cause for the detached ledger: {err}"
+        );
+    }
+
+    // what this catches: the warm-pool key lifecycle — a dead Weak (last handle
+    // dropped) must NOT satisfy a lookup, and a live one must. If lookup ever
+    // returned dangling lanes, a solve would hand its forked cognition an adapter
+    // pointed at a killed llama-server (connection-refused mid-drive).
+    #[test]
+    fn warm_lane_lookup_prunes_dead_entries() {
+        let key = format!("test-warm-lane-{}", uuid::Uuid::new_v4());
+        // No entry → miss.
+        assert!(lookup_warm_eval_lane(&key).is_none());
+        // Registered but immediately dropped inner → the Weak is dead → miss + prune.
+        {
+            let map = &*WARM_EVAL_LANES;
+            map.lock().unwrap().insert(key.clone(), std::sync::Weak::new());
+        }
+        assert!(lookup_warm_eval_lane(&key).is_none(), "dead Weak must not satisfy");
+        assert!(
+            !WARM_EVAL_LANES.lock().unwrap().contains_key(&key),
+            "dead entry must be pruned on the miss"
         );
     }
 }
