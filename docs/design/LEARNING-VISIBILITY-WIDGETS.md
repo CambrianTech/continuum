@@ -114,6 +114,32 @@ The right panel is not a passive inspector — it is the selection/support surfa
 MANY widgets stack in it per activity. Mobile keeps its own central-focused UX (the
 WHAT), with WHO and WHICH behind drawers — never a squished three-pane.
 
+## The brain view — witnessing the organism (Joel, 2026-07-22)
+
+The endgame surface is not a dashboard: it is **watching a mind work**. The README's
+brain HUD image is the prototype; the alpha's cognition now emits the real feed —
+every widget above is also an EVENT STREAM (probes: `hippocampus.supersede`,
+`hippocampus.decay`, dream-tick consolidations, act→observe receipts, genome page-ins)
+that a brain view renders live:
+
+- **3D brain model (positron)** — regions light as the mind runs: hippocampus glows on
+  admission/recall, flashes on supersession (a stale belief physically demoting),
+  dream-tick waves during consolidation, motor cortex on tool acts. The persona tile's
+  diamonds were the 2D sketch; the 3D brain is the same event feed with anatomy.
+- **The organism, not the org chart** — users watch a TRUE persona with an evolving
+  identity learn and grow: pass-rate rising, beliefs replaced, skills paged in. This
+  is the Sims/Second-Life-scale potential: vivid worlds where the inhabitants
+  visibly think, dream, and improve — the entertainment thesis
+  ([[academy-learning-is-the-show-spectator-entertainment-thesis]]).
+- **And the terminal too** — positron's define-once means the SAME brain feed renders
+  to `positron-ratatui`: 90's-style / cyberpunk terminal views mirroring the desktop.
+  The cloud companies' terminals are the whole product; ours is one projection of the
+  organism — we out-vivid them on the desktop AND meet them in the terminal.
+
+Every event in this feed already exists in tree today (probe classes + capture JSONL +
+ledger rows). The brain view is a renderer, not a new telemetry system — same v1 rule
+as everything else in this doc.
+
 ## Principles (carried from the session that birthed this doc)
 
 1. **Receipts, not vibes.** Every widget cell links to its receipt — the ledger, the
