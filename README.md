@@ -409,6 +409,22 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 |---|---|---|---|---|---|---|
 | **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
 
+### Whole-being battery (the learning-capacity curve)
+
+The persona's COMPLETE self — memory ON, genome loaded, tools ON, **never stripped to fit the benchmark** — dropped into seeded git repos one task at a time ([`benchmarks/agent-solve/`](benchmarks/agent-solve/)). The same persona re-measured over time as the mind improves: these rows are a learning curve, not a leaderboard. Opponent CLIs join on identical tasks as sibling arms.
+
+**Agent-Solve Tier 1** — whole-being seeded-repo bug fixes — single-file
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **60% (6/10)** | — | — | — | — |
+
+**Agent-Solve Tier 2** — whole-being — multi-file root-cause, invariants, implement-from-spec
+
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
+|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-7B** | — | **20% (2/10)** | — | — | — | — |
+
 ### Fast verifiable gyms (regression + training signal)
 
 **HumanEval-Rust** — function-level, rustc compile+run graded
