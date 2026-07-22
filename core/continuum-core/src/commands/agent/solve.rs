@@ -227,12 +227,23 @@ impl AgentSolve {
         //     persona at a target repo.
         crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace).await?;
 
-        // 3) Layer the task into her situation as a directed request (same framing eval uses so
-        //    a coder model engages rather than taking the silent PASS hatch), and DRIVE her to
-        //    settlement — read → edit → compile → fix, her real act→observe loop.
+        // 3) Layer the task into her situation as a directed, TOOL-FORCING request. The dominant
+        //    misfit-coder failure (glass-boxed 2026-07-22): a 7B answers with the code in a message
+        //    ("here's reverse.py: ```…```" / "I saved it to reverse.py") instead of CALLING the
+        //    write tool → the graded artifact (the git patch) is empty. The old "Provide your
+        //    complete solution" framing literally invited that own-goal. This is the standard SWE /
+        //    Terminal-Bench harness contract: the deliverable is what her TOOLS put in the
+        //    workspace; narrating it does not perform it. Meeting the misfit where it is — an
+        //    ergonomic/adapter fix ([[use-adapters-dont-dumb-it-down]]), not a capability demand —
+        //    and honest (it states the real I/O contract; it does not hand her the answer). Then
+        //    DRIVE her to settlement (read → edit → run → fix, her real act→observe loop).
         let room = Uuid::nil();
         let framed = format!(
-            "This is a task for you to complete now. Provide your complete solution:\n\n{}",
+            "This is a task you must COMPLETE NOW by USING YOUR TOOLS in your workspace — writing \
+             files with code/write, running commands with code/shell, etc. Only what your tools \
+             actually do takes effect: code shown in a message, or a claim that you saved a file, \
+             does NOT create or change anything — the workspace is graded on the files your tools \
+             write. Do the work with tool calls, then stop.\n\nTask:\n{}",
             p.task.trim()
         );
         let task_delivery = crate::persona::rag_budget::RagDelivery {
