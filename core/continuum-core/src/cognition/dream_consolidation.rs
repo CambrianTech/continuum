@@ -480,6 +480,24 @@ pub struct DreamConsolidationRegion {
     in_flight: Arc<Mutex<HashSet<Uuid>>>,
 }
 
+/// Process-global handle to the ONE live dream region, installed at the ipc
+/// wiring site — the seam that lets the `cognition/dream-now` command (factory
+/// flywheel: force a pass instead of waiting for the governor's next tick)
+/// drive the SAME region the governor drives. Same pattern as
+/// `persona_workspace::global`; never a second region.
+static GLOBAL_DREAM_REGION: std::sync::OnceLock<Arc<DreamConsolidationRegion>> =
+    std::sync::OnceLock::new();
+
+/// Install the live region's handle (idempotent; first install wins).
+pub fn install_global(region: Arc<DreamConsolidationRegion>) {
+    let _ = GLOBAL_DREAM_REGION.set(region);
+}
+
+/// The live dream region, if the substrate has wired one this process.
+pub fn global() -> Option<Arc<DreamConsolidationRegion>> {
+    GLOBAL_DREAM_REGION.get().cloned()
+}
+
 impl DreamConsolidationRegion {
     pub fn new(source: Arc<dyn PersonaReflectionSource>) -> Self {
         Self {
@@ -507,7 +525,7 @@ impl DreamConsolidationRegion {
     /// every pass; the dream never completed once (caught live on its first
     /// boot, 2026-07-12). Long work on its own task is the concurrency
     /// style-guide's first rule; the tick is only the gate + launcher.
-    async fn consolidate(&self, persona_id: Uuid) -> TickOutcome {
+    pub(crate) async fn consolidate(&self, persona_id: Uuid) -> TickOutcome {
         // A dream for this persona is already running on its own task — rest.
         if self.in_flight.lock().unwrap().contains(&persona_id) {
             return sleep();

@@ -19,6 +19,7 @@ use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
 pub mod admit_inbox_message;
+pub mod dream_now;
 pub mod forget_context;
 pub mod redact_memory;
 pub mod observe;

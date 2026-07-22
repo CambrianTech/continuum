@@ -1753,12 +1753,17 @@ pub fn start_server(
         // SelfReflection per dreaming tick — the first mind-wanderer. Hippocampus +
         // adapter resolve per tick from the live workspace registry (re-home-safe),
         // never a parallel persona→adapter map.
-        let dream_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+        let dream_region_concrete = Arc::new(
             crate::cognition::dream_consolidation::DreamConsolidationRegion::new(
                 crate::cognition::persona_workspace::global()
                     as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>,
             ),
         );
+        // Install the flywheel handle: `cognition/dream-now` drives THIS region
+        // on demand (factory mode) — same instance the governor ticks, so the
+        // per-persona single-flight guard holds across both drivers.
+        crate::cognition::dream_consolidation::install_global(dream_region_concrete.clone());
+        let dream_region: Arc<dyn crate::runtime::BrainRegion> = dream_region_concrete;
         // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
         // budget to the host's current memory band so a society of inference-bearing
         // background regions can't stampede the model backend under load. A homeostatic
