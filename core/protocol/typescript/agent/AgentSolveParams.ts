@@ -36,6 +36,17 @@ detach?: boolean,
  */
 run_id?: string, 
 /**
+ * LEARN mode (#221 slice 3 — the loop-closer): after the solve, admit the EXPERIENCE
+ * of the work (task, act count, files touched — never the patch content, never any
+ * grader state) into the LIVING persona's memory, exactly as `cognition/eval`'s
+ * learn mode transfers redacted exam lessons. This is what lets work supersede
+ * stale beliefs: a day of python tasks consolidates into python facts, and the
+ * dream's supersession review demotes "you work with main.rs" — work IS training.
+ * The measurement fork itself stays #59-isolated either way; only the lesson
+ * crosses back. Default false (external harnesses opt in).
+ */
+learn?: boolean, 
+/**
  * GLASS-BOX (opt-in): directory for the JSONL turn-capture sink — every tick's bids +
  * DECISION + timings append to `<dir>/<persona_id>.jsonl`, same sink `cognition/eval`
  * wires (task #14). THE tool for diagnosing an acts=1 silent settle: the capture says

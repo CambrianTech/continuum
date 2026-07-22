@@ -123,7 +123,11 @@ def fire_one(persona, model, label, name, fn, instr, ws, suppress, capture=None)
             f"your tools, and run the code to confirm.")
     args = [CU, "agent/solve", "--persona-id", persona, "--base-model-id", model,
             "--task", task, "--workspace", ws, "--max-acts", "10",
-            "--detach", "true", "--run-id", rid(label, name)]
+            "--detach", "true", "--run-id", rid(label, name),
+            # work IS training: the experience (never the solution) reaches her
+            # living mind, so batteries generate the consolidations that dream
+            # supersession feeds on (#221 slice 3).
+            "--learn", "true"]
     if suppress:
         args += ["--suppress_recall", "true"]
     if capture:

@@ -58,6 +58,17 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub run_id: Option<String>,
+    /// LEARN mode (#221 slice 3 — the loop-closer): after the solve, admit the EXPERIENCE
+    /// of the work (task, act count, files touched — never the patch content, never any
+    /// grader state) into the LIVING persona's memory, exactly as `cognition/eval`'s
+    /// learn mode transfers redacted exam lessons. This is what lets work supersede
+    /// stale beliefs: a day of python tasks consolidates into python facts, and the
+    /// dream's supersession review demotes "you work with main.rs" — work IS training.
+    /// The measurement fork itself stays #59-isolated either way; only the lesson
+    /// crosses back. Default false (external harnesses opt in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub learn: Option<bool>,
     /// GLASS-BOX (opt-in): directory for the JSONL turn-capture sink — every tick's bids +
     /// DECISION + timings append to `<dir>/<persona_id>.jsonl`, same sink `cognition/eval`
     /// wires (task #14). THE tool for diagnosing an acts=1 silent settle: the capture says
@@ -328,6 +339,30 @@ impl AgentSolve {
         //    (new files included), plus the touched paths. This is what SWE/Terminal-Bench apply.
         let (patch, files_changed) = workspace_patch(&workspace).await;
 
+        // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
+        //    the same one-way bridge cognition/eval's learn mode uses. The lesson is
+        //    experience-shaped (task + how she worked + which files), deliberately
+        //    excluding the patch content and her final answer: the python-context
+        //    signal that drives dream supersession rides the task text and file
+        //    names; verbatim solutions would let a re-run score memorization instead
+        //    of capability. Solve carries no held-out answer key in-band (the harness
+        //    grades externally), so there is nothing to redact.
+        if p.learn.unwrap_or(false) {
+            let admitted = transfer_solve_experience(
+                &persona_uuid,
+                room,
+                &p.task,
+                settled.acts,
+                &files_changed,
+            );
+            tracing::info!(
+                persona = %persona_uuid,
+                admitted,
+                acts = settled.acts,
+                "agent/solve learn mode: work experience admitted to the living self"
+            );
+        }
+
         // Lane drops here (end of scope) — measurement copy torn down, living personas untouched.
         drop(lane);
 
@@ -341,6 +376,67 @@ impl AgentSolve {
             detached: false,
             run_id,
         })
+    }
+}
+
+/// Build the durable EXPERIENCE string for one solve — what she worked on and how,
+/// never what she produced (no patch content, no spoken answer: the lesson teaches
+/// context, not solutions, so re-runs measure capability rather than memorization).
+/// Pure; unit-testable.
+fn format_solve_lesson(task: &str, acts: usize, files_changed: &[String]) -> String {
+    let worked = if files_changed.is_empty() {
+        "I changed no files".to_string()
+    } else {
+        format!("I changed: {}", files_changed.join(", "))
+    };
+    format!(
+        "I worked a real coding task in my workspace: {} — I acted {} time(s); {}.",
+        task.trim(),
+        acts,
+        worked
+    )
+}
+
+/// Admit one solve's experience lesson into the LIVING persona (never the fork) —
+/// `cognition/eval::transfer_redacted_lessons`' one-way bridge, solve-shaped.
+/// Returns 1 if a fresh lesson was admitted (identical re-run lessons dedup
+/// idempotently via `admit_reflection`'s content hash), else 0.
+fn transfer_solve_experience(
+    persona_uuid: &Uuid,
+    room: Uuid,
+    task: &str,
+    acts: usize,
+    files_changed: &[String],
+) -> usize {
+    let Some(admission) = crate::cognition::persona_workspace::global()
+        .get(persona_uuid)
+        .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))
+    else {
+        tracing::warn!(
+            persona = %persona_uuid,
+            "agent/solve learn mode: no live admission — experience not transferred \
+             (she was measured, but the living self is not resident to learn)"
+        );
+        return 0;
+    };
+    let mut recall_keys = vec!["agent-solve".to_string()];
+    recall_keys.extend(files_changed.iter().cloned());
+    let engram = crate::persona::engram::Engram {
+        id: Uuid::new_v4(),
+        context_id: Some(room),
+        kind: crate::persona::engram::EngramKind::Episodic,
+        content: format_solve_lesson(task, acts, files_changed),
+        origin: crate::persona::engram::EngramOrigin::SelfReflection {
+            parent_engram_id: Uuid::nil(),
+        },
+        recall_keys,
+        admitted_at_ms: crate::persona::trace::now_ms(),
+        trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+        admission_trace_id: None,
+    };
+    match admission.admit_reflection(engram) {
+        Ok(crate::persona::engram::AdmissionDecision::Admit { .. }) => 1,
+        _ => 0,
     }
 }
 
@@ -488,6 +584,25 @@ mod tests {
         assert!(patch.is_empty(), "bare dir should yield no patch, got:\n{patch}");
         assert!(files.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: the learn-mode lesson teaches CONTEXT, never solutions —
+    // it must carry the task text + how she worked + which files (the language/
+    // domain signal dream-supersession feeds on) and must NOT be empty-file
+    // fragile. If patch content or answers ever leak into the lesson, battery
+    // re-runs would measure memorization instead of capability.
+    #[test]
+    fn solve_lesson_is_experience_shaped() {
+        let l = format_solve_lesson(
+            "There is a bug in mathlib.py: multiply returns a+b. Fix it.",
+            3,
+            &["mathlib.py".to_string()],
+        );
+        assert!(l.contains("mathlib.py"), "domain signal rides the file name: {l}");
+        assert!(l.contains("acted 3 time(s)"));
+        assert!(l.contains("I changed: mathlib.py"));
+        let none = format_solve_lesson("task", 0, &[]);
+        assert!(none.contains("I changed no files"));
     }
 
     // what this catches: the wire name must mirror the file path (commands/agent/solve.rs ⟺
