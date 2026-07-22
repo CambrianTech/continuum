@@ -205,11 +205,15 @@ def matrix(persona, outdir, models, tiers, reps):
              "rev-parse", "--short", "HEAD").stdout.strip()
     started = time.strftime("%Y-%m-%d %H:%M:%S")
     arms = []
+    # Run-unique label stamp — WITHOUT it, two matrix runs share labels and the
+    # second SILENTLY DELETES the first's ledgers as it fires (found by the
+    # forensic pass's missing-ledger signature on its first-ever execution).
+    stamp = time.strftime("%H%M%S")
     for model in models:
         mslug = model.split("/")[-1][:24].lower().replace(".", "").replace("_", "-")
         for tier in tiers:
             for rep in range(1, reps + 1):
-                label = f"mx-{mslug}-{tier}-r{rep}"
+                label = f"mx{stamp}-{mslug}-{tier}-r{rep}"
                 print(f"\n### ARM {label} (model={model} tier={tier} rep={rep}) ###",
                       flush=True)
                 runseq(persona, label, tier=tier, model=model,
@@ -274,6 +278,102 @@ def matrix(persona, outdir, models, tiers, reps):
                 }
                 f.write(json.dumps(row) + "\n")
     print(f"appended {len(models) * len(tiers)} rows to {ledger}", flush=True)
+    forensic(outdir)  # the standing order: every run ends with a forensic pass
+
+import re
+
+# Structural-defect signatures, each learned from a REAL glass-boxed failure
+# (2026-07-22 session). The forensic pass is a completeness critic: it does not
+# judge, it FLAGS with evidence — every finding names the mechanism class the
+# operator (or a persona) should chase, and links the raw artifact.
+CALL_SHAPE = re.compile(r"\b[a-z_/]{3,}\(\s*\{")           # edit_file({ / code/read({
+RECEIPT_SHAPE = re.compile(r"\[Action #\d+\]|^Result:|\"stdout\"", re.M)
+
+def forensic(outdir):
+    """Post-run forensic sweep: mine every arm's ledgers + workspaces + captures
+    for STRUCTURAL issues (not scores). Writes <outdir>/forensics.md."""
+    with open(f"{outdir}/scoreboard.json") as f:
+        board = json.load(f)
+    findings = []  # (severity, klass, arm_label, task, evidence)
+    for arm in board["arms"]:
+        label, tier = arm["label"], arm["tier"]
+        for name, fn, _src, _check, _instr, extra in tier_tasks(tier):
+            led = load_ledger(label, name)
+            if not led:
+                findings.append(("HIGH", "missing-ledger", label, name, "no ledger file"))
+                continue
+            if led.get("failed"):
+                findings.append(("INFO", "infra", label, name, (led.get("error") or "")[:120]))
+                continue
+            acts = led.get("acts") or 0
+            spoken = led.get("spoken") or ""
+            patch = led.get("patch") or ""
+            files = led.get("files_changed") or []
+            legit = {fn} | set((extra or {}).keys())
+            target_ext = os.path.splitext(fn)[1]
+            # 1. Silent settle: she gave up without acting or speaking — the
+            #    highest-priority unexplained class (needs the capture).
+            if acts <= 1 and not patch and not spoken.strip():
+                findings.append(("HIGH", "silent-settle", label, name,
+                                 f"acts={acts}, no patch, no spoken"))
+            # 2. Unlifted call shapes: she EMITTED tool-call-looking text but no
+            #    file changed — a parser/idiom gap candidate (the #219 family).
+            if not patch and CALL_SHAPE.search(spoken):
+                snippet = CALL_SHAPE.search(spoken).group(0)
+                findings.append(("HIGH", "unlifted-call-shape", label, name,
+                                 f"speech contains '{snippet}...' but no patch"))
+            # 3. Fabricated receipts: transcript-mimicry / invented results.
+            if RECEIPT_SHAPE.search(spoken) and acts <= 1:
+                findings.append(("HIGH", "fabricated-receipts", label, name,
+                                 "receipt-shaped text with <=1 real act"))
+            # 4. Language drift: wrote a different language than the task's —
+            #    the stale-memory bias signature (Rust into python repos).
+            drift = [f for f in files if os.path.splitext(f)[1] not in ("", target_ext)]
+            if drift:
+                findings.append(("HIGH", "language-drift", label, name,
+                                 f"target is {target_ext}, wrote {drift}"))
+            # 5. Off-target writes (same language, wrong/new files).
+            stray = [f for f in files if f not in legit and f not in drift]
+            if stray:
+                findings.append(("MED", "off-target-write", label, name, f"{stray}"))
+            # 6. Symptom patch: multi-file task where ONLY the symptom file moved.
+            if extra and files and fn not in files and any(f in extra for f in files):
+                findings.append(("MED", "symptom-patch", label, name,
+                                 f"edited {files}, root-cause file {fn} untouched"))
+            # 7. Zero-length drives that PASSED (suspicious: check the seed).
+            if arm["rows"] and acts == 0 and any(
+                r["task"] == name and r["pass"] for r in arm["rows"]
+            ):
+                findings.append(("HIGH", "pass-without-acting", label, name,
+                                 "graded PASS with acts=0 — audit the seed/grader"))
+    # Captures inventory (deep tick-level mapping is the next iteration).
+    capdir = f"{outdir}/captures"
+    caps = []
+    if os.path.isdir(capdir):
+        for c in os.listdir(capdir):
+            p = os.path.join(capdir, c)
+            caps.append(f"{c}: {os.path.getsize(p)//1024}KB, "
+                        f"{sum(1 for _ in open(p, errors='ignore'))} ticks")
+    sev_rank = {"HIGH": 0, "MED": 1, "INFO": 2}
+    findings.sort(key=lambda x: sev_rank.get(x[0], 3))
+    lines = ["# Forensic pass — structural issues, not scores",
+             f"\nrun: {board.get('started')} · commit: `{board.get('commit')}` · "
+             f"{len(board['arms'])} arms · {len(findings)} findings\n"]
+    by_class = {}
+    for sev, klass, label, task, ev in findings:
+        by_class.setdefault(klass, []).append((sev, label, task, ev))
+    for klass, rows in by_class.items():
+        lines.append(f"\n## {klass} ({len(rows)})")
+        for sev, label, task, ev in rows:
+            lines.append(f"- **{sev}** `{label}/{task}` — {ev}")
+    if caps:
+        lines.append("\n## captures on disk (tick-level evidence)")
+        lines += [f"- {c}" for c in caps]
+    report = "\n".join(lines) + "\n"
+    with open(f"{outdir}/forensics.md", "w") as f:
+        f.write(report)
+    print(report, flush=True)
+    return findings
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
@@ -284,6 +384,8 @@ if __name__ == "__main__":
     elif cmd == "grade":
         grade(sys.argv[2], tier=sys.argv[3] if len(sys.argv) > 3 else "t1",
               wait_s=int(sys.argv[4]) if len(sys.argv) > 4 else 0)
+    elif cmd == "forensic":
+        forensic(sys.argv[2])
     elif cmd == "matrix":
         # matrix <persona> <outdir> [reps] [model1,model2,...]
         reps = int(sys.argv[4]) if len(sys.argv) > 4 else 2
