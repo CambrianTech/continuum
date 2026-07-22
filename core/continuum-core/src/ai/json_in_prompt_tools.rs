@@ -197,6 +197,7 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
         &BareFormat,
         &BbcodeCallFormat,
         &BracketTagFormat,
+        &SelfClosingTagFormat,
         &FencedCallFormat,
         &CliFlagFormat,
         &NarratedWriteFormat,
@@ -478,6 +479,110 @@ fn bracket_tag_args(mut s: &str) -> Option<serde_json::Map<String, serde_json::V
         );
         s = &rest[end + 1..];
     }
+}
+
+/// A self-closing XML-ish tag: `<write_file file_path="x.py" content="…" />`.
+/// qwen2.5-coder emits this idiom (glass-boxed 2026-07-22 via `agent/solve`: the 7B
+/// wrote `<write_file file_path="reverse.py" content="def reverse_string(s):\n…" />`
+/// then `STOP` — the call never lifted, `acts:0`, empty patch, while the SAME model on
+/// a different sample emitted a native tool_call that worked). It's the OpenHands/HTML
+/// hybrid a coder model reaches for; the wire name (`write_file`) resolves to the
+/// canonical command (`code/write`) downstream via `tool_dialect::from_wire_name` (#159),
+/// exactly like the narrated snake_case path — so this format only has to LIFT it.
+///
+/// Precision guard that stays pure (no registry coupling, per the trait contract): the
+/// tag name must contain `_` or `/`. That keeps every HTML void element inert (`<br/>`,
+/// `<img src=…/>`, `<input .../>`, `<meta .../>`, `<hr/>` — none carry `_` or `/`) while
+/// lifting `write_file` / `list_files` / `create_workspace` / `code/write`. Require ≥1
+/// `key="value"` attribute (the BracketTag ≥1-arg precedent — a bare `<foo/>` stays
+/// inert). Attribute VALUES are JSON-unescaped (`\n`→newline, `\t`, `\"`, `\\`): the model
+/// emits code with JSON-style escapes inside the attr, and writing a literal `\n` would
+/// corrupt the file. An invented name lifts and fails LOUD at the executor (NarratedBareArgs
+/// precedent); ACL unchanged.
+struct SelfClosingTagFormat;
+impl ToolCallFormat for SelfClosingTagFormat {
+    fn id(&self) -> &'static str {
+        "self-closing-tag"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        let bytes = text;
+        let mut search = 0;
+        while let Some(rel_open) = bytes[search..].find('<') {
+            let open = search + rel_open;
+            // Find the self-closing terminator `/>` for THIS tag. Scan from just after
+            // '<'; a nested '<' before any '/>' means this wasn't a self-closing tag.
+            let after = open + 1;
+            let Some(rel_close) = bytes[after..].find("/>") else {
+                break; // no more self-closing tags anywhere
+            };
+            let close = after + rel_close;
+            search = close + 2; // advance past this tag for the next iteration
+            if bytes[after..close].contains('<') {
+                continue; // a '<' inside → not a clean self-closing tag; skip
+            }
+            let inner = bytes[after..close].trim();
+            let mut parts = inner.splitn(2, char::is_whitespace);
+            let name = parts.next().unwrap_or("");
+            // Tool guard: name must look like a tool (`_` or `/`), not an HTML void element.
+            if !((name.contains('_') || name.contains('/'))
+                && !name.contains(char::is_whitespace)
+                && name.len() <= 64
+                && !name.starts_with("http"))
+            {
+                continue;
+            }
+            let Some(mut args) = bracket_tag_args(parts.next().unwrap_or("")) else {
+                continue; // leftover after key="value" pairs → whole tag inert
+            };
+            if args.is_empty() {
+                continue; // require ≥1 attribute (bare `<write_file/>` stays inert)
+            }
+            // JSON-unescape each value so `\n`/`\t`/`\"` in code content become real chars.
+            for v in args.values_mut() {
+                if let serde_json::Value::String(s) = v {
+                    *s = json_unescape_scalars(s);
+                }
+            }
+            out.push(ToolCall {
+                id: format!("jip-{}", Uuid::new_v4()),
+                name: name.to_string(),
+                input: serde_json::Value::Object(args),
+            });
+        }
+        out
+    }
+}
+
+/// Unescape the common JSON string escapes a model writes inside an attribute value
+/// (`\n`, `\t`, `\r`, `\"`, `\\`, `\/`). Deliberately minimal — NOT a full JSON parser;
+/// unknown escapes (`\x`, `\u…`) are left verbatim so nothing is silently mangled.
+fn json_unescape_scalars(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('/') => out.push('/'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// A model that writes the tool call CLI-style on its own line — the dominant
@@ -1815,6 +1920,42 @@ I'll paste the output here once it's ready.";
         // The faculty's one-step-per-generation path takes the FIRST — the rest
         // re-emerge across the drive_to_settle loop as results land in memory.
         assert_eq!(parse_tool_call(text).unwrap().name, "code/shell");
+    }
+
+    // what this catches: qwen2.5-coder's self-closing-tag idiom (glass-boxed via agent/solve
+    // 2026-07-22 — the 7B wrote this exact shape then STOP, acts:0, empty patch). The wire name
+    // `write_file` is what the format emits; tool_dialect::from_wire_name maps it to code/write
+    // downstream (faculty), so here we assert the LIFT: name + both attrs, with the JSON-style
+    // `\n` in content unescaped to a real newline so the written file isn't corrupt. regression #219
+    #[test]
+    fn self_closing_write_file_tag_lifts_with_unescaped_content() {
+        let text = "```python\ndef reverse_string(s):\n    return s[::-1]\n```\n\n\
+                    <write_file file_path=\"reverse.py\" content=\"def reverse_string(s):\\n    return s[::-1]\" description=\"Reverse a string.\" />\nSTOP";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1, "the self-closing write_file tag must lift: {calls:?}");
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(calls[0].input["file_path"], "reverse.py");
+        assert_eq!(
+            calls[0].input["content"], "def reverse_string(s):\n    return s[::-1]",
+            "the \\n must be unescaped to a real newline so the file is valid"
+        );
+    }
+
+    // what this catches: the precision guard — HTML void elements must stay INERT. A tag name with
+    // no `_` or `/` is not a tool; `<br/>`, `<img .../>`, `<input .../>` must never lift as calls.
+    #[test]
+    fn self_closing_html_void_elements_stay_inert() {
+        for html in [
+            "here is a break <br/> and more",
+            "an image <img src=\"cat.png\" alt=\"a cat\" />",
+            "<input type=\"text\" name=\"q\" />",
+            "<meta charset=\"utf-8\" />",
+        ] {
+            assert!(
+                parse_tool_calls(html).is_empty(),
+                "HTML void element must not lift as a tool call: {html:?}"
+            );
+        }
     }
 
     // what this catches: a rust-tagged fence with first-person compile/run intent
