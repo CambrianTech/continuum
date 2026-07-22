@@ -140,6 +140,17 @@ const EVAL_LANE_BASE_PORT: u16 = 58_200;
 /// cap stored only the preamble and blinded every failure diagnosis + correction-corpus mine.
 const ANSWER_CAPTURE_CHARS: usize = 24_000;
 
+/// Per-task detail retained in the DURABLE run ledger row (`append_progress_ledger`).
+/// The ledger stored only the summary (score/total), so a detached run's per-task
+/// verdicts were unrecoverable — a webdev pass/fail could not be glass-boxed after the
+/// fact (glass-boxed 2026-07-21: could not tell whether an `acts=0` webdev miss was the
+/// mouth-or-hands capture not firing or the spoken page failing a strict check). We now
+/// persist a compact per-task array; the diagnostic `grade` verdict + answer head are kept
+/// ONLY for FAILED tasks, so a 164-task humaneval row stays lean while a failing 6-task
+/// webdev row is fully inspectable. [[self-test-via-command-feedback-surface-never-blind]]
+const LEDGER_FAIL_GRADE_CHARS: usize = 800;
+const LEDGER_FAIL_ANSWER_CHARS: usize = 1_200;
+
 /// Small headroom (bytes) kept free on the GPU so a lane placed right at the edge
 /// can't trip Metal's decode-time command-buffer OOM. Deliberately SMALL: the
 /// policy is GPU-FIRST — fill the accelerator, aim for ~100% GPU utilization
@@ -2189,6 +2200,17 @@ fn append_progress_ledger(
         // VOID (the lane died mid-exam), and every reader MUST report infra-unavailable
         // instead of a real pass-rate. [[proctored-exam-session-dependable-benchmark]]
         "infraUnavailable": result.infra_unavailable,
+        // Per-task detail for post-hoc glass-boxing (why did THIS task fail?). Compact by
+        // design: every task carries id/ok/acts; only FAILED tasks carry the grade verdict
+        // + answer head, so the row stays lean on a mostly-passing large benchmark.
+        "tasks": result.results.iter().map(|r| {
+            let mut t = serde_json::json!({ "id": r.id, "ok": r.ok, "acts": r.acts });
+            if !r.ok {
+                t["grade"] = serde_json::json!(r.grade.chars().take(LEDGER_FAIL_GRADE_CHARS).collect::<String>());
+                t["answerHead"] = serde_json::json!(r.answer.chars().take(LEDGER_FAIL_ANSWER_CHARS).collect::<String>());
+            }
+            t
+        }).collect::<Vec<_>>(),
     });
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
