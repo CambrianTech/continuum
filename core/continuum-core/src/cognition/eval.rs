@@ -118,7 +118,10 @@ pub(crate) struct EvalLane {
     /// multi-LoRA serving lane that OOMs the Metal backend on a real generation (#175).
     pub(crate) adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     /// The lane's REAL served `/props` window — what the fork's cognition budgets against.
-    served_ctx: u32,
+    /// `pub(crate)` alongside `adapter` so the headless `agent/solve` keystone
+    /// (`commands/agent/solve.rs`) can budget a forked cognition cycle against the same
+    /// live window this eval lane serves — one authority, no re-derivation.
+    pub(crate) served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     placement: PlacementEvidence,
     /// The governed VRAM reservation this lane holds while it runs (#56/G1). RAII:

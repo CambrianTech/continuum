@@ -28,6 +28,13 @@ pub mod status;
 pub mod stop;
 pub mod wait;
 
+/// `agent/solve` — the headless single-task benchmark keystone. Unlike the dep-holding
+/// `start`/`stop`/… verbs above (which share `Arc<AgentService>`), `solve` is a stateless
+/// composition over the cognition-drive seams and self-registers via
+/// `register_stateless_command!` — it needs no `AgentService`, so it is NOT wired into the
+/// object map below.
+pub mod solve;
+
 use list::AgentList;
 use start::AgentStart;
 use status::AgentGetStatus;
