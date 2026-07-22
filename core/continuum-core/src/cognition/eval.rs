@@ -105,12 +105,20 @@ fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
     EXAM_LANE_CTX.min(base.context_window).max(MIN_SERVE_CTX)
 }
 
-/// A stood-up ephemeral measurement lane plus everything the eval loop needs to fork
-/// a cognition copy onto it. Named fields, NOT a positional 4-tuple, so a new piece of
-/// lane state threads as ONE field instead of a fifth positional slot every caller
-/// must re-destructure in the right order ([[structs-by-reference-not-massive-param-lists]]).
-pub(crate) struct EvalLane {
-    /// The throwaway server; kills its process on drop (#59).
+/// The stood-up ephemeral measurement lane and everything the eval loop needs to fork a
+/// cognition copy onto it. This is the SHARED inner — owned behind an `Arc` by every
+/// [`EvalLane`] handle that references it, so N concurrent eval / `agent/solve` tasks on
+/// the SAME base model share ONE lane instead of each cold-spawning a competitor that
+/// fights the others for the GPU. The llama-server process + governed VRAM lease tear
+/// down by RAII the instant the LAST handle drops — one authority, lanes lease, nothing
+/// fights ([[resource-authority-is-a-system-concern]], #56).
+///
+/// Named fields, NOT a positional tuple, so new lane state threads as ONE field
+/// ([[structs-by-reference-not-massive-param-lists]]).
+pub(crate) struct EvalLaneInner {
+    /// The throwaway server; kills its process on drop (#59). Declared FIRST so it drops
+    /// (kills the process, frees the physical VRAM) BEFORE `_vram_lease` releases the
+    /// accounting — same release order the pre-share struct guaranteed.
     lane: crate::inference::llama_server::EphemeralServingLane,
     /// Adapter pinned to THIS lane (never the global serving root). `pub(crate)` so the
     /// teacher path (`genome/teach`) can generate against a DEDICATED bare-base lane —
@@ -118,18 +126,87 @@ pub(crate) struct EvalLane {
     /// multi-LoRA serving lane that OOMs the Metal backend on a real generation (#175).
     pub(crate) adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     /// The lane's REAL served `/props` window — what the fork's cognition budgets against.
-    /// `pub(crate)` alongside `adapter` so the headless `agent/solve` keystone
-    /// (`commands/agent/solve.rs`) can budget a forked cognition cycle against the same
-    /// live window this eval lane serves — one authority, no re-derivation.
     pub(crate) served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     placement: PlacementEvidence,
     /// The governed VRAM reservation this lane holds while it runs (#56/G1). RAII:
-    /// released the moment this struct drops — declared LAST so it releases AFTER
-    /// `lane`'s process is killed (free the physical bytes, THEN the accounting).
-    /// `None` on a CPU-spilled lane or an ungoverned node. Held so a concurrent
-    /// serving tick sees the eval's bytes as taken and won't tier up into them.
+    /// released when the last handle drops, AFTER `lane`'s process is killed. `None` on a
+    /// CPU-spilled lane or an ungoverned node. Held so a concurrent serving tick sees the
+    /// eval's bytes as taken and won't tier up into them.
     _vram_lease: Option<crate::resources::LeaseGuard>,
+}
+
+/// A cheap, cloneable handle to a (possibly shared) [`EvalLaneInner`]. Field reads
+/// (`lane.adapter`, `lane.served_ctx`, `lane.placement`) work transparently through
+/// `Deref`. Dropping a handle only tears the lane down if it was the last one.
+#[derive(Clone)]
+pub(crate) struct EvalLane {
+    inner: std::sync::Arc<EvalLaneInner>,
+}
+
+impl std::ops::Deref for EvalLane {
+    type Target = EvalLaneInner;
+    fn deref(&self) -> &EvalLaneInner {
+        &self.inner
+    }
+}
+
+/// Warm eval-lane pool: lane key (base model id / gene id) → a `Weak` to the live shared
+/// lane. A concurrent caller for the same key UPGRADES the weak and shares the lane
+/// instead of cold-spawning a rival. `Weak`, not strong, so the lane tears down by RAII
+/// the moment its last real user drops — no lingering VRAM, no reaper task, no eviction
+/// policy to get wrong. Dangling entries are pruned lazily on the next miss.
+static WARM_EVAL_LANES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<EvalLaneInner>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Serializes eval-lane COLD-SPAWNS process-wide: only one llama-server cold-loads at a
+/// time, so two different bases can't thrash the GPU against each other and same-base
+/// racers collapse onto the first spawn's result. A `tokio` mutex because it is held
+/// across the spawn `.await` — never a `std` lock across await
+/// (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
+static EVAL_LANE_SPAWN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Return a handle to a live warm lane for `key`, pruning a dangling entry on a miss.
+fn lookup_warm_eval_lane(key: &str) -> Option<EvalLane> {
+    let mut map = WARM_EVAL_LANES.lock().unwrap();
+    if let Some(weak) = map.get(key) {
+        if let Some(inner) = weak.upgrade() {
+            return Some(EvalLane { inner });
+        }
+        map.remove(key); // last user already dropped it — prune the tombstone
+    }
+    None
+}
+
+/// Reuse a warm lane for `key` if one is live; otherwise cold-spawn it under the
+/// single-flight gate and register it. `build` performs the actual cold-load and is
+/// invoked ONLY on a real miss (never speculatively), so a shared lane costs zero extra
+/// llama-servers. This is the seam that makes `agent/solve` + `cognition/eval` composable
+/// at scale: fire N tasks on one model and they share ONE lane instead of N fighting.
+async fn warm_or_spawn_eval_lane<F, Fut>(key: &str, build: F) -> Result<EvalLane, CommandError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<EvalLaneInner, CommandError>>,
+{
+    // Fast path: a lane is already live for this key → share it, no gate, no spawn.
+    if let Some(existing) = lookup_warm_eval_lane(key) {
+        return Ok(existing);
+    }
+    // Slow path: serialize cold-spawns so bringups never fight for the GPU.
+    let _gate = EVAL_LANE_SPAWN_GATE.lock().await;
+    // Re-check under the gate — a racer for the same key may have spawned it while we
+    // waited, in which case we share theirs and skip a redundant cold-load.
+    if let Some(existing) = lookup_warm_eval_lane(key) {
+        return Ok(existing);
+    }
+    let inner = std::sync::Arc::new(build().await?);
+    WARM_EVAL_LANES
+        .lock()
+        .unwrap()
+        .insert(key.to_string(), std::sync::Arc::downgrade(&inner));
+    Ok(EvalLane { inner })
 }
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
@@ -516,12 +593,16 @@ async fn spawn_gene_eval_lane(
         ))
     })?;
 
+    // A gene lane is per-forged-adapter; it stays a fresh dedicated lane (no pooling) —
+    // the shared inner just makes it a handle so both lane kinds are one type.
     Ok(EvalLane {
-        lane,
-        adapter: std::sync::Arc::new(adapter),
-        served_ctx,
-        placement: placement_evidence,
-        _vram_lease: vram_lease,
+        inner: std::sync::Arc::new(EvalLaneInner {
+            lane,
+            adapter: std::sync::Arc::new(adapter),
+            served_ctx,
+            placement: placement_evidence,
+            _vram_lease: vram_lease,
+        }),
     })
 }
 
@@ -533,9 +614,16 @@ async fn spawn_gene_eval_lane(
 /// It's what makes the same-model matrix — hold the harness fixed, vary the model — fall
 /// out of one command, with no serving-pin race. Fails loud (never a substitute base) if
 /// the id isn't in the registry or the lane won't come up.
-pub(crate) async fn spawn_base_eval_lane(
-    base_id: &str,
-) -> Result<EvalLane, CommandError> {
+/// Stand up (or REUSE) an ephemeral base-model measurement lane. Concurrent callers for
+/// the same `base_id` share ONE warm lane via [`warm_or_spawn_eval_lane`] instead of
+/// cold-spawning rivals that fight for the GPU — the fix that makes an at-scale benchmark
+/// battery (`agent/solve` × N tasks) reliable instead of a lane-thrash lottery.
+pub(crate) async fn spawn_base_eval_lane(base_id: &str) -> Result<EvalLane, CommandError> {
+    warm_or_spawn_eval_lane(base_id, || build_base_eval_lane_inner(base_id)).await
+}
+
+/// The actual cold-load for a bare base lane — invoked ONLY on a warm-pool miss.
+async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, CommandError> {
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
@@ -580,7 +668,7 @@ pub(crate) async fn spawn_base_eval_lane(
             "eval lane for base '{base_id}' is up but its /props served window is unreadable ({e})"
         ))
     })?;
-    Ok(EvalLane {
+    Ok(EvalLaneInner {
         lane,
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
@@ -1222,8 +1310,10 @@ impl CognitionEval {
         // drops SECOND: the lane's server is killed first (physical VRAM freed), THEN the
         // accounting reservation is released. Releasing the lease while the process still
         // holds the bytes would flash them as "available" and re-open the grab race.
-        let mut _eval_vram_lease: Option<crate::resources::LeaseGuard> = None;
-        let mut _eval_lane: Option<crate::inference::llama_server::EphemeralServingLane> = None;
+        // Holds the (possibly shared) measurement lane alive for the whole run. The
+        // handle's Arc carries the llama-server process AND the governed VRAM lease, so
+        // one holder keeps both — no separate `_eval_vram_lease` juggling.
+        let mut _eval_lane: Option<EvalLane> = None;
         // The Proctored Exam Session's ACQUIRE for the LIVE-lane case (the `(None, None)`
         // living-persona benchmark): an EXPLICIT `plan_placement` decision (Slice A), not a
         // blind steady-hold. Her base is already resident ⇒ the verdict is `ShareLane` — she
@@ -1240,15 +1330,10 @@ impl CognitionEval {
         let cycle = match (&p.gene, p.base_model_id.as_deref()) {
             // A gene names its own forged base → ephemeral lane + the gene as `--lora`.
             (Some(gene), _) => {
-                let EvalLane {
-                    lane,
-                    adapter,
-                    served_ctx,
-                    placement,
-                    _vram_lease,
-                } = spawn_gene_eval_lane(gene).await?;
-                placement_evidence = Some(placement);
-                _eval_vram_lease = _vram_lease;
+                let el = spawn_gene_eval_lane(gene).await?;
+                placement_evidence = Some(el.placement.clone());
+                let adapter = el.adapter.clone();
+                let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1257,22 +1342,17 @@ impl CognitionEval {
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                 )))?;
-                _eval_lane = Some(lane);
+                _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
             }
             // A bare base_model_id → ephemeral lane for THAT model, no gene. The clean
             // same-model control: measure the full loop on a chosen model in its own
             // throwaway server, living persona untouched (#59).
             (None, Some(base_id)) => {
-                let EvalLane {
-                    lane,
-                    adapter,
-                    served_ctx,
-                    placement,
-                    _vram_lease,
-                } = spawn_base_eval_lane(base_id).await?;
-                placement_evidence = Some(placement);
-                _eval_vram_lease = _vram_lease;
+                let el = spawn_base_eval_lane(base_id).await?;
+                placement_evidence = Some(el.placement.clone());
+                let adapter = el.adapter.clone();
+                let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1281,7 +1361,7 @@ impl CognitionEval {
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                 )))?;
-                _eval_lane = Some(lane);
+                _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
             }
             // Neither → the living-persona benchmark: she is served on THIS base already,
@@ -1353,9 +1433,10 @@ impl CognitionEval {
                     }
                 };
                 match dedicated {
-                    Some(EvalLane { lane, adapter, served_ctx, placement, _vram_lease }) => {
-                        placement_evidence = Some(placement);
-                        _eval_vram_lease = _vram_lease;
+                    Some(el) => {
+                        placement_evidence = Some(el.placement.clone());
+                        let adapter = el.adapter.clone();
+                        let served_ctx = el.served_ctx;
                         let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                             crate::cognition::persona_workspace::global()
                                 .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1364,7 +1445,7 @@ impl CognitionEval {
                         .ok_or_else(|| CommandError::NotFound(format!(
                             "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                         )))?;
-                        _eval_lane = Some(lane);
+                        _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                         cycle
                     }
                     None => {
