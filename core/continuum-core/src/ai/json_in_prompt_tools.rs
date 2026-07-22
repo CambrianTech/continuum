@@ -818,6 +818,18 @@ impl ToolCallFormat for FencedCallFormat {
                     span = body.trim();
                 }
             }
+            // Hash-commented call idiom (Atlas live, 2026-07-22, agent/solve
+            // revlist): a ```python fence whose SOLE content is
+            // `# edit_file({...})` — the model writes its tool call as a
+            // pseudo-code comment, then asks someone to run it. The `#` (or
+            // `//`) is presentation, not semantics: strip one leading comment
+            // marker and let the ordinary sole-call guards decide. A fence with
+            // real code AFTER the comment still refuses (not sole content).
+            let span = span
+                .strip_prefix("#")
+                .or_else(|| span.strip_prefix("//"))
+                .map(str::trim_start)
+                .unwrap_or(span);
             let Some(call) = lift_sole_paren_call(span) else {
                 continue;
             };
@@ -869,7 +881,18 @@ fn lift_sole_paren_call(span: &str) -> Option<ToolCall> {
         });
     };
     let name = span[..paren].trim();
-    let ok = (name.contains('/') || is_discovery(name))
+    // A no-slash name lifts ONLY when the live alias registry resolves it to a
+    // real command (`edit_file` → code/edit, `run_code` → code/run) — the
+    // strongest possible guard, and self-maintaining: a new command's ALIASES
+    // become liftable here with zero parser edits, while `print({...})` /
+    // `is_even({...})` stay speech forever (unknown names pass through
+    // resolve unchanged, slashless → refused). Atlas live 2026-07-22: her
+    // correct `edit_file({...})` sat DEAD in a fence over the missing slash,
+    // and the graded patch scored a fake zero.
+    let resolves_via_alias = |n: &str| {
+        !n.contains('/') && crate::cognition::tool_dialect::resolve_wire_name(n).contains('/')
+    };
+    let ok = (name.contains('/') || is_discovery(name) || resolves_via_alias(name))
         && !name.contains('.')
         && name.len() <= 64
         && !name.starts_with("http")
@@ -2530,18 +2553,33 @@ Please provide the output so I can review it.";
         assert!(parse_tool_calls("```just some words here```").is_empty());
     }
 
-    // what this catches: Casper's live combo (2026-07-12) — a paren-call line
-    // (`code/list()`) beside OTHER pseudo-code in the same fence lifts via the
-    // per-line scan, while the invented non-slash name (`file_tree(...)`) on
-    // the sibling line stays inert.
+    // what this catches: Casper's live combo (2026-07-12) — paren-call lines
+    // beside pseudo-code in one fence lift via the per-line scan, while a truly
+    // INVENTED name on a sibling line stays inert. Updated 2026-07-22: the
+    // original pinned `file_tree(...)` as the invented-name specimen, but
+    // `file_tree` is a REGISTERED alias of code/tree now, and no-slash names
+    // that resolve in the live alias registry lift by design — so Casper's
+    // `file_tree(max_depth=2)` line is a REAL call today (the parser improved
+    // out from under the old expectation). The invented-name guard keeps its
+    // own specimen that no registry resolves.
     #[test]
     fn paren_call_line_lifts_beside_pseudo_code() {
         let calls = parse_tool_calls(
             "I'll run both to get a comprehensive view:\n```python\nfile_tree(max_depth=2)\ncode/list()\n```",
         );
-        assert_eq!(calls.len(), 1);
+        assert_eq!(calls.len(), 2, "registered alias + slash-token both lift: {calls:?}");
+        assert_eq!(calls[0].name, "file_tree");
+        assert_eq!(calls[0].input["max_depth"], 2);
+        assert_eq!(calls[1].name, "code/list");
+        assert!(calls[1].input.as_object().unwrap().is_empty());
+
+        // A genuinely invented name (nothing in the registry resolves it)
+        // beside a real call still stays inert — the original guard, held.
+        let calls = parse_tool_calls(
+            "```python\nimaginary_scanner(depth=2)\ncode/list()\n```",
+        );
+        assert_eq!(calls.len(), 1, "invented sibling stays inert: {calls:?}");
         assert_eq!(calls[0].name, "code/list");
-        assert!(calls[0].input.as_object().unwrap().is_empty());
     }
 
     // what this catches: Mistral/Devstral's native `[TOOL_CALLS]` marker must lift —
@@ -2618,5 +2656,65 @@ Please provide the output so I can review it.";
             Some("room-roster"),
             "the hallucinated tool must be flagged so #159 routes it to the teacher"
         );
+    }
+
+    // what this catches: Atlas's EXACT live emission (glass-boxed 2026-07-22,
+    // agent/solve revlist FAIL) — tool calls as HASH-COMMENTED pseudo-code in
+    // ```python fences (`# edit_file({...})`), then "Please execute these
+    // commands". Correct intent, correct args, and every call sat dead because
+    // (a) the `#` broke the sole-call match and (b) `edit_file` has no slash.
+    // Both are now met: comment marker stripped, no-slash names lift iff the
+    // live alias registry resolves them. All three calls lift in order; the
+    // faculty executes one per generation (organic sequencing).
+    #[test]
+    fn hash_commented_alias_calls_in_fences_lift_from_live_emission() {
+        let live = r#"Let's start by opening `seq.py` for editing.
+
+```python
+# edit_file({"file_path": "seq.py", "edit_mode": {"type": "search_replace", "search": "return xs", "replace": "return xs[::-1]"}, "description": "Fix rev"})
+```
+
+Now, let's save the changes and run the code.
+
+```python
+# write_file({"file_path": "seq.py", "content": "def rev(xs):\n    return xs[::-1]"})
+```
+
+Finally, let's run the modified code to confirm the fix.
+
+```python
+# run_code({"code": "from seq import rev\nprint(rev([1, 2, 3]))", "lang": "python"})
+```
+
+Please execute these commands in sequence."#;
+        let calls = parse_tool_calls(live);
+        assert_eq!(calls.len(), 3, "all three commented calls lift: {calls:?}");
+        assert_eq!(calls[0].name, "edit_file");
+        assert_eq!(calls[0].input["file_path"], "seq.py");
+        assert_eq!(calls[0].input["edit_mode"]["type"], "search_replace");
+        assert_eq!(calls[1].name, "write_file");
+        assert_eq!(calls[2].name, "run_code");
+        assert_eq!(calls[2].input["lang"], "python");
+    }
+
+    // what this catches: the guard rails around the new no-slash lift — ordinary
+    // python in fences must STAY SPEECH. `print`/`is_even` don't resolve in the
+    // alias registry (unknown names pass through slashless → refused), and a
+    // comment followed by real code is not a sole call. If any of these ever
+    // lift, the parser has started executing example code.
+    #[test]
+    fn unresolvable_and_non_sole_fenced_calls_stay_speech() {
+        for speech in [
+            "```python\n# print({\"a\": 1})\n```",
+            "```python\n# is_even({\"n\": 4})\n```",
+            "```python\nmax_of([1, 9, 3])\n```",
+            // comment + trailing real code: not sole content, stays inert
+            "```python\n# edit_file({\"file_path\": \"x.py\"})\ndef rev(xs):\n    return xs\n```",
+        ] {
+            assert!(
+                parse_tool_calls(speech).is_empty(),
+                "must stay speech: {speech}"
+            );
+        }
     }
 }
