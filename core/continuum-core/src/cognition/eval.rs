@@ -2802,26 +2802,31 @@ async fn run_pass(
         // rooted at it) so every task grades EXACTLY the artifact it produced. Only from-scratch
         // build tasks are cleaned; setup/dod/solution tasks OWN their state and are never wiped.
         // No pinned root (hands on the core cwd) → nothing to clean.
+        // INDEPENDENT-TASK COGNITION RESET. Every coder benchmark here is a battery of
+        // UNRELATED tasks (conway_step vs edit_distance vs a login-form) — each a standalone
+        // problem. The continuous-session design (reset once at pass start, carry task-to-task)
+        // is right for a RELATED sequence, but for an independent battery it accumulates each
+        // prior task's answer into working memory + episodic recall, and that drift both
+        // overflows a small lane window (→ per-slot compute-error wedge → empty 0-token
+        // generations) AND nudges the model into declining (glass-boxed 2026-07-21: games-rs
+        // 6/6 in isolation but 0/6 with mid-battery declines under accumulation). A task starts
+        // clean UNLESS it explicitly establishes cross-task state via `setup_shell` (gym/mine's
+        // re-break-the-checkout case — the only genuine continuity). So reset the cognitive
+        // slate before every independent task, exactly as #209 wipes an independent build's
+        // WORKSPACE. [[llama-compute-error-wedge-is-per-slot-context-overflow]]
+        let independent_task = t.setup_shell.is_none();
+        if independent_task {
+            cycle.reset_working_memory();
+            isolation.rewind();
+        }
+        // Workspace wipe: only a from-scratch UI build (ui_checks, no setup/dod/solution) grades
+        // an OBSERVED artifact FILE, so only it needs the pinned root cleared between tasks
+        // (#209) — a stale index.html from the prior task would score a false pass/fail.
         let from_scratch_build = !t.ui_checks.is_empty()
             && t.setup_shell.is_none()
             && t.dod_shell.is_none()
             && t.solution_file.is_none();
         if from_scratch_build {
-            // Independent build task → reset the COGNITION context, not just the workspace
-            // (#209's missing sibling). These tasks are UNRELATED (login-form vs todo-list vs
-            // pricing-cards) and each produces a LARGE artifact. The continuous-session design
-            // (reset once at pass start, then carry task-to-task) accumulates every prior
-            // task's big spoken page into working memory + episodic recall, so by task 2+ the
-            // composed prompt overflows the lane's window → per-slot compute error → the slot
-            // WEDGES and returns empty 0-token generations for every later task, graded as
-            // phantom 0-score misses (glass-boxed 2026-07-21: task 1 real 14133ms gen, tasks
-            // 2-6 empty ~461ms → 0/N checks with empty answers). A from-scratch task must start
-            // from a clean cognitive slate exactly as its workspace is wiped clean — carrying
-            // an unrelated prior page is only noise AND the overflow trigger. The "continuous
-            // student" thesis applies to RELATED tasks that build on each other, not an
-            // independent-UI-build battery. [[llama-compute-error-wedge-is-per-slot-context-overflow]]
-            cycle.reset_working_memory();
-            isolation.rewind();
             if let Some(root) = workspace_root {
                 if let Err(e) = clean_dir_contents(root) {
                     tracing::warn!(
