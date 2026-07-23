@@ -39,7 +39,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="princeton-nlp/SWE-bench_Lite")
     ap.add_argument("--instance", required=True)
-    ap.add_argument("--solver", choices=["gold", "ours"], default="gold")
+    ap.add_argument("--solver", choices=["gold", "ours", "agent"], default="gold")
+    ap.add_argument("--base-model", default="unsloth/Devstral-Small-2507-GGUF",
+                    help="agent solver: the base model the persona is measured on")
+    ap.add_argument("--max-acts", type=int, default=40)
     ap.add_argument("--workdir", default=None)
     args = ap.parse_args()
 
@@ -53,6 +56,46 @@ def main():
         # simulate a CORRECT solver edit by applying the gold patch to the working tree
         p = os.path.join(wd, "gold.patch"); open(p, "w").write(inst["patch"])
         sh(["git", "apply", p], cwd=repo_dir)
+    elif args.solver == "agent":
+        # AGENT: the whole-being agent/solve battery harness (drive_to_settle + idiom-lifted
+        # tool parsing + workspace grounding) — the path that scores 87-93% on the t1 battery,
+        # vs the older cognition/eval exam framing that looped ([[eval-is-an-exam-not-a-life]]).
+        import time
+        CU = next(p for p in (
+            os.path.expanduser("~/.continuum/cache/cargo-target/release/cu"),
+            os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"),
+        ) if os.path.exists(p))
+        pr = subprocess.run([CU, "cognition/personas"], capture_output=True, text=True)
+        personas = (json.loads(pr.stdout).get("personas") or []) if pr.stdout.strip().startswith("{") else []
+        if not personas:
+            raise SystemExit("no resident persona (core booted?) — cannot run --solver agent")
+        pid = personas[0]["persona_id"]
+        print(f"[persona] {personas[0].get('name')} ({pid})")
+        run_id = f"swe-{args.instance}"
+        task = (
+            "You are ALREADY in the task's workspace: a real git repository with a real bug. "
+            "Do not create a new workspace and do not create new top-level files — find the "
+            "existing source with code/search and code/read, and fix it IN PLACE with code/edit. "
+            "Run checks with code/shell if useful. The fix must land in the existing files.\n\n"
+            f"ISSUE:\n{inst['problem_statement']}"
+        )
+        ledger = os.path.expanduser(f"~/.continuum/progress/agent-solve-{run_id}.json")
+        if os.path.exists(ledger):
+            os.remove(ledger)
+        print(f"[agent] dispatching {run_id} (workspace={repo_dir}, max_acts={args.max_acts}, detached)")
+        sh([CU, "agent/solve", "--persona-id", pid, "--base-model-id", args.base_model,
+            "--task", task, "--workspace", repo_dir, "--max-acts", str(args.max_acts),
+            "--detach", "true", "--run-id", run_id], check=False)
+        # fire-and-poll (#86): the drive outlives any socket timeout; the ledger is the result
+        for _ in range(120):
+            time.sleep(30)
+            if os.path.exists(ledger):
+                led = json.load(open(ledger))
+                print(f"[agent] landed: acts={led.get('acts')} failed={led.get('failed')} "
+                      f"error={led.get('error') or '-'}")
+                break
+        else:
+            print("[agent] WARN: ledger did not land in 60min window (may still be running)")
     else:
         # OURS: point a Continuum persona at the clone and run her cognition on the issue.
         # Her file engine is rooted at the clone DETERMINISTICALLY by cognition/eval's

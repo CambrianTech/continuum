@@ -81,6 +81,31 @@ def run_persona_on(workspace_root, prompt, note, max_acts=25):
     print("[run] WARN: run did not land in the ledger window (may still be working)")
 
 
+def run_persona_agent(workspace_root, prompt, note, max_acts=25,
+                      base_model="unsloth/Devstral-Small-2507-GGUF"):
+    """The proven whole-being driver (agent/solve: drive_to_settle + idiom-lifted
+    tool parsing + workspace grounding — the 87-93% t1 path). Detached + polled
+    via the run ledger (#86)."""
+    pid, name = resolve_persona()
+    print(f"[persona] {name} ({pid})")
+    run_id = f"proj-{note}"
+    ledger = os.path.expanduser(f"~/.continuum/progress/agent-solve-{run_id}.json")
+    if os.path.exists(ledger):
+        os.remove(ledger)
+    print(f"[agent] dispatching {run_id} (workspace={workspace_root}, max_acts={max_acts})")
+    sh([CU, "agent/solve", "--persona-id", pid, "--base-model-id", base_model,
+        "--task", prompt, "--workspace", workspace_root, "--max-acts", str(max_acts),
+        "--detach", "true", "--run-id", run_id], check=False)
+    for _ in range(120):
+        time.sleep(30)
+        if os.path.exists(ledger):
+            led = json.load(open(ledger))
+            print(f"[agent] landed: acts={led.get('acts')} failed={led.get('failed')} "
+                  f"error={led.get('error') or '-'}")
+            return
+    print("[agent] WARN: ledger did not land in the poll window (may still be working)")
+
+
 def append_ledger(benchmark, model, arm, result):
     row = {"benchmark": benchmark, "model": model, "arm": arm,
            "score": result.get("passed"), "total": result.get("total"),
@@ -169,7 +194,127 @@ class Commit0Adapter(BenchmarkAdapter):
                 "note": f"pytest: {passed} passed, {failed} failed"}
 
 
-ADAPTERS = {a.name: a for a in [SweBenchAdapter(), Commit0Adapter()]}
+class WebsiteAdapter(BenchmarkAdapter):
+    """Launch an ENTIRE website and fix its appearance — the whole-site tier.
+
+    She builds a real multi-page site in the workspace, LAUNCHES it (code/shell),
+    self-verifies with curl, and CAPTURES screenshots via `interface/capture`
+    (the build→run→see loop; the PNGs land in the run record for the appearance
+    review). Grading is structural + liveness: every required page serves 200,
+    required elements present, nav links resolve, a real shared stylesheet is
+    linked. Appearance scoring by a vision describer is the named next leg —
+    the screenshots this loop records are its training corpus.
+    """
+    name = "website"
+    requires = "a headless browser for interface/capture (Chrome); nothing else"
+
+    SPECS = {
+        "bakery": {
+            "port": 8734,
+            "brief": ("a small-business website for 'Millbrook Bakery' — a neighborhood "
+                      "bakery. Pages: index.html (hero with the bakery name, hours, a "
+                      "featured-items section), about.html (story + team), contact.html "
+                      "(a contact form with name/email/message fields using required "
+                      "attributes, plus address and phone). All pages share ONE "
+                      "stylesheet styles.css (real styling: readable typography, a "
+                      "color scheme, responsive nav that links all three pages)."),
+            "pages": {
+                "index.html":   ["millbrook", "styles.css", "about.html", "contact.html"],
+                "about.html":   ["styles.css", "index.html"],
+                "contact.html": ["<form", "required", "styles.css"],
+            },
+            "css_min_bytes": 400,
+        },
+        "portfolio": {
+            "port": 8735,
+            "brief": ("a personal portfolio site for a freelance photographer named "
+                      "Rivera. Pages: index.html (hero + a gallery grid of at least 6 "
+                      "figure/img placeholders with captions), services.html (pricing "
+                      "table), contact.html (form with validation attributes). One "
+                      "shared styles.css with a responsive grid for the gallery."),
+            "pages": {
+                "index.html":    ["rivera", "styles.css", "<figure", "services.html"],
+                "services.html": ["styles.css", "<table"],
+                "contact.html":  ["<form", "required", "styles.css"],
+            },
+            "css_min_bytes": 400,
+        },
+    }
+
+    def fetch(self, instance):
+        spec = self.SPECS.get(instance)
+        if not spec:
+            raise SystemExit(f"unknown website instance '{instance}' — have: {', '.join(self.SPECS)}")
+        return {"id": instance, **spec}
+
+    def setup(self, task, workdir):
+        ws = os.path.join(workdir, "site")
+        os.makedirs(ws, exist_ok=True)
+        sh(["git", "init", "-q"], cwd=ws, check=False)
+        return ws
+
+    def prompt(self, task):
+        p = task["port"]
+        return (
+            f"Build and LAUNCH a complete website: {task['brief']}\n\n"
+            f"Work in the current workspace. When the files are written:\n"
+            f"1. Launch it: code/shell `nohup python3 -m http.server {p} > server.log 2>&1 &`\n"
+            f"2. Verify every page: code/shell `curl -s http://127.0.0.1:{p}/index.html | head -5` "
+            f"(and about/services/contact pages).\n"
+            f"3. SEE it: call interface/capture with target \"web\" and url "
+            f"\"http://127.0.0.1:{p}\" — look at the result and fix anything broken "
+            f"(missing styles, broken nav, unreadable text), then re-verify.\n"
+            f"Leave the server RUNNING when you finish — a site that is not serving "
+            f"is not launched."
+        )
+
+    def grade(self, task, ws):
+        import urllib.request
+        p, results, notes = task["port"], [], []
+        live = True
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{p}/", timeout=5)
+        except Exception:
+            live = False
+            notes.append("server NOT left running (launch leg failed)")
+            # Serve the tree ourselves to grade the CONTENT leg honestly.
+            subprocess.Popen(["python3", "-m", "http.server", str(p)], cwd=ws,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.5)
+        for page, needles in task["pages"].items():
+            try:
+                html = urllib.request.urlopen(
+                    f"http://127.0.0.1:{p}/{page}", timeout=5).read().decode("utf-8", "replace").lower()
+                missing = [n for n in needles if n.lower() not in html]
+                ok = not missing
+                if missing:
+                    notes.append(f"{page}: missing {missing}")
+            except Exception as e:
+                ok = False
+                notes.append(f"{page}: {e}")
+            results.append(ok)
+        css = os.path.join(ws, "styles.css")
+        css_ok = os.path.exists(css) and os.path.getsize(css) >= task["css_min_bytes"]
+        if not css_ok:
+            notes.append("styles.css missing or trivially small")
+        results.append(css_ok)
+        results.append(live)  # the LAUNCH leg is scored
+        # cleanup: reap whatever python http.server holds the port (verified by comm)
+        try:
+            pid = subprocess.run(["lsof", "-ti", f"tcp:{p}", "-sTCP:LISTEN"],
+                                 capture_output=True, text=True).stdout.strip().splitlines()
+            for x in pid:
+                comm = subprocess.run(["ps", "-p", x, "-o", "comm="],
+                                      capture_output=True, text=True).stdout.strip()
+                if "python" in comm.lower():
+                    subprocess.run(["kill", "-9", x], capture_output=True)
+        except Exception:
+            pass
+        return {"passed": sum(results), "total": len(results),
+                "note": "; ".join(notes) or "all pages serve with required structure; server left running"}
+
+
+ADAPTERS = {a.name: a for a in [SweBenchAdapter(), Commit0Adapter(), WebsiteAdapter()]}
 
 
 def main():
@@ -178,6 +323,8 @@ def main():
     ap.add_argument("--instance", help="instance id / repo url")
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--max-acts", type=int, default=25)
+    ap.add_argument("--solver", choices=["agent", "eval"], default="agent",
+                    help="agent = the proven agent/solve whole-being driver; eval = legacy cognition/eval")
     ap.add_argument("--list", action="store_true")
     args = ap.parse_args()
 
@@ -198,7 +345,8 @@ def main():
     print(f"[{args.benchmark}] instance={args.instance} workdir={wd}")
     task = adapter.fetch(args.instance)
     ws = adapter.setup(task, wd)
-    run_persona_on(ws, adapter.prompt(task), f"{args.benchmark}-{args.instance}", args.max_acts)
+    driver = run_persona_agent if args.solver == "agent" else run_persona_on
+    driver(ws, adapter.prompt(task), f"{args.benchmark}-{args.instance}", args.max_acts)
     result = adapter.grade(task, ws)
     print(f"[grade] {json.dumps(result)}")
     append_ledger(args.benchmark, "resident-persona", "OURS", result)
