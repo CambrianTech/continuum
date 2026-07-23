@@ -25,7 +25,10 @@ import argparse, json, os, subprocess, sys, tempfile, time, datetime, platform
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-CU = os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu")
+CU = next((p for p in (
+    os.path.expanduser("~/.continuum/cache/cargo-target/release/cu"),
+    os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"),
+) if os.path.exists(p)), "cu")
 LEDGER = os.path.join(ROOT, "benchmarks", "RESULTS.jsonl")
 
 
