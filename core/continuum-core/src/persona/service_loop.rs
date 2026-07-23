@@ -412,6 +412,16 @@ async fn serve_persona_loop_inner(
     const RECENT_INBOUND_WINDOW: usize = 24;
     let mut recent_inbound: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
+    // Roster-name memory for engram attribution: harvested from each turn's
+    // composed `room-roster` delivery (zero extra I/O — the roster scan already
+    // runs per turn), consulted at admit time so her MEMORY records
+    // "Joel said…" / "Claude said…", never "peer-7711fe60 said…". First-class
+    // peers — humans, outside agents, personas — all resolve through the one
+    // roster airc owns ([[airc-native-identity-rooms-security]]). Eventually
+    // consistent: a brand-new peer's FIRST message may admit under its short
+    // peer tag (honest, never fabricated); every later one is named.
+    let mut roster_names: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
 
     // While an eval-preemption lease is held, the loop goes FULLY quiet on this beat —
     // it neither self-ticks NOR consumes inbound. Gating only the self-tick isn't
@@ -588,7 +598,10 @@ async fn serve_persona_loop_inner(
                 id: Uuid::new_v4(),
                 room_id: turn_room,
                 sender_id: msg.peer_id,
-                sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
+                sender_name: roster_names
+                    .get(&msg.peer_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
                 sender_type: crate::persona::types::SenderType::Persona,
                 content: msg.text.clone(),
                 timestamp: now_ms,
@@ -693,7 +706,10 @@ async fn serve_persona_loop_inner(
             id: Uuid::new_v4(),
             room_id: turn_room,
             sender_id: msg.peer_id,
-            sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
+            sender_name: roster_names
+                    .get(&msg.peer_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
             sender_type: crate::persona::types::SenderType::Persona,
             content: msg.text.clone(),
             timestamp: now_ms,
@@ -763,6 +779,24 @@ async fn serve_persona_loop_inner(
             cognition.compose_for_turn(&ctx.profile, now_ms).await
         };
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
+        // Harvest the roster resolution this compose already fetched into the
+        // admit-time name memory (see `roster_names` above).
+        for d in composed
+            .deliveries
+            .iter()
+            .filter(|d| d.source_id == "room-roster")
+        {
+            for item in &d.items {
+                if let (Some(peer), Some(name)) = (
+                    item.metadata.get("peer_id").and_then(|v| v.as_str()),
+                    item.metadata.get("display_name").and_then(|v| v.as_str()),
+                ) {
+                    if let Ok(id) = Uuid::parse_str(peer) {
+                        roster_names.insert(id, name.to_string());
+                    }
+                }
+            }
+        }
 
         // The consolidated burst the WorkspaceCycle reasons over — a stream of
         // inbox items WITH their metadata (WHO + WHEN + WHAT), not bare text. A
