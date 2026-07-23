@@ -2,6 +2,8 @@
 
 ### A distributed AI world that runs on your hardware.
 
+> **⚡ Active development happens on [`canary`](https://github.com/CambrianTech/continuum/tree/canary).** `main` is the stable line and lags it. The system has since become a **headless, efficient Rust core** — cognition, serving, memory, and the mesh run with no UI and no Node on the runtime path; every client (web, desktop, CLI, voice) is an equal, optional presentation layer. The continuous-learning loop (constant fine-tuning on consumer hardware, dream-state consolidation that learns from mistakes, multimodal bridging for every persona) lives and moves on canary daily. Watch that branch to see the organism grow.
+
 > **The Cambrian explosion happened in puddles and streams, not oceans.**
 > Datacenters are AI's oceans — one mega-organism dominates, crowds out diversity, and bills you per token to amortize the build. Continuum is the puddles and streams: thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains. Every great evolutionary leap happened this way.
 
