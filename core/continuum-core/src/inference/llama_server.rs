@@ -1298,8 +1298,21 @@ impl LlamaServerControl for LlamaServerProcess {
         }
         // Load each trained genome layer into the `/lora-adapters` catalog at
         // index order; the per-request `"lora":[{id,scale}]` field pages them in.
-        for adapter in &target.adapters {
-            cmd.arg("--lora").arg(&adapter.path);
+        // ONE comma-separated `--lora` value: llama.cpp (b8784+) deprecated
+        // repeated `--lora` flags and SILENTLY keeps only the last — which was
+        // collapsing every multi-layer genome stack to a single adapter
+        // (glass-boxed 2026-07-23 in the lane's own stderr: 'DEPRECATED:
+        // --lora specified multiple times... only last value will be used' ×4
+        // while a 4-layer stack served). The genome's whole premise is layers
+        // that STACK; this arg shape is what actually stacks them.
+        if !target.adapters.is_empty() {
+            let joined = target
+                .adapters
+                .iter()
+                .map(|a| a.path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(",");
+            cmd.arg("--lora").arg(joined);
         }
         // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
         // its load banner AND — critically — the underlying ggml/Metal fault behind a
