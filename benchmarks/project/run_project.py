@@ -98,7 +98,7 @@ def run_persona_agent(workspace_root, prompt, note, max_acts=25,
     print(f"[agent] dispatching {run_id} (workspace={workspace_root}, max_acts={max_acts})")
     sh([CU, "agent/solve", "--persona-id", pid, "--base-model-id", base_model,
         "--task", prompt, "--workspace", workspace_root, "--max-acts", str(max_acts),
-        "--detach", "true", "--run-id", run_id], check=False)
+        "--learn", "true", "--detach", "true", "--run-id", run_id], check=False)
     for _ in range(120):
         time.sleep(30)
         if os.path.exists(ledger):

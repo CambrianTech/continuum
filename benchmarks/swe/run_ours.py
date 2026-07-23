@@ -85,7 +85,7 @@ def main():
         print(f"[agent] dispatching {run_id} (workspace={repo_dir}, max_acts={args.max_acts}, detached)")
         sh([CU, "agent/solve", "--persona-id", pid, "--base-model-id", args.base_model,
             "--task", task, "--workspace", repo_dir, "--max-acts", str(args.max_acts),
-            "--detach", "true", "--run-id", run_id], check=False)
+            "--learn", "true", "--detach", "true", "--run-id", run_id], check=False)
         # fire-and-poll (#86): the drive outlives any socket timeout; the ledger is the result
         for _ in range(120):
             time.sleep(30)
@@ -127,7 +127,7 @@ def main():
             )
             sh([CU, "agent/solve", "--persona-id", rid, "--base-model-id", args.base_model,
                 "--task", review_task, "--workspace", repo_dir,
-                "--max-acts", str(args.max_acts), "--detach", "true",
+                "--max-acts", str(args.max_acts), "--learn", "true", "--detach", "true",
                 "--run-id", review_run], check=False)
             for _ in range(120):
                 time.sleep(30)
