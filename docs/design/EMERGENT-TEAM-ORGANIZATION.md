@@ -62,6 +62,40 @@ the substrate is hamstringing again and the fix is a bug hunt, not a prompt.
 4. When traces accumulate: mine the coordination corpus, train, sentinel-gate,
    and measure team throughput (cards completed/day), not individual scores.
 
+## Speciation — how differentiation compounds (2026-07-23, Joel: "collaborative
+## development and speciation… would happen naturally if they are working together")
+
+Speciation is divergent experience compounding through the personal learning
+loop. The substrate's job is to keep the loop PERSONAL and the information
+FLOWING — never to assign niches.
+
+1. **Role-asymmetric experience (live now).** A team run gives the solver and
+   the reviewer DIFFERENT lessons from the same task (`--learn` on every
+   benchmark dispatch as of today — work IS training). A persona who reviews
+   accrues review engrams; her dreams distill review beliefs; her next gene
+   trains on her own review trajectories. Same task, two diverging minds.
+2. **Genes train on a persona's OWN trajectories only (doctrine).** One shared
+   gene averaged over everyone is homogenization — the anti-speciation force.
+   Cross-pollination happens through EXPLICIT channels: engram transfer
+   (telepathy, permissioned), teaching rounds (the teacher forms engrams too),
+   and published genome layers another persona may TRY and keep only on
+   measured lift (sentinel-gated adoption = horizontal gene transfer with a
+   fitness test).
+3. **Competence is visible, never prescriptive (small build, next).** Mine the
+   run ledgers into a per-(persona, task-kind) track record; surface it into
+   each persona's OWN identity RAG ("my last four reviews caught the defect")
+   and the room roster (teammates see who lands what). Claims stay free — the
+   record is information, not routing. Preferential attachment does the rest:
+   whoever reviews best gets asked to review, reviews more, diverges further.
+   The selection pressure is the benchmark ledger itself.
+4. **The efficiency law: remove operators, not steps.** The flywheel's speed is
+   set by its manual seams ([[genome-loop-manual-seams-are-the-autonomic-build-list]]).
+   Autonomic order: dream triggers training when a persona's corpus crosses
+   threshold (in her own downtime window, governor-refused if serving needs the
+   memory) → sentinel measures → adopt/reject → the next day's work exercises
+   the new reflex → new traces. Nobody schedules it. The operator's only
+   remaining verbs are commissioning work and merging to main.
+
 ## Anti-patterns (refuse these in review)
 
 - A `TeamRole` / `manager` enum consulted by cognition or prompt assembly.
