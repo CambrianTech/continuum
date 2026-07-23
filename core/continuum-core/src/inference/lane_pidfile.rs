@@ -58,9 +58,6 @@ use std::time::{Duration, Instant};
 /// socket, bounded so a wedged kill can't hang serving-daemon init forever.
 const PORT_RELEASE_BUDGET: Duration = Duration::from_secs(5);
 
-/// Poll cadence while waiting for the port to free after a kill.
-const PORT_RELEASE_POLL: Duration = Duration::from_millis(100);
-
 /// The canonical pidfile path: `~/.continuum/run/llama-lane.pid`. Under
 /// `~/.continuum/run` so it lives with the core's other per-user runtime state
 /// (not `/tmp`, which other users and other tools share). `None` only if there is
@@ -159,7 +156,8 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
     match super::lane_process::command_name(pid) {
         Some(comm) if comm.contains("llama-server") => {
             super::lane_process::kill9(pid);
-            let freed = wait_port_free(port, PORT_RELEASE_BUDGET).await;
+            let freed =
+                super::lane_process::wait_port_free(port, PORT_RELEASE_BUDGET).await;
             clear_at(path);
             if freed {
                 ReclaimOutcome::Reclaimed { pid }
@@ -177,20 +175,6 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
     }
 }
 
-/// Poll until the local `port` is bindable (the orphan released its socket) or the
-/// budget expires. A successful bind-then-drop proves the port is free.
-async fn wait_port_free(port: u16, budget: Duration) -> bool {
-    let deadline = Instant::now() + budget;
-    loop {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(PORT_RELEASE_POLL).await;
-    }
-}
 
 // The unix-process helpers (`is_alive` / `kill9` / `command_name`) live in the
 // shared `super::lane_process` module so the canonical-port reclaim here and the

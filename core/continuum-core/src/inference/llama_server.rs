@@ -1169,6 +1169,45 @@ impl LlamaServerControl for LlamaServerProcess {
             );
         }
 
+        // KILL-VERIFY GATE (2026-07-23 ready-flap case): llama-server does NOT
+        // retry a lost bind — spawned against a still-held port it exits
+        // instantly and `wait_ready` burns its whole budget polling a corpse,
+        // which is the flap that killed 3,318 live turns in one day. Verify the
+        // port is actually free BEFORE spawning: a short grace absorbs a normal
+        // teardown (a Metal-resident model takes seconds to release); if the
+        // port is STILL held, name the holder — a verified llama-server (the
+        // predecessor whose pidfile was disarmed, an adopted-then-churned
+        // orphan) is reaped and re-verified; anything else fails loud now
+        // instead of wasting the ready budget ([[fallbacks-are-illegal-fail-loud]]).
+        if !crate::inference::lane_process::wait_port_free(port, Duration::from_secs(8)).await {
+            match crate::inference::lane_process::pid_listening_on_port(port) {
+                Some(pid) if crate::inference::lane_process::is_llama_server(pid) => {
+                    crate::probe!(
+                        class = "serving.lane_kill_verify",
+                        port = port,
+                        holder_pid = pid,
+                        "port still held after teardown grace — reaping the verified llama-server holder",
+                    );
+                    crate::inference::lane_process::kill9(pid);
+                    if !crate::inference::lane_process::wait_port_free(
+                        port,
+                        Duration::from_secs(10),
+                    )
+                    .await
+                    {
+                        return Err(LlamaServerError::Spawn(format!(
+                            "port {port} still held after verified reap of llama-server pid {pid} — refusing to spawn against a bound port"
+                        )));
+                    }
+                }
+                holder => {
+                    return Err(LlamaServerError::Spawn(format!(
+                        "port {port} held by {holder:?} (not a verifiable llama-server) — refusing a blind spawn that would flap ready; free the port or change the lane plan"
+                    )));
+                }
+            }
+        }
+
         // llama-server's `-c` is the TOTAL KV cache, split evenly across the
         // `--parallel` slots; each request only sees `-c / n_parallel` tokens.
         // The plan's `context_window` is PER-LANE, so the total we must request
