@@ -637,6 +637,23 @@ impl DreamConsolidationRegion {
         // The rest gate: which episodics have I not yet dreamed about? If too
         // little is fresh to form a pattern, there is nothing to consolidate —
         // sleep until more experience accrues. (No clock; her own state.)
+        // LANE COURTESY: never fire dream inference into a serving lane that is
+        // down or mid-resuscitation (decode-wedge recovery flips ready=false).
+        // Glass-boxed 2026-07-23: a 3-persona forced-dream storm hammered a
+        // wedged lane through its kill+respawn cycle — 814 failed distillations
+        // and prolonged thrash. The dream is deferrable by definition; it waits
+        // for a healthy lane. Same pressure-gate spirit as the eval-lane memory
+        // veto, applied to the mind's own background inference.
+        {
+            let live = crate::inference::llama_server::current_serving();
+            // "A lane exists but is not ready" = wedged / mid-respawn → defer.
+            // No lane at all (adapter-only contexts, unit tests, cold boot)
+            // falls through: distill fails fast there and the protected queue
+            // survives.
+            if !live.ready && live.active_model.is_some() {
+                return sleep();
+            }
+        }
         let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
         if fresh.len() < self.min_cluster {
             // Nothing new to digest — a QUIET day. The dream still works:
@@ -1018,11 +1035,20 @@ async fn review_batch(
             }
         }
         Err(err) => {
+            // INFRA never consumes the queue (the same INFRA≠FAIL doctrine,
+            // applied inside her own mind): a failed distillation is a broken
+            // lane, not a rendered judgment. The batch stays UNREVIEWED and
+            // gets its day in court when inference is healthy. Glass-boxed
+            // 2026-07-23: a thrashing lane produced 814 distill errors and the
+            // old mark-regardless choice incinerated 200+ review batches
+            // without judgment — the queue burned against a dead lane. Spin is
+            // bounded: an erroring lane fails fast, one cheap call per dream.
             tracing::warn!(
                 persona = %persona_id,
                 error = %err,
-                "review pass: distillation failed — batch still marked reviewed (no spin)"
+                "review pass: distillation failed — batch left UNREVIEWED for a healthy dream"
             );
+            return;
         }
     }
     {
