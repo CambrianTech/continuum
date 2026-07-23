@@ -34,6 +34,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::watch;
+use ts_rs::TS;
 
 /// Live, fast-to-read memory + utilization signals for the policy.
 /// Each implementation talks to its platform's actual monitoring API.
@@ -105,16 +106,26 @@ pub trait GpuMonitor: Send + Sync {
 }
 
 /// Atomic snapshot of all monitor signals. Used by the FootprintRegistry
-/// sanity check and the learned-policy training corpus capture.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// sanity check, the learned-policy training corpus capture, and — as a
+/// ts-rs wire type — the Positron SYS-gauge GPU series (device-wide
+/// `used = total_bytes - free_bytes`, the same system-wide framing the
+/// CPU/MEM series already use; `process_bytes` is our-process-only and is
+/// deliberately kept distinct).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/gpu/GpuSnapshot.ts")]
 pub struct GpuSnapshot {
     pub platform: String,
     pub device_name: String,
+    #[ts(type = "number")]
     pub total_bytes: u64,
+    #[ts(type = "number")]
     pub free_bytes: u64,
+    #[ts(type = "number")]
     pub process_bytes: u64,
     pub utilization: f32,
+    #[ts(optional)]
     pub temperature_c: Option<f32>,
+    #[ts(optional)]
     pub power_watts: Option<f32>,
     pub pressure: f32,
 }
