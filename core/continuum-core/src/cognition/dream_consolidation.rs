@@ -412,6 +412,12 @@ const DEFAULT_RECALL_WINDOW: usize = 64;
 /// recent related beliefs are the likeliest supersession targets, and beliefs
 /// missed this dream get reviewed by a future one (the dream is periodic).
 const SUPERSESSION_REVIEW_LIMIT: usize = 6;
+
+/// How many of her OLDEST not-yet-reviewed beliefs each dream pass adds to the
+/// supersession review beyond the lexically-matched ones (#221 slice 2b) —
+/// the rotating window that guarantees eventual coverage of the whole belief
+/// store, a few beliefs per dream.
+const ROTATING_REVIEW_PER_PASS: usize = 4;
 /// Default minimum cluster size — below this an episode is not yet a pattern
 /// worth generalizing into a fact.
 const DEFAULT_MIN_CLUSTER: usize = 2;
@@ -478,6 +484,11 @@ pub struct DreamConsolidationRegion {
     /// gate: never two concurrent dreams for one persona, and the governor's
     /// re-tick while a dream runs is a cheap no-op.
     in_flight: Arc<Mutex<HashSet<Uuid>>>,
+    /// Per-persona ids of Semantic beliefs the rotating supersession review has
+    /// already shown the distiller (#221 slice 2b). In-memory; a restart
+    /// re-reviews from the oldest — harmless (demotion is idempotent, admission
+    /// dedups) and self-healing.
+    reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
 }
 
 /// Process-global handle to the ONE live dream region, installed at the ipc
@@ -506,6 +517,7 @@ impl DreamConsolidationRegion {
             min_cluster: DEFAULT_MIN_CLUSTER,
             consolidated: Arc::new(Mutex::new(HashMap::new())),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            reviewed: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -596,8 +608,9 @@ impl DreamConsolidationRegion {
         self.in_flight.lock().unwrap().insert(persona_id);
         let consolidated = Arc::clone(&self.consolidated);
         let in_flight = Arc::clone(&self.in_flight);
+        let reviewed = Arc::clone(&self.reviewed);
         tokio::spawn(async move {
-            dream_pass(reflector, persona_id, clusters, fresh, consolidated).await;
+            dream_pass(reflector, persona_id, clusters, fresh, consolidated, reviewed).await;
             in_flight.lock().unwrap().remove(&persona_id);
         });
 
@@ -623,6 +636,7 @@ async fn dream_pass(
     clusters: Vec<Vec<Engram>>,
     fresh: Vec<Engram>,
     consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
 ) {
     // #175 budget-at-assembly: derive the observation budget from the LIVE served
     // per-slot window (the single source of truth, same the deliberation clamp reads)
@@ -659,10 +673,33 @@ async fn dream_pass(
             // recall-key retrieval — mechanics; the model judges). Its verdict
             // rides the same single generation, so supersession costs zero
             // extra inference.
-            let prior_beliefs = reflector.admission.semantic_beliefs_matching(
+            let mut prior_beliefs = reflector.admission.semantic_beliefs_matching(
                 &SemanticDistiller::union_recall_keys(cluster),
                 SUPERSESSION_REVIEW_LIMIT,
             );
+            // ROTATING WINDOW (#221 slice 2b): lexical overlap can't reach
+            // beliefs that share no tokens with new experience (the stale
+            // Rust-era beliefs vs python lessons, glass-boxed live). Each pass
+            // therefore ALSO re-examines a few of her oldest not-yet-reviewed
+            // beliefs — eventual coverage of the whole belief store, a few
+            // beliefs per dream, marked reviewed regardless of verdict.
+            {
+                let already: HashSet<Uuid> = {
+                    let seen = reviewed.lock().unwrap();
+                    let mut set = seen.get(&persona_id).cloned().unwrap_or_default();
+                    set.extend(prior_beliefs.iter().map(|e| e.id));
+                    set
+                };
+                let rotating = reflector
+                    .admission
+                    .semantic_beliefs_oldest_excluding(&already, ROTATING_REVIEW_PER_PASS);
+                let mut seen = reviewed.lock().unwrap();
+                let entry = seen.entry(persona_id).or_default();
+                for b in &rotating {
+                    entry.insert(b.id);
+                }
+                prior_beliefs.extend(rotating);
+            }
             // Distill the cluster into one durable fact. Fail LOUD per cluster:
             // a distillation error is logged and the cluster's episodics stay
             // un-consolidated (so a future dream retries them), never silently

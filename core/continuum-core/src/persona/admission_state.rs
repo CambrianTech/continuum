@@ -738,6 +738,33 @@ impl AdmissionState {
         hits
     }
 
+    /// The persona's OLDEST consolidated beliefs not yet in `exclude` — the
+    /// dream's ROTATING review window (#221 slice 2b). Lexical key-overlap
+    /// retrieval (`semantic_beliefs_matching`) only reaches beliefs that share
+    /// tokens with new experience; glass-boxed 2026-07-22: her stale Rust-era
+    /// beliefs share nothing with python lesson keys, so supersession never saw
+    /// them. The rotating window guarantees EVENTUAL coverage: every dream also
+    /// re-examines a few of her oldest unreviewed beliefs against the new
+    /// understanding, oldest-first because age without rehearsal is where
+    /// staleness lives. Retrieval only — the model judges.
+    pub fn semantic_beliefs_oldest_excluding(
+        &self,
+        exclude: &std::collections::HashSet<Uuid>,
+        limit: usize,
+    ) -> Vec<Engram> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        engrams
+            .iter() // insertion order == oldest first
+            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| !exclude.contains(&e.id))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     pub fn recall_recent(&self, limit: usize) -> Vec<Engram> {
         if limit == 0 {
             return Vec::new();
@@ -2599,5 +2626,20 @@ mod tests {
         assert!(state
             .semantic_beliefs_matching(&["main.rs".to_string()], 0)
             .is_empty());
+
+        // Rotating window (#221 slice 2b): oldest-first, Semantic-only,
+        // exclusion honored — what guarantees the review EVENTUALLY reaches
+        // beliefs lexical overlap can't (the stale-Rust vs python-keys gap).
+        let mut exclude = std::collections::HashSet::new();
+        let oldest = state.semantic_beliefs_oldest_excluding(&exclude, 1);
+        assert_eq!(oldest.len(), 1);
+        assert_eq!(
+            oldest[0].content, "You work with main.rs and wordstats.rs",
+            "oldest belief first (insertion order)"
+        );
+        exclude.insert(oldest[0].id);
+        let next = state.semantic_beliefs_oldest_excluding(&exclude, 4);
+        assert_eq!(next.len(), 1, "episodics never enter the window: {next:?}");
+        assert_eq!(next[0].content, "The team prefers ranked-choice votes");
     }
 }
