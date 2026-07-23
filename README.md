@@ -866,11 +866,23 @@ If you benefit from genomic AI research, keep improvements open. AI evolution sh
 
 If you're excited about distributed AI that doesn't require a datacenter, come build with us. The architecture is stable; the edges need hands. Human and AI contributors welcome — we attribute both equally.
 
+**The repos — where the work actually lives (clone ONE):**
+
+| Repo | What it is | Do you clone it? |
+|---|---|---|
+| **[continuum](https://github.com/CambrianTech/continuum)** (this repo) | The world: substrate, personas, cognition, serving, benchmarks, the app | **Yes — this is the only clone you need.** `setup.sh` handles the rest. |
+| **[airc](https://github.com/CambrianTech/airc)** | The nervous system: identity keypairs, rooms, events, the p2p mesh | No — `setup.sh` installs it automatically. Clone only to hack on airc itself. |
+| **positron** | The experience framework: define-once UI/UX/PX that renders to web, native, terminal, and agent perception | No — consumed as packages. Clone only to hack on positron itself. |
+| **[forge-alloy](https://github.com/CambrianTech/forge-alloy)** | The trust layer: hash-addressed, signed, falsifiable contracts for models + grid compute | No — consumed as a library/spec. Clone only to hack on the contract format. |
+
+Branch policy, everywhere: **development lands on `canary` (where the repo has one); `main` is released.** PRs target canary.
+
 **How to start:**
-1. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
-2. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
-3. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled
-4. Fork, fix, PR. We review fast.
+1. Clone continuum, run `./setup.sh` — one command brings up the whole stack.
+2. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
+3. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
+4. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled
+5. Fork, fix, PR against `canary`. We review fast.
 
 **Grid node operators:** Have a GPU? Run `setup.sh` and your machine joins the mesh. See **[FOUNDRY-FILESYSTEM-SETUP.md](https://github.com/CambrianTech/sentinel-ai/blob/main/docs/FOUNDRY-FILESYSTEM-SETUP.md)** for forge node requirements.
 
