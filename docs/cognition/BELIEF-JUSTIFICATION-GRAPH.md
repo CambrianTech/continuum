@@ -23,6 +23,18 @@ The classical failure of symbolic AGM was the revision operator (hand-written lo
 can't judge real-world conflict). The LLM **is** the revision operator here — that
 inversion is the paper contribution.
 
+## 1b. The attention framing (Joel: "it's like attention graphs")
+
+The same relation at three timescales. Transformer attention is soft and ephemeral —
+which tokens bear on this judgment, this forward pass, then gone. Spreading-activation
+recall (COGNITION-ALGORITHMS' bounded hop-decay propagation) is attention over engrams
+at TURN timescale. The justification graph is attention made DURABLE at lifetime
+timescale: which experiences bore on this belief, kept as edges instead of vanishing
+with the activation. Cascade revision is then simply re-attention after a weight
+change — a superseded belief is an updated weight, and everything that attended to it
+gets re-scored by the model. One mechanism, three timescales, the slowest one finally
+inspectable.
+
 ## 2. The gap the graph closes
 
 Today the review only sees beliefs that are (a) lexically related to new experience or
