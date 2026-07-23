@@ -44,6 +44,14 @@
    projection refocus/reseed — the `markRead` sibling), DM grouping once DM rooms carry a marker.
 2. **`Gauge` widget** (system metrics) — the first genuinely-new widget kind; a `ContextPanel` sibling.
    Small, self-contained, sources from ResourceGovernor (#56). *Proves the new-widget-kind path.*
+   **✅ LANDED (2026-07-23)**: `SystemMetricsViewState` (kind="system-metrics") + core emitter
+   (2s sample of the ONE shared SystemResourceMonitor, spawn_blocking + timeout, 90-sample ring)
+   + `GaugeView` vocab + web SVG sparkline w/ legend (CPU red · MEM green). Live-verified
+   (real boot spike on screen). GPU series pending a public GpuMemoryManager stats read.
+   **Bug surfaced during live verify**: a persona posted a degenerate repetition wall
+   ("…ae0e-ae0e-…" ×hundreds) into general — repetition-brick class AND a human-side
+   perception-contract violation (long messages render unbounded; need digest→collapse in the
+   message renderer). File + fix both.
 3. **GENOME `MeterBlock`** on the persona tile — extends the roster cell (the `meters` pattern again).
 4. **`Hud`** (brain-HUD as a `purpose:"mind"` Content) — the glass box as an inhabitable activity;
    the AR payoff (`persona-brain-hud` → a room you walk into).
