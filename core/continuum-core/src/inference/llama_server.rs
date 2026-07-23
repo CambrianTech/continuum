@@ -117,7 +117,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// bounded well under the daemon's own budget so a wedged compute path (the very
 /// thing we are probing for) resolves to "cannot decode" fast instead of hanging
 /// the reconcile. A healthy 14B answers a 1-token request in well under a second.
-const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Generous on purpose: the probe shares the lane with LIVE persona traffic, and a
+/// 1,238-token co-tenant prefill alone runs ~9s — measured 2026-07-23: the identical
+/// probe body took 60s / 24s / 0s across three tries behind normal load. The old 10s
+/// budget produced sustained FALSE decode-failures that killed healthy lanes all
+/// night (heartbeat → not-ready → kill+respawn → bind race → "crash loop"). A probe's
+/// job is truth, not speed — it runs on a slow cadence; let it wait out the queue.
+const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 
 /// A same-model/same-genome relaunch is required when the target per-slot window
 /// exceeds the running server's served window by MORE than this. llama.cpp has no
@@ -1078,7 +1084,10 @@ impl LlamaServerControl for LlamaServerProcess {
         let url = format!("{}/chat/completions", self.v1_url);
         let body = serde_json::json!({
             "messages": [{ "role": "user", "content": "Count from 1 to 20, separated by spaces." }],
-            "max_tokens": 48,
+            // Enough tokens to prove real decode (MIN_SMOKE_DECODE_TOKENS = 5) with
+            // margin, WITHOUT hogging a busy co-tenant lane for 3s of decode — the
+            // probe must be a light passenger, not another load source.
+            "max_tokens": 12,
             "stream": false,
             "temperature": 0.0,
         });
