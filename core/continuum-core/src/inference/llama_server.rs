@@ -1416,7 +1416,57 @@ impl LlamaServerControl for LlamaServerProcess {
         // catalog record for the relaunch decision (llama.cpp can't report it).
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
-        self.wait_ready().await
+        self.wait_ready().await?;
+        // GENOME DORMANCY (glass-boxed 2026-07-23): llama.cpp loads every
+        // `--lora` at scale 1.0 — ALL ACTIVE, superimposed. Four personas'
+        // adapters blended at full scale produced the degenerate-decode plague
+        // (hangs, digit-splices, zero-walls, prompt-echo) the moment the
+        // comma-fix made stacks REALLY load; the month of prior 'stability'
+        // was the only-last-adapter bug accidentally serving one costume. The
+        // design is paged activation: catalog LOADED, scales DORMANT (0.0),
+        // per-request `lora` field activates. Zero them before ready — a lane
+        // is not ready while wearing every costume at once.
+        if !target.adapters.is_empty() {
+            self.zero_adapter_scales().await;
+        }
+        Ok(())
+    }
+}
+
+impl LlamaServerProcess {
+    /// Set every loaded LoRA adapter's GLOBAL scale to 0.0 (dormant catalog —
+    /// per-request activation only). Best-effort: a failure logs loud but does
+    /// not fail bringup (a lane with active adapters still serves; it is the
+    /// degraded-not-dead case, and the log names it).
+    pub async fn zero_adapter_scales(&self) {
+        let root = self.v1_url.trim_end_matches('/').trim_end_matches("/v1");
+        let url = format!("{root}/lora-adapters");
+        let list: Vec<serde_json::Value> = match self.client.get(&url).send().await {
+            Ok(r) => r.json().await.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "genome dormancy: could not read /lora-adapters");
+                return;
+            }
+        };
+        let zeroed: Vec<serde_json::Value> = list
+            .iter()
+            .filter_map(|a| a.get("id").and_then(|i| i.as_i64()))
+            .map(|id| serde_json::json!({"id": id, "scale": 0.0}))
+            .collect();
+        if zeroed.is_empty() {
+            return;
+        }
+        match self.client.post(&url).json(&zeroed).send().await {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!(
+                    adapters = zeroed.len(),
+                    probe_class = "serving.genome.dormant",
+                    "genome catalog loaded DORMANT — all adapter scales zeroed; per-request activation only"
+                );
+            }
+            Ok(r) => tracing::warn!(status = %r.status(), "genome dormancy: scale-zero POST refused"),
+            Err(e) => tracing::warn!(error = %e, "genome dormancy: scale-zero POST failed"),
+        }
     }
 }
 
