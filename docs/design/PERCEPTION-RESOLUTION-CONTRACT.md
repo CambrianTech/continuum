@@ -47,3 +47,19 @@ into. Perception-side compression, cognition-side choice
 Any new RagSource / observation path must answer: what is its digest tier, what
 is its handle verb, and what bounds its bytes at assembly? "It's usually small"
 is not an answer — pytest was usually small too.
+
+## Universality — one contract, two consumers (Joel, same day)
+
+The contract is not persona-only. **Chat logs, room transcripts, benchmark
+feeds, dev activity — every surface, human or machine, renders the digest tier
+with an expand/open-detail affordance.** Tail operations and filters apply
+automatically at render; the full stream stays a handle away. A room that will
+show live benchmarking and development (the Society HUD's WHAT panel) would
+otherwise flood humans exactly as pytest flooded Asha.
+
+This is why it composes perfectly with positron: digest→expand is already the
+universal UI pattern (collapsed card → detail view). So the SAME source-side
+digest+handle shape feeds both consumers — a persona's working memory and a
+positron widget are two renderers of one tiered surface. Design a source once,
+both minds and screens get flood-proofing for free. The widget's "expand" and
+the persona's "see-full-output" are the same verb.
