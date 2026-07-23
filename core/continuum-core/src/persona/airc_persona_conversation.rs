@@ -241,14 +241,33 @@ impl PersonaConversation for AircPersonaConversation {
                     let message = match perceptual_from_event(&event) {
                         Ok(message) => message,
                         Err(reason) => {
-                            tracing::info!(
-                                persona = %self.own_peer_id,
-                                from_peer = %event.peer_id,
-                                body_kind,
-                                reason,
-                                probe_class = "persona.inbound.filtered_non_turn",
-                                "raw event was not a perceptual room turn — skipped (#146/#177)"
-                            );
+                            // A decode ERROR is loud — a message-shaped body we
+                            // failed to read is exactly the #177 blindness this
+                            // named-reason contract exists for. The two LEGIT
+                            // non-turn shapes (event-bridge frames, presence,
+                            // work-board events) flooded 38k INFO lines/day
+                            // across the roster and drowned real signal — they
+                            // stay observable at debug, counted by probe_class
+                            // either way.
+                            if reason == "envelope_decode_error" {
+                                tracing::warn!(
+                                    persona = %self.own_peer_id,
+                                    from_peer = %event.peer_id,
+                                    body_kind,
+                                    reason,
+                                    probe_class = "persona.inbound.filtered_non_turn",
+                                    "message-shaped event FAILED to decode — a peer may be structurally unheard (#177)"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    persona = %self.own_peer_id,
+                                    from_peer = %event.peer_id,
+                                    body_kind,
+                                    reason,
+                                    probe_class = "persona.inbound.filtered_non_turn",
+                                    "raw event was not a perceptual room turn — skipped (#146/#177)"
+                                );
+                            }
                             continue;
                         }
                     };
