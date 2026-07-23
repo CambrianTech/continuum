@@ -65,7 +65,9 @@ pub struct AgentSolveParams {
     /// stale beliefs: a day of python tasks consolidates into python facts, and the
     /// dream's supersession review demotes "you work with main.rs" — work IS training.
     /// The measurement fork itself stays #59-isolated either way; only the lesson
-    /// crosses back. Default false (external harnesses opt in).
+    /// crosses back. Default TRUE — a living being learns from her work (Joel
+    /// 2026-07-23: "learn should be default anyway"); a harness wanting a
+    /// memoryless measurement opts OUT with `learn:false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub learn: Option<bool>,
@@ -347,7 +349,7 @@ impl AgentSolve {
         //    names; verbatim solutions would let a re-run score memorization instead
         //    of capability. Solve carries no held-out answer key in-band (the harness
         //    grades externally), so there is nothing to redact.
-        if p.learn.unwrap_or(false) {
+        if p.learn.unwrap_or(true) {
             let admitted = transfer_solve_experience(
                 &persona_uuid,
                 room,
