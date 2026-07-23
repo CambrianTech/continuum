@@ -296,9 +296,15 @@ const FORGE_TRAIN_LEASE_TTL_MS: u64 = 6 * 60 * 60 * 1000;
 
 /// Multiplier on the base weight bytes to estimate a LoRA/DoRA training job's peak
 /// UMA residency: the base is loaded resident, plus optimizer moments for the LoRA
-/// params (small) and forward/backward activations. Coarse-but-honest, the sibling
-/// of the eval lane's ×1.25 — over-estimating spills the job to "wait", never OOM.
-const TRAIN_FOOTPRINT_FACTOR: f64 = 1.3;
+/// params (small), forward/backward activations, AND the loss-step logits matrix —
+/// `seq_len × vocab × f32`, which for a 128k-vocab model on the long multi-turn
+/// trajectories genome/teach emits is GIGABYTES per sequence and dominates peak.
+/// Receipt (2026-07-23): ×1.3 sized a Devstral-24B q4 job at ~17GB, the governor
+/// granted it against 18GB available, and Metal OOM'd at `Calculating loss 0%` —
+/// taking the LIVE serving lane down into a model-reload 503 with it. ×2.0 would
+/// have refused that job, which is this estimate's contract: coarse-but-honest,
+/// over-estimating spills the job to "wait", never OOM.
+const TRAIN_FOOTPRINT_FACTOR: f64 = 2.0;
 
 /// Estimate a training job's peak UMA footprint from the base model on disk: sum of
 /// the base dir's `*.safetensors` bytes (≈ resident weight bytes) × [`TRAIN_FOOTPRINT_FACTOR`].
