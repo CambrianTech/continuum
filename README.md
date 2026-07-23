@@ -417,13 +417,13 @@ The persona's COMPLETE self — memory ON, genome loaded, tools ON, **never stri
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **93% (14/15)** | — | — | — | — |
+| **Qwen2.5-Coder-7B** | — | **87% (13/15)** | — | — | — | — |
 
 **Agent-Solve Tier 2** — whole-being — multi-file root-cause, invariants, implement-from-spec
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-7B** | — | **7% (1/15)** | — | — | — | — |
+| **Qwen2.5-Coder-7B** | — | **0% (0/15)** | — | — | — | — |
 
 ### Fast verifiable gyms (regression + training signal)
 
@@ -431,22 +431,22 @@ The persona's COMPLETE self — memory ON, genome loaded, tools ON, **never stri
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — | — |
-| **Qwen2.5-Coder-14B** | 86% (43/50) | **92% (46/50)** | *excluded¹* | — | — | — |
-| **Qwen2.5-Coder-3B** | 32% (13/40) | **72% (29/40)** | *excluded¹* | — | 80% (32/40) | -8 vs aider |
-| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **50% (20/40)** | *excluded¹* | — | 50% (20/40) | ±0 vs aider |
-| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **38% (15/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -10 vs aider |
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **30% (12/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -42 vs aider |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **92% (37/40)** | *excluded¹* | — | — | — |
+| **Devstral-Small-24B** | 0% (0/1) | **88% (35/40)** | — | — | — | — |
+| **Qwen2.5-Coder-3B** | 32% (13/40) | **68% (27/40)** | *excluded¹* | — | 80% (32/40) | -12 vs aider |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **62% (25/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -10 vs aider |
+| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **48% (19/40)** | *excluded¹* | — | 50% (20/40) | -3 vs aider |
+| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **35% (14/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -12 vs aider |
 
 **Hard-Rust** — expression evaluators + algorithmics
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | ***excluded¹*** | — | — | — | — |
-| **Qwen2.5-Coder-14B** | *excluded¹* | **62% (5/8)** | 0% (0/8) | — | — | **+62** vs opencode |
-| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **50% (4/8)** | 0% (0/8) | — | — | **+50** vs opencode |
+| **Devstral-Small-24B** | *excluded¹* | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
 | **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — |
-| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **0% (0/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | -12 vs Hermes |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | **25% (2/8)** | — | — | — | — |
+| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **12% (1/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | ±0 vs Hermes |
 | **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — |
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
