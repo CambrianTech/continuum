@@ -865,6 +865,24 @@ async fn dream_pass(
             }
         }
 
+    // BUSY-DREAM review tail (#221 slice 2c'): drain one belief batch per dream
+    // even when fresh material kept the dream busy — an active persona never
+    // has a quiet day, and the backlog must not wait for one.
+    let already: HashSet<Uuid> = reviewed
+        .lock()
+        .unwrap()
+        .get(&persona_id)
+        .cloned()
+        .unwrap_or_default();
+    let backlog = reflector.admission.semantic_beliefs_oldest_excluding(
+        &already,
+        crate::persona::trace::now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+        REVIEW_ONLY_BATCH,
+    );
+    if !backlog.is_empty() {
+        review_batch(&reflector, persona_id, backlog, &reviewed).await;
+    }
+
     tracing::info!(
         persona = %persona_id,
         published,
@@ -878,8 +896,8 @@ async fn dream_pass(
 /// served window (shared by the consolidation pass and the review-only pass —
 /// one budget rule, [[budget-at-assembly-never-clamp-the-prompt]]).
 fn distiller_for(reflector: &PersonaReflector) -> SemanticDistiller {
+    let live = crate::inference::llama_server::current_serving();
     let obs_budget_chars = {
-        let live = crate::inference::llama_server::current_serving();
         let window = if live.ready && live.served_context_window > 0 {
             live.served_context_window
         } else {
@@ -888,8 +906,21 @@ fn distiller_for(reflector: &PersonaReflector) -> SemanticDistiller {
         let completion_reserve = window / 4;
         (window.saturating_sub(completion_reserve) as usize).saturating_mul(4)
     };
+    // The dream asks for the model THE LANE IS SERVING RIGHT NOW — never the
+    // persona's configured base id, which goes stale the moment serving
+    // re-homes onto a genome-adapter alias. Glass-boxed live 2026-07-22: every
+    // distillation erroring "model 'unsloth/Devstral-…' is not the active
+    // served model" while a healthy lane served Asha's adapter stack — hours of
+    // silent dream failure from one stale binding. Same doctrine as the served
+    // context window: the live snapshot is the ONE authority; the configured
+    // binding is only the not-ready fallback.
+    let model = if live.ready && live.active_model.is_some() {
+        live.active_model
+    } else {
+        reflector.model.clone()
+    };
     SemanticDistiller::new(reflector.adapter.clone())
-        .with_model(reflector.model.clone())
+        .with_model(model)
         .with_observation_budget(obs_budget_chars)
 }
 
@@ -926,7 +957,21 @@ async fn review_pass(
     beliefs: Vec<Engram>,
     reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
 ) {
-    let distiller = distiller_for(&reflector);
+    review_batch(&reflector, persona_id, beliefs, &reviewed).await;
+}
+
+/// The review core, callable from BOTH dream shapes: the quiet-day pass above,
+/// and the tail of every BUSY dream (an active persona always has fresh
+/// material, so a quiet day never comes for her — the backlog must drain a
+/// batch per dream regardless; glass-boxed 2026-07-22: Atlas chatted all
+/// evening and the review-only branch never once fired).
+async fn review_batch(
+    reflector: &PersonaReflector,
+    persona_id: Uuid,
+    beliefs: Vec<Engram>,
+    reviewed: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+) {
+    let distiller = distiller_for(reflector);
     let mut superseded_n = 0usize;
     match distiller
         .distill_reviewing(LENS_REVIEWER, Some(persona_id), &beliefs, &beliefs)
@@ -939,7 +984,7 @@ async fn review_pass(
                     // Drop = she already knows it (dedup). Either way the
                     // surviving belief exists, so the verdict is safe to apply.
                     superseded_n = fact.supersedes.len();
-                    apply_supersessions(&reflector, persona_id, &fact.supersedes);
+                    apply_supersessions(reflector, persona_id, &fact.supersedes);
                 }
                 Ok(AdmissionDecision::Quarantine { .. }) => {
                     tracing::warn!(
