@@ -663,9 +663,21 @@ impl AdmissionState {
     /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
     pub fn fork_detached(&self) -> AdmissionState {
         let cp = self.checkpoint();
-        let fork = Self::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        ));
+        let fork_registry = crate::persona::recall_metadata::RecallMetadataRegistry::new();
+        // Carry the LIVING registry's state into the fork — salience, rehearsal
+        // counts, protection, supersession demotions. A fresh-empty registry
+        // resets every engram to DEFAULT salience inside the fork, which
+        // soul-strips her learned memory WEIGHTS at the measurement boundary:
+        // glass-boxed 2026-07-23 — 490 live supersessions had ZERO benchmark
+        // effect because every demoted stale belief snapped back to 0.5 in the
+        // fork and out-ranked her fresh knowledge again. She must compete with
+        // the salience landscape she actually LEARNED
+        // ([[eval-measures-the-true-full-being-not-a-stripped-copy]]). Still a
+        // detached COPY: the fork's hits/decay touch nothing living.
+        for (id, meta) in self.recall_metadata().snapshot() {
+            fork_registry.admit(id, meta);
+        }
+        let fork = Self::new(Arc::new(fork_registry));
         fork.restore(&cp);
         // Carry owner identity across the fork, or the eval measurement copy would
         // recall the persona's OWN chatter that the live self now gates (#166): the
