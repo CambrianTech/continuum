@@ -57,6 +57,27 @@ plus her own eyes:
   is genome page-in → HuggingFace adapter search (`continuum:*`) → Academy trains
   from the tier's own failure corpus. The battery IS the curriculum generator.
 
+## Rival-arm integrity (Joel, 2026-07-22: "zero scores for competitors are strikingly scientifically flawed")
+
+Binding standard, effective now: **a rival CLI's infrastructure failure is INFRA, not
+FAIL — identical to our own rule.** The coder harnesses' current timeout→empty→0%
+path violates this (a dead shim or wedged endpoint scores opencode/Hermes/aider at
+capability-zero). No rival 0% row is publishable until:
+
+1. **Per-task rival failure taxonomy:** timeout / endpoint error / no-artifact-and-
+   no-output = rival-INFRA (excluded, VOID) — only a graded artifact that is WRONG
+   counts as their FAIL. Same colors, same footnotes, both directions.
+2. **Known-good config verification:** each rival driven per its own documented
+   local-endpoint setup (people run these tools against local models daily — match
+   the configs the community actually uses, cite them in the harness header), with a
+   passing smoke task proving the integration BEFORE the battery counts.
+3. **Suspicion trigger:** any rival scoring 0 on a set where OURS ≥50% on identical
+   weights auto-flags `rival-zero-suspect` in the forensic pass and voids the row
+   pending manual glass-box.
+
+A rival's honest number that beats ours is more valuable than a flattering zero —
+the Δ column is only a claim if a skeptic reproducing THEIR side gets our number.
+
 ## Status: scaffolding, not substrate
 
 Python here is deliberately NON-load-bearing (Joel, 2026-07-22): it only seeds git
