@@ -2727,6 +2727,34 @@ pub fn start_server(
                     ws_substrate.clone(),
                 );
 
+                // Per-citizen substrates for per-user views (nav): each connecting
+                // citizen (?me) reads its own nav from here, unioned with the node
+                // substrate for per-room views. Shared instance so the nav projector
+                // (write) and the session (read) agree on for_citizen(me).
+                let per_user =
+                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
+
+                // Nav wiring (nav slice 2, live): ONE room-set fold projecting the
+                // observed airc stream (seeded with the bootstrap room so the
+                // landing room exists before the first event), one live reader
+                // over it, and the registry the WS ingress asks to ensure a
+                // citizen's projector on first connection.
+                let nav_seed: Vec<(Uuid, String)> = node_presence_deps
+                    .clone()
+                    .zip(persona_bootstrap_room_name.clone())
+                    .map(|((_socket, room), name)| vec![(room.as_uuid(), name)])
+                    .unwrap_or_default();
+                let room_set = positron_nav_source::spawn_room_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                    nav_seed,
+                );
+                let nav_registry = Arc::new(positron_nav_source::NavProjectorRegistry::new(
+                    projection_bus.clone(),
+                    Arc::clone(&per_user),
+                    Arc::new(positron_nav_source::ChannelBookmarksNavReader::new(room_set)),
+                ));
+
                 // Producer half of the same stream: attach a node-level
                 // roster reader and emit `presence:updated` so the consumer
                 // above has an identity source to fold in — otherwise every
@@ -2826,14 +2854,8 @@ pub fn start_server(
                     }
                 }
 
-                // Per-citizen substrates for per-user views (nav): each connecting
-                // citizen (?me) reads its own nav from here, unioned with the node
-                // substrate for per-room views. Shared instance so the nav projector
-                // (write) and the session (read) agree on for_citizen(me).
-                let per_user =
-                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
                 state.rt_handle.spawn(async move {
-                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user).await;
+                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user, nav_registry).await;
                 });
             }
         }

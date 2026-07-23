@@ -31,13 +31,18 @@
 //! The reader yields a neutral [`NavActivity`] carrying a [`NavTargetKind`], so
 //! new activity kinds slot in as data, never as a new nav mechanism.
 
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use continuum_positron::nav::{NavBookmark, NavTab, NavTargetKind, NavViewState};
+use continuum_positron::scoping::PerUserSubstrates;
 use continuum_positron::{StateBuilder, Substrate};
+use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 use uuid::Uuid;
 
+use crate::ipc::positron_source::{AircPresenceUpdate, CHAT_POSTED, PRESENCE_UPDATED};
 use crate::runtime::MessageBus;
 
 /// The bus signal that a citizen's nav state changed (a tab opened/closed, a
@@ -111,25 +116,116 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
     }
 }
 
+/// The live room-set snapshot — every room the node has observed on the airc
+/// stream, `room id → human title` (empty title until `presence:updated`
+/// resolves the name). Published by [`spawn_room_set_fold`]'s single fold task
+/// over a `watch` cell (the canonical snapshot shape — one owner task, N cheap
+/// readers), seeded with the bootstrap room so a fresh boot has its landing
+/// room before the first event.
+pub type RoomSet = BTreeMap<Uuid, String>;
+
+/// Thin `chat:posted` parse for the fold — the ONLY fact the room set needs
+/// from a message event is which room it happened in. The full typed payload
+/// stays [`positron_source`]'s concern.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatPostedRoom {
+    room_id: Uuid,
+}
+
+/// Spawn the single room-set fold: consume `presence:updated` (room id + name)
+/// and `chat:posted` (room id) off the bus and publish the accumulated
+/// [`RoomSet`] over `watch`. This is a PROJECTION of the observed airc stream —
+/// airc's registry stays the truth; this cell is the node's honest "rooms I
+/// have seen" cache, exactly like the chat accumulator ([[compression]]: one
+/// fold, every citizen's nav reader borrows the same receiver).
+pub fn spawn_room_set_fold(
+    rt: &tokio::runtime::Handle,
+    bus: Arc<MessageBus>,
+    seed: Vec<(Uuid, String)>,
+) -> watch::Receiver<RoomSet> {
+    let initial: RoomSet = seed.into_iter().collect();
+    let (tx, rx) = watch::channel(initial);
+    let mut events = bus.receiver();
+    rt.spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    let observed: Option<(Uuid, Option<String>)> = if event.name == PRESENCE_UPDATED
+                    {
+                        serde_json::from_value::<AircPresenceUpdate>(event.payload.clone())
+                            .ok()
+                            .map(|p| (p.room_id, Some(p.room_name)))
+                    } else if event.name == CHAT_POSTED {
+                        serde_json::from_value::<ChatPostedRoom>(event.payload.clone())
+                            .ok()
+                            .map(|p| (p.room_id, None))
+                    } else {
+                        None
+                    };
+                    if let Some((room, name)) = observed {
+                        tx.send_if_modified(|set| fold_observed_room(set, room, name));
+                    }
+                }
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+    rx
+}
+
+/// Pure fold step: register/upgrade one observed room in the set. Returns
+/// whether the set changed (drives `watch::send_if_modified` — an unchanged
+/// observation never wakes subscribers). A presence-resolved (non-empty) name
+/// registers the room and/or upgrades its title; a nameless observation (a
+/// `chat:posted`) registers an unseen room with an empty title for presence to
+/// name later, and is a no-op on a known room.
+fn fold_observed_room(set: &mut RoomSet, room: Uuid, name: Option<String>) -> bool {
+    match name {
+        Some(n) if !n.is_empty() => {
+            let entry = set.entry(room).or_default();
+            if *entry == n {
+                false
+            } else {
+                *entry = n;
+                true
+            }
+        }
+        _ => {
+            if set.contains_key(&room) {
+                false
+            } else {
+                set.insert(room, String::new());
+                true
+            }
+        }
+    }
+}
+
 /// The LIVE [`NavReader`] — reads each room's real read cursor from the shared
 /// `ChannelBookmarks` (the SAME row the persona's RAG grounding reads: the
 /// first-class dual-consumer atom — a human's unread badge and a persona's
 /// "what's new since I last looked" are one value) plus real unread from the
 /// pre-staged digest buffer.
 ///
-/// The room set is provided by the caller (boot wiring), because a citizen's
-/// open-room set is not yet a single registry read — `persona_workspace` lists
-/// residents but not their channels. That's the one open seam; the read cursors
-/// themselves are fully live.
+/// The room set is the live [`spawn_room_set_fold`] snapshot — every room the
+/// node has observed, not a caller-frozen list; the read cursors are fully live.
 pub struct ChannelBookmarksNavReader {
-    /// The citizen's rooms in tab order — (room id, human title). Supplied by
-    /// the caller until a per-citizen room-set registry exists.
-    rooms: Vec<(Uuid, String)>,
+    /// Live room-set snapshot (room id → title), shared with the fold task.
+    rooms: watch::Receiver<RoomSet>,
 }
 
 impl ChannelBookmarksNavReader {
-    pub fn new(rooms: Vec<(Uuid, String)>) -> Self {
+    pub fn new(rooms: watch::Receiver<RoomSet>) -> Self {
         Self { rooms }
+    }
+
+    /// A reader over a FIXED room set — test/fixture construction (no fold
+    /// task). The live path uses [`spawn_room_set_fold`]'s receiver.
+    pub fn fixed(rooms: Vec<(Uuid, String)>) -> Self {
+        let (_tx, rx) = watch::channel(rooms.into_iter().collect::<RoomSet>());
+        Self { rooms: rx }
     }
 }
 
@@ -141,8 +237,8 @@ impl NavReader for ChannelBookmarksNavReader {
         use crate::runtime::ready_buffer::ReadyBuffer;
         let bookmarks = global_channel_bookmarks();
         let digests = global_channel_digest_buffer();
-        let activities = self
-            .rooms
+        let rooms = self.rooms.borrow().clone();
+        let activities = rooms
             .iter()
             .map(|(room, title)| {
                 // REAL cursor — the same (user, room) mark advance()/markRead writes.
@@ -154,9 +250,16 @@ impl NavReader for ChannelBookmarksNavReader {
                     .peek(&(user, *room))
                     .map(|d| d.unread().len() as u32)
                     .unwrap_or(0);
+                // A room observed before presence named it gets an honest
+                // short-id label, never an invisible empty tab.
+                let title = if title.is_empty() {
+                    room.to_string()[..8].to_string()
+                } else {
+                    title.clone()
+                };
                 NavActivity {
                     id: room.to_string(),
-                    title: title.clone(),
+                    title,
                     kind: NavTargetKind::Room,
                     unread,
                     last_read: Some(last as i64),
@@ -165,7 +268,7 @@ impl NavReader for ChannelBookmarksNavReader {
             .collect();
         // Current = the first room until the caller tracks an explicit focus
         // (the `whereWasI` / current-tab write lands with markRead's sibling).
-        let current = self.rooms.first().map(|(r, _)| r.to_string());
+        let current = rooms.keys().next().map(|r| r.to_string());
         NavSnapshot { current, activities, bookmarks: Vec::new() }
     }
 }
@@ -224,7 +327,14 @@ pub fn spawn(
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    if event.name == NAV_CHANGED || event.name == "presence:updated" {
+                    // `chat:posted` moves unread counts and can register a new
+                    // room; `presence:updated` names rooms; `nav:changed` is the
+                    // explicit nav write. All three re-read authority (cheap
+                    // local reads — same discipline as the kanban projector).
+                    if event.name == NAV_CHANGED
+                        || event.name == PRESENCE_UPDATED
+                        || event.name == CHAT_POSTED
+                    {
                         projection.reload();
                     }
                 }
@@ -236,6 +346,48 @@ pub fn spawn(
             }
         }
     });
+}
+
+/// Idempotent per-citizen nav-projector spawner — the boot owns ONE of these,
+/// the WS ingress calls [`ensure`](Self::ensure) whenever a citizen-scoped
+/// session (`?me=<uuid>`) connects. First arrival spawns that citizen's
+/// projector writing into their [`PerUserSubstrates`] cell; every later
+/// connection finds it already live. One projector per citizen for the process
+/// lifetime — nav is durable citizen state, not connection state.
+pub struct NavProjectorRegistry {
+    bus: Arc<MessageBus>,
+    per_user: Arc<PerUserSubstrates>,
+    reader: Arc<dyn NavReader>,
+    spawned: Mutex<HashSet<Uuid>>,
+}
+
+impl NavProjectorRegistry {
+    pub fn new(
+        bus: Arc<MessageBus>,
+        per_user: Arc<PerUserSubstrates>,
+        reader: Arc<dyn NavReader>,
+    ) -> Self {
+        Self { bus, per_user, reader, spawned: Mutex::new(HashSet::new()) }
+    }
+
+    /// Ensure `citizen`'s nav projector is running. Must be called from within
+    /// a tokio runtime (the WS accept path is one). Idempotent — a poisoned
+    /// registry lock is unrecoverable state corruption, so it panics loud
+    /// rather than double-spawning.
+    pub fn ensure(&self, citizen: Uuid) {
+        let mut spawned = self.spawned.lock().expect("nav projector registry lock poisoned");
+        if !spawned.insert(citizen) {
+            return;
+        }
+        drop(spawned);
+        spawn(
+            &tokio::runtime::Handle::current(),
+            Arc::clone(&self.bus),
+            self.per_user.for_citizen(citizen),
+            citizen,
+            Arc::clone(&self.reader),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -301,7 +453,7 @@ mod tests {
         let asha = Uuid::from_u128(0xa54a_u128);
         let room = Uuid::from_u128(0x9e21_u128);
         global_channel_bookmarks().advance(asha, room, 42);
-        let reader = ChannelBookmarksNavReader::new(vec![(room, "General".into())]);
+        let reader = ChannelBookmarksNavReader::fixed(vec![(room, "General".into())]);
         let snap = reader.nav_snapshot(asha);
         let view = project_nav(asha, snap);
         assert_eq!(view.open_tabs.len(), 1);
@@ -319,5 +471,83 @@ mod tests {
         assert!(view.open_tabs.is_empty());
         assert!(view.last_read.is_empty());
         assert!(view.bookmarks.is_empty());
+    }
+
+    // what this catches: the room-set fold's change discipline — a chat event
+    // registers an unseen room (empty title), presence names it, repeats of
+    // either are NOT modifications (send_if_modified must not wake subscribers
+    // on a no-op), and a rename upgrades the title.
+    #[test]
+    fn room_set_fold_registers_names_and_skips_noops() {
+        let room = Uuid::from_u128(0xf00d);
+        let mut set = RoomSet::new();
+        assert!(fold_observed_room(&mut set, room, None), "first sighting registers");
+        assert_eq!(set.get(&room).map(String::as_str), Some(""));
+        assert!(!fold_observed_room(&mut set, room, None), "repeat chat = no-op");
+        assert!(
+            fold_observed_room(&mut set, room, Some("general".into())),
+            "presence names the room"
+        );
+        assert_eq!(set.get(&room).map(String::as_str), Some("general"));
+        assert!(
+            !fold_observed_room(&mut set, room, Some("general".into())),
+            "same name = no-op"
+        );
+        assert!(
+            fold_observed_room(&mut set, room, Some("general-2".into())),
+            "rename upgrades"
+        );
+        assert!(
+            !fold_observed_room(&mut set, room, Some(String::new())),
+            "empty name never erases a known room"
+        );
+        assert_eq!(set.get(&room).map(String::as_str), Some("general-2"));
+    }
+
+    // what this catches: a room the fold has seen but presence hasn't named
+    // renders an honest short-id tab label, never an invisible empty title.
+    #[test]
+    fn unnamed_room_gets_short_id_tab_label() {
+        let room = Uuid::from_u128(0xbeef);
+        let reader = ChannelBookmarksNavReader::fixed(vec![(room, String::new())]);
+        let snap = reader.nav_snapshot(Uuid::from_u128(11));
+        assert_eq!(snap.activities.len(), 1);
+        assert_eq!(snap.activities[0].title, room.to_string()[..8].to_string());
+    }
+
+    // what this catches: the registry spawns a citizen's projector exactly once
+    // — the second ensure() for the same citizen must not double-spawn (nav is
+    // per-citizen process-lifetime state, not per-connection state).
+    #[tokio::test]
+    async fn registry_ensures_a_projector_once_per_citizen() {
+        let per_user = Arc::new(PerUserSubstrates::new());
+        let registry = NavProjectorRegistry::new(
+            Arc::new(crate::runtime::MessageBus::new()),
+            Arc::clone(&per_user),
+            Arc::new(ChannelBookmarksNavReader::fixed(vec![(
+                Uuid::from_u128(0xcafe),
+                "general".into(),
+            )])),
+        );
+        let me = Uuid::from_u128(0xa11ce);
+        registry.ensure(me);
+        registry.ensure(me);
+        assert_eq!(
+            registry.spawned.lock().expect("registry lock").len(),
+            1,
+            "one citizen, one projector"
+        );
+        // The spawned projector's immediate reload lands the citizen's nav view
+        // in THEIR substrate — poll briefly (spawn is async wrt this test).
+        let substrate = per_user.for_citizen(me);
+        let mut seen = false;
+        for _ in 0..50 {
+            if substrate.cache().get(NavViewState::KIND).is_some() {
+                seen = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(seen, "the citizen's nav view materialized in their per-user substrate");
     }
 }
