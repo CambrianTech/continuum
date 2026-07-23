@@ -202,6 +202,7 @@ mod tests {
             lamport: 1,
             peer_id: Uuid::new_v4(),
             text: "hello".into(),
+            room_id: Uuid::nil(),
         }
     }
 

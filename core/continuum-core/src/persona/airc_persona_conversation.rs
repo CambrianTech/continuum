@@ -319,6 +319,10 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
         lamport: event.lamport,
         peer_id,
         text,
+        // The transport room is the turn's context (A.6) — without it the
+        // service loop bound operator/CLI turns to a nil room and every
+        // room-scoped source abstained.
+        room_id: event.room_id.as_uuid(),
     })
 }
 
@@ -404,6 +408,12 @@ mod tests {
             assert_eq!(msg.text, "hello from a peer");
             assert_eq!(msg.peer_id, peer.as_uuid());
             assert_eq!(msg.lamport, 7);
+            // regression for the 2026-07-23 nil-room turn: the transport's
+            // room_id MUST ride into the perceptual message (A.6) — dropping
+            // it bound operator/CLI turns to a nil room where every
+            // room-scoped RAG source abstained (no board, no kanban, no
+            // roster) and the reply had no room to land in.
+            assert_eq!(msg.room_id, RoomId::from_u128(2).as_uuid());
         }
 
         // what this catches: THE bug. chat/send arrives as a Body::Json

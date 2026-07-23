@@ -68,6 +68,15 @@ pub struct IncomingMessage {
     /// filtered upstream of this projection — they should arrive as
     /// `None` from the conversation's stream.
     pub text: String,
+    /// The room the event ARRIVED in — the transport's `TranscriptEvent.room_id`,
+    /// which is authoritative for the turn's context (A.6, the missing context
+    /// axis). Nil means the source predates room stamping (scripted/test
+    /// conversations) and the loop falls back to `identity.default_room`; a real
+    /// wire event always carries its room. Without this, an operator's CLI
+    /// publish woke the persona into a nil-room turn where every room-scoped
+    /// RAG source (roster, doctrine, board, kanban) abstained — she heard the
+    /// words but stood in no room (glass-boxed 2026-07-23, Anwen ACK test).
+    pub room_id: Uuid,
 }
 
 /// Polymorphism rail for "talk to the grid as this persona". The
@@ -545,6 +554,18 @@ async fn serve_persona_loop_inner(
             );
         }
 
+        // A.6 — the turn's room is the room the trigger message ARRIVED in
+        // (transport-stamped, authoritative), not the identity's ambient
+        // default. Nil only from sources that predate room stamping
+        // (scripted/test conversations) → ambient default. This is what lets
+        // an operator's CLI publish wake a turn that can actually SEE the
+        // room's board/kanban/roster instead of a nil-room ghost context.
+        let turn_room = if msg.room_id.is_nil() {
+            ctx.identity.default_room
+        } else {
+            msg.room_id
+        };
+
         // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
         // this path ran a full ~55s decode for EVERY inbound message — so two
         // personas trading one goodbye template cycled forever on a metronome equal
@@ -565,7 +586,7 @@ async fn serve_persona_loop_inner(
             let now_ms = (opts.now_ms)();
             let inbox_msg = crate::persona::types::InboxMessage {
                 id: Uuid::new_v4(),
-                room_id: ctx.identity.default_room,
+                room_id: turn_room,
                 sender_id: msg.peer_id,
                 sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
                 sender_type: crate::persona::types::SenderType::Persona,
@@ -630,7 +651,7 @@ async fn serve_persona_loop_inner(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
             persona_id = %ctx.identity.peer_id.as_uuid(),
-            room_id = %ctx.identity.default_room,
+            room_id = %turn_room,
             lamport = msg.lamport,
             peer_id = %msg.peer_id,
             text_len = msg.text.len(),
@@ -670,7 +691,7 @@ async fn serve_persona_loop_inner(
         //    admit. Inference still runs without holding the mutex.
         let inbox_msg = crate::persona::types::InboxMessage {
             id: Uuid::new_v4(),
-            room_id: ctx.identity.default_room,
+            room_id: turn_room,
             sender_id: msg.peer_id,
             sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
             sender_type: crate::persona::types::SenderType::Persona,
@@ -762,7 +783,7 @@ async fn serve_persona_loop_inner(
         // Her NOW rides the burst header (task #125): live turns carry real wall-clock
         // so time is a fact she can perceive; the eval fork passes its own pinned epoch.
         let workspace_burst = crate::cognition::workspace::Burst::from_turns_at(
-            ctx.identity.default_room,
+            turn_room,
             build_workspace_turns(
                 &composed.deliveries,
                 &ctx.identity.peer_id.to_string(),
@@ -843,11 +864,11 @@ async fn serve_persona_loop_inner(
                 // Scope the cognition tick to the room this turn is FOR (the
                 // contextId), so the deliberation faculty stamps tool calls with
                 // it and the persona's hands act in the real room, not a phantom
-                // nil one. The serviced room is `ctx.identity.default_room` — the
-                // same room the burst header above declares. (IncomingMessage
-                // carries no per-message room yet; a per-message contextId on the
-                // cognition input is the deeper fix — A.6 / the missing context
-                // axis. Today default_room is the correct available context.)
+                // nil one. The serviced room is `turn_room` — the room the
+                // trigger message ARRIVED in (A.6 shipped: IncomingMessage now
+                // carries the transport's room; `identity.default_room` is only
+                // the fallback for room-less scripted sources). Same room the
+                // burst header above declares.
                 // See IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.6 step 3.
                 // ONE settlement step through the SHARED primitive the eval driver
                 // also uses (`act_observe::settle_step`). The live path takes exactly
@@ -968,14 +989,14 @@ async fn serve_persona_loop_inner(
                     conversation.stream_citizen(),
                     ctx.identity.agent_name.clone(),
                     // #170: a room turn — tee tokens to the browser rail so she types live.
-                    Some(ctx.identity.default_room.to_string()),
+                    Some(turn_room.to_string()),
                     Some(ctx.identity.peer_id.to_string()),
                 );
                 let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         workspace_burst,
-                        ctx.identity.default_room,
+                        turn_room,
                         LIVE_MAX_ACTS,
                         framing,
                     )
@@ -2648,6 +2669,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "hello?".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
@@ -2740,6 +2762,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "ping?".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
@@ -3053,6 +3076,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "would-be-message".to_string(),
+                room_id: Uuid::nil(),
             }))])
             .require_prime_before_next_message();
 
@@ -3092,6 +3116,7 @@ mod tests {
                 lamport: 1,
                 peer_id: persona_peer, // SELF
                 text: "my own echo".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
@@ -3134,16 +3159,19 @@ mod tests {
                     lamport: 50, // BEFORE attach
                     peer_id: other_peer,
                     text: "ancient".to_string(),
+                    room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
                     lamport: 100, // exactly at the mark — also skipped
                     peer_id: other_peer,
                     text: "boundary".to_string(),
+                    room_id: Uuid::nil(),
                 })),
                 Ok(Some(IncomingMessage {
                     lamport: 101, // FRESH
                     peer_id: other_peer,
                     text: "new".to_string(),
+                    room_id: Uuid::nil(),
                 })),
                 Ok(None),
             ]);
@@ -3192,6 +3220,7 @@ mod tests {
                 lamport: 1,
                 peer_id: other_peer,
                 text: "after lag".to_string(),
+                room_id: Uuid::nil(),
             })),
             Ok(None),
         ]);
