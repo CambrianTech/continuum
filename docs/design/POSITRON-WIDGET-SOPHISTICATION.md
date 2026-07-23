@@ -37,7 +37,11 @@
 
 1. **Rooms/DMs `Listing`** — lowest new-vocab (reuses `Listing` + `group` + a filter). Needs the core
    to project the room set into `nav`. Render on web + terminal, screenshot/frame-verified. *Proves the
-   data-expansion path.*
+   data-expansion path.* **✅ LANDED (2026-07-23)**: room-set fold + per-citizen nav projector wired at
+   the WS `?me=` seam (core), `ListingCell.count` + `roomsListingFromNav` + unread pills (web);
+   live-verified end-to-end (probe: real `kind="nav"` frame; browser: rail draws the live room set).
+   Remaining inside this brick: room CLICK→switch (needs the `nav/select` current-tab write + chat
+   projection refocus/reseed — the `markRead` sibling), DM grouping once DM rooms carry a marker.
 2. **`Gauge` widget** (system metrics) — the first genuinely-new widget kind; a `ContextPanel` sibling.
    Small, self-contained, sources from ResourceGovernor (#56). *Proves the new-widget-kind path.*
 3. **GENOME `MeterBlock`** on the persona tile — extends the roster cell (the `meters` pattern again).
