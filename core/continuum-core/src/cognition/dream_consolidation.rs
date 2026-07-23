@@ -273,15 +273,23 @@ impl SemanticDistiller {
         let (mut block, kept_n) = Self::observations_block(sources, self.max_observation_chars);
         let kept = &sources[..kept_n];
         if !prior_beliefs.is_empty() {
-            block.push_str(
-                "\n\nPRIOR BELIEFS you consolidated earlier (numbered). If your NEW \
-                 understanding above replaces or contradicts any of them, end your reply \
-                 with a final line exactly like `SUPERSEDES: 2` (comma-separate several: \
-                 `SUPERSEDES: 1,3`). If none are replaced, do not write that line.\n",
-            );
+            // Numbered list FIRST, then an UNCONDITIONAL format slot at the very
+            // end — recency beats primacy for instruction-following on small
+            // models, and a mandatory `SUPERSEDES:` line (with `none` as the
+            // explicit no-op) separates "chose none" from "ignored the
+            // instruction". Glass-boxed 2026-07-22: 25 live reviews, zero
+            // verdict lines, with the old conditional instruction placed BEFORE
+            // the list.
+            block.push_str("\n\nPRIOR BELIEFS (numbered):\n");
             for (i, b) in prior_beliefs.iter().enumerate() {
                 block.push_str(&format!("{}. {}\n", i + 1, b.content.trim()));
             }
+            block.push_str(
+                "\nAfter your reply, on its own final line, list which numbered prior \
+                 beliefs are now outdated, wrong, or replaced by better understanding — \
+                 exactly `SUPERSEDES: 2` or `SUPERSEDES: 1,3` — or exactly \
+                 `SUPERSEDES: none` if every one still holds. This final line is REQUIRED.",
+            );
         }
         if kept_n < sources.len() {
             tracing::info!(
