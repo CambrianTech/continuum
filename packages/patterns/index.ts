@@ -43,6 +43,11 @@ export interface ListingCell {
   readonly badges?: readonly string[];
   /** Optional presence/liveness; `'none'` draws no status indicator. */
   readonly status?: CellStatus;
+  /** Optional attention count (a room's unread, a board's open cards) — a target
+   *  draws it as a badge pill (web) or `(3 new)` (RAG/terminal). Absent or 0 =
+   *  no badge. Numeric so every surface formats its own idiom — the same
+   *  lossless-enrichment path `meters` took. */
+  readonly count?: number;
   /** Optional grouping/category key (the "bookmarked menus + categories" axis). */
   readonly group?: string;
   /** Optional named gauges (0–100), drawn as bars/meters by a target — a member's

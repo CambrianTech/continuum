@@ -26,7 +26,13 @@ import {
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
-import { CHAT_KIND, chatStateFromEnvelope, type ChatState } from '@continuum/chat-view';
+import {
+  CHAT_KIND,
+  NAV_KIND,
+  chatStateFromEnvelope,
+  navStateFromEnvelope,
+  type ChatState,
+} from '@continuum/chat-view';
 
 // Importing the module registers `<chat-widget>` as a side effect; keep the
 // symbol referenced so bundlers don't tree-shake the definition away.
@@ -34,6 +40,11 @@ void ChatWidget;
 
 async function main(): Promise<void> {
   const config = resolveConfig();
+
+  // Citizen-scope the session: `?me=<uuid>` on the connect URL is WHO this
+  // session belongs to — the core resolves per-user views (kind="nav") to this
+  // citizen's substrate and spawns their nav projector on first arrival.
+  const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${config.senderId}`;
 
   const widget = document.createElement('chat-widget');
   const mount = document.getElementById('app') ?? document.body;
@@ -45,7 +56,7 @@ async function main(): Promise<void> {
 
   // SEND socket: the command client. Fails loud if the send lands before any
   // snapshot named a room (no room to send into is a real error, not a no-op).
-  const continuum = Continuum.connect(new WebSocketTransport(config.wsUrl));
+  const continuum = Continuum.connect(new WebSocketTransport(scopedWsUrl));
   const sendHandler: SendHandler = async (text: string) => {
     if (!latest) {
       throw new Error('cannot send before the first room snapshot arrived — the room is unknown.');
@@ -86,12 +97,18 @@ async function main(): Promise<void> {
 
   // READ socket: subscribe to chat state, merge each envelope into the widget.
   let gotState = false;
-  const state = new StateConnection(config.wsUrl);
+  const state = new StateConnection(scopedWsUrl);
   state.on(CHAT_KIND, (envelope: StateEnvelope) => {
     gotState = true;
     banner.remove();
     latest = chatStateFromEnvelope(envelope);
     widget.state = latest;
+  });
+  // The citizen's nav view (room set + unread) — per-user, served from THIS
+  // session's ?me= scoped substrate. Upgrades the rooms rail from the single
+  // focused room to the live room set as soon as the projector delivers.
+  state.on(NAV_KIND, (envelope: StateEnvelope) => {
+    widget.nav = navStateFromEnvelope(envelope);
   });
   // #170 live typing: grow a transient bubble per persona as its turn streams in.
   // Ephemeral — the durable message still arrives via the CHAT_KIND sink above, which

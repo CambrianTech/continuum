@@ -27,6 +27,7 @@ export function listingCell(cell: ListingCell): TemplateResult {
         <div class="cell-title">${cell.title}</div>
         ${cell.subtitle ? html`<div class="cell-subtitle">${cell.subtitle}</div>` : nothing}
       </div>
+      ${cell.count ? html`<span class="cell-count" title="unread">${cell.count}</span>` : nothing}
       ${cell.badges && cell.badges.length > 0
         ? html`<span class="cell-badges">
             ${cell.badges.map((b) => html`<span class="cell-badge">${b}</span>`)}

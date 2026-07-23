@@ -19,7 +19,7 @@
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import type { ChatState } from '@continuum/chat-view';
 import { chatViewModel, type MessageRowVM } from '@continuum/chat-view';
-import type { StreamDelta } from '@continuum/sdk-typescript';
+import type { NavViewState, StreamDelta } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
@@ -30,6 +30,7 @@ export type SendHandler = (text: string) => Promise<void>;
 export class ChatWidget extends LitElement {
   static override properties = {
     state: { attribute: false },
+    nav: { attribute: false },
     sendHandler: { attribute: false },
     _draft: { state: true },
     _sending: { state: true },
@@ -40,6 +41,11 @@ export class ChatWidget extends LitElement {
   /** The current chat snapshot; assignment triggers a re-render. `undefined`
    *  until the first state envelope arrives (the honest "connecting" phase). */
   state?: ChatState;
+
+  /** The citizen's live `kind="nav"` view (room set + unread), when the host's
+   *  nav subscription has delivered. `undefined` = the rooms rail honestly shows
+   *  only the focused room. */
+  nav?: NavViewState;
 
   /** Injected by the host — how a composed message reaches the core. */
   sendHandler?: SendHandler;
@@ -216,6 +222,53 @@ export class ChatWidget extends LitElement {
     }
     .metric[data-tone='muted'] .metric-val {
       color: var(--content-secondary);
+    }
+    /* Rooms widget — the live room set (brick 1): generic listing cells with the
+     * focused room highlighted and an unread pill riding the neutral count. */
+    ul.cells {
+      list-style: none;
+      margin: 0;
+      padding: 0 var(--spacing-sm) var(--spacing-sm);
+    }
+    .cell {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-xs) var(--spacing-sm);
+      border-radius: var(--radius-sm);
+      color: var(--content-secondary);
+      font-size: 13px;
+      cursor: default;
+    }
+    .cell[data-status='active'] {
+      background: var(--button-secondary-background);
+      color: var(--content-primary);
+      border-left: 2px solid var(--content-accent);
+    }
+    .cell-body {
+      flex: 1;
+      min-width: 0;
+    }
+    .cell-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cell-subtitle {
+      font-size: 11px;
+      color: var(--content-secondary);
+    }
+    .cell-count {
+      min-width: 18px;
+      padding: 0 5px;
+      text-align: center;
+      border-radius: var(--radius-lg);
+      background: var(--content-accent);
+      color: var(--surface, #0b0d12);
+      font-size: 10px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 16px;
     }
     /* #186 LIVE COMPASS: the cognition diamond's triangles glow + fade smoothly as the
      * radiator pushes new faculty levels (~2s). This CSS transition IS the "steady glow"
@@ -1147,7 +1200,7 @@ export class ChatWidget extends LitElement {
     // seen ([[fallbacks-are-illegal-fail-loud]]).
     let surface: TemplateResult;
     try {
-      surface = renderChat(vm);
+      surface = renderChat(vm, this.nav);
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;

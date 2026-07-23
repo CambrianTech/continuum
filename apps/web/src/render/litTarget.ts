@@ -58,7 +58,9 @@ export const webTarget: RenderTarget<TemplateResult> = {
    *  rail is now a GLOBAL WIDGET STACK: each `PanelWidget` draws as a titled rail section
    *  (Metrics · Rooms · Users & Agents · …), dispatched by kind. */
   workspace(ws: WorkspaceView): TemplateResult {
-    const room = ws.nav.cells[0];
+    // The focused room is the ACTIVE nav cell — with the live room set the
+    // listing carries every room, so cells[0] is arbitrary order, not focus.
+    const room = ws.nav.cells.find((c) => c.status === 'active') ?? ws.nav.cells[0];
     const roster = rosterOf(ws);
     const memberCount = roster?.cells.length ?? 0;
     const activeCount = roster?.cells.filter((c) => c.status === 'active').length ?? 0;

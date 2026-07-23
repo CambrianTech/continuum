@@ -14,6 +14,7 @@
  */
 
 export { CHAT_KIND, chatStateFromEnvelope } from './ChatState';
+export { NAV_KIND, navStateFromEnvelope } from './NavState';
 export type { ChatState } from './ChatState';
 
 export { chatViewModel, formatTimeOfDay } from './chatViewModel';
@@ -28,7 +29,7 @@ export type {
 // The chat activity expressed on the consumer-neutral pattern primitives
 // (ACTIVITY-ROOM-PATTERNS.md): the roster IS the `Listing`, and the whole room
 // composes into a `Workspace` (nav + left + purpose-keyed content + context).
-export { rosterListing, roomsListing, chatWorkspace } from './patternProjections';
+export { rosterListing, roomsListing, roomsListingFromNav, chatWorkspace } from './patternProjections';
 export type { ChatContentBody } from './patternProjections';
 
 // The chat activity as a positron app, defined ONCE — mount it on any RenderTarget

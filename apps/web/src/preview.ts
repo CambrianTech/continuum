@@ -17,7 +17,7 @@
 import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
 import type { ChatState } from '@continuum/chat-view';
-import type { RosterSlotView } from '@continuum/sdk-typescript';
+import type { NavViewState, RosterSlotView } from '@continuum/sdk-typescript';
 
 // Registering the element is a side effect of the import; keep the symbol live.
 void ChatWidget;
@@ -83,12 +83,35 @@ const FIXTURES: Record<string, ChatState> = {
   },
 };
 
+/** The citizen's nav view for the `rooms` fixture — the live room SET the rooms
+ *  rail draws (brick 1): focused room + two more with unread. The same shape the
+ *  per-user substrate serves under `kind="nav"`. */
+const NAV_FIXTURES: Record<string, NavViewState> = {
+  rooms: {
+    user_id: 'joel',
+    current_tab: 'general',
+    open_tabs: [
+      { id: 'general', title: 'general', kind: 'room', unread: 0 },
+      { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3 },
+      { id: 'foundry', title: 'foundry', kind: 'room', unread: 12 },
+    ],
+    last_read: { general: 1_700_000_060_000 },
+    bookmarks: [],
+  },
+};
+
 function main(): void {
   const name = new URLSearchParams(location.search).get('fixture') ?? 'roster';
   const state = FIXTURES[name] ?? FIXTURES.roster;
 
   const widget = document.createElement('chat-widget');
   widget.state = state;
+  // `?fixture=rooms` renders the roster state PLUS the nav room set — the
+  // rooms-rail reference input. Other fixtures leave nav honest-absent.
+  if (name === 'rooms') {
+    widget.state = FIXTURES.roster;
+    widget.nav = NAV_FIXTURES.rooms;
+  }
   // A no-op send handler so the input area is live for interaction shots without a socket.
   const noop: SendHandler = async () => {
     /* no-op: the preview has no socket, so a submit goes nowhere */

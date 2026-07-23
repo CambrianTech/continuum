@@ -20,6 +20,7 @@
 
 import { type TemplateResult } from 'lit';
 import { chatWorkspace, type ChatViewModel } from '@continuum/chat-view';
+import type { NavViewState } from '@continuum/sdk-typescript';
 import { webTarget } from '../render/litTarget';
 
 /** The read surface: header + roster `Listing` + purpose-dispatched Content.
@@ -28,7 +29,10 @@ import { webTarget } from '../render/litTarget';
  * neutral `WorkspaceView` (`chatWorkspace`) and let the web `RenderTarget` paint it.
  * The markup is byte-identical to the former inline template (screenshot-verified) —
  * the difference is architectural: the same projection a persona reads over RAG and a
- * mobile Flutter target will paint. `apps/web` flows through `mount(chatApp, …, webTarget)`. */
-export function renderChat(vm: ChatViewModel): TemplateResult {
-  return webTarget.workspace(chatWorkspace(vm));
+ * mobile Flutter target will paint. `apps/web` flows through `mount(chatApp, …, webTarget)`.
+ *
+ * `nav` (the citizen's `kind="nav"` view) upgrades the rooms rail to the live room
+ * set with unread badges when present. */
+export function renderChat(vm: ChatViewModel, nav?: NavViewState): TemplateResult {
+  return webTarget.workspace(chatWorkspace(vm, nav));
 }

@@ -34,3 +34,12 @@ export type { RosterViewState } from './RosterViewState';
 // foundry widget closure (kind="foundry" → ForgeViewState + its model row)
 export type { ForgeViewState } from './ForgeViewState';
 export type { ForgeModelView } from './ForgeModelView';
+
+// nav closure (kind="nav" → NavViewState) — a citizen's open tabs (with derived
+// unread), current tab, per-room read cursors, and bookmarks. Per-USER, unlike
+// the per-room chat/roster/foundry kinds; served from the citizen's ?me= scoped
+// session substrate.
+export type { NavViewState } from './NavViewState';
+export type { NavTab } from './NavTab';
+export type { NavBookmark } from './NavBookmark';
+export type { NavTargetKind } from './NavTargetKind';

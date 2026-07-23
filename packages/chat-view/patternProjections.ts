@@ -19,6 +19,7 @@ import type {
   PanelWidget,
   MetricsView,
 } from '@continuum/patterns';
+import type { NavViewState } from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
@@ -73,6 +74,29 @@ export function roomsListing(vm: ChatViewModel): ListingView {
   };
 }
 
+/** The rooms-Listing from the citizen's live `kind="nav"` view — the room SET
+ *  (POSITRON-WIDGET-SOPHISTICATION.md brick 1), superseding the single-cell
+ *  `roomsListing` whenever the nav subscription has delivered. Each open tab is a
+ *  cell: the focused room (the one the chat view is showing) draws active, unread
+ *  rides the neutral `count` (a badge pill on web, `(3 new)` in RAG), and the
+ *  tab's target kind is the `group` facet — the All/Rooms/DMs filter is a facet
+ *  over groups, not a new widget. */
+export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): ListingView {
+  return {
+    id: 'rooms',
+    title: 'Rooms',
+    cells: nav.open_tabs.map((tab): ListingCell => {
+      const cell: ListingCell = {
+        id: tab.id,
+        title: tab.title,
+        status: tab.id === focusedRoomId ? 'active' : 'idle',
+        group: tab.kind,
+      };
+      return tab.unread > 0 ? { ...cell, count: tab.unread } : cell;
+    }),
+  };
+}
+
 /** The `AI Performance` rail widget — the room's LIVE team-cognition readout, derived
  *  from the roster's own vitals (no fabricated numbers, no extra pipe): how many are
  *  here, how many are actively thinking (a faculty firing on the live compass), and how
@@ -108,21 +132,28 @@ export interface ChatContentBody {
 /** The whole chat room as a `Workspace` — nav (rooms) + left (people) + content
  *  (the conversation, dispatched by `purpose`) + an empty context panel. This is the
  *  data spine a `RenderTarget` draws; every activity projects its own `Workspace` the
- *  same way, so the shell is identical and only content/context vary. */
-export function chatWorkspace(vm: ChatViewModel): WorkspaceView {
+ *  same way, so the shell is identical and only content/context vary.
+ *
+ *  `nav` (the citizen's live `kind="nav"` view) is optional: when the nav
+ *  subscription has delivered, the rooms rail carries the real room SET with
+ *  unread counts; until then the honest single-cell focused-room listing draws —
+ *  never a fabricated set ([[fallbacks-are-illegal-fail-loud]]: the fallback here
+ *  is LESS data honestly shown, not invented data). */
+export function chatWorkspace(vm: ChatViewModel, nav?: NavViewState): WorkspaceView {
   const content: ContentView<ChatContentBody> = {
     purpose: vm.purpose,
     body: { messages: vm.messages, isEmpty: vm.isEmpty },
   };
+  const rooms = nav ? roomsListingFromNav(nav, vm.roomId) : roomsListing(vm);
   return {
-    nav: roomsListing(vm),
+    nav: rooms,
     // The left rail = a global widget stack (the README's sidebar): AI Performance
     // (live team cognition) · Rooms (all rooms/DMs) · Users & Agents (the rich live
     // tiles). Each is one PanelWidget dispatched by kind; the roster stays the
     // participants `Listing` (ROSTER_LISTING_ID) that RAG + mobile ground on.
     left: [
       metricsWidget(vm),
-      listingWidget(roomsListing(vm)),
+      listingWidget(rooms),
       listingWidget(rosterListing(vm)),
     ],
     content,

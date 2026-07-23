@@ -10,7 +10,14 @@
 
 import { describe, it, expect } from 'vitest';
 import type { ChatViewModel } from './chatViewModel';
-import { rosterListing, roomsListing, chatWorkspace, type ChatContentBody } from './patternProjections';
+import {
+  rosterListing,
+  roomsListing,
+  roomsListingFromNav,
+  chatWorkspace,
+  type ChatContentBody,
+} from './patternProjections';
+import type { NavViewState } from '@continuum/sdk-typescript';
 
 const vm: ChatViewModel = {
   roomName: 'general',
@@ -112,5 +119,39 @@ describe('chat → pattern projections', () => {
     expect(body.messages).toHaveLength(1);
     expect(body.isEmpty).toBe(false);
     expect(ws.context.listings).toHaveLength(0);
+  });
+
+  // what this catches: brick 1 (POSITRON-WIDGET-SOPHISTICATION.md) — the live
+  // nav view supersedes the single-cell rooms listing with the real room SET:
+  // the focused room draws active (not cells[0] by accident of order), unread
+  // rides the neutral `count` (absent at 0 — no fabricated badge), and the tab
+  // kind is the group facet the All/Rooms/DMs filter runs over.
+  it('projects the nav room set with unread counts and focused-room highlight', () => {
+    const nav: NavViewState = {
+      user_id: 'joel',
+      current_tab: 'room-2',
+      open_tabs: [
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0 },
+        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4 },
+      ],
+      last_read: { 'room-1': 1 },
+      bookmarks: [],
+    };
+    // The chat view is focused on room-1 — THAT drives the active cell, because
+    // the rooms rail highlights what the surface is showing.
+    const listing = roomsListingFromNav(nav, 'room-1');
+    expect(listing.id).toBe('rooms');
+    expect(listing.cells).toHaveLength(2);
+    expect(listing.cells[0]).toMatchObject({ id: 'room-1', status: 'active', group: 'room' });
+    expect(listing.cells[0]?.count).toBeUndefined();
+    expect(listing.cells[1]).toMatchObject({ id: 'room-2', status: 'idle', count: 4 });
+    // And the workspace swaps the nav-derived listing into BOTH the nav slot and
+    // the rooms rail widget when nav is present.
+    const ws = chatWorkspace(vm, nav);
+    expect(ws.nav.cells).toHaveLength(2);
+    const rooms = ws.left.find(
+      (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'rooms',
+    );
+    expect((rooms?.body as { cells: unknown[] }).cells).toHaveLength(2);
   });
 });

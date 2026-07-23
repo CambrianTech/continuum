@@ -42,6 +42,11 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'ForgeModelView' },
   // roster widget kind — path-3 per-region ViewState; imports ./RosterSlotView (views)
   { src: 'positron', dest: 'views', name: 'RosterViewState' },
+  // nav closure (kind="nav" — a citizen's open tabs / unread / bookmarks)
+  { src: 'positron', dest: 'views', name: 'NavViewState' },
+  { src: 'positron', dest: 'views', name: 'NavTab' },
+  { src: 'positron', dest: 'views', name: 'NavBookmark' },
+  { src: 'positron', dest: 'views', name: 'NavTargetKind' },
   // Experience / Join Contract manifest closure — mirrored into experience/, keeps
   // its `./Sibling` + `../grid/TrustLevel` relative imports.
   { src: 'experience', dest: 'experience', name: 'Experience' },
