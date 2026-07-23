@@ -750,6 +750,7 @@ impl AdmissionState {
     pub fn semantic_beliefs_oldest_excluding(
         &self,
         exclude: &std::collections::HashSet<Uuid>,
+        admitted_before_ms: u64,
         limit: usize,
     ) -> Vec<Engram> {
         if limit == 0 {
@@ -759,6 +760,7 @@ impl AdmissionState {
         engrams
             .iter() // insertion order == oldest first
             .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| e.admitted_at_ms < admitted_before_ms)
             .filter(|e| !exclude.contains(&e.id))
             .take(limit)
             .cloned()
@@ -2631,14 +2633,14 @@ mod tests {
         // exclusion honored — what guarantees the review EVENTUALLY reaches
         // beliefs lexical overlap can't (the stale-Rust vs python-keys gap).
         let mut exclude = std::collections::HashSet::new();
-        let oldest = state.semantic_beliefs_oldest_excluding(&exclude, 1);
+        let oldest = state.semantic_beliefs_oldest_excluding(&exclude, u64::MAX, 1);
         assert_eq!(oldest.len(), 1);
         assert_eq!(
             oldest[0].content, "You work with main.rs and wordstats.rs",
             "oldest belief first (insertion order)"
         );
         exclude.insert(oldest[0].id);
-        let next = state.semantic_beliefs_oldest_excluding(&exclude, 4);
+        let next = state.semantic_beliefs_oldest_excluding(&exclude, u64::MAX, 4);
         assert_eq!(next.len(), 1, "episodics never enter the window: {next:?}");
         assert_eq!(next[0].content, "The team prefers ranked-choice votes");
     }
