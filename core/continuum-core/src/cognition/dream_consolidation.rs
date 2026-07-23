@@ -340,7 +340,19 @@ impl SemanticDistiller {
             return Err(DistillError::EmptyDistillation);
         }
         // Lift the model's supersession verdict OUT of the fact text (the fact
-        // must read as knowledge, not as a grading transcript).
+        // must read as knowledge, not as a grading transcript). The raw tail is
+        // probed FIRST — the one glass-box eye on what the model actually wrote
+        // before the parse strips it (25 live reviews were undiagnosable
+        // without this; the distiller path has no prompt-capture yet).
+        if !prior_beliefs.is_empty() {
+            let tail = raw.lines().last().unwrap_or("").trim();
+            crate::probe!(
+                class = "dream.review.raw_tail",
+                persona = ?persona_id,
+                tail = %&tail[..tail.len().min(120)],
+                "belief-review raw verdict line"
+            );
+        }
         let (raw, supersedes) = parse_supersedes_line(raw, prior_beliefs);
         if raw.is_empty() {
             return Err(DistillError::EmptyDistillation);
