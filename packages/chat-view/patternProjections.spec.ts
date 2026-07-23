@@ -147,7 +147,7 @@ describe('chat → pattern projections', () => {
     expect(listing.cells[1]).toMatchObject({ id: 'room-2', status: 'idle', count: 4 });
     // And the workspace swaps the nav-derived listing into BOTH the nav slot and
     // the rooms rail widget when nav is present.
-    const ws = chatWorkspace(vm, nav);
+    const ws = chatWorkspace(vm, { nav });
     expect(ws.nav.cells).toHaveLength(2);
     const rooms = ws.left.find(
       (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'rooms',

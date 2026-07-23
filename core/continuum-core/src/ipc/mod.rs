@@ -111,6 +111,7 @@ pub mod experience_resolver;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
+pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
 pub mod positron_source;
@@ -2754,6 +2755,15 @@ pub fn start_server(
                     Arc::clone(&per_user),
                     Arc::new(positron_nav_source::ChannelBookmarksNavReader::new(room_set)),
                 ));
+
+                // SYS gauge source (brick 2): sample the ONE shared resource
+                // monitor into kind="system-metrics" on the served substrate —
+                // the old sidebar's CPU/MEM sparkline, core-carried window.
+                positron_metrics_source::spawn_system_metrics_emitter(
+                    &state.rt_handle,
+                    system_monitor.clone(),
+                    ws_substrate.clone(),
+                );
 
                 // Producer half of the same stream: attach a node-level
                 // roster reader and emit `presence:updated` so the consumer

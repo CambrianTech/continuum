@@ -19,7 +19,7 @@
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import type { ChatState } from '@continuum/chat-view';
 import { chatViewModel, type MessageRowVM } from '@continuum/chat-view';
-import type { NavViewState, StreamDelta } from '@continuum/sdk-typescript';
+import type { NavViewState, StreamDelta, SystemMetricsViewState } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
@@ -31,6 +31,7 @@ export class ChatWidget extends LitElement {
   static override properties = {
     state: { attribute: false },
     nav: { attribute: false },
+    sys: { attribute: false },
     sendHandler: { attribute: false },
     _draft: { state: true },
     _sending: { state: true },
@@ -46,6 +47,10 @@ export class ChatWidget extends LitElement {
    *  nav subscription has delivered. `undefined` = the rooms rail honestly shows
    *  only the focused room. */
   nav?: NavViewState;
+
+  /** The node's live `kind="system-metrics"` view (CPU/MEM window), when the
+   *  host's subscription has delivered. `undefined` = no SYS gauge, honest. */
+  sys?: SystemMetricsViewState;
 
   /** Injected by the host — how a composed message reaches the core. */
   sendHandler?: SendHandler;
@@ -222,6 +227,46 @@ export class ChatWidget extends LitElement {
     }
     .metric[data-tone='muted'] .metric-val {
       color: var(--content-secondary);
+    }
+    /* SYS gauge (brick 2) — the multi-series resource sparkline + legend. */
+    .gauge {
+      padding: 2px var(--spacing-md) var(--spacing-sm);
+    }
+    .gauge svg {
+      display: block;
+      width: 100%;
+      height: 56px;
+      border-radius: var(--radius-sm);
+      background: var(--widget-surface, rgba(255, 255, 255, 0.03));
+    }
+    .gauge-grid {
+      stroke: var(--border-subtle);
+      stroke-width: 0.5;
+    }
+    .gauge-legend {
+      display: flex;
+      gap: var(--spacing-md);
+      padding-top: var(--spacing-xs);
+    }
+    .gauge-key {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+    }
+    .gauge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    .gauge-label {
+      letter-spacing: 0.08em;
+      color: var(--content-secondary);
+    }
+    .gauge-val {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      color: var(--content-primary);
     }
     /* Rooms widget — the live room set (brick 1): generic listing cells with the
      * focused room highlighted and an unread pill riding the neutral count. */
@@ -1200,7 +1245,7 @@ export class ChatWidget extends LitElement {
     // seen ([[fallbacks-are-illegal-fail-loud]]).
     let surface: TemplateResult;
     try {
-      surface = renderChat(vm, this.nav);
+      surface = renderChat(vm, { nav: this.nav, sys: this.sys });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;

@@ -47,6 +47,9 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'NavTab' },
   { src: 'positron', dest: 'views', name: 'NavBookmark' },
   { src: 'positron', dest: 'views', name: 'NavTargetKind' },
+  // system-metrics closure (kind="system-metrics" — the SYS gauge's series)
+  { src: 'positron', dest: 'views', name: 'SystemMetricsViewState' },
+  { src: 'positron', dest: 'views', name: 'MetricSeriesView' },
   // Experience / Join Contract manifest closure — mirrored into experience/, keeps
   // its `./Sibling` + `../grid/TrustLevel` relative imports.
   { src: 'experience', dest: 'experience', name: 'Experience' },

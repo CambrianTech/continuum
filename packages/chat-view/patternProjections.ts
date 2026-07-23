@@ -19,7 +19,8 @@ import type {
   PanelWidget,
   MetricsView,
 } from '@continuum/patterns';
-import type { NavViewState } from '@continuum/sdk-typescript';
+import type { GaugeView } from '@continuum/patterns';
+import type { NavViewState, SystemMetricsViewState } from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
@@ -121,6 +122,34 @@ export function metricsWidget(vm: ChatViewModel): PanelWidget<MetricsView> {
   return { id: 'metrics', kind: 'metrics', title: 'AI Performance', body: metrics, scope: 'global' };
 }
 
+/** The SYS gauge rail widget — the node's live CPU/MEM window (brick 2), a pure
+ *  reshaping of the core-carried `kind="system-metrics"` view onto the neutral
+ *  `GaugeView`: labels uppercased for the legend, points passed through
+ *  losslessly. The core owns sampling, normalization, and formatting; here we
+ *  only adapt the wire shape to the widget vocabulary. */
+export function systemGaugeWidget(sys: SystemMetricsViewState): PanelWidget<GaugeView> {
+  const gauge: GaugeView = {
+    series: sys.series.map((s) => ({
+      label: s.label.toUpperCase(),
+      points: s.points,
+      current: s.current,
+    })),
+    sampleIntervalMs: sys.sample_interval_ms,
+  };
+  return { id: 'sys-gauge', kind: 'gauge', title: 'System', body: gauge, scope: 'global' };
+}
+
+/** The live extras a host wires in beside the chat snapshot — each optional and
+ *  independent, each honestly absent until its subscription delivers (never a
+ *  fabricated placeholder). One options object, not a growing positional list
+ *  ([[structs-by-reference-not-massive-param-lists]]). */
+export interface WorkspaceLive {
+  /** The citizen's `kind="nav"` view — upgrades the rooms rail to the room set. */
+  readonly nav?: NavViewState;
+  /** The node's `kind="system-metrics"` view — adds the SYS gauge widget. */
+  readonly sys?: SystemMetricsViewState;
+}
+
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
  *  room's `purpose` (here `vm.purpose`, `"chat"`), so a target's registered chat
  *  renderer draws these rows; a foundry room would carry a different purpose + body. */
@@ -134,28 +163,30 @@ export interface ChatContentBody {
  *  data spine a `RenderTarget` draws; every activity projects its own `Workspace` the
  *  same way, so the shell is identical and only content/context vary.
  *
- *  `nav` (the citizen's live `kind="nav"` view) is optional: when the nav
- *  subscription has delivered, the rooms rail carries the real room SET with
- *  unread counts; until then the honest single-cell focused-room listing draws —
- *  never a fabricated set ([[fallbacks-are-illegal-fail-loud]]: the fallback here
- *  is LESS data honestly shown, not invented data). */
-export function chatWorkspace(vm: ChatViewModel, nav?: NavViewState): WorkspaceView {
+ *  `live` carries the optional live extras (nav → the real room set with unread;
+ *  sys → the SYS gauge). Each is honestly absent until its subscription
+ *  delivers — the fallback is LESS data honestly shown, never invented data
+ *  ([[fallbacks-are-illegal-fail-loud]]). */
+export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): WorkspaceView {
   const content: ContentView<ChatContentBody> = {
     purpose: vm.purpose,
     body: { messages: vm.messages, isEmpty: vm.isEmpty },
   };
-  const rooms = nav ? roomsListingFromNav(nav, vm.roomId) : roomsListing(vm);
+  const rooms = live?.nav ? roomsListingFromNav(live.nav, vm.roomId) : roomsListing(vm);
+  // The left rail = a global widget stack (the README's sidebar): System (SYS
+  // gauge, when live) · AI Performance (live team cognition) · Rooms (all
+  // rooms/DMs) · Users & Agents (the rich live tiles). Each is one PanelWidget
+  // dispatched by kind; the roster stays the participants `Listing`
+  // (ROSTER_LISTING_ID) that RAG + mobile ground on.
+  const left = [
+    ...(live?.sys ? [systemGaugeWidget(live.sys)] : []),
+    metricsWidget(vm),
+    listingWidget(rooms),
+    listingWidget(rosterListing(vm)),
+  ];
   return {
     nav: rooms,
-    // The left rail = a global widget stack (the README's sidebar): AI Performance
-    // (live team cognition) · Rooms (all rooms/DMs) · Users & Agents (the rich live
-    // tiles). Each is one PanelWidget dispatched by kind; the roster stays the
-    // participants `Listing` (ROSTER_LISTING_ID) that RAG + mobile ground on.
-    left: [
-      metricsWidget(vm),
-      listingWidget(rooms),
-      listingWidget(rosterListing(vm)),
-    ],
+    left,
     content,
     context: { listings: [] },
   };

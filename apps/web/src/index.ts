@@ -29,8 +29,10 @@ import { ChatWidget, type SendHandler } from './chat/ChatWidget';
 import {
   CHAT_KIND,
   NAV_KIND,
+  SYSTEM_METRICS_KIND,
   chatStateFromEnvelope,
   navStateFromEnvelope,
+  systemMetricsFromEnvelope,
   type ChatState,
 } from '@continuum/chat-view';
 
@@ -109,6 +111,10 @@ async function main(): Promise<void> {
   // focused room to the live room set as soon as the projector delivers.
   state.on(NAV_KIND, (envelope: StateEnvelope) => {
     widget.nav = navStateFromEnvelope(envelope);
+  });
+  // The node's resource window (CPU/MEM) — the SYS gauge's core-carried series.
+  state.on(SYSTEM_METRICS_KIND, (envelope: StateEnvelope) => {
+    widget.sys = systemMetricsFromEnvelope(envelope);
   });
   // #170 live typing: grow a transient bubble per persona as its turn streams in.
   // Ephemeral — the durable message still arrives via the CHAT_KIND sink above, which

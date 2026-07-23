@@ -43,3 +43,8 @@ export type { NavViewState } from './NavViewState';
 export type { NavTab } from './NavTab';
 export type { NavBookmark } from './NavBookmark';
 export type { NavTargetKind } from './NavTargetKind';
+
+// system-metrics closure (kind="system-metrics" → SystemMetricsViewState) — the
+// node's live CPU/MEM series the SYS gauge draws, core-carried window.
+export type { SystemMetricsViewState } from './SystemMetricsViewState';
+export type { MetricSeriesView } from './MetricSeriesView';

@@ -17,7 +17,7 @@
 import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
 import type { ChatState } from '@continuum/chat-view';
-import type { NavViewState, RosterSlotView } from '@continuum/sdk-typescript';
+import type { NavViewState, RosterSlotView, SystemMetricsViewState } from '@continuum/sdk-typescript';
 
 // Registering the element is a side effect of the import; keep the symbol live.
 void ChatWidget;
@@ -100,17 +100,37 @@ const NAV_FIXTURES: Record<string, NavViewState> = {
   },
 };
 
+/** The SYS gauge fixture — a plausible 3-minute CPU/MEM window (deterministic
+ *  waves, not random) so the sparkline + legend render their reference look. */
+const SYS_FIXTURE: SystemMetricsViewState = {
+  series: [
+    {
+      label: 'cpu',
+      points: Array.from({ length: 90 }, (_, i) => 30 + 25 * Math.sin(i / 6) + (i % 7) * 2),
+      current: '58%',
+    },
+    {
+      label: 'mem',
+      points: Array.from({ length: 90 }, (_, i) => 55 + 10 * Math.sin(i / 14)),
+      current: '25.3/32G',
+    },
+  ],
+  sample_interval_ms: 2000,
+};
+
 function main(): void {
   const name = new URLSearchParams(location.search).get('fixture') ?? 'roster';
   const state = FIXTURES[name] ?? FIXTURES.roster;
 
   const widget = document.createElement('chat-widget');
   widget.state = state;
-  // `?fixture=rooms` renders the roster state PLUS the nav room set — the
-  // rooms-rail reference input. Other fixtures leave nav honest-absent.
+  // `?fixture=rooms` renders the roster state PLUS the nav room set and the SYS
+  // gauge — the full left-rail reference input. Other fixtures leave the live
+  // extras honest-absent.
   if (name === 'rooms') {
     widget.state = FIXTURES.roster;
     widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
   }
   // A no-op send handler so the input area is live for interaction shots without a socket.
   const noop: SendHandler = async () => {

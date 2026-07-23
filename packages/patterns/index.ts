@@ -160,6 +160,28 @@ export interface MetricsView {
   readonly spark?: readonly number[];
 }
 
+/** One named series of a `gauge` widget — a rolling 0..=100 window plus the
+ *  display-ready current reading. The projection owns normalization AND
+ *  formatting; a target draws a polyline (web), block bars (terminal), or the
+ *  `CPU 58% · MEM 25/32G` grounding line (RAG) from the same fields. */
+export interface GaugeSeries {
+  /** Short uppercase-able label ("CPU", "MEM", "GPU"). */
+  readonly label: string;
+  /** Rolling normalized samples 0..=100, oldest → newest (bounded upstream). */
+  readonly points: readonly number[];
+  /** Pre-formatted current reading ("58%", "25.3/32G"). */
+  readonly current: string;
+}
+
+/** The `gauge` widget body — a multi-series live graph (brick 2 of
+ *  POSITRON-WIDGET-SOPHISTICATION.md: the old sidebar's SYS sparkline). A
+ *  sibling of `MetricsView`: metrics is a stat ROW, gauge is a windowed GRAPH. */
+export interface GaugeView {
+  readonly series: readonly GaugeSeries[];
+  /** Sample cadence (ms) — lets a target label the window span from data. */
+  readonly sampleIntervalMs?: number;
+}
+
 /** Wrap a `ListingView` as a `kind:'listing'` `PanelWidget` — the common case (the
  *  roster, a rooms list). Keeps constructors terse and single-sources the wrapping so
  *  the widget id/title default to the listing's own ([[compression]]). */
