@@ -10,15 +10,55 @@
 # runs as that user; machine-scope tools (VS Build Tools, CMake, LLVM, CUDA, gh)
 # go through the single gsudo credential cache (one UAC for all of them).
 
-#  GPU feature selection (PS port of tools/scripts/shared/cargo-features.sh) 
+#  Manifest: the ONE source of truth (generated projection)
+# Source values (urls, versions, sha256, redist components, build flags) live in
+# install-manifest.toml and are projected to generated/manifest.windows.ps1 by
+# manifest-gen. We SOURCE that projection here -- a value that lives in the
+# manifest is NEVER hardcoded in a module. Regenerate with: cargo run -p manifest-gen
+$script:ManifestPs = Join-Path $PSScriptRoot '..\generated\manifest.windows.ps1'
+if (-not (Test-Path $script:ManifestPs)) {
+    throw "manifest projection missing: $script:ManifestPs`n  regenerate it with: cargo run -p manifest-gen"
+}
+. $script:ManifestPs    # defines $script:ContinuumManifest ([ordered] hashtable)
+
+# Fetch a module's projected record; fail loud if the manifest lacks it (a typo
+# or a stale projection should stop the install, not silently skip a toolchain).
+function Get-ManifestModule {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    $m = $script:ContinuumManifest[$Id]
+    if (-not $m) { throw "manifest has no module '$Id' -- check install-manifest.toml and regenerate (cargo run -p manifest-gen)" }
+    return $m
+}
+
+# Verify a downloaded file against the manifest's sha256. archive sources carry a
+# pinned hash; a mismatch means a corrupted download or a tampered/moved release
+# -- fail loud, never install unverified bits. (redist components are verified by
+# NVIDIA's own manifest, so they carry no per-file sha256 here.)
+function Assert-Sha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Expected,
+        [string]$Name = 'download'
+    )
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $Expected.ToLowerInvariant()) {
+        Module-Fail $Name "sha256 mismatch`n  expected $Expected`n  actual   $actual`n  ($Path -- corrupted download or moved release; do NOT install unverified)"
+    }
+}
+
+#  GPU feature selection (PS port of tools/scripts/shared/cargo-features.sh)
 # NVIDIA present -> cuda (candle-cuda + ggml-cuda, full native GPU). Otherwise
 # directml (DX12 is universal on Win10+). --no-default-features is applied by
 # Mod-BuildCore to drop livekit-webrtc (its /MT libwebrtc collides with the /MD
 # rest -- the separate live-persona track).
 function Get-CargoFeatures {
-    # NVIDIA -> full GPU: candle+llama CUDA + ORT CUDA EP (load-dynamic = ORT
-    # loaded at runtime, no build-time ORT lib). Non-NVIDIA -> DirectML.
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { return 'cuda,load-dynamic-ort' }
+    # NVIDIA -> full GPU: the manifest's build-core features (candle+llama CUDA +
+    # ORT CUDA EP; load-dynamic = ORT loaded at runtime, no build-time ORT lib).
+    # Non-NVIDIA -> DirectML (runtime branch, not a manifest value: DX12 is
+    # universal on Win10+, chosen by GPU presence not by the manifest).
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        return (Get-ManifestModule 'build-core').build.features
+    }
     return 'directml'
 }
 
@@ -58,7 +98,8 @@ function Test-CudaBuildToolkit {
 function Mod-Rust {
     # Per-user: rustup installs to %USERPROFILE%\.cargo / .rustup so the build
     # (and later `npm start`) run as the user, not admin.
-    Install-IfMissing -Name 'Rust (rustup)' -WingetId 'Rustlang.Rustup' `
+    $src = (Get-ManifestModule 'rust').source
+    Install-IfMissing -Name 'Rust (rustup)' -WingetId $src.id `
         -TestCmd { Get-Command rustc -ErrorAction SilentlyContinue } -UserScope
     # The repo's rust-toolchain.toml pins the version and cargo auto-installs it
     # on first build; ensure a default toolchain exists so rustc/cargo resolve.
@@ -75,9 +116,10 @@ function Mod-VSBuildTools {
     # via --override. NOT --disable-interactivity (breaks this package,
     # winget-pkgs#123624); --wait + --quiet come through the override; exit 3010
     # (reboot) is handled as success by Install-IfMissing.
+    $src = (Get-ManifestModule 'msvc').source
     Install-IfMissing -Name 'VS 2022 Build Tools (C++)' `
-        -WingetId 'Microsoft.VisualStudio.2022.BuildTools' `
-        -Override '--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended' `
+        -WingetId $src.id `
+        -Override $src.override `
         -TestCmd { Test-VCTools }
 }
 
@@ -92,10 +134,12 @@ function Mod-CMake {
         Module-Skip 'CMake' "present at $dir"; return
     }
     Module-Start 'CMake' 'downloading Kitware CMake (no admin)'
-    $ver = '3.30.5'
-    $url = "https://github.com/Kitware/CMake/releases/download/v$ver/cmake-$ver-windows-x86_64.zip"
+    $src = (Get-ManifestModule 'cmake').source   # archive: url + version + sha256 + extract
+    $ver = $src.version
+    $url = $src.url
     $zip = Join-Path $env:TEMP "cmake-$ver.zip"
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    Assert-Sha256 -Path $zip -Expected $src.sha256 -Name 'CMake'
     $tmp = Join-Path $env:TEMP 'continuum-cmake-x'; if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
     $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
@@ -117,19 +161,20 @@ function Mod-LLVM {
         Module-Skip 'LLVM' "libclang present at $bin"; return
     }
     Module-Start 'LLVM' 'downloading libclang from LLVM official release (no admin)'
-    # PIN a stable version. The GitHub "latest" can be a bleeding-edge RC whose
-    # libclang mis-generates llama.cpp's bindgen layout tests (llama_sampler came
-    # out opaque[1 byte] vs the header's 16 -> a `1 - 16` E0080 underflow). 18.1.x
-    # is the known-good that llama.cpp's bindgen expects (pip libclang 18.1.1 is
-    # what the working build used). Bump only after re-validating the llama build.
-    $ver = '18.1.8'
-    $name = "clang+llvm-$ver-x86_64-pc-windows-msvc.tar.xz"
-    $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$ver/$name"
+    # Version is PINNED in the manifest. The GitHub "latest" can be a bleeding-edge
+    # RC whose libclang mis-generates llama.cpp's bindgen layout tests (llama_sampler
+    # came out opaque[1 byte] vs the header's 16 -> a `1 - 16` E0080 underflow).
+    # 18.1.x is the known-good that llama.cpp's bindgen expects. Bump in the
+    # manifest (+ re-validate the llama build), never here.
+    $src = (Get-ManifestModule 'llvm-libclang').source   # archive: url + version + sha256
+    $url = $src.url
+    $name = Split-Path $url -Leaf
     $tar = Join-Path $env:TEMP $name
     # Reuse a cached tarball (idempotent re-runs don't re-download ~800MB).
     if (-not ((Test-Path $tar) -and ((Get-Item $tar).Length -gt 100MB))) {
         Invoke-WebRequest -Uri $url -OutFile $tar -UseBasicParsing
     }
+    Assert-Sha256 -Path $tar -Expected $src.sha256 -Name 'LLVM'
     New-Item -ItemType Directory -Force $dir | Out-Null
     # Use Windows' bsdtar EXPLICITLY -- git-bash's MSYS /usr/bin/tar reads the C:\
     # dest as a remote host ("cannot connect to C:") and fails. Extract only
@@ -160,20 +205,25 @@ function Mod-CUDA {
     }
     Module-Start 'CUDA' 'assembling no-admin CUDA toolkit from NVIDIA redist archives'
 
-    # Pin a redist manifest version. The manifest lists each component's
-    # windows-x86_64 archive path; component versions differ, so we read them
-    # rather than hardcode. Bump this as the toolchain validates newer.
-    $redistVer = '12.9.1'
-    $base = 'https://developer.download.nvidia.com/compute/cuda/redist'
+    # redist source (manifest url + version + components) from install-manifest.toml.
+    # NVIDIA's redist manifest lists each component's windows-x86_64 archive path
+    # (component versions differ), so we read the paths from it rather than
+    # hardcode. The manifest URL already embeds the pinned redist version.
+    $src = (Get-ManifestModule 'cuda').source
+    $redistUrl = $src.manifest
+    # Base dir the component relative_paths resolve against = URL up to the last '/'.
+    # (Split-Path mangles URLs into backslashes; slice the string instead.)
+    $base = $redistUrl.Substring(0, $redistUrl.LastIndexOf('/'))
     try {
-        $manifest = Invoke-RestMethod -Uri "$base/redistrib_$redistVer.json" -UseBasicParsing
+        $manifest = Invoke-RestMethod -Uri $redistUrl -UseBasicParsing
     } catch {
-        Module-Fail 'CUDA' "could not fetch NVIDIA redist manifest $redistVer -- check network. ($_)"
+        Module-Fail 'CUDA' "could not fetch NVIDIA redist manifest ($redistUrl) -- check network. ($_)"
     }
 
-    # Minimum set to COMPILE ggml-cuda + candle-kernels: compiler, runtime,
-    # cuBLAS, cuRAND (candle's RNG links curand.lib), NVRTC, CCCL headers.
-    $components = @('cuda_nvcc', 'cuda_cudart', 'libcublas', 'libcurand', 'cuda_nvrtc', 'cuda_cccl')
+    # Component set (min to COMPILE ggml-cuda + candle-kernels: compiler, runtime,
+    # cuBLAS, cuRAND (candle's RNG links curand.lib), NVRTC, CCCL headers) is DATA
+    # in the manifest -- read it, don't hardcode.
+    $components = $src.components
     New-Item -ItemType Directory -Force $script:CudaToolkitDir | Out-Null
     $tmp = Join-Path $env:TEMP 'continuum-cuda-redist'
     if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
@@ -209,7 +259,7 @@ function Mod-GhAuth {
     param([switch]$WantsGrid)
     # gh is needed for grid (gist rendezvous). Always ensure the CLI is present;
     # only prompt for login when grid is requested (mirrors the Tailscale opt-in).
-    Install-IfMissing -Name 'GitHub CLI' -WingetId 'GitHub.cli' `
+    Install-IfMissing -Name 'GitHub CLI' -WingetId (Get-ManifestModule 'gh').source.id `
         -TestCmd { Get-Command gh -ErrorAction SilentlyContinue }
     if (-not $WantsGrid) { Module-Skip 'gh auth' 'local-only (no grid) -- GitHub login not required'; return }
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Write-Warn2 'gh not on PATH yet -- re-run to finish login.'; return }
@@ -244,13 +294,15 @@ function Mod-BuildCore {
     $features = Get-CargoFeatures
 
     # GPU build env (NVIDIA path): nvcc needs its MSVC host compiler on PATH +
-    # INCLUDE/LIB, and cmake/candle need to target the right VS + GPU arch.
+    # INCLUDE/LIB, and cmake/candle need to target the right VS + GPU arch. The
+    # generator / arch / host are DATA in the manifest's build-core.build block.
     if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-        Enter-MsvcEnv                                   # cl.exe for nvcc (VS2022, nvcc-compatible)
-        $env:CMAKE_GENERATOR = 'Visual Studio 17 2022'  # match the VS2022 nvcc supports
+        $build = (Get-ManifestModule 'build-core').build
+        Enter-MsvcEnv                                       # cl.exe for nvcc (nvcc-compatible VS)
+        $env:CMAKE_GENERATOR = $build.cmake_generator       # match the VS nvcc supports
         $env:CMAKE_GENERATOR_PLATFORM = 'x64'
-        $env:CMAKE_CUDA_ARCHITECTURES = '120'           # Blackwell RTX 5090 = sm_120
-        if (-not $env:CUDA_COMPUTE_CAP) { $env:CUDA_COMPUTE_CAP = '120' }  # candle-kernels
+        $env:CMAKE_CUDA_ARCHITECTURES = $build.cuda_arch    # Blackwell RTX 5090 = sm_120
+        if (-not $env:CUDA_COMPUTE_CAP) { $env:CUDA_COMPUTE_CAP = $build.cuda_arch }  # candle-kernels
         if ($env:CUDA_PATH) {
             $env:CUDA_HOME = $env:CUDA_PATH
             $cudaBin = Join-Path $env:CUDA_PATH 'bin'
