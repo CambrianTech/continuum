@@ -82,6 +82,29 @@ type = "command"
 run = "gh auth login --hostname github.com --git-protocol https --web"
 
 # ── Tier 3: build toolchain (dev / --dev; end users get prebuilt binaries) ────
+
+# The manifest projector itself — a dev-tier module so the toolchain bootstraps
+# it (M5 pin 3). It reads THIS file and emits generated/manifest.<os>.{ps1,sh}
+# that the runners source (runners never parse TOML). accept = the committed
+# projections are in sync; action = regenerate. Reuses the `command` source type
+# (no new type — compression). CI runs `--check` to fail loud on drift.
+[[module]]
+id = "manifest-gen"
+order = 28
+tier = 3
+flags = ["dev"]
+platforms = ["windows", "macos", "linux"]
+accept = "cargo run -q -p manifest-gen -- --check"
+[module.sources.windows]
+type = "command"
+run = "cargo run -q -p manifest-gen"
+[module.sources.macos]
+type = "command"
+run = "cargo run -q -p manifest-gen"
+[module.sources.linux]
+type = "command"
+run = "cargo run -q -p manifest-gen"
+
 [[module]]
 id = "msvc"
 order = 30
