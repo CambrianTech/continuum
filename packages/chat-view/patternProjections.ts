@@ -96,6 +96,11 @@ export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): L
         title: tab.title,
         status: tab.id === focusedRoomId ? 'active' : 'idle',
         group: tab.kind,
+        // The room's recipe-defined activity purpose, carried verbatim as the
+        // description line ([[room-purpose-is-per-recipe-not-an-enum]]).
+        // Empty = unresolved — no subtitle drawn, never a fabricated blurb.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        ...(tab.purpose ? { subtitle: tab.purpose } : {}),
       };
       return tab.unread > 0 ? { ...cell, count: tab.unread } : cell;
     }),

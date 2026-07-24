@@ -24,6 +24,7 @@ import {
   type MetricsView,
 } from '@continuum/patterns';
 import { renderListing } from './parts';
+import './RoomsPanel'; // registers <rooms-panel> (the dense rooms rail section)
 
 /** The web left-rail registry. Import for its side-effectful registrations; `webTarget`
  *  dispatches `widget()` through it. */
@@ -35,6 +36,13 @@ export const webWidgetRegistry: WidgetRegistry<TemplateResult> = createWidgetReg
  *  rail became a widget stack. */
 webWidgetRegistry.register('listing', (widget) => {
   const view = widget.body as ListingView;
+  // The rooms listing draws through the dense `<rooms-panel>` (filter facets +
+  // purpose descriptions + the start-conversation affordance) — same neutral
+  // ListingView, a richer web idiom for THIS listing. Every other listing keeps
+  // the generic titled section.
+  if (view.id === 'rooms') {
+    return html`<rooms-panel .view=${view} .heading=${widget.title}></rooms-panel>`;
+  }
   return html`
     <section class="rail-widget" data-widget="listing" data-id=${widget.id}>
       <div class="who-head">

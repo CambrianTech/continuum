@@ -16,7 +16,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { chatStateFromEnvelope, chatViewModel, CHAT_KIND } from '@continuum/chat-view';
+import { chatStateFromEnvelope, chatViewModel, roomsListingFromNav, CHAT_KIND } from '@continuum/chat-view';
+import { RoomsPanel } from '../render/RoomsPanel';
 import type { ChatViewModel } from '@continuum/chat-view';
 import type {
   ChatMessageView,
@@ -216,25 +217,21 @@ describe('renderChat (Lit)', () => {
   // the handlers are plucked from the template tree and invoked with a stub
   // currentTarget capturing the dispatched CustomEvent.
   it('rooms cells fire the select event with their room id when clicked', () => {
-    const vm = project({
-      room_id: 'room-1',
-      room_name: 'general',
-      purpose: 'chat',
-      roster: [],
-      messages: [],
-    });
     const nav: NavViewState = {
       user_id: 'me',
       current_tab: 'room-1',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0 },
-        { id: 'room-2', title: 'code', kind: 'room', unread: 3 },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
+        { id: 'room-2', title: 'code', kind: 'room', unread: 3, purpose: 'chat' },
       ],
       last_read: {},
       bookmarks: [],
     };
-    // Pluck every event-handler function out of the template tree (the same
-    // structural walk `flatten` does for strings, for values that are functions).
+    // The rooms cells render inside <rooms-panel> (the dense rooms section);
+    // its render() is a plain template — walk THAT tree for the handlers, the
+    // same structural pluck as before, no document mount needed.
+    const panel = new RoomsPanel();
+    panel.view = roomsListingFromNav(nav, 'room-1');
     const handlers: ((e: Event) => void)[] = [];
     const collect = (node: unknown): void => {
       if (typeof node === 'function') {
@@ -245,12 +242,13 @@ describe('renderChat (Lit)', () => {
         for (const v of node.values) collect(v);
       }
     };
-    collect(renderChat(vm, { nav }));
+    collect(panel.render());
     expect(handlers.length).toBeGreaterThan(0);
 
     // Invoke each handler with a stub currentTarget capturing what it fires.
-    // Keydown handlers no-op (the stub event carries no Enter key); the click
-    // handlers must each fire ONE ListingSelect for their own cell.
+    // Keydown handlers no-op (the stub event carries no Enter key), the facet
+    // buttons' click handlers take no event and fire nothing here; the cell
+    // click handlers must each fire ONE ListingSelect for their own cell.
     const fired: CustomEvent<ListingSelectDetail>[] = [];
     const stubEvent = {
       currentTarget: {

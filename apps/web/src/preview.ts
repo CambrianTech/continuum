@@ -125,9 +125,9 @@ const NAV_FIXTURES: Record<string, NavViewState> = {
     user_id: 'joel',
     current_tab: 'general',
     open_tabs: [
-      { id: 'general', title: 'general', kind: 'room', unread: 0 },
-      { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3 },
-      { id: 'foundry', title: 'foundry', kind: 'room', unread: 12 },
+      { id: 'general', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
+      { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3, purpose: 'chat' },
+      { id: 'foundry', title: 'foundry', kind: 'room', unread: 12, purpose: 'foundry' },
     ],
     last_read: { general: 1_700_000_060_000 },
     bookmarks: [],

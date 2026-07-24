@@ -25,4 +25,13 @@ kind: NavTargetKind,
  * Unread count since `last_read` for this tab's room (0 for non-room
  * tabs, or a fully-read room). Derived at projection, not stored twice.
  */
-unread: number, };
+unread: number, 
+/**
+ * The activity **purpose** of what this tab opens (`"chat"`, `"foundry"`,
+ * …) — the recipe-defined nature resolved through the room-purpose seam
+ * ([[room-purpose-is-per-recipe-not-an-enum]]). A renderer draws it as the
+ * tab/room's description line and MAY facet on it. Empty = unresolved —
+ * an honest unknown, never a fabricated purpose. `#[serde(default)]` so a
+ * tab serialized before this field folds as empty, never dropped.
+ */
+purpose: string, };

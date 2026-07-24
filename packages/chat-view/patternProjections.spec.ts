@@ -172,8 +172,8 @@ describe('chat → pattern projections', () => {
       user_id: 'joel',
       current_tab: 'room-2',
       open_tabs: [
-        { id: 'room-1', title: 'general', kind: 'room', unread: 0 },
-        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4 },
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
+        { id: 'room-2', title: 'dev-updates', kind: 'room', unread: 4, purpose: '' },
       ],
       last_read: { 'room-1': 1 },
       bookmarks: [],
@@ -186,6 +186,10 @@ describe('chat → pattern projections', () => {
     expect(listing.cells[0]).toMatchObject({ id: 'room-1', status: 'active', group: 'room' });
     expect(listing.cells[0]?.count).toBeUndefined();
     expect(listing.cells[1]).toMatchObject({ id: 'room-2', status: 'idle', count: 4 });
+    // The recipe-defined purpose rides as the description line; an unresolved
+    // (empty) purpose attaches no subtitle — honest, never a fabricated blurb.
+    expect(listing.cells[0]?.subtitle).toBe('chat');
+    expect(listing.cells[1]).not.toHaveProperty('subtitle');
     // And the workspace swaps the nav-derived listing into BOTH the nav slot and
     // the rooms rail widget when nav is present.
     const ws = chatWorkspace(vm, { nav });

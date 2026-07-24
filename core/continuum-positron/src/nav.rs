@@ -82,6 +82,14 @@ pub struct NavTab {
     /// Unread count since `last_read` for this tab's room (0 for non-room
     /// tabs, or a fully-read room). Derived at projection, not stored twice.
     pub unread: u32,
+    /// The activity **purpose** of what this tab opens (`"chat"`, `"foundry"`,
+    /// …) — the recipe-defined nature resolved through the room-purpose seam
+    /// ([[room-purpose-is-per-recipe-not-an-enum]]). A renderer draws it as the
+    /// tab/room's description line and MAY facet on it. Empty = unresolved —
+    /// an honest unknown, never a fabricated purpose. `#[serde(default)]` so a
+    /// tab serialized before this field folds as empty, never dropped.
+    #[serde(default)]
+    pub purpose: String,
 }
 
 /// A pinned quick-nav target — the citizen's bookmarks (rooms, content,
@@ -184,6 +192,7 @@ mod tests {
             title: "General".into(),
             kind: NavTargetKind::Room,
             unread: 3,
+            purpose: "chat".into(),
         });
         nav.last_read.insert("room-a".into(), 1_700_000_000_000);
         nav.current_tab = Some("room-a".into());

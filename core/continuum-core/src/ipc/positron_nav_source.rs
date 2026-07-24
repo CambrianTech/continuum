@@ -66,6 +66,9 @@ pub struct NavActivity {
     pub kind: NavTargetKind,
     /// Unread count since the read cursor (0 for non-room / fully-read tabs).
     pub unread: u32,
+    /// The activity purpose the room-purpose seam resolved ("chat", "foundry",
+    /// …). Empty = unresolved — honest unknown.
+    pub purpose: String,
     /// The last-read cursor for this activity's room (ms/lamport), when it is
     /// a room. `None` for activities with no read cursor.
     pub last_read: Option<i64>,
@@ -104,7 +107,7 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
             if let Some(ts) = a.last_read {
                 last_read.insert(a.id.clone(), ts);
             }
-            NavTab { id: a.id, title: a.title, kind: a.kind, unread: a.unread }
+            NavTab { id: a.id, title: a.title, kind: a.kind, unread: a.unread, purpose: a.purpose }
         })
         .collect();
     NavViewState {
@@ -263,18 +266,23 @@ fn fold_observed_room(set: &mut RoomSet, room: Uuid, name: Option<String>) -> bo
 pub struct ChannelBookmarksNavReader {
     /// Live room-set snapshot (room id → title), shared with the fold task.
     rooms: watch::Receiver<RoomSet>,
+    /// The room-purpose seam — resolves each room's activity purpose for the
+    /// tab's description/facet line. Same default the chat projection uses
+    /// (`room_purpose::default_source()`): every room honestly "chat" until
+    /// the recipe store answers richer.
+    purpose: crate::ipc::room_purpose::SharedRoomPurpose,
 }
 
 impl ChannelBookmarksNavReader {
     pub fn new(rooms: watch::Receiver<RoomSet>) -> Self {
-        Self { rooms }
+        Self { rooms, purpose: crate::ipc::room_purpose::default_source() }
     }
 
     /// A reader over a FIXED room set — test/fixture construction (no fold
     /// task). The live path uses [`spawn_room_set_fold`]'s receiver.
     pub fn fixed(rooms: Vec<(Uuid, String)>) -> Self {
         let (_tx, rx) = watch::channel(rooms.into_iter().collect::<RoomSet>());
-        Self { rooms: rx }
+        Self { rooms: rx, purpose: crate::ipc::room_purpose::default_source() }
     }
 }
 
@@ -311,6 +319,9 @@ impl NavReader for ChannelBookmarksNavReader {
                     title,
                     kind: NavTargetKind::Room,
                     unread,
+                    // The recipe-defined activity nature, resolved through the
+                    // ONE purpose seam — the tab's description/facet line.
+                    purpose: self.purpose.purpose_for(*room),
                     last_read: Some(last as i64),
                 }
             })
@@ -467,6 +478,7 @@ mod tests {
             title: title.into(),
             kind: NavTargetKind::Room,
             unread,
+            purpose: "chat".into(),
             last_read: Some(last_read),
         }
     }

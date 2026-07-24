@@ -432,8 +432,62 @@ export class ChatWidget extends LitElement {
       font-weight: 700;
       color: var(--content-primary);
     }
-    /* Rooms widget — the live room set (brick 1): generic listing cells with the
-     * focused room highlighted and an unread pill riding the neutral count. */
+    /* Rooms widget — the live room set (brick 1) drawn by <rooms-panel>: filter
+     * facets (All/Rooms/DMs — a facet over the neutral group key), purpose
+     * descriptions under names, unread pills, and the (honestly disabled)
+     * start-conversation affordance. Light-DOM element → styled from here. */
+    rooms-panel {
+      display: block;
+    }
+    .rooms-facets {
+      display: inline-flex;
+      gap: 2px;
+      margin-left: auto;
+      margin-right: var(--spacing-sm);
+    }
+    .rooms-facet {
+      padding: 1px 7px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--content-secondary);
+      font-size: 8.5px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      line-height: 1.5;
+    }
+    .rooms-facet:hover {
+      color: var(--content-primary);
+      border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+    }
+    .rooms-facet[data-active] {
+      background: var(--content-accent);
+      border-color: var(--content-accent);
+      color: var(--surface, #0b0d12);
+    }
+    .rooms-empty {
+      padding: var(--spacing-xs) var(--spacing-md) var(--spacing-sm);
+      color: var(--content-secondary);
+      font-size: 11px;
+      font-style: italic;
+    }
+    .rooms-start {
+      display: block;
+      width: calc(100% - 2 * var(--spacing-md));
+      margin: 2px var(--spacing-md) var(--spacing-sm);
+      padding: 3px 0;
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--content-secondary);
+      font-size: 10.5px;
+      text-align: center;
+    }
+    .rooms-start[disabled] {
+      opacity: 0.55;
+      cursor: default;
+    }
     ul.cells {
       list-style: none;
       margin: 0;
