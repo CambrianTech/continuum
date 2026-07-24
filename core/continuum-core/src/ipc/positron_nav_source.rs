@@ -42,7 +42,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::ipc::positron_source::{AircPresenceUpdate, CHAT_POSTED, PRESENCE_UPDATED};
+use crate::ipc::positron_source::{AircPresenceUpdate, CHAT_FOCUSED, CHAT_POSTED, PRESENCE_UPDATED};
 use crate::runtime::MessageBus;
 
 /// The bus signal that a citizen's nav state changed (a tab opened/closed, a
@@ -114,6 +114,55 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
         last_read,
         bookmarks: snap.bookmarks,
     }
+}
+
+/// The per-citizen EXPLICIT focus store — the `currentTab` nav fact the
+/// `nav/select` verb writes and [`ChannelBookmarksNavReader`] surfaces as
+/// `current` (the "explicit focus" its first-room stand-in anticipated).
+///
+/// HONEST FIRST SLICE, in-core: the canonical home for nav facts is the airc
+/// generic per-`(user, scope)` scoped-state store (task #89 —
+/// `docs/design/NAVIGATION-ACROSS-MODALITIES.md` §1, the same store the read
+/// cursors' `uir:<peer>:<room>`-shaped rows belong to). Until that store
+/// exposes a current-tab row, this process-global map is the ONE write path
+/// (`nav/select`) and the ONE read path (the nav reader) — migrating is a
+/// storage swap behind these two methods, never a second store to drift
+/// ([[navigation-is-airc-state-one-semantics-many-idioms]]).
+///
+/// The target is a `String` ref, not a `Uuid`: a tab can open a content ref
+/// that isn't a Uuid (see [`continuum_positron::nav::NavTab::id`]).
+#[derive(Default)]
+pub struct NavFocus {
+    inner: Mutex<std::collections::HashMap<Uuid, String>>,
+}
+
+impl NavFocus {
+    /// The citizen's explicit current tab, if one was ever selected.
+    pub fn current(&self, user: Uuid) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&user)
+            .cloned()
+    }
+
+    /// Set the citizen's current tab, returning the PREVIOUS focus (the room
+    /// being left — the `markRead` sibling advances its cursor).
+    pub fn focus(&self, user: Uuid, target: String) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(user, target)
+    }
+}
+
+/// The shared process-global [`NavFocus`] — same singleton pattern as
+/// `global_channel_bookmarks()`: one focus row per citizen, read by the nav
+/// reader and written by `nav/select`.
+pub fn global_nav_focus() -> Arc<NavFocus> {
+    use std::sync::OnceLock;
+    static G: OnceLock<Arc<NavFocus>> = OnceLock::new();
+    G.get_or_init(|| Arc::new(NavFocus::default())).clone()
 }
 
 /// The live room-set snapshot — every room the node has observed on the airc
@@ -266,9 +315,14 @@ impl NavReader for ChannelBookmarksNavReader {
                 }
             })
             .collect();
-        // Current = the first room until the caller tracks an explicit focus
-        // (the `whereWasI` / current-tab write lands with markRead's sibling).
-        let current = rooms.keys().next().map(|r| r.to_string());
+        // Current = the citizen's EXPLICIT focus (the `nav/select` write —
+        // surfaced verbatim: what the citizen selected is the truth, even if
+        // the fold hasn't observed that room yet). Before any select, the
+        // first room stands in — the honest pre-focus view for a fresh
+        // citizen, unchanged from the pre-nav/select behavior.
+        let current = global_nav_focus()
+            .current(user)
+            .or_else(|| rooms.keys().next().map(|r| r.to_string()));
         NavSnapshot { current, activities, bookmarks: Vec::new() }
     }
 }
@@ -329,11 +383,15 @@ pub fn spawn(
                 Ok(event) => {
                     // `chat:posted` moves unread counts and can register a new
                     // room; `presence:updated` names rooms; `nav:changed` is the
-                    // explicit nav write. All three re-read authority (cheap
-                    // local reads — same discipline as the kanban projector).
+                    // explicit nav write; `chat:focused` is the select verb's
+                    // realtime twin (the `chat:` prefix is never coalesced, so a
+                    // rapid re-select whose `nav:changed` the bus coalesced away
+                    // still re-projects). All re-read authority (cheap local
+                    // reads — same discipline as the kanban projector).
                     if event.name == NAV_CHANGED
                         || event.name == PRESENCE_UPDATED
                         || event.name == CHAT_POSTED
+                        || event.name == CHAT_FOCUSED
                     {
                         projection.reload();
                     }
@@ -502,6 +560,36 @@ mod tests {
             "empty name never erases a known room"
         );
         assert_eq!(set.get(&room).map(String::as_str), Some("general-2"));
+    }
+
+    // what this catches: the explicit-focus half of the reader — after a
+    // `nav/select` write lands in the shared NavFocus store, `current` must
+    // surface THAT room (not the first-room stand-in), and a citizen who never
+    // selected keeps the first-room fallback. The read half of the seam the
+    // nav/select command's own test drives the write half of.
+    #[test]
+    fn explicit_focus_beats_the_first_room_as_current() {
+        // Unique user ids: the focus store is process-global, so a shared id
+        // would collide with a parallel test's write.
+        let room_a = Uuid::from_u128(0x50a);
+        let room_b = Uuid::from_u128(0x50b);
+        let rooms = vec![(room_a, "General".to_string()), (room_b, "Code".to_string())];
+        let reader = ChannelBookmarksNavReader::fixed(rooms.clone());
+
+        let fresh = Uuid::from_u128(0x50f1);
+        assert_eq!(
+            reader.nav_snapshot(fresh).current,
+            Some(room_a.to_string()),
+            "no select yet → first room stands in"
+        );
+
+        let selector = Uuid::from_u128(0x50f2);
+        global_nav_focus().focus(selector, room_b.to_string());
+        assert_eq!(
+            reader.nav_snapshot(selector).current,
+            Some(room_b.to_string()),
+            "the explicit focus is surfaced as current"
+        );
     }
 
     // what this catches: a room the fold has seen but presence hasn't named

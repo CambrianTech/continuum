@@ -115,8 +115,12 @@ const PRESENCE_RESYNC: &str = "presence:resync";
 /// So before multi-room emitters land, either put a room_id on the cue so
 /// a consumer requests only its focused room, OR guard `apply_presence` to
 /// drop an update whose room ≠ the focused room (follow only on an explicit
-/// `switch_room` message, not on presence). Until then the broadcast cue is
-/// correct and its only cost is one idle roster re-read per emitter.
+/// `switch_room` message, not on presence). The second half now exists for
+/// the explicit case: once a citizen runs `nav/select`, the chat projection
+/// holds an `explicit_focus` pin and drops other rooms' updates (see
+/// `ChatProjection::pinned_away_from`); pre-select it still follows events.
+/// Until multi-room emitters land the broadcast cue is correct and its only
+/// cost is one idle roster re-read per emitter.
 pub(crate) fn request_presence_resync(bus: &MessageBus) {
     // A payload-free cue: the event name IS the whole signal. `Null` is the
     // honest "no data" — a resync *requests* a roster, it does not carry
