@@ -138,19 +138,15 @@ fn main() {
 
     let dst = cfg.build();
 
-    // Link the static libraries produced by cmake. cmake's MULTI-config
-    // generators (Visual Studio / windows-msvc) nest the libs under a per-config
-    // subdir (Debug/ or Release/) as `<name>.lib`, unlike the single-config
-    // Makefile/Ninja layout on Unix (`lib<name>.a` directly in the search dir).
-    // Emit BOTH so the link resolves on either generator — without the config
-    // subdir, MSVC fails with "could not find native static library `common`".
-    // The config matches cargo's PROFILE (cmake-rs builds --config to match).
-    // Emit the search path, plus — for cmake's MULTI-config generators (Visual
-    // Studio / windows-msvc) which nest libs under a per-config subdir as
-    // `<name>.lib` — whichever config subdir cmake ACTUALLY produced. Probe the
-    // filesystem rather than trusting Cargo's PROFILE: the cmake build's config
-    // can diverge from PROFILE when build.rs pins one (per M5's review). On
-    // single-config Unix no such subdir exists, so this is a no-op there.
+    // Link the static libraries cmake produced. cmake's MULTI-config generators
+    // (Visual Studio / windows-msvc) nest libs under a per-config subdir as
+    // `<name>.lib`, unlike the single-config Makefile/Ninja layout on Unix
+    // (`lib<name>.a` directly in the search dir) — without the subdir, MSVC
+    // fails "could not find native static library `common`". So link_search
+    // emits the base path AND probes the filesystem for whichever config subdir
+    // cmake ACTUALLY produced (Debug/Release/...), rather than trusting Cargo's
+    // PROFILE which can diverge when a build.rs pins a cmake config (per M5's
+    // review). No-op on single-config Unix (no such subdir exists).
     let link_search = |rel: &str| {
         let base = dst.join(rel);
         println!("cargo:rustc-link-search=native={}", base.display());
