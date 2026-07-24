@@ -16,7 +16,7 @@
  * the SAME live `persona:vitals` pulse the roster compass draws.
  */
 
-import { html, nothing, svg, type TemplateResult } from 'lit';
+import { html, nothing, type TemplateResult } from 'lit';
 import type {
   PersonaBrainRegionVM,
   PersonaClaimVM,
@@ -24,40 +24,17 @@ import type {
   PersonaPathwayVM,
 } from '@continuum/patterns';
 import { agoLabel, cognitionDiamond, loadoutStrip } from '../render/parts';
+// The REAL mesh brain — recovered from the original HUD (docs/images/
+// persona-brain-hud.png crop): LLM-drawn SVG anatomy is banned; the 3D-rendered
+// replacement is card eb69cfb0. Vite inlines/serves the asset.
+import brainMeshUrl from './brain-mesh.png';
 
-/** The brain mark at the HUD's center — the LEGACY composition ported
- *  (legacy/src/widgets/persona-brain/templates/brain-svg.ts): gradient
- *  ellipse cortex + dashed hemisphere path + a neural node-and-link net +
- *  HUD orbit rings. Colors ride currentColor/tokens via CSS (no literals).
- *  Decorative (aria-hidden); the DATA lives in the region cards around it. */
+/** The mesh brain at the HUD's center — the ORIGINAL asset, recovered from the
+ *  old HUD screenshot (hand-drawing anatomy in SVG is banned; the live
+ *  3D-rendered brain is card eb69cfb0). Decorative — the DATA lives in the
+ *  region cards around it. */
 function brainMark(): TemplateResult {
-  return html`<svg class="brain-mark" viewBox="0 0 400 360" aria-hidden="true">
-    ${svg`
-    <defs>
-      <radialGradient id="brain-core" cx="50%" cy="45%" r="60%">
-        <stop offset="0%" class="brain-grad-in" />
-        <stop offset="100%" class="brain-grad-out" />
-      </radialGradient>
-    </defs>
-    <ellipse cx="200" cy="180" rx="160" ry="140" fill="url(#brain-core)" class="brain-cortex" />
-    <path d="M 200 40 Q 280 60, 320 120 Q 360 180, 340 240 Q 320 300, 260 320
-             Q 200 340, 140 320 Q 80 300, 60 240 Q 40 180, 80 120 Q 120 60, 200 40"
-      fill="none" class="brain-hemis" stroke-dasharray="4,4" />
-    <path d="M 200 44 Q 206 110, 198 180 Q 192 250, 200 316" fill="none" class="brain-fissure" />
-    <g class="brain-net">
-      <circle cx="120" cy="100" r="2.5" /><circle cx="280" cy="100" r="2.5" />
-      <circle cx="100" cy="180" r="2.5" /><circle cx="300" cy="180" r="2.5" />
-      <circle cx="140" cy="260" r="2.5" /><circle cx="260" cy="260" r="2.5" />
-      <circle cx="200" cy="80" r="2" /><circle cx="200" cy="280" r="2" />
-      <line x1="120" y1="100" x2="200" y2="80" /><line x1="280" y1="100" x2="200" y2="80" />
-      <line x1="100" y1="180" x2="200" y2="180" /><line x1="300" y1="180" x2="200" y2="180" />
-      <line x1="140" y1="260" x2="200" y2="280" /><line x1="260" y1="260" x2="200" y2="280" />
-      <line x1="120" y1="100" x2="100" y2="180" /><line x1="280" y1="100" x2="300" y2="180" />
-    </g>
-    <circle cx="200" cy="180" r="170" fill="none" class="brain-ring" />
-    <circle cx="200" cy="180" r="176" fill="none" class="brain-ring-dash" stroke-dasharray="2,8" />
-    `}
-  </svg>`;
+  return html`<img class="brain-mark" src=${brainMeshUrl} alt="" aria-hidden="true" />`;
 }
 
 /** One brain-region card — label, [ role ], live level (bar + status word),
