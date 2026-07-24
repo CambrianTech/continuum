@@ -25,42 +25,38 @@ import type {
 } from '@continuum/patterns';
 import { agoLabel, cognitionDiamond, loadoutStrip } from '../render/parts';
 
-/** The low-poly brain mark at the HUD's center — a wireframe polygon cloud
- *  (the reference's mesh brain), pure SVG, glowing via CSS. Decorative
- *  (aria-hidden); the DATA lives in the region cards around it. */
+/** The brain mark at the HUD's center — the LEGACY composition ported
+ *  (legacy/src/widgets/persona-brain/templates/brain-svg.ts): gradient
+ *  ellipse cortex + dashed hemisphere path + a neural node-and-link net +
+ *  HUD orbit rings. Colors ride currentColor/tokens via CSS (no literals).
+ *  Decorative (aria-hidden); the DATA lives in the region cards around it. */
 function brainMark(): TemplateResult {
-  // Hand-placed low-poly silhouette: outline + interior facets.
-  const outline =
-    '14,58 22,38 34,24 52,14 74,10 96,12 112,20 122,32 126,46 122,60 112,72 96,82 76,86 66,84 58,88 50,84 34,80 22,72';
-  const facets = [
-    '34,24 52,14 54,34',
-    '54,34 52,14 74,10',
-    '74,10 96,12 78,32',
-    '54,34 74,10 78,32',
-    '96,12 112,20 100,40',
-    '78,32 96,12 100,40',
-    '112,20 122,32 126,46 100,40',
-    '34,24 54,34 40,52',
-    '22,38 34,24 40,52',
-    '14,58 22,38 40,52 30,66',
-    '40,52 54,34 62,56',
-    '54,34 78,32 62,56',
-    '62,56 78,32 84,58',
-    '78,32 100,40 84,58',
-    '84,58 100,40 122,60 104,70',
-    '100,40 126,46 122,60',
-    '30,66 40,52 62,56 48,74',
-    '22,72 14,58 30,66',
-    '48,74 62,56 84,58 66,78',
-    '34,80 22,72 30,66 48,74',
-    '66,78 84,58 104,70 88,80',
-    '50,84 34,80 48,74 58,82',
-    '66,78 88,80 76,86',
-    '96,82 88,80 104,70 112,72',
-  ];
-  return html`<svg class="brain-mark" viewBox="0 0 140 96" aria-hidden="true">
-    ${facets.map((pts) => svg`<polygon class="brain-facet" points=${pts} />`)}
-    ${svg`<polygon class="brain-outline" points=${outline} />`}
+  return html`<svg class="brain-mark" viewBox="0 0 400 360" aria-hidden="true">
+    ${svg`
+    <defs>
+      <radialGradient id="brain-core" cx="50%" cy="45%" r="60%">
+        <stop offset="0%" class="brain-grad-in" />
+        <stop offset="100%" class="brain-grad-out" />
+      </radialGradient>
+    </defs>
+    <ellipse cx="200" cy="180" rx="160" ry="140" fill="url(#brain-core)" class="brain-cortex" />
+    <path d="M 200 40 Q 280 60, 320 120 Q 360 180, 340 240 Q 320 300, 260 320
+             Q 200 340, 140 320 Q 80 300, 60 240 Q 40 180, 80 120 Q 120 60, 200 40"
+      fill="none" class="brain-hemis" stroke-dasharray="4,4" />
+    <path d="M 200 44 Q 206 110, 198 180 Q 192 250, 200 316" fill="none" class="brain-fissure" />
+    <g class="brain-net">
+      <circle cx="120" cy="100" r="2.5" /><circle cx="280" cy="100" r="2.5" />
+      <circle cx="100" cy="180" r="2.5" /><circle cx="300" cy="180" r="2.5" />
+      <circle cx="140" cy="260" r="2.5" /><circle cx="260" cy="260" r="2.5" />
+      <circle cx="200" cy="80" r="2" /><circle cx="200" cy="280" r="2" />
+      <line x1="120" y1="100" x2="200" y2="80" /><line x1="280" y1="100" x2="200" y2="80" />
+      <line x1="100" y1="180" x2="200" y2="180" /><line x1="300" y1="180" x2="200" y2="180" />
+      <line x1="140" y1="260" x2="200" y2="280" /><line x1="260" y1="260" x2="200" y2="280" />
+      <line x1="120" y1="100" x2="100" y2="180" /><line x1="280" y1="100" x2="300" y2="180" />
+    </g>
+    <circle cx="200" cy="180" r="170" fill="none" class="brain-ring" />
+    <circle cx="200" cy="180" r="176" fill="none" class="brain-ring-dash" stroke-dasharray="2,8" />
+    `}
   </svg>`;
 }
 

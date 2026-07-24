@@ -1860,17 +1860,52 @@ export class ChatWidget extends LitElement {
       width: 100%;
       max-width: 300px;
       filter: drop-shadow(0 0 18px var(--hud-accent-glow));
+      color: var(--hud-accent);
     }
-    .brain-facet {
-      fill: rgba(0, 150, 220, 0.12);
-      stroke: rgba(0, 212, 255, 0.35);
-      stroke-width: 0.6;
+    /* Legacy brain composition (ported from persona-brain/templates/brain-svg):
+       gradient cortex ellipse + dashed hemisphere + neural net + orbit rings —
+       every stroke rides the hud tokens via currentColor. */
+    .brain-grad-in {
+      stop-color: var(--hud-accent);
+      stop-opacity: 0.14;
     }
-    .brain-outline {
-      fill: none;
-      stroke: var(--content-accent);
+    .brain-grad-out {
+      stop-color: var(--hud-accent);
+      stop-opacity: 0.02;
+    }
+    .brain-cortex {
+      stroke: currentColor;
+      stroke-width: 2;
+      opacity: 0.5;
+    }
+    .brain-hemis {
+      stroke: currentColor;
       stroke-width: 1;
-      opacity: 0.7;
+      opacity: 0.35;
+    }
+    .brain-fissure {
+      stroke: currentColor;
+      stroke-width: 0.8;
+      opacity: 0.25;
+    }
+    .brain-net circle {
+      fill: currentColor;
+      opacity: 0.6;
+    }
+    .brain-net line {
+      stroke: currentColor;
+      stroke-width: 0.6;
+      opacity: 0.3;
+    }
+    .brain-ring {
+      stroke: currentColor;
+      stroke-width: 1;
+      opacity: 0.12;
+    }
+    .brain-ring-dash {
+      stroke: currentColor;
+      stroke-width: 1;
+      opacity: 0.08;
     }
     /* Region card — the framed HUD module with corner brackets, glowing with
      * its live level (border + shadow intensity ride --region-level). */
