@@ -22,8 +22,15 @@ import type {
   MetricsView,
 } from '@continuum/patterns';
 import type { GaugeView } from '@continuum/patterns';
-import type { NavViewState, SystemMetricsViewState } from '@continuum/sdk-typescript';
+import type { KanbanViewState, NavViewState, SystemMetricsViewState } from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
+import { PERSONA_PURPOSE } from '@continuum/patterns';
+import type { PersonaContentBody } from '@continuum/patterns';
+import {
+  focusedPersonaTab,
+  personaContentBody,
+  personaFactsListing,
+} from './personaProjections';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
  *  display token the Listing carries (targets draw it, they don't re-derive it). */
@@ -240,6 +247,9 @@ export interface WorkspaceLive {
   readonly nav?: NavViewState;
   /** The node's `kind="system-metrics"` view — adds the SYS gauge widget. */
   readonly sys?: SystemMetricsViewState;
+  /** The node's `kind="kanban"` work board — feeds the persona home's claims
+   *  feed (cards by assignee). Honestly absent until the subscription delivers. */
+  readonly board?: KanbanViewState;
   /** The client build's version string (a real manifest/build stamp — e.g. the web
    *  app's package version). Drives the continuon header's version badge; honestly
    *  absent when the host has none to report. */
@@ -264,11 +274,24 @@ export interface ChatContentBody {
  *  delivers — the fallback is LESS data honestly shown, never invented data
  *  ([[fallbacks-are-illegal-fail-loud]]). */
 export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): WorkspaceView {
-  const content: ContentView<ChatContentBody> = {
-    purpose: vm.purpose,
-    body: { messages: vm.messages, isEmpty: vm.isEmpty },
-  };
-  const rooms = live?.nav ? roomsListingFromNav(live.nav, vm.roomId) : roomsListing(vm);
+  // Content dispatch keys off the FOCUSED TAB'S KIND (tabs==rooms==activities):
+  // a persona-kind current tab renders the persona HOME (purpose "persona")
+  // while the chat projection stays pinned to the room underneath — the same
+  // registry dispatch as chat/foundry, never a parallel route. No persona tab →
+  // the room's own purpose-keyed content, unchanged.
+  const persona = focusedPersonaTab(live?.nav);
+  const personaBody = persona ? personaContentBody(vm, persona, live?.board) : undefined;
+  const content: ContentView<ChatContentBody> | ContentView<PersonaContentBody> = personaBody
+    ? { purpose: PERSONA_PURPOSE, body: personaBody }
+    : {
+        purpose: vm.purpose,
+        body: { messages: vm.messages, isEmpty: vm.isEmpty },
+      };
+  // The ACTIVE nav cell follows the citizen's current tab: the persona tab
+  // when a persona home is focused, else the chat room on screen.
+  const rooms = live?.nav
+    ? roomsListingFromNav(live.nav, persona?.id ?? vm.roomId)
+    : roomsListing(vm);
   // The left rail = a global widget stack (the README's sidebar): System (SYS
   // gauge, when live) · AI Performance (live team cognition) · Rooms (all
   // rooms/DMs) · Users & Agents (the rich live tiles). Each is one PanelWidget
@@ -286,8 +309,11 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     nav: rooms,
     left,
     content,
-    // The right contextual rail: the focused room's info card (purpose,
-    // presence, participant mix) — the ContextPanel primitive, finally fed.
-    context: { listings: [roomInfoListing(vm)] },
+    // The right contextual rail follows the focused activity: persona FACTS
+    // (model · presence · genes · last active · claims) on a persona home,
+    // else the room's info card — the ContextPanel primitive, activity-scoped.
+    context: {
+      listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
+    },
   };
 }

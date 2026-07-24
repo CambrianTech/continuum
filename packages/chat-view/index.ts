@@ -16,6 +16,7 @@
 export { CHAT_KIND, chatStateFromEnvelope } from './ChatState';
 export { NAV_KIND, navStateFromEnvelope } from './NavState';
 export { SYSTEM_METRICS_KIND, systemMetricsFromEnvelope } from './SystemMetricsState';
+export { KANBAN_KIND, kanbanStateFromEnvelope } from './KanbanState';
 export type { ChatState } from './ChatState';
 
 export { chatViewModel, formatTimeOfDay } from './chatViewModel';
@@ -54,6 +55,20 @@ export {
   chatWorkspace,
 } from './patternProjections';
 export type { ChatContentBody, WorkspaceLive } from './patternProjections';
+
+// The persona HOME projections — the profile/brain surface as a purpose-
+// dispatched activity (PERSONA_PURPOSE), lit from the SAME live pulse the
+// roster tiles draw. `chatWorkspace` dispatches to it off the focused tab's
+// kind; these are exported for renderers/tests that build the pieces directly.
+export {
+  focusedPersonaTab,
+  personaContentBody,
+  brainRegions,
+  personaPathways,
+  personaClaims,
+  personaFactsListing,
+  agoText,
+} from './personaProjections';
 
 // The chat activity as a positron app, defined ONCE — mount it on any RenderTarget
 // (web/mobile/terminal/RAG). The first real `defineApp` consumer.

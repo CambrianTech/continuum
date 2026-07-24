@@ -48,3 +48,13 @@ export type { NavTargetKind } from './NavTargetKind';
 // node's live CPU/MEM series the SYS gauge draws, core-carried window.
 export type { SystemMetricsViewState } from './SystemMetricsViewState';
 export type { MetricSeriesView } from './MetricSeriesView';
+
+// kanban closure (kind="kanban" → KanbanViewState) — the room's work board;
+// vendored for the persona home's claims feed (cards filtered by assignee).
+export type { KanbanViewState } from './KanbanViewState';
+export type { KanbanCardView } from './KanbanCardView';
+export type { KanbanLaneView } from './KanbanLaneView';
+export type { KanbanCardState } from './KanbanCardState';
+export type { KanbanLaneState } from './KanbanLaneState';
+export type { KanbanPriority } from './KanbanPriority';
+export type { KanbanPullRequest } from './KanbanPullRequest';

@@ -31,6 +31,7 @@ import { renderChat } from './renderChat';
 import {
   LISTING_SELECT,
   avatarState,
+  navSelectTarget,
   roomSelectTarget,
   type ListingSelectDetail,
 } from '../render/parts';
@@ -309,13 +310,37 @@ describe('renderChat (Lit)', () => {
 
     const selects = fired.filter((ev) => ev.type === LISTING_SELECT);
     expect(selects.map((ev) => ev.detail)).toEqual([
-      { listingId: 'rooms', id: 'room-1' },
-      { listingId: 'rooms', id: 'room-2' },
+      { listingId: 'rooms', id: 'room-1', group: 'room' },
+      { listingId: 'rooms', id: 'room-2', group: 'room' },
     ]);
     // …and the widget-side router turns exactly the rooms detail into a switch
-    // target; a roster pick is NOT a room switch.
-    expect(roomSelectTarget({ listingId: 'rooms', id: 'room-2' })).toBe('room-2');
+    // target; a roster pick is NOT a room switch (it routes as a persona select).
+    expect(roomSelectTarget({ listingId: 'rooms', id: 'room-2', group: 'room' })).toBe('room-2');
     expect(roomSelectTarget({ listingId: 'roster', id: 'asha' })).toBeNull();
+  });
+
+  // what this catches: the kind-aware select routing (`navSelectTarget`) — the
+  // ONE rule that decides what a listing pick dispatches. A rooms-rail pick
+  // routes by the cell's group (the nav tab's target kind): persona tabs open
+  // the persona HOME (kind 'persona'), room tabs switch rooms; a ROSTER pick
+  // (a citizen's tile) IS the persona select; content tabs and unknown listings
+  // stay inert. Regression here = a persona click hijacks the room, or a
+  // roster click goes dead.
+  it('navSelectTarget routes room picks to rooms and persona picks to the persona home', () => {
+    expect(navSelectTarget({ listingId: 'rooms', id: 'room-2', group: 'room' })).toEqual({
+      target: 'room-2',
+      kind: 'room',
+    });
+    expect(navSelectTarget({ listingId: 'rooms', id: 'asha', group: 'persona' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+    });
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+    });
+    expect(navSelectTarget({ listingId: 'rooms', id: 'doc-1', group: 'content' })).toBeNull();
+    expect(navSelectTarget({ listingId: 'nodes', id: 'local' })).toBeNull();
   });
 
   // what this catches: a runtime badge must appear ONLY when the substrate

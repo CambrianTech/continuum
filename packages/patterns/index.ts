@@ -21,6 +21,18 @@
  * grounding are ONE projection that cannot drift.
  */
 
+// The persona home's neutral Content body (`purpose === PERSONA_PURPOSE`) — the
+// profile/brain surface as a purpose-dispatched activity, never a special view.
+export { PERSONA_PURPOSE } from './personaContent';
+export type {
+  PersonaContentBody,
+  PersonaBrainRegionVM,
+  PersonaRegionFact,
+  PersonaPathwayVM,
+  PersonaClaimVM,
+  PersonaWritingVM,
+} from './personaContent';
+
 // ── Listing ────────────────────────────────────────────────────────────────
 
 /** Presence/liveness of a listing cell, when it has one (a member is active/idle;

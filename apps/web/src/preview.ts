@@ -17,7 +17,12 @@
 import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
 import type { ChatState } from '@continuum/chat-view';
-import type { NavViewState, RosterSlotView, SystemMetricsViewState } from '@continuum/sdk-typescript';
+import type {
+  KanbanViewState,
+  NavViewState,
+  RosterSlotView,
+  SystemMetricsViewState,
+} from '@continuum/sdk-typescript';
 
 // Registering the element is a side effect of the import; keep the symbol live.
 void ChatWidget;
@@ -125,6 +130,54 @@ const FIXTURES: Record<string, ChatState> = {
   },
 };
 
+/** The persona-home reference input (`?fixture=persona`): the citizen's nav
+ *  view focused on Asha's persona-kind tab + a work board with her claims —
+ *  the SAME shapes the live substrate serves, so the persona surface renders
+ *  every section (hero, brain HUD, genome shelf, claims, writings frame)
+ *  exactly as it would from a live nav/select on her roster tile. */
+const PERSONA_NAV: NavViewState = {
+  user_id: 'joel',
+  current_tab: 'asha',
+  open_tabs: [
+    { id: 'general', title: 'general', kind: 'room', unread: 0, purpose: 'chat' },
+    { id: 'dev-updates', title: 'dev-updates', kind: 'room', unread: 3, purpose: 'chat' },
+    { id: 'asha', title: 'Asha', kind: 'persona', unread: 0, purpose: 'persona' },
+  ],
+  last_read: { general: 1_700_000_060_000 },
+  bookmarks: [],
+};
+
+const PERSONA_BOARD: KanbanViewState = {
+  room_id: 'general',
+  lanes: [],
+  cards: [
+    {
+      card_id: 'c1', room_id: 'general', title: 'Wire the persona home claims feed',
+      state: 'in_progress', priority: 'p1', lane_id: null,
+      creator_id: 'joel', creator_name: 'Joel', creator_kind: { kind: 'human' },
+      integrations: {}, provenance: { runtime: '' },
+      assignee_id: 'asha', assignee_name: 'Asha',
+      created_at: Date.now() - 26 * 3_600_000, updated_at: Date.now() - 40 * 60_000,
+    },
+    {
+      card_id: 'c2', room_id: 'general', title: 'Review lane admission planner PR',
+      state: 'review', priority: 'p2', lane_id: null,
+      creator_id: 'solenne', creator_name: 'Solenne', creator_kind: { kind: 'agent' },
+      integrations: {}, provenance: { runtime: 'qwen' },
+      assignee_id: 'asha', assignee_name: 'Asha',
+      created_at: Date.now() - 3 * 86_400_000, updated_at: Date.now() - 5 * 3_600_000,
+    },
+    {
+      card_id: 'c3', room_id: 'general', title: 'A card owned by another citizen (must not show)',
+      state: 'open', priority: 'p2', lane_id: null,
+      creator_id: 'joel', creator_name: 'Joel', creator_kind: { kind: 'human' },
+      integrations: {}, provenance: { runtime: '' },
+      assignee_id: 'solenne', assignee_name: 'Solenne',
+      created_at: Date.now() - 86_400_000, updated_at: Date.now() - 60_000,
+    },
+  ],
+};
+
 /** The citizen's nav view for the `rooms` fixture — the live room SET the rooms
  *  rail draws (brick 1): focused room + two more with unread. The same shape the
  *  per-user substrate serves under `kind="nav"`. */
@@ -176,6 +229,15 @@ function main(): void {
     widget.state = FIXTURES.roster;
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
+  }
+  // `?fixture=persona` — Asha's persona-kind tab focused: the persona HOME
+  // renders in the center (hero + brain HUD + genome shelf + claims) while the
+  // room state stays pinned underneath, exactly the live nav/select shape.
+  if (name === 'persona') {
+    widget.state = FIXTURES.roster;
+    widget.nav = PERSONA_NAV;
+    widget.sys = SYS_FIXTURE;
+    widget.board = PERSONA_BOARD;
   }
   // A no-op send handler so the input area is live for interaction shots without a socket.
   const noop: SendHandler = async () => {

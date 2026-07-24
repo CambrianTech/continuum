@@ -76,28 +76,57 @@ export function renderMetricsRow(view: MetricsView): TemplateResult {
  *  render fragments stay pure/stateless, the host owns what a selection DOES. */
 export const LISTING_SELECT = 'listing-select';
 
-/** Detail payload of a `LISTING_SELECT` event — which listing, which cell. */
+/** Detail payload of a `LISTING_SELECT` event — which listing, which cell, and
+ *  (when the cell carries one) its neutral `group` key: the nav tab's target
+ *  kind for rooms-rail cells. The routing rule reads it to pick the select's
+ *  activity kind — never a second vocabulary. */
 export interface ListingSelectDetail {
   readonly listingId: string;
   readonly id: string;
+  readonly group?: string;
 }
 
-export function fireListingSelect(e: Event, listingId: string, id: string): void {
+export function fireListingSelect(e: Event, listingId: string, id: string, group?: string): void {
   (e.currentTarget as HTMLElement).dispatchEvent(
     new CustomEvent<ListingSelectDetail>(LISTING_SELECT, {
-      detail: { listingId, id },
+      detail: { listingId, id, ...(group !== undefined ? { group } : {}) },
       bubbles: true,
       composed: true,
     }),
   );
 }
 
-/** Which listing selections mean "switch room" — a pick in the rooms listing
- *  yields its room id; every other listing's select is not a room switch
- *  (`null`). Pure and DOM-free (it lives here, not on the widget) so the
- *  routing decision is unit-tested without a browser. */
+/** A routed listing selection — the `nav/select` verb's (target, kind) pair the
+ *  host dispatches. `kind` is the wire `NavTargetKind` string. */
+export interface NavSelectRoute {
+  readonly target: string;
+  readonly kind: 'room' | 'persona';
+}
+
+/** THE select-routing rule (`select(entityInList)` → NavIntent,
+ *  NAVIGATION-ACROSS-MODALITIES.md §2), pure and DOM-free so it is unit-tested
+ *  without a browser:
+ *    - a ROOMS-rail / tab-bar pick routes by the cell's group (the tab's target
+ *      kind): `persona` → a persona-kind select (the persona HOME tab),
+ *      `content` → inert until content tabs route, anything else → a room switch;
+ *    - a ROSTER pick (a citizen's name/avatar) IS the persona select — the
+ *      profile is the persona's home activity, same verb, persona kind;
+ *    - every other listing's select is not a navigation (`null`). */
+export function navSelectTarget(detail: ListingSelectDetail): NavSelectRoute | null {
+  if (detail.listingId === 'rooms') {
+    if (detail.group === 'persona') return { target: detail.id, kind: 'persona' };
+    if (detail.group === 'content') return null;
+    return { target: detail.id, kind: 'room' };
+  }
+  if (detail.listingId === 'roster') return { target: detail.id, kind: 'persona' };
+  return null;
+}
+
+/** Which listing selections mean "switch room" — the room-only slice of
+ *  [`navSelectTarget`], kept for callers/tests that only care about rooms. */
 export function roomSelectTarget(detail: ListingSelectDetail): string | null {
-  return detail.listingId === 'rooms' ? detail.id : null;
+  const route = navSelectTarget(detail);
+  return route?.kind === 'room' ? route.target : null;
 }
 
 /** GENERIC listing-cell renderer — the first real positron web *component*: it draws
@@ -116,7 +145,7 @@ export function listingCell(cell: ListingCell, selectFrom?: string): TemplateRes
     selectFrom === undefined
       ? undefined
       : (e: Event): void => {
-          fireListingSelect(e, selectFrom, cell.id);
+          fireListingSelect(e, selectFrom, cell.id, cell.group);
         };
   const keySelect =
     select === undefined
@@ -159,7 +188,7 @@ export function listingCell(cell: ListingCell, selectFrom?: string): TemplateRes
  *  selection means anything for (rooms today; an unhandled select is inert). */
 export function renderListing(view: ListingView): TemplateResult {
   if (view.id === 'roster') {
-    return html`<ul class="roster">${view.cells.map(memberCardFromCell)}</ul>`;
+    return html`<ul class="roster">${view.cells.map((c) => memberCardFromCell(c, view.id))}</ul>`;
   }
   return html`<ul class="cells">${view.cells.map((c) => listingCell(c, view.id))}</ul>`;
 }
@@ -433,13 +462,31 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
  *  (vitals). Byte-for-byte the same markup as `memberCard(vm)` — verified by the
  *  before/after screenshot of the live three-panel — so routing apps/web through the
  *  framework's neutral projection does not regress the ACT meters. */
-export function memberCardFromCell(cell: ListingCell): TemplateResult {
+export function memberCardFromCell(cell: ListingCell, listingId?: string): TemplateResult {
   const active = cell.status === 'active';
   const kind = cell.badges?.[0] ?? 'agent';
   const runtime = cell.badges?.[1] ?? '';
+  // A tile pick IS the persona select (`select(entityInList)` → nav/select with
+  // a persona-kind target — the citizen's HOME tab). Fires the SAME composed
+  // LISTING_SELECT seam the rooms rail uses; the host owns the dispatch.
+  const select =
+    listingId === undefined
+      ? undefined
+      : (e: Event): void => {
+          fireListingSelect(e, listingId, cell.id, cell.group);
+        };
+  const keySelect =
+    select === undefined
+      ? undefined
+      : (e: KeyboardEvent): void => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            select(e);
+          }
+        };
   return html`
     <li class="member clickable ${active ? 'online' : 'idle'}" data-kind=${kind} tabindex="0"
-        title="Open ${cell.title}">
+        title="Open ${cell.title}" @click=${select ?? nothing} @keydown=${keySelect ?? nothing}>
       ${agoStamp(cell.lastActiveMs)}
       <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
         <span class="glyph">${cell.glyph ?? ''}</span>

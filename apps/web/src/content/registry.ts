@@ -9,10 +9,16 @@
  */
 
 import { html, type TemplateResult } from 'lit';
-import { createContentRegistry, type ContentRegistry } from '@continuum/patterns';
+import {
+  createContentRegistry,
+  PERSONA_PURPOSE,
+  type ContentRegistry,
+  type PersonaContentBody,
+} from '@continuum/patterns';
 import type { ChatContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
 import { listingCell, messageRow } from '../render/parts';
+import { renderPersona } from '../persona/renderPersona';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -42,3 +48,6 @@ export const webContentRegistry: ContentRegistry<TemplateResult> =
 
 webContentRegistry.register<ChatContentBody>('chat', (body) => chatContent(body));
 webContentRegistry.register<ForgeContentBody>('foundry', (body) => foundryContent(body));
+// The persona HOME — the profile + brain HUD center, dispatched when the
+// focused tab is persona-kind (the projection publishes purpose "persona").
+webContentRegistry.register<PersonaContentBody>(PERSONA_PURPOSE, (body) => renderPersona(body));

@@ -66,8 +66,10 @@ function tabIcon(group: string | undefined): string {
  *  (listingId 'rooms'), so a tab pick IS a real nav/select round-trip. Close is
  *  rendered honestly disabled until a nav/close verb exists. */
 function navTab(cell: ListingCell): TemplateResult {
+  // The cell's group carries the tab's target KIND — riding the detail so the
+  // routing rule (`navSelectTarget`) picks room vs persona select.
   const select = (e: Event): void => {
-    fireListingSelect(e, 'rooms', cell.id);
+    fireListingSelect(e, 'rooms', cell.id, cell.group);
   };
   const keySelect = (e: KeyboardEvent): void => {
     if (e.key === 'Enter' || e.key === ' ') {

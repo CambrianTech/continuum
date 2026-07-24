@@ -29,9 +29,11 @@ import { resolveConfig } from './config';
 import { ChatWidget, type SelectRoomHandler, type SendHandler } from './chat/ChatWidget';
 import {
   CHAT_KIND,
+  KANBAN_KIND,
   NAV_KIND,
   SYSTEM_METRICS_KIND,
   chatStateFromEnvelope,
+  kanbanStateFromEnvelope,
   navStateFromEnvelope,
   systemMetricsFromEnvelope,
   type ChatState,
@@ -103,10 +105,13 @@ async function main(): Promise<void> {
   // Bare-wire contract: failure is a REJECTED promise (no success field), which
   // the widget surfaces — never a silently-dead click. `userId` is the command
   // envelope's caller-identity sibling (CommandRequest), same as nav/mark-read.
-  const selectRoomHandler: SelectRoomHandler = async (roomId: string) => {
+  // `kind` rides the verb (NavSelectParams.kind): 'room' switches the room on
+  // screen; 'persona' opens that citizen's HOME tab (profile/brain) while the
+  // chat projection stays pinned — the content dispatch keys off the tab kind.
+  const selectRoomHandler: SelectRoomHandler = async (target: string, kind: 'room' | 'persona') => {
     await transport.execute(
       buildCommandUri('nav/select'),
-      JSON.stringify({ userId: config.senderId, target: roomId }),
+      JSON.stringify({ userId: config.senderId, target, kind }),
     );
   };
   widget.selectRoomHandler = selectRoomHandler;
@@ -143,6 +148,10 @@ async function main(): Promise<void> {
   // The node's resource window (CPU/MEM) — the SYS gauge's core-carried series.
   state.on(SYSTEM_METRICS_KIND, (envelope: StateEnvelope) => {
     widget.sys = systemMetricsFromEnvelope(envelope);
+  });
+  // The node's work board — the persona home's claims feed (cards by assignee).
+  state.on(KANBAN_KIND, (envelope: StateEnvelope) => {
+    widget.board = kanbanStateFromEnvelope(envelope);
   });
   // #170 live typing: grow a transient bubble per persona as its turn streams in.
   // Ephemeral — the durable message still arrives via the CHAT_KIND sink above, which
