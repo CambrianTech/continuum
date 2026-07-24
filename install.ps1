@@ -90,6 +90,11 @@ try {
     Mod-CUDA
     Mod-GhAuth -WantsGrid:$WantsGrid
 
+    # Cold storage: auto-detect a large drive and route models + build cache there
+    # (migrating what's on the system drive) BEFORE the build, so cargo builds into
+    # the relocated cache. No-op on single-drive machines. Reconfigurable later.
+    Mod-ColdStorage
+
     # Build + run as the invoking user (never elevated -- keeps the cargo cache
     # user-owned so a later non-elevated `npm start` can rebuild).
     Mod-BuildCore -RepoRoot $RepoRoot
