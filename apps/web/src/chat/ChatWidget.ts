@@ -2565,9 +2565,19 @@ export class ChatWidget extends LitElement {
   }
 
   /** Keep the compose input from scrolling on every state push. The persona
-   *  home reads top-down (a profile, not a transcript) — never auto-scrolled. */
+   *  home reads top-down (a profile, not a transcript) — never auto-scrolled,
+   *  and OPENING one resets the pane to the top (the transcript underneath was
+   *  pinned to its bottom; a profile that opens mid-scroll reads broken). */
   protected override updated(changed: PropertyValues): void {
-    if (changed.has('state') && !focusedPersonaTab(this.nav)) this.scrollToLatest();
+    const persona = focusedPersonaTab(this.nav);
+    if (changed.has('state') && !persona) this.scrollToLatest();
+    if (changed.has('nav')) {
+      const wasPersona = focusedPersonaTab(changed.get('nav') as NavViewState | undefined);
+      if (persona && persona.id !== wasPersona?.id) {
+        const what = this.renderRoot.querySelector('.what');
+        if (what) what.scrollTop = 0;
+      }
+    }
   }
 
   private onInput = (e: Event): void => {
