@@ -24,10 +24,13 @@ import { renderChat } from './renderChat';
 import {
   LISTING_SELECT,
   MESSAGE_EXPAND_TOGGLE,
+  PANEL_RESIZE_START,
   roomSelectTarget,
   type ListingSelectDetail,
   type MessageExpandToggleDetail,
+  type PanelResizeStartDetail,
 } from '../render/parts';
+import type { WorkspaceLayout } from '@continuum/patterns';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
 /** The send action the host injects. Resolves when the message is accepted by
@@ -104,6 +107,75 @@ export class ChatWidget extends LitElement {
     this._expanded = next;
   };
 
+  /** Per-user workspace layout (column widths) — the neutral `WorkspaceLayout`
+   *  shape, persisted locally per user until the airc per-(user,scope) layout
+   *  row lands (same migration path as the nav focus store). Applied as host
+   *  CSS vars so the grid reads it with zero re-render cost during drag. */
+  private _layout: WorkspaceLayout = {};
+
+  /** localStorage key for the layout slice. Versioned so a shape change can
+   *  migrate instead of silently misparsing. */
+  private static readonly LAYOUT_KEY = 'continuum.workspace.layout.v1';
+
+  /** Clamp bounds per panel — the target's sanity rails over the neutral
+   *  intent value ([[WorkspaceLayout]]: "the value is intent, not law"). */
+  private static readonly PANEL_BOUNDS = {
+    who: { min: 210, max: 420 },
+    context: { min: 180, max: 380 },
+  } as const;
+
+  private applyLayout(): void {
+    const { whoWidth, contextWidth } = this._layout;
+    if (whoWidth) this.style.setProperty('--who-w', `${whoWidth}px`);
+    if (contextWidth) this.style.setProperty('--ctx-w', `${contextWidth}px`);
+  }
+
+  private loadLayout(): void {
+    try {
+      const raw = localStorage.getItem(ChatWidget.LAYOUT_KEY);
+      if (raw) this._layout = JSON.parse(raw) as WorkspaceLayout;
+    } catch {
+      // Corrupt layout state is presentation-only — discard, never crash.
+      this._layout = {};
+    }
+    this.applyLayout();
+  }
+
+  /** Drag a column handle: track the pointer globally (works identically for
+   *  mouse and touch/iPad — pointer events), clamp, apply live via CSS var,
+   *  persist once on release. */
+  private onPanelResizeStart = (e: Event): void => {
+    const { panel, startX } = (e as CustomEvent<PanelResizeStartDetail>).detail;
+    const bounds = ChatWidget.PANEL_BOUNDS[panel];
+    const varName = panel === 'who' ? '--who-w' : '--ctx-w';
+    const key = panel === 'who' ? 'whoWidth' : 'contextWidth';
+    const startWidth =
+      this._layout[key] ?? (panel === 'who' ? 280 : 220);
+    const move = (ev: PointerEvent): void => {
+      // The left rail grows rightward; the context panel grows leftward.
+      const delta = panel === 'who' ? ev.clientX - startX : startX - ev.clientX;
+      const next = Math.round(
+        Math.min(bounds.max, Math.max(bounds.min, startWidth + delta)),
+      );
+      this.style.setProperty(varName, `${next}px`);
+      this._layout = { ...this._layout, [key]: next };
+    };
+    const up = (): void => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      try {
+        localStorage.setItem(ChatWidget.LAYOUT_KEY, JSON.stringify(this._layout));
+      } catch {
+        // Storage full/blocked — the live drag still applied; persistence is
+        // best-effort presentation state.
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  };
+
   /** A listing cell was picked. Rooms-rail picks dispatch through the injected
    *  `selectRoomHandler` (`nav/select`); the active cell + center pane move when
    *  the refocused envelopes stream back — never an optimistic local switch. */
@@ -153,6 +225,10 @@ export class ChatWidget extends LitElement {
     // bubbles out of the shadow tree to the host — listen on self so the pure
     // fragments need no callback threading through the render registries.
     this.addEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
+    // Column resize: handles fire the composed start event; the widget owns
+    // the drag tracking + the persisted WorkspaceLayout (same pattern).
+    this.addEventListener(PANEL_RESIZE_START, this.onPanelResizeStart);
+    this.loadLayout();
     // Rooms-rail picks: the cell's composed LISTING_SELECT bubbles up here.
     this.addEventListener(LISTING_SELECT, this.onListingSelect);
   }
@@ -222,14 +298,35 @@ export class ChatWidget extends LitElement {
     }
     .panels {
       display: grid;
-      grid-template-columns: minmax(210px, 280px) 1fr;
+      /* Column widths are the per-user WorkspaceLayout intent (host CSS vars,
+         set by the widget's drag handling + persisted) over target defaults;
+         the slim tracks between are the drag handles. */
+      grid-template-columns: var(--who-w, 280px) 6px 1fr;
       min-height: 0;
       flex: 1;
     }
     /* A populated ContextPanel opens the third column — the right contextual
        rail (participants summary, room info; the factory reference's right panel). */
     .panels[data-context] {
-      grid-template-columns: minmax(210px, 280px) 1fr minmax(180px, 240px);
+      grid-template-columns: var(--who-w, 280px) 6px 1fr 6px var(--ctx-w, 220px);
+    }
+    /* Column drag handle — invisible until hover/drag, a full-height slim hit
+       target (6px track, wider invisible hit area via padding-box trick is
+       unnecessary at 6px on touch: iPadOS pointer coalescing hits it fine). */
+    .col-handle {
+      cursor: col-resize;
+      touch-action: none;
+      background: transparent;
+      transition: background 0.15s ease;
+    }
+    .col-handle:hover,
+    .col-handle:active {
+      background: var(--content-accent);
+      opacity: 0.35;
+    }
+    .col-handle:focus-visible {
+      outline: 2px solid var(--content-accent);
+      outline-offset: -2px;
     }
     .context {
       border-left: 1px solid var(--border-subtle);
@@ -1459,6 +1556,10 @@ export class ChatWidget extends LitElement {
       .panels {
         grid-template-columns: 1fr;
         grid-template-rows: auto 1fr;
+      }
+      /* No column drag on the single-column phone layout. */
+      .col-handle {
+        display: none;
       }
       .who {
         border-right: none;

@@ -268,6 +268,21 @@ export interface WorkspaceView {
   readonly context: ContextPanelView;
 }
 
+/** Per-user workspace LAYOUT state — the citizen's arrangement of the shell,
+ *  designed ONCE for every pointer-capable target (desktop web, iPad, a future
+ *  native shell all render the same drag affordances from this one shape).
+ *  Presentation state, not domain truth: a host persists it per user (today a
+ *  local store; the airc per-(user,scope) state row when the layout verbs land
+ *  — same migration path as the nav focus store) and re-applies it on mount.
+ *  Grows widget order/heights/collapse (task #185) without a shape break. */
+export interface WorkspaceLayout {
+  /** Left rail width in px; absent = the target's default. Targets clamp to
+   *  their own sane min/max — the value is intent, not law. */
+  readonly whoWidth?: number;
+  /** Right context-panel width in px; absent = the target's default. */
+  readonly contextWidth?: number;
+}
+
 // ── RenderTarget — the consumer-neutral render contract ──────────────────────
 
 /** A per-purpose content renderer: given the `ContentView.body` and its purpose,

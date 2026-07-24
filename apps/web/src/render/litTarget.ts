@@ -21,7 +21,7 @@ import {
   type ContextPanelView,
   type PanelWidget,
 } from '@continuum/patterns';
-import { fireListingSelect, renderListing } from './parts';
+import { fireListingSelect, renderListing, resizeHandle } from './parts';
 import { webContentRegistry } from '../content/registry';
 import { webWidgetRegistry } from './widgets';
 
@@ -168,9 +168,10 @@ export const webTarget: RenderTarget<TemplateResult> = {
         <aside class="who" aria-label="global widgets">
           ${ws.left.length > 0 ? ws.left.map((w) => this.widget(w)) : nothing}
         </aside>
+        ${resizeHandle('who')}
         <section class="what" aria-label="conversation">${this.content(ws.content)}</section>
         ${ws.context.listings.length > 0
-          ? html`<aside class="context" aria-label="activity context">
+          ? html`${resizeHandle('context')}<aside class="context" aria-label="activity context">
               ${ws.context.listings.map(
                 (l) => html`<section class="rail-widget" data-widget="context">
                   <div class="who-head"><span class="who-title">${l.title}</span></div>

@@ -525,6 +525,44 @@ function fireExpandToggle(e: Event, id: string): void {
   );
 }
 
+/** The composed drag-start event a column resize handle fires — bubbles to
+ *  `<chat-widget>`, which owns the `WorkspaceLayout` state and the pointer
+ *  tracking (fragments stay stateless — the MESSAGE_EXPAND_TOGGLE pattern).
+ *  Pointer events, so mouse and touch (iPad) drag through the same path. */
+export const PANEL_RESIZE_START = 'panel-resize-start';
+
+/** Detail payload of a `PANEL_RESIZE_START` event. */
+export interface PanelResizeStartDetail {
+  /** Which column the handle borders. */
+  readonly panel: 'who' | 'context';
+  /** The pointer's starting clientX — the drag delta's origin. */
+  readonly startX: number;
+  /** The pointer id, so the widget can track this drag exclusively. */
+  readonly pointerId: number;
+}
+
+/** A column resize handle — a slim hit target between workspace columns. */
+export function resizeHandle(panel: 'who' | 'context'): TemplateResult {
+  const start = (e: PointerEvent): void => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).dispatchEvent(
+      new CustomEvent<PanelResizeStartDetail>(PANEL_RESIZE_START, {
+        detail: { panel, startX: e.clientX, pointerId: e.pointerId },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  };
+  return html`<div
+    class="col-handle"
+    data-panel=${panel}
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="resize ${panel === 'who' ? 'left rail' : 'context panel'}"
+    @pointerdown=${start}
+  ></div>`;
+}
+
 /** The message body at its display tier ([[perception-resolution-contract]]):
  *  a digested row renders head + mechanical tail line (+ repetition histogram)
  *  collapsed by default — no message floods the transcript — with the full
