@@ -28,6 +28,16 @@ export { PERSONA_PURPOSE } from './personaContent';
 // The live call face's neutral Content body (`purpose === LIVE_PURPOSE`) — a
 // room's call grid as a purpose-dispatched activity, never a special view.
 export { LIVE_PURPOSE } from './liveContent';
+
+// The benchmark arena's neutral Content body (`purpose === ARENA_PURPOSE`) —
+// leaderboards + live-run strip from REAL eval ledger rows, never a mockup.
+export { ARENA_PURPOSE } from './arenaContent';
+export type {
+  ArenaContentBody,
+  ArenaResultRowVM,
+  ArenaBoardVM,
+  ArenaLiveRunVM,
+} from './arenaContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,

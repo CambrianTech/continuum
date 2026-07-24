@@ -17,7 +17,7 @@
  */
 
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
-import type { ChatState } from '@continuum/chat-view';
+import type { ArenaViewState, ChatState } from '@continuum/chat-view';
 import {
   chatViewModel,
   focusedLiveTab,
@@ -64,6 +64,7 @@ export class ChatWidget extends LitElement {
     nav: { attribute: false },
     sys: { attribute: false },
     board: { attribute: false },
+    arena: { attribute: false },
     version: { attribute: false },
     sendHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
@@ -94,6 +95,11 @@ export class ChatWidget extends LitElement {
    *  has delivered — feeds the persona home's claims. `undefined` = the claims
    *  section renders its honest awaiting frame. */
   board?: KanbanViewState;
+
+  /** The node's live `kind="arena"` eval-ledger view, when the host's
+   *  subscription has delivered — feeds an arena-purpose room's leaderboards.
+   *  `undefined` = the arena face renders its honest awaiting frame. */
+  arena?: ArenaViewState;
 
   /** The client build's version string (a real manifest/build stamp injected by
    *  the host) — drives the continuon header's version badge. `undefined` = no
@@ -1666,6 +1672,183 @@ export class ChatWidget extends LitElement {
      * Cognitive System View, styled to the reference HUD (docs/images/
      * persona-profile.png + persona-brain-hud.png). Every colour is a named
      * token; region glow rides the live faculty pulse via --region-level. */
+    /* ── ARENA face (purpose "arena") — leaderboards from the real ledger ── */
+    .arena-home {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 16px 18px;
+      overflow-y: auto;
+    }
+    .arena-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .arena-title {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 3px;
+      color: var(--hud-accent);
+    }
+    .a-feed-chip {
+      font-size: 9px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      color: var(--text-dim);
+    }
+    .a-feed-chip[data-on] {
+      color: var(--status-online);
+      border-color: var(--status-online);
+    }
+    .a-rowcount {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .arena-live-run {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border: 1px solid var(--hud-accent);
+      border-radius: 8px;
+      background: var(--hud-panel-background);
+      font-size: 11px;
+    }
+    .a-live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--status-online);
+      box-shadow: 0 0 6px var(--status-online);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      50% { opacity: 0.35; }
+    }
+    .a-live-label {
+      font-weight: 800;
+      letter-spacing: 2px;
+      font-size: 9px;
+      color: var(--status-online);
+    }
+    .a-live-what { font-weight: 600; }
+    .a-live-progress {
+      flex: 1;
+      height: 5px;
+      border-radius: 3px;
+      background: var(--hud-slot-background);
+      overflow: hidden;
+    }
+    .a-live-fill {
+      display: block;
+      height: 100%;
+      background: var(--hud-accent);
+      transition: width var(--motion-slow) var(--motion-ease);
+    }
+    .a-live-count { font-variant-numeric: tabular-nums; color: var(--text-dim); }
+    .a-live-task { color: var(--text-dim); font-style: italic; }
+    .arena-board {
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      background: var(--hud-panel-background);
+      overflow: hidden;
+    }
+    .a-board-head {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .a-board-name {
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 1px;
+      color: var(--hud-accent);
+    }
+    .a-board-count {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .arena-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .arena-table th {
+      text-align: left;
+      font-size: 9px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .arena-table td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--panel-border);
+      vertical-align: middle;
+    }
+    .arena-row:last-child td { border-bottom: none; }
+    .arena-row[data-excluded] {
+      opacity: 0.5;
+    }
+    .arena-row[data-excluded] .a-model-name,
+    .arena-row[data-excluded] .a-score-num {
+      text-decoration: line-through;
+    }
+    .a-rank {
+      width: 26px;
+      font-weight: 800;
+      color: var(--hud-accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .a-model-name { font-weight: 600; }
+    .a-arm {
+      margin-left: 6px;
+      font-size: 8px;
+      letter-spacing: 1px;
+      padding: 1px 5px;
+      border-radius: 6px;
+      border: 1px solid var(--panel-border);
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .a-arm[data-arm='OURS'] {
+      color: var(--hud-accent);
+      border-color: var(--hud-accent);
+    }
+    .a-score { display: flex; align-items: center; gap: 8px; min-width: 180px; }
+    .a-score-bar {
+      flex: 1;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--hud-slot-background);
+      overflow: hidden;
+    }
+    .a-score-fill {
+      display: block;
+      height: 100%;
+      background: var(--hud-accent);
+      box-shadow: 0 0 4px var(--hud-accent-glow);
+    }
+    .a-score-num { font-variant-numeric: tabular-nums; font-weight: 700; }
+    .a-score-pct { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 10px; }
+    .a-prov, .a-date { color: var(--text-dim); font-size: 10px; white-space: nowrap; }
+    .a-awaiting {
+      padding: 22px;
+      text-align: center;
+      color: var(--text-dim);
+      border: 1px dashed var(--panel-border);
+      border-radius: 10px;
+    }
+
     .persona-home {
       max-width: 880px;
       margin: 0 auto;
@@ -2878,6 +3061,7 @@ export class ChatWidget extends LitElement {
         nav: this.nav,
         sys: this.sys,
         board: this.board,
+        arena: this.arena,
         version: this.version,
         // The live-call overlay: the Go-live face state + the REAL StreamDelta
         // token rail (who is speaking NOW, and what they're saying — the same

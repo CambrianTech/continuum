@@ -60,6 +60,12 @@
   --status-busy: #ff4444;
   --status-offline: #666666;
 
+  /* Widget shorthand aliases — canonical names widgets already lean on.
+   * Aliased (not new colors) so every theme retints them via the base tokens;
+   * they were previously UNDEFINED and silently resolved to nothing. */
+  --text-dim: var(--content-secondary);
+  --panel-border: var(--border-subtle);
+
   /* Input */
   --input-background: rgba(40, 45, 55, 0.8);
   --input-border: rgba(255, 255, 255, 0.15);

@@ -86,6 +86,11 @@ export {
 } from './liveProjections';
 export type { LiveCallOverlay } from './liveProjections';
 
+// Arena projections — real eval-ledger rows → ranked leaderboards + live-run
+// strip (the benchmarks-are-the-show face).
+export { ARENA_KIND, arenaBoards, arenaContentBody } from './arenaProjections';
+export type { ArenaLedgerRow, ArenaViewState } from './arenaProjections';
+
 // The chat activity as a positron app, defined ONCE — mount it on any RenderTarget
 // (web/mobile/terminal/RAG). The first real `defineApp` consumer.
 export { chatApp } from './chatApp';

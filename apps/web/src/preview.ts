@@ -275,6 +275,32 @@ function main(): void {
       done: false,
     });
   }
+  // `?fixture=arena` — the benchmark ARENA face: an arena-purpose room rendering
+  // ranked leaderboards from REAL RESULTS.jsonl rows (copied verbatim from the
+  // ledger — including an honest EXCLUDED row) plus a live-run strip. The
+  // reference input for the benchmarks-are-the-show surface.
+  if (name === 'arena') {
+    widget.state = {
+      kind: 'chat', revision: 1, room_id: 'arena', room_name: 'arena', purpose: 'arena',
+      roster: FIXTURES.roster?.roster ?? [],
+      messages: [],
+    };
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.arena = {
+      rows: [
+        { benchmark: 'humaneval-rs', model: 'Devstral-Small-24B', arm: 'RAW', score: 5, total: 5, pass_rate: 1.0, captured: '2026-07-08', machine: 'macbook-m-series' },
+        { benchmark: 'humaneval-rs', model: 'Devstral-Small-24B', arm: 'OURS', score: 5, total: 5, pass_rate: 1.0, captured: '2026-07-08', machine: 'macbook-m-series', note: 'zero tax after tool-surface fix' },
+        { benchmark: 'humaneval-rs', model: 'Qwen2.5-Coder-14B', arm: 'OURS', score: 37, total: 40, pass_rate: 0.925, captured: '2026-07-23', machine: 'Joels-MacBook-Pro.local' },
+        { benchmark: 'humaneval-rs', model: 'Qwen2.5-Coder-14B', arm: 'OURS', score: 46, total: 50, pass_rate: 0.92, captured: '2026-07-10', machine: 'Joels-MBP.lan' },
+        { benchmark: 'humaneval-rs', model: 'qwen3.5-4b-code-forged', arm: 'opencode', score: 22, total: 40, pass_rate: 0.55, captured: '2026-07-10', machine: 'Joels-MBP.lan', note: 'shim-bypassed — unfair, re-run pending', excluded: true },
+        { benchmark: 'hard-rs', model: 'Qwen2.5-Coder-14B', arm: 'OURS', score: 5, total: 8, pass_rate: 0.625, captured: '2026-07-11', machine: 'Joels-MBP.lan' },
+        { benchmark: 'hard-rs', model: 'Devstral-Small-24B', arm: 'opencode', score: 4, total: 8, pass_rate: 0.5, captured: '2026-07-14', machine: 'Joels-MBP.lan' },
+        { benchmark: 'hard-rs', model: 'Devstral-Small-24B', arm: 'hermes', score: 4, total: 8, pass_rate: 0.5, captured: '2026-07-14', machine: 'Joels-MBP.lan' },
+      ],
+      live_run: { benchmark: 'hard-rs', model: 'Qwen2.5-Coder-14B', done: 5, total: 8, current_task: 'task 6: lifetime-bound iterator' },
+    };
+  }
   // `?fixture=persona` — Asha's persona-kind tab focused: the persona HOME
   // renders in the center (hero + brain HUD + genome shelf + claims) while the
   // room state stays pinned underneath, exactly the live nav/select shape.

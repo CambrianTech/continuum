@@ -24,7 +24,7 @@ import type {
 import type { GaugeView } from '@continuum/patterns';
 import type { KanbanViewState, NavViewState, SystemMetricsViewState } from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
-import { LIVE_PURPOSE, PERSONA_PURPOSE } from '@continuum/patterns';
+import { ARENA_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, type ArenaContentBody as ArenaContentBodyT } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -32,6 +32,7 @@ import {
   personaFactsListing,
 } from './personaProjections';
 import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProjections';
+import { arenaContentBody, type ArenaViewState } from './arenaProjections';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
  *  display token the Listing carries (targets draw it, they don't re-derive it). */
@@ -259,6 +260,9 @@ export interface WorkspaceLive {
    *  token rail + captions toggle) — renderer state threaded through so the
    *  live face projects from REAL signals. Absent = no live face requested. */
   readonly call?: LiveCallOverlay;
+  /** The `kind="arena"` eval-ledger view — feeds an arena-purpose room's
+   *  leaderboards. Honestly absent until the feed delivers. */
+  readonly arena?: ArenaViewState;
 }
 
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
@@ -294,17 +298,27 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !personaBody && liveFaceOpen(vm, live?.nav, live?.call)
       ? liveContentBody(vm, live?.call)
       : undefined;
+  // The ARENA face: a room whose recipe purpose is "arena" renders ranked
+  // leaderboards from the eval-ledger feed — same registry dispatch, and the
+  // frame renders (awaiting rows) even before the feed delivers.
+  const arenaBody =
+    !personaBody && !liveBody && vm.purpose === ARENA_PURPOSE
+      ? arenaContentBody(live?.arena ?? { rows: [] }, live?.arena !== undefined)
+      : undefined;
   const content:
     | ContentView<ChatContentBody>
     | ContentView<PersonaContentBody>
-    | ContentView<LiveContentBody> = personaBody
+    | ContentView<LiveContentBody>
+    | ContentView<ArenaContentBodyT> = personaBody
     ? { purpose: PERSONA_PURPOSE, body: personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }
-      : {
-          purpose: vm.purpose,
-          body: { messages: vm.messages, isEmpty: vm.isEmpty },
-        };
+      : arenaBody
+        ? { purpose: ARENA_PURPOSE, body: arenaBody }
+        : {
+            purpose: vm.purpose,
+            body: { messages: vm.messages, isEmpty: vm.isEmpty },
+          };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const rooms = live?.nav

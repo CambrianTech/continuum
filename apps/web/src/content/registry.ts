@@ -10,9 +10,11 @@
 
 import { html, type TemplateResult } from 'lit';
 import {
+  ARENA_PURPOSE,
   createContentRegistry,
   LIVE_PURPOSE,
   PERSONA_PURPOSE,
+  type ArenaContentBody,
   type ContentRegistry,
   type LiveContentBody,
   type PersonaContentBody,
@@ -22,6 +24,7 @@ import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
 import { listingCell, messageRow } from '../render/parts';
 import { renderPersona } from '../persona/renderPersona';
 import { renderLive } from '../live/renderLive';
+import { renderArena } from '../arena/renderArena';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -58,3 +61,6 @@ webContentRegistry.register<PersonaContentBody>(PERSONA_PURPOSE, (body) => rende
 // room recipe's purpose is "live", a live tab is focused, or the Go-live face
 // is open (the projection publishes purpose "live").
 webContentRegistry.register<LiveContentBody>(LIVE_PURPOSE, (body) => renderLive(body));
+// The benchmark ARENA — ranked leaderboards + live-run strip from real eval
+// ledger rows, dispatched when the room recipe's purpose is "arena".
+webContentRegistry.register<ArenaContentBody>(ARENA_PURPOSE, (body) => renderArena(body));
