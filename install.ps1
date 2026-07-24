@@ -98,6 +98,13 @@ try {
     # Build + run as the invoking user (never elevated -- keeps the cargo cache
     # user-owned so a later non-elevated `npm start` can rebuild).
     Mod-BuildCore -RepoRoot $RepoRoot
+
+    # Build llama-server.exe (the serving daemon's GPU-backend child) from the same
+    # vendored llama.cpp. Windows twin of install-llama-server.sh. Without this the
+    # serving daemon has no binary to spawn -> no local inference -> no persona can
+    # speak. Needs CUDA + MSVC env (already provisioned above).
+    Mod-LlamaServer -RepoRoot $RepoRoot
+
     Mod-Run
 }
 finally {

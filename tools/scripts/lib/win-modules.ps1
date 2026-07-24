@@ -433,6 +433,118 @@ function Mod-BuildCore {
     Module-Done 'build'
 }
 
+function Mod-LlamaServer {
+    # Build the inference engine WE OWN: llama.cpp's `llama-server` (the OpenAI /v1
+    # gateway) that continuum's serving daemon spawns as its GPU-backend CHILD
+    # process. External-child is deliberate (M5): a CUDA-OOM-wedged backend can be
+    # reaped + respawned without taking the core down. Windows twin of
+    # tools/scripts/install-llama-server.sh (which covers macOS/Linux only). ONE
+    # llama.cpp source of truth (core/vendor/llama.cpp) for both the in-process FFI
+    # lib and this server child. Idempotent via a HEAD:backend stamp.
+    #
+    # The daemon probes $USERPROFILE/.continuum/bin/llama-server.exe (server_bin(),
+    # airc/continuum serving fix 4d4c463fb) -> the BINARY lands there (system drive,
+    # tiny). The heavy CUDA build tree goes to cold storage so it doesn't bloat C:.
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $submodule   = Join-Path $RepoRoot 'core\vendor\llama.cpp'
+    $serverCMake = Join-Path $submodule 'tools\server\CMakeLists.txt'
+    $installDir  = Join-Path $env:USERPROFILE '.continuum\bin'
+    $installBin  = Join-Path $installDir 'llama-server.exe'
+    $stampFile   = Join-Path $installDir '.llama-server.stamp'
+    # Build tree on the cold drive when cold-storage routed one (else system cache).
+    $cacheRoot   = if ($env:CONTINUUM_STORAGE_PATH) { $env:CONTINUUM_STORAGE_PATH } else { Join-Path $env:USERPROFILE '.continuum' }
+    $buildDir    = Join-Path $cacheRoot 'cache\llama-server-build'
+
+    # Submodule presence: a fresh clone may not have it checked out. Init from our
+    # fork (github.com/CambrianTech/llama.cpp) rather than failing.
+    if (-not (Test-Path $serverCMake)) {
+        Module-Start 'llama-server' 'initializing core/vendor/llama.cpp submodule'
+        Push-Location $RepoRoot
+        try { & git submodule update --init core/vendor/llama.cpp } finally { Pop-Location }
+    }
+    if (-not (Test-Path $serverCMake)) {
+        Module-Fail 'llama-server' "llama.cpp submodule missing at $submodule even after init"
+    }
+
+    $head = (& git -C $submodule rev-parse --short HEAD 2>$null)
+    if (-not $head) { $head = 'unknown' }
+
+    # Backend: NVIDIA -> CUDA (matches core/llama/build.rs gating), else CPU.
+    $backend = 'cpu'; $backendDefs = @()
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        $backend = 'cuda'
+        $build = (Get-ManifestModule 'build-core').build
+        $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($build.cuda_arch)")
+    }
+    $stampWant = "${head}:${backend}"
+
+    if ((Test-Path $installBin) -and (Test-Path $stampFile) -and
+        ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $stampWant)) {
+        Module-Skip 'llama-server' "already current at $installBin ($stampWant)"
+        return
+    }
+
+    Module-Start 'llama-server' "building llama-server ($backend, llama.cpp@$head) -- the serving-lane child"
+    New-Item -ItemType Directory -Force $buildDir, $installDir | Out-Null
+
+    # Generator: the "Visual Studio 17 2022" generator needs the CUDA VS MSBuild
+    # integration (CUDA*.props in the VC BuildCustomizations dir) to enable_language
+    # (CUDA) -- but our NO-ADMIN CUDA redist doesn't ship it (it's a full-installer
+    # component that writes into Program Files). Ninja drives nvcc DIRECTLY, so it
+    # needs zero VS integration -- the robust no-admin CUDA path. Provision ninja
+    # (a single ~500KB binary, no admin) and build with it inside the vcvars env
+    # (Enter-MsvcEnv puts cl.exe on PATH for nvcc's host side).
+    $ninjaDir = Join-Path $env:USERPROFILE '.continuum\tools\ninja'
+    $ninja = Join-Path $ninjaDir 'ninja.exe'
+    if ($backend -eq 'cuda' -and -not (Test-Path $ninja)) {
+        Write-Step '  llama-server: fetching ninja (no-admin CUDA build driver)'
+        New-Item -ItemType Directory -Force $ninjaDir | Out-Null
+        $nz = Join-Path $env:TEMP 'ninja-win.zip'
+        Invoke-WebRequest -Uri 'https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-win.zip' -OutFile $nz -UseBasicParsing
+        Expand-Archive -Path $nz -DestinationPath $ninjaDir -Force
+        Remove-Item $nz -ErrorAction SilentlyContinue
+    }
+
+    $cmakeArgs = @('-S', $submodule, '-B', $buildDir,
+        '-DCMAKE_BUILD_TYPE=Release',
+        '-DLLAMA_BUILD_SERVER=ON', '-DLLAMA_BUILD_TOOLS=ON', '-DLLAMA_BUILD_COMMON=ON',
+        '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_EXAMPLES=OFF',
+        # We serve local GGUF paths (-m), never fetch by URL -> drop libcurl.
+        '-DLLAMA_CURL=OFF',
+        # STATIC libs: link ggml/ggml-base/ggml-cuda/llama INTO llama-server.exe
+        # (mirrors core/llama/build.rs). Without this, llama-server.exe dynamically
+        # links ggml-base.dll etc. that live only in the build tree -> copying just
+        # the exe to ~/.continuum/bin fails at spawn with "cannot open ggml-base.dll"
+        # (live repro 2026-07-24). Static = one self-contained binary (only the CUDA
+        # runtime DLLs remain dynamic, and those are on PATH via the toolkit).
+        '-DBUILD_SHARED_LIBS=OFF',
+        # Static CRT: a standalone child that needs no VC runtime DLLs on a public box.
+        '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded')
+    if ($backend -eq 'cuda') {
+        Enter-MsvcEnv                                    # cl.exe on PATH for nvcc host side
+        $cmakeArgs += @('-G', 'Ninja', "-DCMAKE_MAKE_PROGRAM=$ninja",
+            '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl') + $backendDefs
+    }
+
+    & cmake @cmakeArgs
+    if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake configure failed ($LASTEXITCODE)" }
+    & cmake --build $buildDir --target llama-server
+    if ($LASTEXITCODE -ne 0) { Module-Fail 'llama-server' "cmake build failed ($LASTEXITCODE)" }
+
+    # Ninja (single-config) emits under bin\; the VS generator would use bin\Release\.
+    $builtBin = @(
+        (Join-Path $buildDir 'bin\llama-server.exe'),
+        (Join-Path $buildDir 'bin\Release\llama-server.exe')
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $builtBin) { Module-Fail 'llama-server' "build finished but llama-server.exe not found under $buildDir\bin" }
+
+    Copy-Item -Force $builtBin $installBin
+    Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII
+    Module-Done 'llama-server'
+    Write-Ok "llama-server -> $installBin ($stampWant) -- the serving daemon spawns this"
+}
+
 function Mod-Run {
     $bin = Join-Path $env:CARGO_TARGET_DIR 'release\continuum-core-server.exe'
     if (Test-Path $bin) {
