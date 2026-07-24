@@ -346,6 +346,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    // what this catches: the empty-clobber guard — the legacy skill's "preload an
+    // empty corpus" call must REFUSE once a corpus is live (it replaced hydrated
+    // memories with nothing, live incident 2026-07-24), while a fresh persona's
+    // empty load and a REAL reload both still work.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_load_corpus_refuses_to_clobber_a_live_corpus() {
+        use crate::runtime::module_harness::ModuleHarness;
+        let h = ModuleHarness::with(fresh_memory_module()).await;
+        let persona = "clobber-guard-persona";
+        // Fresh persona: an empty load is a legitimate bring-up — allowed.
+        let first = h
+            .execute_json(
+                "memory/load-corpus",
+                serde_json::json!({ "persona_id": persona, "memories": [], "events": [] }),
+            )
+            .await;
+        assert!(first.is_ok(), "fresh empty load must succeed: {first:?}");
+        // A REAL (non-empty) reload replaces — allowed.
+        let real = h
+            .execute_json(
+                "memory/load-corpus",
+                serde_json::json!({
+                    "persona_id": persona,
+                    "memories": [test_memory(persona, "m1", "durable truth")],
+                    "events": [],
+                }),
+            )
+            .await;
+        assert!(real.is_ok(), "real reload must succeed: {real:?}");
+        // An EMPTY load over the live corpus is the clobber — refused loudly.
+        let clobber = h
+            .execute_json(
+                "memory/load-corpus",
+                serde_json::json!({ "persona_id": persona, "memories": [], "events": [] }),
+            )
+            .await;
+        let err = clobber.expect_err("empty load over a live corpus must refuse");
+        assert!(err.contains("EMPTY"), "error must name the clobber: {err}");
+    }
+
     // what this catches: the ONE persona-id→handle mapping — UUID-shaped ids hit
     // the uuid path (`personas/<uuid>/longterm.db`, the live on-disk layout);
     // slugs use the `@persona:` sentinel. Drift here silently splits a persona's
