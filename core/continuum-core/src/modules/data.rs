@@ -18,7 +18,7 @@ use crate::orm::{
     types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},
 };
 use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, HandleRef, ModuleConfig, ModuleContext,
+    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModuleContext,
     ModulePriority, ServiceModule,
 };
 use crate::{log_error, log_info};
@@ -397,7 +397,9 @@ macro_rules! deserialize_params {
 
 /// Check if a string matches the 36-char UUID shape `8-4-4-4-12` hex.
 /// Intentionally simple — avoids pulling uuid crate just for a shape check.
-fn is_uuid_shape(s: &str) -> bool {
+/// `pub(crate)` so `commands/memory` derives the SAME per-persona handle
+/// mapping `resolve_handle` uses (one shape check, one place).
+pub(crate) fn is_uuid_shape(s: &str) -> bool {
     if s.len() != 36 {
         return false;
     }
@@ -3758,7 +3760,13 @@ pub struct DataListParams {
     pub offset: Option<u32>,
     /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
     /// "@persona:<slug>" or "@metrics" to target a specific store.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// WIRE NOTE: on the flat wire the `handle` key is CLAIMED by the
+    /// [`CommandRequest`](crate::runtime::CommandRequest) envelope (a kernel
+    /// `HandleRef`), so a string here never reaches these params under that
+    /// name — callers pass the storage handle as `dbPath` (the alias below),
+    /// same as `data/create`.
+    #[serde(default, alias = "dbPath", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub handle: Option<String>,
 }

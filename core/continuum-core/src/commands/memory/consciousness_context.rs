@@ -43,6 +43,14 @@ crate::action_command! {
     output: ConsciousnessContextResponse,
     run(this, _ctx, p) => {
         let _timer = TimingGuard::new("module", "memory_consciousness_context");
+        // Cold-cache read-through: hydrate from the durable store on first
+        // touch after a restart (same seam as multi-layer-recall, card aded8871).
+        if let Some(loaded) = super::hydrate_corpus_if_missing(&this.state, &p.persona_id).await? {
+            log_info!(
+                "module", "memory_consciousness_context",
+                "Hydrated corpus for {} from durable store ({loaded} memories)", p.persona_id
+            );
+        }
         let req = ConsciousnessContextRequest {
             room_id: p.room_id,
             current_message: p.current_message,
