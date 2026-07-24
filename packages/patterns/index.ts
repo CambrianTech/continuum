@@ -187,6 +187,28 @@ export interface GaugeView {
   readonly sampleIntervalMs?: number;
 }
 
+/** The `continuon` widget body — the rail's identity header (the top-left mark of
+ *  POSITRON-PURE-ROOMS-BRIEF.md: "alive — a slow-breathing mark"). Wordmark + an
+ *  optional version badge + a compact live-activity ticker. The projection owns the
+ *  ticker's formatting (digested, newest last); a target only paints — web draws a
+ *  breathing dot + scrolling mono lines, terminal a title line, RAG nothing (no
+ *  grounding value). Every field honest: no ticker lines yet = a quiet header,
+ *  never fabricated activity. */
+export interface ContinuonView {
+  /** The product wordmark ("continuum"). */
+  readonly wordmark: string;
+  /** Optional strapline under the wordmark. */
+  readonly tagline?: string;
+  /** Optional version badge ("v0.1.0") — from a REAL version source (a package
+   *  manifest, a core build stamp), never a hardcoded literal in a renderer. */
+  readonly version?: string;
+  /** Compact live-activity lines (newest last, already digested/truncated by the
+   *  projection). Empty = nothing observed yet — honest quiet. */
+  readonly ticker: readonly string[];
+  /** Whether the substrate feed is live — drives the breathing mark's state. */
+  readonly alive: boolean;
+}
+
 /** Wrap a `ListingView` as a `kind:'listing'` `PanelWidget` — the common case (the
  *  roster, a rooms list). Keeps constructors terse and single-sources the wrapping so
  *  the widget id/title default to the listing's own ([[compression]]). */

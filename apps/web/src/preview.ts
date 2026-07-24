@@ -153,6 +153,8 @@ function main(): void {
 
   const widget = document.createElement('chat-widget');
   widget.state = state;
+  // Same real version stamp as the live entry — the preview is byte-faithful.
+  widget.version = `v${__APP_VERSION__}`;
   // `?fixture=rooms` renders the roster state PLUS the nav room set and the SYS
   // gauge — the full left-rail reference input. Other fixtures leave the live
   // extras honest-absent.

@@ -15,6 +15,7 @@ import type {
   ListingCell,
   CellStatus,
   ContentView,
+  ContinuonView,
   WorkspaceView,
   PanelWidget,
   MetricsView,
@@ -100,6 +101,31 @@ export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): L
   };
 }
 
+/** Digest one message row into a ticker line: `sender: head…` — truncated hard so
+ *  the header ticker stays a glanceable log strip, never a second transcript. */
+function tickerLine(msg: MessageRowVM, max = 34): string {
+  const head = msg.content.replace(/\s+/g, ' ').trim();
+  const clipped = head.length > max ? `${head.slice(0, max - 1)}…` : head;
+  return `${msg.senderName}: ${clipped}`;
+}
+
+/** The `continuon` rail header — the wordmark + breathing status mark + a compact
+ *  live ticker of the room's latest turns (the old header's tiny scrolling log,
+ *  reborn from data the chat state already carries — no new pipe, no fabrication).
+ *  `version` is threaded from the host (a real manifest/build stamp) and honestly
+ *  absent until it is. */
+export function continuonWidget(vm: ChatViewModel, version?: string): PanelWidget<ContinuonView> {
+  const body: ContinuonView = {
+    wordmark: 'continuum',
+    tagline: 'ai workforce construction',
+    ...(version ? { version } : {}),
+    // Newest last, last three turns — the ticker reads bottom-fresh like a log tail.
+    ticker: vm.messages.slice(-3).map((m) => tickerLine(m)),
+    alive: vm.members.some((m) => m.active),
+  };
+  return { id: 'continuon', kind: 'continuon', title: 'Continuum', body, scope: 'global' };
+}
+
 /** The `AI Performance` rail widget — the room's LIVE team-cognition readout, derived
  *  from the roster's own vitals (no fabricated numbers, no extra pipe): how many are
  *  here, how many are actively thinking (a faculty firing on the live compass), and how
@@ -150,6 +176,10 @@ export interface WorkspaceLive {
   readonly nav?: NavViewState;
   /** The node's `kind="system-metrics"` view — adds the SYS gauge widget. */
   readonly sys?: SystemMetricsViewState;
+  /** The client build's version string (a real manifest/build stamp — e.g. the web
+   *  app's package version). Drives the continuon header's version badge; honestly
+   *  absent when the host has none to report. */
+  readonly version?: string;
 }
 
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
@@ -181,6 +211,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // dispatched by kind; the roster stays the participants `Listing`
   // (ROSTER_LISTING_ID) that RAG + mobile ground on.
   const left = [
+    continuonWidget(vm, live?.version),
     ...(live?.sys ? [systemGaugeWidget(live.sys)] : []),
     metricsWidget(vm),
     listingWidget(rooms),

@@ -45,6 +45,7 @@ export class ChatWidget extends LitElement {
     state: { attribute: false },
     nav: { attribute: false },
     sys: { attribute: false },
+    version: { attribute: false },
     sendHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
     _draft: { state: true },
@@ -67,6 +68,11 @@ export class ChatWidget extends LitElement {
   /** The node's live `kind="system-metrics"` view (CPU/MEM window), when the
    *  host's subscription has delivered. `undefined` = no SYS gauge, honest. */
   sys?: SystemMetricsViewState;
+
+  /** The client build's version string (a real manifest/build stamp injected by
+   *  the host) — drives the continuon header's version badge. `undefined` = no
+   *  badge, honest. */
+  version?: string;
 
   /** Injected by the host — how a composed message reaches the core. */
   sendHandler?: SendHandler;
@@ -256,6 +262,97 @@ export class ChatWidget extends LitElement {
     }
     .rail-widget:last-child {
       border-bottom: none;
+    }
+    /* Continuon header — the sidebar's identity mark: breathing orb + wordmark +
+     * version chip + the tiny live-activity ticker (the old header's scrolling log). */
+    .continuon {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-sm) var(--spacing-md);
+      min-height: 44px;
+    }
+    .continuon-orb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      flex: none;
+      background: radial-gradient(circle at 35% 35%, #7df2c8, #0f7a54 65%, #063325);
+      box-shadow: 0 0 8px rgba(63, 185, 80, 0.55), inset 0 0 3px rgba(255, 255, 255, 0.35);
+    }
+    @keyframes continuon-breathe {
+      0%, 100% { box-shadow: 0 0 5px rgba(63, 185, 80, 0.35), inset 0 0 3px rgba(255, 255, 255, 0.3); }
+      50% { box-shadow: 0 0 13px rgba(63, 185, 80, 0.85), inset 0 0 4px rgba(255, 255, 255, 0.5); }
+    }
+    .continuon-orb[data-alive='yes'] {
+      animation: continuon-breathe 3.2s ease-in-out infinite;
+    }
+    .continuon-orb[data-alive='no'] {
+      filter: grayscale(0.8);
+      opacity: 0.6;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .continuon-orb[data-alive='yes'] {
+        animation: none;
+      }
+    }
+    .continuon-id {
+      min-width: 0;
+      flex: none;
+    }
+    .continuon-row {
+      display: flex;
+      align-items: baseline;
+      gap: var(--spacing-sm);
+    }
+    .continuon-wordmark {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--content-accent);
+      text-shadow: 0 0 8px rgba(0, 212, 255, 0.35);
+    }
+    .continuon-version {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      padding: 1px 5px;
+      border: 1px solid var(--border-accent, rgba(0, 212, 255, 0.4));
+      border-radius: var(--radius-sm);
+      color: var(--content-accent);
+      background: rgba(0, 212, 255, 0.08);
+      font-variant-numeric: tabular-nums;
+    }
+    .continuon-tagline {
+      font-size: 8.5px;
+      letter-spacing: 0.06em;
+      color: var(--content-secondary);
+      white-space: nowrap;
+    }
+    /* The live log ticker — right-aligned column of the last turns, log-tail style. */
+    .continuon-ticker {
+      flex: 1;
+      min-width: 0;
+      align-self: stretch;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 1px;
+      overflow: hidden;
+      border-left: 1px solid var(--border-subtle);
+      padding-left: var(--spacing-sm);
+    }
+    .continuon-tick {
+      font-family: var(--font-mono);
+      font-size: 7.5px;
+      line-height: 1.35;
+      color: var(--content-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .continuon-tick:last-child {
+      color: var(--content-accent);
+      opacity: 0.85;
     }
     /* AI Performance widget — the live team-cognition stat row (HERE / THINKING /
      * GENOME), the honest roster-derived slice of the old AI PERFORMANCE panel. */
@@ -1385,7 +1482,7 @@ export class ChatWidget extends LitElement {
     // seen ([[fallbacks-are-illegal-fail-loud]]).
     let surface: TemplateResult;
     try {
-      surface = renderChat(vm, { nav: this.nav, sys: this.sys });
+      surface = renderChat(vm, { nav: this.nav, sys: this.sys, version: this.version });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;

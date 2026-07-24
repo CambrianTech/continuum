@@ -14,10 +14,11 @@
  * cyberpunk tokens.
  */
 
-import { html, svg, type TemplateResult } from 'lit';
+import { html, nothing, svg, type TemplateResult } from 'lit';
 import {
   createWidgetRegistry,
   type WidgetRegistry,
+  type ContinuonView,
   type GaugeView,
   type ListingView,
   type MetricsView,
@@ -41,6 +42,35 @@ webWidgetRegistry.register('listing', (widget) => {
         <span class="who-count">${view.cells.length}</span>
       </div>
       ${renderListing(view)}
+    </section>
+  `;
+});
+
+/** `'continuon'` — the rail's identity header (the old sidebar's continuum mark):
+ *  a breathing status orb + the wordmark + tagline, a version badge, and the tiny
+ *  live-activity ticker (last turns, digested by the projection). The mark reads
+ *  ALIVE from data — `alive` gates the breath, the ticker carries the real feed. */
+webWidgetRegistry.register('continuon', (widget) => {
+  const view = widget.body as ContinuonView;
+  return html`
+    <section class="rail-widget" data-widget="continuon" data-id=${widget.id}>
+      <div class="continuon">
+        <span class="continuon-orb" data-alive=${view.alive ? 'yes' : 'no'}></span>
+        <div class="continuon-id">
+          <div class="continuon-row">
+            <span class="continuon-wordmark">${view.wordmark}</span>
+            ${view.version
+              ? html`<span class="continuon-version" title="client build">${view.version}</span>`
+              : nothing}
+          </div>
+          ${view.tagline ? html`<div class="continuon-tagline">${view.tagline}</div>` : nothing}
+        </div>
+        ${view.ticker.length > 0
+          ? html`<div class="continuon-ticker" title="latest activity">
+              ${view.ticker.map((line) => html`<div class="continuon-tick">${line}</div>`)}
+            </div>`
+          : nothing}
+      </div>
     </section>
   `;
 });

@@ -50,6 +50,8 @@ async function main(): Promise<void> {
   const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${config.senderId}`;
 
   const widget = document.createElement('chat-widget');
+  // The version badge's real source: this build's package version, stamped by vite.
+  widget.version = `v${__APP_VERSION__}`;
   const mount = document.getElementById('app') ?? document.body;
   mount.replaceChildren(widget);
 

@@ -14,6 +14,7 @@ import {
   rosterListing,
   roomsListing,
   roomsListingFromNav,
+  continuonWidget,
   chatWorkspace,
   type ChatContentBody,
 } from './patternProjections';
@@ -113,10 +114,11 @@ describe('chat → pattern projections', () => {
   it('composes the room into a Workspace with purpose-keyed Content', () => {
     const ws = chatWorkspace(vm);
     expect(ws.nav.id).toBe('rooms');
-    // The left rail is a global widget stack: AI Performance (metrics) · Rooms (listing)
-    // · Users & Agents (listing). The roster is the participants listing (id 'roster').
-    expect(ws.left).toHaveLength(3);
-    expect(ws.left.map((w) => w.kind)).toEqual(['metrics', 'listing', 'listing']);
+    // The left rail is a global widget stack: Continuon (identity header) · AI
+    // Performance (metrics) · Rooms (listing) · Users & Agents (listing). The
+    // roster is the participants listing (id 'roster').
+    expect(ws.left).toHaveLength(4);
+    expect(ws.left.map((w) => w.kind)).toEqual(['continuon', 'metrics', 'listing', 'listing']);
     const roster = ws.left.find(
       (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'roster',
     );
@@ -129,6 +131,35 @@ describe('chat → pattern projections', () => {
     expect(body.messages).toHaveLength(1);
     expect(body.isEmpty).toBe(false);
     expect(ws.context.listings).toHaveLength(0);
+  });
+
+  // what this catches: the continuon header is projected purely from data the chat
+  // state already carries — the ticker digests the LAST turns (newest last, hard
+  // truncation so the header never becomes a second transcript), `alive` reflects
+  // real presence, and the version badge attaches only when the host reported one
+  // (honest-absent, never a fabricated stamp).
+  it('projects the continuon header with a digested ticker and honest version', () => {
+    const longVm: ChatViewModel = {
+      ...vm,
+      messages: [
+        ...vm.messages,
+        { id: 'm2', senderId: 'a', senderName: 'Asha', kind: 'agent', time: '00:01', runtime: 'persona',
+          content: 'a very long line that must be clipped hard because the ticker is a log strip, not a transcript' },
+      ],
+    };
+    const w = continuonWidget(longVm, 'v0.1.0');
+    expect(w.kind).toBe('continuon');
+    expect(w.body.wordmark).toBe('continuum');
+    expect(w.body.version).toBe('v0.1.0');
+    expect(w.body.alive).toBe(true);
+    expect(w.body.ticker).toHaveLength(2);
+    expect(w.body.ticker[0]).toBe('Asha: hi');
+    expect(w.body.ticker[1]?.length).toBeLessThanOrEqual('Asha: '.length + 34);
+    expect(w.body.ticker[1]?.endsWith('…')).toBe(true);
+    // No version reported → no badge field at all.
+    expect(continuonWidget(vm).body).not.toHaveProperty('version');
+    // The workspace puts the continuon at the TOP of the rail.
+    expect(chatWorkspace(vm).left[0]?.kind).toBe('continuon');
   });
 
   // what this catches: brick 1 (POSITRON-WIDGET-SOPHISTICATION.md) — the live
