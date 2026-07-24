@@ -30,7 +30,7 @@ import { webWidgetRegistry } from './widgets';
  *  `?universe=` axis `<chat-widget>` already keys its skins off ('' = the
  *  native continuum look). Cycling rewrites the query param, which re-embodies
  *  the app — a real action, not a dead chrome button. */
-const UNIVERSES = ['', 'tron', 'forge', 'cosmos'] as const;
+const UNIVERSES = ['', 'tron', 'ares', 'warcraft', 'crystal', 'cuddly', 'crt', 'forge', 'cosmos'] as const;
 
 /** Advance the ?universe= query param to the next skin (pure on its input so
  *  the cycle order is unit-testable; the caller applies it to location). */

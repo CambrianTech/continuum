@@ -2771,6 +2771,151 @@ export class ChatWidget extends LitElement {
     /* ── UNIVERSE: tron ── the SAME app, re-embodied as a neon grid portal. Not a
        theme swap — an EXPERIENCE ([[universe-is-an-experience-not-a-theme]]): the grid
        floor, glowing programs, the derez cyan. One chatApp, a whole world over it. */
+    /* ── ARES — Tron: Ares. The grid gone RED: Ares' program-red light-lines
+       on black glass. Same instrument cluster, hostile-elegant palette. ── */
+    :host([data-universe='ares']) {
+      --button-primary-background: #c4232c;
+      --button-primary-background-hover: #ff3b45;
+      --button-primary-text: #fff0f0;
+      --hud-accent: rgba(255, 45, 55, 0.92);
+      --hud-accent-dim: rgba(255, 45, 55, 0.6);
+      --hud-accent-border: rgba(255, 45, 55, 0.4);
+      --hud-accent-glow: rgba(255, 45, 55, 0.38);
+      --hud-panel-background: rgba(20, 4, 6, 0.92);
+      --content-accent: #ff3b45;
+      --content-primary: #ffe3e5;
+      --content-secondary: #b08a8d;
+      --border-subtle: rgba(255, 45, 55, 0.22);
+      --status-online: #ff7a45;
+      --meter-act: #ff3b45;
+      --meter-que: #ff9a5a;
+      --ring-speaking: #ff3b45;
+      --ring-thinking: #ff8a90;
+      color: #ffd9db;
+      background:
+        radial-gradient(ellipse 90% 55% at 50% 6%, rgba(255, 40, 50, 0.12), transparent 70%),
+        repeating-linear-gradient(0deg, transparent 0 47px, rgba(255, 45, 55, 0.06) 47px 48px),
+        repeating-linear-gradient(90deg, transparent 0 47px, rgba(255, 45, 55, 0.06) 47px 48px),
+        linear-gradient(180deg, #0a0102, #050001);
+    }
+
+    /* ── WARCRAFT — gilded fantasy: aged gold on dark umber leather, the
+       faction-blue steel as secondary. Ornate, warm, tavern-lit. ── */
+    :host([data-universe='warcraft']) {
+      --button-primary-background: #a67c00;
+      --button-primary-background-hover: #f8b700;
+      --button-primary-text: #1a1108;
+      --hud-accent: rgba(248, 183, 0, 0.95);
+      --hud-accent-dim: rgba(248, 183, 0, 0.6);
+      --hud-accent-border: rgba(248, 183, 0, 0.45);
+      --hud-accent-glow: rgba(248, 183, 0, 0.35);
+      --hud-panel-background: rgba(30, 20, 8, 0.94);
+      --content-accent: #f8b700;
+      --content-primary: #f4e6c8;
+      --content-secondary: #a8946a;
+      --border-subtle: rgba(248, 183, 0, 0.25);
+      --status-online: #6fd44a;
+      --meter-act: #f8b700;
+      --meter-que: #4a9bd4;
+      --ring-speaking: #f8b700;
+      --ring-thinking: #4a9bd4;
+      --radius-sm: 2px;
+      --radius-md: 3px;
+      --radius-lg: 4px;
+      color: #f4e6c8;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 0%, rgba(248, 183, 0, 0.08), transparent 65%),
+        linear-gradient(180deg, #1a1108, #0d0804);
+    }
+
+    /* ── CRYSTAL — the classic Final Fantasy menu: cobalt gradient panels,
+       white text, crystal-cyan accent. Serene RPG chrome. ── */
+    :host([data-universe='crystal']) {
+      --button-primary-background: #2b57c9;
+      --button-primary-background-hover: #4a7ae8;
+      --button-primary-text: #ffffff;
+      --hud-accent: rgba(140, 220, 255, 0.95);
+      --hud-accent-dim: rgba(140, 220, 255, 0.6);
+      --hud-accent-border: rgba(200, 230, 255, 0.5);
+      --hud-accent-glow: rgba(140, 220, 255, 0.4);
+      --hud-panel-background: rgba(8, 24, 88, 0.88);
+      --content-accent: #9fe0ff;
+      --content-primary: #ffffff;
+      --content-secondary: #a9c1e8;
+      --border-subtle: rgba(200, 230, 255, 0.35);
+      --status-online: #7dffb0;
+      --meter-act: #9fe0ff;
+      --meter-que: #ffd77d;
+      --ring-speaking: #9fe0ff;
+      --ring-thinking: #ffffff;
+      color: #ffffff;
+      background: linear-gradient(180deg, #0a1c6e 0%, #061148 55%, #030a30 100%);
+    }
+
+    /* ── CUDDLY — soft pastel plush: lavender-cream ground, candy-pink
+       accent, everything rounder and gentler. ── */
+    :host([data-universe='cuddly']) {
+      --button-primary-background: #e0559a;
+      --button-primary-background-hover: #ff7ab2;
+      --button-primary-text: #fff5fb;
+      --hud-accent: rgba(255, 122, 178, 0.95);
+      --hud-accent-dim: rgba(255, 122, 178, 0.6);
+      --hud-accent-border: rgba(255, 122, 178, 0.45);
+      --hud-accent-glow: rgba(255, 122, 178, 0.35);
+      --hud-panel-background: rgba(58, 44, 78, 0.9);
+      --content-accent: #ff7ab2;
+      --content-primary: #fdeffa;
+      --content-secondary: #c9b3d9;
+      --border-subtle: rgba(255, 170, 210, 0.3);
+      --status-online: #8be8b0;
+      --meter-act: #ff7ab2;
+      --meter-que: #b48ff0;
+      --ring-speaking: #ff7ab2;
+      --ring-thinking: #b48ff0;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 22px;
+      color: #fdeffa;
+      background:
+        radial-gradient(ellipse 70% 45% at 30% 0%, rgba(255, 122, 178, 0.14), transparent 65%),
+        radial-gradient(ellipse 70% 45% at 80% 100%, rgba(140, 110, 240, 0.16), transparent 65%),
+        linear-gradient(180deg, #2e2342, #241a35);
+    }
+
+    /* ── CRT — old-school amber phosphor terminal: one hue, scanlines,
+       glow bloom. The machine room at 2 a.m. ── */
+    :host([data-universe='crt']) {
+      --button-primary-background: #b87c00;
+      --button-primary-background-hover: #ffb000;
+      --button-primary-text: #140c00;
+      --hud-accent: rgba(255, 176, 0, 0.95);
+      --hud-accent-dim: rgba(255, 176, 0, 0.55);
+      --hud-accent-border: rgba(255, 176, 0, 0.4);
+      --hud-accent-glow: rgba(255, 176, 0, 0.45);
+      --hud-panel-background: rgba(20, 12, 0, 0.92);
+      --content-accent: #ffb000;
+      --content-primary: #ffcf6a;
+      --content-secondary: #a87c22;
+      --content-success: #ffb000;
+      --border-subtle: rgba(255, 176, 0, 0.28);
+      --status-online: #ffb000;
+      --meter-act: #ffb000;
+      --meter-que: #ff8c00;
+      --ring-speaking: #ffb000;
+      --ring-thinking: #ffcf6a;
+      --radius-sm: 0px;
+      --radius-md: 0px;
+      --radius-lg: 0px;
+      --radius-xl: 0px;
+      color: #ffcf6a;
+      text-shadow: 0 0 6px rgba(255, 176, 0, 0.35);
+      background:
+        repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.35) 0 1px, transparent 1px 3px),
+        radial-gradient(ellipse 120% 90% at 50% 50%, rgba(255, 176, 0, 0.06), transparent 75%),
+        #0a0600;
+    }
+
     :host([data-universe='tron']) {
       /* Tile HUD tokens re-skinned to the grid's electric cyan — the whole
          instrument cluster (chips, meters, genome, rings) follows. */
