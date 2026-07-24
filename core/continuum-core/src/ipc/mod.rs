@@ -1114,6 +1114,11 @@ pub fn start_server(
                     monitor.platform(),
                     monitor.device_name()
                 );
+                // Feed the SAME detected monitor to the system-resource snapshot
+                // so the holistic SYS view (and the Positron SYS gauge) carries
+                // live GPU stats next to cpu+mem — one probe, reused, never a
+                // second `gpu::monitor::detect()`.
+                system_monitor.attach_gpu_monitor(monitor.clone());
                 capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
                     monitor,
                     GPU_SAFETY_RESERVE_BYTES,
