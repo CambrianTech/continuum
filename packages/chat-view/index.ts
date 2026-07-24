@@ -50,6 +50,7 @@ export {
   systemPanelWidget,
   nodesWidget,
   continuonWidget,
+  roomInfoListing,
   chatWorkspace,
 } from './patternProjections';
 export type { ChatContentBody, WorkspaceLive } from './patternProjections';

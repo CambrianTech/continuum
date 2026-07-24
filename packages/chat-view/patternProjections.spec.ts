@@ -132,7 +132,16 @@ describe('chat → pattern projections', () => {
     const body = ws.content.body as ChatContentBody;
     expect(body.messages).toHaveLength(1);
     expect(body.isEmpty).toBe(false);
-    expect(ws.context.listings).toHaveLength(0);
+    // The right contextual rail carries the room-info card — purpose, presence,
+    // and the agent/human mix, all derived from the same snapshot (no new pipe).
+    expect(ws.context.listings).toHaveLength(1);
+    const info = ws.context.listings[0];
+    expect(info?.id).toBe('room-info');
+    expect(info?.cells.map((c) => c.title)).toEqual([
+      'chat',
+      '2 members · 1 active',
+      '1 agents · 1 humans',
+    ]);
   });
 
   // what this catches: the continuon header is projected purely from data the chat

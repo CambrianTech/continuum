@@ -208,6 +208,29 @@ export function systemPanelWidget(
   return { id: 'system', kind: 'system', title: 'System', body, scope: 'global' };
 }
 
+/** The chat room's contextual panel listing — room facts + participants summary
+ *  (the right rail's "Room info" card), every line derived from state the
+ *  surface already holds: purpose, presence counts, and the agent/human mix.
+ *  No created-at line — the substrate doesn't carry a room birth timestamp yet,
+ *  so none is drawn (honest-absent, never a fabricated date). */
+export function roomInfoListing(vm: ChatViewModel): ListingView {
+  const agents = vm.members.filter((m) => m.kind === 'agent').length;
+  const humans = vm.members.filter((m) => m.kind === 'human').length;
+  return {
+    id: 'room-info',
+    title: 'Room',
+    cells: [
+      { id: 'purpose', title: vm.purpose, subtitle: 'purpose' },
+      {
+        id: 'presence',
+        title: `${vm.memberCount} members · ${vm.activeCount} active`,
+        subtitle: 'presence',
+      },
+      { id: 'mix', title: `${agents} agents · ${humans} humans`, subtitle: 'participants' },
+    ],
+  };
+}
+
 /** The live extras a host wires in beside the chat snapshot — each optional and
  *  independent, each honestly absent until its subscription delivers (never a
  *  fabricated placeholder). One options object, not a growing positional list
@@ -263,6 +286,8 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     nav: rooms,
     left,
     content,
-    context: { listings: [] },
+    // The right contextual rail: the focused room's info card (purpose,
+    // presence, participant mix) — the ContextPanel primitive, finally fed.
+    context: { listings: [roomInfoListing(vm)] },
   };
 }
