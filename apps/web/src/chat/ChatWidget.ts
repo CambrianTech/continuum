@@ -859,13 +859,28 @@ export class ChatWidget extends LitElement {
 
     .member {
       position: relative;
-      display: flex;
+      /* A designed grid, not accidental flex alignment: avatar | info | right
+         rail, with the recency stamp and genome panel stacked in the right rail
+         (no absolute positioning, no dodge margins — the reference layout). */
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      grid-template-areas:
+        'av info ago'
+        'av info gen';
+      grid-template-rows: auto 1fr;
+      column-gap: var(--spacing-sm);
+      row-gap: 2px;
       align-items: center;
-      gap: var(--spacing-sm);
       padding: var(--spacing-xs) var(--spacing-sm);
       /* Chamfered HUD module (notched corners), not a rounded row. */
       clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
       transition: background var(--motion-fast) var(--motion-ease);
+    }
+    .member .avatar {
+      grid-area: av;
+    }
+    .member .info {
+      grid-area: info;
     }
     .member.idle {
       opacity: 0.6;
@@ -1060,9 +1075,9 @@ export class ChatWidget extends LitElement {
     }
     /* Recency stamp — the reference's "55m ago", quiet in the top-right. */
     .member .ago {
-      position: absolute;
-      top: 3px;
-      right: 10px;
+      grid-area: ago;
+      justify-self: end;
+      align-self: start;
       font-family: var(--font-mono);
       font-size: var(--font-size-xs);
       letter-spacing: 0.04em;
@@ -1178,16 +1193,13 @@ export class ChatWidget extends LitElement {
      * in — visible empty equipment slots, never half-mast bars) · the
      * cognition compass at top-right. */
     .genome-panel {
+      grid-area: gen;
+      justify-self: end;
+      align-self: start;
       display: grid;
       grid-template-columns: auto 1fr auto;
       column-gap: var(--spacing-xs);
       align-items: end;
-      align-self: stretch;
-      flex: none;
-      margin-left: auto;
-      /* Clears the tile's top-right "55m ago" stamp — the reference keeps the
-         recency line ABOVE the panel, never over it. */
-      margin-top: 13px;
       min-height: 46px;
       padding: var(--spacing-xs) 5px;
       background: var(--hud-panel-background);
