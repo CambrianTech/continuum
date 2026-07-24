@@ -22,6 +22,7 @@
 
 import type { ChatState } from './ChatState';
 import type { ChatMessageView, RosterSlotView, SenderKind } from '@continuum/sdk-typescript';
+import { messageDigest, type MessageDigestVM } from './messageDigest';
 
 /** The neutral author/member kind discriminant (`'human' | 'agent' | 'system'`). */
 export type MemberKind = SenderKind['kind'];
@@ -67,6 +68,15 @@ export interface MessageRowVM {
   /** Wall-clock time-of-day (UTC `HH:MM`) — deterministic across machines. */
   readonly time: string;
   readonly runtime: string;
+  /** The digest tier for an over-threshold body ([[perception-resolution-contract]]):
+   *  head + mechanical tail summary (+ repetition histogram). Absent = the full
+   *  tier — render `content` verbatim. `content` always carries the untouched
+   *  original either way; the digest never destroys fidelity, only defers it. */
+  readonly digest?: MessageDigestVM;
+  /** Renderer-owned overlay: the reader expanded this collapsed row (render the
+   *  full body, offer "collapse"). NEVER set by the projection — the widget's
+   *  expand state stamps it on, the same overlay pattern as live typing rows. */
+  readonly expanded?: boolean;
 }
 
 /** The full render-ready projection of a chat snapshot. */
@@ -132,6 +142,10 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
 }
 
 function messageVM(msg: ChatMessageView): MessageRowVM {
+  // Digest tier ([[perception-resolution-contract]]): classify here, in the ONE
+  // place that computes "how a message row reads", so every renderer (web, tui,
+  // RAG grounding) inherits flood-proofing without re-deriving it.
+  const digest = messageDigest(msg.content);
   return {
     id: msg.id,
     senderId: msg.sender_id,
@@ -140,6 +154,7 @@ function messageVM(msg: ChatMessageView): MessageRowVM {
     content: msg.content,
     time: formatTimeOfDay(msg.timestamp),
     runtime: msg.provenance.runtime,
+    ...(digest ? { digest } : {}),
   };
 }
 

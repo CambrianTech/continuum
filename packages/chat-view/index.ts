@@ -27,6 +27,18 @@ export type {
   MessageRowVM,
 } from './chatViewModel';
 
+// The transcript's digest tier ([[perception-resolution-contract]]): mechanical
+// head + tail-summary + repetition-histogram classification of over-threshold
+// message bodies, so no message can flood a renderer — human or persona.
+export {
+  messageDigest,
+  DIGEST_OVER_CHARS,
+  DIGEST_OVER_LINES,
+  DIGEST_HEAD_LINES,
+  DIGEST_HEAD_CHARS,
+} from './messageDigest';
+export type { MessageDigestVM } from './messageDigest';
+
 // The chat activity expressed on the consumer-neutral pattern primitives
 // (ACTIVITY-ROOM-PATTERNS.md): the roster IS the `Listing`, and the whole room
 // composes into a `Workspace` (nav + left + purpose-keyed content + context).
