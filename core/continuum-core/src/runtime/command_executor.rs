@@ -33,7 +33,16 @@
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+// The TS CommandRouterServer is reached over a Unix-domain socket. On Windows
+// there is no Unix socket; alias to TcpStream so the TS-bridge path compiles
+// unchanged. `connect()` to the filesystem-path socket then fails gracefully at
+// runtime. BEHAVIORAL GAP: the explicit TS-bridge (`execute_ts*`) is
+// unavailable on Windows until a TCP endpoint is wired; the Rust dispatch chain
+// (the primary path) is unaffected.
+#[cfg(unix)]
 use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::TcpStream as UnixStream;
 use tracing::Instrument;
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
