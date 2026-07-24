@@ -79,8 +79,11 @@ dashmap = "6.1"  # Lock-free concurrent HashMap
 # no hand-maintained list (infinitely-extensible / on-the-fly commands make a
 # static list immediately stale). dtolnay's inventory; link-time collection.
 inventory = "0.3"
-tikv-jemallocator = "0.6"  # jemalloc: returns memory to OS aggressively, reduces fragmentation
+# jemalloc lives in a target block below (gated off windows-msvc, where
+# jemalloc-sys's autotools build fails); see the `not(target_env = "msvc")`
+# block near the macOS deps + the gated #[global_allocator] in main.rs.
 libc = "0.2"     # Process group management (setsid, kill -pgid)
+fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
 toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
 sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
@@ -247,6 +250,15 @@ scraper = "0.21"
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
 deadpool-postgres.workspace = true                        # Postgres connection pool
 tokio-postgres.workspace = true                           # Postgres async driver
+
+# jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
+# jemalloc via an autotools `configure` shell script that fails under
+# windows-msvc, which broke the native Windows continuum-core build. Windows
+# falls back to the system allocator (this box is a dev / serving-via-Docker
+# host, not the Bevy/persona fragmentation case jemalloc fixes — see main.rs).
+# Linux + macOS serving nodes keep jemalloc unchanged.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
 
 # Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
 # Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility

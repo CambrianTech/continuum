@@ -104,7 +104,10 @@ async fn help_for(command: &str) -> Result<(), String> {
 /// Render a command's `CommandInfo` (from commands/list) as CLI/bash help. Pure
 /// (Value in, String out) so it's unit-testable without a running core.
 fn render_cli_help(command: &str, info: &Value) -> String {
-    let desc = info.get("description").and_then(|d| d.as_str()).unwrap_or("");
+    let desc = info
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or("");
     let mut out = format!("{command} — {desc}\n\n");
     out.push_str(&format!(
         "Usage: cu {command} [--flag value ...]   (or a single JSON object)\n"
@@ -116,12 +119,18 @@ fn render_cli_help(command: &str, info: &Value) -> String {
         .and_then(|r| r.as_array())
         .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
         .unwrap_or_default();
-    match schema.and_then(|s| s.get("properties")).and_then(|p| p.as_object()) {
+    match schema
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.as_object())
+    {
         Some(props) if !props.is_empty() => {
             out.push_str("\nParams:\n");
             for (name, spec) in props {
                 let ty = schema_type_str(spec);
-                let pdesc = spec.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                let pdesc = spec
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("");
                 let req = if required.contains(&name.as_str()) {
                     "  (required)"
                 } else {
@@ -451,10 +460,22 @@ fn pgrep(pattern: &str) -> Vec<i32> {
         .unwrap_or_default()
 }
 
-/// True if `pid` is still alive (signal 0 is the canonical liveness probe).
+/// True if `pid` is still alive. Unix: signal 0 is the canonical liveness probe.
+/// Windows has no signals — query the task list for the pid.
 fn pid_alive(pid: i32) -> bool {
-    // SAFETY: kill(pid, 0) sends no signal; it only checks existence/permission.
-    unsafe { libc::kill(pid, 0) == 0 }
+    #[cfg(unix)]
+    {
+        // SAFETY: kill(pid, 0) sends no signal; it only checks existence/permission.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
 }
 
 /// Spawn the pure-Rust start script detached and wait until the core answers
@@ -484,14 +505,23 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
-    // SAFETY: setsid() in the forked child before exec — detaches from cu's
-    // session/controlling terminal so the core outlives this CLI invocation.
+    // Detach so the core outlives this CLI invocation. Unix: setsid() in the
+    // forked child before exec, off cu's session/controlling terminal. Windows:
+    // a new process group + detached process (no console tie).
+    #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(|| {
             libc::setsid();
             Ok(())
         });
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
     let child = cmd
         .spawn()
@@ -527,14 +557,22 @@ async fn stop() -> Result<(), String> {
     let mut stopped = false;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
         if let Ok(pid) = contents.trim().parse::<i32>() {
-            // Signal the whole process group (negative pid) — the start script's
-            // setsid made the core a group leader, so this reaps cargo + the core.
+            // Reap the core + its children. Unix: signal the whole process group
+            // (negative pid) — the start script's setsid made the core a group
+            // leader. Windows: taskkill /T kills the process tree.
+            #[cfg(unix)]
             unsafe {
                 libc::kill(-pid, libc::SIGTERM);
                 libc::kill(pid, libc::SIGTERM);
             }
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .output();
+            }
             stopped = true;
-            println!("sent SIGTERM to core (pid {pid})");
+            println!("stopping core (pid {pid})");
         }
         let _ = std::fs::remove_file(&pidfile);
     }
@@ -671,7 +709,12 @@ mod tests {
     fn flags_canonicalize_to_schema_field_names() {
         let canonical = vec!["persona_id".to_string(), "eval_set".to_string()];
         // every separator/case spelling of a schema field → the exact field name
-        for spelling in ["--persona_id", "--persona-id", "--personaId", "--PERSONA_ID"] {
+        for spelling in [
+            "--persona_id",
+            "--persona-id",
+            "--personaId",
+            "--PERSONA_ID",
+        ] {
             let p = params_from_args(&[spelling.into(), "abc".into()], &canonical).unwrap();
             assert_eq!(p, json!({ "persona_id": "abc" }), "{spelling} → persona_id");
         }
