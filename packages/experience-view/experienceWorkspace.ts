@@ -76,14 +76,31 @@ function standingByPeer(membership: readonly Member[]): Map<string, Standing> {
 function rosterCell(slot: RosterSlotView, standing: Standing | undefined): ListingCell {
   const badges = standing ? [slot.kind.kind, standing] : [slot.kind.kind];
   const status: CellStatus = slot.active ? 'active' : 'idle';
-  const cell: ListingCell = {
+  let cell: ListingCell = {
     id: slot.member_id,
     title: slot.display_name,
     glyph: kindGlyph(slot.kind),
     badges,
     status,
   };
-  return Object.keys(slot.vitals).length > 0 ? { ...cell, meters: slot.vitals } : cell;
+  if (Object.keys(slot.vitals).length > 0) cell = { ...cell, meters: slot.vitals };
+  // Loadout (model · size · ctx) + recency ride the neutral cell, same lossless
+  // enrichment as the chat-view roster projection (`patternProjections.rosterCell`)
+  // — without them the Experience-driven roster silently drops the tile's model
+  // strip and "Nm ago" stamp that the chat path carries.
+  if (slot.loadout) {
+    const lo = slot.loadout;
+    cell = {
+      ...cell,
+      loadout: {
+        ...(lo.model ? { model: lo.model } : {}),
+        ...(lo.params ? { params: lo.params } : {}),
+        ...(lo.context_window ? { contextWindow: lo.context_window } : {}),
+      },
+    };
+  }
+  if (slot.last_seen_ms > 0) cell = { ...cell, lastActiveMs: slot.last_seen_ms };
+  return cell;
 }
 
 /** The participant roster as the `Listing` primitive — rich cells from the `"roster"`

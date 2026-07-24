@@ -44,11 +44,13 @@ function rosterCell(m: RosterMemberVM): ListingCell {
   const badges = m.runtime ? [m.kind, m.runtime] : [m.kind];
   const status: CellStatus = m.active ? 'active' : 'idle';
   let cell: ListingCell = { id: m.id, title: m.name, glyph: kindGlyph(m.kind), badges, status };
-  // Vitals (0–100 meters) and loadout (model·size·ctx labels) both ride the neutral
-  // cell so the projection stays LOSSLESS — a target draws both from the Listing alone,
-  // no rich view-model crosses the render boundary. Each attaches only when present.
+  // Vitals (0–100 meters), loadout (model·size·ctx labels), and recency all ride the
+  // neutral cell so the projection stays LOSSLESS — a target draws them from the
+  // Listing alone, no rich view-model crosses the render boundary. Each attaches
+  // only when present.
   if (Object.keys(m.vitals).length > 0) cell = { ...cell, meters: m.vitals };
   if (m.loadout) cell = { ...cell, loadout: m.loadout };
+  if (m.lastSeenMs > 0) cell = { ...cell, lastActiveMs: m.lastSeenMs };
   return cell;
 }
 

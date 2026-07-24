@@ -529,6 +529,19 @@ export class ChatWidget extends LitElement {
       animation: comet-orbit 3.5s linear infinite;
       pointer-events: none;
     }
+    /* Top-right recency stamp — the old tile's "55m ago". Quiet mono caption that
+       never competes with the name row. */
+    .member .ago {
+      position: absolute;
+      top: 3px;
+      right: 10px;
+      font-family: var(--font-mono);
+      font-size: 8px;
+      letter-spacing: 0.04em;
+      color: var(--content-secondary);
+      opacity: 0.75;
+      pointer-events: none;
+    }
     .member .status-dot {
       position: absolute;
       bottom: -1px;

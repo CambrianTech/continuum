@@ -200,8 +200,14 @@ export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult
  *  Each part appears only when its data is present — a persona with no cognition emitted yet
  *  simply shows its activity, honestly. */
 /** The engine meters shown as bars — the cognition faculties are the DIAMOND, not bars
- *  (showing them both ways made the tile tall + redundant). Just speed + size here. */
+ *  (showing them both ways made the tile tall + redundant). `activity` is the LIVE
+ *  radiator's always-on tempo meter (`vitals_emitter` radiates it every sample, 0 at
+ *  idle — the one always-visible bar, the old tile's NRG analogue); speed/size are
+ *  capability meters a richer source may attach. Filtering on presence keeps absent
+ *  keys honest — but `activity` present-at-0 DRAWS (an idle persona shows an empty
+ *  bar, exactly like the old INT/NRG/QUE row, never a blank tile). */
 const STAT_ORDER: readonly (readonly [string, string])[] = [
+  ['activity', 'ACT'],
   ['speed', 'SPD'],
   ['size', 'PAR'],
 ];
@@ -278,12 +284,35 @@ export function loadoutStrip(lo: LoadoutVM | undefined): TemplateResult | typeof
   </span>`;
 }
 
+/** Raw last-active epoch ms → the tile's relative stamp: `"55m ago"`, `"2h ago"`,
+ *  `"3d ago"`, `"now"` under a minute. `undefined` when the fact is absent/unusable
+ *  (no stamp drawn — honest, never a fabricated recency). Renderer-owned unit
+ *  formatting, the sibling of `formatParams`/`formatCtx`. */
+export function agoLabel(lastActiveMs: number | undefined, nowMs = Date.now()): string | undefined {
+  if (!lastActiveMs || lastActiveMs <= 0 || lastActiveMs > nowMs + 60_000) return undefined;
+  const mins = Math.floor((nowMs - lastActiveMs) / 60_000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** The top-right recency stamp — the old tile's "55m ago". Nothing when unknown. */
+function agoStamp(lastActiveMs: number | undefined): TemplateResult | typeof nothing {
+  const label = agoLabel(lastActiveMs);
+  return label === undefined
+    ? nothing
+    : html`<span class="ago" title="last active">${label}</span>`;
+}
+
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
  *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
 export function memberCard(m: RosterMemberVM): TemplateResult {
   return html`
     <li class="member clickable ${m.active ? 'online' : 'idle'}" data-kind=${m.kind} tabindex="0"
         title="Open ${m.name}">
+      ${agoStamp(m.lastSeenMs)}
       <span class="avatar" data-state=${avatarState(m.vitals, m.active)}>
         <span class="glyph">${kindGlyph(m.kind)}</span>
         ${emojiOverlay(m.vitals)}
@@ -316,6 +345,7 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
   return html`
     <li class="member clickable ${active ? 'online' : 'idle'}" data-kind=${kind} tabindex="0"
         title="Open ${cell.title}">
+      ${agoStamp(cell.lastActiveMs)}
       <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
         <span class="glyph">${cell.glyph ?? ''}</span>
         ${emojiOverlay(cell.meters ?? {})}

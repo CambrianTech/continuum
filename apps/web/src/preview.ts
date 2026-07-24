@@ -42,18 +42,25 @@ const member = (over: Partial<RosterSlotView>): RosterSlotView => ({
 const roster: RosterSlotView[] = [
   member({
     member_id: 'asha', display_name: 'Asha', provenance: { runtime: 'devstral' },
-    vitals: { focus: 62, reason: 88, recall: 40, act: 20, genome: 55, speed: 70, size: 40 },
+    // `activity` is the live radiator's always-on tempo key — the fixture carries it
+    // so the preview exercises the SAME vocabulary `vitals_emitter` radiates.
+    vitals: { activity: 72, focus: 62, reason: 88, recall: 40, act: 20, genome: 55, speed: 70, size: 40 },
     loadout: { model: 'devstral-24b', params: 24_000_000_000, context_window: 32_768 },
+    last_seen_ms: Date.now() - 55 * 60_000, // "55m ago" — the reference stamp
   }),
   member({
     member_id: 'solenne', display_name: 'Solenne', provenance: { runtime: 'qwen' },
-    vitals: { focus: 30, reason: 45, recall: 80, act: 66, genome: 33, speed: 55, size: 55 },
+    vitals: { activity: 40, focus: 30, reason: 45, recall: 80, act: 66, genome: 33, speed: 55, size: 55 },
     loadout: { model: 'qwen3-coder-30b', params: 30_500_000_000, context_window: 262_144 },
+    last_seen_ms: Date.now() - 3 * 60_000,
   }),
   member({
     member_id: 'anwen', display_name: 'Anwen', provenance: { runtime: 'claude' },
-    vitals: { focus: 20, reason: 30, recall: 25, act: 90, genome: 0, speed: 88, size: 95 },
+    // An idle-but-resident persona: activity present at 0 → the tile still draws the
+    // (empty) ACT bar, the always-visible readout the old INT/NRG/QUE row set.
+    vitals: { activity: 0, focus: 20, reason: 30, recall: 25, act: 90, genome: 0, speed: 88, size: 95 },
     loadout: { model: 'claude-opus-4-8', params: 671_000_000_000, context_window: 1_000_000 },
+    last_seen_ms: Date.now() - 26 * 3_600_000, // "1d ago"
   }),
   member({
     member_id: 'joel', display_name: 'Joel', kind: { kind: 'human' },

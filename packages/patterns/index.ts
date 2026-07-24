@@ -60,6 +60,11 @@ export interface ListingCell {
    *  `meters` are 0–100 gauges, a loadout is capability text/counts. Absent = none
    *  reported (a human, a room, a model-less row) — the target draws no strip. */
   readonly loadout?: CellLoadout;
+  /** Optional recency fact — WHEN this item was last active (epoch ms, the raw
+   *  `last_seen_ms` presence signal). RAW so every surface formats its own idiom
+   *  (`"55m ago"` on web, `(55m)` in RAG). Absent or 0 = unknown — the target
+   *  draws no stamp, never a fabricated recency. */
+  readonly lastActiveMs?: number;
 }
 
 /** A roster cell's model loadout — the display facts of an AI member's backend. RAW

@@ -34,8 +34,9 @@ const vm: ChatViewModel = {
       runtime: 'persona',
       vitals: { energy: 80, attention: 90 },
       loadout: { model: 'devstral-24b', params: 24_000_000_000, contextWindow: 32_768 },
+      lastSeenMs: 1_700_000_000_000,
     },
-    { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '', vitals: {} },
+    { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '', vitals: {}, lastSeenMs: 0 },
   ],
   messages: [
     { id: 'm1', senderId: 'a', senderName: 'Asha', kind: 'agent', content: 'hi', time: '00:00', runtime: 'persona' },
@@ -85,6 +86,15 @@ describe('chat → pattern projections', () => {
       contextWindow: 32_768,
     });
     expect(cells[1]).not.toHaveProperty('loadout');
+  });
+
+  // what this catches: a member's recency (last_seen_ms) rides the neutral cell as
+  // `lastActiveMs` — the tile's "55m ago" stamp (card 2661a1b1) — and an unreported
+  // recency (0) attaches no key, so no fabricated stamp is ever drawn.
+  it('carries member recency as lastActiveMs, absent when unreported', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.lastActiveMs).toBe(1_700_000_000_000);
+    expect(cells[1]).not.toHaveProperty('lastActiveMs');
   });
 
   // what this catches: the focused room projects to the nav `Listing` (the tab

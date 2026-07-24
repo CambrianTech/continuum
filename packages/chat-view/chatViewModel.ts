@@ -56,6 +56,10 @@ export interface RosterMemberVM {
    *  a remote peer, or a persona whose binding hasn't resolved — the card draws
    *  no LOADOUT strip, never a fabricated model. */
   readonly loadout?: LoadoutVM;
+  /** WHEN this member was last active — raw epoch ms (`last_seen_ms` from
+   *  presence). `0` = unreported; the card draws no recency stamp then, never a
+   *  fabricated one. The renderer formats the idiom (`"55m ago"`). */
+  readonly lastSeenMs: number;
 }
 
 /** One conversation row — "what was said". */
@@ -138,6 +142,10 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     // Additive field (#186 loadout): absent for a human / unresolved agent — the
     // card draws no LOADOUT strip, never a fabricated model.
     ...(loadout ? { loadout } : {}),
+    // Recency (card 2661a1b1): the raw presence signal, formatted by the renderer.
+    // An older core omitting the field reads as 0 = unreported (no stamp drawn).
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    lastSeenMs: slot.last_seen_ms ?? 0,
   };
 }
 
