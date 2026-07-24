@@ -71,6 +71,12 @@ export interface ListingCell {
    *  (`"55m ago"` on web, `(55m)` in RAG). Absent or 0 = unknown — the target
    *  draws no stamp, never a fabricated recency. */
   readonly lastActiveMs?: number;
+  /** Optional NAMES of the item's loaded skill overlays (a persona's paged-in
+   *  LoRA genes), in load order — the label half of a `meters.genome` count, so
+   *  a target names each lit genome segment (tooltip) instead of drawing an
+   *  anonymous chip. Absent/empty = none loaded/reported — honest-absent,
+   *  never fabricated labels. */
+  readonly genes?: readonly string[];
 }
 
 /** A roster cell's model loadout — the display facts of an AI member's backend. RAW

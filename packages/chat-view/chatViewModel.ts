@@ -64,6 +64,11 @@ export interface RosterMemberVM {
    *  when the producing node has one. Absent = the card draws its kind
    *  glyph — honest fallback, never a broken image. */
   readonly avatarUrl?: string;
+  /** NAMES of the member's loaded skill overlays (paged-in LoRA genes), in
+   *  load order — the label half of `vitals.genome` (which is only a
+   *  normalized count), so the genome segments carry real adapter names.
+   *  Absent = none loaded/reported — never fabricated labels. */
+  readonly genes?: readonly string[];
 }
 
 /** One conversation row — "what was said". */
@@ -152,6 +157,10 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     lastSeenMs: slot.last_seen_ms ?? 0,
     // Additive field: the node's stored avatar image URL — absent = glyph fallback.
     ...(slot.avatar_url ? { avatarUrl: slot.avatar_url } : {}),
+    // Additive field (QUE/genes revival): gene NAMES, only when the radiator
+    // reported any — an older core omits the field entirely.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    ...(slot.genes && slot.genes.length > 0 ? { genes: slot.genes } : {}),
   };
 }
 

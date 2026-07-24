@@ -19,6 +19,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   member_id: 'm-1', display_name: 'Asha', kind: kind('agent'), integrations: {},
   provenance: { runtime: 'persona' }, active: true, last_seen_ms: 0,
   vitals: { activity: 42 },
+  genes: [],
   loadout: { model: 'devstral-24b', params: 24_000_000_000, context_window: 32_768 },
   ...over,
 });

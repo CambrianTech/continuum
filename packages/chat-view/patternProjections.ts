@@ -54,6 +54,7 @@ function rosterCell(m: RosterMemberVM): ListingCell {
   if (m.loadout) cell = { ...cell, loadout: m.loadout };
   if (m.lastSeenMs > 0) cell = { ...cell, lastActiveMs: m.lastSeenMs };
   if (m.avatarUrl) cell = { ...cell, image: m.avatarUrl };
+  if (m.genes && m.genes.length > 0) cell = { ...cell, genes: m.genes };
   return cell;
 }
 

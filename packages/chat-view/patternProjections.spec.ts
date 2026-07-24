@@ -38,6 +38,7 @@ const vm: ChatViewModel = {
       vitals: { energy: 80, attention: 90 },
       loadout: { model: 'devstral-24b', params: 24_000_000_000, contextWindow: 32_768 },
       lastSeenMs: 1_700_000_000_000,
+      genes: ['rust-hands', 'tool-fluency'],
     },
     { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '', vitals: {}, lastSeenMs: 0 },
   ],
@@ -89,6 +90,16 @@ describe('chat → pattern projections', () => {
       contextWindow: 32_768,
     });
     expect(cells[1]).not.toHaveProperty('loadout');
+  });
+
+  // what this catches: a member's gene NAMES ride the neutral cell losslessly —
+  // the label half of a `meters.genome` count — so a target names each lit
+  // genome segment. A member with none carries no `genes` key (absent, never
+  // fabricated labels).
+  it('carries member gene names as a neutral cell field, absent when none', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.genes).toEqual(['rust-hands', 'tool-fluency']);
+    expect(cells[1]).not.toHaveProperty('genes');
   });
 
   // what this catches: a member's recency (last_seen_ms) rides the neutral cell as

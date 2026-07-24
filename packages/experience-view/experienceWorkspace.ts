@@ -100,6 +100,10 @@ function rosterCell(slot: RosterSlotView, standing: Standing | undefined): Listi
     };
   }
   if (slot.last_seen_ms > 0) cell = { ...cell, lastActiveMs: slot.last_seen_ms };
+  // Gene NAMES ride losslessly too (the label half of `meters.genome`) — same
+  // parity-with-chat-view discipline as loadout/recency above.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if (slot.genes && slot.genes.length > 0) cell = { ...cell, genes: slot.genes };
   return cell;
 }
 
