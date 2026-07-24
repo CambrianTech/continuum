@@ -14,4 +14,11 @@ series: Array<MetricSeriesView>,
  * Sample cadence in milliseconds — lets a renderer label the window span
  * ("last 3 min") from the data instead of hardcoding it.
  */
-sample_interval_ms: number, };
+sample_interval_ms: number, 
+/**
+ * The producing node's host name — the identity line of the "nodes
+ * online" strip. `None` = the OS reported none (honest unknown, never a
+ * fabricated name). `#[serde(default)]` so a view serialized before this
+ * field folds as absent, never dropped.
+ */
+node?: string, };

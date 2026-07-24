@@ -150,6 +150,7 @@ const SYS_FIXTURE: SystemMetricsViewState = {
     },
   ],
   sample_interval_ms: 2000,
+  node: 'bigmama.local',
 };
 
 function main(): void {

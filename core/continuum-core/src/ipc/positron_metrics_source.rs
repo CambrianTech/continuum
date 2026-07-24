@@ -103,6 +103,10 @@ pub fn spawn_system_metrics_emitter(
         // Sole writer of the "system-metrics" kind → its own standalone
         // Revisions well (same discipline as chat / nav / kanban).
         let builder = StateBuilder::standalone();
+        // The node's identity line for the "nodes online" strip — read once
+        // (it can't change under a running process); `None` when the OS
+        // reports none, honest unknown ([[fallbacks-are-illegal-fail-loud]]).
+        let node = sysinfo::System::host_name();
         let mut ticker = tokio::time::interval(SAMPLE_INTERVAL);
         let mut cpu_ring: Vec<f32> = Vec::with_capacity(WINDOW);
         let mut mem_ring: Vec<f32> = Vec::with_capacity(WINDOW);
@@ -132,6 +136,7 @@ pub fn spawn_system_metrics_emitter(
             let view = SystemMetricsViewState {
                 series: fold_sample(&snap, &mut cpu_ring, &mut mem_ring, &mut gpu_ring),
                 sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,
+                node: node.clone(),
             };
             substrate.store(builder.session(view));
         }

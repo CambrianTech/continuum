@@ -50,6 +50,13 @@ pub struct SystemMetricsViewState {
     /// ("last 3 min") from the data instead of hardcoding it.
     #[ts(type = "number")]
     pub sample_interval_ms: u64,
+    /// The producing node's host name — the identity line of the "nodes
+    /// online" strip. `None` = the OS reported none (honest unknown, never a
+    /// fabricated name). `#[serde(default)]` so a view serialized before this
+    /// field folds as absent, never dropped.
+    #[serde(default)]
+    #[ts(optional)]
+    pub node: Option<String>,
 }
 
 impl SystemMetricsViewState {
@@ -73,7 +80,8 @@ mod tests {
     #[test]
     fn kind_is_stable_and_empty_series_is_honest() {
         use positron_core::ViewState;
-        let view = SystemMetricsViewState { series: Vec::new(), sample_interval_ms: 2000 };
+        let view =
+            SystemMetricsViewState { series: Vec::new(), sample_interval_ms: 2000, node: None };
         assert_eq!(view.kind(), SystemMetricsViewState::KIND);
         assert_eq!(view.kind(), "system-metrics");
         assert!(view.series.is_empty());

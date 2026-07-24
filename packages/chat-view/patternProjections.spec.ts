@@ -16,6 +16,7 @@ import {
   roomsListingFromNav,
   continuonWidget,
   systemPanelWidget,
+  nodesWidget,
   chatWorkspace,
   type ChatContentBody,
 } from './patternProjections';
@@ -177,6 +178,25 @@ describe('chat → pattern projections', () => {
       sample_interval_ms: 2000,
     });
     expect(wet.body.gauge?.series[0]).toMatchObject({ label: 'CPU', current: '20%' });
+  });
+
+  // what this catches: the NODES strip only exists when a live metrics feed
+  // attests this node (host name present) — no feed / no name = no widget,
+  // never a fabricated "1/1 online". And with the feed, the strip is a status
+  // widget over the one Listing primitive with THIS node active.
+  it('projects the nodes strip only from an attested metrics feed', () => {
+    expect(nodesWidget(undefined)).toBeUndefined();
+    expect(nodesWidget({ series: [], sample_interval_ms: 2000 })).toBeUndefined();
+    const w = nodesWidget({ series: [], sample_interval_ms: 2000, node: 'bigmama.local' });
+    expect(w?.kind).toBe('status');
+    expect(w?.body.cells).toEqual([
+      { id: 'local', title: 'bigmama.local', subtitle: 'this node', status: 'active' },
+    ]);
+    // The workspace slots it between the System panel and the Rooms listing.
+    const sys = { series: [], sample_interval_ms: 2000, node: 'bigmama.local' };
+    expect(chatWorkspace(vm, { sys }).left.map((x) => x.kind)).toEqual([
+      'continuon', 'system', 'status', 'listing', 'listing',
+    ]);
   });
 
   // what this catches: brick 1 (POSITRON-WIDGET-SOPHISTICATION.md) — the live

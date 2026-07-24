@@ -116,6 +116,36 @@ webWidgetRegistry.register('metrics', (widget) => {
   `;
 });
 
+/** `'status'` — the NODES strip (the factory sidebar's "1/1 nodes online"):
+ *  an online summary in the header, then one compact row per node (pulse dot ·
+ *  name · role chip). Body is the neutral `Listing`; only attested nodes reach
+ *  it, so the count is real by construction. */
+webWidgetRegistry.register('status', (widget) => {
+  const view = widget.body as ListingView;
+  const online = view.cells.filter((c) => c.status === 'active').length;
+  return html`
+    <section class="rail-widget" data-widget="status" data-id=${widget.id}>
+      <div class="who-head">
+        <span class="who-title">${widget.title}</span>
+        <span class="nodes-online"
+          ><span class="node-dot" data-on=${online > 0 ? '' : nothing}></span>${online}/${view.cells
+            .length}
+          online</span
+        >
+      </div>
+      <ul class="nodes">
+        ${view.cells.map(
+          (c) => html`<li class="node-row" data-status=${c.status ?? 'none'}>
+            <span class="node-dot" data-on=${c.status === 'active' ? '' : nothing}></span>
+            <span class="node-name">${c.title}</span>
+            ${c.subtitle ? html`<span class="node-role">${c.subtitle}</span>` : nothing}
+          </li>`,
+        )}
+      </ul>
+    </section>
+  `;
+});
+
 /** `'system'` — the two-faced SYS|AI panel: gauge + team stats behind a real
  *  toggle, drawn by `<sys-panel>` (which face shows is the reader's lens —
  *  element state, never projection state). */

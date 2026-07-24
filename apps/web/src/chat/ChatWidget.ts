@@ -478,6 +478,58 @@ export class ChatWidget extends LitElement {
       font-weight: 700;
       color: var(--content-primary);
     }
+    /* NODES strip — the factory sidebar's "1/1 nodes online": pulse dot + host
+     * name + role chip per attested node. */
+    .nodes-online {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-left: auto;
+      font-size: 9px;
+      letter-spacing: 0.05em;
+      color: var(--content-secondary);
+    }
+    ul.nodes {
+      list-style: none;
+      margin: 0;
+      padding: 0 var(--spacing-md) var(--spacing-sm);
+    }
+    .node-row {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      padding: 2px 0;
+      font-size: 12px;
+      color: var(--content-primary);
+    }
+    .node-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--status-offline, #555);
+      flex: none;
+    }
+    .node-dot[data-on] {
+      background: var(--status-online, #3fb950);
+      box-shadow: 0 0 5px var(--status-online, #3fb950);
+    }
+    .node-name {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .node-role {
+      margin-left: auto;
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 1px 6px;
+      clip-path: polygon(4px 0, 100% 0, 100% 100%, 0 100%);
+      background: rgba(0, 212, 255, 0.14);
+      color: var(--content-accent);
+    }
     /* Rooms widget — the live room set (brick 1) drawn by <rooms-panel>: filter
      * facets (All/Rooms/DMs — a facet over the neutral group key), purpose
      * descriptions under names, unread pills, and the (honestly disabled)

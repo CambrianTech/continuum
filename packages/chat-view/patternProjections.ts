@@ -174,6 +174,23 @@ export function systemGaugeWidget(sys: SystemMetricsViewState): PanelWidget<Gaug
   return { id: 'sys-gauge', kind: 'gauge', title: 'System', body: gauge, scope: 'global' };
 }
 
+/** The NODES strip (the factory sidebar's "1/1 nodes online"): every grid node
+ *  this surface can honestly attest, as a `status` widget whose body is the one
+ *  `Listing` primitive. Today that is exactly THIS node — attested by its live
+ *  `kind="system-metrics"` feed carrying the OS-reported host name; connected
+ *  peers join as cells when a peer-presence feed exists to attest them.
+ *  `undefined` (no feed / no host name) = no strip — honest, never a
+ *  fabricated "1/1 online". */
+export function nodesWidget(sys?: SystemMetricsViewState): PanelWidget<ListingView> | undefined {
+  if (!sys?.node) return undefined;
+  const listing: ListingView = {
+    id: 'nodes',
+    title: 'Nodes',
+    cells: [{ id: 'local', title: sys.node, subtitle: 'this node', status: 'active' }],
+  };
+  return { id: 'nodes', kind: 'status', title: 'Nodes', body: listing, scope: 'global' };
+}
+
 /** The TWO-FACED system panel (the old sidebar's SYS|AI header): one widget
  *  carrying BOTH the node's resource gauge (SYS face, from the live
  *  `kind="system-metrics"` view when delivered) and the team-cognition stats
@@ -234,9 +251,11 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // rooms/DMs) · Users & Agents (the rich live tiles). Each is one PanelWidget
   // dispatched by kind; the roster stays the participants `Listing`
   // (ROSTER_LISTING_ID) that RAG + mobile ground on.
+  const nodes = nodesWidget(live?.sys);
   const left = [
     continuonWidget(vm, live?.version),
     systemPanelWidget(vm, live?.sys),
+    ...(nodes ? [nodes] : []),
     listingWidget(rooms),
     listingWidget(rosterListing(vm)),
   ];
