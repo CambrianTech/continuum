@@ -7,9 +7,15 @@
 // muzzy_decay_ms=2000 (return muzzy pages after 2s instead of default 10s).
 // On a 32GB machine with 15 bursty personas, the default 10s window accumulates
 // 3-5GB of "owned unmapped memory" that inflates RSS.
+// Gated off windows-msvc: jemalloc-sys's autotools `configure` can't build
+// there, so Windows uses the system allocator. jemalloc stays on the
+// Linux/macOS serving nodes where the Bevy/persona fragmentation above bites
+// (Windows here is a dev/serving-via-Docker host, not the fragmentation case).
+#[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(not(target_env = "msvc"))]
 #[allow(non_upper_case_globals)]
 #[unsafe(export_name = "malloc_conf")]
 pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:2000\0";
