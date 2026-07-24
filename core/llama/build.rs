@@ -70,6 +70,29 @@ fn main() {
     // GCC-world `stdc++`/`gomp`.
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
+    // windows-msvc: pin llama.cpp's C/C++ runtime to the RELEASE CRT (/MD) even
+    // in Cargo's debug profile. Rust's msvc target ALWAYS links the release CRT
+    // (msvcrt/ucrt) — it has no debug-CRT (/MDd) variant. Modern cmake with
+    // CMP0091 NEW selects the runtime via CMAKE_MSVC_RUNTIME_LIBRARY, whose
+    // default is MultiThreadedDebugDLL (/MDd) for the Debug config — and /MDd
+    // is what DEFINES `_DEBUG`. With _DEBUG set, the MSVC headers (the PPL task
+    // machinery pulled in transitively by llama.cpp) emit references to the
+    // debug-only CRT reporter `_CrtDbgReport`/`_CrtDbgReportW`. Those symbols do
+    // not exist in the release CRT that Rust links, so the FINAL link of
+    // continuum_core.dll fails:
+    //   libllama…rlib(llama.cpp.obj): error LNK2001: unresolved external symbol
+    //     __imp__CrtDbgReport  →  LNK1120: 3 unresolved externals
+    // Pinning MultiThreadedDLL (/MD, no _DEBUG) makes llama.cpp's CRT match
+    // Rust's on both debug and release profiles. `cargo build --release` already
+    // gets this for free via the Release config's natural /MD; this line fixes
+    // the debug profile too. No-op off msvc (the flag only affects MSVC).
+    if target_env == "msvc" {
+        // Belt-and-suspenders: ensure CMP0091 is NEW so CMAKE_MSVC_RUNTIME_LIBRARY
+        // is actually honored rather than the legacy /MDd-baked-into-flags path.
+        cfg.define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW")
+            .define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
+    }
+
     // macOS always links Accelerate.framework — ggml-cpu's ops.cpp uses
     // vDSP_vsmul / vDSP_vsub / vDSP_vsadd UNCONDITIONALLY on macOS (CMake's
     // GGML_ACCELERATE auto-detection enables it whenever the SDK is
@@ -87,7 +110,7 @@ fn main() {
     // Metal on macOS — additional frameworks beyond the always-Mac set above.
     if cfg!(feature = "metal") && target_os == "macos" {
         cfg.define("GGML_METAL", "ON")
-           .define("GGML_METAL_EMBED_LIBRARY", "ON");
+            .define("GGML_METAL_EMBED_LIBRARY", "ON");
         println!("cargo:rustc-link-lib=framework=Metal");
         println!("cargo:rustc-link-lib=framework=MetalKit");
     } else {
@@ -249,9 +272,15 @@ fn main() {
         .header(llama_header.to_str().unwrap())
         .header(mtmd_header.to_str().unwrap())
         .header(mtmd_helper_header.to_str().unwrap())
-        .clang_arg(format!("-I{}", submodule.join("ggml").join("include").display()))
+        .clang_arg(format!(
+            "-I{}",
+            submodule.join("ggml").join("include").display()
+        ))
         .clang_arg(format!("-I{}", submodule.join("include").display()))
-        .clang_arg(format!("-I{}", submodule.join("tools").join("mtmd").display()))
+        .clang_arg(format!(
+            "-I{}",
+            submodule.join("tools").join("mtmd").display()
+        ))
         .allowlist_function("llama_.*")
         .allowlist_function("ggml_.*")
         .allowlist_function("mtmd_.*")
@@ -276,6 +305,7 @@ fn main() {
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
     let bindings = builder.generate().expect("Failed to generate bindings");
-    bindings.write_to_file(&out_path)
+    bindings
+        .write_to_file(&out_path)
         .expect("Failed to write bindings");
 }
