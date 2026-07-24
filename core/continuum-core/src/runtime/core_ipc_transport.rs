@@ -31,9 +31,9 @@ use serde_json::{Map, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 // The core's IPC socket is a Unix-domain socket. On Windows there is no Unix
 // socket; alias to TcpStream so the field/signature types compile. The connect
-// site is cfg-gated separately (a PathBuf is not a TCP address). BEHAVIORAL
-// GAP: this direct-IPC sidecar path (continuum-mcp) is not yet wired to the
-// core's TCP loopback listener on Windows — see the connect site below.
+// site is cfg-gated separately (a PathBuf is not a TCP address): on Windows it
+// dials the core's TCP loopback listener (127.0.0.1:CONTINUUM_CORE_TCP, the
+// PRIMARY IPC on Windows per ipc/mod.rs) — see the connect site below.
 #[cfg(windows)]
 use tokio::net::TcpStream as UnixStream;
 #[cfg(unix)]
