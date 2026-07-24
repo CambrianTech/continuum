@@ -835,6 +835,11 @@ export class ChatWidget extends LitElement {
       height: 100%;
       border-radius: 50%;
       object-fit: cover;
+      /* Legacy spec (PersonaTile.ts:308): cover + CENTER TOP — VRM portraits
+       * carry the face at the top of the frame; a centered crop lands on the
+       * dark collar. Scene-lit live renders (the bevy scene compositor) are the
+       * follow-up that replaces the dark field entirely. */
+      object-position: center top;
     }
     /* Presence dot — the legacy status-indicator, bottom-right on the ring. */
     .member .status-dot {

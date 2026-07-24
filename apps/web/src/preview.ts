@@ -51,7 +51,9 @@ const roster: RosterSlotView[] = [
     last_seen_ms: Date.now() - 55 * 60_000, // "55m ago" — the reference stamp
     // Exercises the avatar-image path (vite serves ~/.continuum/avatars at
     // /avatars); a machine without the file degrades to the glyph — honest.
-    avatar_url: '/avatars/asha.png',
+    // The peer-id-keyed file (the LIVE emitter's path) — the older asha.png is
+    // an unlit sceneless render (black face); scene-lit renders are card 80ef4131.
+    avatar_url: '/avatars/90e758b2-3cf3-45c1-b100-de7c4ab5a549.png',
   }),
   member({
     member_id: 'solenne', display_name: 'Solenne', provenance: { runtime: 'qwen' },
