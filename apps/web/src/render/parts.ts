@@ -194,11 +194,13 @@ export function runtimeBadge(runtime: string): TemplateResult | typeof nothing {
 }
 
 /** The avatar's live inference state — the SAME signal the chat header's "Asha is thinking…"
- *  reads. Drives the ring colour + pulse. Real thinking/error events are the wiring
- *  (persona:vitals emitting `error`/inference state); today derived from activity/reason
- *  (thinking) + presence (active/idle). */
+ *  reads. Drives the ring colour + pulse. `speaking` is the widget's overlay of the LIVE
+ *  token rail (#170 StreamDelta — real tokens flowing right now), stamped onto the vitals
+ *  the same way the expand overlay rides message rows; it outranks the slower (2s-sampled)
+ *  radiator-derived thinking state. Error > speaking > thinking > presence. */
 export function avatarState(v: Readonly<Record<string, number>>, active: boolean): string {
   if ((v.error ?? 0) > 0) return 'error';
+  if ((v.speaking ?? 0) > 0) return 'speaking';
   if ((v.activity ?? 0) > 25 || (v.reason ?? 0) > 55) return 'thinking';
   return active ? 'active' : 'idle';
 }
@@ -219,9 +221,6 @@ function emojiOverlay(v: Readonly<Record<string, number>>): TemplateResult | typ
 }
 
 
-/** The four faculties the cognition diamond reads — Focus / Reason / Recall / Act. */
-const COGNITION = ['focus', 'reason', 'recall', 'act'] as const;
-
 /** The cognition diamond — four faculties of a working mind as four triangles, each lit by
  *  its live value. The SHAPE of the diamond is the shape of the mind that instant: a persona
  *  deep in thought skews toward Reason, one running tools skews toward Act. Dynamic from
@@ -236,74 +235,87 @@ export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateR
   const tri = (pts: string, k: string, label: string, color: string): TemplateResult =>
     svg`<polygon points="${pts}" class="cog-tri" style="fill:${color};opacity:${lit(k)}"><title>${label} ${pct(k)}</title></polygon>`;
   return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
-    ${tri('20,2 12,15 28,15', 'focus', 'Focus', '#00d4ff')}
-    ${tri('38,20 25,12 25,28', 'reason', 'Reason', '#ffb020')}
-    ${tri('20,38 12,25 28,25', 'recall', 'Recall', '#3fb950')}
-    ${tri('2,20 15,12 15,28', 'act', 'Act', '#ff6a3d')}
+    ${tri('20,2 12,15 28,15', 'focus', 'Focus', 'var(--faculty-focus)')}
+    ${tri('38,20 25,12 25,28', 'reason', 'Reason', 'var(--faculty-reason)')}
+    ${tri('20,38 12,25 28,25', 'recall', 'Recall', 'var(--faculty-recall)')}
+    ${tri('2,20 15,12 15,28', 'act', 'Act', 'var(--faculty-act)')}
   </svg>`;
 }
 
-/** Genome bars — the persona's loaded LoRA genes as filled segments, framed with the
- *  reference tile's GENOME caption + a lit/total count so the block reads as a labelled
- *  instrument, not anonymous dots. Nothing when running the base model (honest — not a
- *  fabricated 0% bar). */
-export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
-  const g = v.genome;
-  if (g === undefined || g <= 0) return nothing;
-  const filled = Math.max(1, Math.round((Math.min(100, g) / 100) * 6));
-  return html`<span class="genome-wrap" title="genome ${Math.round(g)}%">
+/** Fixed genome slot count — the legacy tile's four equipment slots (RPG loadout).
+ *  Personas with more genes keep the top-4 slots lit; the panel tooltip names the
+ *  overflow count. */
+const GENOME_SLOTS = 4;
+
+/** How many genome slots are lit. Gene NAMES (when the radiator reported them) are
+ *  the count truth; an older core radiating only the numeric `genome` percent maps
+ *  it back through the radiator's 6-gene full scale. */
+function litGeneCount(v: Readonly<Record<string, number>>, genes: readonly string[]): number {
+  if (genes.length > 0) return genes.length;
+  const g = v.genome ?? 0;
+  return g > 0 ? Math.max(1, Math.round((Math.min(100, g) / 100) * 6)) : 0;
+}
+
+/** The GENOME panel — the legacy persona-tile's labelled instrument block, faithfully:
+ *  a rotated GENOME caption on the left, four FULL-HEIGHT gene slots (dark until a
+ *  gene pages in — the reference's empty-but-visible equipment slots, never half-mast
+ *  bars), and the cognition compass at the panel's top-right. Each lit slot is named
+ *  by its real paged-in adapter ([[persona-tile-is-a-live-game-hud]]). Drawn for any
+ *  member with live vitals; base-model personas show four dark slots — an honest
+ *  "nothing loaded", not a hidden panel. */
+export function genomePanel(
+  v: Readonly<Record<string, number>>,
+  genes: readonly string[] = [],
+): TemplateResult {
+  const lit = litGeneCount(v, genes);
+  const title =
+    lit > GENOME_SLOTS
+      ? `GENOME — ${lit} genes loaded (top ${GENOME_SLOTS} shown)`
+      : `GENOME — ${lit} gene${lit === 1 ? '' : 's'} loaded`;
+  return html`<span class="genome-panel" title=${title}>
     <span class="genome-label">GENOME</span>
-    <span class="genome">
-      ${Array.from(
-        { length: 6 },
-        (_, i) => html`<span class="gene ${i < filled ? 'on' : ''} ${i % 3 === 2 ? 'hot' : ''}"></span>`,
-      )}
+    <span class="genome-slots">
+      ${Array.from({ length: GENOME_SLOTS }, (_, i) => {
+        const isLit = i < lit;
+        const name = genes[i];
+        return html`<span
+          class="genome-slot ${isLit ? 'lit' : ''}"
+          title=${name ?? (isLit ? 'loaded gene' : 'empty slot')}
+        ></span>`;
+      })}
     </span>
-    <span class="genome-count">${filled}/6</span>
+    ${cognitionDiamond(v)}
   </span>`;
 }
 
-/** The rich per-persona readout: cognition diamond + genome bars + the tempo/other meters.
- *  Each part appears only when its data is present — a persona with no cognition emitted yet
- *  simply shows its activity, honestly. */
-/** The engine meters shown as bars — the cognition faculties are the DIAMOND, not bars
- *  (showing them both ways made the tile tall + redundant). `activity` is the LIVE
- *  radiator's always-on tempo meter (`vitals_emitter` radiates it every sample, 0 at
- *  idle — the one always-visible bar, the old tile's NRG analogue); speed/size are
- *  capability meters a richer source may attach. Filtering on presence keeps absent
- *  keys honest — but `activity` present-at-0 DRAWS (an idle persona shows an empty
- *  bar, exactly like the old INT/NRG/QUE row, never a blank tile). */
+/** The labelled vitals stack — the legacy tile's INT/NRG/QUE rows, reborn on the live
+ *  radiator's vocabulary: ACT (cognition tempo) and QUE (staged unread depth) are
+ *  always radiated — present-at-0 DRAWS (an idle persona shows empty tracks, exactly
+ *  like the reference's empty QUE row, never a blank tile); SPD/PAR are capability
+ *  meters a richer source may attach. Absent keys draw nothing (honest). */
 const STAT_ORDER: readonly (readonly [string, string])[] = [
   ['activity', 'ACT'],
+  ['queue', 'QUE'],
   ['speed', 'SPD'],
   ['size', 'PAR'],
 ];
 
-/** The dense meter grid — the info-packed heart of the glass-box tile. Tons of tiny
- *  labelled value-meters close together, each hoverable ([[persona-tile-is-a-live-game-hud]]).
- *  Plus the cognition diamond (compact personality glyph) + genome bars alongside. */
+/** The meter stack — label · track · value per row, the info-dense heart of the
+ *  glass-box tile, each row hoverable ([[persona-tile-is-a-live-game-hud]]). Fill
+ *  hues key off `data-key` in CSS (named theme tokens, one per vital). */
 export function personaReadout(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
   const stats = STAT_ORDER.filter(([k]) => v[k] !== undefined);
   if (stats.length === 0) return nothing;
-  return html`<span class="stat-grid">
+  return html`<span class="meters">
     ${stats.map(([k, label]) => {
       const val = Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
-      return html`<span class="stat" data-key=${k} title="${label} ${val}">
-        <span class="stat-label">${label}</span>
-        <span class="stat-bar"><span class="stat-fill" style="width:${val}%"></span></span>
-        <span class="stat-val">${val}</span>
+      return html`<span class="meter" data-key=${k} title="${label} ${val}">
+        <span class="meter-label">${label}</span>
+        <span class="meter-track"><span class="meter-fill" style="width:${val}%"></span></span>
+        <span class="meter-val">${val}</span>
       </span>`;
     })}
   </span>`;
-}
-
-/** The RIGHT pane of the glass-box tile — the cognition diamond (personality glyph) + genome
- *  bars. Compact, ~one avatar tall, pushed to the right edge. */
-export function cognitionCluster(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
-  const hasCog = COGNITION.some((k) => (v[k] ?? 0) > 0);
-  const genome = genomeBlock(v);
-  if (!hasCog && genome === nothing) return nothing;
-  return html`<span class="cog-cluster">${hasCog ? cognitionDiamond(v) : nothing}${genome}</span>`;
 }
 
 /** RAW parameter count → a compact unit label: `24_000_000_000` → "24B",
@@ -387,6 +399,7 @@ function avatarImage(url: string | undefined): TemplateResult | typeof nothing {
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
  *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
 export function memberCard(m: RosterMemberVM): TemplateResult {
+  const hasVitals = Object.keys(m.vitals).length > 0;
   return html`
     <li class="member clickable ${m.active ? 'online' : 'idle'}" data-kind=${m.kind} tabindex="0"
         title="Open ${m.name}">
@@ -394,6 +407,7 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
       <span class="avatar" data-state=${avatarState(m.vitals, m.active)}>
         <span class="glyph">${kindGlyph(m.kind)}</span>
         ${avatarImage(m.avatarUrl)}
+        <span class="status-dot"></span>
         ${emojiOverlay(m.vitals)}
       </span>
       <span class="info">
@@ -405,7 +419,7 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
         ${loadoutStrip(m.loadout)}
         ${personaReadout(m.vitals)}
       </span>
-      ${cognitionCluster(m.vitals)}
+      ${hasVitals ? genomePanel(m.vitals, m.genes ?? []) : nothing}
     </li>
   `;
 }
@@ -428,6 +442,7 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
       <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
         <span class="glyph">${cell.glyph ?? ''}</span>
         ${avatarImage(cell.image)}
+        <span class="status-dot"></span>
         ${emojiOverlay(cell.meters ?? {})}
       </span>
       <span class="info">
@@ -439,7 +454,7 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
         ${loadoutStrip(cell.loadout)}
         ${cell.meters ? personaReadout(cell.meters) : nothing}
       </span>
-      ${cell.meters ? cognitionCluster(cell.meters) : nothing}
+      ${cell.meters ? genomePanel(cell.meters, cell.genes ?? []) : nothing}
     </li>
   `;
 }

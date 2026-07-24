@@ -753,23 +753,35 @@ export class ChatWidget extends LitElement {
         transition: none;
       }
     }
-    /* Member card — the old persona-tile: avatar + presence dot, name, meta. */
+    /* ================= PERSONA TILE =================
+     * The legacy persona-tile (legacy/src/widgets/chat/user-list), ported onto
+     * the positron member card: avatar-in-ring + status dots · name · green-mono
+     * identity chips · labelled vital meters · the GENOME instrument panel.
+     * Every colour is a named theme token; spacing/type/motion ride the shared
+     * scales, so a universe skin restyles the WHOLE tile by overriding tokens. */
+
     .member {
       position: relative;
       display: flex;
       align-items: center;
       gap: var(--spacing-sm);
-      padding: 3px 10px 3px var(--spacing-sm);
-      /* Cyberpunk "disjoint pane" — a chamfered (notched-corner) HUD module, not a rounded row. */
+      padding: var(--spacing-xs) var(--spacing-sm);
+      /* Chamfered HUD module (notched corners), not a rounded row. */
       clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
-      transition: background 0.15s ease;
+      transition: background var(--motion-fast) var(--motion-ease);
+    }
+    .member.idle {
+      opacity: 0.6;
+    }
+    .member.clickable {
+      cursor: pointer;
     }
     .member:hover,
     .member.clickable:focus-visible {
       background: linear-gradient(90deg, rgba(0, 212, 255, 0.09), transparent 70%);
       outline: none;
     }
-    /* HUD corner brackets on hover/focus — the framed-module look from the reference sheet. */
+    /* HUD corner brackets on hover/focus — the framed-module affordance. */
     .member.clickable::before,
     .member.clickable::after {
       content: '';
@@ -777,7 +789,7 @@ export class ChatWidget extends LitElement {
       width: 7px;
       height: 7px;
       opacity: 0;
-      transition: opacity 0.15s ease;
+      transition: opacity var(--motion-fast) var(--motion-ease);
       pointer-events: none;
     }
     .member.clickable::before {
@@ -798,40 +810,24 @@ export class ChatWidget extends LitElement {
     .member.clickable:focus-visible::after {
       opacity: 1;
     }
+
+    /* --- Avatar: image in a live ring, presence dot at 4 o'clock ----------- */
     .member .avatar {
       position: relative;
-      width: 40px;
-      height: 40px;
+      width: 42px;
+      height: 42px;
       border-radius: 50%;
       display: grid;
       place-items: center;
       font-size: 20px;
       flex: none;
       background: var(--border-subtle);
-      border: 1px solid var(--border-subtle);
+      border: 2px solid var(--border-subtle);
     }
-    /* AI members get the signature cyan-ringed avatar. */
     .member[data-kind='agent'] .avatar {
-      border-color: var(--border-accent);
-      box-shadow: 0 0 6px rgba(0, 212, 255, 0.18);
+      border-color: var(--widget-border);
+      box-shadow: 0 0 6px var(--hud-accent-glow);
     }
-    /* Live inference-state ring — the game HUD's status halo, matching the chat header's
-       "Asha is thinking…". The border carries the state colour; the glow layers over it. */
-    .member .avatar[data-state='thinking'] {
-      border-color: var(--content-accent);
-    }
-    .member .avatar[data-state='active'] {
-      border-color: #3fb950;
-    }
-    .member .avatar[data-state='error'] {
-      border-color: #f85149;
-      box-shadow: 0 0 0 1px #f85149, 0 0 8px rgba(248, 81, 73, 0.55);
-    }
-    .member .avatar[data-state='idle'] {
-      opacity: 0.7;
-    }
-    /* The avatar IMAGE — layered over the glyph (which stays as fallback under a
-       failed load); clipped to the ring. */
     .avatar-img {
       position: absolute;
       inset: 0;
@@ -840,32 +836,49 @@ export class ChatWidget extends LitElement {
       border-radius: 50%;
       object-fit: cover;
     }
+    /* Presence dot — the legacy status-indicator, bottom-right on the ring. */
+    .member .status-dot {
+      position: absolute;
+      bottom: -2px;
+      right: -2px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--status-offline);
+      border: 2px solid var(--widget-surface-solid);
+      z-index: 2;
+      transition: background var(--motion-base) var(--motion-ease),
+        box-shadow var(--motion-base) var(--motion-ease);
+    }
+    .member.online .status-dot {
+      background: var(--status-online);
+      box-shadow: 0 0 5px var(--status-online);
+    }
     /* Emotional-event emoji, over the avatar. */
     .emoji-overlay {
       position: absolute;
-      bottom: -4px;
+      top: -4px;
       right: -5px;
       font-size: 14px;
       line-height: 1;
       filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.85));
+      z-index: 3;
     }
-    /* A slow breathing "cognition" glow on a LIVE agent — the sci-fi signal that
-     * this is a living mind present in the room, not a static row. Paired with the
-     * comet arc below; both idle out when the agent goes offline. */
+
+    /* --- The live ring: breathing at idle, comet arc while the mind works --
+     * A slow "alive" breath on any online agent; the orbiting comet arc fires
+     * on REAL state only — speaking (live token rail) and thinking (radiator)
+     * carry their own named ring hues; error flares the border. Transform/
+     * opacity-composited; reduced-motion collapses to static colour. */
     @keyframes alive-pulse {
       0%,
       100% {
-        box-shadow: 0 0 5px rgba(0, 212, 255, 0.15);
+        box-shadow: 0 0 5px var(--hud-accent-glow);
       }
       50% {
-        box-shadow: 0 0 14px rgba(0, 212, 255, 0.4);
+        box-shadow: 0 0 14px var(--border-accent);
       }
     }
-    .member[data-kind='agent'].online .avatar {
-      animation: alive-pulse 3s ease-in-out infinite;
-    }
-    /* …and a slow "cognition" comet arc on a live agent — the old persona-tile's
-     * living ring, a quiet sign the agent is present and thinking. */
     @keyframes comet-orbit {
       from {
         transform: rotate(0deg);
@@ -874,54 +887,53 @@ export class ChatWidget extends LitElement {
         transform: rotate(360deg);
       }
     }
-    .member[data-kind='agent'].online .avatar::before {
+    .member[data-kind='agent'].online .avatar {
+      animation: alive-pulse 3s var(--motion-ease) infinite;
+    }
+    .member .avatar::before {
       content: '';
       position: absolute;
-      inset: -4px;
+      inset: -5px;
       border-radius: 50%;
-      border: 2px solid transparent;
-      border-top-color: var(--content-accent);
-      border-right-color: rgba(0, 212, 255, 0.4);
+      border: 3px solid transparent;
+      opacity: 0;
+      transition: opacity var(--motion-base) var(--motion-ease);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .member .avatar[data-state='speaking']::before,
+    .member .avatar[data-state='thinking']::before {
+      opacity: 1;
+      border-top-color: var(--comet-color);
+      border-right-color: var(--comet-color);
       animation: comet-orbit 3.5s linear infinite;
-      pointer-events: none;
     }
-    /* Top-right recency stamp — the old tile's "55m ago". Quiet mono caption that
-       never competes with the name row. */
-    .member .ago {
-      position: absolute;
-      top: 3px;
-      right: 10px;
-      font-family: var(--font-mono);
-      font-size: 8px;
-      letter-spacing: 0.04em;
-      color: var(--content-secondary);
-      opacity: 0.75;
-      pointer-events: none;
+    .member .avatar[data-state='speaking'] {
+      --comet-color: var(--ring-speaking);
+      border-color: var(--ring-speaking);
     }
-    .member .status-dot {
-      position: absolute;
-      bottom: -1px;
-      right: -1px;
-      width: 11px;
-      height: 11px;
-      border-radius: 50%;
-      background: var(--status-offline);
-      border: 2px solid var(--widget-surface-solid);
+    .member .avatar[data-state='thinking'] {
+      --comet-color: var(--ring-thinking);
+      border-color: var(--ring-thinking);
     }
-    .member.online .status-dot {
-      background: var(--status-online);
-      box-shadow: 0 0 5px var(--status-online);
+    .member .avatar[data-state='error'] {
+      border-color: var(--content-error);
+      box-shadow: 0 0 0 1px var(--content-error), 0 0 8px var(--content-error);
     }
-    .member.idle {
-      opacity: 0.6;
+    .member .avatar[data-state='idle'] {
+      opacity: 0.7;
     }
+
+    /* --- Identity column ---------------------------------------------------- */
     .member .info {
       display: flex;
       flex-direction: column;
+      gap: 2px;
       min-width: 0;
-      gap: 1px;
+      flex: 1;
     }
     .member .name {
+      font-size: 14px;
       font-weight: 600;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -929,39 +941,40 @@ export class ChatWidget extends LitElement {
     }
     .member .meta {
       display: flex;
-      align-items: center;
-      gap: 4px;
+      align-items: baseline;
+      gap: var(--spacing-sm);
     }
-    /* Angular HUD chips (slanted-edge tags from the reference), not rounded pills. The two
-       chips cut opposite corners so they nest, and the palette keeps kind cool / runtime warm. */
-    .member .kind-badge {
-      font-size: 8px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      padding: 1px 6px;
-      clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
-      background: rgba(130, 140, 160, 0.16);
-      color: var(--content-secondary);
-    }
+    /* Green-mono identity chips — the legacy tile-type-badge look: bare glowing
+     * mono caps, no pill boxes (PERSONA  ALIBABA in the reference). */
+    .member .kind-badge,
     .runtime {
-      font-size: 8px;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      padding: 1px 6px;
-      clip-path: polygon(4px 0, 100% 0, 100% 100%, 0 100%);
-      background: rgba(0, 212, 255, 0.14);
-      color: var(--content-accent);
+      letter-spacing: 0.12em;
+      color: var(--hud-accent-dim);
+      text-shadow: 0 0 4px var(--hud-accent-glow);
     }
-    /* LOADOUT strip — the model backing the persona (model · size · ctx), the
-       spec-sheet line under the identity chips. Monospace digits so param/ctx
-       counts read as hard numbers; the model name carries the accent, the
-       size/ctx sit quieter. The "model size, context size" the tile surfaces. */
+    /* Recency stamp — the reference's "55m ago", quiet in the top-right. */
+    .member .ago {
+      position: absolute;
+      top: 3px;
+      right: 10px;
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
+      letter-spacing: 0.04em;
+      color: var(--content-secondary);
+      opacity: 0.75;
+      pointer-events: none;
+    }
+    /* LOADOUT strip — the model backing the persona (model · size · ctx). */
     .member .loadout {
       display: flex;
       align-items: baseline;
-      gap: 4px;
-      margin-top: 2px;
-      font-size: 8.5px;
+      gap: var(--spacing-xs);
+      font-family: var(--font-mono);
+      font-size: var(--font-size-xs);
       font-variant-numeric: tabular-nums;
       color: var(--content-secondary);
       white-space: nowrap;
@@ -975,195 +988,73 @@ export class ChatWidget extends LitElement {
     .member .loadout-sep {
       opacity: 0.4;
     }
-    /* Live genome-energy meters — the old persona-tile INT/NRG/QUE bars, reborn
-     * sci-fi: a thin cyan bar per vital with a moving glint on live agents. The
-     * readout that makes a persona feel alive in the roster. */
-    /* Clickable glass-box row — the whole tile navigates into the persona's tab/content. */
-    .member.clickable {
-      cursor: pointer;
-    }
-    .member.clickable:focus-visible {
-      outline: 1px solid var(--content-accent);
-      outline-offset: -1px;
-    }
-    .member .info {
-      min-width: 0;
-      flex: 1;
-    }
-    /* The dense meter grid — the info-packed heart of the glass-box tile: tiny label+bar+value
-       cells, two columns, close together, each hoverable ([[persona-tile-is-a-live-game-hud]]). */
-    .stat-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1px 8px;
-      margin-top: 4px;
-    }
-    .stat {
-      display: flex;
-      align-items: center;
-      gap: 3px;
-    }
-    .stat-label {
-      font-family: var(--font-mono);
-      font-size: 7px;
-      letter-spacing: 0.04em;
-      color: var(--content-secondary);
-      width: 19px;
-      flex: none;
-    }
-    .stat-bar {
-      position: relative;
-      height: 3px;
-      flex: 1;
-      min-width: 12px;
-      border-radius: 2px;
-      background: var(--border-subtle);
-      overflow: hidden;
-    }
-    .stat-fill {
-      display: block;
-      height: 100%;
-      border-radius: 2px;
-      background: linear-gradient(90deg, rgba(0, 212, 255, 0.5), var(--content-accent));
-      box-shadow: 0 0 4px rgba(0, 212, 255, 0.5);
-    }
-    .stat-val {
-      font-family: var(--font-mono);
-      font-size: 7px;
-      color: var(--content-accent);
-      width: 12px;
-      text-align: right;
-      flex: none;
-      font-variant-numeric: tabular-nums;
-    }
-    /* Warm the PAR (model-size) meter amber — SPD stays cyan, so the two read apart (palette > mono). */
-    .stat[data-key='size'] .stat-fill {
-      background: linear-gradient(90deg, rgba(255, 176, 32, 0.5), #ffb020);
-      box-shadow: 0 0 4px rgba(255, 176, 32, 0.5);
-    }
-    .stat[data-key='size'] .stat-val {
-      color: #ffb020;
-    }
-    /* RIGHT pane of the 3-pane persona row — cognition diamond + genome bars, pushed right,
-       ~one avatar tall so the row stays COMPACT (not a tall stack). */
-    .cog-cluster {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      flex: none;
-      margin-left: auto;
-      padding-left: 4px;
-    }
-    /* Cognition diamond — four triangles pointing out like a compass (Focus N / Reason E /
-       Recall S / Act W), each lit by its faculty value; the SHAPE is the mind that instant. */
-    .cog-diamond {
-      width: 28px;
-      height: 28px;
-      flex: none;
-    }
-    /* Each triangle sets its own hue inline (Focus cyan / Reason amber / Recall green /
-       Act orange) — a soft neutral glow keeps the colours popping without a cyan halo. */
-    .cog-tri {
-      filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.25));
-    }
-    /* Genome — the labelled instrument block: GENOME caption over the gene cells +
-       a lit/total count, the reference tile's segmented panel. */
-    .genome-wrap {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 1px;
-      flex: none;
-      padding: 2px 3px;
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-sm);
-      background: rgba(0, 212, 255, 0.04);
-    }
-    .genome-label {
-      font-family: var(--font-mono);
-      font-size: 5.5px;
-      letter-spacing: 0.12em;
-      color: var(--content-secondary);
-    }
-    .genome-count {
-      font-family: var(--font-mono);
-      font-size: 6.5px;
-      color: var(--content-accent);
-      font-variant-numeric: tabular-nums;
-    }
-    /* Genome — a compact 2-column chip of tiny gene cells (base model shows an empty chip). */
-    .genome {
-      display: grid;
-      grid-template-columns: repeat(2, 4px);
-      grid-auto-rows: 4px;
-      gap: 2px;
-      flex: none;
-    }
-    .gene {
-      width: 4px;
-      height: 4px;
-      border-radius: 1px;
-      background: var(--border-subtle);
-    }
-    .gene.on {
-      background: var(--content-accent);
-      box-shadow: 0 0 3px var(--content-accent);
-    }
-    /* Orange gene cells — the cyan+orange dual-tone from the HUD reference sheet. */
-    .gene.on.hot {
-      background: #ff6a3d;
-      box-shadow: 0 0 3px #ff6a3d;
-    }
-    /* CENTER pane — the horizontal engine gauges (SPD/PAR), compact. */
-    .vitals {
+
+    /* --- Vital meters: the legacy INT/NRG/QUE stack, live ------------------ */
+    .meters {
       display: flex;
       flex-direction: column;
       gap: 2px;
-      margin-top: 3px;
+      margin-top: 2px;
     }
-    .vital {
+    .meter {
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: var(--spacing-xs);
     }
-    .vital-label {
+    .meter-label {
       font-family: var(--font-mono);
-      font-size: 8px;
-      letter-spacing: 0.06em;
-      color: var(--content-secondary);
+      font-size: var(--font-size-2xs);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--hud-accent-dim);
+      text-shadow: 0 0 3px var(--hud-accent-glow);
       width: 22px;
       flex: none;
     }
-    /* Numeric readout — the old sci-fi gauge showed the value, not just a bar. */
-    .vital-value {
+    .meter-track {
+      position: relative;
+      height: 5px;
+      flex: 1;
+      max-width: 72px;
+      border-radius: 2px;
+      background: var(--hud-track-background);
+      border: 1px solid var(--hud-track-border);
+      overflow: hidden;
+    }
+    .meter-fill {
+      display: block;
+      height: 100%;
+      border-radius: 1px;
+      background: var(--meter-color, var(--content-accent));
+      box-shadow: 0 0 4px var(--meter-color, var(--content-accent));
+      transition: width var(--motion-base) var(--motion-ease);
+      overflow: hidden;
+      position: relative;
+    }
+    .meter-val {
       font-family: var(--font-mono);
-      font-size: 8px;
-      color: var(--content-accent);
-      width: 16px;
+      font-size: var(--font-size-2xs);
+      color: var(--meter-color, var(--content-accent));
+      width: 14px;
       text-align: right;
       flex: none;
       font-variant-numeric: tabular-nums;
     }
-    .vital-track {
-      position: relative;
-      height: 4px;
-      flex: 1;
-      border-radius: 2px;
-      background: var(--border-subtle);
-      overflow: hidden;
+    /* One named hue per vital — set once on the row, read by fill + value. */
+    .meter[data-key='activity'] {
+      --meter-color: var(--meter-act);
     }
-    .vital-fill {
-      position: relative;
-      display: block;
-      height: 100%;
-      border-radius: 2px;
-      background: linear-gradient(90deg, rgba(0, 212, 255, 0.45), var(--content-accent));
-      box-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
-      overflow: hidden;
-      transition: width 0.6s ease;
+    .meter[data-key='queue'] {
+      --meter-color: var(--meter-que);
     }
-    /* Moving glint — reads as a live, updating gauge on an active agent. */
-    @keyframes vital-shimmer {
+    .meter[data-key='speed'] {
+      --meter-color: var(--meter-spd);
+    }
+    .meter[data-key='size'] {
+      --meter-color: var(--meter-par);
+    }
+    /* Live glint across a working persona's bars — a moving gauge, game-feel. */
+    @keyframes meter-shimmer {
       from {
         transform: translateX(-120%);
       }
@@ -1171,14 +1062,110 @@ export class ChatWidget extends LitElement {
         transform: translateX(320%);
       }
     }
-    .member.online .vital-fill::after {
+    .member.online .meter-fill::after {
       content: '';
       position: absolute;
       inset: 0;
       width: 40%;
       background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
-      animation: vital-shimmer 2.4s linear infinite;
+      animation: meter-shimmer 2.4s linear infinite;
     }
+
+    /* --- GENOME panel: the legacy instrument block, faithful ---------------
+     * Rotated caption · four FULL-HEIGHT gene slots (dark until a gene pages
+     * in — visible empty equipment slots, never half-mast bars) · the
+     * cognition compass at top-right. */
+    .genome-panel {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      column-gap: var(--spacing-xs);
+      align-items: end;
+      align-self: stretch;
+      flex: none;
+      margin-left: auto;
+      /* Clears the tile's top-right "55m ago" stamp — the reference keeps the
+         recency line ABOVE the panel, never over it. */
+      margin-top: 13px;
+      min-height: 46px;
+      padding: var(--spacing-xs) 5px;
+      background: var(--hud-panel-background);
+      border: 1px solid var(--hud-accent-border);
+      border-radius: var(--radius-md);
+      box-shadow: 0 0 8px var(--hud-accent-glow);
+      transition: border-color var(--motion-fast) var(--motion-ease);
+    }
+    .member:hover .genome-panel {
+      border-color: var(--hud-accent);
+    }
+    .genome-label {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-2xs);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--hud-accent);
+      text-shadow: 0 0 4px var(--hud-accent-glow);
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      line-height: 1;
+      align-self: center;
+    }
+    .genome-slots {
+      display: flex;
+      gap: 2px;
+      justify-content: center;
+    }
+    .genome-slot {
+      width: 7px;
+      height: 17px;
+      border-radius: 1px;
+      background: var(--hud-slot-background);
+      border: 1px solid var(--hud-slot-border);
+      transition: background var(--motion-base) var(--motion-ease),
+        border-color var(--motion-base) var(--motion-ease),
+        box-shadow var(--motion-base) var(--motion-ease);
+    }
+    /* Page-in moment: the slot IGNITES (bright flash → settle) — game-feel on a
+     * real state change only (the class flips when the radiator reports the
+     * gene). Opacity-composited. */
+    @keyframes gene-ignite {
+      0% {
+        opacity: 0.2;
+      }
+      60% {
+        opacity: 1;
+      }
+      100% {
+        opacity: 0.92;
+      }
+    }
+    .genome-slot.lit {
+      background: var(--hud-accent);
+      border-color: var(--hud-accent);
+      box-shadow: 0 0 5px var(--hud-accent-glow);
+      animation: gene-ignite var(--motion-slow) var(--motion-ease);
+    }
+    /* Cognition compass — four faculty triangles, top-right of the panel. */
+    .cog-diamond {
+      width: 26px;
+      height: 26px;
+      flex: none;
+      align-self: start;
+      margin: 1px 0 0 1px;
+    }
+    .cog-tri {
+      filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.25));
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .member[data-kind='agent'].online .avatar,
+      .member .avatar[data-state='speaking']::before,
+      .member .avatar[data-state='thinking']::before,
+      .member.online .meter-fill::after,
+      .genome-slot.lit {
+        animation: none;
+      }
+    }
+
     .what {
       overflow-y: auto;
       padding: var(--spacing-md) var(--spacing-lg);
@@ -1504,7 +1491,10 @@ export class ChatWidget extends LitElement {
       }
       /* Mobile drops the secondary per-member detail — presence, not a dossier. */
       .member .meta,
-      .member .vitals {
+      .member .loadout,
+      .member .meters,
+      .member .ago,
+      .genome-panel {
         display: none;
       }
     }
@@ -1513,6 +1503,17 @@ export class ChatWidget extends LitElement {
        theme swap — an EXPERIENCE ([[universe-is-an-experience-not-a-theme]]): the grid
        floor, glowing programs, the derez cyan. One chatApp, a whole world over it. */
     :host([data-universe='tron']) {
+      /* Tile HUD tokens re-skinned to the grid's electric cyan — the whole
+         instrument cluster (chips, meters, genome, rings) follows. */
+      --hud-accent: rgba(0, 224, 255, 0.9);
+      --hud-accent-dim: rgba(0, 224, 255, 0.65);
+      --hud-accent-border: rgba(0, 224, 255, 0.4);
+      --hud-accent-glow: rgba(0, 224, 255, 0.35);
+      --hud-panel-background: rgba(0, 14, 24, 0.9);
+      --meter-act: #00e0ff;
+      --meter-que: #00fff0;
+      --ring-speaking: #00e0ff;
+      --ring-thinking: #66f6ff;
       color: #cfefff;
       background:
         radial-gradient(ellipse 90% 60% at 50% 8%, rgba(0, 200, 255, 0.10), transparent 70%),
@@ -1571,6 +1572,16 @@ export class ChatWidget extends LitElement {
        different WORLD ([[universe-is-an-experience-not-a-theme]]) — proving a universe is
        an experience, not a colour swap. */
     :host([data-universe='forge']) {
+      /* Tile HUD tokens in molten amber — same instruments, forge-lit. */
+      --hud-accent: rgba(255, 180, 70, 0.9);
+      --hud-accent-dim: rgba(255, 180, 70, 0.65);
+      --hud-accent-border: rgba(255, 140, 40, 0.4);
+      --hud-accent-glow: rgba(255, 130, 30, 0.3);
+      --hud-panel-background: rgba(28, 16, 8, 0.9);
+      --meter-act: #ffb347;
+      --meter-que: #ff9a2e;
+      --ring-speaking: #ffb347;
+      --ring-thinking: #ff6a3d;
       color: #efdcc0;
       background:
         radial-gradient(ellipse 85% 55% at 50% 112%, rgba(255, 120, 20, 0.32), transparent 60%),
@@ -1760,6 +1771,16 @@ export class ChatWidget extends LitElement {
       if (typingRows.length > 0) {
         vm = { ...vm, messages: [...vm.messages, ...typingRows] };
       }
+      // The tile's SPEAKING ring: overlay the live token rail onto the roster
+      // vitals (`speaking: 100`) for members mid-turn — the same widget-owned
+      // overlay pattern as the typing bubbles above and MessageRowVM.expanded.
+      // Driven only by REAL StreamDeltas; retires when the turn's `done` lands.
+      vm = {
+        ...vm,
+        members: vm.members.map((m) =>
+          this._typing.has(m.id) ? { ...m, vitals: { ...m.vitals, speaking: 100 } } : m,
+        ),
+      };
     }
     // Error boundary: a render throw (e.g. the Content registry hitting an
     // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit

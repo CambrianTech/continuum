@@ -152,7 +152,7 @@ describe('renderChat (Lit)', () => {
     const chunks = flatten(renderChat(withVitals));
     expect(chunks).toContain('SPD'); // the stat label (speed → SPD)
     expect(chunks).toContain('80'); // the fill width value (single member → unambiguous)
-    expect(markup(withVitals)).toContain('stat-fill'); // the meter bar rendered
+    expect(markup(withVitals)).toContain('meter-fill'); // the meter bar rendered
 
     // A member reporting no vitals → no meter markup at all.
     const noVitals = project({
@@ -162,7 +162,36 @@ describe('renderChat (Lit)', () => {
       roster: [member({ member_id: 'j', display_name: 'Joel', kind: kind('human'), vitals: {} })],
       messages: [],
     });
-    expect(markup(noVitals)).not.toContain('stat-fill');
+    expect(markup(noVitals)).not.toContain('meter-fill');
+  });
+
+  // what this catches: the QUE revival + the GENOME instrument panel. `queue`
+  // present-at-0 must still DRAW its labelled empty track (the reference tile's
+  // empty QUE row — an idle persona is visible, not blank); a member with live
+  // vitals draws the four-slot genome panel, and a radiated gene NAME reaches
+  // the lit slot's tooltip (real adapter names, never anonymous chips).
+  it('draws the QUE track at zero and names lit genome slots from genes', () => {
+    const view = project({
+      room_id: 'room-1',
+      room_name: 'general',
+      purpose: 'chat',
+      roster: [
+        member({
+          member_id: 'a',
+          display_name: 'Asha',
+          kind: kind('agent'),
+          vitals: { activity: 0, queue: 0 },
+          genes: ['rust-hands'],
+        }),
+      ],
+      messages: [],
+    });
+    const chunks = flatten(renderChat(view));
+    expect(chunks).toContain('QUE'); // the labelled track drew at 0
+    const html = markup(view);
+    expect(html).toContain('genome-panel');
+    expect(html).toContain('genome-slot'); // the four equipment slots
+    expect(html).toContain('rust-hands'); // the lit slot is NAMED by its gene
   });
 
   // what this catches: a member's LOADOUT must DRAW the model·size·ctx strip with
