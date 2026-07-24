@@ -1318,8 +1318,27 @@ export class ChatWidget extends LitElement {
       gap: var(--spacing-sm);
       padding: 6px 0;
     }
+    /* Continuation rows (same sender, grouped upstream): tuck the body into the
+       sender's column — tight runs, the classic chat grouping. */
+    .messages .msg.continues {
+      padding: 1px 0;
+      margin-left: calc(28px + var(--spacing-sm));
+    }
     .msg-glyph {
       flex: none;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .msg-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      object-fit: cover;
+      object-position: center top;
+      border: 1px solid var(--hud-accent-border);
     }
     /* The flex child holding the message text MUST be allowed to shrink below its
        content's intrinsic width, or the bubble overflows its container and clips

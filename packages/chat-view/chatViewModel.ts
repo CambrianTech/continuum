@@ -90,6 +90,13 @@ export interface MessageRowVM {
    *  full body, offer "collapse"). NEVER set by the projection — the widget's
    *  expand state stamps it on, the same overlay pattern as live typing rows. */
   readonly expanded?: boolean;
+  /** The sender's avatar image, joined from the roster at projection time so a
+   *  message row draws the same face as the sender's tile. Absent = glyph. */
+  readonly senderAvatarUrl?: string;
+  /** True when this row continues the previous row's sender within the group
+   *  window — the renderer draws a compact continuation (no avatar/head), the
+   *  classic chat grouping that kills the bubble-per-line sprawl. */
+  readonly continues?: boolean;
 }
 
 /** The full render-ready projection of a chat snapshot. */
@@ -181,9 +188,33 @@ function messageVM(msg: ChatMessageView): MessageRowVM {
   };
 }
 
+/** Consecutive-sender window: a message within this span of the previous row
+ *  by the SAME sender renders as a continuation (no avatar/head) — the classic
+ *  grouping that turns bubble-per-line sprawl into readable runs. */
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
 /** Project a `ChatState` snapshot into the flat view model the panels render. */
 export function chatViewModel(state: ChatState): ChatViewModel {
   const members = state.roster.map(memberVM);
+  // Join each message to its sender's tile face + fold consecutive-sender
+  // grouping — both here, in the ONE projection, so web/tui/RAG all inherit.
+  const avatarBySender = new Map(
+    state.roster.flatMap((m) => (m.avatar_url ? [[m.member_id, m.avatar_url] as const] : [])),
+  );
+  const messages = state.messages.map((msg, i): MessageRowVM => {
+    const vm = messageVM(msg);
+    const prev = state.messages[i - 1];
+    const continues =
+      prev !== undefined &&
+      prev.sender_id === msg.sender_id &&
+      msg.timestamp - prev.timestamp < GROUP_WINDOW_MS;
+    const avatar = avatarBySender.get(msg.sender_id);
+    return {
+      ...vm,
+      ...(avatar ? { senderAvatarUrl: avatar } : {}),
+      ...(continues ? { continues: true } : {}),
+    };
+  });
   return {
     roomName: state.room_name,
     roomId: state.room_id,
@@ -195,7 +226,7 @@ export function chatViewModel(state: ChatState): ChatViewModel {
     memberCount: members.length,
     activeCount: members.filter((m) => m.active).length,
     members,
-    messages: state.messages.map(messageVM),
+    messages,
     isEmpty: state.messages.length === 0,
     revision: state.revision,
   };

@@ -590,9 +590,23 @@ function messageBody(msg: MessageRowVM): TemplateResult {
 
 /** One conversation row — WHAT was said. */
 export function messageRow(msg: MessageRowVM): TemplateResult {
+  // A continuation row (same sender, close in time — projected upstream) drops
+  // the avatar + head and hangs the body in the same column: readable runs
+  // instead of bubble-per-line sprawl. Time surfaces on hover via title.
+  if (msg.continues) {
+    return html`
+      <li class="msg continues" data-kind=${msg.kind} data-sender=${msg.senderId} title=${msg.time}>
+        <div class="msg-body">${messageBody(msg)}</div>
+      </li>
+    `;
+  }
   return html`
     <li class="msg" data-kind=${msg.kind} data-sender=${msg.senderId}>
-      <span class="msg-glyph">${kindGlyph(msg.kind)}</span>
+      <span class="msg-glyph">
+        ${msg.senderAvatarUrl
+          ? html`<img class="msg-avatar" src=${msg.senderAvatarUrl} alt="" />`
+          : kindGlyph(msg.kind)}
+      </span>
       <div class="msg-body">
         <div class="msg-head">
           <span class="sender">${msg.senderName}</span>
