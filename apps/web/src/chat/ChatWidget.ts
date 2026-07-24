@@ -117,6 +117,11 @@ export class ChatWidget extends LitElement {
   private _sending = false;
   private _sendError = '';
   private _selectError = '';
+  /** Element navigation (card 95844639): when a tile ELEMENT (compass, genome
+   *  block) routed a persona select with an anchor, remember which persona +
+   *  section — `updated()` scrolls there once that persona's home renders.
+   *  Presentation state only; the wire select is a plain (target, kind). */
+  private _pendingAnchor: { readonly persona: string; readonly anchor: string } | null = null;
   /** #170 live typing: senderId → accumulated in-progress turn text. Ephemeral —
    *  the durable message (via `state`) supersedes it; reassigned (not mutated) so
    *  Lit re-renders. */
@@ -234,6 +239,12 @@ export class ChatWidget extends LitElement {
       );
     }
     this._selectError = '';
+    // An anchored route remembers WHERE in the destination to land; the scroll
+    // happens after the persona home renders (updated()), never optimistically.
+    this._pendingAnchor =
+      route.kind === 'persona' && route.anchor !== undefined
+        ? { persona: route.target, anchor: route.anchor }
+        : null;
     void this.selectRoomHandler(route.target, route.kind).catch((err: unknown) => {
       // Surface the failure in-UI; never a silently-dead click.
       this._selectError = `Navigation failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -1331,6 +1342,17 @@ export class ChatWidget extends LitElement {
     }
     .cog-tri {
       filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.25));
+    }
+    /* Element navigation (card 95844639): a tile element that navigates SIGNALS
+     * it — pointer + a lift on hover (the affordance IS the invitation). */
+    .element-link {
+      cursor: pointer;
+      transition: filter var(--motion-base) var(--motion-ease),
+        transform var(--motion-base) var(--motion-ease);
+    }
+    .element-link:hover {
+      filter: brightness(1.35) drop-shadow(0 0 4px var(--hud-accent-glow));
+      transform: translateY(-1px);
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -2910,6 +2932,18 @@ export class ChatWidget extends LitElement {
       if (persona && persona.id !== wasPersona?.id) {
         const what = this.renderRoot.querySelector('.what');
         if (what) what.scrollTop = 0;
+      }
+    }
+    // Element navigation (card 95844639): the anchored persona home rendered —
+    // land on its section (top-scroll above may have just run; the anchor wins).
+    const pending = this._pendingAnchor;
+    if (pending && persona?.id === pending.persona) {
+      const section = this.renderRoot.querySelector(
+        `.persona-home[data-persona="${pending.persona}"] #${pending.anchor}`,
+      );
+      if (section) {
+        section.scrollIntoView({ block: 'start' });
+        this._pendingAnchor = null;
       }
     }
   }

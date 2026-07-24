@@ -84,12 +84,28 @@ export interface ListingSelectDetail {
   readonly listingId: string;
   readonly id: string;
   readonly group?: string;
+  /** Which ELEMENT of the cell was picked (card 95844639): a tile's compass →
+   *  `'brain'`, its genome block → `'genome'`. Absent = the cell itself. The
+   *  routing rule maps it to the route's `anchor` — same destination activity,
+   *  scrolled to the element's section. */
+  readonly element?: string;
 }
 
-export function fireListingSelect(e: Event, listingId: string, id: string, group?: string): void {
+export function fireListingSelect(
+  e: Event,
+  listingId: string,
+  id: string,
+  group?: string,
+  element?: string,
+): void {
   (e.currentTarget as HTMLElement).dispatchEvent(
     new CustomEvent<ListingSelectDetail>(LISTING_SELECT, {
-      detail: { listingId, id, ...(group !== undefined ? { group } : {}) },
+      detail: {
+        listingId,
+        id,
+        ...(group !== undefined ? { group } : {}),
+        ...(element !== undefined ? { element } : {}),
+      },
       bubbles: true,
       composed: true,
     }),
@@ -97,11 +113,19 @@ export function fireListingSelect(e: Event, listingId: string, id: string, group
 }
 
 /** A routed listing selection — the `nav/select` verb's (target, kind) pair the
- *  host dispatches. `kind` is the wire `NavTargetKind` string. */
+ *  host dispatches. `kind` is the wire `NavTargetKind` string. `anchor` is
+ *  CLIENT-side presentation (scroll the destination to a section) — it never
+ *  rides the wire; nav semantics stay (target, kind) pure. */
 export interface NavSelectRoute {
   readonly target: string;
   readonly kind: 'room' | 'persona';
+  readonly anchor?: string;
 }
+
+/** Tile elements that anchor into the persona HOME — the sections
+ *  `renderPersona` gives ids to. A whitelist so an unknown element degrades to
+ *  the plain persona select, never a dead scroll target. */
+const PERSONA_ANCHOR_ELEMENTS: ReadonlySet<string> = new Set(['brain', 'genome']);
 
 /** THE select-routing rule (`select(entityInList)` → NavIntent,
  *  NAVIGATION-ACROSS-MODALITIES.md §2), pure and DOM-free so it is unit-tested
@@ -118,7 +142,13 @@ export function navSelectTarget(detail: ListingSelectDetail): NavSelectRoute | n
     if (detail.group === 'content') return null;
     return { target: detail.id, kind: 'room' };
   }
-  if (detail.listingId === 'roster') return { target: detail.id, kind: 'persona' };
+  if (detail.listingId === 'roster') {
+    const anchor =
+      detail.element !== undefined && PERSONA_ANCHOR_ELEMENTS.has(detail.element)
+        ? detail.element
+        : undefined;
+    return { target: detail.id, kind: 'persona', ...(anchor !== undefined ? { anchor } : {}) };
+  }
   return null;
 }
 
@@ -254,7 +284,10 @@ function emojiOverlay(v: Readonly<Record<string, number>>): TemplateResult | typ
  *  its live value. The SHAPE of the diamond is the shape of the mind that instant: a persona
  *  deep in thought skews toward Reason, one running tools skews toward Act. Dynamic from
  *  cognition events ([[design-the-persona-as-a-being]]). */
-export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateResult {
+export function cognitionDiamond(
+  v: Readonly<Record<string, number>>,
+  onSelect?: (e: Event) => void,
+): TemplateResult {
   // FOUR distinct triangles pointing out like a compass (N=Focus, E=Reason, S=Recall,
   // W=Act), a gap in the centre — so it reads as four, and a strong faculty burns bright
   // while a dim one nearly vanishes (the SHAPE is the mind). No more solid blob.
@@ -263,7 +296,24 @@ export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateR
   // Each faculty its own hue (color > monochrome) — readable by colour AND position.
   const tri = (pts: string, k: string, label: string, color: string): TemplateResult =>
     svg`<polygon points="${pts}" class="cog-tri" style="fill:${color};opacity:${lit(k)}"><title>${label} ${pct(k)}</title></polygon>`;
-  return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
+  // With a select handler the compass is its OWN click target (→ the brain HUD)
+  // nested inside the tile's whole-card select: stop propagation so one click
+  // means one navigation (card 95844639).
+  const pick =
+    onSelect === undefined
+      ? undefined
+      : (e: Event): void => {
+          e.stopPropagation();
+          onSelect(e);
+        };
+  return html`<svg
+    viewBox="0 0 40 40"
+    class="cog-diamond ${pick ? 'element-link' : ''}"
+    aria-label="cognition"
+    role=${pick ? 'button' : nothing}
+    @click=${pick ?? nothing}
+  >
+    ${pick ? svg`<title>Open brain HUD</title>` : nothing}
     ${tri('20,2 12,15 28,15', 'focus', 'Focus', 'var(--faculty-focus)')}
     ${tri('38,20 25,12 25,28', 'reason', 'Reason', 'var(--faculty-reason)')}
     ${tri('20,38 12,25 28,25', 'recall', 'Recall', 'var(--faculty-recall)')}
@@ -295,15 +345,31 @@ function litGeneCount(v: Readonly<Record<string, number>>, genes: readonly strin
 export function genomePanel(
   v: Readonly<Record<string, number>>,
   genes: readonly string[] = [],
+  onElement?: (e: Event, element: 'brain' | 'genome') => void,
 ): TemplateResult {
   const lit = litGeneCount(v, genes);
   const title =
     lit > GENOME_SLOTS
       ? `GENOME — ${lit} genes loaded (top ${GENOME_SLOTS} shown)`
       : `GENOME — ${lit} gene${lit === 1 ? '' : 's'} loaded`;
+  // Element navigation (card 95844639): the slots block opens the genome shelf,
+  // the compass opens the brain HUD — each stops propagation so the tile's
+  // whole-card select doesn't also fire.
+  const pickGenome =
+    onElement === undefined
+      ? undefined
+      : (e: Event): void => {
+          e.stopPropagation();
+          onElement(e, 'genome');
+        };
   return html`<span class="genome-panel" title=${title}>
     <span class="genome-label">GENOME</span>
-    <span class="genome-slots">
+    <span
+      class="genome-slots ${pickGenome ? 'element-link' : ''}"
+      role=${pickGenome ? 'button' : nothing}
+      title=${pickGenome ? 'Open genome shelf' : nothing}
+      @click=${pickGenome ?? nothing}
+    >
       ${Array.from({ length: GENOME_SLOTS }, (_, i) => {
         const isLit = i < lit;
         const name = genes[i];
@@ -313,7 +379,7 @@ export function genomePanel(
         ></span>`;
       })}
     </span>
-    ${cognitionDiamond(v)}
+    ${cognitionDiamond(v, onElement === undefined ? undefined : (e) => onElement(e, 'brain'))}
   </span>`;
 }
 
@@ -484,6 +550,15 @@ export function memberCardFromCell(cell: ListingCell, listingId?: string): Templ
             select(e);
           }
         };
+  // Element navigation (card 95844639): compass → brain HUD, genome block →
+  // genome shelf. Same LISTING_SELECT seam, `element` rides the detail and the
+  // routing rule turns it into the persona route's anchor.
+  const selectElement =
+    listingId === undefined
+      ? undefined
+      : (e: Event, element: 'brain' | 'genome'): void => {
+          fireListingSelect(e, listingId, cell.id, cell.group, element);
+        };
   return html`
     <li class="member clickable ${active ? 'online' : 'idle'}" data-kind=${kind} tabindex="0"
         title="Open ${cell.title}" @click=${select ?? nothing} @keydown=${keySelect ?? nothing}>
@@ -505,7 +580,7 @@ export function memberCardFromCell(cell: ListingCell, listingId?: string): Templ
         </span>
         ${cell.meters ? personaReadout(cell.meters) : nothing}
       </span>
-      ${cell.meters ? genomePanel(cell.meters, cell.genes ?? []) : nothing}
+      ${cell.meters ? genomePanel(cell.meters, cell.genes ?? [], selectElement) : nothing}
     </li>
   `;
 }

@@ -343,6 +343,28 @@ describe('renderChat (Lit)', () => {
     expect(navSelectTarget({ listingId: 'nodes', id: 'local' })).toBeNull();
   });
 
+  // what this catches: ELEMENT navigation (card 95844639) — a tile's compass
+  // routes to the persona home ANCHORED at the brain HUD, its genome block at
+  // the genome shelf; an unknown element degrades to the plain persona select
+  // (never a dead scroll target). The anchor is client presentation — kind and
+  // target stay the pure nav/select pair.
+  it('navSelectTarget anchors roster element picks into the persona home', () => {
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha', element: 'brain' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+      anchor: 'brain',
+    });
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha', element: 'genome' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+      anchor: 'genome',
+    });
+    expect(navSelectTarget({ listingId: 'roster', id: 'asha', element: 'wat' })).toEqual({
+      target: 'asha',
+      kind: 'persona',
+    });
+  });
+
   // what this catches: a runtime badge must appear ONLY when the substrate
   // resolved an origin — an unresolved '' runtime must inject no badge (no
   // fabricated provenance, [[positron-identity-security-first-class]]). The badge
