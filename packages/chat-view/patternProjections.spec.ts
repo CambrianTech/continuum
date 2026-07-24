@@ -15,6 +15,7 @@ import {
   roomsListing,
   roomsListingFromNav,
   continuonWidget,
+  systemPanelWidget,
   chatWorkspace,
   type ChatContentBody,
 } from './patternProjections';
@@ -114,11 +115,11 @@ describe('chat → pattern projections', () => {
   it('composes the room into a Workspace with purpose-keyed Content', () => {
     const ws = chatWorkspace(vm);
     expect(ws.nav.id).toBe('rooms');
-    // The left rail is a global widget stack: Continuon (identity header) · AI
-    // Performance (metrics) · Rooms (listing) · Users & Agents (listing). The
-    // roster is the participants listing (id 'roster').
+    // The left rail is a global widget stack: Continuon (identity header) ·
+    // System (the two-faced SYS|AI panel) · Rooms (listing) · Users & Agents
+    // (listing). The roster is the participants listing (id 'roster').
     expect(ws.left).toHaveLength(4);
-    expect(ws.left.map((w) => w.kind)).toEqual(['continuon', 'metrics', 'listing', 'listing']);
+    expect(ws.left.map((w) => w.kind)).toEqual(['continuon', 'system', 'listing', 'listing']);
     const roster = ws.left.find(
       (w) => w.kind === 'listing' && (w.body as { id: string }).id === 'roster',
     );
@@ -160,6 +161,22 @@ describe('chat → pattern projections', () => {
     expect(continuonWidget(vm).body).not.toHaveProperty('version');
     // The workspace puts the continuon at the TOP of the rail.
     expect(chatWorkspace(vm).left[0]?.kind).toBe('continuon');
+  });
+
+  // what this catches: the two-faced System panel composes the EXISTING gauge +
+  // metrics projections (no new numbers): without the live sys feed the gauge
+  // face is honestly absent (no fabricated flat graph), with it the reshaped
+  // series ride in; the AI stats derive from the roster either way.
+  it('composes the system panel with an honestly-absent gauge until sys delivers', () => {
+    const dry = systemPanelWidget(vm);
+    expect(dry.kind).toBe('system');
+    expect(dry.body).not.toHaveProperty('gauge');
+    expect(dry.body.stats.stats.map((s) => s.label)).toEqual(['here', 'thinking', 'genome']);
+    const wet = systemPanelWidget(vm, {
+      series: [{ label: 'cpu', points: [10, 20], current: '20%' }],
+      sample_interval_ms: 2000,
+    });
+    expect(wet.body.gauge?.series[0]).toMatchObject({ label: 'CPU', current: '20%' });
   });
 
   // what this catches: brick 1 (POSITRON-WIDGET-SOPHISTICATION.md) — the live

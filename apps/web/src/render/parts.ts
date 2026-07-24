@@ -10,8 +10,65 @@
 import { html, svg, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
-import type { ListingCell, ListingView } from '@continuum/patterns';
+import type { GaugeView, ListingCell, ListingView, MetricsView } from '@continuum/patterns';
 import type { LoadoutVM, MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
+
+/** Per-series hues for the SYS gauge — the old sidebar's legend palette (CPU
+ *  red · MEM green · GPU purple), keyed by label with a cyan fallback for any
+ *  future series so an unknown label still draws. */
+const GAUGE_HUES: Record<string, string> = {
+  CPU: '#ff5c5c',
+  MEM: '#3fb950',
+  GPU: '#a78bfa',
+};
+
+/** One series → an SVG polyline over a fixed 0..=100 viewBox. Points are
+ *  already normalized upstream; x spreads the window across the width so a
+ *  short (fresh-boot) series draws from the left edge outward, honestly. */
+function sparkline(points: readonly number[], hue: string, w: number, h: number): TemplateResult {
+  if (points.length < 2) return svg``;
+  const step = w / (points.length - 1);
+  const pts = points.map((p, i) => `${(i * step).toFixed(1)},${(h - (p / 100) * h).toFixed(1)}`);
+  return svg`<polyline points=${pts.join(' ')} fill="none" stroke=${hue} stroke-width="1.5" vector-effect="non-scaling-stroke" />`;
+}
+
+/** The SYS gauge body — multi-series sparkline over a faint grid + the legend
+ *  row (hue dot · LABEL · current reading). Shared by the `'gauge'` rail widget
+ *  and `<sys-panel>`'s SYS face ([[compression]]). */
+export function renderGaugeBody(view: GaugeView): TemplateResult {
+  const W = 240;
+  const H = 56;
+  return html`<div class="gauge">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="resource history">
+      ${[0.25, 0.5, 0.75].map(
+        (f) => svg`<line x1="0" y1=${H * f} x2=${W} y2=${H * f} class="gauge-grid" />`,
+      )}
+      ${view.series.map((s) => sparkline(s.points, GAUGE_HUES[s.label] ?? '#7dd3fc', W, H))}
+    </svg>
+    <div class="gauge-legend">
+      ${view.series.map(
+        (s) => html`<span class="gauge-key">
+          <span class="gauge-dot" style="background:${GAUGE_HUES[s.label] ?? '#7dd3fc'}"></span>
+          <span class="gauge-label">${s.label}</span>
+          <span class="gauge-val">${s.current}</span>
+        </span>`,
+      )}
+    </div>
+  </div>`;
+}
+
+/** The team-cognition stat row (value over label, tone-coloured) — shared by the
+ *  `'metrics'` rail widget and `<sys-panel>`'s AI face ([[compression]]). */
+export function renderMetricsRow(view: MetricsView): TemplateResult {
+  return html`<div class="metrics-row">
+    ${view.stats.map(
+      (s) => html`<span class="metric" data-tone=${s.tone ?? 'muted'}>
+        <span class="metric-val">${s.value}</span>
+        <span class="metric-label">${s.label}</span>
+      </span>`,
+    )}
+  </div>`;
+}
 
 /** The composed select event a listing cell fires when the reader picks it — the
  *  `select(entityInList)` NavIntent reaching the web idiom. It bubbles out of the

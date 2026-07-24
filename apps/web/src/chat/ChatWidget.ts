@@ -392,6 +392,52 @@ export class ChatWidget extends LitElement {
     .metric[data-tone='muted'] .metric-val {
       color: var(--content-secondary);
     }
+    /* SYS|AI face chips + honest window chip on the <sys-panel> header. */
+    sys-panel {
+      display: block;
+    }
+    .face-chips {
+      display: inline-flex;
+      gap: 2px;
+      margin-left: auto;
+      margin-right: var(--spacing-sm);
+    }
+    .face-chip {
+      padding: 1px 7px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--content-secondary);
+      font-size: 8.5px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      cursor: pointer;
+      line-height: 1.5;
+    }
+    .face-chip:hover:not([disabled]) {
+      color: var(--content-primary);
+      border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+    }
+    .face-chip[data-active] {
+      background: var(--content-accent);
+      border-color: var(--content-accent);
+      color: var(--surface, #0b0d12);
+    }
+    .face-chip[disabled] {
+      opacity: 0.4;
+      cursor: default;
+    }
+    .gauge-window {
+      /* Keep the derived unit honest: "3m" is minutes; uppercase would read as months. */
+      text-transform: none;
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      padding: 1px 5px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: var(--content-secondary);
+      font-variant-numeric: tabular-nums;
+    }
     /* SYS gauge (brick 2) — the multi-series resource sparkline + legend. */
     .gauge {
       padding: 2px var(--spacing-md) var(--spacing-sm);

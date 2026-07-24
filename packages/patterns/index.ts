@@ -193,6 +193,21 @@ export interface GaugeView {
   readonly sampleIntervalMs?: number;
 }
 
+/** The `system` widget body — the rail's TWO-FACED system panel (the old
+ *  sidebar's SYS|AI header): the node's resource gauge (SYS face) and the live
+ *  team-cognition stats (AI face) as one widget, so a target can draw a real
+ *  toggle between them instead of stacking two half-panels. `gauge` is honestly
+ *  absent until the node's metrics feed delivers; `stats` derives from state the
+ *  surface already holds. Which face shows is renderer state (a lens), never
+ *  projection state. */
+export interface SystemPanelView {
+  /** The node's resource window (CPU/MEM/GPU) — the SYS face. Absent = the
+   *  feed hasn't delivered; a target disables that face, honestly. */
+  readonly gauge?: GaugeView;
+  /** The live team-cognition stat row — the AI face. */
+  readonly stats: MetricsView;
+}
+
 /** The `continuon` widget body — the rail's identity header (the top-left mark of
  *  POSITRON-PURE-ROOMS-BRIEF.md: "alive — a slow-breathing mark"). Wordmark + an
  *  optional version badge + a compact live-activity ticker. The projection owns the

@@ -16,6 +16,7 @@ import type {
   CellStatus,
   ContentView,
   ContinuonView,
+  SystemPanelView,
   WorkspaceView,
   PanelWidget,
   MetricsView,
@@ -173,6 +174,23 @@ export function systemGaugeWidget(sys: SystemMetricsViewState): PanelWidget<Gaug
   return { id: 'sys-gauge', kind: 'gauge', title: 'System', body: gauge, scope: 'global' };
 }
 
+/** The TWO-FACED system panel (the old sidebar's SYS|AI header): one widget
+ *  carrying BOTH the node's resource gauge (SYS face, from the live
+ *  `kind="system-metrics"` view when delivered) and the team-cognition stats
+ *  (AI face, derived from the roster's own vitals). A target draws a real
+ *  toggle between the faces; which face shows is renderer state. Composes the
+ *  two existing projections — no new numbers, no new pipe. */
+export function systemPanelWidget(
+  vm: ChatViewModel,
+  sys?: SystemMetricsViewState,
+): PanelWidget<SystemPanelView> {
+  const body: SystemPanelView = {
+    ...(sys ? { gauge: systemGaugeWidget(sys).body } : {}),
+    stats: metricsWidget(vm).body,
+  };
+  return { id: 'system', kind: 'system', title: 'System', body, scope: 'global' };
+}
+
 /** The live extras a host wires in beside the chat snapshot — each optional and
  *  independent, each honestly absent until its subscription delivers (never a
  *  fabricated placeholder). One options object, not a growing positional list
@@ -218,8 +236,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // (ROSTER_LISTING_ID) that RAG + mobile ground on.
   const left = [
     continuonWidget(vm, live?.version),
-    ...(live?.sys ? [systemGaugeWidget(live.sys)] : []),
-    metricsWidget(vm),
+    systemPanelWidget(vm, live?.sys),
     listingWidget(rooms),
     listingWidget(rosterListing(vm)),
   ];

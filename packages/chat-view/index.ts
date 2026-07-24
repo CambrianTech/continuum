@@ -47,6 +47,7 @@ export {
   roomsListing,
   roomsListingFromNav,
   systemGaugeWidget,
+  systemPanelWidget,
   continuonWidget,
   chatWorkspace,
 } from './patternProjections';
