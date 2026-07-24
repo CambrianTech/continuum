@@ -65,6 +65,10 @@ fn main() {
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    // "msvc" on windows-msvc, "gnu" on windows-gnu/linux-gnu, "" elsewhere.
+    // Used to pick the right C++ runtime + OpenMP libs below: MSVC has no
+    // GCC-world `stdc++`/`gomp`.
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
     // macOS always links Accelerate.framework — ggml-cpu's ops.cpp uses
     // vDSP_vsmul / vDSP_vsub / vDSP_vsadd UNCONDITIONALLY on macOS (CMake's
@@ -204,7 +208,16 @@ fn main() {
     // C++ stdlib + OpenMP (llama.cpp CPU backend uses GOMP_parallel on Linux).
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=c++");
+    } else if target_env == "msvc" {
+        // windows-msvc: there is NO GCC-world `stdc++`/`gomp`. The MSVC C++
+        // runtime is auto-linked through the `/DEFAULTLIB` directives the MSVC
+        // compiler embeds in the ggml/llama `.obj` files, and OpenMP (when
+        // ggml's CMake enables it) is pulled in the same way via the
+        // `/openmp`-emitted `/DEFAULTLIB:vcomp` directive. So emit neither GCC
+        // lib here — doing so is what caused `LNK1181: cannot open input file
+        // 'stdc++.lib'`. windows-gnu (MinGW) keeps the GCC libs via the else.
     } else {
+        // Linux / other GNU targets.
         println!("cargo:rustc-link-lib=stdc++");
         println!("cargo:rustc-link-lib=gomp");
     }

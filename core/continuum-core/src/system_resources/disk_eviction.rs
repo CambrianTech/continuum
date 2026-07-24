@@ -46,7 +46,12 @@ pub const DEFAULT_CARGO_TARGET_BUDGET_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 /// A missing lock file is created — holding it makes a cargo invocation
 /// that starts mid-eviction block until we finish, instead of racing us.
 fn try_exclusive_flock(path: &Path) -> Option<std::fs::File> {
-    use std::os::unix::io::AsRawFd;
+    // Cross-platform advisory file lock via `fs2` (Unix: flock; Windows:
+    // LockFileEx) — ONE code path on every platform. The lock is held until the
+    // returned `File` is dropped, matching the previous flock-until-drop
+    // semantics. `try_lock_exclusive` returns Err when another process (a live
+    // cargo build) holds it → `None`.
+    use fs2::FileExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -54,8 +59,7 @@ fn try_exclusive_flock(path: &Path) -> Option<std::fs::File> {
         .truncate(false)
         .open(path)
         .ok()?;
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    (rc == 0).then_some(file)
+    file.try_lock_exclusive().ok().map(|_| file)
 }
 
 /// Budget-capped eviction owner for the shared cargo-target cache.

@@ -29,7 +29,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+// The core's IPC socket is a Unix-domain socket. On Windows there is no Unix
+// socket; alias to TcpStream so the field/signature types compile. The connect
+// site is cfg-gated separately (a PathBuf is not a TCP address). BEHAVIORAL
+// GAP: this direct-IPC sidecar path (continuum-mcp) is not yet wired to the
+// core's TCP loopback listener on Windows — see the connect site below.
+#[cfg(unix)]
 use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::TcpStream as UnixStream;
 use tokio::sync::Mutex;
 
 use continuum_client::event::EventStream;
@@ -161,13 +169,28 @@ impl Transport for CoreIpcTransport {
         let mut guard = self.stream.lock().await;
         // Lazy connect / reconnect if the stream is absent.
         if guard.is_none() {
-            let s = UnixStream::connect(&self.socket_path).await.map_err(|e| {
-                ClientError::Connect(format!(
-                    "connect to core IPC socket {}: {e}",
+            #[cfg(not(unix))]
+            {
+                // Windows: this direct-IPC sidecar addresses the core by its
+                // Unix-socket path, which has no equivalent here. The core's
+                // Windows IPC is TCP loopback (see ipc/mod.rs), but wiring this
+                // transport to it is a follow-up. Fail loud, don't silently drop.
+                return Err(ClientError::Connect(format!(
+                    "CoreIpcTransport uses Unix-domain sockets, unavailable on this platform \
+                     (socket {}); the TCP loopback IPC path is a follow-up",
                     self.socket_path.display()
-                ))
-            })?;
-            *guard = Some(s);
+                )));
+            }
+            #[cfg(unix)]
+            {
+                let s = UnixStream::connect(&self.socket_path).await.map_err(|e| {
+                    ClientError::Connect(format!(
+                        "connect to core IPC socket {}: {e}",
+                        self.socket_path.display()
+                    ))
+                })?;
+                *guard = Some(s);
+            }
         }
 
         let stream = guard.as_mut().expect("just ensured connected");

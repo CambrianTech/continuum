@@ -83,6 +83,7 @@ inventory = "0.3"
 # jemalloc-sys's autotools build fails); see the `not(target_env = "msvc")`
 # block near the macOS deps + the gated #[global_allocator] in main.rs.
 libc = "0.2"     # Process group management (setsid, kill -pgid)
+fs2 = "0.4"      # Cross-platform advisory file locks (flock / LockFileEx)
 toml = "0.8"     # Avatar model manifest parsing
 base64 = "0.22"  # Base64 encoding for audio data
 sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash

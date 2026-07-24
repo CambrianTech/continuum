@@ -9,7 +9,15 @@
 use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
+// The livekit-bridge is a Unix-socket sidecar. On Windows there is no
+// Unix-domain socket; alias to TcpStream so this client compiles unchanged.
+// `connect()` to the bridge's filesystem-path socket then fails gracefully at
+// runtime (voice/livekit is a Unix-only subsystem today). BEHAVIORAL GAP:
+// voice bridge is unavailable on Windows until a TCP endpoint is wired.
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use std::net::TcpStream as UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 

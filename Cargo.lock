@@ -2862,6 +2862,7 @@ dependencies = [
  "dirs 5.0.1",
  "earshot",
  "ed25519-dalek",
+ "fs2",
  "futures",
  "futures-util",
  "half",
