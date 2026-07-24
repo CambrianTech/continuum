@@ -113,7 +113,11 @@ export function roomSelectTarget(detail: ListingSelectDetail): string | null {
  *  no-optimistic-append discipline as chat send). */
 export function listingCell(cell: ListingCell, selectFrom?: string): TemplateResult {
   const select =
-    selectFrom === undefined ? undefined : (e: Event): void => fireListingSelect(e, selectFrom, cell.id);
+    selectFrom === undefined
+      ? undefined
+      : (e: Event): void => {
+          fireListingSelect(e, selectFrom, cell.id);
+        };
   const keySelect =
     select === undefined
       ? undefined
@@ -513,7 +517,9 @@ function fireExpandToggle(e: Event, id: string): void {
 function messageBody(msg: MessageRowVM): TemplateResult {
   const digest = msg.digest;
   if (!digest) return html`<div class="content">${formatContent(msg.content)}</div>`;
-  const toggle = (e: Event): void => fireExpandToggle(e, msg.id);
+  const toggle = (e: Event): void => {
+    fireExpandToggle(e, msg.id);
+  };
   // NOTE: `.content` is `white-space: pre-wrap`, so these templates must stay
   // whitespace-tight — pretty-printed newlines would render as literal blank lines.
   if (msg.expanded) {

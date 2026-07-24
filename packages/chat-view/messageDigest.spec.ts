@@ -60,7 +60,7 @@ describe('messageDigest', () => {
   // repeated line must surface the `uniq -c` histogram ("mostly N× '…'") so a
   // degenerate wall is NAMED, not just hidden. Counts are exact.
   it('surfaces a repetition histogram when one line dominates the remainder', () => {
-    const wall = ['deploy trace follows:', ...Array(219).fill('ae0e-')].join('\n');
+    const wall = ['deploy trace follows:', ...Array<string>(219).fill('ae0e-')].join('\n');
     const digest = messageDigest(wall);
     expect(digest).toBeDefined();
     // head = title + first 5 wall lines; remainder = the other 214 repeats
