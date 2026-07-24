@@ -325,6 +325,45 @@ function inlineCode(text: string): TemplateResult {
   return html`${out}`;
 }
 
+/** The composed toggle event a digest row's expand/collapse affordance fires —
+ *  it bubbles out of the shadow tree to `<chat-widget>`, which owns the Set of
+ *  expanded message ids (the render fragments stay pure/stateless). */
+export const MESSAGE_EXPAND_TOGGLE = 'message-expand-toggle';
+
+/** Detail payload of a `MESSAGE_EXPAND_TOGGLE` event. */
+export interface MessageExpandToggleDetail {
+  readonly id: string;
+}
+
+function fireExpandToggle(e: Event, id: string): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<MessageExpandToggleDetail>(MESSAGE_EXPAND_TOGGLE, {
+      detail: { id },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
+/** The message body at its display tier ([[perception-resolution-contract]]):
+ *  a digested row renders head + mechanical tail line (+ repetition histogram)
+ *  collapsed by default — no message floods the transcript — with the full
+ *  original one toggle away. The widget stamps `expanded` per its own state. */
+function messageBody(msg: MessageRowVM): TemplateResult {
+  const digest = msg.digest;
+  if (!digest) return html`<div class="content">${formatContent(msg.content)}</div>`;
+  const toggle = (e: Event): void => fireExpandToggle(e, msg.id);
+  // NOTE: `.content` is `white-space: pre-wrap`, so these templates must stay
+  // whitespace-tight — pretty-printed newlines would render as literal blank lines.
+  if (msg.expanded) {
+    return html`<div class="content">${formatContent(msg.content)}<button class="digest-toggle" @click=${toggle}>collapse</button></div>`;
+  }
+  return html`<div class="content" data-collapsed>${formatContent(digest.head)}<div
+      class="digest-tail" title="collapsed — mechanical summary of the hidden remainder">${digest.tailSummary}${digest.histogram
+        ? html` <span class="digest-histogram">· ${digest.histogram}</span>`
+        : nothing}</div><button class="digest-toggle" @click=${toggle}>show full message</button></div>`;
+}
+
 /** One conversation row — WHAT was said. */
 export function messageRow(msg: MessageRowVM): TemplateResult {
   return html`
@@ -336,7 +375,7 @@ export function messageRow(msg: MessageRowVM): TemplateResult {
           ${runtimeBadge(msg.runtime)}
           <span class="time">${msg.time}</span>
         </div>
-        <div class="content">${formatContent(msg.content)}</div>
+        ${messageBody(msg)}
       </div>
     </li>
   `;

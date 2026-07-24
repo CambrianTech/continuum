@@ -21,6 +21,7 @@ import type { ChatState } from '@continuum/chat-view';
 import { chatViewModel, type MessageRowVM } from '@continuum/chat-view';
 import type { NavViewState, StreamDelta, SystemMetricsViewState } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
+import { MESSAGE_EXPAND_TOGGLE, type MessageExpandToggleDetail } from '../render/parts';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
 /** The send action the host injects. Resolves when the message is accepted by
@@ -37,6 +38,7 @@ export class ChatWidget extends LitElement {
     _sending: { state: true },
     _sendError: { state: true },
     _typing: { state: true },
+    _expanded: { state: true },
   };
 
   /** The current chat snapshot; assignment triggers a re-render. `undefined`
@@ -62,6 +64,21 @@ export class ChatWidget extends LitElement {
    *  the durable message (via `state`) supersedes it; reassigned (not mutated) so
    *  Lit re-renders. */
   private _typing = new Map<string, string>();
+  /** Digest-tier expand state ([[perception-resolution-contract]]): the message
+   *  ids the reader expanded to full fidelity. Widget-owned presentation state —
+   *  the projection classifies, the reader chooses. Reassigned (not mutated) so
+   *  Lit re-renders; toggled by the row's bubbled MESSAGE_EXPAND_TOGGLE event. */
+  private _expanded = new Set<string>();
+
+  /** Toggle one message between digest and full — the row's affordance bubbles
+   *  the composed event up here because the render fragments are stateless. */
+  private onExpandToggle = (e: Event): void => {
+    const { id } = (e as CustomEvent<MessageExpandToggleDetail>).detail;
+    const next = new Set(this._expanded);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    this._expanded = next;
+  };
 
   /**
    * Apply one live token from a persona's in-progress turn (#170). Grows a transient
@@ -88,6 +105,15 @@ export class ChatWidget extends LitElement {
     // Unset → the native 'continuum' look.
     const universe = new URLSearchParams(location.search).get('universe');
     if (universe) this.setAttribute('data-universe', universe);
+    // Digest expand/collapse: the row's affordance fires a composed event that
+    // bubbles out of the shadow tree to the host — listen on self so the pure
+    // fragments need no callback threading through the render registries.
+    this.addEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
+  }
+
+  override disconnectedCallback(): void {
+    this.removeEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
+    super.disconnectedCallback();
   }
 
   static override styles = css`
@@ -765,6 +791,42 @@ export class ChatWidget extends LitElement {
       padding: var(--spacing-sm) var(--spacing-md);
       margin-top: 3px;
     }
+    /* Digest tier ([[perception-resolution-contract]]) — a flooding message renders
+       collapsed: head + a mechanical tail line + an expand affordance. No animation
+       on toggle — an instant swap is simple and already honors reduced-motion. */
+    .digest-tail {
+      margin-top: var(--spacing-sm);
+      padding-top: var(--spacing-xs);
+      border-top: 1px dashed var(--border-subtle);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--content-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+    .digest-histogram {
+      /* The repetition callout — the named degenerate pattern, warmed so it reads
+         as the anomaly signal, not more body text. */
+      color: #ffb020;
+    }
+    button.digest-toggle {
+      display: inline-block;
+      margin-top: var(--spacing-xs);
+      padding: 2px 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--button-secondary-background);
+      color: var(--content-secondary);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+    }
+    button.digest-toggle:hover,
+    button.digest-toggle:focus-visible {
+      color: var(--content-accent);
+      border-color: var(--border-accent);
+      outline: none;
+    }
     /* Fenced code + commands — personas speak these constantly; a monospace block reads
        as an action, not noise. Scrolls inside itself so a long command never widens the bubble. */
     /* Expandable code block — a summary bar you can toggle; long commands/outputs stay
@@ -1208,6 +1270,17 @@ export class ChatWidget extends LitElement {
             loadout: models[i % models.length],
           };
         }),
+      };
+    }
+    // Digest tier ([[perception-resolution-contract]]): stamp the reader's expand
+    // choices onto the rows the projection classified — an expanded row renders
+    // its full body with a collapse affordance; everything else stays digested.
+    if (this._expanded.size > 0) {
+      vm = {
+        ...vm,
+        messages: vm.messages.map((m) =>
+          this._expanded.has(m.id) ? { ...m, expanded: true } : m,
+        ),
       };
     }
     // #170 live typing: overlay a transient bubble per persona mid-turn, growing

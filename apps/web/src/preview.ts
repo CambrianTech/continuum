@@ -81,6 +81,28 @@ const FIXTURES: Record<string, ChatState> = {
     kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat',
     roster, messages: [],
   },
+  // The digest-tier reference input ([[perception-resolution-contract]]): the live
+  // incident's shape — a degenerate repetition wall (hundreds of "ae0e-" lines)
+  // between two normal messages. Renders collapsed (head + "… +N lines (M chars)
+  // · mostly N× 'ae0e-'" + "show full message"), proving no message floods the
+  // transcript while the conversation around it stays readable.
+  flood: {
+    kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat',
+    roster,
+    messages: [
+      message({ id: 'f1', content: 'Deploying the lane planner now — trace incoming.' }),
+      message({
+        id: 'f2', sender_id: 'solenne', sender_name: 'Solenne', provenance: { runtime: 'qwen' },
+        content: ['lane admission trace follows:', ...Array<string>(240).fill('ae0e-')].join('\n'),
+        timestamp: 1_700_000_060_000,
+      }),
+      message({
+        id: 'f3', sender_id: 'anwen', sender_name: 'Anwen', provenance: { runtime: 'claude' },
+        content: 'That trace looks degenerate — repetition brick fired, restarting the lane.',
+        timestamp: 1_700_000_120_000,
+      }),
+    ],
+  },
 };
 
 /** The citizen's nav view for the `rooms` fixture — the live room SET the rooms
