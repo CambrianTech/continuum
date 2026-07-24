@@ -459,6 +459,13 @@ pub fn install_serving_state(rx: watch::Receiver<ServingSnapshot>) -> bool {
     SERVING_STATE.set(rx).is_ok()
 }
 
+/// A clone of the process-wide serving-state receiver, for consumers that
+/// need to FOLLOW the snapshot over time (the gateway-sync task, card
+/// ed3661c4) rather than read it once. `None` before the daemon installs.
+pub fn serving_state_receiver() -> Option<watch::Receiver<ServingSnapshot>> {
+    SERVING_STATE.get().cloned()
+}
+
 /// The model currently served on this node, per the daemon's last reconcile.
 /// Returns [`ServingSnapshot::empty`] before the daemon installs its state
 /// (boot) or when nothing is live. No HTTP, no probe — a `watch` borrow.
