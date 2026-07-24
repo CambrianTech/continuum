@@ -168,8 +168,11 @@ export class ChatWidget extends LitElement {
      * hardcoded colors, so a theme swap is a :root override and the same token
      * names port to other surfaces. */
     :host {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
+      /* Flex column (not a fixed grid-row count): the surface's row set varies —
+         header, optional TAB BAR, panels, optional error strips, compose — and
+         flex lets each optional row slot in while .panels keeps the remainder. */
+      display: flex;
+      flex-direction: column;
       height: 100%;
       font: 14px/1.45 var(--font-primary, system-ui, sans-serif);
       color: var(--content-primary, #e0e6ed);
@@ -190,6 +193,7 @@ export class ChatWidget extends LitElement {
     }
     .room-meta {
       display: flex;
+      align-items: center;
       gap: var(--spacing-sm);
       color: var(--content-secondary);
       font-size: 12px;
@@ -220,6 +224,99 @@ export class ChatWidget extends LitElement {
       display: grid;
       grid-template-columns: minmax(210px, 280px) 1fr;
       min-height: 0;
+      flex: 1;
+    }
+    /* A populated ContextPanel opens the third column — the right contextual
+       rail (participants summary, room info; the factory reference's right panel). */
+    .panels[data-context] {
+      grid-template-columns: minmax(210px, 280px) 1fr minmax(180px, 240px);
+    }
+    .context {
+      border-left: 1px solid var(--border-subtle);
+      overflow-y: auto;
+      padding: var(--spacing-sm) 0;
+      background: var(--sidebar-background);
+    }
+    /* TAB BAR — the open activities as icon+title tabs (the reference's tabbed
+       center). A tab pick IS the rooms-rail select (same composed event). */
+    .tab-bar {
+      display: flex;
+      gap: 3px;
+      padding: 4px var(--spacing-md) 0;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--widget-input-area-background);
+      overflow-x: auto;
+    }
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 8px 5px 10px;
+      border: 1px solid var(--border-subtle);
+      border-bottom: none;
+      border-radius: 7px 7px 0 0;
+      font-size: 12px;
+      color: var(--content-secondary);
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .tab[data-status='active'] {
+      background: var(--widget-surface-solid, #1a1f2e);
+      color: var(--content-primary);
+      border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+      box-shadow: 0 -1px 8px rgba(0, 212, 255, 0.12);
+    }
+    .tab:hover {
+      color: var(--content-primary);
+    }
+    .tab:focus-visible {
+      outline: 1px solid var(--content-accent);
+      outline-offset: -1px;
+    }
+    .tab-icon {
+      font-size: 11px;
+    }
+    .tab-close {
+      border: none;
+      background: transparent;
+      color: var(--content-secondary);
+      font-size: 12px;
+      line-height: 1;
+      padding: 0 1px;
+    }
+    .tab-close[disabled] {
+      opacity: 0.4;
+      cursor: default;
+    }
+    /* Top-right header controls: version badge + Theme (real universe cycle) +
+       the not-yet-wired chrome rendered honestly disabled. */
+    .header-controls {
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .header-version {
+      align-self: center;
+    }
+    .hdr-btn {
+      padding: 2px 9px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: var(--button-secondary-background);
+      color: var(--content-secondary);
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+      line-height: 1.6;
+    }
+    .hdr-btn:hover:not([disabled]) {
+      color: var(--content-accent);
+      border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+    }
+    .hdr-btn[disabled] {
+      opacity: 0.45;
+      cursor: default;
     }
     .who {
       border-right: 1px solid var(--border-subtle);
@@ -1348,6 +1445,7 @@ export class ChatWidget extends LitElement {
     .connecting {
       display: grid;
       place-items: center;
+      flex: 1;
       color: var(--content-secondary);
     }
     .render-error {

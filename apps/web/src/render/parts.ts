@@ -82,7 +82,7 @@ export interface ListingSelectDetail {
   readonly id: string;
 }
 
-function fireListingSelect(e: Event, listingId: string, id: string): void {
+export function fireListingSelect(e: Event, listingId: string, id: string): void {
   (e.currentTarget as HTMLElement).dispatchEvent(
     new CustomEvent<ListingSelectDetail>(LISTING_SELECT, {
       detail: { listingId, id },

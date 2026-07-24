@@ -12,16 +12,89 @@
 import { html, nothing, type TemplateResult } from 'lit';
 import {
   ROSTER_LISTING_ID,
+  type ContinuonView,
   type RenderTarget,
   type WorkspaceView,
+  type ListingCell,
   type ListingView,
   type ContentView,
   type ContextPanelView,
   type PanelWidget,
 } from '@continuum/patterns';
-import { renderListing } from './parts';
+import { fireListingSelect, renderListing } from './parts';
 import { webContentRegistry } from '../content/registry';
 import { webWidgetRegistry } from './widgets';
+
+/** The universe skins the Theme button cycles through — the SAME real
+ *  `?universe=` axis `<chat-widget>` already keys its skins off ('' = the
+ *  native continuum look). Cycling rewrites the query param, which re-embodies
+ *  the app — a real action, not a dead chrome button. */
+const UNIVERSES = ['', 'tron', 'forge', 'cosmos'] as const;
+
+/** Advance the ?universe= query param to the next skin (pure on its input so
+ *  the cycle order is unit-testable; the caller applies it to location). */
+export function nextUniverse(current: string | null): string {
+  const idx = UNIVERSES.indexOf((current ?? '') as (typeof UNIVERSES)[number]);
+  return UNIVERSES[(idx + 1) % UNIVERSES.length] ?? '';
+}
+
+function cycleUniverse(): void {
+  const params = new URLSearchParams(location.search);
+  const next = nextUniverse(params.get('universe'));
+  if (next === '') params.delete('universe');
+  else params.set('universe', next);
+  const query = params.toString();
+  location.search = query;
+}
+
+/** Tab icon by the nav cell's group (the tab's target kind / purpose). */
+function tabIcon(group: string | undefined): string {
+  switch (group) {
+    case 'persona':
+      return '🤖';
+    case 'content':
+      return '📄';
+    case 'foundry':
+      return '🏭';
+    default:
+      return '💬';
+  }
+}
+
+/** One nav tab — icon + title + unread pill + a (not-yet-wired) close affordance.
+ *  Clicking the tab fires the SAME composed LISTING_SELECT the rooms rail uses
+ *  (listingId 'rooms'), so a tab pick IS a real nav/select round-trip. Close is
+ *  rendered honestly disabled until a nav/close verb exists. */
+function navTab(cell: ListingCell): TemplateResult {
+  const select = (e: Event): void => fireListingSelect(e, 'rooms', cell.id);
+  const keySelect = (e: KeyboardEvent): void => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      select(e);
+    }
+  };
+  return html`<span
+    class="tab"
+    data-status=${cell.status ?? 'none'}
+    role="tab"
+    tabindex="0"
+    aria-selected=${cell.status === 'active' ? 'true' : 'false'}
+    @click=${select}
+    @keydown=${keySelect}
+  >
+    <span class="tab-icon">${tabIcon(cell.group)}</span>
+    <span class="tab-title">${cell.title}</span>
+    ${cell.count ? html`<span class="cell-count" title="unread">${cell.count}</span>` : nothing}
+    <button class="tab-close" disabled title="coming soon — tab close isn't wired yet">×</button>
+  </span>`;
+}
+
+/** The continuon widget's version badge, reused as the header's top-right badge
+ *  — ONE version source (the projected ContinuonView), never a second literal. */
+function versionOf(ws: WorkspaceView): string | undefined {
+  const w = ws.left.find((widget) => widget.kind === 'continuon');
+  return w ? (w.body as ContinuonView).version : undefined;
+}
 
 /** The participants `Listing` (id === ROSTER_LISTING_ID) among the rail's widgets — used
  *  only for the header's "active / total" count. NOT just the first listing (that may be
@@ -64,19 +137,46 @@ export const webTarget: RenderTarget<TemplateResult> = {
     const roster = rosterOf(ws);
     const memberCount = roster?.cells.length ?? 0;
     const activeCount = roster?.cells.filter((c) => c.status === 'active').length ?? 0;
+    const version = versionOf(ws);
     return html`
       <header class="room">
         <div class="room-name">${room?.title ?? ''}</div>
         <div class="room-meta">
           <span class="count" title="active / total">${activeCount}/${memberCount} here</span>
           <span class="live" title="live · ${room?.id ?? ''}"><span class="live-dot"></span>live</span>
+          ${version
+            ? html`<span class="continuon-version header-version" title="client build">${version}</span>`
+            : nothing}
+          <span class="header-controls">
+            <button class="hdr-btn" @click=${cycleUniverse} title="cycle universe skin (?universe=)">
+              Theme
+            </button>
+            <button class="hdr-btn" disabled title="coming soon">Settings</button>
+            <button class="hdr-btn" disabled title="coming soon">Browser</button>
+            <button class="hdr-btn" disabled title="coming soon">Help</button>
+          </span>
         </div>
       </header>
-      <div class="panels">
+      ${ws.nav.cells.length > 1
+        ? html`<div class="tab-bar" role="tablist" aria-label="open activities">
+            ${ws.nav.cells.map(navTab)}
+          </div>`
+        : nothing}
+      <div class="panels" data-context=${ws.context.listings.length > 0 ? '' : nothing}>
         <aside class="who" aria-label="global widgets">
           ${ws.left.length > 0 ? ws.left.map((w) => this.widget(w)) : nothing}
         </aside>
         <section class="what" aria-label="conversation">${this.content(ws.content)}</section>
+        ${ws.context.listings.length > 0
+          ? html`<aside class="context" aria-label="activity context">
+              ${ws.context.listings.map(
+                (l) => html`<section class="rail-widget" data-widget="context">
+                  <div class="who-head"><span class="who-title">${l.title}</span></div>
+                  ${renderListing(l)}
+                </section>`,
+              )}
+            </aside>`
+          : nothing}
       </div>
     `;
   },
