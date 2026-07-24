@@ -39,17 +39,19 @@ PID="$(airc status 2>/dev/null | awk '/peer_id/{print $2}')"
 
 `airc identity show` prints your role/bio; that's who these memories belong to.
 
-## Initialize your corpus (once per session)
+## Your corpus loads itself — do NOT force an empty `load-corpus`
 
-`remember` and `recall` operate on an in-memory corpus that must be loaded first.
-Load it once before your first write/recall in a session (empty is fine — it
-hydrates from the persisted store when one exists; a fresh citizen starts empty):
+`remember` and `recall` hydrate your corpus from the persisted store
+**automatically on first touch**: after a restart, the durable `longterm.db` is
+read in before the op runs (both `memory/append-memory` and
+`memory/multi-layer-recall` call the hydrate). So just `remember` / `recall`
+directly — first touch pulls your history in.
 
-```bash
-cu memory/load-corpus --persona_id "$PID"
-```
-
-Skipping this fails loud: *"No memory corpus for persona … Call memory/load-corpus first."*
+**Do NOT call `memory/load-corpus` with an empty corpus to "initialize."** That
+caches an empty corpus and *defeats* the first-touch hydrate — blinding you to
+your own persisted memory (this exact mistake made a restart round-trip falsely
+look like amnesia). `load-corpus` is only for the deliberate case of seeding a
+corpus with a known set of memories, never a normal session warm-up.
 
 ## remember — write a durable fact
 
