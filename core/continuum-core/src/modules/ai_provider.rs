@@ -240,10 +240,20 @@ pub(crate) fn select_failure_message(
 /// fast-path and the reactive watcher (compression — the adapter is wired the
 /// same way whether it registers at boot or seconds later). Returns the
 /// initialized adapter ready to register, or a Display error on init failure.
-async fn build_gateway_adapter(base_url: String) -> Result<OpenAICompatibleAdapter, String> {
+async fn build_gateway_adapter(
+    base_url: String,
+    active_model: Option<&str>,
+) -> Result<OpenAICompatibleAdapter, String> {
     let mut a = OpenAICompatibleAdapter::from_registry(crate::inference::llama_server::PROVIDER_ID)
         .with_runtime_base_url(base_url);
     a.initialize().await.map_err(|e| e.to_string())?;
+    // The snapshot's active_model ALWAYS selects, whatever /v1/models claimed —
+    // the daemon's reconcile verified it against the live process; the catalog
+    // is derived and can misname the model (Windows alias-mangling put the GGUF
+    // path in data[].id and select() refused a healthy lane, 5090 2026-07-24).
+    if let Some(model) = active_model {
+        a.ensure_runtime_model(model);
+    }
     Ok(a)
 }
 
@@ -284,7 +294,7 @@ impl AIProviderModule {
                 if snap.ready {
                     let want = (snap.base_url.clone(), snap.active_model.clone());
                     if synced.as_ref() != Some(&want) {
-                        match build_gateway_adapter(want.0.clone()).await {
+                        match build_gateway_adapter(want.0.clone(), want.1.as_deref()).await {
                             Ok(a) => {
                                 let mut reg = registry_arc.write().await;
                                 // Replace, never append: deregister sweeps the
@@ -505,7 +515,7 @@ impl AIProviderModule {
             crate::inference::llama_server::await_ready_serving(GATEWAY_FAST_PATH_WAIT).await
         {
             self.log().info("Registering llama-server gateway adapter");
-            match build_gateway_adapter(snap.base_url.clone()).await {
+            match build_gateway_adapter(snap.base_url.clone(), snap.active_model.as_deref()).await {
                 Ok(a) => {
                     registry.register(Arc::new(a), 9);
                     gateway_registered = true;

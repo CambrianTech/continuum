@@ -553,6 +553,26 @@ impl OpenAICompatibleAdapter {
     /// handle the common "persona says short name, DMR stores full
     /// hf.co/…-GGUF ID" pattern. No fuzzy magic beyond that — if neither
     /// contains the other, the adapter honestly does not have the model.
+    /// Ensure `id` is present in the runtime catalog. The llama-server gateway
+    /// calls this with the ServingSnapshot's `active_model` after initialize —
+    /// the SNAPSHOT is the authority on what the lane serves; the `/v1/models`
+    /// catalog is DERIVED, and it can lie about identity: on Windows a mangled
+    /// spawn `--alias` put the GGUF file PATH in `data[].id`, so the served
+    /// model matched nothing and `select()` refused a healthy lane (5090 repro
+    /// 2026-07-24). Not a fallback: this records a fact the daemon's reconcile
+    /// already verified against the live process.
+    pub fn ensure_runtime_model(&self, id: &str) {
+        let mut guard = self.runtime_models.write().unwrap();
+        match guard.as_mut() {
+            Some(set) => {
+                set.insert(id.to_string());
+            }
+            None => {
+                *guard = Some(std::collections::HashSet::from([id.to_string()]));
+            }
+        }
+    }
+
     fn runtime_models_contain(&self, model_name: &str) -> bool {
         let guard = self.runtime_models.read().unwrap();
         match guard.as_ref() {
