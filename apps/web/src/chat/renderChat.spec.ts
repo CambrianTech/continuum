@@ -28,7 +28,12 @@ import type {
   StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
-import { LISTING_SELECT, roomSelectTarget, type ListingSelectDetail } from '../render/parts';
+import {
+  LISTING_SELECT,
+  avatarState,
+  roomSelectTarget,
+  type ListingSelectDetail,
+} from '../render/parts';
 
 const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k });
 
@@ -192,6 +197,18 @@ describe('renderChat (Lit)', () => {
     expect(html).toContain('genome-panel');
     expect(html).toContain('genome-slot'); // the four equipment slots
     expect(html).toContain('rust-hands'); // the lit slot is NAMED by its gene
+  });
+
+  // what this catches: the avatar ring's state ladder — error outranks the live
+  // token rail's `speaking` overlay, which outranks the (2s-sampled) radiator
+  // thinking heuristic, which outranks bare presence. A mis-ranked ladder shows
+  // a green idle ring on a persona mid-sentence.
+  it('avatarState ranks error > speaking > thinking > presence', () => {
+    expect(avatarState({ error: 1, speaking: 100 }, true)).toBe('error');
+    expect(avatarState({ speaking: 100, reason: 90 }, true)).toBe('speaking');
+    expect(avatarState({ reason: 90 }, true)).toBe('thinking');
+    expect(avatarState({}, true)).toBe('active');
+    expect(avatarState({}, false)).toBe('idle');
   });
 
   // what this catches: a member's LOADOUT must DRAW the model·size·ctx strip with
