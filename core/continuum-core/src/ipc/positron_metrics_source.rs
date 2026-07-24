@@ -21,7 +21,7 @@ use std::time::Duration;
 use continuum_positron::system_metrics::{MetricSeriesView, SystemMetricsViewState};
 use continuum_positron::{StateBuilder, Substrate};
 
-use crate::system_resources::SystemResourceMonitor;
+use crate::system_resources::{SystemResourceMonitor, SystemResourceSnapshot};
 
 /// Sample cadence. The old sidebar graph breathed at seconds-scale; 2s matches
 /// the vitals radiator so the rail animates in one rhythm.
@@ -46,6 +46,51 @@ fn push_ring(ring: &mut Vec<f32>, v: f32) {
     ring.push(v);
 }
 
+/// Fold one sampled snapshot into the rings and produce this tick's series —
+/// the pure heart of the emitter (testable without a monitor or a substrate).
+///
+/// CPU and MEM are always present. The GPU series joins ONLY when the shared
+/// monitor carried a live [`GpuSnapshot`](crate::gpu::monitor::GpuSnapshot)
+/// this tick (device present, probe healthy, `total_bytes` known): points are
+/// the VRAM-used percentage (device-wide `total - free`, the same system-wide
+/// framing as mem), current is the same compact `6.5/25G` legend reading via
+/// [`gb`]. No GPU / failed probe / zero-total → NO series, honest absence —
+/// never a fabricated flatline ([[fallbacks-are-illegal-fail-loud]]).
+fn fold_sample(
+    snap: &SystemResourceSnapshot,
+    cpu_ring: &mut Vec<f32>,
+    mem_ring: &mut Vec<f32>,
+    gpu_ring: &mut Vec<f32>,
+) -> Vec<MetricSeriesView> {
+    let cpu_pct = (snap.cpu.global_usage * 100.0).clamp(0.0, 100.0);
+    let mem_pct = (snap.memory.pressure * 100.0).clamp(0.0, 100.0);
+    push_ring(cpu_ring, cpu_pct);
+    push_ring(mem_ring, mem_pct);
+    let mut series = vec![
+        MetricSeriesView {
+            label: "cpu".into(),
+            points: cpu_ring.clone(),
+            current: format!("{cpu_pct:.0}%"),
+        },
+        MetricSeriesView {
+            label: "mem".into(),
+            points: mem_ring.clone(),
+            current: gb(snap.memory.used_bytes, snap.memory.total_bytes),
+        },
+    ];
+    if let Some(gpu) = snap.gpu.as_ref().filter(|g| g.total_bytes > 0) {
+        let used = gpu.total_bytes.saturating_sub(gpu.free_bytes);
+        let gpu_pct = ((used as f64 / gpu.total_bytes as f64) * 100.0).clamp(0.0, 100.0) as f32;
+        push_ring(gpu_ring, gpu_pct);
+        series.push(MetricSeriesView {
+            label: "gpu".into(),
+            points: gpu_ring.clone(),
+            current: gb(used, gpu.total_bytes),
+        });
+    }
+    series
+}
+
 /// Spawn the emitter: every [`SAMPLE_INTERVAL`] refresh the shared monitor off
 /// the async threads, fold the reading into the rings, and store the view.
 /// Runs for the process lifetime.
@@ -61,6 +106,7 @@ pub fn spawn_system_metrics_emitter(
         let mut ticker = tokio::time::interval(SAMPLE_INTERVAL);
         let mut cpu_ring: Vec<f32> = Vec::with_capacity(WINDOW);
         let mut mem_ring: Vec<f32> = Vec::with_capacity(WINDOW);
+        let mut gpu_ring: Vec<f32> = Vec::with_capacity(WINDOW);
         loop {
             ticker.tick().await;
             // sysinfo refresh is a syscall walk — off the async workers, with
@@ -83,25 +129,8 @@ pub fn spawn_system_metrics_emitter(
                     continue;
                 }
             };
-            let cpu_pct = (snap.cpu.global_usage * 100.0).clamp(0.0, 100.0);
-            let mem_pct = (snap.memory.pressure * 100.0).clamp(0.0, 100.0);
-            push_ring(&mut cpu_ring, cpu_pct);
-            push_ring(&mut mem_ring, mem_pct);
             let view = SystemMetricsViewState {
-                series: vec![
-                    MetricSeriesView {
-                        label: "cpu".into(),
-                        points: cpu_ring.clone(),
-                        current: format!("{cpu_pct:.0}%"),
-                    },
-                    MetricSeriesView {
-                        label: "mem".into(),
-                        points: mem_ring.clone(),
-                        current: gb(snap.memory.used_bytes, snap.memory.total_bytes),
-                    },
-                    // GPU series joins here when the GpuMemoryManager exposes a
-                    // public stats read — absent until then, never fabricated.
-                ],
+                series: fold_sample(&snap, &mut cpu_ring, &mut mem_ring, &mut gpu_ring),
                 sample_interval_ms: SAMPLE_INTERVAL.as_millis() as u64,
             };
             substrate.store(builder.session(view));
@@ -134,5 +163,75 @@ mod tests {
         let g = 1024_u64 * 1024 * 1024;
         assert_eq!(gb(25_395_000_000, 32 * g), "23.7/32G");
         assert_eq!(gb(6 * g + g / 2, 25 * g), "6.5/25G");
+    }
+
+    fn snapshot(gpu: Option<crate::gpu::monitor::GpuSnapshot>) -> SystemResourceSnapshot {
+        let g = 1024_u64 * 1024 * 1024;
+        SystemResourceSnapshot {
+            cpu: crate::system_resources::CpuStats {
+                physical_cores: 8,
+                logical_cores: 8,
+                global_usage: 0.5,
+                per_core_usage: vec![0.5; 8],
+                brand: "TestChip".into(),
+            },
+            memory: crate::system_resources::MemoryStats {
+                total_bytes: 32 * g,
+                used_bytes: 16 * g,
+                available_bytes: 16 * g,
+                pressure: 0.5,
+                swap_total_bytes: 0,
+                swap_used_bytes: 0,
+            },
+            gpu,
+            processes: None,
+            timestamp_ms: 0,
+            uptime_seconds: 0,
+        }
+    }
+
+    // what this catches: the GPU series' honest-absence contract. Absent
+    // `snapshot.gpu` (no device / failed probe) → the fold emits ONLY cpu+mem,
+    // never a fabricated flatline; present gpu → a third "gpu" series whose
+    // points are the VRAM-used percentage and whose current is the same
+    // compact `6.5/25G` legend reading cpu+mem share. Regression for the
+    // brick-2 seam ("absent until then, never fabricated").
+    #[test]
+    fn gpu_series_present_only_with_live_gpu_snapshot() {
+        let g = 1024_u64 * 1024 * 1024;
+        let (mut cpu, mut mem, mut gpu) = (Vec::new(), Vec::new(), Vec::new());
+
+        // No GPU → exactly cpu+mem, and the gpu ring stays untouched.
+        let series = fold_sample(&snapshot(None), &mut cpu, &mut mem, &mut gpu);
+        assert_eq!(
+            series.iter().map(|s| s.label.as_str()).collect::<Vec<_>>(),
+            ["cpu", "mem"],
+            "absent gpu must contribute NO series"
+        );
+        assert!(gpu.is_empty(), "no fabricated gpu points");
+
+        // Live GPU (25G total, 6.5G used) → third series, pct points + compact current.
+        let live = crate::gpu::monitor::GpuSnapshot {
+            platform: "metal".into(),
+            device_name: "TestGPU".into(),
+            total_bytes: 25 * g,
+            free_bytes: 25 * g - (6 * g + g / 2),
+            process_bytes: 0,
+            utilization: 0.4,
+            temperature_c: None,
+            power_watts: None,
+            pressure: 0.26,
+        };
+        let series = fold_sample(&snapshot(Some(live)), &mut cpu, &mut mem, &mut gpu);
+        assert_eq!(series.len(), 3);
+        let gpu_series = &series[2];
+        assert_eq!(gpu_series.label, "gpu");
+        assert_eq!(gpu_series.current, "6.5/25G");
+        assert_eq!(gpu_series.points.len(), 1);
+        assert!(
+            (gpu_series.points[0] - 26.0).abs() < 0.1,
+            "points are VRAM-used percent, got {}",
+            gpu_series.points[0]
+        );
     }
 }
