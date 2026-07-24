@@ -96,4 +96,14 @@ loadout?: Loadout,
  * ([[fallbacks-are-illegal-fail-loud]]). `#[serde(default)]` so a slot
  * serialized before this field folds as absent, never dropped.
  */
-avatar_url?: string, };
+avatar_url?: string, 
+/**
+ * NAMES of the member's loaded skill overlays (a continuum persona's
+ * paged-in LoRA genes), in load order — the label half of a `genome`
+ * vital that carries only a normalized count. Transported, NOT
+ * interpreted (same neutral discipline as `vitals`): the app decides how
+ * to render them (segment tooltips). Empty = none loaded/reported —
+ * honest-absent, never fabricated labels. `#[serde(default)]` so a slot
+ * serialized before this field folds as empty, never dropped.
+ */
+genes: Array<string>, };

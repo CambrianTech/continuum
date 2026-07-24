@@ -215,6 +215,7 @@ mod tests {
                 vitals: BTreeMap::new(),
                 loadout: None,
                 avatar_url: None,
+            genes: Vec::new(),
             }],
         }
     }

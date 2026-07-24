@@ -364,6 +364,15 @@ pub struct RosterSlotView {
     #[serde(default)]
     #[ts(optional)]
     pub avatar_url: Option<String>,
+    /// NAMES of the member's loaded skill overlays (a continuum persona's
+    /// paged-in LoRA genes), in load order — the label half of a `genome`
+    /// vital that carries only a normalized count. Transported, NOT
+    /// interpreted (same neutral discipline as `vitals`): the app decides how
+    /// to render them (segment tooltips). Empty = none loaded/reported —
+    /// honest-absent, never fabricated labels. `#[serde(default)]` so a slot
+    /// serialized before this field folds as empty, never dropped.
+    #[serde(default)]
+    pub genes: Vec<String>,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills
@@ -601,6 +610,7 @@ mod tests {
             vitals: BTreeMap::new(),
             loadout: None,
             avatar_url: None,
+            genes: Vec::new(),
         };
         let back: RosterSlotView =
             serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
@@ -662,6 +672,7 @@ mod tests {
                 vitals: BTreeMap::new(),
                 loadout: None,
                 avatar_url: None,
+            genes: Vec::new(),
             }],
         };
         let json = serde_json::to_string(&state).unwrap();

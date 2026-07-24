@@ -98,6 +98,7 @@ fn build_chat_state(content: &str) -> ChatViewState {
             vitals: BTreeMap::new(),
             loadout: None,
             avatar_url: None,
+            genes: Vec::new(),
         }],
     }
 }

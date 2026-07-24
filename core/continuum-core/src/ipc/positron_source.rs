@@ -222,6 +222,13 @@ pub(crate) struct PersonaVitalsUpdate {
     /// vitals payload minted before this field deserializes with no loadout.
     #[serde(default)]
     pub(crate) loadout: Option<Loadout>,
+    /// NAMES of the paged-in LoRA genes, in page-in order — the label half of
+    /// the `genome` vital (which carries only the normalized count). Lets the
+    /// tile name each lit genome segment. Empty = base model, no genes.
+    /// `#[serde(default)]` so a payload minted before this field deserializes
+    /// with no names — honest-absent, never fabricated labels.
+    #[serde(default)]
+    pub(crate) genes: Vec<String>,
 }
 
 /// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's
@@ -306,6 +313,10 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // enriches (it owns the store scan); this shared projection stays
         // pure — no I/O here, absent by default.
         avatar_url: None,
+        // Gene names arrive on the persona's OWN `persona:vitals` radiate and
+        // are folded in at `store` time, same as vitals/loadout — never
+        // through this presence path. Empty = none reported.
+        genes: Vec::new(),
     }
 }
 
@@ -341,6 +352,7 @@ pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> Ro
         last_seen_ms: 0,
         vitals: BTreeMap::new(),
         loadout: None,
+        genes: Vec::new(),
         avatar_url: None,
     }
 }
@@ -434,6 +446,11 @@ struct ChatProjection {
     /// time, surviving roster churn. A member with no entry carries `None` (no
     /// loadout strip), never a fabricated model.
     loadout: HashMap<Uuid, Loadout>,
+    /// Latest radiated gene NAMES per member id, folded from the SAME
+    /// `persona:vitals` events — the label half of the `genome` vital. Same
+    /// separate-overlay discipline as `vitals`/`loadout` (survives roster
+    /// churn). Empty entry = base model, no genes.
+    genes: HashMap<Uuid, Vec<String>>,
     /// Resolves this room's activity **purpose** (the `Content` dispatch key) — #6.
     /// The projection no longer hardcodes `"chat"`; it routes through this seam so a
     /// foundry / scada / academy room reports its own recipe-defined purpose with NO
@@ -482,6 +499,7 @@ impl ChatProjection {
             roster: Vec::new(),
             vitals: HashMap::new(),
             loadout: HashMap::new(),
+            genes: HashMap::new(),
             experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
             experience_builder: StateBuilder::standalone(),
             last_experience: std::cell::RefCell::new(None),
@@ -505,6 +523,7 @@ impl ChatProjection {
             self.roster.clear();
             self.vitals.clear();
             self.loadout.clear();
+            self.genes.clear();
         }
     }
 
@@ -544,6 +563,9 @@ impl ChatProjection {
             self.loadout.insert(update.member_id, loadout);
         }
         self.vitals.insert(update.member_id, update.vitals);
+        // Genes REPLACE (not merge): an empty list is a real "paged out to
+        // base" fact from the radiator, not an absence to preserve across.
+        self.genes.insert(update.member_id, update.genes);
         self.store();
     }
 
@@ -645,13 +667,15 @@ impl ChatProjection {
             .map(|slot| {
                 let vitals = self.vitals.get(&slot.member_id);
                 let loadout = self.loadout.get(&slot.member_id);
+                let genes = self.genes.get(&slot.member_id);
                 // No live overlay for this member → the presence slot, verbatim.
-                if vitals.is_none() && loadout.is_none() {
+                if vitals.is_none() && loadout.is_none() && genes.is_none() {
                     return slot.clone();
                 }
                 RosterSlotView {
                     vitals: vitals.cloned().unwrap_or_else(|| slot.vitals.clone()),
                     loadout: loadout.cloned().or_else(|| slot.loadout.clone()),
+                    genes: genes.cloned().unwrap_or_else(|| slot.genes.clone()),
                     ..slot.clone()
                 }
             })
@@ -919,6 +943,7 @@ mod tests {
                 ("attention".to_string(), 90u8),
             ]),
             loadout: None,
+            genes: Vec::new(),
         })
         .unwrap();
         match classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -974,6 +999,7 @@ mod tests {
                 params: Some(24_000_000_000),
                 context_window: Some(32_768),
             }),
+            genes: Vec::new(),
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -990,6 +1016,7 @@ mod tests {
             member_id: asha,
             vitals: BTreeMap::from([("activity".to_string(), 50u8)]),
             loadout: None,
+            genes: Vec::new(),
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &vitals_only).unwrap() {
@@ -1309,6 +1336,7 @@ mod tests {
             member_id: m,
             vitals: BTreeMap::from([("energy".to_string(), 70u8)]),
             loadout: None,
+            genes: Vec::new(),
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
