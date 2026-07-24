@@ -1373,6 +1373,7 @@ fn snapshot_from_outcome(
                 // authority's footprint(), a grid allocator) charge total resident
                 // KV as `lanes × kv_at(served_context_window)` (#79).
                 lanes,
+                degraded_reason: None,
             }
         }
         // Ready outcome but the served window was unreadable (0) → do NOT publish
@@ -1382,7 +1383,12 @@ fn snapshot_from_outcome(
         EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
             ServingSnapshot::empty()
         }
-        EnsureOutcome::Degraded { .. } => ServingSnapshot::empty(),
+        // A Degraded reconcile PUBLISHES its reason — the spawn/probe failure
+        // (e.g. a missing llama-server binary, its path in the text) reaches
+        // `serving/status` instead of dying as an anonymous empty snapshot
+        // (live repro 2026-07-24: Windows spawn failed every tick, status
+        // showed null/false with no why).
+        EnsureOutcome::Degraded { reason } => ServingSnapshot::degraded(reason.clone()),
     }
 }
 
@@ -2078,6 +2084,18 @@ mod tests {
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
         assert!(degraded.adapters.is_empty(), "degraded → no genome claimed");
+        // regression for the 2026-07-24 Windows repro: the spawn-failure reason
+        // must SURVIVE into the published snapshot — serving/status saying only
+        // null/false while spawn fails every tick is the silent-failure lie.
+        assert_eq!(
+            degraded.degraded_reason.as_deref(),
+            Some("x"),
+            "degraded reason must reach the snapshot"
+        );
+        assert_eq!(
+            windowless.degraded_reason, None,
+            "a windowless-ready snapshot is not degraded — no reason claimed"
+        );
     }
 
     // what this catches (#175 sticky window): the LoRA-load relaunch cascade must not
@@ -2138,6 +2156,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            degraded_reason: None,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -2156,6 +2175,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            degraded_reason: None,
         }
     }
 
@@ -2306,6 +2326,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: plan_window / 4,
             lanes: 4,
+            degraded_reason: None,
         });
         daemon
             .reconcile_to_plan()
@@ -2322,6 +2343,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: plan_window / 2 + 256,
             lanes: 4,
+            degraded_reason: None,
         });
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -2346,6 +2368,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 11008,
             lanes: 4,
+            degraded_reason: None,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None

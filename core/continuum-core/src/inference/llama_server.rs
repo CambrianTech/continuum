@@ -340,11 +340,14 @@ fn server_bin() -> String {
     {
         return over;
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let owned = std::path::Path::new(&home)
-            .join(".continuum")
-            .join("bin")
-            .join("llama-server");
+    // Windows: `HOME` is usually unset (the home is `USERPROFILE`) and the
+    // binary carries `.exe` — probing only the unix name silently skipped the
+    // owned install and fell through to a bare PATH lookup that spawns nothing
+    // (live repro 2026-07-24, BigMama: planned lane, empty log, no server).
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    if let Some(home) = home {
+        let name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+        let owned = std::path::Path::new(&home).join(".continuum").join("bin").join(name);
         if owned.is_file() {
             return owned.to_string_lossy().into_owned();
         }
@@ -397,6 +400,16 @@ pub struct ServingSnapshot {
     /// persisted snapshots (lane-less) readable.
     #[serde(default)]
     pub lanes: u32,
+    /// WHY nothing is serving, when the last reconcile ended Degraded — the
+    /// spawn/probe failure reason, verbatim (e.g. a missing llama-server binary
+    /// names its path here). `None` on healthy and never-attempted snapshots.
+    /// Live repro 2026-07-24 (BigMama/Windows): the daemon planned correctly,
+    /// spawn failed every tick, and `serving/status` showed only
+    /// `active_model=null ready=false` — the reason was dropped on the floor,
+    /// an operator-facing silent failure ([[fallbacks-are-illegal-fail-loud]]).
+    #[serde(default)]
+    #[ts(optional)]
+    pub degraded_reason: Option<String>,
 }
 
 impl ServingSnapshot {
@@ -414,6 +427,18 @@ impl ServingSnapshot {
             // Nothing served → no lanes. A `ready` snapshot always carries the
             // real `--parallel` count; 0 is the "no lanes" sentinel.
             lanes: 0,
+            degraded_reason: None,
+        }
+    }
+
+    /// The "nothing served AND here is why" state — a reconcile that ended
+    /// Degraded publishes its reason so `serving/status` tells the operator
+    /// what failed (a missing binary names its path) instead of a silent
+    /// `active_model=null`.
+    pub fn degraded(reason: String) -> Self {
+        Self {
+            degraded_reason: Some(reason),
+            ..Self::empty()
         }
     }
 }
@@ -2002,6 +2027,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            degraded_reason: None,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -2012,6 +2038,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            degraded_reason: None,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -2022,6 +2049,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            degraded_reason: None,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await
