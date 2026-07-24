@@ -21,12 +21,24 @@ import type { ChatState } from '@continuum/chat-view';
 import { chatViewModel, type MessageRowVM } from '@continuum/chat-view';
 import type { NavViewState, StreamDelta, SystemMetricsViewState } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
-import { MESSAGE_EXPAND_TOGGLE, type MessageExpandToggleDetail } from '../render/parts';
+import {
+  LISTING_SELECT,
+  MESSAGE_EXPAND_TOGGLE,
+  roomSelectTarget,
+  type ListingSelectDetail,
+  type MessageExpandToggleDetail,
+} from '../render/parts';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
 /** The send action the host injects. Resolves when the message is accepted by
  *  the core; rejects (fails loud) on a transport/command error the widget shows. */
 export type SendHandler = (text: string) => Promise<void>;
+
+/** The room-switch action the host injects (dispatches `nav/select` through the
+ *  command client — the widget stays SDK-free). Resolves when the core accepted
+ *  the select; the VIEW moves only when the refocused chat/nav envelopes stream
+ *  back — substrate truth only, no optimistic local active state. */
+export type SelectRoomHandler = (roomId: string) => Promise<void>;
 
 export class ChatWidget extends LitElement {
   static override properties = {
@@ -34,9 +46,11 @@ export class ChatWidget extends LitElement {
     nav: { attribute: false },
     sys: { attribute: false },
     sendHandler: { attribute: false },
+    selectRoomHandler: { attribute: false },
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
+    _selectError: { state: true },
     _typing: { state: true },
     _expanded: { state: true },
   };
@@ -57,9 +71,13 @@ export class ChatWidget extends LitElement {
   /** Injected by the host — how a composed message reaches the core. */
   sendHandler?: SendHandler;
 
+  /** Injected by the host — how a rooms-rail pick reaches the core (`nav/select`). */
+  selectRoomHandler?: SelectRoomHandler;
+
   private _draft = '';
   private _sending = false;
   private _sendError = '';
+  private _selectError = '';
   /** #170 live typing: senderId → accumulated in-progress turn text. Ephemeral —
    *  the durable message (via `state`) supersedes it; reassigned (not mutated) so
    *  Lit re-renders. */
@@ -78,6 +96,26 @@ export class ChatWidget extends LitElement {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     this._expanded = next;
+  };
+
+  /** A listing cell was picked. Rooms-rail picks dispatch through the injected
+   *  `selectRoomHandler` (`nav/select`); the active cell + center pane move when
+   *  the refocused envelopes stream back — never an optimistic local switch. */
+  private onListingSelect = (e: Event): void => {
+    const target = roomSelectTarget((e as CustomEvent<ListingSelectDetail>).detail);
+    if (target === null) return;
+    if (!this.selectRoomHandler) {
+      // Fail loud: a selectable rooms rail with no wired switch is a wiring
+      // bug, not a no-op ([[fallbacks-are-illegal-fail-loud]]).
+      throw new Error(
+        '<chat-widget>: room select with no selectRoomHandler wired — the host must set it.',
+      );
+    }
+    this._selectError = '';
+    void this.selectRoomHandler(target).catch((err: unknown) => {
+      // Surface the failure in-UI; never a silently-dead click.
+      this._selectError = `Room switch failed: ${err instanceof Error ? err.message : String(err)}`;
+    });
   };
 
   /**
@@ -109,10 +147,13 @@ export class ChatWidget extends LitElement {
     // bubbles out of the shadow tree to the host — listen on self so the pure
     // fragments need no callback threading through the render registries.
     this.addEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
+    // Rooms-rail picks: the cell's composed LISTING_SELECT bubbles up here.
+    this.addEventListener(LISTING_SELECT, this.onListingSelect);
   }
 
   override disconnectedCallback(): void {
     this.removeEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
+    this.removeEventListener(LISTING_SELECT, this.onListingSelect);
     super.disconnectedCallback();
   }
 
@@ -315,6 +356,19 @@ export class ChatWidget extends LitElement {
       background: var(--button-secondary-background);
       color: var(--content-primary);
       border-left: 2px solid var(--content-accent);
+    }
+    /* Selectable cells (the rooms rail) — a pick is a nav/select round-trip; the
+     * active highlight moves only when the refocused envelope arrives. */
+    .cell[data-selectable] {
+      cursor: pointer;
+    }
+    .cell[data-selectable]:hover {
+      background: var(--widget-surface, rgba(255, 255, 255, 0.05));
+      color: var(--content-primary);
+    }
+    .cell[data-selectable]:focus-visible {
+      outline: 1px solid var(--content-accent);
+      outline-offset: -1px;
     }
     .cell-body {
       flex: 1;
@@ -1331,6 +1385,7 @@ export class ChatWidget extends LitElement {
           ></cosmos-backdrop>`
         : nothing}
       ${surface}
+      ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}
       ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
       <form class="compose" @submit=${this.onSubmit}>
         <input

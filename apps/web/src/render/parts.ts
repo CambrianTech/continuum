@@ -13,15 +13,68 @@ import hljs from 'highlight.js/lib/common';
 import type { ListingCell, ListingView } from '@continuum/patterns';
 import type { LoadoutVM, MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
 
+/** The composed select event a listing cell fires when the reader picks it — the
+ *  `select(entityInList)` NavIntent reaching the web idiom. It bubbles out of the
+ *  shadow tree to `<chat-widget>` (same pattern as `MESSAGE_EXPAND_TOGGLE`): the
+ *  render fragments stay pure/stateless, the host owns what a selection DOES. */
+export const LISTING_SELECT = 'listing-select';
+
+/** Detail payload of a `LISTING_SELECT` event — which listing, which cell. */
+export interface ListingSelectDetail {
+  readonly listingId: string;
+  readonly id: string;
+}
+
+function fireListingSelect(e: Event, listingId: string, id: string): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<ListingSelectDetail>(LISTING_SELECT, {
+      detail: { listingId, id },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
+/** Which listing selections mean "switch room" — a pick in the rooms listing
+ *  yields its room id; every other listing's select is not a room switch
+ *  (`null`). Pure and DOM-free (it lives here, not on the widget) so the
+ *  routing decision is unit-tested without a browser. */
+export function roomSelectTarget(detail: ListingSelectDetail): string | null {
+  return detail.listingId === 'rooms' ? detail.id : null;
+}
+
 /** GENERIC listing-cell renderer — the first real positron web *component*: it draws
  *  ANY already-projected `ListingCell` (a foundry model, a room, a cohort) the same
  *  way, on any target. The roster's rich member card stays bespoke while it carries
  *  live vitals meters; every other Listing routes through this. Two consumers
  *  (foundry now, more later) is exactly what earns the extraction — outliers first,
- *  then the component ([[positron-is-a-framework-not-vanilla-pages]]). */
-export function listingCell(cell: ListingCell): TemplateResult {
+ *  then the component ([[positron-is-a-framework-not-vanilla-pages]]).
+ *
+ *  With `selectFrom` (the owning listing's id) the cell is SELECTABLE: click or
+ *  Enter/Space fires `LISTING_SELECT` up to the host. No local active state — the
+ *  active cell moves only when the substrate's next envelope arrives (same
+ *  no-optimistic-append discipline as chat send). */
+export function listingCell(cell: ListingCell, selectFrom?: string): TemplateResult {
+  const select =
+    selectFrom === undefined ? undefined : (e: Event): void => fireListingSelect(e, selectFrom, cell.id);
+  const keySelect =
+    select === undefined
+      ? undefined
+      : (e: KeyboardEvent): void => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            select(e);
+          }
+        };
   return html`
-    <li class="cell" data-status=${cell.status ?? 'none'}>
+    <li
+      class="cell"
+      data-status=${cell.status ?? 'none'}
+      data-selectable=${select ? '' : nothing}
+      tabindex=${select ? '0' : nothing}
+      @click=${select ?? nothing}
+      @keydown=${keySelect ?? nothing}
+    >
       ${cell.glyph ? html`<span class="cell-glyph">${cell.glyph}</span>` : nothing}
       <div class="cell-body">
         <div class="cell-title">${cell.title}</div>
@@ -40,12 +93,14 @@ export function listingCell(cell: ListingCell): TemplateResult {
 /** Render a `ListingView`'s rows — the roster as rich member cards (the neutral cell
  *  carries glyph/name/badges/status/meters), every other listing as generic cells.
  *  Single-sourced here so `webTarget.listing` AND the `'listing'` rail-widget renderer
- *  draw the SAME rows without duplication ([[compression]]). */
+ *  draw the SAME rows without duplication ([[compression]]). Generic cells carry their
+ *  listing id so a pick fires `LISTING_SELECT` — the host decides which listings a
+ *  selection means anything for (rooms today; an unhandled select is inert). */
 export function renderListing(view: ListingView): TemplateResult {
   if (view.id === 'roster') {
     return html`<ul class="roster">${view.cells.map(memberCardFromCell)}</ul>`;
   }
-  return html`<ul class="cells">${view.cells.map(listingCell)}</ul>`;
+  return html`<ul class="cells">${view.cells.map((c) => listingCell(c, view.id))}</ul>`;
 }
 
 /** Short glyph per author kind — the neutral human/agent/system discriminant. */

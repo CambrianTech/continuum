@@ -22,10 +22,11 @@ import {
   Continuum,
   WebSocketTransport,
   StateConnection,
+  buildCommandUri,
   type StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
-import { ChatWidget, type SendHandler } from './chat/ChatWidget';
+import { ChatWidget, type SelectRoomHandler, type SendHandler } from './chat/ChatWidget';
 import {
   CHAT_KIND,
   NAV_KIND,
@@ -58,7 +59,8 @@ async function main(): Promise<void> {
 
   // SEND socket: the command client. Fails loud if the send lands before any
   // snapshot named a room (no room to send into is a real error, not a no-op).
-  const continuum = Continuum.connect(new WebSocketTransport(scopedWsUrl));
+  const transport = new WebSocketTransport(scopedWsUrl);
+  const continuum = Continuum.connect(transport);
   const sendHandler: SendHandler = async (text: string) => {
     if (!latest) {
       throw new Error('cannot send before the first room snapshot arrived — the room is unknown.');
@@ -82,6 +84,30 @@ async function main(): Promise<void> {
     }
   };
   widget.sendHandler = sendHandler;
+
+  // Room switching: a rooms-rail pick is one `nav/select` into the core — the
+  // NavIntent verb, not a client-side tab swap. The core writes the citizen's
+  // focus, marks the left room read, and refocuses the chat projection; the
+  // active cell + center pane move when those envelopes stream back through the
+  // READ socket. No optimistic local state — substrate truth only, same
+  // discipline as chat send.
+  //
+  // Dispatch rides the SAME facade seam `commands.execute` wraps
+  // (buildCommandUri + transport.execute): `nav/select` is a registered typed
+  // command core-side (modules/nav.rs), but the generated CommandMap predates
+  // it and its re-emit is blocked by pre-existing drift (registered commands
+  // with unexported wire types — see the sdk_codegen ts-codegen emit test).
+  // When that regenerates, this becomes `continuum.commands.execute('nav/select', …)`.
+  // Bare-wire contract: failure is a REJECTED promise (no success field), which
+  // the widget surfaces — never a silently-dead click. `userId` is the command
+  // envelope's caller-identity sibling (CommandRequest), same as nav/mark-read.
+  const selectRoomHandler: SelectRoomHandler = async (roomId: string) => {
+    await transport.execute(
+      buildCommandUri('nav/select'),
+      JSON.stringify({ userId: config.senderId, target: roomId }),
+    );
+  };
+  widget.selectRoomHandler = selectRoomHandler;
 
   // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
   // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells

@@ -21,11 +21,13 @@ import type { ChatViewModel } from '@continuum/chat-view';
 import type {
   ChatMessageView,
   ChatViewState,
+  NavViewState,
   RosterSlotView,
   SenderKind,
   StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
+import { LISTING_SELECT, roomSelectTarget, type ListingSelectDetail } from '../render/parts';
 
 const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k });
 
@@ -204,6 +206,71 @@ describe('renderChat (Lit)', () => {
     const text = markup(vm);
     expect(text).toContain('No messages yet — say hello.');
     expect(text).not.toMatch(/error/i);
+  });
+
+  // what this catches: brick 1's remainder — the rooms-rail cells must be
+  // SELECTABLE: each cell carries a click handler that fires the composed
+  // LISTING_SELECT event with the ROOMS listing id + that cell's room id (the
+  // detail `roomSelectTarget` routes to `nav/select`). A regression here means
+  // clicking a room dispatches nothing, or dispatches the wrong room. DOM-free:
+  // the handlers are plucked from the template tree and invoked with a stub
+  // currentTarget capturing the dispatched CustomEvent.
+  it('rooms cells fire the select event with their room id when clicked', () => {
+    const vm = project({
+      room_id: 'room-1',
+      room_name: 'general',
+      purpose: 'chat',
+      roster: [],
+      messages: [],
+    });
+    const nav: NavViewState = {
+      user_id: 'me',
+      current_tab: 'room-1',
+      open_tabs: [
+        { id: 'room-1', title: 'general', kind: 'room', unread: 0 },
+        { id: 'room-2', title: 'code', kind: 'room', unread: 3 },
+      ],
+      last_read: {},
+      bookmarks: [],
+    };
+    // Pluck every event-handler function out of the template tree (the same
+    // structural walk `flatten` does for strings, for values that are functions).
+    const handlers: ((e: Event) => void)[] = [];
+    const collect = (node: unknown): void => {
+      if (typeof node === 'function') {
+        handlers.push(node as (e: Event) => void);
+      } else if (Array.isArray(node)) {
+        for (const child of node as readonly unknown[]) collect(child);
+      } else if (typeof node === 'object' && node !== null && isTemplateLike(node)) {
+        for (const v of node.values) collect(v);
+      }
+    };
+    collect(renderChat(vm, { nav }));
+    expect(handlers.length).toBeGreaterThan(0);
+
+    // Invoke each handler with a stub currentTarget capturing what it fires.
+    // Keydown handlers no-op (the stub event carries no Enter key); the click
+    // handlers must each fire ONE ListingSelect for their own cell.
+    const fired: CustomEvent<ListingSelectDetail>[] = [];
+    const stubEvent = {
+      currentTarget: {
+        dispatchEvent: (ev: Event): boolean => {
+          fired.push(ev as CustomEvent<ListingSelectDetail>);
+          return true;
+        },
+      },
+    } as unknown as Event;
+    for (const handler of handlers) handler(stubEvent);
+
+    const selects = fired.filter((ev) => ev.type === LISTING_SELECT);
+    expect(selects.map((ev) => ev.detail)).toEqual([
+      { listingId: 'rooms', id: 'room-1' },
+      { listingId: 'rooms', id: 'room-2' },
+    ]);
+    // …and the widget-side router turns exactly the rooms detail into a switch
+    // target; a roster pick is NOT a room switch.
+    expect(roomSelectTarget({ listingId: 'rooms', id: 'room-2' })).toBe('room-2');
+    expect(roomSelectTarget({ listingId: 'roster', id: 'asha' })).toBeNull();
   });
 
   // what this catches: a runtime badge must appear ONLY when the substrate

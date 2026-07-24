@@ -290,6 +290,16 @@ impl ActionCommand for Select {
     }
 }
 
+// Self-register the nav verbs into the auto-discovered command registry — the
+// declaration-site line that makes them appear in every generated surface
+// (CommandMap for the thin clients, the ACL, the persona's AiSafe tool catalog:
+// a persona switching its attention IS the same verb — the RAG menu idiom,
+// NAVIGATION-ACROSS-MODALITIES.md §3). Dep-holding (they carry NavShared), so
+// runtime construction stays in `NavModule::commands()`; this registers only
+// the static descriptor.
+crate::register_command!(MarkRead);
+crate::register_command!(Select);
+
 #[cfg(test)]
 mod tests {
     use super::*;
