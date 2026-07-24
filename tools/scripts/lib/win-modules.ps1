@@ -263,7 +263,11 @@ function Mod-BuildCore {
     Push-Location $core
     try {
         # Runs as the invoking user (NOT via gsudo) so the cache stays user-owned.
-        $buildArgs = @('build', '-p', 'continuum-core', '--bin', 'continuum-core-server',
+        # Build BOTH the serving binary AND `cu` (the CLI the user + agents drive
+        # the core with -- `cu ping`, `cu memory/*`, etc.). An install that ships
+        # the server but not its CLI is only half a product.
+        $buildArgs = @('build', '-p', 'continuum-core',
+            '--bin', 'continuum-core-server', '--bin', 'cu',
             '--release', '--features', $features)
         & cargo @buildArgs
         $code = $LASTEXITCODE

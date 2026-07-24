@@ -34,10 +34,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 // site is cfg-gated separately (a PathBuf is not a TCP address). BEHAVIORAL
 // GAP: this direct-IPC sidecar path (continuum-mcp) is not yet wired to the
 // core's TCP loopback listener on Windows — see the connect site below.
-#[cfg(unix)]
-use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::TcpStream as UnixStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
 use continuum_client::event::EventStream;
@@ -169,18 +169,6 @@ impl Transport for CoreIpcTransport {
         let mut guard = self.stream.lock().await;
         // Lazy connect / reconnect if the stream is absent.
         if guard.is_none() {
-            #[cfg(not(unix))]
-            {
-                // Windows: this direct-IPC sidecar addresses the core by its
-                // Unix-socket path, which has no equivalent here. The core's
-                // Windows IPC is TCP loopback (see ipc/mod.rs), but wiring this
-                // transport to it is a follow-up. Fail loud, don't silently drop.
-                return Err(ClientError::Connect(format!(
-                    "CoreIpcTransport uses Unix-domain sockets, unavailable on this platform \
-                     (socket {}); the TCP loopback IPC path is a follow-up",
-                    self.socket_path.display()
-                )));
-            }
             #[cfg(unix)]
             {
                 let s = UnixStream::connect(&self.socket_path).await.map_err(|e| {
@@ -188,6 +176,21 @@ impl Transport for CoreIpcTransport {
                         "connect to core IPC socket {}: {e}",
                         self.socket_path.display()
                     ))
+                })?;
+                *guard = Some(s);
+            }
+            #[cfg(windows)]
+            {
+                // Windows has no Unix socket — the core's IPC is its TCP loopback
+                // listener (see ipc/mod.rs; the TCP listener is PRIMARY on Windows).
+                // Dial 127.0.0.1:<CONTINUUM_CORE_TCP, default 9100>; the socket_path
+                // field is unused here. UnixStream is aliased to TcpStream on
+                // windows, so this is a TCP connect.
+                let port =
+                    std::env::var("CONTINUUM_CORE_TCP").unwrap_or_else(|_| "9100".to_string());
+                let addr = format!("127.0.0.1:{port}");
+                let s = UnixStream::connect(&addr).await.map_err(|e| {
+                    ClientError::Connect(format!("connect to core IPC (TCP {addr}): {e}"))
                 })?;
                 *guard = Some(s);
             }
@@ -333,7 +336,10 @@ mod tests {
         assert_eq!(result["saw"]["command"], "chat/send");
         assert_eq!(result["saw"]["room"], "general");
         assert_eq!(result["saw"]["text"], "hi");
-        assert!(result["saw"]["requestId"].is_number(), "requestId stamped on the request");
+        assert!(
+            result["saw"]["requestId"].is_number(),
+            "requestId stamped on the request"
+        );
 
         let _ = std::fs::remove_file(&socket);
     }
@@ -353,7 +359,10 @@ mod tests {
         match err {
             ClientError::Refused { command, reason } => {
                 assert_eq!(command, "refuse/me");
-                assert!(reason.contains("refused by test server"), "reason: {reason}");
+                assert!(
+                    reason.contains("refused by test server"),
+                    "reason: {reason}"
+                );
             }
             other => panic!("expected Refused, got {other:?}"),
         }
