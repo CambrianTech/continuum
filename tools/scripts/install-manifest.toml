@@ -107,7 +107,7 @@ accept = "cmake --version"
 type = "archive"          # standalone Kitware (knows every VS generator string), no admin
 url = "https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-windows-x86_64.zip"
 version = "3.30.5"
-sha256 = "TODO"           # from cmake-3.30.5-SHA-256.txt (Kitware release checksum)
+sha256 = "5ab6e1faf20256ee4f04886597e8b6c3b1bd1297b58a68a58511af013710004b"
 extract = "strip-top-dir" # -> ~/.continuum/tools/cmake, add bin/ to PATH
 [module.sources.macos]
 type = "brew"             # PROVEN (M5 mac: cmake 4.3.3 at /opt/homebrew/bin — no-sudo)
