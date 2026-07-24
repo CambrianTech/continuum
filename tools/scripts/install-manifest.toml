@@ -22,11 +22,15 @@
 #             needs {manifest, version, components} — per-component sha256 comes
 #             from the vendor manifest, so we don't duplicate it.
 #   accept    a REAL, run-verified command + expected evidence (never invented).
+#             Per-OS override keys accept_macos / accept_linux / accept_windows on a
+#             SOURCE block win over the module accept when the evidence is OS-shaped
+#             (e.g. libclang.dll vs libclang.dylib).
 #
 # OWNERSHIP: schema + bash runner + macos/linux source rows + the shared
 # acceptance-check table = M5. windows source rows + windows runner handlers
 # (archive/redist) + windows accept probes = BigMama (seeded below, proven on
-# a live RTX 5090 install). macos/linux rows are STUBS for M5 to fill.
+# a live RTX 5090 install). macos rows PROVEN on M5's live Mac; linux rows are
+# schema-complete with run-verify pending on a real linux node (marked inline).
 
 schema_version = 1
 
@@ -42,11 +46,13 @@ type = "winget"          # rustup installs per-user to %USERPROFILE%\.cargo (no 
 id = "Rustlang.Rustup"
 scope = "user"
 [module.sources.macos]
-type = "curl-sh"         # STUB (M5)
+type = "curl-sh"         # PROVEN (M5 mac: rustc 1.96.0 present; rustup installs per-user ~/.cargo, no admin)
 url = "https://sh.rustup.rs"
+args = "-y --no-modify-path"
 [module.sources.linux]
-type = "curl-sh"         # STUB (M5)
+type = "curl-sh"         # same per-user rustup path; run-verify pending on a linux node
 url = "https://sh.rustup.rs"
+args = "-y --no-modify-path"
 
 [[module]]
 id = "gh"
@@ -58,11 +64,11 @@ accept = "gh --version"
 type = "winget"
 id = "GitHub.cli"
 [module.sources.macos]
-type = "brew"            # STUB (M5)
+type = "brew"            # PROVEN (M5 mac: gh 2.94.0 via /opt/homebrew — brew is no-sudo)
 formula = "gh"
 [module.sources.linux]
-type = "apt"             # STUB (M5)
-package = "gh"
+type = "apt"             # gh is NOT in stock apt — runner must add GitHub's official
+package = "gh"           # apt repo (cli.github.com/packages) first; run-verify pending
 
 [[module]]
 id = "gh-auth"
@@ -104,10 +110,10 @@ version = "3.30.5"
 sha256 = "TODO"           # from cmake-3.30.5-SHA-256.txt (Kitware release checksum)
 extract = "strip-top-dir" # -> ~/.continuum/tools/cmake, add bin/ to PATH
 [module.sources.macos]
-type = "brew"             # STUB (M5)
+type = "brew"             # PROVEN (M5 mac: cmake 4.3.3 at /opt/homebrew/bin — no-sudo)
 formula = "cmake"
 [module.sources.linux]
-type = "apt"              # STUB (M5)
+type = "apt"              # run-verify pending on a linux node
 package = "cmake"
 
 [[module]]
@@ -125,10 +131,14 @@ version = "18.1.8"        # PIN stable: bleeding-edge libclang mis-generates lla
 sha256 = "22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8"
 extract = "members:*/bin/libclang.dll,*/lib/clang/*"  # DLL + clang resource headers
 [module.sources.macos]
-type = "system"           # STUB (M5) — Xcode clang provides libclang
+type = "system"           # PROVEN (M5 mac: /Library/Developer/CommandLineTools/usr/lib/libclang.dylib
+                          # present via Xcode CLT; runner directs `xcode-select --install` if absent —
+                          # the one quasi-system mac step, detect+direct like drivers)
+accept_macos = "test -f /Library/Developer/CommandLineTools/usr/lib/libclang.dylib"
 [module.sources.linux]
-type = "apt"              # STUB (M5)
+type = "apt"              # run-verify pending on a linux node
 package = "libclang-dev"
+accept_linux = "test -f /usr/lib/llvm-18/lib/libclang.so.1 || ldconfig -p | grep -q libclang"
 
 [[module]]
 id = "cuda"
@@ -147,7 +157,7 @@ version = "12.9.1"
 components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
 # per-component sha256 comes from NVIDIA's manifest above (delegated verification)
 [module.sources.linux]
-type = "redist"           # STUB (M5) — same NVIDIA redist works no-admin on Linux too
+type = "redist"           # schema-complete; run-verify pending on a linux+nvidia node (same no-admin redist)
 manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json"
 version = "12.9.1"
 components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
@@ -171,10 +181,10 @@ cmake_generator = "Visual Studio 17 2022"   # match the VS2022 host nvcc support
 cuda_arch = "120"                       # Blackwell RTX 5090 = sm_120
 msvc_host = "vs2022"                    # Enter-MsvcEnv: cl.exe for nvcc (14.4x, nvcc-compatible)
 [module.build.macos]
-features = "metal,accelerate"           # STUB (M5)
+features = "metal,accelerate"           # PROVEN (M5: the daily mac build; Metal needs no toolkit)
 profile = "release"
 [module.build.linux]
-features = "cuda,load-dynamic-ort"      # STUB (M5); non-NVIDIA -> rocm/vulkan
+features = "cuda,load-dynamic-ort"      # run-verify pending on linux; non-NVIDIA -> rocm/vulkan
 profile = "release"
 
 [[module]]
