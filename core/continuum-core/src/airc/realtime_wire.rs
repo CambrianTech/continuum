@@ -133,6 +133,9 @@ pub fn bus_event_from_envelope(envelope: &AircRealtimeEnvelope) -> Option<BusEve
 /// - `"envelope_decode_error"` — hint present, serde decode FAILED (wire drift);
 /// - `"non_chat_schema"` — a continuum envelope that is not a chat line
 ///   (presence, event-bridge, media-control) — a legit skip.
+/// - `"stream_chunk"` — a live streaming token fragment (`airc.stream.*`
+///   headers): typing-indicator-class traffic whose settled utterance arrives
+///   separately via `say()` — never a spoken line (card 65fca48d).
 ///
 /// Consumers: persona perception (`perceptual_from_event`), the digest element
 /// (`ChannelElement::new` — was the third text-only blind surface), and any
@@ -140,6 +143,21 @@ pub fn bus_event_from_envelope(envelope: &AircRealtimeEnvelope) -> Option<BusEve
 pub fn room_turn_from_event(
     event: &TranscriptEvent,
 ) -> Result<(uuid::Uuid, String), &'static str> {
+    // - `"stream_chunk"` — a live streaming token chunk (`airc.stream.*` headers,
+    //   published by `publish_stream_chunk` as typing-indicator-class traffic).
+    //   By the stream-chunk contract the settled utterance arrives separately via
+    //   `say()`; the chunk is NEVER a spoken room line. Live 2026-07-24 (card
+    //   65fca48d): the daemon publish path classified chunks Durable, so
+    //   `page_recent` returned hours of per-250ms fragments ("Anwen: I",
+    //   "Anwen: see that you're…") as transcript — they flooded every persona's
+    //   digest window (a 21-31 "message" window that was mostly shards of ONE
+    //   utterance), woke peers per fragment, leaked a streamed "PASS" sentinel
+    //   as room content, and starved the repetition detectors of judgeable
+    //   turns. The header check is the receive-side guard that holds regardless
+    //   of how the sender's delivery class was stamped.
+    if event.headers.get(airc_lib::HEADER_STREAM_ID).is_some() {
+        return Err("stream_chunk");
+    }
     if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
         return Ok((event.peer_id.as_uuid(), text.to_string()));
     }

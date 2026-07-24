@@ -1693,7 +1693,71 @@ pub(crate) fn build_workspace_turns(
                      answered with another courtesy has no natural end.",
                     names.join(" and ")
                 )));
+                observed = true;
                 if cyclic >= TAIL_CYCLIC + (PATTERN_FIRES_BEFORE_ANCHOR - 1) {
+                    turns.push(crate::cognition::workspace::BurstTurn::opaque(
+                        work_board_anchor(deliveries),
+                    ));
+                }
+            }
+        }
+        // Detector 3 — CROSS-SPEAKER MIRROR (card 65fca48d, live 2026-07-24): the
+        // persona's own trailing message(s) restate what OTHER participants
+        // already said — the four-persona echo hall ("I see that we're both here
+        // to help!" ping-ponged verbatim between Atlas/Asha/Benchy/Anwen for
+        // hours). Structurally invisible to both prior detectors: her mirror is
+        // NOVEL relative to her OWN history (detector 1's self-run stays 0-1),
+        // and interleaved substantial turns (a peer's plan, a tool report) break
+        // detector 2's consecutive tail chain. So measure the mirror directly:
+        // each trailing OWN message whose vocabulary was already ≥
+        // MIRROR_CONTAINMENT covered by OTHER speakers' earlier turns is one
+        // fire (she added nothing a peer hadn't said); the trailing run is the
+        // consecutive-fire count, same escalation law as detectors 1/2. Same
+        // doctrine: perception into her mind, never an output gate
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        if !observed {
+            // Same 8-word floor as the self detector: short courtesies ("thanks,
+            // will do!") legitimately reuse a peer's words and must not alarm.
+            const MIRROR_MIN_WORDS: usize = 8;
+            // Between self (0.8) and conversation (0.9): an on-topic ANSWER
+            // legitimately quotes more of a peer's vocabulary than of one's own
+            // history (you restate the question you're answering), so the mirror
+            // bar sits above the self bar; live echo turns measured ~1.0 covered,
+            // novel answers ~0.1-0.3 (the containment math validated on #121).
+            const MIRROR_CONTAINMENT: f32 = 0.85;
+            let mut mirror_run = 0usize;
+            for i in (0..turns.len()).rev() {
+                if !turns[i].is_self {
+                    continue; // peers between her posts don't break HER run
+                }
+                let cur = words(&turns[i].content);
+                if cur.len() < MIRROR_MIN_WORDS {
+                    break;
+                }
+                let others: std::collections::HashSet<String> = turns[..i]
+                    .iter()
+                    .filter(|t| !t.is_self)
+                    .flat_map(|t| words(&t.content))
+                    .collect();
+                if others.is_empty() {
+                    break; // nothing to mirror — a monologue is detector 1's case
+                }
+                let covered =
+                    cur.iter().filter(|w| others.contains(*w)).count() as f32 / cur.len() as f32;
+                if covered >= MIRROR_CONTAINMENT {
+                    mirror_run += 1;
+                } else {
+                    break;
+                }
+            }
+            if mirror_run >= 1 {
+                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                    "[pattern] {agent_name}'s last {mirror_run} message(s) restate what other \
+                     participants in this room had already said, in nearly the same words — \
+                     an echo, not a contribution. Reflecting their words back adds nothing; \
+                     only something new (a fact, an action, a result) would.",
+                )));
+                if mirror_run >= PATTERN_FIRES_BEFORE_ANCHOR {
                     turns.push(crate::cognition::workspace::BurstTurn::opaque(
                         work_board_anchor(deliveries),
                     ));
@@ -2864,6 +2928,154 @@ mod tests {
                 "already-threaded trigger must not be doubled, got {turns:?}"
             );
             assert_eq!(turns.last().unwrap().content, question);
+        }
+
+        // Deterministic reproduction of the live 2026-07-24 four-persona echo
+        // hall (card 65fca48d): each persona's reply restates what ANOTHER
+        // participant already said, so detector 1 never fires (her mirror is
+        // novel relative to her OWN history — here she has only 2 own turns,
+        // below detector 1's floor of 3) and detector 2's consecutive tail
+        // chain is broken by the interleaved substantial peer report. Only the
+        // cross-speaker MIRROR detector can see this shape.
+        fn echo_hall(me: &str, anwen: &str, benchy: &str) -> Vec<RagItem> {
+            vec![
+                chat(
+                    anwen,
+                    "I see that there might have been some confusion earlier. Let's start \
+                     fresh! How can I assist you today with the word count project?",
+                ),
+                chat(
+                    benchy,
+                    "The Rust program I ran requires a file path argument to function \
+                     correctly, so it exited with a usage error before printing any counts.",
+                ),
+                chat(
+                    me,
+                    "I see that there might have been some confusion earlier. Let's start \
+                     fresh! How can I assist you today with the word count project?",
+                ),
+                chat(
+                    anwen,
+                    "I see that we're both here to help! Please let me know which specific \
+                     project or file you need help with today.",
+                ),
+                chat(
+                    me,
+                    "I see that we're both here to help! Please let me know which specific \
+                     project or file you need help with today.",
+                ),
+            ]
+        }
+
+        // what this catches: the cross-speaker echo loop (card 65fca48d, live
+        // 2026-07-24 — Atlas/Asha/Benchy/Anwen ping-ponged "I see that we're
+        // both here to help!" for hours with ZERO detector fires in 40
+        // consecutive captures). A trailing run of OWN messages each already
+        // ≥0.85-contained in OTHER speakers' earlier vocabulary must surface
+        // the mirror observation, and a run of 2 (she mirrored again AFTER the
+        // observation was derivable) must escalate to the live board anchor —
+        // same escalation law as detectors 1/2.
+        #[test]
+        fn cross_speaker_mirror_fires_observation_and_escalates_to_anchor() {
+            let me = "me-peer";
+            let anwen = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let benchy = "0d3209a1-c675-41db-9867-86f1011f9520";
+            let deliveries = vec![
+                delivery(
+                    "room-kanban",
+                    vec![kanban_card("65fca48d", "Break the echo loop", "Open", None)],
+                ),
+                delivery("airc", echo_hall(me, anwen, benchy)),
+            ];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            let obs = turns
+                .iter()
+                .find(|t| t.content.starts_with("[pattern]"))
+                .expect("the cross-speaker mirror must surface an observation");
+            assert!(
+                obs.content.contains("Asha") && obs.content.contains("restate"),
+                "the observation must name the persona and the mirroring, got: {}",
+                obs.content
+            );
+            assert_eq!(
+                turns
+                    .iter()
+                    .filter(|t| t.content.starts_with("[pattern]"))
+                    .count(),
+                1,
+                "exactly one observation per burst — perception, not nagging"
+            );
+            let anchor = turns.last().unwrap();
+            assert!(
+                anchor.content.starts_with("[anchor]")
+                    && anchor.content.contains("65fca48d")
+                    && anchor.content.contains("Break the echo loop"),
+                "a mirror run of 2 must escalate to the live board anchor, got: {anchor:?}"
+            );
+        }
+
+        // what this catches: a genuinely novel multi-speaker conversation —
+        // each reply quotes SOME of the peer's vocabulary (answering means
+        // restating the question) but adds new facts/actions — must never trip
+        // the mirror detector. The 0.85 bar exists exactly for this: an answer
+        // reuses a peer's words, an echo reuses (nearly) ONLY a peer's words.
+        #[test]
+        fn novel_multi_speaker_conversation_does_not_trip_the_mirror() {
+            let me = "me-peer";
+            let anwen = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let benchy = "0d3209a1-c675-41db-9867-86f1011f9520";
+            let deliveries = vec![delivery(
+                "airc",
+                vec![
+                    chat(anwen, "Can someone check why the word count tool exits early on empty files?"),
+                    chat(me, "Checked the word count tool: it exits early because read_to_string returns Ok with zero bytes and we treat that as an error branch."),
+                    chat(benchy, "Nice find — does the fix need a regression test?"),
+                    chat(me, "Yes — adding test_empty_file_counts_zero that pins stdout to '0 words' and returns exit code zero."),
+                ],
+            )];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            assert!(
+                !turns
+                    .iter()
+                    .any(|t| t.content.starts_with("[pattern]")
+                        || t.content.starts_with("[anchor]")),
+                "novel multi-speaker work must never trip the mirror, got {turns:?}"
+            );
+        }
+
+        // what this catches: a mirror run of exactly 1 stays description-only —
+        // the first fire is her chance to self-correct; the anchor only appears
+        // when the observation demonstrably failed to land (same law as
+        // detectors 1/2, PATTERN_FIRES_BEFORE_ANCHOR).
+        #[test]
+        fn first_mirror_fire_stays_description_only() {
+            let me = "me-peer";
+            let anwen = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let benchy = "0d3209a1-c675-41db-9867-86f1011f9520";
+            let mut items = echo_hall(me, anwen, benchy);
+            // Replace her FIRST own message with novel work so only the newest
+            // own message mirrors — run of 1.
+            items[2] = chat(
+                me,
+                "Claimed card 44ebaa41 — reading conway_game_of_life/src/main.rs \
+                 now to wire the neighbor count fix.",
+            );
+            let deliveries = vec![
+                delivery(
+                    "room-kanban",
+                    vec![kanban_card("65fca48d", "Break the echo loop", "Open", None)],
+                ),
+                delivery("airc", items),
+            ];
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+            assert!(
+                turns.iter().any(|t| t.content.starts_with("[pattern]")),
+                "a single trailing mirror must still fire the description, got {turns:?}"
+            );
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "the FIRST mirror fire must stay description-only, got {turns:?}"
+            );
         }
     }
 

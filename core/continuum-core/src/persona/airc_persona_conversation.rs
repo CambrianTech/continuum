@@ -435,6 +435,36 @@ mod tests {
             assert_eq!(msg.room_id, RoomId::from_u128(2).as_uuid());
         }
 
+        // what this catches: a live streaming token chunk (airc.stream.* headers,
+        // text body) must NOT be perceived as a spoken room turn — card 65fca48d,
+        // live 2026-07-24: chunks were stamped Durable by the publish path, came
+        // back from page_recent as transcript, and flooded every persona's window
+        // with per-250ms fragments ("Anwen: I", "Anwen: see that you're…"),
+        // waking peers per fragment and leaking a streamed "PASS" sentinel as
+        // room content. The settled utterance arrives separately via say(); the
+        // chunk is typing-indicator-class traffic, skipped with a NAMED reason.
+        #[test]
+        fn stream_chunk_is_not_a_room_turn() {
+            let peer = PeerId::from_u128(42);
+            let mut headers = Headers::new();
+            headers.insert(
+                airc_lib::HEADER_STREAM_ID.into(),
+                "b1946ac9-2a75-4a6f-9182-6b1c6e0e7a11".to_string(),
+            );
+            headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), "3".to_string());
+            headers.insert(
+                airc_lib::HEADER_STREAM_KIND.into(),
+                "text.token".to_string(),
+            );
+            let ev = event(peer, Some(Body::text(" see that you're")), headers);
+            assert_eq!(
+                perceptual_from_event(&ev),
+                Err("stream_chunk"),
+                "a streaming fragment must be skipped with its named reason — \
+                 never surfaced as a spoken room line"
+            );
+        }
+
         // what this catches: THE bug. chat/send arrives as a Body::Json
         // chat_transcript envelope (as_text()==None). It MUST be perceived,
         // and attributed to the true logical sender (inline.senderId), not
