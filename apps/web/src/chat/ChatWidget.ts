@@ -18,7 +18,12 @@
 
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import type { ChatState } from '@continuum/chat-view';
-import { chatViewModel, focusedPersonaTab, type MessageRowVM } from '@continuum/chat-view';
+import {
+  chatViewModel,
+  focusedLiveTab,
+  focusedPersonaTab,
+  type MessageRowVM,
+} from '@continuum/chat-view';
 import type {
   KanbanViewState,
   NavViewState,
@@ -28,14 +33,17 @@ import type {
 import { renderChat } from './renderChat';
 import {
   LISTING_SELECT,
+  LIVE_CAPTIONS_TOGGLE,
+  LIVE_FACE_TOGGLE,
   MESSAGE_EXPAND_TOGGLE,
   PANEL_RESIZE_START,
   navSelectTarget,
   type ListingSelectDetail,
+  type LiveFaceToggleDetail,
   type MessageExpandToggleDetail,
   type PanelResizeStartDetail,
 } from '../render/parts';
-import type { WorkspaceLayout } from '@continuum/patterns';
+import { LIVE_PURPOSE, type WorkspaceLayout } from '@continuum/patterns';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
 /** The send action the host injects. Resolves when the message is accepted by
@@ -59,12 +67,14 @@ export class ChatWidget extends LitElement {
     version: { attribute: false },
     sendHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
+    liveFace: { attribute: false },
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
     _selectError: { state: true },
     _typing: { state: true },
     _expanded: { state: true },
+    _captionsOn: { state: true },
   };
 
   /** The current chat snapshot; assignment triggers a re-render. `undefined`
@@ -96,6 +106,13 @@ export class ChatWidget extends LitElement {
   /** Injected by the host — how a rooms-rail pick reaches the core (`nav/select`). */
   selectRoomHandler?: SelectRoomHandler;
 
+  /** The room's LIVE face is open (the call grid instead of the transcript).
+   *  Renderer state, toggled by the header's Go-live affordance / the call
+   *  bar's hang-up (composed LIVE_FACE_TOGGLE) — the recipe-declared live
+   *  room (purpose "live") is the substrate-driven follow-up. Public so a
+   *  host/preview can open the face directly. */
+  liveFace = false;
+
   private _draft = '';
   private _sending = false;
   private _sendError = '';
@@ -109,6 +126,20 @@ export class ChatWidget extends LitElement {
    *  the projection classifies, the reader chooses. Reassigned (not mutated) so
    *  Lit re-renders; toggled by the row's bubbled MESSAGE_EXPAND_TOGGLE event. */
   private _expanded = new Set<string>();
+  /** The live face's caption strip toggle (CC) — on by default; the strip only
+   *  draws while a real turn streams, so "on" costs nothing in silence. */
+  private _captionsOn = true;
+
+  /** Go-live / hang-up: the composed face-toggle from the header affordance or
+   *  the call bar bubbles up here — the widget owns the face state. */
+  private onLiveFaceToggle = (e: Event): void => {
+    this.liveFace = (e as CustomEvent<LiveFaceToggleDetail>).detail.open;
+  };
+
+  /** CC toggle — flips the live caption strip (a real control). */
+  private onLiveCaptionsToggle = (): void => {
+    this._captionsOn = !this._captionsOn;
+  };
 
   /** Toggle one message between digest and full — the row's affordance bubbles
    *  the composed event up here because the render fragments are stateless. */
@@ -244,11 +275,16 @@ export class ChatWidget extends LitElement {
     this.loadLayout();
     // Rooms-rail picks: the cell's composed LISTING_SELECT bubbles up here.
     this.addEventListener(LISTING_SELECT, this.onListingSelect);
+    // The live face: Go-live/hang-up + the CC toggle bubble up the same way.
+    this.addEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
+    this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
   override disconnectedCallback(): void {
     this.removeEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
     this.removeEventListener(LISTING_SELECT, this.onListingSelect);
+    this.removeEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
+    this.removeEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
     super.disconnectedCallback();
   }
 
@@ -2212,6 +2248,261 @@ export class ChatWidget extends LitElement {
       }
     }
 
+    /* ================= LIVE CALL FACE =================
+     * The room's call grid (purpose "live") — the reference's Teams-style
+     * avatar tiles (docs/images/live-session-avatars.png): per-participant
+     * tiles, name tags bottom-left, presence dot top-left, SPEAKING green
+     * border driven by the live token rail, caption strip, call-controls bar.
+     * Every colour a named token; game-HUD polish on REAL state only. */
+    .hdr-live[data-active] {
+      color: var(--status-online, #3fb950);
+      border-color: var(--status-online, #3fb950);
+      box-shadow: 0 0 8px rgba(63, 185, 80, 0.4);
+    }
+    .live-room {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+      gap: var(--spacing-md);
+    }
+    .live-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--spacing-md);
+    }
+    .live-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--content-secondary);
+    }
+    .live-title-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--status-online, #3fb950);
+      box-shadow: 0 0 7px var(--status-online, #3fb950);
+      animation: live-pulse 2.4s ease-in-out infinite;
+    }
+    /* Honest capability tag: tiles are avatars + live presence until the
+       browser media plane carries real tracks. */
+    .live-plane-chip {
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: var(--content-secondary);
+    }
+    .live-empty {
+      flex: 1;
+      display: grid;
+      place-items: center;
+      color: var(--content-secondary);
+      font-style: italic;
+    }
+    .live-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: var(--spacing-md);
+      align-content: center;
+    }
+    /* Wide rooms cap at 4 columns worth of tile width via the minmax above;
+       small screens fall to 1–2 columns naturally. */
+    .live-tile {
+      position: relative;
+      aspect-ratio: 16 / 10;
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(ellipse 80% 65% at 50% 30%, rgba(120, 150, 210, 0.28), transparent 75%),
+        linear-gradient(180deg, rgba(70, 90, 140, 0.35), rgba(10, 14, 26, 0.9)),
+        var(--hud-panel-background);
+      border: 2px solid var(--border-subtle);
+      transition: border-color var(--motion-base) var(--motion-ease),
+        box-shadow var(--motion-base) var(--motion-ease),
+        transform var(--motion-fast) var(--motion-ease);
+    }
+    .live-tile:hover {
+      transform: translateY(-2px);
+      border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+    }
+    .live-tile:not([data-active]) {
+      opacity: 0.55;
+      filter: saturate(0.6);
+    }
+    /* SPEAKING — the reference's green active-speaker border, breathing while
+       REAL tokens flow on the live rail (never a timer animation). */
+    @keyframes live-speaking-pulse {
+      0%, 100% {
+        box-shadow: 0 0 10px rgba(63, 185, 80, 0.55), inset 0 0 14px rgba(63, 185, 80, 0.12);
+      }
+      50% {
+        box-shadow: 0 0 24px rgba(63, 185, 80, 0.95), inset 0 0 22px rgba(63, 185, 80, 0.2);
+      }
+    }
+    .live-tile[data-speaking] {
+      border-color: var(--status-online, #3fb950);
+      animation: live-speaking-pulse 1.6s ease-in-out infinite;
+    }
+    .lt-glyph {
+      font-size: 52px;
+      opacity: 0.9;
+    }
+    .lt-img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      /* Legacy tile spec: VRM portraits carry the face at the top of the
+         frame — a centered crop lands on the collar. */
+      object-position: center top;
+    }
+    .lt-status {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--status-offline, #555);
+      border: 2px solid rgba(0, 0, 0, 0.5);
+      z-index: 2;
+    }
+    .lt-status[data-on] {
+      background: var(--status-online, #3fb950);
+      box-shadow: 0 0 6px var(--status-online, #3fb950);
+    }
+    .lt-name {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: calc(100% - 16px);
+      padding: 2px 9px;
+      border-radius: var(--radius-sm);
+      background: rgba(0, 0, 0, 0.62);
+      color: #fff;
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 2;
+    }
+    .lt-wave {
+      font-size: 10px;
+    }
+    /* The live transcript line — the active speaker's streaming turn. */
+    .live-caption {
+      align-self: center;
+      max-width: min(760px, 92%);
+      padding: var(--spacing-sm) var(--spacing-lg);
+      border-radius: var(--radius-md);
+      background: rgba(0, 0, 0, 0.68);
+      border: 1px solid var(--border-subtle);
+      color: #fff;
+      font-size: 14px;
+      line-height: 1.4;
+      text-align: center;
+    }
+    .live-caption-name {
+      color: var(--status-online, #3fb950);
+      font-weight: 700;
+      margin-right: 6px;
+    }
+    .live-caret {
+      opacity: 0.8;
+    }
+    /* Call controls — the reference's bottom-center bar. Only real actions
+       enabled: CC (caption strip) and hang-up; the rest honestly disabled. */
+    .live-controls {
+      align-self: center;
+      display: flex;
+      gap: var(--spacing-md);
+      padding: var(--spacing-sm) 0 var(--spacing-md);
+    }
+    .live-btn {
+      position: relative;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      border: 1px solid var(--border-subtle);
+      background: var(--button-secondary-background);
+      color: var(--content-primary);
+      font-size: 17px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      padding: 0;
+      transition: border-color var(--motion-fast) var(--motion-ease),
+        box-shadow var(--motion-fast) var(--motion-ease);
+    }
+    .live-btn:hover:not([disabled]) {
+      border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
+      box-shadow: 0 0 10px var(--hud-accent-glow);
+    }
+    .live-btn[disabled] {
+      opacity: 0.38;
+      cursor: default;
+    }
+    .live-btn[data-on] {
+      border-color: var(--content-accent);
+      color: var(--content-accent);
+      box-shadow: 0 0 8px var(--hud-accent-glow);
+    }
+    .live-btn[data-danger] {
+      background: #b62324;
+      border-color: #d33;
+      color: #fff;
+    }
+    .live-btn[data-danger]:hover:not([disabled]) {
+      border-color: #ff6b6b;
+      box-shadow: 0 0 12px rgba(255, 60, 60, 0.55);
+    }
+    .live-btn-glyph {
+      font-size: inherit;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .live-btn-badge {
+      position: absolute;
+      top: -4px;
+      right: -6px;
+      min-width: 17px;
+      padding: 0 4px;
+      border-radius: var(--radius-lg);
+      background: var(--content-accent);
+      color: var(--surface, #0b0d12);
+      font-size: 9.5px;
+      font-weight: 700;
+      line-height: 15px;
+      font-variant-numeric: tabular-nums;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .live-title-dot,
+      .live-tile[data-speaking] {
+        animation: none;
+      }
+      .live-tile:hover {
+        transform: none;
+      }
+    }
+
     /* The MOBILE adaptation rule (@media modality:mobile via viewport) — LAST in the
        sheet so it wins by source order (media queries add no specificity). The desktop
        three-panel is wrong on a phone, so the presentation is DERIVED, not reflowed:
@@ -2566,6 +2857,14 @@ export class ChatWidget extends LitElement {
         sys: this.sys,
         board: this.board,
         version: this.version,
+        // The live-call overlay: the Go-live face state + the REAL StreamDelta
+        // token rail (who is speaking NOW, and what they're saying — the same
+        // map the typing bubbles/speaking rings draw) + the CC toggle.
+        call: {
+          open: this.liveFace,
+          streams: Object.fromEntries(this._typing),
+          captionsOn: this._captionsOn,
+        },
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
@@ -2581,7 +2880,7 @@ export class ChatWidget extends LitElement {
       ${surface}
       ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}
       ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
-      ${focusedPersonaTab(this.nav)
+      ${focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace || vm.purpose === LIVE_PURPOSE
         ? nothing
         : html`<form class="compose" @submit=${this.onSubmit}>
             <input

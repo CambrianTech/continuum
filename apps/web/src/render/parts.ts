@@ -614,6 +614,40 @@ export function resizeHandle(panel: 'who' | 'context'): TemplateResult {
   ></div>`;
 }
 
+/** The composed toggle event the live-face affordances fire — the header's
+ *  Go-live button opens the room's call face, the call bar's hang-up closes it
+ *  (returning to the chat face). Bubbles to `<chat-widget>`, which owns the
+ *  face state — fragments stay pure/stateless (the MESSAGE_EXPAND_TOGGLE
+ *  pattern). The face itself is renderer state until room recipes declare
+ *  purpose "live" ([[room-purpose-is-per-recipe-not-an-enum]] follow-up). */
+export const LIVE_FACE_TOGGLE = 'live-face-toggle';
+
+/** Detail payload of a `LIVE_FACE_TOGGLE` event. */
+export interface LiveFaceToggleDetail {
+  /** true = open the live face; false = hang up (back to the chat face). */
+  readonly open: boolean;
+}
+
+export function fireLiveFaceToggle(e: Event, open: boolean): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<LiveFaceToggleDetail>(LIVE_FACE_TOGGLE, {
+      detail: { open },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
+/** The composed toggle event the call bar's CC button fires — flips the live
+ *  caption strip (a REAL control: the strip is the streaming transcript line). */
+export const LIVE_CAPTIONS_TOGGLE = 'live-captions-toggle';
+
+export function fireLiveCaptionsToggle(e: Event): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent(LIVE_CAPTIONS_TOGGLE, { bubbles: true, composed: true }),
+  );
+}
+
 /** The message body at its display tier ([[perception-resolution-contract]]):
  *  a digested row renders head + mechanical tail line (+ repetition histogram)
  *  collapsed by default — no message floods the transcript — with the full

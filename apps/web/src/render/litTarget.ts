@@ -11,6 +11,7 @@
 
 import { html, nothing, type TemplateResult } from 'lit';
 import {
+  LIVE_PURPOSE,
   ROSTER_LISTING_ID,
   type ContinuonView,
   type RenderTarget,
@@ -21,7 +22,7 @@ import {
   type ContextPanelView,
   type PanelWidget,
 } from '@continuum/patterns';
-import { fireListingSelect, renderListing, resizeHandle } from './parts';
+import { fireListingSelect, fireLiveFaceToggle, renderListing, resizeHandle } from './parts';
 import { webContentRegistry } from '../content/registry';
 import { webWidgetRegistry } from './widgets';
 
@@ -152,6 +153,18 @@ export const webTarget: RenderTarget<TemplateResult> = {
             ? html`<span class="continuon-version header-version" title="client build">${version}</span>`
             : nothing}
           <span class="header-controls">
+            <button
+              class="hdr-btn hdr-live"
+              data-active=${ws.content.purpose === LIVE_PURPOSE ? '' : nothing}
+              @click=${(e: Event): void => {
+                fireLiveFaceToggle(e, ws.content.purpose !== LIVE_PURPOSE);
+              }}
+              title=${ws.content.purpose === LIVE_PURPOSE
+                ? 'in the live room — click to return to chat'
+                : "open this room's live face — the call grid"}
+            >
+              📹 ${ws.content.purpose === LIVE_PURPOSE ? 'Live' : 'Go live'}
+            </button>
             <button class="hdr-btn" @click=${cycleUniverse} title="cycle universe skin (?universe=)">
               Theme
             </button>

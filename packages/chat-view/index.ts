@@ -70,6 +70,22 @@ export {
   agoText,
 } from './personaProjections';
 
+// The LIVE call-face projections — a room's call grid as a purpose-dispatched
+// activity (LIVE_PURPOSE), lit from the SAME StreamDelta token rail the roster's
+// speaking ring draws. `chatWorkspace` dispatches to it off the room recipe's
+// purpose / a live tab / the Go-live overlay; exported for renderers/tests.
+export {
+  focusedLiveTab,
+  liveFaceOpen,
+  liveContentBody,
+  liveParticipants,
+  liveCaption,
+  liveControls,
+  captionTail,
+  CAPTION_TAIL_CHARS,
+} from './liveProjections';
+export type { LiveCallOverlay } from './liveProjections';
+
 // The chat activity as a positron app, defined ONCE — mount it on any RenderTarget
 // (web/mobile/terminal/RAG). The first real `defineApp` consumer.
 export { chatApp } from './chatApp';

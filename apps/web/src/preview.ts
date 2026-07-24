@@ -86,6 +86,29 @@ const roster: RosterSlotView[] = [
   }),
 ];
 
+/** The LIVE fixture roster — the reference grid needs 6+ tiles
+ *  (docs/images/live-session-avatars.png), mixing REAL avatar files from the
+ *  node's store (vite serves ~/.continuum/avatars at /avatars) with
+ *  glyph-fallback citizens — the honest range the live grid must handle. */
+const liveRoster: RosterSlotView[] = [
+  ...roster,
+  member({
+    member_id: 'kestrel', display_name: 'Kestrel', provenance: { runtime: 'devstral' },
+    vitals: { activity: 55 }, avatar_url: '/avatars/90e758b2-3cf3-45c1-b100-de7c4ab5a549-happy.png',
+    last_seen_ms: Date.now() - 2 * 60_000,
+  }),
+  member({
+    member_id: 'wren', display_name: 'Wren', provenance: { runtime: 'qwen' },
+    vitals: { activity: 12 },
+    avatar_url: '/avatars/90e758b2-3cf3-45c1-b100-de7c4ab5a549-happy-mouth90.png',
+    last_seen_ms: Date.now() - 9 * 60_000,
+  }),
+  member({
+    member_id: 'tarn', display_name: 'Tarn', provenance: { runtime: 'claude' },
+    vitals: {}, active: false, last_seen_ms: Date.now() - 4 * 3_600_000,
+  }),
+];
+
 const message = (over: Partial<ChatState['messages'][number]>): ChatState['messages'][number] => ({
   id: 'x', room_id: 'general', sender_id: 'asha', sender_name: 'Asha',
   sender_kind: { kind: 'agent' }, integrations: {}, provenance: { runtime: 'devstral' },
@@ -229,6 +252,28 @@ function main(): void {
     widget.state = FIXTURES.roster;
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
+  }
+  // `?fixture=live` — the room's LIVE call face open (the Go-live affordance's
+  // state), 7 tiles incl. real avatar files, Asha mid-turn on the token rail:
+  // her tile carries the speaking border and her streaming text is the caption
+  // — the reference-grid input (docs/images/live-session-avatars.png).
+  if (name === 'live') {
+    widget.state = {
+      kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat',
+      roster: liveRoster,
+      messages: FIXTURES.roster?.messages ?? [],
+    };
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.liveFace = true;
+    // A REAL StreamDelta shape driving the speaking border + caption — the
+    // same applyStreamDelta path the live socket feeds.
+    widget.applyStreamDelta({
+      roomId: 'general', senderId: 'asha', streamId: 'preview-turn', seq: 0,
+      token:
+        'Reading the lane admission trace now — the planner admitted both persona lanes, and the eval lane kept its own window through the whole run.',
+      done: false,
+    });
   }
   // `?fixture=persona` — Asha's persona-kind tab focused: the persona HOME
   // renders in the center (hero + brain HUD + genome shelf + claims) while the

@@ -54,6 +54,11 @@ async function main(): Promise<void> {
   const widget = document.createElement('chat-widget');
   // The version badge's real source: this build's package version, stamped by vite.
   widget.version = `v${__APP_VERSION__}`;
+  // `?live` — boot straight into the focused room's LIVE face (the same state
+  // the header's Go-live affordance toggles): a deep link to the call grid,
+  // presentation state only ([[navigation-is-airc-state-one-semantics-many-idioms]]
+  // — the URL is the web idiom; recipe-declared live rooms are the substrate path).
+  if (new URLSearchParams(location.search).has('live')) widget.liveFace = true;
   const mount = document.getElementById('app') ?? document.body;
   mount.replaceChildren(widget);
 

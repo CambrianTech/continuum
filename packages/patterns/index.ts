@@ -24,6 +24,16 @@
 // The persona home's neutral Content body (`purpose === PERSONA_PURPOSE`) — the
 // profile/brain surface as a purpose-dispatched activity, never a special view.
 export { PERSONA_PURPOSE } from './personaContent';
+
+// The live call face's neutral Content body (`purpose === LIVE_PURPOSE`) — a
+// room's call grid as a purpose-dispatched activity, never a special view.
+export { LIVE_PURPOSE } from './liveContent';
+export type {
+  LiveContentBody,
+  LiveParticipantVM,
+  LiveCaptionVM,
+  LiveControlsVM,
+} from './liveContent';
 export type {
   PersonaContentBody,
   PersonaBrainRegionVM,

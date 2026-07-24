@@ -11,14 +11,17 @@
 import { html, type TemplateResult } from 'lit';
 import {
   createContentRegistry,
+  LIVE_PURPOSE,
   PERSONA_PURPOSE,
   type ContentRegistry,
+  type LiveContentBody,
   type PersonaContentBody,
 } from '@continuum/patterns';
 import type { ChatContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
 import { listingCell, messageRow } from '../render/parts';
 import { renderPersona } from '../persona/renderPersona';
+import { renderLive } from '../live/renderLive';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -51,3 +54,7 @@ webContentRegistry.register<ForgeContentBody>('foundry', (body) => foundryConten
 // The persona HOME — the profile + brain HUD center, dispatched when the
 // focused tab is persona-kind (the projection publishes purpose "persona").
 webContentRegistry.register<PersonaContentBody>(PERSONA_PURPOSE, (body) => renderPersona(body));
+// The LIVE call face — the room's avatar-grid call surface, dispatched when the
+// room recipe's purpose is "live", a live tab is focused, or the Go-live face
+// is open (the projection publishes purpose "live").
+webContentRegistry.register<LiveContentBody>(LIVE_PURPOSE, (body) => renderLive(body));
