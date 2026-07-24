@@ -206,16 +206,28 @@ impl ActionCommand for MarkRead {
     }
 }
 
-/// Params for `nav/select` — switch the calling citizen's current tab to a room.
-/// The `select`/`switchTo` NavIntent verb (NAVIGATION-ACROSS-MODALITIES.md §2);
-/// caller identity (`userId`) rides the command envelope, same as `nav/mark-read`.
+/// Params for `nav/select` — switch the calling citizen's current tab to an
+/// activity. The `select`/`switchTo` NavIntent verb
+/// (NAVIGATION-ACROSS-MODALITIES.md §2); caller identity (`userId`) rides the
+/// command envelope, same as `nav/mark-read`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/nav/NavSelectParams.ts")]
 pub struct NavSelectParams {
-    /// The room to switch to (its airc room id).
+    /// The activity to switch to (an airc room id, or a citizen id for a
+    /// persona-kind tab).
     #[ts(type = "string")]
     pub target: Uuid,
+    /// What the target IS — the tab's activity kind (`room` default / `content`
+    /// / `persona`). A persona select opens the citizen's HOME tab (the profile
+    /// / brain surface) WITHOUT refocusing the chat projection — the content
+    /// dispatch keys off this, the same tabs==rooms==activities semantics.
+    /// `serde(default)` so a kind-less older client reads as a room switch.
+    /// Schema surfaced as a string (the wire values are the lowercase
+    /// `NavTargetKind` names) — schemars has no derive on the positron enum.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub kind: continuum_positron::nav::NavTargetKind,
 }
 
 /// Result of `nav/select` — the citizen's focus after the switch.
@@ -258,16 +270,20 @@ impl ActionCommand for Select {
         let user = ctx.user_id.ok_or_else(|| {
             CommandError::Invalid("nav/select requires an authenticated caller (user_id)".to_string())
         })?;
+        use continuum_positron::nav::NavTargetKind;
         let target = params.target.to_string();
-        let previous = global_nav_focus().focus(user, target.clone());
+        let previous = global_nav_focus().focus(user, target.clone(), params.kind);
 
-        // markRead sibling: the room being LEFT is read. Advance its shared
+        // markRead sibling: a ROOM being LEFT is read. Advance its shared
         // cursor to the staged digest's tip — the lamport-domain "now", the same
         // advance a persona makes after engaging (`ChannelDigest::tip_lamport`).
         // No staged digest → no unread info exists for that room yet → honestly
         // nothing to advance (never a fabricated cursor). Cursor is monotonic,
-        // so a re-select can never rewind it.
-        if let Some(prev) = previous.as_deref().filter(|p| *p != target) {
+        // so a re-select can never rewind it. A non-room previous focus (a
+        // persona tab) has no read cursor — nothing to advance.
+        if let Some((prev, NavTargetKind::Room)) =
+            previous.as_ref().filter(|(p, _)| *p != target)
+        {
             if let Ok(prev_room) = Uuid::parse_str(prev) {
                 if let Some(tip) = global_channel_digest_buffer()
                     .peek(&(user, prev_room))
@@ -278,14 +294,20 @@ impl ActionCommand for Select {
             }
         }
 
-        // Command in → Events out on the airc bus: the chat accumulator pins to
-        // the selected room (center pane), the nav projector re-projects the
-        // explicit focus (rail's active cell + the persona's menu).
-        self.shared.publish_chat_focused(params.target);
+        // Command in → Events out on the airc bus: for a ROOM select the chat
+        // accumulator pins to the selected room (center pane); a PERSONA/content
+        // select deliberately does NOT refocus the chat projection — the room on
+        // screen stays put, the persona tab renders by its own purpose (the
+        // content dispatch keys off the tab kind, never a room switch). The nav
+        // projector re-projects either way (rail's active cell + the persona's
+        // menu follow the explicit focus).
+        if params.kind == NavTargetKind::Room {
+            self.shared.publish_chat_focused(params.target);
+        }
         self.shared.publish_nav_changed(user);
         Ok(NavSelectResult {
             current: target,
-            previous,
+            previous: previous.map(|(p, _)| p),
         })
     }
 }
@@ -391,21 +413,21 @@ mod tests {
 
         // First select: no previous focus, cursor untouched.
         let first = cmd
-            .run(&ctx, NavSelectParams { target: room_a })
+            .run(&ctx, NavSelectParams { target: room_a, kind: Default::default() })
             .await
             .expect("select ok");
         assert_eq!(first.current, room_a.to_string());
         assert_eq!(first.previous, None, "a fresh citizen has no previous focus");
         assert_eq!(
-            global_nav_focus().current(user).as_deref(),
-            Some(room_a.to_string().as_str()),
-            "the explicit focus landed in the shared store the reader surfaces"
+            global_nav_focus().current(user),
+            Some((room_a.to_string(), continuum_positron::nav::NavTargetKind::Room)),
+            "the explicit focus (target + kind) landed in the shared store the reader surfaces"
         );
         assert_eq!(global_channel_bookmarks().last_read(user, room_a), 0);
 
         // Second select: leaving room_a advances its cursor to the digest tip.
         let second = cmd
-            .run(&ctx, NavSelectParams { target: room_b })
+            .run(&ctx, NavSelectParams { target: room_b, kind: Default::default() })
             .await
             .expect("select ok");
         assert_eq!(second.current, room_b.to_string());
@@ -437,7 +459,7 @@ mod tests {
             user_id: Some(user),
             ..Ctx::default()
         };
-        cmd.run(&ctx, NavSelectParams { target: room })
+        cmd.run(&ctx, NavSelectParams { target: room, kind: Default::default() })
             .await
             .expect("select ok");
 
@@ -460,6 +482,60 @@ mod tests {
         assert!(saw_nav, "nav:changed must reach the bus");
     }
 
+    // what this catches: the persona-tab purity contract — a persona-kind
+    // nav/select stores the persona focus (kind and all) but must NOT publish
+    // `chat:focused` (the chat projection stays pinned to the room on screen;
+    // the persona home renders by tab kind, never by hijacking the room
+    // accumulator). `nav:changed` still fires so the rail + tab bar follow.
+    #[tokio::test]
+    async fn persona_select_stores_focus_without_refocusing_chat() {
+        use continuum_positron::nav::NavTargetKind;
+        let module = NavModule::new();
+        let bus = Arc::new(MessageBus::new());
+        module.shared.set_bus(Arc::clone(&bus));
+        let mut rx = bus.receiver();
+        let cmd = Select {
+            shared: module.shared.clone(),
+        };
+        let user = Uuid::from_u128(0x5e1e_c703);
+        let persona = Uuid::from_u128(0x5e1e_d00d);
+        let ctx = Ctx {
+            user_id: Some(user),
+            ..Ctx::default()
+        };
+        let out = cmd
+            .run(
+                &ctx,
+                NavSelectParams {
+                    target: persona,
+                    kind: NavTargetKind::Persona,
+                },
+            )
+            .await
+            .expect("persona select ok");
+        assert_eq!(out.current, persona.to_string());
+        assert_eq!(
+            global_nav_focus().current(user),
+            Some((persona.to_string(), NavTargetKind::Persona)),
+            "the persona focus (target + kind) landed in the shared store"
+        );
+        let mut saw_focus = false;
+        let mut saw_nav = false;
+        while let Ok(event) = rx.try_recv() {
+            if event.name == CHAT_FOCUSED {
+                saw_focus = true;
+            }
+            if event.name == NAV_CHANGED {
+                saw_nav = true;
+            }
+        }
+        assert!(
+            !saw_focus,
+            "a persona select must NOT refocus the chat projection — the room stays put"
+        );
+        assert!(saw_nav, "nav:changed still reaches the bus for the rail/tab bar");
+    }
+
     // what this catches: no caller identity → fail loud, never a silent
     // default-user focus write — the select twin of the mark-read guard
     // ([[fallbacks-are-illegal-fail-loud]]).
@@ -474,6 +550,7 @@ mod tests {
                 &Ctx::default(),
                 NavSelectParams {
                     target: Uuid::from_u128(2),
+                    kind: Default::default(),
                 },
             )
             .await;

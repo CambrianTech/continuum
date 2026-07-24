@@ -53,11 +53,14 @@ use uuid::Uuid;
 /// three the nav surfaces route today; a new target kind adds a variant here
 /// (a compile-error at every `match`, never a silent `Other` —
 /// [[fallbacks-are-illegal-fail-loud]]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
 #[ts(export, export_to = "../../../protocol/typescript/positron/NavTargetKind.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum NavTargetKind {
-    /// A room's conversation (the common case — a chat tab).
+    /// A room's conversation (the common case — a chat tab). The `Default` so a
+    /// kind-less `nav/select` (an older client) reads as the pre-persona-tab
+    /// behavior — a room switch, never a misrouted profile.
+    #[default]
     Room,
     /// A piece of content (a document, a wall post, a file view).
     Content,

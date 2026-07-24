@@ -2755,10 +2755,18 @@ pub fn start_server(
                     projection_bus.clone(),
                     nav_seed,
                 );
+                // Member-name fold (the room fold's identity sibling): resolves a
+                // persona-kind tab's title from the same presence stream.
+                let member_set = positron_nav_source::spawn_member_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                );
                 let nav_registry = Arc::new(positron_nav_source::NavProjectorRegistry::new(
                     projection_bus.clone(),
                     Arc::clone(&per_user),
-                    Arc::new(positron_nav_source::ChannelBookmarksNavReader::new(room_set)),
+                    Arc::new(positron_nav_source::ChannelBookmarksNavReader::new(
+                        room_set, member_set,
+                    )),
                 ));
 
                 // SYS gauge source (brick 2): sample the ONE shared resource

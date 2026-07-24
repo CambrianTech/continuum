@@ -133,15 +133,18 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
 /// ([[navigation-is-airc-state-one-semantics-many-idioms]]).
 ///
 /// The target is a `String` ref, not a `Uuid`: a tab can open a content ref
-/// that isn't a Uuid (see [`continuum_positron::nav::NavTab::id`]).
+/// that isn't a Uuid (see [`continuum_positron::nav::NavTab::id`]). The stored
+/// row is `(target, kind)` — a tab is any activity KIND (room / content /
+/// persona), and the reader needs the kind to surface the focused activity as
+/// the right tab (a persona focus must NOT read as a room switch).
 #[derive(Default)]
 pub struct NavFocus {
-    inner: Mutex<std::collections::HashMap<Uuid, String>>,
+    inner: Mutex<std::collections::HashMap<Uuid, (String, NavTargetKind)>>,
 }
 
 impl NavFocus {
     /// The citizen's explicit current tab, if one was ever selected.
-    pub fn current(&self, user: Uuid) -> Option<String> {
+    pub fn current(&self, user: Uuid) -> Option<(String, NavTargetKind)> {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -149,13 +152,19 @@ impl NavFocus {
             .cloned()
     }
 
-    /// Set the citizen's current tab, returning the PREVIOUS focus (the room
-    /// being left — the `markRead` sibling advances its cursor).
-    pub fn focus(&self, user: Uuid, target: String) -> Option<String> {
+    /// Set the citizen's current tab (+ its activity kind), returning the
+    /// PREVIOUS focus (the activity being left — when it's a room, the
+    /// `markRead` sibling advances its cursor).
+    pub fn focus(
+        &self,
+        user: Uuid,
+        target: String,
+        kind: NavTargetKind,
+    ) -> Option<(String, NavTargetKind)> {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(user, target)
+            .insert(user, (target, kind))
     }
 }
 
@@ -255,6 +264,54 @@ fn fold_observed_room(set: &mut RoomSet, room: Uuid, name: Option<String>) -> bo
     }
 }
 
+/// The live member-name snapshot — every citizen the node has observed in a
+/// presence roster, `member id → display name`. The identity lookup a
+/// persona-kind tab's TITLE resolves through (the same `display_name` the chat
+/// roster carries — one presence stream, two folds, zero fabrication).
+pub type MemberSet = BTreeMap<Uuid, String>;
+
+/// Spawn the single member-set fold: consume `presence:updated` rosters off the
+/// bus and publish the accumulated [`MemberSet`] over `watch` — the member
+/// sibling of [`spawn_room_set_fold`] (same canonical shape: one owner task, N
+/// cheap readers). A projection of the observed airc presence stream; airc's
+/// identity cards stay the truth.
+pub fn spawn_member_set_fold(
+    rt: &tokio::runtime::Handle,
+    bus: Arc<MessageBus>,
+) -> watch::Receiver<MemberSet> {
+    let (tx, rx) = watch::channel(MemberSet::new());
+    let mut events = bus.receiver();
+    rt.spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    if event.name != PRESENCE_UPDATED {
+                        continue;
+                    }
+                    if let Ok(update) =
+                        serde_json::from_value::<AircPresenceUpdate>(event.payload.clone())
+                    {
+                        tx.send_if_modified(|set| {
+                            let mut changed = false;
+                            for slot in &update.roster {
+                                let entry = set.entry(slot.member_id).or_default();
+                                if *entry != slot.display_name && !slot.display_name.is_empty() {
+                                    *entry = slot.display_name.clone();
+                                    changed = true;
+                                }
+                            }
+                            changed
+                        });
+                    }
+                }
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+    rx
+}
+
 /// The LIVE [`NavReader`] — reads each room's real read cursor from the shared
 /// `ChannelBookmarks` (the SAME row the persona's RAG grounding reads: the
 /// first-class dual-consumer atom — a human's unread badge and a persona's
@@ -266,6 +323,10 @@ fn fold_observed_room(set: &mut RoomSet, room: Uuid, name: Option<String>) -> bo
 pub struct ChannelBookmarksNavReader {
     /// Live room-set snapshot (room id → title), shared with the fold task.
     rooms: watch::Receiver<RoomSet>,
+    /// Live member-name snapshot (member id → display name), shared with the
+    /// member fold task — resolves a persona-kind tab's title from the SAME
+    /// presence stream the chat roster reads (never a fabricated name).
+    members: watch::Receiver<MemberSet>,
     /// The room-purpose seam — resolves each room's activity purpose for the
     /// tab's description/facet line. Same default the chat projection uses
     /// (`room_purpose::default_source()`): every room honestly "chat" until
@@ -274,15 +335,22 @@ pub struct ChannelBookmarksNavReader {
 }
 
 impl ChannelBookmarksNavReader {
-    pub fn new(rooms: watch::Receiver<RoomSet>) -> Self {
-        Self { rooms, purpose: crate::ipc::room_purpose::default_source() }
+    pub fn new(rooms: watch::Receiver<RoomSet>, members: watch::Receiver<MemberSet>) -> Self {
+        Self { rooms, members, purpose: crate::ipc::room_purpose::default_source() }
     }
 
     /// A reader over a FIXED room set — test/fixture construction (no fold
     /// task). The live path uses [`spawn_room_set_fold`]'s receiver.
     pub fn fixed(rooms: Vec<(Uuid, String)>) -> Self {
-        let (_tx, rx) = watch::channel(rooms.into_iter().collect::<RoomSet>());
-        Self { rooms: rx, purpose: crate::ipc::room_purpose::default_source() }
+        Self::fixed_with_members(rooms, Vec::new())
+    }
+
+    /// A fixed reader that also carries a member-name set — the persona-tab
+    /// test/fixture construction.
+    pub fn fixed_with_members(rooms: Vec<(Uuid, String)>, members: Vec<(Uuid, String)>) -> Self {
+        let (_rtx, rrx) = watch::channel(rooms.into_iter().collect::<RoomSet>());
+        let (_mtx, mrx) = watch::channel(members.into_iter().collect::<MemberSet>());
+        Self { rooms: rrx, members: mrx, purpose: crate::ipc::room_purpose::default_source() }
     }
 }
 
@@ -326,13 +394,37 @@ impl NavReader for ChannelBookmarksNavReader {
                 }
             })
             .collect();
+        let mut activities: Vec<NavActivity> = activities;
         // Current = the citizen's EXPLICIT focus (the `nav/select` write —
         // surfaced verbatim: what the citizen selected is the truth, even if
         // the fold hasn't observed that room yet). Before any select, the
         // first room stands in — the honest pre-focus view for a fresh
         // citizen, unchanged from the pre-nav/select behavior.
-        let current = global_nav_focus()
-            .current(user)
+        let focus = global_nav_focus().current(user);
+        // A persona-kind focus surfaces as its OWN open tab (the persona home
+        // — same nav semantics as any activity, `activity == room == tab`).
+        // Title resolves through the live member-name fold (the same presence
+        // display_name the chat roster carries); an unnamed member gets the
+        // honest short-id label, exactly like an unnamed room. The persona
+        // home's room-ification (a real airc room per citizen) is the
+        // follow-up; this tab IS the nav truth today, not a parallel router.
+        if let Some((target, NavTargetKind::Persona)) = &focus {
+            let title = Uuid::parse_str(target)
+                .ok()
+                .and_then(|id| self.members.borrow().get(&id).cloned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| target.chars().take(8).collect());
+            activities.push(NavActivity {
+                id: target.clone(),
+                title,
+                kind: NavTargetKind::Persona,
+                unread: 0,
+                purpose: "persona".to_string(),
+                last_read: None,
+            });
+        }
+        let current = focus
+            .map(|(target, _)| target)
             .or_else(|| rooms.keys().next().map(|r| r.to_string()));
         NavSnapshot { current, activities, bookmarks: Vec::new() }
     }
@@ -596,12 +688,60 @@ mod tests {
         );
 
         let selector = Uuid::from_u128(0x50f2);
-        global_nav_focus().focus(selector, room_b.to_string());
+        global_nav_focus().focus(selector, room_b.to_string(), NavTargetKind::Room);
         assert_eq!(
             reader.nav_snapshot(selector).current,
             Some(room_b.to_string()),
             "the explicit focus is surfaced as current"
         );
+    }
+
+    // what this catches: a persona-kind focus surfaces as its OWN open tab —
+    // kind Persona, purpose "persona", title resolved from the live member-name
+    // fold (the presence display_name, never a fabricated label) — and becomes
+    // current WITHOUT displacing any room tab. The honest first slice of the
+    // persona home: the tab is nav truth, the chat projection stays untouched.
+    #[test]
+    fn persona_focus_surfaces_a_persona_tab_with_resolved_name() {
+        let room = Uuid::from_u128(0x9e50_a);
+        let asha = Uuid::from_u128(0x9e50_b);
+        let reader = ChannelBookmarksNavReader::fixed_with_members(
+            vec![(room, "General".into())],
+            vec![(asha, "Asha".into())],
+        );
+        let user = Uuid::from_u128(0x9e50_c);
+        global_nav_focus().focus(user, asha.to_string(), NavTargetKind::Persona);
+        let snap = reader.nav_snapshot(user);
+        assert_eq!(snap.current, Some(asha.to_string()));
+        let persona_tab = snap
+            .activities
+            .iter()
+            .find(|a| a.kind == NavTargetKind::Persona)
+            .expect("persona tab surfaced");
+        assert_eq!(persona_tab.title, "Asha", "title from the member fold");
+        assert_eq!(persona_tab.purpose, "persona");
+        assert_eq!(persona_tab.unread, 0);
+        // The room tab is still there — a persona tab ADDS, never displaces.
+        assert!(snap.activities.iter().any(|a| a.kind == NavTargetKind::Room));
+    }
+
+    // what this catches: a persona focus whose name the fold hasn't observed
+    // yet gets the honest short-id label — same discipline as an unnamed room,
+    // never an invisible or fabricated title.
+    #[test]
+    fn unnamed_persona_focus_gets_short_id_label() {
+        let room = Uuid::from_u128(0x9e51_a);
+        let stranger = Uuid::from_u128(0x9e51_b);
+        let reader = ChannelBookmarksNavReader::fixed(vec![(room, "General".into())]);
+        let user = Uuid::from_u128(0x9e51_c);
+        global_nav_focus().focus(user, stranger.to_string(), NavTargetKind::Persona);
+        let snap = reader.nav_snapshot(user);
+        let tab = snap
+            .activities
+            .iter()
+            .find(|a| a.kind == NavTargetKind::Persona)
+            .expect("persona tab surfaced");
+        assert_eq!(tab.title, stranger.to_string().chars().take(8).collect::<String>());
     }
 
     // what this catches: a room the fold has seen but presence hasn't named
