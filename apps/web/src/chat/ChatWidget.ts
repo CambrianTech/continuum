@@ -1045,9 +1045,21 @@ export class ChatWidget extends LitElement {
     .member .info {
       display: flex;
       flex-direction: column;
-      gap: 2px;
+      gap: 1px;
       min-width: 0;
-      flex: 1;
+    }
+    /* Identity line — kind/runtime chips and the model loadout share ONE row
+       (they were two stacked rows; the tile's height budget goes to live data). */
+    .member .idline {
+      display: flex;
+      align-items: baseline;
+      gap: var(--spacing-sm);
+      min-width: 0;
+    }
+    .member .idline .loadout {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .member .name {
       font-size: 14px;
@@ -1108,9 +1120,11 @@ export class ChatWidget extends LitElement {
 
     /* --- Vital meters: the legacy INT/NRG/QUE stack, live ------------------ */
     .meters {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
+      /* 2×2 grid — four live bars in two rows, half the vertical spend of the
+         stacked column, no data dropped. */
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 2px var(--spacing-sm);
       margin-top: 2px;
     }
     .meter {

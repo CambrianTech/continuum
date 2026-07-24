@@ -412,11 +412,13 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
       </span>
       <span class="info">
         <span class="name">${m.name}</span>
-        <span class="meta">
-          <span class="kind-badge">${kindLabel(m.kind)}</span>
-          ${runtimeBadge(m.runtime)}
+        <span class="idline">
+          <span class="meta">
+            <span class="kind-badge">${kindLabel(m.kind)}</span>
+            ${runtimeBadge(m.runtime)}
+          </span>
+          ${loadoutStrip(m.loadout)}
         </span>
-        ${loadoutStrip(m.loadout)}
         ${personaReadout(m.vitals)}
       </span>
       ${hasVitals ? genomePanel(m.vitals, m.genes ?? []) : nothing}
@@ -447,11 +449,13 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
       </span>
       <span class="info">
         <span class="name">${cell.title}</span>
-        <span class="meta">
-          <span class="kind-badge">${kind}</span>
-          ${runtimeBadge(runtime)}
+        <span class="idline">
+          <span class="meta">
+            <span class="kind-badge">${kind}</span>
+            ${runtimeBadge(runtime)}
+          </span>
+          ${loadoutStrip(cell.loadout)}
         </span>
-        ${loadoutStrip(cell.loadout)}
         ${cell.meters ? personaReadout(cell.meters) : nothing}
       </span>
       ${cell.meters ? genomePanel(cell.meters, cell.genes ?? []) : nothing}
