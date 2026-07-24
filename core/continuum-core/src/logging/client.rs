@@ -5,7 +5,15 @@
 use super::{LogLevel, WriteLogPayload};
 use serde::{Deserialize, Serialize};
 use std::io::{BufWriter, Write};
+// The logger worker is a Unix-socket sidecar. On Windows there is no
+// Unix-domain socket; alias to TcpStream so this client compiles unchanged.
+// `connect()` to the worker's filesystem-path socket then fails gracefully at
+// runtime. BEHAVIORAL GAP: the remote logger sink is unavailable on Windows
+// (in-process tracing still works) until a TCP endpoint is wired.
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(windows)]
+use std::net::TcpStream as UnixStream;
 use std::sync::mpsc;
 
 /// Channel capacity — if this many messages are queued, new ones are silently dropped.

@@ -7,9 +7,15 @@
 // muzzy_decay_ms=2000 (return muzzy pages after 2s instead of default 10s).
 // On a 32GB machine with 15 bursty personas, the default 10s window accumulates
 // 3-5GB of "owned unmapped memory" that inflates RSS.
+// Gated off windows-msvc: jemalloc-sys's autotools `configure` can't build
+// there, so Windows uses the system allocator. jemalloc stays on the
+// Linux/macOS serving nodes where the Bevy/persona fragmentation above bites
+// (Windows here is a dev/serving-via-Docker host, not the fragmentation case).
+#[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(not(target_env = "msvc"))]
 #[allow(non_upper_case_globals)]
 #[unsafe(export_name = "malloc_conf")]
 pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:2000\0";
@@ -55,31 +61,86 @@ use tracing::info;
 /// The `Drop` impls remain correct for normal lifetime — model unload,
 /// context swap, etc. We're only short-circuiting the process-exit path.
 fn install_shutdown_handlers() {
-    // SIGTERM (from npm stop / kill / system-stop.sh)
-    tokio::spawn(async {
-        if let Ok(mut sig) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            sig.recv().await;
-            eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
-            continuum_core::modules::sentinel::shutdown_all_sentinels();
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            unsafe { libc::_exit(0) };
-        }
-    });
+    // Unix: SIGTERM (npm stop / kill / system-stop.sh) + SIGINT (Ctrl+C).
+    // Windows has neither as a POSIX signal — its shutdown edges are Ctrl+C,
+    // console-window close (the WM_CLOSE that `taskkill` and the npm-stop path
+    // deliver), and system shutdown/logoff, exposed via tokio::signal::windows.
+    // Both platforms get identical treatment: tear down sentinel process groups,
+    // then fast-`_exit` to skip llama.cpp's C++ static destructors (see the
+    // double-free note above). `libc::_exit` exists on windows-msvc too.
+    #[cfg(unix)]
+    {
+        // SIGTERM (from npm stop / kill / system-stop.sh)
+        tokio::spawn(async {
+            if let Ok(mut sig) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            {
+                sig.recv().await;
+                eprintln!("[continuum-core] SIGTERM — killing sentinel process groups");
+                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                unsafe { libc::_exit(0) };
+            }
+        });
 
-    // SIGINT (Ctrl+C)
-    tokio::spawn(async {
-        if let Ok(mut sig) =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        {
-            sig.recv().await;
-            eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
+        // SIGINT (Ctrl+C)
+        tokio::spawn(async {
+            if let Ok(mut sig) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            {
+                sig.recv().await;
+                eprintln!("[continuum-core] SIGINT — killing sentinel process groups");
+                continuum_core::modules::sentinel::shutdown_all_sentinels();
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                unsafe { libc::_exit(0) };
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        tokio::spawn(async {
+            // Ctrl+C is the required edge; console-close + system-shutdown are
+            // best-effort (a failed install parks that arm forever so select!
+            // still waits on the others).
+            let mut ctrl_c = match tokio::signal::windows::ctrl_c() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[continuum-core] could not install Ctrl+C handler: {e}");
+                    return;
+                }
+            };
+            let mut ctrl_close = tokio::signal::windows::ctrl_close().ok();
+            let mut ctrl_shutdown = tokio::signal::windows::ctrl_shutdown().ok();
+
+            let close_fut = async {
+                match ctrl_close.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let shutdown_fut = async {
+                match ctrl_shutdown.as_mut() {
+                    Some(s) => {
+                        s.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+
+            tokio::select! {
+                _ = ctrl_c.recv() => {}
+                _ = close_fut => {}
+                _ = shutdown_fut => {}
+            }
+            eprintln!("[continuum-core] shutdown signal — killing sentinel process groups");
             continuum_core::modules::sentinel::shutdown_all_sentinels();
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             unsafe { libc::_exit(0) };
-        }
-    });
+        });
+    }
 }
 
 /// Short human-readable description of each `BootMode` — surfaces
@@ -97,9 +158,7 @@ fn register_bevy_reporter(
         Some(b) => b,
         None => {
             // Ready edge fired but renderer absent — race during shutdown.
-            tracing::warn!(
-                "🧠 Bevy ready edge fired but try_get returned None; skipping reporter"
-            );
+            tracing::warn!("🧠 Bevy ready edge fired but try_get returned None; skipping reporter");
             return;
         }
     };
@@ -159,7 +218,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Use println so it appears even when RUST_LOG filters out
         // info-level tracing events — the operator who just set the
         // env var SHOULD see this confirmation.
-        eprintln!("[continuum-core-server] probes landing at {}", path.display());
+        eprintln!(
+            "[continuum-core-server] probes landing at {}",
+            path.display()
+        );
     }
     // Per `[[never-redirect-substrate-stderr]]`: the substrate now
     // owns its tracing fmt-layer log persistence via a rolling-file
@@ -225,7 +287,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  -h, --help       Print this help and exit");
                 println!();
                 println!("Modes:");
-                println!("  full-citizen     (default) hosts personas via AIRC; requires AIRC Healthy");
+                println!(
+                    "  full-citizen     (default) hosts personas via AIRC; requires AIRC Healthy"
+                );
                 println!("  inference-only   no persona hosting; allows degraded AIRC");
                 println!("  fail-fast        strictest; refuses any degraded capability");
                 std::process::exit(0);
@@ -244,7 +308,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");
-    info!("   Boot mode:  {} ({})", boot_mode.label(), boot_mode_description(boot_mode));
+    info!(
+        "   Boot mode:  {} ({})",
+        boot_mode.label(),
+        boot_mode_description(boot_mode)
+    );
 
     // Create LiveKit agent manager — routes audio/video through LiveKit WebRTC SFU.
     // Handles speak-in-call, inject-audio, ambient, and video track publishing.
@@ -272,10 +340,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "🧠 Initializing Hippocampus (lexical bootstrap embedder; per-persona recall \
          resolves neural on spawn) — no gateway probe on the boot path"
     );
-    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
-        Arc::new(continuum_core::cognition::embedding::CachingEmbeddingProvider::new(
-            Arc::new(continuum_core::cognition::embedding::LexicalEmbedder::new()),
-        ));
+    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> = Arc::new(
+        continuum_core::cognition::embedding::CachingEmbeddingProvider::new(Arc::new(
+            continuum_core::cognition::embedding::LexicalEmbedder::new(),
+        )),
+    );
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
     // Capture tokio runtime handle for async operations from IPC thread
@@ -389,7 +458,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
-    if tokio::time::timeout(boot_deadline, wait_ready).await.is_err() {
+    if tokio::time::timeout(boot_deadline, wait_ready)
+        .await
+        .is_err()
+    {
         // eprintln! alongside tracing: libc::_exit(1) skips the async appender
         // flush, so the raw stderr write is what the operator/service log sees.
         let m = format!(

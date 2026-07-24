@@ -48,6 +48,10 @@ use crate::{log_debug, log_error, log_info};
 use dashmap::DashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+// Unix-domain socket is the primary IPC transport on Unix. On Windows there is
+// no Unix socket; the server binds ONLY the TCP loopback listener (below) and
+// local callers connect over TCP. These imports are Unix-only.
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -79,6 +83,7 @@ trait IpcStream: Read + Write + Send + Sized + 'static {
     fn peer_addr_str(&self) -> String;
 }
 
+#[cfg(unix)]
 impl IpcStream for UnixStream {
     fn try_clone_stream(&self) -> std::io::Result<Self> {
         self.try_clone()
@@ -2543,6 +2548,10 @@ pub fn start_server(
         let _ = tx.send(Arc::clone(&executor));
     }
 
+    // Unix: bind the primary Unix-domain socket. On Windows this is skipped
+    // entirely — the server's primary IPC is the TCP loopback listener in the
+    // accept section below (Windows has no Unix-domain sockets).
+    #[cfg(unix)]
     let listener = UnixListener::bind(socket_path)?;
     // Make the socket world-rw so callers running under a different UID
     // than the server can connect. Concrete failure (#1008): on Windows
@@ -2556,6 +2565,7 @@ pub fn start_server(
     // would suppress the error; let it propagate) is intentional per
     // the global "evidence is for the debugger" rule. Caught live by
     // continuum-b69f 2026-05-02 during Carl-OOTB Windows Phase 4.
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
@@ -2618,6 +2628,12 @@ pub fn start_server(
     // handshake for the TCP listener (and/or a sub-Provisional read-only ceiling)
     // before relying on a non-loopback bind — pairs with the airc↔grid per-peer
     // trust bridge. Until then: do NOT bind 0.0.0.0 on an untrusted network.
+    //
+    // Unix-only: this is the containerized-node-server-on-Mac path (Docker VM
+    // boundary crossing). On Windows the TCP listener is the PRIMARY IPC (bound
+    // in the accept section below), so gating this here prevents a double-bind
+    // of CONTINUUM_CORE_TCP.
+    #[cfg(unix)]
     if let Ok(tcp_port_str) = std::env::var("CONTINUUM_CORE_TCP") {
         if let Ok(port) = tcp_port_str.parse::<u16>() {
             if port > 0 {
@@ -2945,14 +2961,17 @@ pub fn start_server(
         }
     });
 
-    // Accept connections (event-driven - sleeps until connection)
+    // Accept connections (event-driven - sleeps until connection).
+    //
+    // Unix: block on the Unix-domain socket accept loop. Unix socket = LOCAL
+    // caller (the operator on the box) → None = owner-by-locality.
+    #[cfg(unix)]
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let state = state.clone();
 
-                // Spawn thread for concurrent handling. Unix socket = LOCAL caller
-                // (the operator on the box) → None = owner-by-locality.
+                // Spawn thread for concurrent handling.
                 std::thread::spawn(move || {
                     if let Err(e) = handle_client(stream, state, None) {
                         log_error!("ipc", "server", "Client error: {}", e);
@@ -2961,6 +2980,48 @@ pub fn start_server(
             }
             Err(e) => {
                 log_error!("ipc", "server", "Connection error: {}", e);
+            }
+        }
+    }
+
+    // Windows: no Unix-domain sockets. Bind a TCP loopback listener as the
+    // PRIMARY IPC and block on its accept loop. Loopback == the local operator,
+    // so callers are stamped `None` (owner-by-locality), mirroring the Unix
+    // socket's trust semantics — local jtag/SDK clients connect over
+    // 127.0.0.1:<port> and retain owner privileges. Host from CONTINUUM_CORE_BIND
+    // (default 127.0.0.1 — loopback only), port from CONTINUUM_CORE_TCP
+    // (default 9100). BEHAVIORAL NOTE: local Windows clients must connect over
+    // this TCP port instead of a Unix socket path.
+    #[cfg(windows)]
+    {
+        let bind_host =
+            std::env::var("CONTINUUM_CORE_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port: u16 = std::env::var("CONTINUUM_CORE_TCP")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .filter(|p| *p > 0)
+            .unwrap_or(9100);
+        let bind_addr = format!("{bind_host}:{port}");
+        let listener = TcpListener::bind(&bind_addr)?;
+        log_info!(
+            "ipc",
+            "server",
+            "IPC server ready on TCP {} (Windows primary transport — no Unix-domain sockets)",
+            bind_addr
+        );
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let state = state.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = handle_client(stream, state, None) {
+                            log_error!("ipc", "server", "Client error: {}", e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    log_error!("ipc", "server", "Connection error: {}", e);
+                }
             }
         }
     }

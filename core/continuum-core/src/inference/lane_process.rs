@@ -18,6 +18,7 @@
 /// True if `pid` names a live process. `kill(pid, 0)` sends no signal: `0` = alive
 /// and ours; `EPERM` = alive but owned by another user (still alive); `ESRCH` =
 /// gone.
+#[cfg(unix)]
 pub fn is_alive(pid: u32) -> bool {
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
@@ -29,11 +30,33 @@ pub fn is_alive(pid: u32) -> bool {
     )
 }
 
+/// Windows: no `kill(pid, 0)`. Query the task table — a matching row means the
+/// pid is live. `tasklist` failing (unavailable / no permission) is treated as
+/// "not alive", matching the Unix path's conservative-on-error stance.
+#[cfg(windows)]
+pub fn is_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
+}
+
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
+#[cfg(unix)]
 pub fn kill9(pid: u32) {
     unsafe {
         let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
+}
+
+/// Windows: force-terminate the process (and its child tree) via `taskkill`.
+/// There is no SIGKILL; `/F /T` is the nearest equivalent. Best-effort.
+#[cfg(windows)]
+pub fn kill9(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
 }
 
 /// The command name (basename) of `pid` via `ps -p <pid> -o comm=`. `None` if the
