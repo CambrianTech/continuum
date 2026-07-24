@@ -85,4 +85,15 @@ vitals: Record<string, number>,
  * human, an unresolved agent) carries `None`. `#[serde(default)]` so a
  * slot serialized before this field folds as absent, never dropped.
  */
-loadout?: Loadout, };
+loadout?: Loadout, 
+/**
+ * URL of this member's avatar IMAGE, when the producing node has one
+ * stored (`~/.continuum/avatars/<peer-id>.png`, served under
+ * `/avatars/…` by the client's static tier). Neutral like every other
+ * slot field: positron transports the URL, never the pixels, and never
+ * interprets it. `None` = no stored avatar — the renderer draws its
+ * glyph fallback, never a broken image or a fabricated face
+ * ([[fallbacks-are-illegal-fail-loud]]). `#[serde(default)]` so a slot
+ * serialized before this field folds as absent, never dropped.
+ */
+avatar_url?: string, };

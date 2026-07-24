@@ -182,17 +182,23 @@ export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateR
   </svg>`;
 }
 
-/** Genome bars — the persona's loaded LoRA genes as filled segments. Nothing when running
- *  the base model (honest — not a fabricated 0% bar). */
+/** Genome bars — the persona's loaded LoRA genes as filled segments, framed with the
+ *  reference tile's GENOME caption + a lit/total count so the block reads as a labelled
+ *  instrument, not anonymous dots. Nothing when running the base model (honest — not a
+ *  fabricated 0% bar). */
 export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
   const g = v.genome;
   if (g === undefined || g <= 0) return nothing;
   const filled = Math.max(1, Math.round((Math.min(100, g) / 100) * 6));
-  return html`<span class="genome" title="genome ${Math.round(g)}%">
-    ${Array.from(
-      { length: 6 },
-      (_, i) => html`<span class="gene ${i < filled ? 'on' : ''} ${i % 3 === 2 ? 'hot' : ''}"></span>`,
-    )}
+  return html`<span class="genome-wrap" title="genome ${Math.round(g)}%">
+    <span class="genome-label">GENOME</span>
+    <span class="genome">
+      ${Array.from(
+        { length: 6 },
+        (_, i) => html`<span class="gene ${i < filled ? 'on' : ''} ${i % 3 === 2 ? 'hot' : ''}"></span>`,
+      )}
+    </span>
+    <span class="genome-count">${filled}/6</span>
   </span>`;
 }
 
@@ -306,6 +312,17 @@ function agoStamp(lastActiveMs: number | undefined): TemplateResult | typeof not
     : html`<span class="ago" title="last active">${label}</span>`;
 }
 
+/** The avatar IMAGE layered over the glyph — the glyph stays underneath as the
+ *  fallback, and a load failure simply removes the image (never a broken-image
+ *  box, never a fabricated face). Absent url → nothing rendered. */
+function avatarImage(url: string | undefined): TemplateResult | typeof nothing {
+  if (!url) return nothing;
+  const hide = (e: Event): void => {
+    (e.currentTarget as HTMLElement).remove();
+  };
+  return html`<img class="avatar-img" src=${url} alt="" @error=${hide} />`;
+}
+
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
  *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
 export function memberCard(m: RosterMemberVM): TemplateResult {
@@ -315,6 +332,7 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
       ${agoStamp(m.lastSeenMs)}
       <span class="avatar" data-state=${avatarState(m.vitals, m.active)}>
         <span class="glyph">${kindGlyph(m.kind)}</span>
+        ${avatarImage(m.avatarUrl)}
         ${emojiOverlay(m.vitals)}
       </span>
       <span class="info">
@@ -348,6 +366,7 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
       ${agoStamp(cell.lastActiveMs)}
       <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
         <span class="glyph">${cell.glyph ?? ''}</span>
+        ${avatarImage(cell.image)}
         ${emojiOverlay(cell.meters ?? {})}
       </span>
       <span class="info">

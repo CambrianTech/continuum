@@ -302,6 +302,10 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // `store` time. `None` here = no bound model reported (a human, an
         // unresolved agent) — honest-absent, never a fabricated model.
         loadout: None,
+        // The avatar IMAGE is a node-local disk fact the presence EMITTER
+        // enriches (it owns the store scan); this shared projection stays
+        // pure — no I/O here, absent by default.
+        avatar_url: None,
     }
 }
 
@@ -337,6 +341,7 @@ pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> Ro
         last_seen_ms: 0,
         vitals: BTreeMap::new(),
         loadout: None,
+        avatar_url: None,
     }
 }
 

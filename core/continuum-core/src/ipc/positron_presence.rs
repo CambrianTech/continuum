@@ -47,6 +47,8 @@
 //! (task #70); the coarse projection stays honest by keeping the full
 //! string in provenance for anyone who needs to discriminate.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -137,10 +139,41 @@ pub(crate) fn request_presence_resync(bus: &MessageBus) {
 /// because it grounds a persona in "who is NOT me"), the widget roster
 /// shows **every** present member including self — a chat roster you are
 /// absent from would be wrong. Every member airc returns becomes a slot.
+/// The node's avatar-image store: `~/.continuum/avatars/<peer-id>.png`. The
+/// presence emitter is the ONE place this disk fact meets the wire — the
+/// shared [`roster_slot_from_member`] projection stays pure (no I/O), and the
+/// persona-grounding rail (which has no use for pixels) never pays for it.
+fn avatar_store_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".continuum").join("avatars"))
+}
+
+/// Scan the avatar store once: every `<uuid>.png` becomes `peer id →
+/// "/avatars/<uuid>.png"` (the URL path the client's static tier serves).
+/// Non-uuid names (named art, emote sets, subdirs) are not member avatars and
+/// are skipped. A missing/unreadable store is the honest empty map — members
+/// simply carry no `avatar_url`, never a fabricated one.
+fn scan_avatar_store(dir: &Path) -> HashMap<Uuid, String> {
+    let mut map = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return map;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(stem) = name.strip_suffix(".png") {
+            if let Ok(id) = Uuid::parse_str(stem) {
+                map.insert(id, format!("/avatars/{name}"));
+            }
+        }
+    }
+    map
+}
+
 pub(crate) fn project_presence(
     members: Vec<RoomMember>,
     room_id: Uuid,
     room_name: String,
+    avatars: &HashMap<Uuid, String>,
 ) -> AircPresenceUpdate {
     // ONE projection for both rails — the WS widget roster and the persona's
     // grounding roster are the same neutral `RosterSlotView`, built here by
@@ -152,7 +185,16 @@ pub(crate) fn project_presence(
     // present member including self — a chat roster you are absent from would
     // be wrong. Self-exclusion is the persona source's own post-projection
     // policy, never baked into the shared projection.
-    let roster = members.iter().map(roster_slot_from_member).collect();
+    let roster = members
+        .iter()
+        .map(|m| {
+            let mut slot = roster_slot_from_member(m);
+            // Enrich with the node's stored avatar image, when one exists for
+            // this peer — the URL only; absent stays honestly absent.
+            slot.avatar_url = avatars.get(&slot.member_id).cloned();
+            slot
+        })
+        .collect();
     AircPresenceUpdate {
         room_id,
         room_name,
@@ -197,6 +239,13 @@ async fn run_presence_loop(
     let mut ticker = tokio::time::interval(EMIT_INTERVAL);
     let mut rx = bus.receiver();
     let mut last_published: Option<AircPresenceUpdate> = None;
+    // The avatar store map, refreshed off-task (spawn_blocking — disk I/O never
+    // rides the async tick, CONCURRENCY-STYLE-GUIDE) on a slow cadence: presence
+    // is 2s, avatar files change on human timescales. Refreshed every
+    // AVATAR_RESCAN_TICKS ticks and on a resync cue.
+    const AVATAR_RESCAN_TICKS: u32 = 15;
+    let mut avatars: HashMap<Uuid, String> = HashMap::new();
+    let mut ticks_until_rescan: u32 = 0;
     // Once the bus closes (all senders dropped — process teardown) no
     // consumer is left to cue us; disable the resync arm so the select does
     // not busy-loop on `Closed`, and keep ticking (the emitter still owns
@@ -205,8 +254,14 @@ async fn run_presence_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                if ticks_until_rescan == 0 {
+                    ticks_until_rescan = AVATAR_RESCAN_TICKS;
+                    avatars = rescan_avatars().await;
+                } else {
+                    ticks_until_rescan -= 1;
+                }
                 // Idle re-read: publish only on a real change (dedup).
-                emit_once(&reader, room_id, &room_name, &bus, &mut last_published, false).await;
+                emit_once(&reader, room_id, &room_name, &bus, &mut last_published, &avatars, false).await;
             }
             recv = rx.recv(), if bus_open => match recv {
                 // A booting/reconnecting presence CONSUMER demands the
@@ -215,7 +270,9 @@ async fn run_presence_loop(
                 // (re)started after our last publish would otherwise hold a
                 // roster-empty view until the roster next changed.
                 Ok(event) if event.name == PRESENCE_RESYNC => {
-                    emit_once(&reader, room_id, &room_name, &bus, &mut last_published, true).await;
+                    avatars = rescan_avatars().await;
+                    ticks_until_rescan = AVATAR_RESCAN_TICKS;
+                    emit_once(&reader, room_id, &room_name, &bus, &mut last_published, &avatars, true).await;
                 }
                 // Any other bus traffic is not ours — ignore.
                 Ok(_) => {}
@@ -243,12 +300,30 @@ async fn run_presence_loop(
 /// the roster empty). This is resilience, not a fallback: no fabricated
 /// data is ever substituted; the emitter simply waits for the next good
 /// read.
+/// Refresh the avatar-store map off the async tick (`spawn_blocking` — a
+/// read_dir is disk I/O, CONCURRENCY-STYLE-GUIDE). A join failure (worker
+/// panic/cancel) keeps the empty map — honest absence, logged, never a crash
+/// of the presence loop.
+async fn rescan_avatars() -> HashMap<Uuid, String> {
+    let Some(dir) = avatar_store_dir() else {
+        return HashMap::new();
+    };
+    match tokio::task::spawn_blocking(move || scan_avatar_store(&dir)).await {
+        Ok(map) => map,
+        Err(err) => {
+            tracing::warn!(error = %err, "positron_presence: avatar store scan failed — no avatar urls this round");
+            HashMap::new()
+        }
+    }
+}
+
 async fn emit_once(
     reader: &Arc<dyn AircRosterReader>,
     room_id: Uuid,
     room_name: &str,
     bus: &MessageBus,
     last_published: &mut Option<AircPresenceUpdate>,
+    avatars: &HashMap<Uuid, String>,
     force: bool,
 ) {
     let members = match reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
@@ -262,7 +337,7 @@ async fn emit_once(
             return;
         }
     };
-    let update = project_presence(members, room_id, room_name.to_string());
+    let update = project_presence(members, room_id, room_name.to_string(), avatars);
     if !force && last_published.as_ref() == Some(&update) {
         return;
     }
@@ -428,6 +503,7 @@ mod tests {
             ],
             Uuid::from_u128(0xa),
             "general".into(),
+            &HashMap::new(),
         );
         assert_eq!(update.roster.len(), 3, "every present member is a slot");
 
@@ -462,6 +538,53 @@ mod tests {
         assert_eq!(carbon.provenance.runtime, "interactive");
     }
 
+    // what this catches: the avatar-image enrichment — a peer with a stored
+    // `<uuid>.png` carries its URL on the slot, everyone else stays honestly
+    // absent (glyph fallback, never a broken image). And the store scan maps
+    // ONLY uuid-named .png files — named art / emote subdirs are not member
+    // avatars and must not leak onto arbitrary slots.
+    #[test]
+    fn avatar_url_enriches_only_members_with_a_stored_image() {
+        let pictured = PeerId::new();
+        let plain = PeerId::new();
+        let mut avatars = HashMap::new();
+        avatars.insert(
+            pictured.as_uuid(),
+            format!("/avatars/{}.png", pictured.as_uuid()),
+        );
+        let update = project_presence(
+            vec![
+                member(pictured, "claude", Some("win-claude")),
+                member(plain, "codex", None),
+            ],
+            Uuid::from_u128(0xd),
+            "general".into(),
+            &avatars,
+        );
+        assert_eq!(
+            update.roster[0].avatar_url.as_deref(),
+            Some(format!("/avatars/{}.png", pictured.as_uuid()).as_str()),
+            "a stored avatar rides the slot as its URL"
+        );
+        assert_eq!(
+            update.roster[1].avatar_url, None,
+            "no stored image → honest absent, never a fabricated face"
+        );
+
+        // The store scan: uuid-named .png only.
+        let dir = std::env::temp_dir().join(format!("avatar-scan-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("mk tmp store");
+        let id = Uuid::new_v4();
+        std::fs::write(dir.join(format!("{id}.png")), b"png").expect("write");
+        std::fs::write(dir.join("asha.png"), b"png").expect("write");
+        std::fs::write(dir.join(format!("{id}-happy.png")), b"png").expect("write");
+        std::fs::create_dir_all(dir.join("emote")).expect("subdir");
+        let map = scan_avatar_store(&dir);
+        assert_eq!(map.len(), 1, "only exact <uuid>.png names are member avatars");
+        assert_eq!(map.get(&id).map(String::as_str), Some(format!("/avatars/{id}.png").as_str()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // what this catches: the widget roster must include self — unlike the
     // persona-grounding roster (which drops self). A regression that
     // copied the self-exclusion here would erase the local user from
@@ -473,6 +596,7 @@ mod tests {
             vec![member(me, "interactive", Some("Joel"))],
             Uuid::from_u128(0xb),
             "general".into(),
+            &HashMap::new(),
         );
         assert_eq!(update.roster.len(), 1);
         assert_eq!(update.roster[0].member_id, me.as_uuid());
@@ -489,6 +613,7 @@ mod tests {
             vec![member(PeerId::new(), "claude", Some("win-claude"))],
             Uuid::from_u128(0xc),
             "general".into(),
+            &HashMap::new(),
         );
         let json = serde_json::to_value(&update).expect("serializes");
         let back: AircPresenceUpdate = serde_json::from_value(json).expect("round-trips");
@@ -512,19 +637,19 @@ mod tests {
         let mut last = None;
 
         // First idle emit publishes (roster changed None → Some).
-        emit_once(&reader, room, "general", &bus, &mut last, false).await;
+        emit_once(&reader, room, "general", &bus, &mut last, &HashMap::new(), false).await;
         let first = rx.try_recv().expect("first emit publishes presence:updated");
         assert_eq!(first.name, PRESENCE_UPDATED);
 
         // Second idle emit dedups — nothing published.
-        emit_once(&reader, room, "general", &bus, &mut last, false).await;
+        emit_once(&reader, room, "general", &bus, &mut last, &HashMap::new(), false).await;
         assert!(
             rx.try_recv().is_err(),
             "an unchanged roster dedups on the idle path"
         );
 
         // A resync cue forces a re-publish of the unchanged roster.
-        emit_once(&reader, room, "general", &bus, &mut last, true).await;
+        emit_once(&reader, room, "general", &bus, &mut last, &HashMap::new(), true).await;
         let forced = rx
             .try_recv()
             .expect("a resync forces a re-publish even when the roster is unchanged");

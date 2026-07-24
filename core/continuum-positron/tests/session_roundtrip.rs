@@ -97,6 +97,7 @@ fn build_chat_state(content: &str) -> ChatViewState {
             last_seen_ms: 1_700_000_000_000,
             vitals: BTreeMap::new(),
             loadout: None,
+            avatar_url: None,
         }],
     }
 }

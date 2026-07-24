@@ -60,6 +60,10 @@ export interface RosterMemberVM {
    *  presence). `0` = unreported; the card draws no recency stamp then, never a
    *  fabricated one. The renderer formats the idiom (`"55m ago"`). */
   readonly lastSeenMs: number;
+  /** URL of this member's stored avatar image (`/avatars/<peer-id>.png`),
+   *  when the producing node has one. Absent = the card draws its kind
+   *  glyph — honest fallback, never a broken image. */
+  readonly avatarUrl?: string;
 }
 
 /** One conversation row — "what was said". */
@@ -146,6 +150,8 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     // An older core omitting the field reads as 0 = unreported (no stamp drawn).
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     lastSeenMs: slot.last_seen_ms ?? 0,
+    // Additive field: the node's stored avatar image URL — absent = glyph fallback.
+    ...(slot.avatar_url ? { avatarUrl: slot.avatar_url } : {}),
   };
 }
 

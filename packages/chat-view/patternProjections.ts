@@ -52,6 +52,7 @@ function rosterCell(m: RosterMemberVM): ListingCell {
   if (Object.keys(m.vitals).length > 0) cell = { ...cell, meters: m.vitals };
   if (m.loadout) cell = { ...cell, loadout: m.loadout };
   if (m.lastSeenMs > 0) cell = { ...cell, lastActiveMs: m.lastSeenMs };
+  if (m.avatarUrl) cell = { ...cell, image: m.avatarUrl };
   return cell;
 }
 

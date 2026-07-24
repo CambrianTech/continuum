@@ -39,6 +39,12 @@ export interface ListingCell {
   readonly subtitle?: string;
   /** Optional leading glyph — an emoji/icon token (the avatar in a people listing). */
   readonly glyph?: string;
+  /** Optional avatar/thumbnail IMAGE URL (or data URI) for this item — a persona's
+   *  stored portrait, a model's card art. The glyph remains the fallback a target
+   *  draws when the image is absent or fails to load — honest-absent, never a
+   *  broken-image box ([[fallbacks-are-illegal-fail-loud]] applies to fabrication,
+   *  not to degrading to the glyph the cell already carries). */
+  readonly image?: string;
   /** Optional short tags (kind, runtime, provider) — the target styles them. */
   readonly badges?: readonly string[];
   /** Optional presence/liveness; `'none'` draws no status indicator. */

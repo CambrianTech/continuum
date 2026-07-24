@@ -581,6 +581,16 @@ export class ChatWidget extends LitElement {
     .member .avatar[data-state='idle'] {
       opacity: 0.7;
     }
+    /* The avatar IMAGE — layered over the glyph (which stays as fallback under a
+       failed load); clipped to the ring. */
+    .avatar-img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      object-fit: cover;
+    }
     /* Emotional-event emoji, over the avatar. */
     .emoji-overlay {
       position: absolute;
@@ -790,10 +800,10 @@ export class ChatWidget extends LitElement {
     .cog-cluster {
       display: flex;
       align-items: center;
-      gap: 7px;
+      gap: 4px;
       flex: none;
       margin-left: auto;
-      padding-left: 8px;
+      padding-left: 4px;
     }
     /* Cognition diamond — four triangles pointing out like a compass (Focus N / Reason E /
        Recall S / Act W), each lit by its faculty value; the SHAPE is the mind that instant. */
@@ -807,17 +817,42 @@ export class ChatWidget extends LitElement {
     .cog-tri {
       filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.25));
     }
+    /* Genome — the labelled instrument block: GENOME caption over the gene cells +
+       a lit/total count, the reference tile's segmented panel. */
+    .genome-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      flex: none;
+      padding: 2px 3px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: rgba(0, 212, 255, 0.04);
+    }
+    .genome-label {
+      font-family: var(--font-mono);
+      font-size: 5.5px;
+      letter-spacing: 0.12em;
+      color: var(--content-secondary);
+    }
+    .genome-count {
+      font-family: var(--font-mono);
+      font-size: 6.5px;
+      color: var(--content-accent);
+      font-variant-numeric: tabular-nums;
+    }
     /* Genome — a compact 2-column chip of tiny gene cells (base model shows an empty chip). */
     .genome {
       display: grid;
-      grid-template-columns: repeat(2, 5px);
-      grid-auto-rows: 5px;
+      grid-template-columns: repeat(2, 4px);
+      grid-auto-rows: 4px;
       gap: 2px;
       flex: none;
     }
     .gene {
-      width: 5px;
-      height: 5px;
+      width: 4px;
+      height: 4px;
       border-radius: 1px;
       background: var(--border-subtle);
     }
