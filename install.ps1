@@ -1,276 +1,107 @@
-# install.ps1 -- Continuum installer for Windows.
+# install.ps1 -- Continuum native installer for Windows.
 #
-# Usage (from any PowerShell prompt, including the default Windows
-# PowerShell 5.1 -- pwsh 7 is bootstrapped if needed):
+# ONE approach, every platform: provision the toolchain (modular, idempotent,
+# ONE prompt, auto-updating) -> build native -> run. This is the Windows shim of
+# the same contract Unix implements in tools/scripts/install.sh. Re-running picks
+# up new/updated deps; it asks for elevation AT MOST ONCE (via gsudo's credential
+# cache -- the Windows twin of ensure_sudo_warmed). See
+# docs/infrastructure/INSTALL-ARCHITECTURE.md.
 #
+# Usage:
+#   # Remote one-liner (bootstraps: clones the repo, then builds native):
 #   irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
 #
-# Or with options:
-#   $env:CONTINUUM_MODE = 'browser'   # 'browser' (default) | 'cli' | 'headless'
-#   irm ... | iex
+#   # From a checkout:
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1          # local-only
+#   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Grid    # + GitHub login for grid
 #
-# COUNTERPART: install.sh. Any change to one needs a matching change in
-# the other or the platforms diverge. The actual install body lives in
-# bootstrap.sh; only platform-specific prereq install + Docker Desktop
-# settings paths differ between this entry and the counterpart.
-# See docs/INSTALL-ARCHITECTURE.md for the full design.
+# Docker remains available as a RUNTIME for grid nodes (docker compose up); it is
+# NOT a second install path. COUNTERPART: tools/scripts/install.sh (Unix). A
+# change to the install CONTRACT belongs in both.
+
+[CmdletBinding()]
+param(
+    [switch]$Grid
+)
 
 $ErrorActionPreference = 'Stop'
 
-$Mode = if ($env:CONTINUUM_MODE) { $env:CONTINUUM_MODE } else { 'browser' }
-
-function Write-Step($msg)  { Write-Host "  -> $msg" }
-function Write-Ok($msg)    { Write-Host "  + $msg" -ForegroundColor Green }
-function Write-Warn2($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
-function Write-Fail($msg)  { Write-Host "  x $msg" -ForegroundColor Red }
-
-function Update-SessionPath {
-    # winget mutates the User PATH in the registry but the current
-    # session inherits the old PATH. Pull both Machine + User PATH
-    # back from the registry so subsequent probes see freshly-
-    # installed binaries.
-    $machine = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-    $user    = [Environment]::GetEnvironmentVariable('PATH', 'User')
-    $env:PATH = "$machine;$user"
-}
-
-Write-Host ''
-Write-Host '  Continuum installer (Windows)'
-Write-Host '  -----------------------------'
-Write-Host "  Mode: $Mode"
-Write-Host ''
-
-# ── section: prereqs ────────────────────────────────────────────────────
-# Same shape as install.sh ensure_prereqs. Auto-install the missing set
-# via winget; fall through with a clear error if winget itself isn't
-# available.
-
-function Test-WingetAvailable {
+#  Bootstrap: make the remote `irm | iex` one-liner work for the native build 
+# When piped, $PSScriptRoot is empty and there is no repo yet. Inline the minimum
+# to get one (winget + git, both per-user / no admin), clone, then re-invoke the
+# cloned install.ps1 which has a real $PSScriptRoot. Mirrors the root install.sh
+# bootstrapper.
+if (-not $PSScriptRoot) {
+    Write-Host '  Continuum installer (bootstrap) -- fetching the repo for a native build ...'
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Fail 'winget not found. winget ships with App Installer (Microsoft Store).'
-        Write-Host '    Install/update App Installer from the Microsoft Store, then re-run.'
-        Write-Host '    Direct: https://www.microsoft.com/store/productId/9NBLGGH4NNS1'
+        Write-Host '  winget not found. Install App Installer from the Microsoft Store, then re-run.' -ForegroundColor Red
+        Write-Host '    https://www.microsoft.com/store/productId/9NBLGGH4NNS1'
         exit 1
     }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host '  -> Installing Git (per-user) ...'
+        & winget install --id Git.Git --exact --silent --accept-package-agreements --accept-source-agreements --scope user
+        $m = [Environment]::GetEnvironmentVariable('PATH', 'Machine'); $u = [Environment]::GetEnvironmentVariable('PATH', 'User')
+        $env:PATH = "$m;$u"
+    }
+    $target = Join-Path $env:USERPROFILE 'continuum'
+    if (-not (Test-Path (Join-Path $target '.git'))) {
+        & git clone https://github.com/CambrianTech/continuum.git $target
+    }
+    $bootArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $target 'install.ps1'))
+    if ($Grid) { $bootArgs += '-Grid' }
+    & (Get-Process -Id $PID).Path @bootArgs
+    exit $LASTEXITCODE
 }
 
-function Install-IfMissing {
-    param([string]$Name, [string]$WingetId, [scriptblock]$TestCmd)
-    if (& $TestCmd) { Write-Ok "$Name already installed"; return }
-    Write-Step "Installing $Name (winget: $WingetId) ..."
-    & winget install --id $WingetId --exact --silent `
-        --accept-package-agreements --accept-source-agreements `
-        --disable-interactivity
-    Update-SessionPath
-    if (& $TestCmd) { Write-Ok "$Name installed" }
-    else { Write-Warn2 "$Name install completed but probe still fails. Open a NEW shell to refresh PATH and re-run." }
-}
+#  From-checkout path 
+$RepoRoot = $PSScriptRoot
+$LibDir = Join-Path $RepoRoot 'tools\scripts\lib'
+. (Join-Path $LibDir 'install-common.ps1')
+. (Join-Path $LibDir 'win-modules.ps1')
+
+$WantsGrid = $Grid -or ($env:CONTINUUM_GRID -eq '1')
+
+Write-Host ''
+Write-Host '  Continuum installer (Windows, native)'
+Write-Host '  -------------------------------------'
+Write-Host "  Repo:  $RepoRoot"
+if ($WantsGrid) { Write-Host '  Grid:  yes (GitHub login)' } else { Write-Host '  Grid:  no (local-only)' }
+Write-Host ''
 
 Test-WingetAvailable
 
-# Git: needed for the continuum.cmd shim's path resolution + dev paths.
-Install-IfMissing -Name 'Git for Windows'    -WingetId 'Git.Git' `
-    -TestCmd { Get-Command git -ErrorAction SilentlyContinue }
-
-# Docker Desktop: the core runtime continuum's docker compose stack
-# depends on. winget install registers + starts the service; first run
-# may still require interactive accept on the EULA.
-Install-IfMissing -Name 'Docker Desktop'     -WingetId 'Docker.DockerDesktop' `
-    -TestCmd { Get-Command docker -ErrorAction SilentlyContinue }
-
-# WSL2 + Ubuntu: continuum's runtime is Linux (Unix sockets, Rust
-# workers, CUDA passthrough). Native Windows can't provide these.
-# Install via wsl --install which requires admin + reboot the first
-# time; subsequent runs are no-ops.
-function Install-WSL2 {
-    $wslExe = Get-Command wsl.exe -ErrorAction SilentlyContinue
-    if ($wslExe) {
-        # wsl.exe writes its --list output as UTF-16 LE; PowerShell reads
-        # as UTF-8 by default, so each character ends up interspersed with
-        # null bytes ("U`0b`0u`0n`0t`0u`0") and the regex 'Ubuntu' never
-        # matches even when Ubuntu is genuinely installed and running.
-        # Pre-fix this caused install.ps1 to false-flag WSL2 as missing
-        # and demand admin elevation on every fresh-Windows-validator run.
-        # Caught by continuum-b69f 2026-05-02 during Carl-OOTB Windows test.
-        # Strip the embedded nulls before matching.
-        $distros = (& wsl.exe --list --quiet 2>$null) -replace "`0", ""
-        $hasUbuntu = $distros | Where-Object { $_ -match 'Ubuntu' }
-        if ($hasUbuntu) { Write-Ok 'WSL2 + Ubuntu already installed'; return }
+try {
+    # Git + vendored submodules (llama.cpp, whisper.cpp) -- the native build needs
+    # them. Per-user, no elevation.
+    Install-IfMissing -Name 'Git' -WingetId 'Git.Git' `
+        -TestCmd { Get-Command git -ErrorAction SilentlyContinue } -UserScope
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        Push-Location $RepoRoot
+        try { & git submodule update --init --recursive } finally { Pop-Location }
     }
-    Write-Step 'Installing WSL2 + Ubuntu (will require admin elevation + a reboot on first install) ...'
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)
-    if (-not $isAdmin) {
-        Write-Warn2 'Not running as admin. WSL2 install needs admin -- relaunch this script in an elevated PowerShell:'
-        Write-Host  '    Start-Process pwsh -Verb runAs -ArgumentList "-Command","irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex"'
-        exit 1
-    }
-    & wsl.exe --install -d Ubuntu --no-launch
-    Write-Warn2 'WSL2 install kicked off. Reboot when prompted, then re-run this installer.'
-    exit 0
+
+    # Toolchain. Per-user tools first (rustup -- no prompt); machine-scope tools
+    # (VS Build Tools, CMake, LLVM, CUDA, gh) share the SINGLE gsudo UAC.
+    Mod-Rust
+    Mod-VSBuildTools
+    Mod-CMake
+    Mod-LLVM
+    Mod-CUDA
+    Mod-GhAuth -WantsGrid:$WantsGrid
+
+    # Build + run as the invoking user (never elevated -- keeps the cargo cache
+    # user-owned so a later non-elevated `npm start` can rebuild).
+    Mod-BuildCore -RepoRoot $RepoRoot
+    Mod-Run
 }
-Install-WSL2
-
-# ── section: docker desktop AI settings auto-toggle ─────────────────────
-# Highest-leverage friction kill. Without these toggles continuum's
-# personas run on CPU at ~10 tok/s instead of GPU at ~80-237 tok/s, OR
-# the core container can't reach Docker Model Runner at all. Write the
-# keys programmatically + bounce Docker Desktop so the user never has to
-# think about it.
-#
-# Key reference (from inspecting %APPDATA%\Docker\settings-store.json
-# on a real Docker Desktop 4.x install with both toggles set):
-#   EnableDockerAI            -- master toggle for the AI features
-#   EnableInferenceGPUVariant -- "Enable GPU-backed inference" UI toggle
-#   EnableInferenceTCP        -- "Enable host-side TCP support" UI toggle
-#   InferenceCanUseGPUVariant -- capability flag (Docker sets, we don't)
-
-function Set-DockerDesktopAISettings {
-    $settingsPath = Join-Path $env:APPDATA 'Docker\settings-store.json'
-    if (-not (Test-Path $settingsPath)) {
-        Write-Warn2 "Docker Desktop settings-store.json not found at $settingsPath."
-        Write-Warn2 "Docker Desktop hasn't run for the first time yet. Start Docker Desktop once, accept the EULA, then re-run this installer."
-        return $false
-    }
-    try {
-        $raw = Get-Content $settingsPath -Raw
-        $cfg = $raw | ConvertFrom-Json
-    } catch {
-        Write-Fail "Failed to parse $settingsPath -- skipping AI toggle. Set them manually in Docker Desktop -> Settings -> AI."
-        return $false
-    }
-    $changed = $false
-    foreach ($key in @('EnableDockerAI', 'EnableInferenceGPUVariant', 'EnableInferenceTCP')) {
-        if (-not $cfg.PSObject.Properties.Name.Contains($key) -or $cfg.$key -ne $true) {
-            $cfg | Add-Member -NotePropertyName $key -NotePropertyValue $true -Force
-            $changed = $true
-        }
-    }
-    if (-not $changed) { Write-Ok 'Docker Desktop AI settings already enabled (GPU + host TCP)'; return $true }
-    # Backup before write -- if Docker Desktop reformats the file we
-    # don't want to clobber unrecoverably.
-    Copy-Item $settingsPath "$settingsPath.continuum-bak" -Force -ErrorAction SilentlyContinue
-    ($cfg | ConvertTo-Json -Depth 20) | Set-Content -Path $settingsPath -Encoding UTF8 -NoNewline
-    Write-Ok 'Docker Desktop AI settings enabled (GPU-backed inference + host-side TCP)'
-    Write-Step 'Restarting Docker Desktop so the toggles apply ...'
-    try {
-        Get-Process 'Docker Desktop' -ErrorAction Stop | Stop-Process -Force -ErrorAction SilentlyContinue
-    } catch { }
-    Start-Sleep -Seconds 2
-    Start-Process "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
-    return $true
+finally {
+    # Always drop the cached elevation so an admin session never outlives install.
+    Clear-Elevation
 }
 
-Set-DockerDesktopAISettings | Out-Null
-
-# Wait for Docker Desktop to be ready. If it's not running yet, start
-# it and poll. Bounded wait so we never spin forever (vs setup.bat's
-# old infinite wait_loop).
-function Wait-DockerReady {
-    param([int]$TimeoutSec = 120)
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    if (-not (Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue)) {
-        Start-Process "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
-    }
-    while ((Get-Date) -lt $deadline) {
-        & docker info 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { Write-Ok 'Docker Desktop ready'; return $true }
-        Start-Sleep -Seconds 3
-    }
-    Write-Fail "Docker Desktop didn't become ready within ${TimeoutSec}s. Open it manually and retry."
-    return $false
-}
-Wait-DockerReady -TimeoutSec 180 | Out-Null
-
-# ── section: continuum CLI shim ─────────────────────────────────────────
-# Drops continuum.cmd into %LOCALAPPDATA%\Programs\continuum + adds
-# that dir to user PATH so `continuum <verb>` works from PowerShell,
-# cmd.exe, Run dialog, scheduled tasks. Same pattern as airc.cmd.
-
-$shimDir = Join-Path $env:LOCALAPPDATA 'Programs\continuum'
-$shimPath = Join-Path $shimDir 'continuum.cmd'
-New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
-@'
-@echo off
-REM continuum.cmd -- Windows shim that delegates to the Linux runtime
-REM inside WSL. Generated by continuum/install.ps1.
-wsl bash -c "~/.local/bin/continuum %*"
-'@ | Set-Content -Path $shimPath -Encoding ASCII
-
-$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
-if (-not $userPath) { $userPath = '' }
-if ($userPath -notlike "*$shimDir*") {
-    $newPath = if ($userPath.Length -gt 0) { "$userPath;$shimDir" } else { $shimDir }
-    [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
-    Write-Step "Added $shimDir to user PATH (open a NEW shell to pick up)"
-}
-Write-Ok "continuum CLI shim installed at $shimPath"
-
-# ── section: probe WSL2 networking before delegating ────────────────────
-# bootstrap.sh inside WSL needs to curl raw.githubusercontent.com. If the
-# WSL2 VM has lost network reachability (vEthernet/HNS corruption is
-# common on Win10/11 after sleep cycles or driver updates), the curl
-# inside the bootstrap step takes 30+ seconds to time out with a cryptic
-# error — and the user has no idea their issue is environmental, not
-# continuum-related. Probe upfront with a 5s budget; if external HTTP
-# from inside WSL is broken, surface explicit remediation instead of
-# delegating into a doom-spiral. Caught by continuum-b69f 2026-05-02
-# (issue #1006) when their WSL2 NAT broke after a system update.
-Write-Step 'Probing WSL2 networking (5s budget) ...'
-$probeOutput = & wsl.exe bash -c "curl -sfI -m 5 https://raw.githubusercontent.com/CambrianTech/continuum/main/bootstrap.sh -o /dev/null 2>&1; echo EXIT=`$?"
-$probeExit = $LASTEXITCODE
-$probeOk = ($probeExit -eq 0) -and ($probeOutput -match 'EXIT=0')
-if (-not $probeOk) {
-    Write-Fail 'WSL2 networking is broken — cannot reach raw.githubusercontent.com from inside WSL.'
-    Write-Host ''
-    Write-Host '  Probe output:'
-    if ($probeOutput) { $probeOutput | ForEach-Object { Write-Host "    $_" } }
-    Write-Host "    (LASTEXITCODE=$probeExit)"
-    Write-Host ''
-    Write-Host '  This is a Windows-side WSL2 issue (vEthernet / HNS corruption is the usual culprit).'
-    Write-Host '  Try in order:'
-    Write-Host '    1. wsl --shutdown                                 # forces VM restart, often heals NAT'
-    Write-Host '    2. (as admin)  Restart-Service hns -Force         # reset Host Networking Service'
-    Write-Host '    3. Reboot Windows'
-    Write-Host '    4. Edit %USERPROFILE%\.wslconfig — add  [wsl2]  then  networkingMode=NAT  on next line'
-    Write-Host ''
-    Write-Host '  Then re-run:  irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex'
-    exit 1
-}
-Write-Ok 'WSL2 networking OK'
-
-# ── section: delegate to bootstrap.sh inside WSL ────────────────────────
-# bootstrap.sh is the canonical install body -- clones the repo, pulls
-# docker compose images, brings the stack up, opens the browser. Runs
-# inside WSL2 here on Windows.
-
-Write-Step 'Handing off to bootstrap.sh inside WSL ...'
-# CONTINUUM_REF env override: when set, fetch bootstrap.sh + clone
-# repo at the specified branch/sha. Used by CI (Windows install
-# validation of PR src/) and power users testing pre-merge changes.
-# Defaults to main when unset. Without this, Windows installs always
-# fetched bootstrap.sh from main + cloned main — same chicken-and-egg
-# as install.sh had before CONTINUUM_REF support.
-$BootstrapRef = if ($env:CONTINUUM_REF) { $env:CONTINUUM_REF } else { 'main' }
-$BootstrapUrl = "https://raw.githubusercontent.com/CambrianTech/continuum/$BootstrapRef/bootstrap.sh"
-& wsl.exe bash -ic "CONTINUUM_REF='$BootstrapRef' curl -fsSL '$BootstrapUrl' | bash -s -- --mode=$Mode"
-$bootstrapExit = $LASTEXITCODE
-
-# ── section: post-install guidance ──────────────────────────────────────
 Write-Host ''
-if ($bootstrapExit -eq 0) {
-    Write-Ok 'Continuum is up.'
-    Write-Host ''
-    switch ($Mode) {
-        'browser'  { Write-Host '  UI:        http://localhost:9003' }
-        'cli'      { Write-Host '  CLI:       continuum   (from any new shell)' }
-        'headless' { Write-Host '  Server:    http://localhost:9003 (API only)' }
-    }
-    Write-Host '  Verify:    continuum doctor'
-    Write-Host ''
-} else {
-    Write-Fail "bootstrap.sh exited $bootstrapExit -- check the WSL output above for the actual failure."
-    Write-Host '  Re-run any time:  irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex'
-    Write-Host '  Diagnose:         continuum doctor'
-}
-exit $bootstrapExit
+Write-Ok 'Continuum native install complete.'
+Write-Host '  Start:  npm start'
+Write-Host '  Test:   cu ping'
+Write-Host ''

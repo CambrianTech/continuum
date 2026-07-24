@@ -294,7 +294,19 @@ fn main() {
         .allowlist_type("ggml_.*")
         .allowlist_type("mtmd_.*")
         .allowlist_var("LLAMA_.*")
-        .allowlist_var("MTMD_.*");
+        .allowlist_var("MTMD_.*")
+        // Disable bindgen's struct size/align assertions. They are a QA feature
+        // that compares the generated Rust layout against libclang's reported C
+        // layout — but different libclang BUILDS disagree on opaque-vs-sized for
+        // pointer-only structs (e.g. `llama_sampler`: some libclang report 16
+        // bytes, others emit a 1-byte opaque type), producing a false
+        // `size_of - 16` E0080 underflow that varies by machine. Our installer
+        // provisions libclang per-platform (LLVM release on Windows, system
+        // clang on Linux/macOS), so the build MUST NOT depend on one exact
+        // libclang. These structs are used only through pointers, where opaque
+        // is correct; dropping the layout assertions makes the bindings portable
+        // across libclang builds without changing any real ABI.
+        .layout_tests(false);
 
     if cfg!(feature = "metal") && target_os == "macos" {
         let metal_header = submodule.join("ggml").join("include").join("ggml-metal.h");

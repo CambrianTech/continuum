@@ -1,0 +1,185 @@
+# Continuum install manifest — the ONE source of truth for install / update / repair.
+#
+# Thin per-platform RUNNERS execute these modules (tools/scripts/install.sh on
+# unix via bash; install.ps1 on Windows via PowerShell). Source selection is
+# DATA here, not code — a decision, so it lives in the manifest. Re-running a
+# runner converges the machine: each module is idempotent (skip when its accept
+# check already passes), so "run the installer again" is install + update +
+# repair. See docs/architecture/GPU-CONTRACT.md (zero-CPU GPU contract +
+# per-subsystem acceptance) and docs/CARL-INSTALL-SMOKE-HANDOFF.md.
+#
+# Per-module schema:
+#   id        unique name
+#   order     execution order (ascending)
+#   tier      0=base(git/rust)  1=driver(detect+direct only)  2=runtime-libs
+#             3=build-toolchain(dev/--dev only; end users get prebuilt binaries)
+#   flags     optional gates, e.g. ["dev"], ["grid"]
+#   applies   optional predicate the runner evaluates, e.g. "has-nvidia"
+#   platforms which OSes this module runs on
+#   sources.<os> = install SOURCE per OS. type ∈ archive|redist|winget|brew|apt|curl-sh.
+#             archive/redist are the NO-ADMIN, NO-PYTHON defaults (vendor's own
+#             binaries). archive needs {url, version, sha256, extract}. redist
+#             needs {manifest, version, components} — per-component sha256 comes
+#             from the vendor manifest, so we don't duplicate it.
+#   accept    a REAL, run-verified command + expected evidence (never invented).
+#
+# OWNERSHIP: schema + bash runner + macos/linux source rows + the shared
+# acceptance-check table = M5. windows source rows + windows runner handlers
+# (archive/redist) + windows accept probes = BigMama (seeded below, proven on
+# a live RTX 5090 install). macos/linux rows are STUBS for M5 to fill.
+
+schema_version = 1
+
+# ── Tier 0: base ────────────────────────────────────────────────────────────
+[[module]]
+id = "rust"
+order = 10
+tier = 0
+platforms = ["windows", "macos", "linux"]
+accept = "rustc --version"
+[module.sources.windows]
+type = "winget"          # rustup installs per-user to %USERPROFILE%\.cargo (no admin)
+id = "Rustlang.Rustup"
+scope = "user"
+[module.sources.macos]
+type = "curl-sh"         # STUB (M5)
+url = "https://sh.rustup.rs"
+[module.sources.linux]
+type = "curl-sh"         # STUB (M5)
+url = "https://sh.rustup.rs"
+
+[[module]]
+id = "gh"
+order = 20
+tier = 0
+platforms = ["windows", "macos", "linux"]
+accept = "gh --version"
+[module.sources.windows]
+type = "winget"
+id = "GitHub.cli"
+[module.sources.macos]
+type = "brew"            # STUB (M5)
+formula = "gh"
+[module.sources.linux]
+type = "apt"             # STUB (M5)
+package = "gh"
+
+[[module]]
+id = "gh-auth"
+order = 25
+tier = 0
+flags = ["grid"]         # only when grid is requested; device-code login, no admin
+platforms = ["windows", "macos", "linux"]
+accept = "gh auth status"
+[module.sources.windows]
+type = "command"
+run = "gh auth login --hostname github.com --git-protocol https --web"
+
+# ── Tier 3: build toolchain (dev / --dev; end users get prebuilt binaries) ────
+[[module]]
+id = "msvc"
+order = 30
+tier = 3
+flags = ["dev"]
+platforms = ["windows"]   # Windows-only; the MSVC C++ toolset for linking + nvcc host
+accept = "vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"
+[module.sources.windows]
+type = "winget"
+id = "Microsoft.VisualStudio.2022.BuildTools"
+override = "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+# nvcc 12.9 supports MSVC 14.4x (VS2022), NOT the 14.5x/VS18 preview — the build
+# module pins the VS2022 host env (Enter-MsvcEnv).
+
+[[module]]
+id = "cmake"
+order = 40
+tier = 3
+flags = ["dev"]
+platforms = ["windows", "macos", "linux"]
+accept = "cmake --version"
+[module.sources.windows]
+type = "archive"          # standalone Kitware (knows every VS generator string), no admin
+url = "https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-windows-x86_64.zip"
+version = "3.30.5"
+sha256 = "TODO"           # from cmake-3.30.5-SHA-256.txt (Kitware release checksum)
+extract = "strip-top-dir" # -> ~/.continuum/tools/cmake, add bin/ to PATH
+[module.sources.macos]
+type = "brew"             # STUB (M5)
+formula = "cmake"
+[module.sources.linux]
+type = "apt"              # STUB (M5)
+package = "cmake"
+
+[[module]]
+id = "llvm-libclang"
+order = 50
+tier = 3
+flags = ["dev"]
+platforms = ["windows", "macos", "linux"]
+# accept: libclang.dll present; sets LIBCLANG_PATH for bindgen.
+accept = "test-path ~/.continuum/tools/llvm/bin/libclang.dll"
+[module.sources.windows]
+type = "archive"          # LLVM official release, no admin, no Python
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
+version = "18.1.8"        # PIN stable: bleeding-edge libclang mis-generates llama bindgen layout
+sha256 = "22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8"
+extract = "members:*/bin/libclang.dll,*/lib/clang/*"  # DLL + clang resource headers
+[module.sources.macos]
+type = "system"           # STUB (M5) — Xcode clang provides libclang
+[module.sources.linux]
+type = "apt"              # STUB (M5)
+package = "libclang-dev"
+
+[[module]]
+id = "cuda"
+order = 60
+tier = 3
+flags = ["dev"]
+applies = "has-nvidia"    # runner skips on non-NVIDIA hosts (they build DirectML/Metal)
+platforms = ["windows", "linux"]
+accept = "nvcc --version >= 12.8"   # Blackwell/sm_120 floor; run-verified
+[module.sources.windows]
+type = "redist"           # NVIDIA's OWN official redist archives, no admin, no Python
+manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json"
+version = "12.9.1"
+# minimum to COMPILE ggml-cuda + candle-kernels; libcurand is load-bearing
+# (candle's RNG links curand.lib -- omitting it fails the final link, not the build)
+components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
+# per-component sha256 comes from NVIDIA's manifest above (delegated verification)
+[module.sources.linux]
+type = "redist"           # STUB (M5) — same NVIDIA redist works no-admin on Linux too
+manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json"
+version = "12.9.1"
+components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
+
+# ── The build itself (a module: env is data) ─────────────────────────────────
+[[module]]
+id = "build-core"
+order = 90
+tier = 3
+flags = ["dev"]           # end users install a prebuilt binary instead (see release pipeline)
+platforms = ["windows", "macos", "linux"]
+# accept: the binary builds AND passes the per-subsystem GPU gates in GPU-CONTRACT.md.
+accept = "continuum-core-server.exe boots past the GPU-detection gate on the target device"
+[module.build.windows]
+# no-compromise GPU: DEFAULT features (livekit+bevy stay on GPU) + cuda. NEVER
+# --no-default-features (that drops livekit off the GPU).
+features = "cuda,load-dynamic-ort"     # NVIDIA; non-NVIDIA -> "directml"
+profile = "release"
+crt = "static"                          # +crt-static -> /MT, to match livekit's prebuilt /MT libwebrtc
+cmake_generator = "Visual Studio 17 2022"   # match the VS2022 host nvcc supports
+cuda_arch = "120"                       # Blackwell RTX 5090 = sm_120
+msvc_host = "vs2022"                    # Enter-MsvcEnv: cl.exe for nvcc (14.4x, nvcc-compatible)
+[module.build.macos]
+features = "metal,accelerate"           # STUB (M5)
+profile = "release"
+[module.build.linux]
+features = "cuda,load-dynamic-ort"      # STUB (M5); non-NVIDIA -> rocm/vulkan
+profile = "release"
+
+[[module]]
+id = "run"
+order = 100
+tier = 3
+platforms = ["windows", "macos", "linux"]
+accept = "continuum-core-server binary present + serves TCP 9100"
