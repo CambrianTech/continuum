@@ -70,27 +70,33 @@ fn main() {
     // GCC-world `stdc++`/`gomp`.
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
-    // windows-msvc: pin llama.cpp's C/C++ runtime to the RELEASE CRT (/MD) even
-    // in Cargo's debug profile. Rust's msvc target ALWAYS links the release CRT
-    // (msvcrt/ucrt) — it has no debug-CRT (/MDd) variant. Modern cmake with
-    // CMP0091 NEW selects the runtime via CMAKE_MSVC_RUNTIME_LIBRARY, whose
-    // default is MultiThreadedDebugDLL (/MDd) for the Debug config — and /MDd
-    // is what DEFINES `_DEBUG`. With _DEBUG set, the MSVC headers (the PPL task
-    // machinery pulled in transitively by llama.cpp) emit references to the
-    // debug-only CRT reporter `_CrtDbgReport`/`_CrtDbgReportW`. Those symbols do
-    // not exist in the release CRT that Rust links, so the FINAL link of
-    // continuum_core.dll fails:
-    //   libllama…rlib(llama.cpp.obj): error LNK2001: unresolved external symbol
-    //     __imp__CrtDbgReport  →  LNK1120: 3 unresolved externals
-    // Pinning MultiThreadedDLL (/MD, no _DEBUG) makes llama.cpp's CRT match
-    // Rust's on both debug and release profiles. `cargo build --release` already
-    // gets this for free via the Release config's natural /MD; this line fixes
-    // the debug profile too. No-op off msvc (the flag only affects MSVC).
+    // windows-msvc: llama.cpp's C/C++ runtime MUST match whatever CRT the final
+    // Rust link uses — a mismatch is a hard LNK2038 "RuntimeLibrary mismatch" (or,
+    // for the debug variant, unresolved `_CrtDbgReport` from _DEBUG). Modern cmake
+    // (CMP0091 NEW) selects the runtime via CMAKE_MSVC_RUNTIME_LIBRARY; its Debug
+    // default MultiThreadedDebugDLL (/MDd) defines _DEBUG and pulls debug-only CRT
+    // symbols Rust never links, so we pin it explicitly.
+    //
+    // WHICH CRT: follow the `crt-static` target feature (per docs/architecture/
+    // GPU-CONTRACT.md). The no-compromise GPU build keeps livekit, which links a
+    // prebuilt `webrtc.lib` built /MT (static CRT, unchangeable) — so that build
+    // sets `+crt-static` and EVERYTHING, llama.cpp included, must be /MT
+    // (MultiThreaded). A build without crt-static uses Rust's default dynamic
+    // release CRT, /MD (MultiThreadedDLL). Honor the feature instead of hardcoding
+    // either, so both the full-GPU (/MT) and the reduced (/MD) builds link.
     if target_env == "msvc" {
-        // Belt-and-suspenders: ensure CMP0091 is NEW so CMAKE_MSVC_RUNTIME_LIBRARY
-        // is actually honored rather than the legacy /MDd-baked-into-flags path.
+        let crt_static = env::var("CARGO_CFG_TARGET_FEATURE")
+            .map(|f| f.split(',').any(|x| x == "crt-static"))
+            .unwrap_or(false);
+        let runtime = if crt_static {
+            "MultiThreaded"
+        } else {
+            "MultiThreadedDLL"
+        };
+        // CMP0091 NEW so CMAKE_MSVC_RUNTIME_LIBRARY is honored (not the legacy
+        // /MD-baked-into-flags path).
         cfg.define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW")
-            .define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
+            .define("CMAKE_MSVC_RUNTIME_LIBRARY", runtime);
     }
 
     // macOS always links Accelerate.framework — ggml-cpu's ops.cpp uses

@@ -113,24 +113,26 @@
 # `force = false` lets a per-shell CARGO_TARGET_DIR export override
 # this — useful for one-shot builds against a clean target.
 
-# ─── windows-msvc: force the release CRT (/MD) for cc-compiled C/C++ deps ───
+# ─── windows-msvc: static CRT (/MT) to match the prebuilt libwebrtc ─────────
 #
-# ACTIVE (not opt-in): a correctness fix, not an accelerator. On the
-# x86_64-pc-windows-msvc target Rust ALWAYS links the dynamic release CRT
-# (/MD → msvcrt); it has no /MDd debug-CRT variant. Most cc-crate deps honor
-# that (basis-universal-sys etc. → /MD). The outlier is esaxx-rs (pulled in
-# transitively by `tokenizers`), whose build.rs hardcodes `.static_crt(true)`
-# → /MT (static LIBCMT), ignoring the target. That yields a hard link failure
-# when everything is combined into continuum_core.dll:
+# ACTIVE (not opt-in): a correctness fix, not an accelerator. See
+# docs/architecture/GPU-CONTRACT.md. The no-compromise GPU build keeps livekit,
+# which links a PREBUILT `webrtc.lib` that Google/LiveKit ship built /MT (static
+# CRT) — it cannot be recompiled /MD short of building libwebrtc from source. A
+# single object with a different RuntimeLibrary is a hard link failure:
 #   LNK2038: mismatch detected for 'RuntimeLibrary': value 'MT_StaticRelease'
 #            doesn't match value 'MD_DynamicRelease'   →   LNK1319
-# Appending -MD via the target-scoped CFLAGS/CXXFLAGS makes cl.exe's
-# last-/M-wins rule flip esaxx back to /MD (a cosmetic D9025 override warning),
-# matching Rust and every other dep. The variable names are target-suffixed,
-# so they are INERT on every non-windows-msvc target (Linux/macOS cc reads a
-# differently-suffixed variable) — safe to set unconditionally here.
-# llama.cpp's CRT is handled separately in core/llama/build.rs via
-# CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL (the cmake abstraction path).
-[env]
-CFLAGS_x86_64_pc_windows_msvc = "-MD"
-CXXFLAGS_x86_64_pc_windows_msvc = "-MD"
+# So the WHOLE windows-msvc build is /MT: `+crt-static` makes Rust link LIBCMT,
+# and the cc crate then compiles every from-source C/C++ dep (basis-universal,
+# ring, sqlite, …) /MT automatically because it honors this feature. esaxx-rs
+# already hardcodes `.static_crt(true)` → /MT, which is now CORRECT (no override
+# needed — that's why the old CFLAGS/CXXFLAGS=-MD hack is gone). llama.cpp reads
+# the same feature in core/llama/build.rs (CMAKE_MSVC_RUNTIME_LIBRARY). Now every
+# object is MT_StaticRelease, matching libwebrtc.
+#
+# Off windows-msvc this section does not apply (target-scoped), so Linux/macOS
+# builds are unaffected. If a /MD prebuilt (e.g. a static MKL) is ever pulled
+# into a windows-msvc build it will re-surface LNK2038 — drop that dep's mkl-style
+# feature (a CUDA build doesn't need candle's CPU BLAS) rather than weakening this.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
