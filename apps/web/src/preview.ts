@@ -162,7 +162,7 @@ const SYS_FIXTURE: SystemMetricsViewState = {
 };
 
 function main(): void {
-  const name = new URLSearchParams(location.search).get('fixture') ?? 'roster';
+  const name = new URLSearchParams(location.search).get('fixture') ?? 'rooms';
   const state = FIXTURES[name] ?? FIXTURES.roster;
 
   const widget = document.createElement('chat-widget');

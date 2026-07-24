@@ -55,8 +55,11 @@ export class SysPanel extends LitElement {
     const body = this.body;
     if (!body) return html``;
     const hasGauge = body.gauge !== undefined;
-    // The SYS face needs a gauge; without one the AI face is the only honest view.
-    const face: Face = hasGauge ? this._face : 'ai';
+    // ANTI-DISAPPEARANCE rule (Joel: "stuff disappearing is alarming"): a
+    // missing feed renders as VISIBLE absence — the SYS face stays selectable
+    // and shows an awaiting-feed placeholder — never as a vanished face. The
+    // frame is the promise; the data fills it when it arrives.
+    const face: Face = this._face;
     const window = gaugeWindowLabel(body.gauge);
     const chip = (id: Face, label: string, enabled: boolean): TemplateResult => html`<button
       class="face-chip"
@@ -84,8 +87,12 @@ export class SysPanel extends LitElement {
               >`
             : html``}
         </div>
-        ${face === 'sys' && body.gauge
-          ? renderGaugeBody(body.gauge)
+        ${face === 'sys'
+          ? body.gauge
+            ? renderGaugeBody(body.gauge)
+            : html`<div class="gauge-awaiting" title="the system-metrics feed has not delivered yet">
+                awaiting system feed…
+              </div>`
           : renderMetricsRow(body.stats)}
       </section>
     `;
