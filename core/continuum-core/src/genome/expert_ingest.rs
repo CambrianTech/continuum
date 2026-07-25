@@ -151,6 +151,14 @@ mod tests {
         async fn evict(&self, _target_free_bytes: usize) -> Vec<EvictionRecord> {
             Vec::new()
         }
+        fn capacity(&self) -> crate::genome::tier::TierCapacity {
+            // Unlimited test tier — the write-side double never triggers eviction.
+            crate::genome::tier::TierCapacity {
+                current_used: 0,
+                configured_limit: u64::MAX,
+            }
+        }
+        fn observe_access(&self, _page: PageRef) {}
     }
 
     fn f32_info(shape: &[usize], offset: u64) -> TensorInfo {
