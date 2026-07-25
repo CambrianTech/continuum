@@ -33,31 +33,76 @@ use ts_rs::TS;
 // 2026-07-15: one inbound message woke six minds, each ran a full ~54s deliberation,
 // and the two lanes serialized them into a 250s tail (#139).
 // [[conversational-latency-is-a-misdirection-budget]] [[idle-is-self-directed-free-time]]
-static INFLIGHT_MODEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+static INFLIGHT_MODEL_CALLS: Gauge = Gauge::new();
 
-/// RAII marker: increments the shared in-flight gauge on entry and decrements on
-/// EVERY exit path (Ok, Err, panic-unwind). The deliberation faculty wraps its single
-/// generate call in this so the gauge reflects exactly the model-call window
-/// (lane-queue + prefill + decode) and nothing downstream.
+/// The in-flight model-call gauge: a saturating count of outstanding deliberative model calls.
+/// Extracted as a named type (not a bare static) for one reason beyond tidiness — testability.
+/// The process has exactly ONE shared instance (`INFLIGHT_MODEL_CALLS`) that production RAII
+/// guards bump; a unit test constructs its OWN isolated `Gauge` and drives the identical
+/// enter/read/saturate logic against it, so its absolute-count assertions are deterministic
+/// under `cargo test`'s parallel execution — no cross-module guard on the shared instance can
+/// perturb a gauge nothing else can reach. (This is the #1960 flaky class killed at the root:
+/// the previous test read the process-global counter as an absolute value while a sibling test's
+/// `InflightModelCall` guard bumped it mid-loop; drain-before-baseline couldn't catch mid-loop
+/// interference. Inject the gauge instead of draining around it.)
 #[derive(Debug)]
-pub struct InflightModelCall(());
+struct Gauge {
+    count: AtomicUsize,
+}
 
-impl InflightModelCall {
-    pub fn enter() -> Self {
-        INFLIGHT_MODEL_CALLS.fetch_add(1, Ordering::AcqRel);
-        Self(())
+impl Gauge {
+    const fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Enter one in-flight call; the returned guard decrements the SAME gauge on drop.
+    fn enter(&self) -> GaugeGuard<'_> {
+        self.count.fetch_add(1, Ordering::AcqRel);
+        GaugeGuard(&self.count)
+    }
+
+    /// Outstanding calls right now.
+    fn inflight(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// True when `outstanding >= max_lanes` — one more call would queue behind the fleet.
+    fn saturated(&self, max_lanes: usize) -> bool {
+        self.inflight() >= max_lanes
     }
 }
 
-impl Drop for InflightModelCall {
+/// RAII decrement for one gauge entry. Borrows the gauge it incremented so drop decrements
+/// exactly that gauge — the shared instance for a production guard, a test's local instance for
+/// a test's. This borrow is what makes the gauge injectable without a second counter.
+#[derive(Debug)]
+struct GaugeGuard<'a>(&'a AtomicUsize);
+
+impl Drop for GaugeGuard<'_> {
     fn drop(&mut self) {
-        INFLIGHT_MODEL_CALLS.fetch_sub(1, Ordering::AcqRel);
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// RAII marker: increments the shared in-flight gauge on entry and decrements on EVERY exit
+/// path (Ok, Err, panic-unwind). The deliberation faculty wraps its single generate call in this
+/// so the gauge reflects exactly the model-call window (lane-queue + prefill + decode) and
+/// nothing downstream. Wraps a guard on the process-global `INFLIGHT_MODEL_CALLS`, so it carries
+/// NO lifetime and stays storable as a plain field (e.g. `ServingLanePermit._inflight`).
+#[derive(Debug)]
+pub struct InflightModelCall(GaugeGuard<'static>);
+
+impl InflightModelCall {
+    pub fn enter() -> Self {
+        Self(INFLIGHT_MODEL_CALLS.enter())
     }
 }
 
 /// Deliberative model calls outstanding against the shared serving target right now.
 pub fn inflight_model_calls() -> usize {
-    INFLIGHT_MODEL_CALLS.load(Ordering::Acquire)
+    INFLIGHT_MODEL_CALLS.inflight()
 }
 
 /// True when every shared decode slot is busy, so one more call would QUEUE behind
@@ -65,7 +110,7 @@ pub fn inflight_model_calls() -> usize {
 /// same constant the planner sizes lanes by, NOT a new magic number. A self-tick
 /// yields on this; message/directed turns are never gated on it (a human/peer waits).
 pub fn shared_model_saturated() -> bool {
-    inflight_model_calls() >= crate::cognition::serving_plan::MAX_LANES as usize
+    INFLIGHT_MODEL_CALLS.saturated(crate::cognition::serving_plan::MAX_LANES as usize)
 }
 
 // ── Ambient-turn admission permit (#171) ───────────────────────────────────────
@@ -475,64 +520,52 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 mod tests {
     use super::*;
 
-    // These tests each mutate PROCESS-GLOBAL admission statics — the in-flight gauge,
-    // the ambient-turn semaphore, the serving-lane semaphores — and must NOT run
-    // concurrently. The sharp edge (#191): `acquire_serving_lane` bumps the same
-    // `INFLIGHT_MODEL_CALLS` gauge (via `ServingLanePermit._inflight`) that the gauge
-    // test asserts starts at zero, so `directed_turn_always_finds_a_reserved_lane`
-    // racing it made the gauge test flap. Each state-touching test takes this lock
-    // first, then establishes its own baseline, so sibling order can't leak.
+    // The ambient-permit and serving-lane tests mutate PROCESS-GLOBAL admission statics
+    // (the ambient-turn semaphore, the serving-lane semaphores) and must NOT run
+    // concurrently — each takes this lock first, then establishes its own baseline, so
+    // sibling order can't leak. (The in-flight GAUGE test used to need this too and still
+    // flapped under it — TEST_SERIAL only serializes THIS module, but a cross-module guard
+    // on the process-global gauge could bump it mid-loop, #1960/#191. That test now drives a
+    // LOCAL Gauge instance instead, so it needs no lock at all — the race is gone at the
+    // source, not merely serialized.)
     static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
     // what this catches (#139 idle admission): the in-flight gauge counts each
     // model-call entry, releases on drop, and reads SATURATED exactly at the serving
     // concurrency (serving_plan::MAX_LANES) — the signal a self-tick yields on so an
-    // idle deliberation never deepens the queue live conversation waits behind. This
-    // is the only test that touches the process-global gauge, so it starts at zero.
+    // idle deliberation never deepens the queue live conversation waits behind.
+    //
+    // Drives a LOCAL Gauge instance — the SAME type production's process-global
+    // INFLIGHT_MODEL_CALLS is, but one nothing else in the process can reach — so the
+    // absolute-count assertions are deterministic under cargo's parallel execution. The
+    // prior version read the process-global counter and a sibling test's InflightModelCall
+    // guard could bump it mid-loop (the #1960 flaky class, canary red 2026-07-25); scoping
+    // the gauge kills that race at the root, so no TEST_SERIAL / drain-wait is needed here.
     #[test]
     fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
-        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let max = crate::cognition::serving_plan::MAX_LANES as usize;
-        // The gauge is PROCESS-global and TEST_SERIAL only serializes THIS
-        // module's tests — a test elsewhere in the crate that walks the
-        // admission path holds an InflightModelCall guard for a moment, and CI's
-        // scheduling (unlike local) can overlap it with our baseline read (the
-        // deterministic-local/flaky-CI split, canary red 2026-07-25). Bounded
-        // drain-wait: transient cross-module guards drop in microseconds; a
-        // LEAK still fails loudly below with the real count named.
-        for _ in 0..200 {
-            if inflight_model_calls() == 0 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert_eq!(
-            inflight_model_calls(),
-            0,
-            "gauge did not drain to zero — a cross-module InflightModelCall guard leaked"
-        );
-        assert!(!shared_model_saturated(), "idle model is not saturated");
+        let gauge = Gauge::new();
 
-        let mut guards: Vec<InflightModelCall> = Vec::new();
+        assert_eq!(gauge.inflight(), 0, "a fresh gauge starts empty");
+        assert!(!gauge.saturated(max), "an empty gauge is not saturated");
+
+        let mut guards = Vec::new();
         for expected in 1..=max {
-            guards.push(InflightModelCall::enter());
-            assert_eq!(inflight_model_calls(), expected);
+            guards.push(gauge.enter());
+            assert_eq!(gauge.inflight(), expected);
         }
         // Every decode slot busy → one more call would queue behind the fleet.
-        assert!(
-            shared_model_saturated(),
-            "MAX_LANES outstanding must read saturated"
-        );
+        assert!(gauge.saturated(max), "MAX_LANES outstanding must read saturated");
 
         guards.pop(); // free a slot
-        assert_eq!(inflight_model_calls(), max - 1);
+        assert_eq!(gauge.inflight(), max - 1);
         assert!(
-            !shared_model_saturated(),
+            !gauge.saturated(max),
             "freeing a slot clears saturation — an idle self-tick may run again"
         );
 
         drop(guards);
-        assert_eq!(inflight_model_calls(), 0, "all guards released → baseline");
+        assert_eq!(gauge.inflight(), 0, "all guards released → baseline");
     }
 
     // what this catches (#171 fan-out): the ambient-turn permit bounds how many
