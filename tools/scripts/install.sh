@@ -82,6 +82,12 @@ esac
 mod_submodules_init
 mod_docker_wsl_integration
 
+# Cold storage: auto-detect a large drive and route models + build cache there
+# (migrating what's on the home fs) BEFORE any cargo build, so the build uses the
+# relocated CARGO_TARGET_DIR. No-op on single-drive machines. Reconfigurable via
+# ~/.continuum/config.env. (Windows twin: Mod-ColdStorage in win-modules.ps1.)
+mod_cold_storage
+
 # ============================================================================
 # GPU detection
 # ============================================================================

@@ -30,6 +30,9 @@ members = [
 
     # apps/ — first-party UI shells / embodiments
     "apps/cli",
+
+    # tools/ — build-time codegen (not substrate, not shipped in the binary)
+    "tools/manifest-gen",
 ]
 # Citizen project dirs are STANDALONE crates, never substrate-workspace members:
 # `cargo new` inside the checkout auto-adds members (rewriting THIS file
