@@ -563,9 +563,23 @@ async fn run_render(
     // source of truth per the OOP-adapter rule. Code never branches on
     // model name. Default applies if the registry has no row (e.g. a
     // brand-new cloud model not yet declared).
-    let multi_party_strategy = crate::model_registry::try_global()
-        .and_then(|reg| reg.model(&input.model))
+    let resolved_model = crate::model_registry::try_global()
+        .and_then(|reg| reg.model(&input.model).cloned());
+    let multi_party_strategy = resolved_model
+        .as_ref()
         .map(|m| m.multi_party_strategy.clone())
+        .unwrap_or_default();
+    // Per-model sampling (#76): the anti-loop decode knobs live on the Model
+    // row (ModelSampling default = repeat_penalty 1.1 / repeat_last_n 320 /
+    // frequency_penalty 0.3, the #181 anti-loop floor). The persona request
+    // used to hardcode temperature 0.7 + repeat_penalty None — so llama.cpp
+    // fell back to its no-penalty default and small models DEGENERATED within a
+    // turn (Atlas looped one block 4× live, 2026-07-25). Apply the model's
+    // profile (or the substrate floor when the row is absent) so EVERY persona
+    // turn carries the anti-loop guard, data-driven, no hardcoded magic.
+    let sampling = resolved_model
+        .as_ref()
+        .map(|m| m.sampling)
         .unwrap_or_default();
 
     // Capture probe signals BEFORE moving matched_angle + history
@@ -659,17 +673,21 @@ async fn run_render(
         system_prompt: Some(assembled.system_message),
         model: Some(input.model.clone()),
         provider: Some("local".to_string()),
-        temperature: Some(0.7),
+        // Data-driven per-model sampling (#76 + #181 anti-loop): the Model row's
+        // profile, NOT a scattered hardcoded 0.7. `repeat_penalty` +
+        // `repeat_last_n` (windowed) and `frequency_penalty` (unwindowed) are
+        // the anti-degeneration guard the persona path was missing.
+        temperature: Some(sampling.temperature),
         // No cap. The adapter falls back to backend.n_ctx_train() when
         // None, giving the model its full trained context window.
         // Hardcoding 1024 here was clipping qwen3.5 mid-<think>, leaving
         // unterminated reasoning that leaked '<think>' into chat.
         max_tokens: None,
-        top_p: None,
-        top_k: None,
-        repeat_penalty: None,
-        frequency_penalty: None,
-        repeat_last_n: None,
+        top_p: Some(sampling.top_p),
+        top_k: Some(sampling.top_k),
+        repeat_penalty: Some(sampling.repeat_penalty),
+        frequency_penalty: Some(sampling.frequency_penalty),
+        repeat_last_n: Some(sampling.repeat_last_n),
         stop_sequences: None,
         tools: None,
         tool_choice: None,
