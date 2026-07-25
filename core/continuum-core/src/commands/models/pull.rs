@@ -115,10 +115,20 @@ crate::action_command! {
         drop(snap);
 
         // 3. Ask the repo what files it actually has — the authority on quant tiers.
-        let api = ApiBuilder::new()
-            .with_token(hf_token())
-            .build()
-            .map_err(|e| CommandError::Internal(format!("hf-hub init failed: {e}")))?;
+        // Route the download to the configured cold-storage HF cache (a big drive,
+        // e.g. D:\continuum-cold\huggingface\hub) instead of hf-hub's ~/.cache
+        // default on the SYSTEM drive — a multi-GB model must NOT fill C:. This is
+        // the download half of the disk-D routing (artifacts read from the same
+        // root; pull must WRITE there). huggingface_cache_root() honors HF_HOME env
+        // + config.env, so it's automatic on Windows, Linux, and WSL.
+        let api = {
+            let mut b = ApiBuilder::new().with_token(hf_token());
+            if let Some(hub) = crate::model_registry::artifacts::huggingface_cache_root() {
+                b = b.with_cache_dir(hub);
+            }
+            b.build()
+                .map_err(|e| CommandError::Internal(format!("hf-hub init failed: {e}")))?
+        };
         let repo = api.model(repo_id.clone());
         let info = repo.info().await.map_err(|e| {
             CommandError::Internal(format!("could not list repo '{repo_id}': {e}"))
