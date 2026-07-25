@@ -174,10 +174,7 @@ mod tests {
                 configured_limit: 10_000_000,
             },
         });
-        let blob = ArtifactBlob {
-            id: ArtifactId::new(Uuid::nil()),
-            bytes: vec![1, 2, 3],
-        };
+        let blob = ArtifactBlob::inline(ArtifactId::new(Uuid::nil()), vec![1, 2, 3]);
         let prov = Provenance::minimal(blob.id, 1_700_000_000_000);
         store.write(sample_page(), blob, prov).await.unwrap();
     }
