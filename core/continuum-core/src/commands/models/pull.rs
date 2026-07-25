@@ -115,10 +115,16 @@ crate::action_command! {
         drop(snap);
 
         // 3. Ask the repo what files it actually has — the authority on quant tiers.
-        let api = ApiBuilder::new()
-            .with_token(hf_token())
-            .build()
-            .map_err(|e| CommandError::Internal(format!("hf-hub init failed: {e}")))?;
+        //    Route the download cache to the configured cold-storage drive (HF_HOME/hub)
+        //    so multi-GB GGUFs land on the big/data drive, NOT the system drive.
+        let api = {
+            let mut b = ApiBuilder::new().with_token(hf_token());
+            if let Some(hub) = crate::model_registry::artifacts::huggingface_cache_root() {
+                b = b.with_cache_dir(hub);
+            }
+            b.build()
+                .map_err(|e| CommandError::Internal(format!("hf-hub init failed: {e}")))?
+        };
         let repo = api.model(repo_id.clone());
         let info = repo.info().await.map_err(|e| {
             CommandError::Internal(format!("could not list repo '{repo_id}': {e}"))

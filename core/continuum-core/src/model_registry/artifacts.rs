@@ -316,7 +316,7 @@ fn hf_repo_slug(hint: &str) -> Option<String> {
     ))
 }
 
-fn huggingface_cache_root() -> Option<PathBuf> {
+pub(crate) fn huggingface_cache_root() -> Option<PathBuf> {
     if let Ok(hf_home) = std::env::var("HF_HOME") {
         if !hf_home.trim().is_empty() {
             return Some(PathBuf::from(hf_home).join("hub"));
