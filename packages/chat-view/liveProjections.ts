@@ -49,6 +49,9 @@ export interface LiveCallOverlay {
   readonly mediaConnected?: boolean;
   /** Mic is currently capturing/publishing (renderer state via CallClient). */
   readonly micOn?: boolean;
+  /** Participant ids with a live video frame right now — the tile paints a
+   *  canvas for each (the widget draws the pixels imperatively post-render). */
+  readonly videoSenders?: ReadonlyArray<string>;
 }
 
 /** The live-purpose tab currently focused in the citizen's nav view, if any —
@@ -96,6 +99,7 @@ export function captionTail(text: string, max = CAPTION_TAIL_CHARS): string {
 function participant(
   m: RosterMemberVM,
   streams: Readonly<Record<string, string>>,
+  overlay?: LiveCallOverlay,
 ): LiveParticipantVM {
   return {
     id: m.id,
@@ -104,6 +108,7 @@ function participant(
     ...(m.avatarUrl ? { avatarUrl: m.avatarUrl } : {}),
     active: m.active,
     speaking: Object.prototype.hasOwnProperty.call(streams, m.id),
+    hasVideo: overlay?.videoSenders?.includes(m.id) === true,
     runtime: m.runtime,
   };
 }
@@ -113,8 +118,9 @@ function participant(
 export function liveParticipants(
   vm: ChatViewModel,
   streams: Readonly<Record<string, string>>,
+  overlay?: LiveCallOverlay,
 ): readonly LiveParticipantVM[] {
-  return vm.members.map((m) => participant(m, streams));
+  return vm.members.map((m) => participant(m, streams, overlay));
 }
 
 /** The ACTIVE speaker's caption — the most recent citizen to start a turn
@@ -168,7 +174,7 @@ export function liveContentBody(vm: ChatViewModel, overlay?: LiveCallOverlay): L
   return {
     roomId: vm.roomId,
     roomName: vm.roomName,
-    participants: liveParticipants(vm, streams),
+    participants: liveParticipants(vm, streams, overlay),
     ...(caption ? { caption } : {}),
     controls: liveControls(vm, captionsOn, overlay),
     mediaPlaneLive: overlay?.mediaConnected === true,

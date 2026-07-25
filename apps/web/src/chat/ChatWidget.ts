@@ -31,7 +31,7 @@ import type {
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
-import { CallClient } from '../live/callClient';
+import { CallClient, type CallVideoFrame } from '../live/callClient';
 import {
   LISTING_SELECT,
   LIVE_MIC_TOGGLE,
@@ -136,6 +136,9 @@ export class ChatWidget extends LitElement {
    *  map so the SAME projection drives borders whether speech is tokens on the
    *  chat rail or real audio on the call). */
   private _callSpeaking = new Map<string, boolean>();
+  /** senderId → latest decoded video frame, painted onto the tile canvas in
+   *  updated() (imperative — canvas is not declarative Lit content). */
+  private _videoFrames = new Map<string, CallVideoFrame>();
 
   private _draft = '';
   private _sending = false;
@@ -192,6 +195,10 @@ export class ChatWidget extends LitElement {
       onDelta: (d) => {
         if (this.state) this.applyStreamDelta({ ...d, roomId: this.state.room_id });
       },
+      onVideoFrame: (f) => {
+        this._videoFrames.set(f.senderId, f);
+        this.requestUpdate();
+      },
     });
     this._call = client;
     try {
@@ -213,6 +220,7 @@ export class ChatWidget extends LitElement {
     this._mediaConnected = false;
     this._micOn = false;
     this._callSpeaking = new Map();
+    this._videoFrames = new Map();
   }
 
   /** The mic button — a REAL toggle when the media plane is connected. */
@@ -3417,6 +3425,7 @@ export class ChatWidget extends LitElement {
           captionsOn: this._captionsOn,
           mediaConnected: this._mediaConnected,
           micOn: this._micOn,
+          videoSenders: Array.from(this._videoFrames.keys()),
         },
       });
     } catch (err) {
@@ -3465,6 +3474,28 @@ export class ChatWidget extends LitElement {
         if (what) what.scrollTop = 0;
       }
     }
+    // Paint any live video frames onto their tile canvases (imperative — the
+    // canvas element is declarative in the template but its pixels are not).
+    if (this._videoFrames.size > 0) {
+      for (const [sender, frame] of this._videoFrames) {
+        const canvas = this.renderRoot.querySelector<HTMLCanvasElement>(
+          `canvas.lt-video[data-sender="${sender}"]`,
+        );
+        if (!canvas || frame.pixelFormat !== 0) continue; // 0 = RGBA8
+        canvas.width = frame.width;
+        canvas.height = frame.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+        const expected = frame.width * frame.height * 4;
+        if (frame.pixels.length < expected) continue;
+        // Copy into a fresh ArrayBuffer-backed clamped array (ImageData needs a
+        // real ArrayBuffer, not a subarray view over the frame's buffer).
+        const rgba = new Uint8ClampedArray(expected);
+        rgba.set(frame.pixels.subarray(0, expected));
+        ctx.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
+      }
+    }
+
     // Element navigation (card 95844639): the anchored persona home rendered —
     // land on its section (top-scroll above may have just run; the anchor wins).
     const pending = this._pendingAnchor;

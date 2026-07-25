@@ -156,6 +156,7 @@ describe('live call face → pattern projections', () => {
     const body = liveContentBody(vm, { open: true, streams: {}, captionsOn: true });
     expect(body.controls).toEqual({
       micAvailable: false,
+      micOn: false,
       cameraAvailable: false,
       screenshareAvailable: false,
       captionsAvailable: true,
@@ -163,6 +164,7 @@ describe('live call face → pattern projections', () => {
       hangupAvailable: true,
       transcriptCount: 2,
     });
+    // No media plane connected in this overlay → mic honestly unavailable.
     expect(body.mediaPlaneLive).toBe(false);
     expect(body.caption).toBeUndefined();
   });

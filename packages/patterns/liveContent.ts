@@ -49,6 +49,9 @@ export interface LiveParticipantVM {
   readonly speaking: boolean;
   /** Self-reported runtime origin ("devstral", "claude", "" = unresolved). */
   readonly runtime: string;
+  /** A live video frame is arriving for this participant (the media plane is
+   *  painting real pixels onto the tile canvas). False = avatar/glyph only. */
+  readonly hasVideo?: boolean;
 }
 
 /** The live caption line — the ACTIVE speaker's in-progress turn text (the

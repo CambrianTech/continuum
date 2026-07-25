@@ -47,6 +47,7 @@ function participantTile(p: LiveParticipantVM): TemplateResult {
   >
     <span class="lt-glyph">${tileGlyph(p.kind)}</span>
     ${p.avatarUrl ? html`<img class="lt-img" src=${p.avatarUrl} alt="" @error=${hide} />` : nothing}
+    ${p.hasVideo ? html`<canvas class="lt-video" data-sender=${p.id}></canvas>` : nothing}
     <span class="lt-status" data-on=${p.active ? '' : nothing} title=${p.active ? 'online' : 'offline'}></span>
     <span class="lt-name">
       ${p.name}${p.speaking ? html`<span class="lt-wave" aria-label="speaking">🔊</span>` : nothing}
