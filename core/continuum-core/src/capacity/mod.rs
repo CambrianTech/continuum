@@ -23,6 +23,7 @@
 //! IS a real regression test.
 
 pub mod consumer;
+pub mod expert_residency;
 pub mod gossip;
 pub mod grid;
 pub mod lease;
