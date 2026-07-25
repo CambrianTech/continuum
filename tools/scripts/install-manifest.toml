@@ -1,0 +1,239 @@
+# Continuum install manifest — the ONE source of truth for install / update / repair.
+#
+# Thin per-platform RUNNERS execute these modules (tools/scripts/install.sh on
+# unix via bash; install.ps1 on Windows via PowerShell). Source selection is
+# DATA here, not code — a decision, so it lives in the manifest. Re-running a
+# runner converges the machine: each module is idempotent (skip when its accept
+# check already passes), so "run the installer again" is install + update +
+# repair. See docs/architecture/GPU-CONTRACT.md (zero-CPU GPU contract +
+# per-subsystem acceptance) and docs/CARL-INSTALL-SMOKE-HANDOFF.md.
+#
+# Per-module schema:
+#   id        unique name
+#   order     execution order (ascending)
+#   tier      0=base(git/rust)  1=driver(detect+direct only)  2=runtime-libs
+#             3=build-toolchain(dev/--dev only; end users get prebuilt binaries)
+#   flags     optional gates, e.g. ["dev"], ["grid"]
+#   applies   optional predicate the runner evaluates, e.g. "has-nvidia"
+#   platforms which OSes this module runs on
+#   sources.<os> = install SOURCE per OS. type ∈ archive|redist|winget|brew|apt|curl-sh.
+#             archive/redist are the NO-ADMIN, NO-PYTHON defaults (vendor's own
+#             binaries). archive needs {url, version, sha256, extract}. redist
+#             needs {manifest, version, components} — per-component sha256 comes
+#             from the vendor manifest, so we don't duplicate it.
+#   accept    a REAL, run-verified command + expected evidence (never invented).
+#             Per-OS override keys accept_macos / accept_linux / accept_windows on a
+#             SOURCE block win over the module accept when the evidence is OS-shaped
+#             (e.g. libclang.dll vs libclang.dylib).
+#
+# OWNERSHIP: schema + bash runner + macos/linux source rows + the shared
+# acceptance-check table = M5. windows source rows + windows runner handlers
+# (archive/redist) + windows accept probes = BigMama (seeded below, proven on
+# a live RTX 5090 install). macos rows PROVEN on M5's live Mac; linux rows are
+# schema-complete with run-verify pending on a real linux node (marked inline).
+
+schema_version = 1
+
+# ── Tier 0: base ────────────────────────────────────────────────────────────
+[[module]]
+id = "rust"
+order = 10
+tier = 0
+platforms = ["windows", "macos", "linux"]
+accept = "rustc --version"
+[module.sources.windows]
+type = "winget"          # rustup installs per-user to %USERPROFILE%\.cargo (no admin)
+id = "Rustlang.Rustup"
+scope = "user"
+[module.sources.macos]
+type = "curl-sh"         # PROVEN (M5 mac: rustc 1.96.0 present; rustup installs per-user ~/.cargo, no admin)
+url = "https://sh.rustup.rs"
+args = "-y --no-modify-path"
+[module.sources.linux]
+type = "curl-sh"         # same per-user rustup path; run-verify pending on a linux node
+url = "https://sh.rustup.rs"
+args = "-y --no-modify-path"
+
+[[module]]
+id = "gh"
+order = 20
+tier = 0
+platforms = ["windows", "macos", "linux"]
+accept = "gh --version"
+[module.sources.windows]
+type = "winget"
+id = "GitHub.cli"
+[module.sources.macos]
+type = "brew"            # PROVEN (M5 mac: gh 2.94.0 via /opt/homebrew — brew is no-sudo)
+formula = "gh"
+[module.sources.linux]
+type = "apt"             # gh is NOT in stock apt — runner must add GitHub's official
+package = "gh"           # apt repo (cli.github.com/packages) first; run-verify pending
+
+[[module]]
+id = "gh-auth"
+order = 25
+tier = 0
+flags = ["grid"]         # only when grid is requested; device-code login, no admin
+platforms = ["windows", "macos", "linux"]
+accept = "gh auth status"
+[module.sources.windows]
+type = "command"
+run = "gh auth login --hostname github.com --git-protocol https --web"
+
+# airc grid-transport inbound reachability. Windows Firewall (on by default, all
+# profiles) silently DROPS inbound peer dials to the airc daemon unless it's
+# allowed -- an asymmetric route failure (outbound works, peers can't dial in)
+# that breaks cross-grid delivery + peer-dialed inference. Grid-only; needs the
+# one gsudo UAC. A PROGRAM rule survives the daemon's ephemeral-port churn. The
+# runner resolves the airc binary path (Mod-AircFirewall). Windows-only: Linux/
+# macOS LAN nodes don't drop inbound by default (add a ufw rule only if ufw is
+# active -- follow-up on the bash runner).
+[[module]]
+id = "airc-firewall"
+order = 27
+tier = 0
+flags = ["grid"]
+applies = "has-airc"     # runner skips when the airc grid transport isn't installed
+platforms = ["windows"]
+accept = "netsh advfirewall firewall show rule name=\"airc daemon inbound (continuum grid)\""
+[module.sources.windows]
+type = "command"
+# path resolved by the runner (Get-Command airc / ~/.local/bin/airc.exe)
+run = "New-NetFirewallRule -DisplayName 'airc daemon inbound (continuum grid)' -Direction Inbound -Action Allow -Profile Any"
+
+# ── Tier 3: build toolchain (dev / --dev; end users get prebuilt binaries) ────
+
+# The manifest projector itself — a dev-tier module so the toolchain bootstraps
+# it (M5 pin 3). It reads THIS file and emits generated/manifest.<os>.{ps1,sh}
+# that the runners source (runners never parse TOML). accept = the committed
+# projections are in sync; action = regenerate. Reuses the `command` source type
+# (no new type — compression). CI runs `--check` to fail loud on drift.
+[[module]]
+id = "manifest-gen"
+order = 28
+tier = 3
+flags = ["dev"]
+platforms = ["windows", "macos", "linux"]
+accept = "cargo run -q -p manifest-gen -- --check"
+[module.sources.windows]
+type = "command"
+run = "cargo run -q -p manifest-gen"
+[module.sources.macos]
+type = "command"
+run = "cargo run -q -p manifest-gen"
+[module.sources.linux]
+type = "command"
+run = "cargo run -q -p manifest-gen"
+
+[[module]]
+id = "msvc"
+order = 30
+tier = 3
+flags = ["dev"]
+platforms = ["windows"]   # Windows-only; the MSVC C++ toolset for linking + nvcc host
+accept = "vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath"
+[module.sources.windows]
+type = "winget"
+id = "Microsoft.VisualStudio.2022.BuildTools"
+override = "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+# nvcc 12.9 supports MSVC 14.4x (VS2022), NOT the 14.5x/VS18 preview — the build
+# module pins the VS2022 host env (Enter-MsvcEnv).
+
+[[module]]
+id = "cmake"
+order = 40
+tier = 3
+flags = ["dev"]
+platforms = ["windows", "macos", "linux"]
+accept = "cmake --version"
+[module.sources.windows]
+type = "archive"          # standalone Kitware (knows every VS generator string), no admin
+url = "https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-windows-x86_64.zip"
+version = "3.30.5"
+sha256 = "5ab6e1faf20256ee4f04886597e8b6c3b1bd1297b58a68a58511af013710004b"
+extract = "strip-top-dir" # -> ~/.continuum/tools/cmake, add bin/ to PATH
+[module.sources.macos]
+type = "brew"             # PROVEN (M5 mac: cmake 4.3.3 at /opt/homebrew/bin — no-sudo)
+formula = "cmake"
+[module.sources.linux]
+type = "apt"              # run-verify pending on a linux node
+package = "cmake"
+
+[[module]]
+id = "llvm-libclang"
+order = 50
+tier = 3
+flags = ["dev"]
+platforms = ["windows", "macos", "linux"]
+# accept: libclang.dll present; sets LIBCLANG_PATH for bindgen.
+accept = "test-path ~/.continuum/tools/llvm/bin/libclang.dll"
+[module.sources.windows]
+type = "archive"          # LLVM official release, no admin, no Python
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
+version = "18.1.8"        # PIN stable: bleeding-edge libclang mis-generates llama bindgen layout
+sha256 = "22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8"
+extract = "members:*/bin/libclang.dll,*/lib/clang/*"  # DLL + clang resource headers
+[module.sources.macos]
+type = "system"           # PROVEN (M5 mac: /Library/Developer/CommandLineTools/usr/lib/libclang.dylib
+                          # present via Xcode CLT; runner directs `xcode-select --install` if absent —
+                          # the one quasi-system mac step, detect+direct like drivers)
+accept_macos = "test -f /Library/Developer/CommandLineTools/usr/lib/libclang.dylib"
+[module.sources.linux]
+type = "apt"              # run-verify pending on a linux node
+package = "libclang-dev"
+accept_linux = "test -f /usr/lib/llvm-18/lib/libclang.so.1 || ldconfig -p | grep -q libclang"
+
+[[module]]
+id = "cuda"
+order = 60
+tier = 3
+flags = ["dev"]
+applies = "has-nvidia"    # runner skips on non-NVIDIA hosts (they build DirectML/Metal)
+platforms = ["windows", "linux"]
+accept = "nvcc --version >= 12.8"   # Blackwell/sm_120 floor; run-verified
+[module.sources.windows]
+type = "redist"           # NVIDIA's OWN official redist archives, no admin, no Python
+manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json"
+version = "12.9.1"
+# minimum to COMPILE ggml-cuda + candle-kernels; libcurand is load-bearing
+# (candle's RNG links curand.lib -- omitting it fails the final link, not the build)
+components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
+# per-component sha256 comes from NVIDIA's manifest above (delegated verification)
+[module.sources.linux]
+type = "redist"           # schema-complete; run-verify pending on a linux+nvidia node (same no-admin redist)
+manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json"
+version = "12.9.1"
+components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
+
+# ── The build itself (a module: env is data) ─────────────────────────────────
+[[module]]
+id = "build-core"
+order = 90
+tier = 3
+flags = ["dev"]           # end users install a prebuilt binary instead (see release pipeline)
+platforms = ["windows", "macos", "linux"]
+# accept: the binary builds AND passes the per-subsystem GPU gates in GPU-CONTRACT.md.
+accept = "continuum-core-server.exe boots past the GPU-detection gate on the target device"
+[module.build.windows]
+# no-compromise GPU: DEFAULT features (livekit+bevy stay on GPU) + cuda. NEVER
+# --no-default-features (that drops livekit off the GPU).
+features = "cuda,load-dynamic-ort"     # NVIDIA; non-NVIDIA -> "directml"
+profile = "release"
+crt = "static"                          # +crt-static -> /MT, to match livekit's prebuilt /MT libwebrtc
+cmake_generator = "Visual Studio 17 2022"   # match the VS2022 host nvcc supports
+cuda_arch = "120"                       # Blackwell RTX 5090 = sm_120
+msvc_host = "vs2022"                    # Enter-MsvcEnv: cl.exe for nvcc (14.4x, nvcc-compatible)
+[module.build.macos]
+features = "metal,accelerate"           # PROVEN (M5: the daily mac build; Metal needs no toolkit)
+profile = "release"
+[module.build.linux]
+features = "cuda,load-dynamic-ort"      # run-verify pending on linux; non-NVIDIA -> rocm/vulkan
+profile = "release"
+
+[[module]]
+id = "run"
+order = 100
+tier = 3
+platforms = ["windows", "macos", "linux"]
+accept = "continuum-core-server binary present + serves TCP 9100"

@@ -340,10 +340,10 @@ fn server_bin() -> String {
     {
         return over;
     }
-    // Windows: `HOME` is usually unset (the home is `USERPROFILE`) and the
-    // binary carries `.exe` — probing only the unix name silently skipped the
-    // owned install and fell through to a bare PATH lookup that spawns nothing
-    // (live repro 2026-07-24, BigMama: planned lane, empty log, no server).
+    // Windows: `HOME` is usually unset (the home is `USERPROFILE`) and the binary
+    // carries `.exe` — probing only the unix name silently skipped the owned
+    // install and fell through to a bare PATH lookup that spawns nothing (live
+    // repro 2026-07-24, BigMama: planned lane, empty log, no server).
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     if let Some(home) = home {
         let name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };

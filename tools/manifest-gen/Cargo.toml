@@ -1,0 +1,16 @@
+[package]
+name = "manifest-gen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Build-time codegen: install-manifest.toml (ONE truth) -> per-platform runner data files. Runners parse nothing."
+
+[[bin]]
+name = "manifest-gen"
+path = "src/main.rs"
+
+# Deliberately tiny dep surface — this is a bootstrap tool (M5 pin 3: it is
+# itself a dev-tier manifest module, so the toolchain builds it early/cheap).
+[dependencies]
+serde = { workspace = true }
+toml = "0.8"

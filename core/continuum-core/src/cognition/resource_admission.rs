@@ -493,7 +493,24 @@ mod tests {
     fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
         let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let max = crate::cognition::serving_plan::MAX_LANES as usize;
-        assert_eq!(inflight_model_calls(), 0, "gauge starts clean");
+        // The gauge is PROCESS-global and TEST_SERIAL only serializes THIS
+        // module's tests — a test elsewhere in the crate that walks the
+        // admission path holds an InflightModelCall guard for a moment, and CI's
+        // scheduling (unlike local) can overlap it with our baseline read (the
+        // deterministic-local/flaky-CI split, canary red 2026-07-25). Bounded
+        // drain-wait: transient cross-module guards drop in microseconds; a
+        // LEAK still fails loudly below with the real count named.
+        for _ in 0..200 {
+            if inflight_model_calls() == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            inflight_model_calls(),
+            0,
+            "gauge did not drain to zero — a cross-module InflightModelCall guard leaked"
+        );
         assert!(!shared_model_saturated(), "idle model is not saturated");
 
         let mut guards: Vec<InflightModelCall> = Vec::new();
