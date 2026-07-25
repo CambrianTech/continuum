@@ -90,6 +90,12 @@ try {
     Mod-CUDA
     Mod-GhAuth -WantsGrid:$WantsGrid
 
+    # Grid transport reachability: Windows Firewall silently drops inbound peer
+    # dials to the airc daemon unless it's allowed -- an asymmetric route failure
+    # that breaks cross-grid delivery + peer-dialed inference. Grid-only; one gsudo
+    # UAC (shared). A fresh grid box must not need a manual firewall click.
+    Mod-AircFirewall -WantsGrid:$WantsGrid
+
     # Cold storage: auto-detect a large drive and route models + build cache there
     # (migrating what's on the system drive) BEFORE the build, so cargo builds into
     # the relocated cache. No-op on single-drive machines. Reconfigurable later.

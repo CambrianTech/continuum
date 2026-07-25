@@ -373,6 +373,43 @@ function Mod-GhAuth {
     else { Write-Warn2 'GitHub login not completed -- re-run install to finish, or: gh auth login' }
 }
 
+function Mod-AircFirewall {
+    param([switch]$WantsGrid)
+    # airc (the grid transport) listens for inbound PEER DIALS on an ephemeral TCP
+    # port. Windows Firewall is ON by default on all profiles and SILENTLY DROPS
+    # those inbound SYNs unless the airc daemon is allowed -- which manifests as a
+    # baffling ASYMMETRIC route failure: outbound works (your messages reach peers),
+    # but peers can't dial in, so cross-grid delivery + peer-dial (e.g. another node
+    # routing inference to this box) never connect. A hand-added rule is a manual
+    # step that a fresh grid box won't have -- so it belongs in the installer.
+    #
+    # A PROGRAM rule (allow airc.exe on ANY port) survives the daemon's ephemeral-
+    # port churn. Grid-only: local serving never needs inbound peer dials. Uses the
+    # single gsudo UAC (Ensure-Elevated) shared with the other machine-scope modules.
+    if (-not $WantsGrid) { Module-Skip 'airc-firewall' 'local-only (no grid) -- no inbound peer dials'; return }
+
+    # Locate the airc grid-transport binary; skip cleanly if airc isn't installed.
+    $airc = (Get-Command airc -ErrorAction SilentlyContinue).Source
+    if (-not $airc) { $airc = Join-Path $env:USERPROFILE '.local\bin\airc.exe' }
+    if (-not (Test-Path $airc)) { Module-Skip 'airc-firewall' 'airc not installed -- grid transport absent'; return }
+
+    $ruleName = 'airc daemon inbound (continuum grid)'
+    if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
+        Module-Skip 'airc-firewall' 'inbound rule already present'; return
+    }
+
+    Module-Start 'airc-firewall' 'allowing airc daemon inbound (peers must dial in for the grid)'
+    Ensure-Elevated
+    $add = "New-NetFirewallRule -DisplayName '$ruleName' -Program '$airc' -Direction Inbound -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null"
+    Invoke-Elevated -CommandLine @('powershell', '-NoProfile', '-Command', $add)
+    if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
+        Module-Done 'airc-firewall'
+        Write-Ok "airc inbound allowed -> peers can dial this node for the grid (program rule, ephemeral-port safe)"
+    } else {
+        Write-Warn2 'airc-firewall: rule not present after add -- peers may not be able to dial in (was the UAC approved?).'
+    }
+}
+
 function Mod-BuildCore {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     $core = Join-Path $RepoRoot 'core\continuum-core'

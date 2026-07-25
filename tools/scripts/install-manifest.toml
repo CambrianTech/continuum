@@ -81,6 +81,27 @@ accept = "gh auth status"
 type = "command"
 run = "gh auth login --hostname github.com --git-protocol https --web"
 
+# airc grid-transport inbound reachability. Windows Firewall (on by default, all
+# profiles) silently DROPS inbound peer dials to the airc daemon unless it's
+# allowed -- an asymmetric route failure (outbound works, peers can't dial in)
+# that breaks cross-grid delivery + peer-dialed inference. Grid-only; needs the
+# one gsudo UAC. A PROGRAM rule survives the daemon's ephemeral-port churn. The
+# runner resolves the airc binary path (Mod-AircFirewall). Windows-only: Linux/
+# macOS LAN nodes don't drop inbound by default (add a ufw rule only if ufw is
+# active -- follow-up on the bash runner).
+[[module]]
+id = "airc-firewall"
+order = 27
+tier = 0
+flags = ["grid"]
+applies = "has-airc"     # runner skips when the airc grid transport isn't installed
+platforms = ["windows"]
+accept = "netsh advfirewall firewall show rule name=\"airc daemon inbound (continuum grid)\""
+[module.sources.windows]
+type = "command"
+# path resolved by the runner (Get-Command airc / ~/.local/bin/airc.exe)
+run = "New-NetFirewallRule -DisplayName 'airc daemon inbound (continuum grid)' -Direction Inbound -Action Allow -Profile Any"
+
 # ── Tier 3: build toolchain (dev / --dev; end users get prebuilt binaries) ────
 
 # The manifest projector itself — a dev-tier module so the toolchain bootstraps
