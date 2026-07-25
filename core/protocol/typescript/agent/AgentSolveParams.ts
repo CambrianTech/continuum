@@ -43,7 +43,9 @@ run_id?: string,
  * stale beliefs: a day of python tasks consolidates into python facts, and the
  * dream's supersession review demotes "you work with main.rs" — work IS training.
  * The measurement fork itself stays #59-isolated either way; only the lesson
- * crosses back. Default false (external harnesses opt in).
+ * crosses back. Default TRUE — a living being learns from her work (Joel
+ * 2026-07-23: "learn should be default anyway"); a harness wanting a
+ * memoryless measurement opts OUT with `learn:false`.
  */
 learn?: boolean, 
 /**
