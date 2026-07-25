@@ -120,6 +120,6 @@ finally {
 
 Write-Host ''
 Write-Ok 'Continuum native install complete.'
-Write-Host '  Start:  npm start'
+Write-Host '  Start:  .\start.ps1     (ensures grid inbound every start, then launches)'
 Write-Host '  Test:   cu ping'
 Write-Host ''

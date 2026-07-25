@@ -587,7 +587,7 @@ function Mod-Run {
     if (Test-Path $bin) {
         Module-Done 'run'
         Write-Ok "continuum-core-server.exe ready: $bin"
-        Write-Host '    Start the full system with:  npm start'
+        Write-Host '    Start the full system with:  .\start.ps1  (headless rust; ensures grid inbound, then launches)'
     } else {
         Write-Warn2 "serving binary not found at $bin -- the build step may not have completed."
     }
