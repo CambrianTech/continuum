@@ -82,6 +82,28 @@ function controlBtn(opts: {
 
 /** The live call face. Anti-disappearance: an empty room renders its honest
  *  empty state inside the same frame; the controls bar always renders. */
+/** The call composition — TikTok's own two canonical layouts
+ *  (docs/images/reference/tiktok-live/panel-vs-grid-canonical.jpeg):
+ *  PANEL when someone is SPEAKING (the active speaker takes the full bleed,
+ *  everyone else shrinks to a right rail — driven by the REAL StreamDelta
+ *  rail, so focus follows actual tokens, never a timer), GRID otherwise
+ *  (equal tiles). `data-composition` carries the state for CSS + tests. */
+function renderComposition(body: LiveContentBody): TemplateResult {
+  const focused = body.participants.find((p) => p.speaking);
+  if (focused) {
+    const rail = body.participants.filter((p) => p.id !== focused.id);
+    return html`<div class="live-panel" data-composition="panel">
+      <div class="live-stage">${participantTile(focused)}</div>
+      ${rail.length > 0
+        ? html`<div class="live-rail">${rail.map(participantTile)}</div>`
+        : nothing}
+    </div>`;
+  }
+  return html`<div class="live-grid" data-composition="grid" data-count=${body.participants.length}>
+    ${body.participants.map(participantTile)}
+  </div>`;
+}
+
 export function renderLive(body: LiveContentBody): TemplateResult {
   const hangup = (e: Event): void => {
     fireLiveFaceToggle(e, false);
@@ -105,9 +127,7 @@ export function renderLive(body: LiveContentBody): TemplateResult {
       ? html`<div class="live-empty">
           No one is in this room yet — tiles light up as citizens arrive.
         </div>`
-      : html`<div class="live-grid" data-count=${body.participants.length}>
-          ${body.participants.map(participantTile)}
-        </div>`}
+      : renderComposition(body)}
     ${body.caption
       ? html`<div class="live-caption" aria-live="polite">
           <span class="live-caption-name">${body.caption.speakerName}:</span>

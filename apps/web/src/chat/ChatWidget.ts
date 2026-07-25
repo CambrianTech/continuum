@@ -2519,6 +2519,103 @@ export class ChatWidget extends LitElement {
       gap: var(--spacing-md);
       align-content: center;
     }
+    /* PANEL composition — TikTok's host-focused layout: the ACTIVE SPEAKER
+       takes the full bleed, everyone else shrinks to a right rail (the
+       reference's panel-vs-grid canonical). Focus follows the REAL token
+       rail — whoever is streaming speaks the stage. */
+    .live-panel {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 132px;
+      gap: var(--spacing-md);
+      min-height: 0;
+    }
+    .live-stage {
+      display: grid;
+      min-height: 0;
+    }
+    .live-stage .live-tile {
+      aspect-ratio: auto;
+      height: 100%;
+    }
+    .live-stage .live-avatar {
+      width: 132px;
+      height: 132px;
+      font-size: 64px;
+    }
+    .live-rail {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .live-rail .live-tile {
+      aspect-ratio: 4 / 3;
+      flex: none;
+    }
+    .live-rail .live-avatar {
+      width: 44px;
+      height: 44px;
+      font-size: 22px;
+    }
+    .live-rail .live-name {
+      font-size: 9px;
+    }
+    /* MOBILE full-bleed — the TikTok-native register (card 0dd1123c): the
+       call face IS the screen; head + caption + controls float as overlays,
+       the rail hugs the right edge, controls become a floating bottom bar. */
+    @media (max-width: 720px) {
+      .live-room {
+        padding: 0;
+        gap: 0;
+        position: relative;
+      }
+      .live-head {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        z-index: 3;
+        padding: var(--spacing-md);
+        background: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent);
+      }
+      .live-panel {
+        grid-template-columns: 1fr;
+      }
+      .live-panel .live-stage .live-tile,
+      .live-grid[data-count='1'] .live-tile {
+        border-radius: 0;
+        border: none;
+      }
+      .live-rail {
+        position: absolute;
+        right: var(--spacing-sm);
+        top: 64px;
+        bottom: 120px;
+        width: 84px;
+        z-index: 2;
+      }
+      .live-caption {
+        position: absolute;
+        left: var(--spacing-md);
+        right: 100px;
+        bottom: 88px;
+        z-index: 3;
+        background: rgba(0, 0, 0, 0.45);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-sm) var(--spacing-md);
+      }
+      .live-controls {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 3;
+        padding: var(--spacing-md);
+        background: linear-gradient(0deg, rgba(0, 0, 0, 0.55), transparent);
+      }
+    }
     /* Wide rooms cap at 4 columns worth of tile width via the minmax above;
        small screens fall to 1–2 columns naturally. */
     .live-tile {
@@ -2766,7 +2863,20 @@ export class ChatWidget extends LitElement {
       .genome-panel {
         display: none;
       }
+    
+      /* LIVE takes the phone (TikTok-native, card 0dd1123c): when the call face
+         is the content, the who-strip and tab chrome yield — the face IS the
+         screen; head/caption/controls float as overlays per the reference set. */
+      .panels:has(.live-room) {
+        grid-template-rows: 1fr;
+      }
+      .panels:has(.live-room) .who,
+      .panels:has(.live-room) ~ .tabbar,
+      :host([data-live-mobile]) .tabs {
+        display: none;
+      }
     }
+
 
     /* ── UNIVERSE: tron ── the SAME app, re-embodied as a neon grid portal. Not a
        theme swap — an EXPERIENCE ([[universe-is-an-experience-not-a-theme]]): the grid

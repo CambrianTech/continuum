@@ -86,3 +86,26 @@ describe('renderLive (Lit)', () => {
     expect(joined).toContain('No one is in this room yet');
   });
 });
+
+// what this catches: the composition rule — TikTok's two canonical layouts
+// driven by the REAL token rail: someone speaking ⇒ PANEL (speaker takes the
+// stage, everyone else in the rail), nobody speaking ⇒ GRID of equals.
+// Regression here = the stage stops following actual speech.
+it('composes panel when someone speaks, grid when nobody does', () => {
+  const speaking = flatten(renderLive(body())).join('');
+  expect(speaking).toContain('data-composition="panel"');
+  expect(speaking).toContain('live-stage');
+  expect(speaking).toContain('live-rail');
+  const idle = flatten(
+    renderLive(
+      body({
+        participants: [
+          { id: 'asha', name: 'Asha', kind: 'agent', active: true, speaking: false, runtime: '' },
+          { id: 'joel', name: 'Joel', kind: 'human', active: true, speaking: false, runtime: '' },
+        ],
+      }),
+    ),
+  ).join('');
+  expect(idle).toContain('data-composition="grid"');
+  expect(idle).not.toContain('live-rail');
+});
