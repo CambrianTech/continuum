@@ -539,12 +539,18 @@ impl AdmissionState {
                 self.seen_events
                     .record(r.message_id.clone(), engram.admitted_at_ms);
             }
-            EngramOrigin::Tool(_) | EngramOrigin::SelfReflection { .. } => {
-                // Tool + SelfReflection origins don't carry a content_hash
-                // string on a uniform field — dedup for those paths lands
-                // when the tool/reflection ingestion converters land
-                // (later PR). For now the admit path doesn't synthesize
-                // these origins from the inbox path.
+            EngramOrigin::Tool(_)
+            | EngramOrigin::SelfReflection { .. }
+            | EngramOrigin::Agent(_) => {
+                // Tool + SelfReflection + Agent origins don't carry a
+                // content_hash on a uniform field — dedup for those paths
+                // lands when their ingestion converters land (later PR).
+                // For Agent specifically: the `/remember` converter (agent
+                // side) either hashes engram.content or AgentRef grows a
+                // content_hash — a co-design call, tracked in the bridge doc.
+                // Re-remembering the SAME lesson STRENGTHENS via the
+                // RecallMetadata sidecar below, which is the consolidation
+                // the bridge is actually for.
             }
         }
 
@@ -1102,6 +1108,9 @@ pub enum EngramOriginKind {
     Airc,
     Tool,
     SelfReflection,
+    /// Authored by an external agent via the agent-memory bridge
+    /// (`docs/cognition/AGENT-MEMORY-BRIDGE.md`).
+    Agent,
 }
 
 impl From<&EngramOrigin> for EngramOriginKind {
@@ -1111,6 +1120,7 @@ impl From<&EngramOrigin> for EngramOriginKind {
             EngramOrigin::Airc(_) => Self::Airc,
             EngramOrigin::Tool(_) => Self::Tool,
             EngramOrigin::SelfReflection { .. } => Self::SelfReflection,
+            EngramOrigin::Agent(_) => Self::Agent,
         }
     }
 }
@@ -2097,9 +2107,42 @@ mod tests {
         let airc = synthetic_engram_with_airc_origin("y", "evt-1");
         assert_eq!(EngramOriginKind::from(&chat.origin), EngramOriginKind::Chat);
         assert_eq!(EngramOriginKind::from(&airc.origin), EngramOriginKind::Airc);
+        // Agent origin (agent-memory bridge) maps to EngramOriginKind::Agent.
+        let agent_origin = EngramOrigin::Agent(crate::persona::engram::AgentRef {
+            agent_peer_id: Uuid::new_v4(),
+            session: None,
+            origin_hint: None,
+        });
+        assert_eq!(EngramOriginKind::from(&agent_origin), EngramOriginKind::Agent);
         // Tool + SelfReflection variants exist on EngramOrigin (per PR-1)
         // and are covered by the From impl's exhaustive match — no need
         // to construct them here; the compiler enforces coverage.
+    }
+
+    /// What this catches: an Agent origin serializes with tag "Agent" and its
+    /// AgentRef payload (agent_peer_id required, session/origin_hint optional),
+    /// and round-trips back to EngramOriginKind::Agent. The wire shape is what
+    /// the agent-memory bridge's /remember + /recall commands depend on; a
+    /// serde-tag drift would silently break cross-agent recall.
+    #[test]
+    fn agent_origin_serde_round_trips_with_required_peer_id() {
+        use crate::persona::engram::AgentRef;
+        let me = Uuid::new_v4();
+
+        let origin = EngramOrigin::Agent(AgentRef {
+            agent_peer_id: me,
+            session: Some("sess-1".into()),
+            origin_hint: None,
+        });
+        let json = serde_json::to_value(&origin).unwrap();
+        assert_eq!(json["kind"], "Agent");
+        assert_eq!(json["ref"]["agent_peer_id"], me.to_string());
+        // origin_hint is None → omitted (ts optional / serde skips nothing by
+        // default, so it's present-but-null); session present.
+        assert_eq!(json["ref"]["session"], "sess-1");
+
+        let back: EngramOrigin = serde_json::from_value(json).unwrap();
+        assert_eq!(EngramOriginKind::from(&back), EngramOriginKind::Agent);
     }
 
     /// What this catches: Admit (NOT Quarantine) records BOTH content_hash
