@@ -28,6 +28,7 @@ pub mod gossip;
 pub mod grid;
 pub mod lease;
 pub mod recursion_depth;
+pub mod residency_detect;
 pub mod score;
 pub mod sim;
 
