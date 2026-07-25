@@ -34,6 +34,7 @@ pub mod consciousness_context;
 pub mod load_corpus;
 pub mod multi_layer_recall;
 pub mod recall_hook;
+pub mod remember;
 
 use append_event::MemoryAppendEvent;
 use append_memory::MemoryAppendMemory;
@@ -41,6 +42,7 @@ use consciousness_context::MemoryConsciousnessContext;
 use load_corpus::MemoryLoadCorpus;
 use multi_layer_recall::MemoryMultiLayerRecall;
 use recall_hook::MemoryRecallHook;
+use remember::MemoryRemember;
 
 /// Result of an incremental append (`memory/append-memory`, `memory/append-event`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -59,6 +61,7 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(MemoryLoadCorpus { state: state.clone() }),
         Arc::new(MemoryMultiLayerRecall { state: state.clone() }),
         Arc::new(MemoryRecallHook { state: state.clone() }),
+        Arc::new(MemoryRemember { state: state.clone() }),
         Arc::new(MemoryConsciousnessContext { state: state.clone() }),
         Arc::new(MemoryAppendMemory { state: state.clone() }),
         Arc::new(MemoryAppendEvent { state }),
