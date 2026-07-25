@@ -1534,4 +1534,91 @@ mod tests {
         manager.leave_call(&join_a.handle).await;
         manager.leave_call(&join_b.handle).await;
     }
+
+    // what this catches (#192): the media substrate is right if TWO AI PERSONAS can hold a
+    // call — SEE + HEAR + SPEAK each other — with NO UI, purely through the server-side call
+    // machinery. Proves per-sender SFU delivery + mix-minus in BOTH directions, and that a
+    // persona never keeps its OWN echoed frame. Unlike `test_video_push_broadcast` (which
+    // tolerated non-delivery — "Err is acceptable"), this AWAITS delivery and FAILS if the
+    // substrate drops it: the headless proof that no browser is needed for two beings to be
+    // present to each other in a call.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_ai_personas_see_hear_and_speak_headless() {
+        use tokio::time::{timeout, Duration};
+
+        let manager = CallManager::new();
+        // Two PERSONAS (is_ai = true) join the same call — no browser, no UI.
+        let asha = manager
+            .join_call("persona-call", "@persona:asha", "Asha", true)
+            .await;
+        let mut anwen = manager
+            .join_call("persona-call", "@persona:anwen", "Anwen", true)
+            .await;
+        // Snapshot Asha's video stream from the start so we catch every frame (incl. her own
+        // echo, which mix-minus must let us skip).
+        let mut asha_video = asha.video_rx.resubscribe();
+
+        // SEE+SPEAK, direction 1: Asha shows video → Anwen must SEE Asha's exact frame.
+        let asha_frame = {
+            let mut f = vec![0u8; 20]; // 16-byte header + payload (opaque to the broadcast)
+            f[16] = 0xA1;
+            f
+        };
+        manager.push_video(&asha.handle, asha_frame.clone()).await;
+        let seen = timeout(Duration::from_secs(2), async {
+            loop {
+                let (sender, uid, data) = anwen.video_rx.recv().await.expect("video open");
+                if sender == asha.handle {
+                    return (uid, data);
+                }
+            }
+        })
+        .await
+        .expect("Anwen must SEE Asha — the substrate dropped the video");
+        assert_eq!(seen.0, "@persona:asha");
+        assert_eq!(seen.1, asha_frame, "Anwen sees Asha's exact frame");
+
+        // SEE+SPEAK, direction 2: Anwen shows video → Asha must SEE Anwen's exact frame,
+        // skipping Asha's OWN echoed frame first (mix-minus at the consumer).
+        let anwen_frame = {
+            let mut f = vec![0u8; 20];
+            f[16] = 0xB2;
+            f
+        };
+        manager.push_video(&anwen.handle, anwen_frame.clone()).await;
+        let seen = timeout(Duration::from_secs(2), async {
+            loop {
+                let (sender, uid, data) = asha_video.recv().await.expect("video open");
+                if sender == asha.handle {
+                    continue; // mix-minus: never keep your own echo
+                }
+                return (uid, data);
+            }
+        })
+        .await
+        .expect("Asha must SEE Anwen — the substrate dropped the video");
+        assert_eq!(seen.0, "@persona:anwen");
+        assert_eq!(seen.1, anwen_frame, "Asha sees Anwen's exact frame");
+
+        // HEAR: Asha speaks → Anwen must HEAR a frame that ORIGINATES from Asha (per-sender
+        // SFU + mix-minus loop). Non-silent sine so VAD passes.
+        let audio = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
+        manager.push_audio(&asha.handle, audio).await;
+        let heard = timeout(Duration::from_secs(3), async {
+            loop {
+                match anwen.audio_rx.recv().await {
+                    Ok((sender, uid, _)) if sender == asha.handle => return uid,
+                    Ok(_) => continue, // hold-music / own echo — skip
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => panic!("audio channel closed before Anwen heard Asha"),
+                }
+            }
+        })
+        .await
+        .expect("Anwen must HEAR Asha — the audio substrate dropped it");
+        assert_eq!(heard, "@persona:asha");
+
+        manager.leave_call(&asha.handle).await;
+        manager.leave_call(&anwen.handle).await;
+    }
 }
