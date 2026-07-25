@@ -280,16 +280,41 @@ mod tests {
     // append mutated only the in-process corpus and session 2 recalled nothing.
     #[tokio::test(flavor = "multi_thread")]
     async fn append_memory_survives_a_core_restart() {
+        roundtrip_survives_restart("roundtrip-test-persona", "the grid password is tangerine").await;
+    }
+
+    // what this catches (#224): the SAME durable-survival must hold for AGENT and HUMAN
+    // citizens, not just personas — "both agents (me + BigMama) and humans (Joel) get the same
+    // ORM-backed engram; no one re-boots amnesiac." `persona_db_handle` routes the `@agent:` /
+    // `@human:` sentinels to their OWN store buckets (agents/, humans/); if that routing or a
+    // bucket's hydrate-on-miss were wrong, an agent would forget across a restart while
+    // personas remembered. Regression guard for the citizenship-homes work.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_citizen_memory_survives_a_core_restart() {
+        roundtrip_survives_restart("@agent:claude-code", "seam-2 lands in genome eviction").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn human_citizen_memory_survives_a_core_restart() {
+        roundtrip_survives_restart("@human:joel", "the raid drives were 420 at microcenter").await;
+    }
+
+    /// Shared body: append a memory for `persona_id` through the real dispatch chain, prove the
+    /// durable row lands in THAT citizen's bucket, then boot a FRESH manager (the restart) and
+    /// assert recall hydrates it from the store. Parameterized over the citizen id so
+    /// persona / `@agent:` / `@human:` all exercise the identical write-through + hydrate path.
+    async fn roundtrip_survives_restart(persona_id: &str, secret: &str) {
         use crate::runtime::module_harness::ModuleHarness;
 
+        let safe = persona_id.replace(|c: char| matches!(c, ':' | '/' | '@'), "_");
         let home = std::env::temp_dir().join(format!(
-            "memory-roundtrip-{}-{:?}",
+            "memory-roundtrip-{}-{}-{:?}",
+            safe,
             std::process::id(),
             std::thread::current().id()
         ));
         std::fs::create_dir_all(&home).expect("create temp HOME");
         let _home = HomeGuard::set(&home).await;
-        let persona = "roundtrip-test-persona";
 
         // Session 1: append through the real dispatch chain (memory + data).
         {
@@ -302,26 +327,29 @@ mod tests {
                 .execute(
                     "memory/append-memory",
                     serde_json::json!({
-                        "persona_id": persona,
-                        "memory": test_memory(persona, "m-roundtrip-1", "the grid password is tangerine"),
+                        "persona_id": persona_id,
+                        "memory": test_memory(persona_id, "m-roundtrip-1", secret),
                     }),
                 )
                 .await
                 .expect("append-memory");
             assert!(appended.appended);
 
-            // The durable row exists NOW — not merely the cache.
+            // The durable row exists NOW — not merely the cache — in THIS citizen's bucket.
             let listed = h
                 .execute_json(
                     "data/list",
                     serde_json::json!({
                         "collection": MEMORIES_COLLECTION,
-                        "dbPath": persona_db_handle(persona),
+                        "dbPath": persona_db_handle(persona_id),
                     }),
                 )
                 .await
                 .expect("data/list");
-            assert_eq!(listed["total"], 1, "append must write through to longterm.db");
+            assert_eq!(
+                listed["total"], 1,
+                "append must write through to {persona_id}'s longterm.db"
+            );
         }
 
         // Session 2: FRESH memory manager (the restart). Recall must hydrate.
@@ -335,7 +363,7 @@ mod tests {
                 .execute(
                     "memory/multi-layer-recall",
                     serde_json::json!({
-                        "persona_id": persona,
+                        "persona_id": persona_id,
                         "room_id": "general",
                         "max_results": 10,
                     }),
@@ -343,11 +371,8 @@ mod tests {
                 .await
                 .expect("multi-layer-recall after restart");
             assert!(
-                recalled
-                    .memories
-                    .iter()
-                    .any(|m| m.content.contains("tangerine")),
-                "recall after restart must hydrate from longterm.db; got {:?}",
+                recalled.memories.iter().any(|m| m.content.contains(secret)),
+                "recall after restart must hydrate {persona_id}'s memory from longterm.db; got {:?}",
                 recalled.memories
             );
         }
