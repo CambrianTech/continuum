@@ -82,13 +82,22 @@ pub(crate) const MEMORIES_COLLECTION: &str = "memories";
 /// embedding — e.g. sentinel-written rows — both round-trip.
 const EMBEDDING_KEY: &str = "embedding";
 
-/// Map a persona id to its per-persona data-layer handle. UUID-shaped ids pass
-/// through verbatim (`resolve_handle` maps them to
-/// `~/.continuum/personas/<uuid>/longterm.db` — the live on-disk layout);
-/// anything else uses the `@persona:<slug>` sentinel. ONE mapping, derived
-/// from the data module's own shape check.
+/// Map a citizen id to its per-citizen data-layer handle. Three shapes, so the
+/// SAME memory command serves persona / agent / human (first-class citizenship,
+/// Joel 2026-07-25):
+///  - an EXPLICIT sentinel (`@agent:claude-code`, `@human:joel`, `@persona:Asha`)
+///    passes through verbatim → its own bucket (this is how an agent's
+///    `/continuum:memory` writes land in `agents/<name>/`, its durable
+///    amnesia-fixing home);
+///  - a UUID-shaped id passes through → the live `personas/<uuid>/` layout;
+///  - a bare slug defaults to `@persona:<slug>` (back-compat — the unchanged
+///    persona contract).
 pub(crate) fn persona_db_handle(persona_id: &str) -> String {
-    if crate::modules::data::is_uuid_shape(persona_id) {
+    if persona_id.starts_with("@agent:")
+        || persona_id.starts_with("@human:")
+        || persona_id.starts_with("@persona:")
+        || crate::modules::data::is_uuid_shape(persona_id)
+    {
         persona_id.to_string()
     } else {
         format!("@persona:{persona_id}")
@@ -397,6 +406,13 @@ mod tests {
             "90e758b2-3cf3-45c1-b100-de7c4ab5a549"
         );
         assert_eq!(persona_db_handle("helper"), "@persona:helper");
+        // First-class citizenship: an explicit kind sentinel passes through to
+        // its OWN bucket, so a Claude Code / Codex agent's /continuum:memory
+        // writes land in agents/<name>/ (durable, own-dir — the amnesia fix),
+        // and a human's in humans/<name>/.
+        assert_eq!(persona_db_handle("@agent:claude-code"), "@agent:claude-code");
+        assert_eq!(persona_db_handle("@human:joel"), "@human:joel");
+        assert_eq!(persona_db_handle("@persona:Asha"), "@persona:Asha");
     }
 
     // what this catches: the five memory commands carry their `memory/<verb>` wire
