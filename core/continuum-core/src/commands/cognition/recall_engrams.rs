@@ -123,10 +123,11 @@ crate::action_command! {
                     "airc" => EngramOriginKind::Airc,
                     "tool" => EngramOriginKind::Tool,
                     "self_reflection" => EngramOriginKind::SelfReflection,
+                    "agent" => EngramOriginKind::Agent,
                     other => {
                         return Err(CommandError::Invalid(format!(
                             "unknown origin kind '{other}'; expected one of: \
-                             chat, airc, tool, self_reflection"
+                             chat, airc, tool, self_reflection, agent"
                         )))
                     }
                 };
