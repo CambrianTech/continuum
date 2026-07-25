@@ -517,6 +517,11 @@ impl AIProviderModule {
             self.log().info("Registering llama-server gateway adapter");
             match build_gateway_adapter(snap.base_url.clone(), snap.active_model.as_deref()).await {
                 Ok(a) => {
+                    // Idempotent registration (the 5090 #2 mystery, 2026-07-25):
+                    // EVERY gateway registration site deregister-sweeps first, so
+                    // no path ordering can ever mint a collision-suffixed twin —
+                    // whichever fired first, last-writer replaces.
+                    registry.deregister(crate::inference::llama_server::PROVIDER_ID);
                     registry.register(Arc::new(a), 9);
                     gateway_registered = true;
                     gateway_synced = Some((snap.base_url, snap.active_model));
