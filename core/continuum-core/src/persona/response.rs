@@ -687,6 +687,29 @@ async fn run_render(
         persona_id: Some(input.persona.persona_id.to_string()),
     };
 
+    // #108 STEP 2 (cross-grid sprint, LaneDecision contract stamped 2026-07-24):
+    // the lane decision now runs on EVERY persona pre-inference path — the live
+    // caller the remote adapter (BigMama's step 3) lands against. THIS slice
+    // decides-and-RADIATES: the decision is computed from the live grid ledger +
+    // governed VRAM and probed; dispatch honors only the Local arm (a Remote
+    // decision is recorded for the glass box, then served locally) until step 4
+    // branches the select to provider="airc-remote". Leasability is typed at the
+    // seam: media on the turn needs THIS node's artifacts → LocalOnly; pure text
+    // may cross the compute-lease boundary ([[compute-lease-boundary]]).
+    let leasability = if input.message_media.is_empty() {
+        crate::capacity::lease::Leasability::TextOnly
+    } else {
+        crate::capacity::lease::Leasability::LocalOnly
+    };
+    let lane = crate::capacity::lease::decide_render_lane(leasability);
+    crate::probe!(
+        class = "capacity.lane_decision",
+        persona = %input.persona.persona_id,
+        model = input.model.as_str(),
+        decision = ?lane,
+        "pre-inference lane decision (step-2 slice: Remote is recorded, dispatch stays local until step 4)",
+    );
+
     // 4. Pick an adapter via the global registry — capability-routed,
     //    no hardcoded provider name. "local" + Auto = "best available
     //    LOCAL adapter that honestly supports the requested model,
