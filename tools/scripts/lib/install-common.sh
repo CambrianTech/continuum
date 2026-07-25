@@ -151,6 +151,13 @@ _COLD_MIN_FREE_KB=$((256 * 1024 * 1024))   # 256 GB, in df -Pk (1K) units
 
 # Print the roomiest eligible mountpoint (>= min free, not the $HOME fs, not a
 # pseudo fs), or nothing.
+#
+# WSL-aware (the primary target: a Linux core under Windows). Windows drives
+# mount at /mnt/<letter> via drvfs; /mnt/c is the Windows SYSTEM drive (exclude
+# like /), /mnt/d.. are the large data drives (a 16TB D: shows up here). Writing
+# to /mnt/d/continuum-cold IS the Windows D: drive, reachable from both WSL and
+# native Windows — cold storage + the genome pager's backing store land on the
+# big drive automatically under WSL too.
 _cold_drive() {
   local home_src; home_src="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2{print $1}')"
   df -Pk 2>/dev/null | awk -v home="$home_src" -v min="$_COLD_MIN_FREE_KB" '
@@ -158,6 +165,8 @@ _cold_drive() {
       mp=$6
       if (mp ~ /^\/(proc|sys|dev|run|snap|boot)(\/|$)/) next
       if (mp=="/") next
+      if (mp ~ /^\/mnt\/wsl(\/|$)/) next   # WSL-internal mounts, never storage
+      if (mp=="/mnt/c") next               # Windows SYSTEM drive under WSL — exclude like /
       if ($4>max) { max=$4; best=mp }
     }
     END { if (best!="") print best }'
