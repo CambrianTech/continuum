@@ -225,6 +225,21 @@ function Mod-VSBuildTools {
         -TestCmd { Test-VCTools }
 }
 
+function Set-CMakeEnv {
+    # Make our per-user cmake findable by EVERY future build shell, not just the
+    # install session. The cmake-rs crate (llama's build.rs) honors the `CMAKE`
+    # env var for the binary path -- exactly as bindgen honors LIBCLANG_PATH -- so
+    # persisting CMAKE means a plain `cargo build` from a fresh terminal works, not
+    # only `npm start` (which re-runs install and re-adds cmake to the session PATH
+    # each time). PATH-safe: we set a named var, not mutate persistent PATH. Mirrors
+    # Mod-LLVM's LIBCLANG_PATH persistence so the toolchain env is automatic.
+    param([Parameter(Mandatory)][string]$Bin)
+    $exe = Join-Path $Bin 'cmake.exe'
+    $env:CMAKE = $exe
+    [Environment]::SetEnvironmentVariable('CMAKE', $exe, 'User')   # persist for future sessions
+    if ($env:PATH -notlike "*$Bin*") { $env:PATH = "$Bin;$env:PATH" }  # also on PATH for direct CLI this session
+}
+
 function Mod-CMake {
     # Standalone Kitware CMake (knows every VS generator string, unlike the
     # VS-bundled one). Downloaded + extracted per-user -- NO admin.
@@ -232,7 +247,7 @@ function Mod-CMake {
     $dir = Join-Path $env:USERPROFILE '.continuum\tools\cmake'
     $bin = Join-Path $dir 'bin'
     if (Test-Path (Join-Path $bin 'cmake.exe')) {
-        if ($env:PATH -notlike "*$bin*") { $env:PATH = "$bin;$env:PATH" }
+        Set-CMakeEnv $bin
         Module-Skip 'CMake' "present at $dir"; return
     }
     Module-Start 'CMake' 'downloading Kitware CMake (no admin)'
@@ -248,7 +263,7 @@ function Mod-CMake {
     New-Item -ItemType Directory -Force $dir | Out-Null
     Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $dir -Recurse -Force
     Remove-Item -Recurse -Force $tmp, $zip -ErrorAction SilentlyContinue
-    if (Test-Path (Join-Path $bin 'cmake.exe')) { $env:PATH = "$bin;$env:PATH"; Module-Done 'CMake' }
+    if (Test-Path (Join-Path $bin 'cmake.exe')) { Set-CMakeEnv $bin; Module-Done 'CMake' }
     else { Module-Fail 'CMake' "cmake.exe not found after extract to $dir" }
 }
 
