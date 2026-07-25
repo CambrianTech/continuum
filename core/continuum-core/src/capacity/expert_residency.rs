@@ -95,25 +95,10 @@ pub struct ExpertResidencyPlan {
     pub cold: Vec<ExpertId>,
 }
 
-/// Decide expert residency for one lane against LIVE capacity. The pure brain.
-///
-/// - `hot` = the top experts by combined priority that fit live free VRAM after
-///   the margin (`lanes_that_fit` — the SAME fit rule everywhere).
-/// - `warm` = the next tier that fits system RAM (fault-to-GPU per token).
-/// - `cold` = the rest (frozen on disk, faulted on a miss).
-///
-/// Degenerate-safe: `expert_bytes == 0` (unmeasured) puts everything WARM
-/// (honest "don't pin what we can't size" — never a false hot claim). An empty
-/// profile with sized experts still fits a hot tier by count; priority is 0 so
-/// the choice is arbitrary-but-bounded until live hits arrive.
-pub fn plan_expert_residency(
-    profile: &ExpertActivationProfile,
-    cap: &DeviceCapacity,
-    expert_bytes: u64,
-    margin_bytes: u64,
-) -> ExpertResidencyPlan {
+/// Experts known to the profile, highest residency-priority first (stable tiebreak). The one
+/// place the ranking lives — both the 3-tier convenience and the N-tier engine consult it.
+fn ranked_experts(profile: &ExpertActivationProfile) -> Vec<ExpertId> {
     let mut experts = profile.known_experts();
-    // Highest priority first — hot experts are the ones the workload routes to.
     experts.sort_by(|a, b| {
         profile
             .priority(b)
@@ -121,34 +106,146 @@ pub fn plan_expert_residency(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.cmp(b)) // stable, deterministic tiebreak
     });
+    experts
+}
 
+/// Decide expert residency for one lane against LIVE capacity. The 3-tier convenience view —
+/// hot(VRAM) / warm(RAM) / cold(disk) — which is the 2-promotable-tier special case of
+/// [`plan_tiered_residency`] (VRAM + RAM). Use the tiered form directly when the machine has a
+/// deeper storage hierarchy (VRAM → RAM → NVMe-flash → cold-RAID — Joel's real box).
+///
+/// - `hot` = the top experts by combined priority that fit live free VRAM after
+///   the margin (`lanes_that_fit` — the SAME fit rule everywhere).
+/// - `warm` = the next tier that fits system RAM (fault-to-GPU per token).
+/// - `cold` = the rest (frozen on the backing store, faulted on a miss).
+///
+/// Degenerate-safe: `expert_bytes == 0` (unmeasured) puts everything WARM
+/// (honest "don't pin what we can't size" — never a false hot claim; RAM-resident also beats
+/// leaving a RAM-capable model on disk). An empty profile with sized experts still fits a hot
+/// tier by count; priority is 0 so the choice is arbitrary-but-bounded until live hits arrive.
+pub fn plan_expert_residency(
+    profile: &ExpertActivationProfile,
+    cap: &DeviceCapacity,
+    expert_bytes: u64,
+    margin_bytes: u64,
+) -> ExpertResidencyPlan {
     if expert_bytes == 0 {
-        // Can't size residency — warm everything (RAM-faulted), pin nothing.
+        // Can't size residency — warm everything (RAM-faulted), pin nothing. The 3-tier view's
+        // RAM tier is its safe fallback; the general N-tier planner has no privileged RAM tier
+        // and instead makes the honest "promote nothing" call (see plan_tiered_residency).
         return ExpertResidencyPlan {
             hot: Vec::new(),
-            warm: experts,
+            warm: ranked_experts(profile),
             cold: Vec::new(),
         };
     }
+    let tiers = [
+        ResidencyTier {
+            medium: ResidencyMedium::Vram,
+            free_bytes: cap.gpu_free_bytes_live,
+        },
+        ResidencyTier {
+            medium: ResidencyMedium::Ram,
+            free_bytes: cap.system_ram_free_bytes,
+        },
+    ];
+    let plan = plan_tiered_residency(profile, &tiers, expert_bytes, margin_bytes);
+    let mut it = plan.tiers.into_iter();
+    let hot = it.next().map(|(_, v)| v).unwrap_or_default();
+    let warm = it.next().map(|(_, v)| v).unwrap_or_default();
+    ExpertResidencyPlan {
+        hot,
+        warm,
+        cold: plan.cold,
+    }
+}
 
-    let hot_cap =
-        lanes_that_fit(cap.gpu_free_bytes_live, margin_bytes, expert_bytes) as usize;
-    let warm_cap =
-        lanes_that_fit(cap.system_ram_free_bytes, margin_bytes, expert_bytes) as usize;
+/// A storage medium in the residency hierarchy, ordered fastest-fault-first. Derived `Ord`
+/// IS the fault-cost order: VRAM (never faults — resident) < RAM (fault-to-GPU per token) <
+/// Flash (NVMe, single-digit-ms miss) < ColdDisk (the RAID that backs every expert). Joel's
+/// box has all four; a MacBook Air collapses to VRAM/UMA + RAM + disk. The planner reads the
+/// tiers it's handed and assumes no particular set exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ResidencyMedium {
+    Vram,
+    Ram,
+    Flash,
+    ColdDisk,
+}
 
-    let mut hot = Vec::new();
-    let mut warm = Vec::new();
+/// One promotable tier: a medium and how many bytes are free on it RIGHT NOW (live, never a
+/// constant — same doctrine as [`DeviceCapacity`]). Caller supplies them hottest-first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResidencyTier {
+    pub medium: ResidencyMedium,
+    pub free_bytes: u64,
+}
+
+/// Where each expert lives this tick across an N-tier hierarchy. `tiers[i]` holds the experts
+/// promoted into the input `tiers[i]` (hottest first); `cold` holds the rest — resident only
+/// on the backing store (the RAID that always holds all 896 experts), faulted up on a miss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TieredResidencyPlan {
+    pub tiers: Vec<(ResidencyMedium, Vec<ExpertId>)>,
+    pub cold: Vec<ExpertId>,
+}
+
+/// Decide expert residency across an ORDERED storage hierarchy. The general pure brain that
+/// [`plan_expert_residency`] is a 2-tier special case of.
+///
+/// **Extra tiers are OPTIONAL, never required.** The baseline is VRAM + RAM + disk and it
+/// just works — a plain laptop (the common case; most users are not ML engineers with RAID
+/// rigs) uses [`plan_expert_residency`] and never touches this. NVMe-flash and cold-RAID are
+/// an *acceleration* for people who happen to have that hardware, offered by handing this
+/// function more tiers — the system asks nobody to buy a drive. Give it whatever the machine
+/// has, from one tier to four; it degrades, never demands.
+///
+/// Every expert already lives on the cold backing store; this promotes the highest-priority
+/// ones up through the tiers, each filled by the SAME `lanes_that_fit` rule against THAT
+/// tier's live free bytes. A tier that fits zero (too full / too small) is skipped and its
+/// experts flow to the next tier with room; whatever exceeds every sized tier stays `cold`.
+///
+/// Degenerate-safe: `expert_bytes == 0` (unmeasured) promotes NOTHING — everything stays on
+/// the cold backing store, because without a size we cannot honestly claim a promotion fits
+/// (never a false pin). An empty profile yields empty tiers + empty cold.
+pub fn plan_tiered_residency(
+    profile: &ExpertActivationProfile,
+    tiers: &[ResidencyTier],
+    expert_bytes: u64,
+    margin_bytes: u64,
+) -> TieredResidencyPlan {
+    let experts = ranked_experts(profile);
+    let mut out: Vec<(ResidencyMedium, Vec<ExpertId>)> =
+        tiers.iter().map(|t| (t.medium, Vec::new())).collect();
+
+    if expert_bytes == 0 {
+        // Can't size any promotion — leave everything on the cold backing store.
+        return TieredResidencyPlan {
+            tiers: out,
+            cold: experts,
+        };
+    }
+
+    // Per-tier capacity by the one fit rule, against each tier's own live free bytes.
+    let caps: Vec<usize> = tiers
+        .iter()
+        .map(|t| lanes_that_fit(t.free_bytes, margin_bytes, expert_bytes) as usize)
+        .collect();
+
     let mut cold = Vec::new();
+    let mut ti = 0usize;
     for e in experts {
-        if hot.len() < hot_cap {
-            hot.push(e);
-        } else if warm.len() < warm_cap {
-            warm.push(e);
+        // Advance past any tier that's full or fits zero — never step back (promotion order).
+        while ti < out.len() && out[ti].1.len() >= caps[ti] {
+            ti += 1;
+        }
+        if ti < out.len() {
+            out[ti].1.push(e);
         } else {
             cold.push(e);
         }
     }
-    ExpertResidencyPlan { hot, warm, cold }
+    TieredResidencyPlan { tiers: out, cold }
 }
 
 #[cfg(test)]
@@ -228,5 +325,88 @@ mod tests {
         assert_eq!(tiny.hot.len(), 1);
         assert_eq!(tiny.warm.len(), 2);
         assert_eq!(tiny.cold.len(), 5, "the rest freeze on disk");
+    }
+
+    // what this catches: the deep hierarchy on Joel's real box (VRAM → RAM → NVMe-flash →
+    // cold-RAID) — the flash tier the 3-tier planner collapsed. The hottest experts must
+    // promote fastest-first, each tier bounded by its OWN live free bytes, the rest staying on
+    // the cold backing store. If tier ordering or the per-tier fit drifts, an expert lands a
+    // tier too slow (flash-fault where it should be VRAM-resident) and locality degrades.
+    #[test]
+    fn four_tier_hierarchy_promotes_hottest_first() {
+        let mut p = ExpertActivationProfile::default();
+        for x in 0..10 {
+            p.hits.insert(e(0, x), 1000 - x as u64); // 0 hottest … 9 coldest
+        }
+        // 2GB/expert, 2GB margin. VRAM 6GB→fits 2, RAM 8GB→3, Flash 10GB→4. 10 experts → 1 cold.
+        let tiers = [
+            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB },
+            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 8 * GB },
+            ResidencyTier { medium: ResidencyMedium::Flash, free_bytes: 10 * GB },
+        ];
+        let plan = plan_tiered_residency(&p, &tiers, 2 * GB, 2 * GB);
+        assert_eq!(plan.tiers[0], (ResidencyMedium::Vram, vec![e(0, 0), e(0, 1)]));
+        assert_eq!(plan.tiers[1], (ResidencyMedium::Ram, vec![e(0, 2), e(0, 3), e(0, 4)]));
+        assert_eq!(
+            plan.tiers[2],
+            (ResidencyMedium::Flash, vec![e(0, 5), e(0, 6), e(0, 7), e(0, 8)])
+        );
+        assert_eq!(plan.cold, vec![e(0, 9)], "the coldest expert stays on the RAID");
+    }
+
+    // what this catches: the tier vector expresses a MULTI-GPU box (Joel's 3×1080ti) with no
+    // special-casing — three VRAM tiers, filled device-by-device before spilling to RAM. This
+    // is the misfit-fleet payoff: the SAME planner consumes each machine's real hierarchy (one
+    // 5090 or three 1080tis) just by handing it a different tier list.
+    #[test]
+    fn multi_gpu_fleet_box_fills_each_vram_tier() {
+        let mut p = ExpertActivationProfile::default();
+        for x in 0..7 {
+            p.hits.insert(e(0, x), 100 - x as u64);
+        }
+        // Three 1080ti VRAM tiers (each fits 2) + a RAM tier (fits many). 7 experts.
+        let tiers = [
+            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB }, // gpu0: fits 2
+            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB }, // gpu1: fits 2
+            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB }, // gpu2: fits 2
+            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 64 * GB },
+        ];
+        let plan = plan_tiered_residency(&p, &tiers, 2 * GB, 2 * GB);
+        assert_eq!(plan.tiers[0].1, vec![e(0, 0), e(0, 1)], "gpu0 gets the two hottest");
+        assert_eq!(plan.tiers[1].1, vec![e(0, 2), e(0, 3)], "gpu1 next");
+        assert_eq!(plan.tiers[2].1, vec![e(0, 4), e(0, 5)], "gpu2 next");
+        assert_eq!(plan.tiers[3].1, vec![e(0, 6)], "the 7th spills to RAM");
+        assert!(plan.cold.is_empty());
+    }
+
+    // what this catches: the N-tier degenerate contracts — unsized promotes NOTHING (all cold,
+    // never a false pin), and a tier that fits zero (too small after margin) is SKIPPED so its
+    // experts flow to the next tier with room rather than being dropped.
+    #[test]
+    fn unsized_promotes_nothing_and_zero_fit_tier_is_skipped() {
+        let mut p = ExpertActivationProfile::default();
+        for x in 0..3 {
+            p.hits.insert(e(0, x), 10);
+        }
+        let tiers = [
+            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB },
+            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 8 * GB },
+        ];
+
+        // Unsized → everything on the cold backing store, tiers empty.
+        let no_size = plan_tiered_residency(&p, &tiers, 0, 0);
+        assert!(no_size.tiers.iter().all(|(_, v)| v.is_empty()), "promote nothing unsized");
+        assert_eq!(no_size.cold.len(), 3, "all on the RAID");
+
+        // VRAM tier too small (3GB free, 2GB margin, 2GB/expert → fits 0) is skipped; RAM
+        // (6GB→fits 2) takes over, the 3rd expert spills cold.
+        let skip = [
+            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 3 * GB },
+            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 6 * GB },
+        ];
+        let plan = plan_tiered_residency(&p, &skip, 2 * GB, 2 * GB);
+        assert!(plan.tiers[0].1.is_empty(), "zero-fit VRAM tier skipped");
+        assert_eq!(plan.tiers[1].1, vec![e(0, 0), e(0, 1)], "RAM tier takes the hot pair");
+        assert_eq!(plan.cold, vec![e(0, 2)]);
     }
 }
