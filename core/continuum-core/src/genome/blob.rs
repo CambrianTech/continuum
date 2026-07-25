@@ -34,37 +34,84 @@ use super::working_set::ArtifactId;
 /// round-trip through the value type or the message bus. This is the tier-aware
 /// handle `ArtifactBlob`'s original `Vec<u8>` doc anticipated.
 ///
-/// A single `Mapped` artifact spanning **N ranges** is one whole MoE expert:
-/// its gate / up / down slices live in separate stacked `*_exps` tensors at
-/// different file offsets, so one expert = N disjoint `(offset, len)` ranges.
-/// Making the expert ONE artifact (not one-per-projection) keeps the residency
-/// decision atomic — an expert is co-resident or not, never half — so the
-/// working-set key is naturally `(layer, expert)`.
+/// A `Mapped` artifact is one **layer's MoE expert set**, memory-mapped from a
+/// backing GGUF. `projections` are the stacked `*_exps` tensors' full `(base,
+/// total_len)` for that layer (2–3: gate/up/down, or fused gate_up/down); each
+/// holds all `n_experts` experts contiguously along dim 0. A single expert's
+/// bytes are the stride-slice `base + e*(total_len/n_experts)` of every
+/// projection — resolved by [`ArtifactSource::expert_ranges`]. One artifact =
+/// one layer set; `PageOffset::Expert{e}` selects the expert, matching the
+/// pre-existing `PageKind::MoEExpert` model ("the artifact is the full expert
+/// set; offset picks one expert"). Residency still keys on the PAGE
+/// (`artifact + offset` = `(layer, expert)`), so it stays per-expert.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ArtifactSource {
     /// Bytes carried inline. LoRA layers, engrams — small enough to move.
     Inline(Vec<u8>),
-    /// Byte ranges within a backing file, memory-mapped on read. The tier
-    /// store accounts capacity from the range lengths and NEVER reads the
+    /// A layer's expert set in a backing file, memory-mapped on read. The tier
+    /// store accounts capacity from the projection lengths and NEVER reads the
     /// bytes on write (trust + audit-budget reasons, same as the id contract).
     Mapped {
-        /// Absolute path to the backing file (e.g. the K3 GGUF on the frozen
-        /// tier drive).
+        /// Absolute path to the backing file (e.g. the K3 GGUF on the frozen tier).
         path: PathBuf,
-        /// `(absolute_offset, len)` byte ranges. Summed for size accounting.
-        ranges: Vec<(u64, u64)>,
+        /// How many experts are stacked along dim 0 of every projection. The
+        /// per-expert stride is `total_len / n_experts`.
+        n_experts: u32,
+        /// Each stacked projection tensor's `(absolute_base_offset, total_len)`
+        /// for the whole layer. 2–3 entries (gate/up/down or fused gate_up/down).
+        projections: Vec<(u64, u64)>,
     },
 }
 
 impl ArtifactSource {
-    /// Physical byte size — the inline length, or the sum of mapped range
-    /// lengths. Must be the *physical* size (what the tier store bills against
-    /// capacity), never a logical one.
+    /// Physical byte size of the WHOLE artifact — the inline length, or the sum
+    /// of the mapped projections' total lengths (the full layer expert set).
+    /// Must be the *physical* size the tier store bills against capacity.
     pub fn size_bytes(&self) -> u64 {
         match self {
             ArtifactSource::Inline(bytes) => bytes.len() as u64,
-            ArtifactSource::Mapped { ranges, .. } => ranges.iter().map(|(_, len)| *len).sum(),
+            ArtifactSource::Mapped { projections, .. } => {
+                projections.iter().map(|(_, total)| *total).sum()
+            }
         }
+    }
+
+    /// Resolve ONE expert's byte ranges within a `Mapped` layer set — the
+    /// stride-slice `base + e*(total/n_experts)` of every projection. This is
+    /// THE single place the stacked-slice math lives: the tier read
+    /// (`PageOffset::Expert{e}`) and per-expert size accounting both call it.
+    /// `None` for an `Inline` source, a zero-expert set, or an out-of-range index.
+    pub fn expert_ranges(&self, expert_index: u32) -> Option<Vec<(u64, u64)>> {
+        match self {
+            ArtifactSource::Inline(_) => None,
+            ArtifactSource::Mapped {
+                n_experts,
+                projections,
+                ..
+            } => {
+                if *n_experts == 0 || expert_index >= *n_experts {
+                    return None;
+                }
+                let e = expert_index as u64;
+                let n = *n_experts as u64;
+                Some(
+                    projections
+                        .iter()
+                        .map(|(base, total)| {
+                            let stride = total / n;
+                            (base + e * stride, stride)
+                        })
+                        .collect(),
+                )
+            }
+        }
+    }
+
+    /// Physical byte size of ONE expert within a `Mapped` set — the sum of its
+    /// per-projection strides. `None` for `Inline` / out-of-range.
+    pub fn expert_size_bytes(&self, expert_index: u32) -> Option<u64> {
+        self.expert_ranges(expert_index)
+            .map(|ranges| ranges.iter().map(|(_, len)| *len).sum())
     }
 }
 
@@ -102,12 +149,23 @@ impl ArtifactBlob {
         }
     }
 
-    /// Construct a file-mapped blob — one whole MoE expert as N `(offset,
-    /// len)` ranges into `path`. Zero-copy: the bytes are never read here.
-    pub fn mapped(id: ArtifactId, path: PathBuf, ranges: Vec<(u64, u64)>) -> Self {
+    /// Construct a file-mapped blob — one layer's MoE expert set, its stacked
+    /// projections given as `(base, total_len)` into `path`. Zero-copy: the
+    /// bytes are never read here. `PageOffset::Expert{e}` + `expert_ranges`
+    /// select an individual expert.
+    pub fn mapped(
+        id: ArtifactId,
+        path: PathBuf,
+        n_experts: u32,
+        projections: Vec<(u64, u64)>,
+    ) -> Self {
         Self {
             id,
-            source: ArtifactSource::Mapped { path, ranges },
+            source: ArtifactSource::Mapped {
+                path,
+                n_experts,
+                projections,
+            },
         }
     }
 
@@ -183,26 +241,51 @@ mod tests {
         assert_eq!(big.size_bytes(), 1_048_576);
     }
 
-    /// What this catches: a Mapped blob's size is the SUM of its range
-    /// lengths, not a byte read — a whole MoE expert (gate+up+down slices
-    /// at different file offsets) bills the tier store for the total of its
-    /// N ranges without ever touching the backing file. If size accounting
-    /// ever tried to read the mapped bytes, this (with a bogus path) would
-    /// break instead of returning the summed length.
+    /// What this catches: a Mapped layer-set blob's size is the SUM of its
+    /// projection total lengths (the WHOLE layer set), not a byte read — the
+    /// tier bills the frozen set without touching the (bogus) backing file.
     #[test]
-    fn mapped_blob_size_is_the_sum_of_range_lengths() {
-        // Three ranges (gate/up/down slices for one expert) at arbitrary
+    fn mapped_blob_size_is_the_sum_of_projection_totals() {
+        // 3 projections (gate/up/down) for a 4-expert layer, at arbitrary
         // offsets in a file that does NOT exist — size must not read it.
-        let expert = ArtifactBlob::mapped(
+        let layer = ArtifactBlob::mapped(
             sample_id(),
             PathBuf::from("/frozen/k3.gguf"),
+            4,
             vec![(1_000, 4_096), (500_000, 4_096), (900_000, 2_048)],
         );
-        assert_eq!(expert.size_bytes(), 4_096 + 4_096 + 2_048);
+        assert_eq!(layer.size_bytes(), 4_096 + 4_096 + 2_048);
+    }
 
-        // Zero ranges = zero bytes (a degenerate but valid accounting).
-        let none = ArtifactBlob::mapped(sample_id(), PathBuf::from("/frozen/k3.gguf"), vec![]);
-        assert_eq!(none.size_bytes(), 0);
+    /// What this catches: THE stacked-slice resolver — expert e's ranges are
+    /// `base + e*(total/n_experts)` of every projection, and out-of-range /
+    /// Inline yield None. This is the single math the tier read + size
+    /// accounting share; if it drifts, half the paging layer computes wrong
+    /// offsets. Uses a nonexistent path to prove it's pure arithmetic.
+    #[test]
+    fn expert_ranges_slices_each_projection_by_stride() {
+        // 4 experts; gate total 256 (stride 64), up total 256 (stride 64),
+        // down total 128 (stride 32), at bases 1000 / 2000 / 3000.
+        let set = ArtifactSource::Mapped {
+            path: PathBuf::from("/frozen/k3.gguf"),
+            n_experts: 4,
+            projections: vec![(1_000, 256), (2_000, 256), (3_000, 128)],
+        };
+        // Expert 0: first slice of each projection.
+        assert_eq!(
+            set.expert_ranges(0),
+            Some(vec![(1_000, 64), (2_000, 64), (3_000, 32)])
+        );
+        // Expert 3: base + 3*stride of each projection.
+        assert_eq!(
+            set.expert_ranges(3),
+            Some(vec![(1_000 + 192, 64), (2_000 + 192, 64), (3_000 + 96, 32)])
+        );
+        // One expert's size = sum of its per-projection strides.
+        assert_eq!(set.expert_size_bytes(0), Some(64 + 64 + 32));
+        // Out of range (index == n_experts) and Inline → None.
+        assert_eq!(set.expert_ranges(4), None);
+        assert_eq!(ArtifactSource::Inline(vec![1, 2, 3]).expert_ranges(0), None);
     }
 
     /// What this catches: ArtifactBlob is intentionally NOT TS-exported.

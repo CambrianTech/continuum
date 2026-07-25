@@ -1,30 +1,31 @@
-//! MoE expert layout — locate each `(layer, expert)`'s physical byte ranges
-//! in a GGUF so the Seam-1 splitter can register them as file-mapped
-//! [`ArtifactSource::Mapped`](super::blob::ArtifactSource) artifacts on the
-//! frozen tier without ever copying the bytes.
+//! MoE expert layout — locate each layer's stacked expert-set in a GGUF so the
+//! Seam-1 splitter can register it as a file-mapped
+//! [`ArtifactSource::Mapped`](super::blob::ArtifactSource) artifact on the frozen
+//! tier without copying bytes.
 //!
-//! ## Why ranges, not tensors
+//! ## One artifact per layer, `PageOffset::Expert{e}` selects the expert
 //!
 //! GGUF stores MoE experts **stacked**: each layer has one `blk.{L}.ffn_gate_exps`
 //! / `ffn_up_exps` / `ffn_down_exps` tensor of shape `[n_experts, …]` (some
-//! exporters fuse gate+up into `ffn_gate_up_exps`). So "expert `e`" is not a named
-//! tensor — it is the `[e]` **slice** of each stacked projection tensor, and those
-//! projections live at *different* file offsets. One expert therefore spans N
-//! disjoint `(offset, len)` ranges (one per projection). The stack is along dim 0,
-//! so each expert's slice is an equal contiguous chunk: `stride = tensor_bytes /
-//! n_experts`, and expert `e`'s slice is `base + e * stride` for `stride` bytes.
+//! exporters fuse gate+up into `ffn_gate_up_exps`). Per the pre-existing
+//! `PageKind::MoEExpert` model, ONE artifact is a whole layer's expert set, and
+//! `PageOffset::Expert{e}` picks an expert out of it. So this module returns, per
+//! MoE layer, the stacked projection tensors' full `(base, total_len)` — enough
+//! to build `ArtifactBlob::mapped(id, path, n_experts, projections)`. The
+//! per-expert stride-slice (`base + e*(total/n_experts)`) is resolved by
+//! [`ArtifactSource::expert_ranges`], which is the single place that math lives.
 //!
-//! The router weight (`ffn_gate_inp`) is deliberately NOT paged per-expert — it is
+//! The router weight (`ffn_gate_inp`) is deliberately NOT part of the set — it is
 //! one small tensor consulted for EVERY token's routing and stays resident.
 
 use candle_core::quantized::gguf_file::Content;
 
 use crate::inference_capability::gguf_keys;
 
-/// The stacked expert-projection tensor suffixes, in canonical range order. A
-/// layer carries EITHER the split trio (`gate`/`up`/`down`) OR the fused pair
-/// (`gate_up`/`down`); we emit ranges for whichever are present, so both export
-/// styles work without the caller knowing which it has.
+/// The stacked expert-projection tensor suffixes, in canonical order. A layer
+/// carries EITHER the split trio (`gate`/`up`/`down`) OR the fused pair
+/// (`gate_up`/`down`); we collect whichever are present, so both export styles
+/// work without the caller knowing which it has.
 const EXPS_SUFFIXES: &[&str] = &[
     "ffn_gate_exps",
     "ffn_up_exps",
@@ -32,22 +33,23 @@ const EXPS_SUFFIXES: &[&str] = &[
     "ffn_down_exps",
 ];
 
-/// One MoE expert's physical location: the `(absolute_offset, len)` byte ranges
-/// of its slices across the stacked projection tensors in one layer. Feeds
-/// `ArtifactBlob::mapped(id, gguf_path, ranges)` — one whole expert per artifact.
+/// One MoE layer's expert-set layout: its expert count and the stacked
+/// projection tensors' `(absolute_base_offset, total_len)`. Maps directly onto
+/// `ArtifactBlob::mapped(id, gguf_path, n_experts, projections)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExpertLocation {
+pub struct LayerExpertSet {
     pub layer: u32,
-    pub expert: u32,
-    /// Absolute-in-file `(offset, len)` ranges, one per present projection.
-    pub ranges: Vec<(u64, u64)>,
+    pub n_experts: u32,
+    /// Each present stacked projection tensor's `(base, total_len)` for the whole
+    /// layer, in `EXPS_SUFFIXES` order. 2–3 entries.
+    pub projections: Vec<(u64, u64)>,
 }
 
-impl ExpertLocation {
-    /// Total bytes this expert occupies — the sum of its range lengths. Matches
-    /// what `ArtifactSource::Mapped::size_bytes` will bill the tier store.
+impl LayerExpertSet {
+    /// Total bytes of the whole layer set — the sum of projection lengths. Equals
+    /// the resulting `ArtifactSource::size_bytes` for this artifact.
     pub fn total_bytes(&self) -> u64 {
-        self.ranges.iter().map(|(_, len)| *len).sum()
+        self.projections.iter().map(|(_, total)| *total).sum()
     }
 }
 
@@ -69,10 +71,13 @@ pub enum ExpertLayoutError {
     },
 }
 
-/// Enumerate every `(layer, expert)` in a MoE GGUF and its physical byte ranges.
-/// Returns one [`ExpertLocation`] per `(layer, expert)`, skipping dense layers
-/// (layers with no `*_exps` tensors). `Err(NotMoe)` for a dense model.
-pub fn locate_experts(ct: &Content, arch: &str) -> Result<Vec<ExpertLocation>, ExpertLayoutError> {
+/// Enumerate every MoE layer's expert set in a GGUF. Returns one
+/// [`LayerExpertSet`] per layer that has stacked `*_exps` tensors, skipping dense
+/// layers. `Err(NotMoe)` for a dense model.
+pub fn locate_layer_sets(
+    ct: &Content,
+    arch: &str,
+) -> Result<Vec<LayerExpertSet>, ExpertLayoutError> {
     let n_experts = gguf_keys::expert_count(ct, arch).ok_or(ExpertLayoutError::NotMoe)?;
     if n_experts == 0 {
         return Err(ExpertLayoutError::ZeroExperts);
@@ -81,9 +86,7 @@ pub fn locate_experts(ct: &Content, arch: &str) -> Result<Vec<ExpertLocation>, E
 
     let mut out = Vec::new();
     for layer in 0..n_layers {
-        // Per-projection (base_offset, per_expert_stride) for every stacked
-        // expert tensor present in this layer, in canonical suffix order.
-        let mut slices: Vec<(u64, u64)> = Vec::new();
+        let mut projections: Vec<(u64, u64)> = Vec::new();
         for suffix in EXPS_SUFFIXES {
             let name = format!("blk.{layer}.{suffix}.weight");
             let Some(info) = ct.tensor_infos.get(&name) else {
@@ -92,9 +95,9 @@ pub fn locate_experts(ct: &Content, arch: &str) -> Result<Vec<ExpertLocation>, E
             let elems = info.shape.elem_count();
             let block_size = info.ggml_dtype.block_size();
             let type_size = info.ggml_dtype.type_size();
-            // elems is always divisible by block_size for a valid GGUF tensor;
-            // guard anyway so a corrupt header fails loud, not with wrong math.
             let tensor_bytes = (elems / block_size * type_size) as u64;
+            // Stacking is along dim 0 (experts); the whole tensor must divide
+            // evenly by n_experts or the per-expert stride is undefined.
             if tensor_bytes % n_experts as u64 != 0 {
                 return Err(ExpertLayoutError::UnevenStack {
                     tensor: name,
@@ -102,24 +105,17 @@ pub fn locate_experts(ct: &Content, arch: &str) -> Result<Vec<ExpertLocation>, E
                     n_experts,
                 });
             }
-            let stride = tensor_bytes / n_experts as u64;
             let base = ct.tensor_data_offset + info.offset;
-            slices.push((base, stride));
+            projections.push((base, tensor_bytes));
         }
-        if slices.is_empty() {
+        if projections.is_empty() {
             continue; // dense layer — no experts to page
         }
-        for expert in 0..n_experts {
-            let ranges = slices
-                .iter()
-                .map(|(base, stride)| (base + expert as u64 * stride, *stride))
-                .collect();
-            out.push(ExpertLocation {
-                layer,
-                expert,
-                ranges,
-            });
-        }
+        out.push(LayerExpertSet {
+            layer,
+            n_experts,
+            projections,
+        });
     }
     Ok(out)
 }
@@ -127,13 +123,13 @@ pub fn locate_experts(ct: &Content, arch: &str) -> Result<Vec<ExpertLocation>, E
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::genome::blob::ArtifactSource;
     use candle_core::quantized::gguf_file::{Content, TensorInfo, Value, VersionedMagic};
     use candle_core::quantized::GgmlDType;
     use candle_core::Shape;
-    use std::collections::HashMap;
+    use std::path::PathBuf;
 
-    // F32 keeps the byte math trivial (block_size 1, type_size 4): a
-    // [4, 2, 8] tensor = 64 elems = 256 bytes, per-expert stride = 64.
+    // F32 keeps the byte math trivial (block_size 1, type_size 4).
     fn f32_info(shape: &[usize], offset: u64) -> TensorInfo {
         TensorInfo {
             ggml_dtype: GgmlDType::F32,
@@ -154,65 +150,66 @@ mod tests {
         }
     }
 
-    // what this catches: the core stacked-slice math — expert e's ranges are
-    // `base + e*stride` across each present projection, layers with no *_exps
-    // tensors are skipped (dense), and every expert bills the summed stride.
+    // what this catches: per-layer projection extraction — the (base, total_len)
+    // of each stacked *_exps tensor, dense layers skipped, and the crucial
+    // cross-check that feeding the result into ArtifactSource::Mapped and calling
+    // expert_ranges reproduces the exact stride-slices. This ties the locator
+    // (write side) to the resolver (read side) so they can't drift apart.
     #[test]
-    fn locates_stacked_experts_and_skips_dense_layers() {
-        // n_experts=4, 2 layers. Layer 0 dense (no exps). Layer 1 MoE with the
-        // split trio at distinct offsets. tensor_data_offset=1000.
+    fn locates_layer_sets_and_resolver_agrees() {
+        // n_experts=4, 2 layers. Layer 0 dense; layer 1 MoE (gate/up/down).
+        // tensor_data_offset=1000. Each [4,2,8] tensor = 64 elems = 256 bytes.
         let md = vec![
             ("qwen3moe.expert_count", Value::U32(4)),
             ("qwen3moe.block_count", Value::U32(2)),
         ];
         let tensors = vec![
-            // layer 0 is dense — an attention tensor, no experts
             ("blk.0.attn_q.weight", f32_info(&[2, 8], 0)),
-            // layer 1: gate/up/down stacked over 4 experts, 256 bytes each
             ("blk.1.ffn_gate_exps.weight", f32_info(&[4, 2, 8], 0)),
             ("blk.1.ffn_up_exps.weight", f32_info(&[4, 2, 8], 256)),
             ("blk.1.ffn_down_exps.weight", f32_info(&[4, 2, 8], 512)),
         ];
         let ct = content(md, tensors, 1000);
 
-        let experts = locate_experts(&ct, "qwen3moe").unwrap();
-        // 4 experts in layer 1 only (layer 0 dense → skipped).
-        assert_eq!(experts.len(), 4);
-        assert!(experts.iter().all(|e| e.layer == 1));
+        let sets = locate_layer_sets(&ct, "qwen3moe").unwrap();
+        assert_eq!(sets.len(), 1, "only layer 1 is MoE");
+        let s = &sets[0];
+        assert_eq!(s.layer, 1);
+        assert_eq!(s.n_experts, 4);
+        // projections = (base = data_offset + tensor.offset, total_len = 256).
+        assert_eq!(s.projections, vec![(1000, 256), (1256, 256), (1512, 256)]);
+        assert_eq!(s.total_bytes(), 768);
 
-        // Expert 0: first slice of each of the 3 projections. stride = 256/4 = 64.
-        let e0 = &experts[0];
-        assert_eq!(e0.expert, 0);
+        // Cross-check: build the artifact source and resolve expert 3 — it must
+        // match base + 3*(256/4)=+192, stride 64 in each projection.
+        let src = ArtifactSource::Mapped {
+            path: PathBuf::from("/frozen/k3.gguf"),
+            n_experts: s.n_experts,
+            projections: s.projections.clone(),
+        };
         assert_eq!(
-            e0.ranges,
-            vec![(1000, 64), (1256, 64), (1512, 64)],
-            "gate@1000 up@1256 down@1512, expert-0 slice at offset 0"
+            src.expert_ranges(3),
+            Some(vec![(1000 + 192, 64), (1256 + 192, 64), (1512 + 192, 64)])
         );
-        assert_eq!(e0.total_bytes(), 192);
-
-        // Expert 3: last slice — base + 3*stride in each projection.
-        let e3 = &experts[3];
-        assert_eq!(e3.expert, 3);
-        assert_eq!(
-            e3.ranges,
-            vec![(1000 + 192, 64), (1256 + 192, 64), (1512 + 192, 64)]
-        );
+        assert_eq!(src.expert_size_bytes(0), Some(64 * 3));
     }
 
-    // what this catches: a dense model (no expert_count key) is NotMoe, not a
-    // panic or an empty-but-Ok — the splitter must distinguish "nothing to page"
-    // as an explicit signal.
+    // what this catches: a dense model (no expert_count) is NotMoe — an explicit
+    // "nothing to page" signal, not a panic or empty-Ok.
     #[test]
     fn dense_model_is_not_moe() {
         let ct = content(vec![("llama.block_count", Value::U32(4))], vec![], 100);
-        assert_eq!(locate_experts(&ct, "llama"), Err(ExpertLayoutError::NotMoe));
+        assert_eq!(
+            locate_layer_sets(&ct, "llama"),
+            Err(ExpertLayoutError::NotMoe)
+        );
     }
 
-    // what this catches: the fused gate_up export style (gate+up in one tensor)
-    // still resolves — an expert = the fused slice + the down slice (2 ranges),
-    // proving EXPS_SUFFIXES handles both layouts without caller knowledge.
+    // what this catches: the fused gate_up export (gate+up in one tensor) still
+    // resolves — a layer set with 2 projections (fused + down), proving
+    // EXPS_SUFFIXES handles both layouts.
     #[test]
-    fn fused_gate_up_export_resolves_two_ranges() {
+    fn fused_gate_up_export_resolves_two_projections() {
         let md = vec![
             ("glm4moe.expert_count", Value::U32(2)),
             ("glm4moe.block_count", Value::U32(1)),
@@ -222,10 +219,9 @@ mod tests {
             ("blk.0.ffn_down_exps.weight", f32_info(&[2, 2, 8], 512)),
         ];
         let ct = content(md, tensors, 0);
-        let experts = locate_experts(&ct, "glm4moe").unwrap();
-        assert_eq!(experts.len(), 2);
-        // gate_up: [2,4,8]=64 elems=256B → stride 128; down: [2,2,8]=32 elems=128B → stride 64.
-        assert_eq!(experts[0].ranges, vec![(0, 128), (512, 64)]);
-        assert_eq!(experts[1].ranges, vec![(128, 128), (576, 64)]);
+        let sets = locate_layer_sets(&ct, "glm4moe").unwrap();
+        assert_eq!(sets.len(), 1);
+        // gate_up: [2,4,8]=64 elems=256B; down: [2,2,8]=32 elems=128B.
+        assert_eq!(sets[0].projections, vec![(0, 256), (512, 128)]);
     }
 }
