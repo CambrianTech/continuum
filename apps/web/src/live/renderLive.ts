@@ -23,7 +23,7 @@
 
 import { html, nothing, type TemplateResult } from 'lit';
 import type { LiveContentBody, LiveParticipantVM } from '@continuum/patterns';
-import { fireLiveCaptionsToggle, fireLiveFaceToggle } from '../render/parts';
+import { fireLiveCaptionsToggle, fireLiveFaceToggle, fireLiveMicToggle } from '../render/parts';
 
 /** Kind glyph for a tile with no stored avatar — the honest fallback face. */
 function tileGlyph(kind: string): string {
@@ -139,7 +139,13 @@ export function renderLive(body: LiveContentBody): TemplateResult {
         glyph: '🎤',
         label: 'microphone',
         enabled: cc.micAvailable,
-        title: 'coming soon — mic capture lands with the browser media plane',
+        on: cc.micOn,
+        title: cc.micAvailable
+          ? cc.micOn
+            ? 'mic live — click to mute'
+            : 'click to speak'
+          : 'connect the media plane to speak (core call server not reachable)',
+        onClick: cc.micAvailable ? (e: Event) => fireLiveMicToggle(e) : undefined,
       })}
       ${controlBtn({
         glyph: '🎥',

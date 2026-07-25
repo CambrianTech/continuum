@@ -52,6 +52,7 @@ async function main(): Promise<void> {
   const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${config.senderId}`;
 
   const widget = document.createElement('chat-widget');
+  widget.callUrl = config.callUrl;
   // The version badge's real source: this build's package version, stamped by vite.
   widget.version = `v${__APP_VERSION__}`;
   // `?live` — boot straight into the focused room's LIVE face (the same state

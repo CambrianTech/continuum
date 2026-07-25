@@ -43,6 +43,12 @@ export interface LiveCallOverlay {
   readonly streams: Readonly<Record<string, string>>;
   /** Whether the reader has the caption strip on (renderer state). */
   readonly captionsOn: boolean;
+  /** The browser MEDIA PLANE is connected (the CallClient joined the core's
+   *  call server) — flips the honest capability flags below. Absent/false =
+   *  avatar-presence face, exactly as before. */
+  readonly mediaConnected?: boolean;
+  /** Mic is currently capturing/publishing (renderer state via CallClient). */
+  readonly micOn?: boolean;
 }
 
 /** The live-purpose tab currently focused in the citizen's nav view, if any —
@@ -135,9 +141,14 @@ export function liveCaption(
 /** The controls bar's honest availability: hang-up + captions are real;
  *  mic/camera/screenshare are disabled until the browser media plane lands.
  *  The transcript badge count is the room's REAL durable transcript length. */
-export function liveControls(vm: ChatViewModel, captionsOn: boolean): LiveControlsVM {
+export function liveControls(
+  vm: ChatViewModel,
+  captionsOn: boolean,
+  overlay?: LiveCallOverlay,
+): LiveControlsVM {
   return {
-    micAvailable: false,
+    micAvailable: overlay?.mediaConnected === true,
+    micOn: overlay?.micOn === true,
     cameraAvailable: false,
     screenshareAvailable: false,
     captionsAvailable: true,
@@ -159,7 +170,7 @@ export function liveContentBody(vm: ChatViewModel, overlay?: LiveCallOverlay): L
     roomName: vm.roomName,
     participants: liveParticipants(vm, streams),
     ...(caption ? { caption } : {}),
-    controls: liveControls(vm, captionsOn),
-    mediaPlaneLive: false,
+    controls: liveControls(vm, captionsOn, overlay),
+    mediaPlaneLive: overlay?.mediaConnected === true,
   };
 }

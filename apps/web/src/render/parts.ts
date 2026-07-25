@@ -76,6 +76,14 @@ export function renderMetricsRow(view: MetricsView): TemplateResult {
  *  render fragments stay pure/stateless, the host owns what a selection DOES. */
 export const LISTING_SELECT = 'listing-select';
 
+/** Composed event: toggle the live face's MIC capture (the CallClient). */
+export const LIVE_MIC_TOGGLE = 'live-mic-toggle';
+export function fireLiveMicToggle(e: Event): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent(LIVE_MIC_TOGGLE, { bubbles: true, composed: true }),
+  );
+}
+
 /** Detail payload of a `LISTING_SELECT` event — which listing, which cell, and
  *  (when the cell carries one) its neutral `group` key: the nav tab's target
  *  kind for rooms-rail cells. The routing rule reads it to pick the select's

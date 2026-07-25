@@ -1480,6 +1480,30 @@ pub fn start_server(
     let rag_state = Arc::new(RagState::new(memory_manager.clone()));
     runtime.register(Arc::new(RagModule::new(rag_state)));
 
+    // The LIVE CALL media plane (finish-live-video, 2026-07-25): the WebSocket
+    // call server (mix-minus audio, STT, avatar-state fanout, video frames)
+    // was fully built and NEVER STARTED — the armed-but-idle pattern. Start it
+    // at boot on its own task; the browser's live face dials it on Go-live.
+    // Port from config.env CONTINUUM_CALL_WS (one owner, [[config-env-single-owner]]),
+    // default 8790. Bind failure is LOUD (a squatted port must surface), but
+    // non-fatal: the core serves without a media plane rather than dying —
+    // the live face shows its honest avatar-presence chip in that state.
+    let call_manager = std::sync::Arc::new(crate::live::transport::call_server::CallManager::new());
+    {
+        let port = crate::config_env::read("CONTINUUM_CALL_WS")
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .unwrap_or(8790);
+        let addr = format!("127.0.0.1:{port}");
+        let manager = call_manager.clone();
+        rt_handle.spawn(async move {
+            if let Err(e) =
+                crate::live::transport::call_server::start_call_server(&addr, manager).await
+            {
+                tracing::error!(addr = %addr, error = %e, "call server failed to start — live media plane unavailable (browser live face stays avatar-presence)");
+            }
+        });
+    }
+
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
     let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
     let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());

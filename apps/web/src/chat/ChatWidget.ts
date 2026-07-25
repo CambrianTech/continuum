@@ -31,8 +31,10 @@ import type {
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
+import { CallClient } from '../live/callClient';
 import {
   LISTING_SELECT,
+  LIVE_MIC_TOGGLE,
   LIVE_CAPTIONS_TOGGLE,
   LIVE_FACE_TOGGLE,
   MESSAGE_EXPAND_TOGGLE,
@@ -69,6 +71,9 @@ export class ChatWidget extends LitElement {
     sendHandler: { attribute: false },
     selectRoomHandler: { attribute: false },
     liveFace: { attribute: false },
+    callUrl: { attribute: false },
+    _mediaConnected: { state: true },
+    _micOn: { state: true },
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
@@ -119,6 +124,19 @@ export class ChatWidget extends LitElement {
    *  host/preview can open the face directly. */
   liveFace = false;
 
+  /** ws:// URL of the core's call server (config: CONTINUUM_CALL_WS, default
+   *  8790). Absent = no media plane; the live face stays avatar-presence with
+   *  the mic honestly disabled. */
+  callUrl?: string;
+
+  private _call?: CallClient;
+  private _mediaConnected = false;
+  private _micOn = false;
+  /** Call-server avatar states: personaId → speaking (merged into the streams
+   *  map so the SAME projection drives borders whether speech is tokens on the
+   *  chat rail or real audio on the call). */
+  private _callSpeaking = new Map<string, boolean>();
+
   private _draft = '';
   private _sending = false;
   private _sendError = '';
@@ -145,6 +163,70 @@ export class ChatWidget extends LitElement {
    *  the call bar bubbles up here — the widget owns the face state. */
   private onLiveFaceToggle = (e: Event): void => {
     this.liveFace = (e as CustomEvent<LiveFaceToggleDetail>).detail.open;
+    if (this.liveFace) void this.connectCall();
+    else this.disconnectCall();
+  };
+
+  /** Dial the core's call server when the face opens (real media plane). A
+   *  dial failure keeps the honest avatar-presence face — never a fake
+   *  connected state ([[fallbacks-are-illegal-fail-loud]] display-side). */
+  private async connectCall(): Promise<void> {
+    if (this._call || !this.callUrl || !this.state) return;
+    const client = new CallClient({
+      onConnected: () => {
+        this._mediaConnected = true;
+      },
+      onClosed: () => {
+        this._mediaConnected = false;
+        this._micOn = false;
+        this._call = undefined;
+        this._callSpeaking = new Map();
+      },
+      onAvatar: (a) => {
+        const next = new Map(this._callSpeaking);
+        if (a.speaking) next.set(a.personaId, true);
+        else next.delete(a.personaId);
+        this._callSpeaking = next;
+        this.requestUpdate();
+      },
+      onDelta: (d) => {
+        if (this.state) this.applyStreamDelta({ ...d, roomId: this.state.room_id });
+      },
+    });
+    this._call = client;
+    try {
+      await client.connect(
+        this.callUrl,
+        this.state.room_id,
+        'operator-web',
+        'Operator (web)',
+      );
+    } catch {
+      this._call = undefined;
+      this._mediaConnected = false;
+    }
+  }
+
+  private disconnectCall(): void {
+    this._call?.leave();
+    this._call = undefined;
+    this._mediaConnected = false;
+    this._micOn = false;
+    this._callSpeaking = new Map();
+  }
+
+  /** The mic button — a REAL toggle when the media plane is connected. */
+  private onLiveMicToggle = (): void => {
+    const call = this._call;
+    if (!call) return;
+    if (this._micOn) {
+      call.stopMic();
+      this._micOn = false;
+    } else {
+      void call.startMic().then((ok) => {
+        this._micOn = ok;
+      });
+    }
   };
 
   /** CC toggle — flips the live caption strip (a real control). */
@@ -294,6 +376,7 @@ export class ChatWidget extends LitElement {
     this.addEventListener(LISTING_SELECT, this.onListingSelect);
     // The live face: Go-live/hang-up + the CC toggle bubble up the same way.
     this.addEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
+    this.addEventListener(LIVE_MIC_TOGGLE, this.onLiveMicToggle);
     this.addEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
   }
 
@@ -3323,8 +3406,17 @@ export class ChatWidget extends LitElement {
         // map the typing bubbles/speaking rings draw) + the CC toggle.
         call: {
           open: this.liveFace,
-          streams: Object.fromEntries(this._typing),
+          // Streams = the token rail PLUS call-audio speakers (presence in the
+          // map IS the speaking signal for the projection).
+          streams: {
+            ...Object.fromEntries(this._typing),
+            ...Object.fromEntries(
+              Array.from(this._callSpeaking.keys(), (id) => [id, this._typing.get(id) ?? ''] as const),
+            ),
+          },
           captionsOn: this._captionsOn,
+          mediaConnected: this._mediaConnected,
+          micOn: this._micOn,
         },
       });
     } catch (err) {

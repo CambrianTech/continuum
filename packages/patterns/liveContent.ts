@@ -64,8 +64,11 @@ export interface LiveCaptionVM {
 /** The call-controls bar — availability is HONEST: a flag is true only when
  *  the action behind the button is real today. */
 export interface LiveControlsVM {
-  /** Microphone capture — false until the browser media plane lands. */
+  /** Microphone capture — TRUE when the browser CallClient is connected to
+   *  the core's call server (the media plane is REAL for this reader). */
   readonly micAvailable: boolean;
+  /** Mic currently capturing (the button's lit state). */
+  readonly micOn?: boolean;
   /** Camera capture — false until the browser media plane lands. */
   readonly cameraAvailable: boolean;
   /** Screenshare — false until the browser media plane lands. */
