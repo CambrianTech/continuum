@@ -1752,7 +1752,13 @@ mod tests {
             // A tool set whose FULL schemas would dwarf the window — the live shape
             // (whole authorized set ≫ whole slot), scaled down. With progressive
             // disclosure it no longer matters: only names+summaries ride the prompt.
-            let window: u32 = 4096;
+            // 8192 = tight-but-SERVABLE: the un-amputated native surface (~4.1k
+            // tokens of specs) must fit beside a real prompt + reserve. 4096 was
+            // the old cliff-era fixture — below what the full surface can ever
+            // serve in, i.e. a window the plan would never hand a tool-using
+            // persona. The budget trims VOLATILE context to fit; specs are
+            // reserved up front, never amputated.
+            let window: u32 = 8192;
             let tools: Vec<NativeToolSpec> = (0..60)
                 .map(|i| NativeToolSpec {
                     name: format!("cat/command_{i}"),
@@ -1782,9 +1788,15 @@ mod tests {
             .with_context_window(window)
             .with_tools(tools);
 
-            // The native surface is WINDOW-ADAPTIVE. On this TIGHT window (4096) it shrinks
-            // to the DISCOVERY PAIR — the full coding-arc schemas (~2.7k tokens) would crowd
-            // out the prompt itself. The long tail stays reachable by name.
+            // The native surface is NEVER window-amputated. The old tight-window
+            // "discovery pair only" cliff was a clamp (glass-boxed #206): a
+            // native-tool-call model can only emit calls for offered specs, so the
+            // amputated surface stranded it in a commands/help loop with 0 edits —
+            // and the threshold sat on the served window's knife-edge, flipping
+            // 10/10 ↔ 0/6 on a token. The budget (`prompt_view_within`) owns the
+            // fit now: it reserves these specs' tokens up front and trims VOLATILE
+            // context, protecting the hands. This test USED to pin the cliff; now
+            // it pins its absence.
             let native: Vec<&str> = faculty
                 .native_specs
                 .iter()
@@ -1792,16 +1804,12 @@ mod tests {
                 .collect();
             // Names on the wire ride the DIALECT (tool_dialect): the conventional,
             // charset-legal aliases tool-trained models actually saw in training.
-            assert_eq!(
-                native,
-                vec!["list_commands", "help"],
-                "tight window ⇒ discovery pair only (wire dialect)"
-            );
-            assert!(
-                faculty.describe_tool_tokens() < 512,
-                "the discovery-pair surface must be tiny ({} tokens)",
-                faculty.describe_tool_tokens()
-            );
+            for must in ["list_commands", "help", "edit_file", "bash", "grep"] {
+                assert!(
+                    native.contains(&must),
+                    "tight window must NOT amputate the native surface — {must} missing: {native:?}"
+                );
+            }
             // On a ROOMY window the CORE CODING ARC rides natively too — so a
             // tool-call-trained model acts directly instead of looping on
             // `commands/help{code/search}` (glass-boxed: 14/14 SWE acts were help-loops,
