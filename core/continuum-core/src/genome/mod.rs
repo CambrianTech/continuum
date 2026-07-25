@@ -63,6 +63,7 @@ pub mod blob;
 pub mod bus;
 pub mod candidate_source_store;
 pub mod eviction;
+pub mod expert_ingest;
 pub mod expert_layout;
 pub mod fine_tuning;
 pub mod fitness;
