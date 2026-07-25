@@ -475,6 +475,28 @@ impl CallManager {
         }
     }
 
+    /// Canonicalize a wire `call_id` to the airc [`RoomId`] string that keys ALL call
+    /// state — the ONE gate that makes "the call room IS the airc room" true by
+    /// construction (#193, [[all-rooms-are-airc-rooms-no-mirrors]],
+    /// [[call-identity-is-airc-room-id-owned-by-airc-across-the-mesh]]). A `call_id` that
+    /// is already an airc room uuid passes through as its canonical string; anything else
+    /// is REJECTED loud — there is no parallel `call_id` namespace to fall back to.
+    ///
+    /// Name → RoomId derivation belongs at the CLIENT (which holds airc's mesh identity),
+    /// not here: a foreign airc peer dialing this call can't derive OUR names, so the wire
+    /// carries the airc RoomId. This keeps the id owned by airc across the whole mesh.
+    fn require_airc_room(call_id: &str) -> Result<String, String> {
+        super::call_room::call_room_id_if_uuid(call_id)
+            .map(|room| room.to_string())
+            .ok_or_else(|| {
+                format!(
+                    "call_id '{call_id}' is not an airc room id — the call room IS the airc \
+                     room; send the airc RoomId (uuid), not a name. A name resolves to its \
+                     RoomId through airc (derive_room_id) BEFORE dialing the call."
+                )
+            })
+    }
+
     /// Join a participant to a call
     /// is_ai: If true, creates AI participant with server-side audio buffering
     pub async fn join_call(
@@ -483,7 +505,11 @@ impl CallManager {
         user_id: &str,
         display_name: &str,
         is_ai: bool,
-    ) -> CallJoinResult {
+    ) -> Result<CallJoinResult, String> {
+        // The gate: every call is keyed by its canonical airc RoomId, or refused. No rogue
+        // call_id ever enters the maps.
+        let call_id = Self::require_airc_room(call_id)?;
+        let call_id = call_id.as_str();
         let call = self.get_or_create_call(call_id).await;
         let handle = Handle::new();
 
@@ -531,13 +557,13 @@ impl CallManager {
             handle.short(),
             call_id
         );
-        CallJoinResult {
+        Ok(CallJoinResult {
             handle,
             audio_rx,
             transcription_rx,
             video_rx,
             message_rx,
-        }
+        })
     }
 
     /// Join a participant to a call with model-specific capabilities
@@ -549,9 +575,9 @@ impl CallManager {
         user_id: &str,
         display_name: &str,
         model_id: &str,
-    ) -> CallJoinResult {
-        // AI participants always get server-side buffering
-        let result = self.join_call(call_id, user_id, display_name, true).await;
+    ) -> Result<CallJoinResult, String> {
+        // AI participants always get server-side buffering (join_call gates the airc room id).
+        let result = self.join_call(call_id, user_id, display_name, true).await?;
 
         // Create routed participant with model capabilities
         let participant = RoutedParticipant::ai(
@@ -575,7 +601,7 @@ impl CallManager {
         // Add to audio router for capability-based routing
         self.audio_router.add_participant(participant).await;
 
-        result
+        Ok(result)
     }
 
     /// Inject TTS audio into a call (for text-only models speaking)
@@ -1211,7 +1237,18 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<CallMessage>(&text) {
                             Ok(CallMessage::Join { call_id, user_id, display_name, is_ai }) => {
-                                let join = manager.join_call(&call_id, &user_id, &display_name, is_ai).await;
+                                // The call room IS the airc room: a call_id that isn't an airc
+                                // RoomId is refused, not given a rogue parallel identity (#193).
+                                let join = match manager.join_call(&call_id, &user_id, &display_name, is_ai).await {
+                                    Ok(j) => j,
+                                    Err(e) => {
+                                        clog_error!("Join refused for call_id '{}': {}", call_id, e);
+                                        let _ = msg_tx.send(Message::Text(
+                                            serde_json::json!({ "type": "error", "error": e }).to_string().into()
+                                        )).await;
+                                        continue;
+                                    }
+                                };
                                 let handle = join.handle;
                                 let mut audio_rx = join.audio_rx;
                                 let mut transcription_rx = join.transcription_rx;
@@ -1423,6 +1460,25 @@ mod tests {
     use crate::live::audio::mixer::test_utils::*;
     use crate::utils::audio::base64_encode_i16;
 
+    /// A valid airc RoomId (uuid) to key test calls. Post-#193 the call room IS the airc
+    /// room, so `join_call` accepts only an airc RoomId — a bare name is refused. Tests dial
+    /// with the RoomId, exactly as a real client would after resolving the name through airc.
+    const TEST_ROOM: &str = "11111111-1111-1111-1111-111111111111";
+
+    // what this catches (#193): the call room IS the airc room BY CONSTRUCTION. The gate
+    // refuses a bare name (there is no parallel call_id namespace to fall back to — the
+    // nodejs rogue-id cancer), and every spelling of an airc RoomId collapses to ONE
+    // canonical key, so two peers dialing the same room meet in the same call.
+    #[test]
+    fn require_airc_room_refuses_names_and_canonicalizes_uuid_spellings() {
+        assert!(CallManager::require_airc_room("general").is_err(), "a name is not an airc room id");
+        assert!(CallManager::require_airc_room("persona-call").is_err(), "no rogue call_id namespace");
+        assert!(CallManager::require_airc_room("").is_err(), "empty is refused");
+        let dashed = CallManager::require_airc_room("22222222-2222-2222-2222-222222222222").unwrap();
+        let simple = CallManager::require_airc_room("22222222222222222222222222222222").unwrap();
+        assert_eq!(dashed, simple, "dashed + 32-char spellings of one RoomId ⇒ one canonical key");
+    }
+
     #[test]
     fn test_base64_roundtrip() {
         let samples = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
@@ -1437,8 +1493,8 @@ mod tests {
 
         // Join a call (false = not AI)
         let join = manager
-            .join_call("test-call", "user-1", "Alice", false)
-            .await;
+            .join_call(TEST_ROOM, "user-1", "Alice", false)
+            .await.unwrap();
 
         // Check stats
         let stats = manager.get_stats(&join.handle).await;
@@ -1460,9 +1516,9 @@ mod tests {
 
         // Two participants join (humans)
         let join_a = manager
-            .join_call("test-call", "user-a", "Alice", false)
-            .await;
-        let join_b = manager.join_call("test-call", "user-b", "Bob", false).await;
+            .join_call(TEST_ROOM, "user-a", "Alice", false)
+            .await.unwrap();
+        let join_b = manager.join_call(TEST_ROOM, "user-b", "Bob", false).await.unwrap();
 
         // Check count
         let stats = manager.get_stats(&join_a.handle).await;
@@ -1489,8 +1545,8 @@ mod tests {
         let manager = CallManager::new();
 
         let join = manager
-            .join_call("test-call", "user-1", "Alice", false)
-            .await;
+            .join_call(TEST_ROOM, "user-1", "Alice", false)
+            .await.unwrap();
 
         // Mute
         manager.set_mute(&join.handle, true).await;
@@ -1507,9 +1563,9 @@ mod tests {
 
         // Two participants join
         let join_a = manager
-            .join_call("test-call", "user-a", "Alice", false)
-            .await;
-        let mut join_b = manager.join_call("test-call", "user-b", "Bob", false).await;
+            .join_call(TEST_ROOM, "user-a", "Alice", false)
+            .await.unwrap();
+        let mut join_b = manager.join_call(TEST_ROOM, "user-b", "Bob", false).await.unwrap();
 
         // Alice sends a video frame
         let fake_frame = vec![0x00; 20]; // 16 byte header + 4 byte payload
@@ -1549,11 +1605,11 @@ mod tests {
         let manager = CallManager::new();
         // Two PERSONAS (is_ai = true) join the same call — no browser, no UI.
         let asha = manager
-            .join_call("persona-call", "@persona:asha", "Asha", true)
-            .await;
+            .join_call(TEST_ROOM, "@persona:asha", "Asha", true)
+            .await.unwrap();
         let mut anwen = manager
-            .join_call("persona-call", "@persona:anwen", "Anwen", true)
-            .await;
+            .join_call(TEST_ROOM, "@persona:anwen", "Anwen", true)
+            .await.unwrap();
         // Snapshot Asha's video stream from the start so we catch every frame (incl. her own
         // echo, which mix-minus must let us skip).
         let mut asha_video = asha.video_rx.resubscribe();
