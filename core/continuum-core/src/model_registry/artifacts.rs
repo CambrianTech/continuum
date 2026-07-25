@@ -316,7 +316,9 @@ fn hf_repo_slug(hint: &str) -> Option<String> {
     ))
 }
 
-fn huggingface_cache_root() -> Option<PathBuf> {
+// Merge: BigMama's pub(crate) visibility (install code calls it) + M5's
+// config.env HF_HOME read (the cold-storage installer writes it there).
+pub(crate) fn huggingface_cache_root() -> Option<PathBuf> {
     // Process env wins (a launcher's explicit override), then config.env — the
     // ONE cross-platform source ([[config-env-single-owner]]): Windows persists
     // user env in the registry and Linux has no equivalent, so the cold-storage
