@@ -21,7 +21,7 @@ use std::io::{Read, Seek};
 use candle_core::quantized::gguf_file::Content;
 use candle_core::{Device, Tensor};
 
-use crate::inference_capability::gguf_keys;
+use super::expert_layout::{locate_layer_sets, ExpertLayoutError};
 
 /// The GGUF suffix for the MoE router weight, per layer. Deliberately NOT one of the
 /// `EXPS_SUFFIXES` in [`super::expert_layout`] — the router picks experts, it is not one.
@@ -30,10 +30,10 @@ const GATE_INP_SUFFIX: &str = "ffn_gate_inp.weight";
 /// Why gate magnitudes could not be read.
 #[derive(Debug)]
 pub enum GateMagnitudeError {
-    /// No `{arch}.expert_count` — a dense model has no router-per-expert to read.
-    NotMoe,
-    /// No `{arch}.block_count` — a broken/incomplete export.
-    MissingBlockCount,
+    /// The MoE layer layout could not be resolved. Delegated to [`locate_layer_sets`] so the
+    /// priors key the SAME layers the ingest (Seam-1) registered — never an independent
+    /// MoE-detection that could disagree. `NotMoe` is handled as "no priors", not surfaced here.
+    Layout(ExpertLayoutError),
     /// A candle read/dequantize/shape op failed on a router tensor.
     Tensor(candle_core::Error),
 }
@@ -44,35 +44,47 @@ impl From<candle_core::Error> for GateMagnitudeError {
     }
 }
 
-/// Per-(layer, expert) gate-magnitude prior for every MoE layer that has a router. Keyed by
+/// Per-(layer, expert) gate-magnitude prior for every MoE layer the ingest registers. Keyed by
 /// `(layer, expert_index)` to match the residency key `(layer, expert)` — a page's
 /// `PageRef{artifact: layer_set, offset: Expert{e}}` maps straight onto `(layer, e)`.
 ///
-/// Reads each layer's `ffn_gate_inp`, dequantizes to f32, and takes each expert's row L2 norm.
-/// Dense layers (no router tensor) are skipped. Pure over the GGUF: no forward pass, no serving.
+/// Drives off the SAME [`locate_layer_sets`] enumeration as [`super::expert_ingest`] (Seam-1),
+/// NOT an independent MoE-detection: the priors therefore key EXACTLY the `(layer, expert)`
+/// pages the splitter made — no format where a router-presence check and an `*_exps`-presence
+/// check could disagree (BigMama's co-review note). For each registered layer it reads the
+/// router `ffn_gate_inp`, dequantizes to f32, and takes each expert's row L2 norm, clamped to
+/// the layer's registered `n_experts`. A dense model yields no priors (not an error). Pure over
+/// the GGUF: no forward pass, no serving.
 pub fn locate_gate_magnitudes<R: Read + Seek>(
     ct: &Content,
     reader: &mut R,
     arch: &str,
 ) -> Result<HashMap<(u32, u32), f32>, GateMagnitudeError> {
-    let n_experts = gguf_keys::expert_count(ct, arch).ok_or(GateMagnitudeError::NotMoe)?;
-    if n_experts == 0 {
-        return Ok(HashMap::new());
-    }
-    let n_layers =
-        gguf_keys::block_count(ct, arch).ok_or(GateMagnitudeError::MissingBlockCount)?;
+    let layer_sets = match locate_layer_sets(ct, arch) {
+        Ok(sets) => sets,
+        Err(ExpertLayoutError::NotMoe) => return Ok(HashMap::new()), // dense — no priors
+        Err(e) => return Err(GateMagnitudeError::Layout(e)),
+    };
 
     let mut out = HashMap::new();
-    for layer in 0..n_layers {
-        let name = format!("blk.{layer}.{GATE_INP_SUFFIX}");
+    for set in layer_sets {
+        let name = format!("blk.{}.{GATE_INP_SUFFIX}", set.layer);
+        // A registered expert layer with no router is malformed but non-fatal: that layer's
+        // experts simply fall back to the live-hits signal with no cold-start prior.
         if !ct.tensor_infos.contains_key(&name) {
-            continue; // dense layer — no router, nothing to read
+            continue;
         }
         let router = ct
             .tensor(reader, &name, &Device::Cpu)?
             .dequantize(&Device::Cpu)?; // [n_experts, hidden]
-        for (e, mag) in per_expert_row_norms(&router)?.into_iter().enumerate() {
-            out.insert((layer, e as u32), mag);
+        // Clamp to the layer's registered expert count so a prior can never key an expert the
+        // splitter didn't page.
+        for (e, mag) in per_expert_row_norms(&router)?
+            .into_iter()
+            .take(set.n_experts as usize)
+            .enumerate()
+        {
+            out.insert((set.layer, e as u32), mag);
         }
     }
     Ok(out)
@@ -88,6 +100,7 @@ fn per_expert_row_norms(router: &Tensor) -> candle_core::Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference_capability::gguf_keys;
 
     // what this catches: the magnitude math — each expert's prior is the L2 norm of its router
     // row. A 3-4-5 / 6-8-10 row gives clean norms (5, 10), so a transposed reduction (summing
