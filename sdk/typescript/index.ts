@@ -61,6 +61,19 @@ export type {
   Provenance,
   ForgeViewState,
   ForgeModelView,
+  NavViewState,
+  NavTab,
+  NavBookmark,
+  NavTargetKind,
+  SystemMetricsViewState,
+  MetricSeriesView,
+  KanbanViewState,
+  KanbanCardView,
+  KanbanLaneView,
+  KanbanCardState,
+  KanbanLaneState,
+  KanbanPriority,
+  KanbanPullRequest,
 } from './generated/views';
 // The Join Contract manifest closure — the room-level structure a renderer projects
 // into a Workspace (purpose / regions / affordances / membership / layout).

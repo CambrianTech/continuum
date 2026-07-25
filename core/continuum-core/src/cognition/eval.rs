@@ -84,55 +84,152 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// placement spills this lane to CPU, the window is still sized off the GPU free-VRAM
 /// budget (under-sizes for the rare CPU-spilled eval) — acceptable for short prompts;
 /// the two-phase device-aware sizing rides with #56's `ResourceGovernor`.
-fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
-    use crate::cognition::serving_plan::{plan_serving, MIN_SERVE_CTX};
-    use crate::modules::serving_daemon::{footprint_for, governed_host_budget};
+/// The eval lane's context window is FIXED, NOT sized to the live free-VRAM budget. A lane
+/// sized against the governed board got a different `-c` every run (placement captures swung
+/// 2872 ↔ 99371), and a different n_ctx changes llama.cpp's KV/tensor shapes enough that even
+/// GREEDY argmax flips on borderline tokens — so the SAME task passed one run and failed the
+/// next, making the ABSOLUTE score MEANINGLESS (glass-boxed 2026-07-21: which of 3 tasks failed
+/// swapped run-to-run under greedy). A benchmark must hold n_ctx constant so the same prompt
+/// yields the same tokens every time. This value is generous for a self-contained coder exam
+/// (prompt + a function + reasoning fit far under it) yet constant, and capped at the model's
+/// trained window (never invent a bigger one). Determinism beats adaptivity for a MEASUREMENT
+/// lane — the opposite priority from a live persona lane. [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]]
+const EXAM_LANE_CTX: u32 = 16384;
 
-    let plan = match (crate::resources::ResourceDaemon::global(), footprint_for(base)) {
-        (Some(daemon), Some(footprint)) => {
-            // Size against the GOVERNED live board — the ONE memory authority's pre-staged
-            // snapshot (Vram available netted over every measured consumer + external
-            // pressure), NOT a raw GPU probe on this spawn path (which over-reports by
-            // serving's reserved-but-unallocated prefill, the G5 phantom bytes). Via the
-            // SAME `plan_serving` the autonomic serving plan uses; no duplicate budget calc,
-            // no un-governed read (MEMORY-AUTHORITY-DAEMON slice 2). One measurement stream,
-            // no batching → demand_lanes = 1.
-            let budget = governed_host_budget(&daemon);
-            plan_serving(budget, std::slice::from_ref(&footprint), 1)
-        }
-        // No authority (ungoverned host) or unsizable base: the model's own trained window,
-        // floored — never a fresh invented cap.
-        _ => None,
-    };
-    plan.map(|p| p.served_context_window)
-        .unwrap_or_else(|| base.context_window.max(MIN_SERVE_CTX))
+fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
+    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    // Fixed, capped at the model's trained window, floored at the serving minimum — a constant
+    // the same for every run on the same model, so the exam is reproducible. Fit is decided
+    // downstream (decide_eval_lane_placement): if this window won't fit, the lane spawn fails
+    // and the (None,None) caller degrades to a co-tenant SHARE — never an OOM.
+    EXAM_LANE_CTX.min(base.context_window).max(MIN_SERVE_CTX)
 }
 
-/// A stood-up ephemeral measurement lane plus everything the eval loop needs to fork
-/// a cognition copy onto it. Named fields, NOT a positional 4-tuple, so a new piece of
-/// lane state threads as ONE field instead of a fifth positional slot every caller
-/// must re-destructure in the right order ([[structs-by-reference-not-massive-param-lists]]).
-struct EvalLane {
-    /// The throwaway server; kills its process on drop (#59).
+/// The stood-up ephemeral measurement lane and everything the eval loop needs to fork a
+/// cognition copy onto it. This is the SHARED inner — owned behind an `Arc` by every
+/// [`EvalLane`] handle that references it, so N concurrent eval / `agent/solve` tasks on
+/// the SAME base model share ONE lane instead of each cold-spawning a competitor that
+/// fights the others for the GPU. The llama-server process + governed VRAM lease tear
+/// down by RAII the instant the LAST handle drops — one authority, lanes lease, nothing
+/// fights ([[resource-authority-is-a-system-concern]], #56).
+///
+/// Named fields, NOT a positional tuple, so new lane state threads as ONE field
+/// ([[structs-by-reference-not-massive-param-lists]]).
+pub(crate) struct EvalLaneInner {
+    /// The throwaway server; kills its process on drop (#59). Declared FIRST so it drops
+    /// (kills the process, frees the physical VRAM) BEFORE `_vram_lease` releases the
+    /// accounting — same release order the pre-share struct guaranteed.
     lane: crate::inference::llama_server::EphemeralServingLane,
-    /// Adapter pinned to THIS lane (never the global serving root).
-    adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+    /// Adapter pinned to THIS lane (never the global serving root). `pub(crate)` so the
+    /// teacher path (`genome/teach`) can generate against a DEDICATED bare-base lane —
+    /// the same isolation that makes the eval score trustworthy — instead of the live
+    /// multi-LoRA serving lane that OOMs the Metal backend on a real generation (#175).
+    pub(crate) adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
     /// The lane's REAL served `/props` window — what the fork's cognition budgets against.
-    served_ctx: u32,
+    pub(crate) served_ctx: u32,
     /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
     placement: PlacementEvidence,
     /// The governed VRAM reservation this lane holds while it runs (#56/G1). RAII:
-    /// released the moment this struct drops — declared LAST so it releases AFTER
-    /// `lane`'s process is killed (free the physical bytes, THEN the accounting).
-    /// `None` on a CPU-spilled lane or an ungoverned node. Held so a concurrent
-    /// serving tick sees the eval's bytes as taken and won't tier up into them.
+    /// released when the last handle drops, AFTER `lane`'s process is killed. `None` on a
+    /// CPU-spilled lane or an ungoverned node. Held so a concurrent serving tick sees the
+    /// eval's bytes as taken and won't tier up into them.
     _vram_lease: Option<crate::resources::LeaseGuard>,
+}
+
+/// A cheap, cloneable handle to a (possibly shared) [`EvalLaneInner`]. Field reads
+/// (`lane.adapter`, `lane.served_ctx`, `lane.placement`) work transparently through
+/// `Deref`. Dropping a handle only tears the lane down if it was the last one.
+#[derive(Clone)]
+pub(crate) struct EvalLane {
+    inner: std::sync::Arc<EvalLaneInner>,
+}
+
+impl std::ops::Deref for EvalLane {
+    type Target = EvalLaneInner;
+    fn deref(&self) -> &EvalLaneInner {
+        &self.inner
+    }
+}
+
+/// Warm eval-lane pool: lane key (base model id / gene id) → a `Weak` to the live shared
+/// lane. A concurrent caller for the same key UPGRADES the weak and shares the lane
+/// instead of cold-spawning a rival. `Weak`, not strong, so the lane tears down by RAII
+/// the moment its last real user drops — no lingering VRAM, no reaper task, no eviction
+/// policy to get wrong. Dangling entries are pruned lazily on the next miss.
+static WARM_EVAL_LANES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<EvalLaneInner>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Serializes eval-lane COLD-SPAWNS process-wide: only one llama-server cold-loads at a
+/// time, so two different bases can't thrash the GPU against each other and same-base
+/// racers collapse onto the first spawn's result. A `tokio` mutex because it is held
+/// across the spawn `.await` — never a `std` lock across await
+/// (docs/architecture/CONCURRENCY-STYLE-GUIDE.md).
+static EVAL_LANE_SPAWN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Return a handle to a live warm lane for `key`, pruning a dangling entry on a miss.
+fn lookup_warm_eval_lane(key: &str) -> Option<EvalLane> {
+    let mut map = WARM_EVAL_LANES.lock().unwrap();
+    if let Some(weak) = map.get(key) {
+        if let Some(inner) = weak.upgrade() {
+            return Some(EvalLane { inner });
+        }
+        map.remove(key); // last user already dropped it — prune the tombstone
+    }
+    None
+}
+
+/// Reuse a warm lane for `key` if one is live; otherwise cold-spawn it under the
+/// single-flight gate and register it. `build` performs the actual cold-load and is
+/// invoked ONLY on a real miss (never speculatively), so a shared lane costs zero extra
+/// llama-servers. This is the seam that makes `agent/solve` + `cognition/eval` composable
+/// at scale: fire N tasks on one model and they share ONE lane instead of N fighting.
+async fn warm_or_spawn_eval_lane<F, Fut>(key: &str, build: F) -> Result<EvalLane, CommandError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<EvalLaneInner, CommandError>>,
+{
+    // Fast path: a lane is already live for this key → share it, no gate, no spawn.
+    if let Some(existing) = lookup_warm_eval_lane(key) {
+        return Ok(existing);
+    }
+    // Slow path: serialize cold-spawns so bringups never fight for the GPU.
+    let _gate = EVAL_LANE_SPAWN_GATE.lock().await;
+    // Re-check under the gate — a racer for the same key may have spawned it while we
+    // waited, in which case we share theirs and skip a redundant cold-load.
+    if let Some(existing) = lookup_warm_eval_lane(key) {
+        return Ok(existing);
+    }
+    let inner = std::sync::Arc::new(build().await?);
+    WARM_EVAL_LANES
+        .lock()
+        .unwrap()
+        .insert(key.to_string(), std::sync::Arc::downgrade(&inner));
+    Ok(EvalLane { inner })
 }
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
 /// ABOVE the default serving port (58057) so the scan never lands on — or has to
 /// step over — the living persona's lane.
 const EVAL_LANE_BASE_PORT: u16 = 58_200;
+
+/// How much of a graded answer to persist in the result. A coder answer (code + reasoning)
+/// fits far under this; the generous bound exists ONLY to cap a pathological loop-to-length
+/// generation (which is captured up to here, still a diagnosable signal). The old 200-char
+/// cap stored only the preamble and blinded every failure diagnosis + correction-corpus mine.
+const ANSWER_CAPTURE_CHARS: usize = 24_000;
+
+/// Per-task detail retained in the DURABLE run ledger row (`append_progress_ledger`).
+/// The ledger stored only the summary (score/total), so a detached run's per-task
+/// verdicts were unrecoverable — a webdev pass/fail could not be glass-boxed after the
+/// fact (glass-boxed 2026-07-21: could not tell whether an `acts=0` webdev miss was the
+/// mouth-or-hands capture not firing or the spoken page failing a strict check). We now
+/// persist a compact per-task array; the diagnostic `grade` verdict + answer head are kept
+/// ONLY for FAILED tasks, so a 164-task humaneval row stays lean while a failing 6-task
+/// webdev row is fully inspectable. [[self-test-via-command-feedback-surface-never-blind]]
+const LEDGER_FAIL_GRADE_CHARS: usize = 800;
+const LEDGER_FAIL_ANSWER_CHARS: usize = 1_200;
 
 /// Small headroom (bytes) kept free on the GPU so a lane placed right at the edge
 /// can't trip Metal's decode-time command-buffer OOM. Deliberately SMALL: the
@@ -277,6 +374,80 @@ fn decide_eval_lane_placement(
     )
 }
 
+/// Refuse to stand up a measurement lane while the MACHINE is already drowning.
+///
+/// The VRAM ledger (#56/G1) accounts what the governor GRANTED — but on unified
+/// memory the machine can be compressor-deep in swap from everything the ledger
+/// doesn't meter (builds, apps, page compression), and the arithmetic still says
+/// yes. That exact gap kernel-panicked the dev machine (2026-07-22: watchdog
+/// timeout, compressed-pages 100%, 5 swapfiles) while a benchmark battery stood
+/// up an eval lane. `PressureLevel`'s own contract already names the rule —
+/// High: "aggressive eviction", Critical: "refuse new allocations" — and Whisper
+/// honors it before loading its model; a multi-GB ELECTIVE lane must too. Veto at
+/// >= High or while the sustained-pressure gate is closed. Fail-loud, never a
+/// silent degrade: the detached ledger carries this exact string, and the harness
+/// retries when pressure clears. Live serving is untouched — it has its own
+/// shedding machinery; this gates only the deferrable measurement load.
+fn refuse_eval_lane_under_memory_pressure() -> Result<(), CommandError> {
+    eval_lane_memory_veto(
+        crate::system_resources::MemoryPressureMonitor::current_level(),
+        crate::system_resources::is_memory_gate_closed(),
+    )
+}
+
+/// How long a lane bringup will WAIT for a transient pressure spike to clear
+/// before failing loud. Sized for the real spikes observed live (2026-07-22): a
+/// `cu reboot` cargo build or a sibling model cold-load pushes used/total past
+/// 0.90 for a couple of minutes, then the machine returns to Normal. Deferring
+/// briefly turns "battery wiped out by a build" into "battery ran 3 minutes
+/// later"; a SUSTAINED squeeze still fails loud at the deadline.
+const EVAL_LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// The deferring form of the memory veto: poll until pressure clears or the
+/// bounded deadline lapses (then fail loud with the veto's own error). The
+/// veto's error message says "retry when pressure clears" — for a DETACHED
+/// solve/eval there is no operator watching to retry, so the system honors its
+/// own advice for one bounded window. Never a silent wait: each deferred tick
+/// probes, so a stall is visible in the trace, not a mystery hang.
+async fn await_eval_lane_memory_headroom() -> Result<(), CommandError> {
+    let deadline = tokio::time::Instant::now() + EVAL_LANE_PRESSURE_WAIT;
+    loop {
+        let verdict = refuse_eval_lane_under_memory_pressure();
+        match verdict {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                crate::probe!(
+                    class = "eval.lane.pressure_defer",
+                    level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
+                    "eval lane bringup deferred — waiting for a transient memory spike to clear"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+}
+
+/// The pure veto decision — split from the static reads so it's unit-testable
+/// without mutating process-global pressure state (same split rationale as
+/// [`acquire_eval_lane_slot`]).
+fn eval_lane_memory_veto(
+    level: crate::system_resources::PressureLevel,
+    gate_closed: bool,
+) -> Result<(), CommandError> {
+    use crate::system_resources::PressureLevel;
+    if level >= PressureLevel::High || gate_closed {
+        return Err(CommandError::Internal(format!(
+            "refusing to stand up an eval lane under system memory pressure \
+             (level={level:?}, sustained_gate_closed={gate_closed}) — a measurement \
+             lane is deferrable load; retry when pressure clears"
+        )));
+    }
+    Ok(())
+}
+
 /// Ask the ONE resource authority for this eval lane's VRAM slot (#56/G1) and
 /// decide GPU/CPU from the answer. Returns `(placement, reason, held-lease,
 /// observed-free-vram)`. Split out so the acquire/refuse/ungoverned branching is
@@ -381,6 +552,7 @@ async fn spawn_gene_eval_lane(
         AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
     };
 
+    await_eval_lane_memory_headroom().await?;
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
         .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
@@ -496,12 +668,16 @@ async fn spawn_gene_eval_lane(
         ))
     })?;
 
+    // A gene lane is per-forged-adapter; it stays a fresh dedicated lane (no pooling) —
+    // the shared inner just makes it a handle so both lane kinds are one type.
     Ok(EvalLane {
-        lane,
-        adapter: std::sync::Arc::new(adapter),
-        served_ctx,
-        placement: placement_evidence,
-        _vram_lease: vram_lease,
+        inner: std::sync::Arc::new(EvalLaneInner {
+            lane,
+            adapter: std::sync::Arc::new(adapter),
+            served_ctx,
+            placement: placement_evidence,
+            _vram_lease: vram_lease,
+        }),
     })
 }
 
@@ -513,12 +689,20 @@ async fn spawn_gene_eval_lane(
 /// It's what makes the same-model matrix — hold the harness fixed, vary the model — fall
 /// out of one command, with no serving-pin race. Fails loud (never a substitute base) if
 /// the id isn't in the registry or the lane won't come up.
-async fn spawn_base_eval_lane(
-    base_id: &str,
-) -> Result<EvalLane, CommandError> {
+/// Stand up (or REUSE) an ephemeral base-model measurement lane. Concurrent callers for
+/// the same `base_id` share ONE warm lane via [`warm_or_spawn_eval_lane`] instead of
+/// cold-spawning rivals that fight for the GPU — the fix that makes an at-scale benchmark
+/// battery (`agent/solve` × N tasks) reliable instead of a lane-thrash lottery.
+pub(crate) async fn spawn_base_eval_lane(base_id: &str) -> Result<EvalLane, CommandError> {
+    warm_or_spawn_eval_lane(base_id, || build_base_eval_lane_inner(base_id)).await
+}
+
+/// The actual cold-load for a bare base lane — invoked ONLY on a warm-pool miss.
+async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, CommandError> {
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
+    await_eval_lane_memory_headroom().await?;
     let base = crate::model_registry::try_global()
         .and_then(|r| r.model(base_id).cloned())
         .ok_or_else(|| {
@@ -560,7 +744,7 @@ async fn spawn_base_eval_lane(
             "eval lane for base '{base_id}' is up but its /props served window is unreadable ({e})"
         ))
     })?;
-    Ok(EvalLane {
+    Ok(EvalLaneInner {
         lane,
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
@@ -822,8 +1006,13 @@ pub struct EvalTaskResult {
     /// How many times she acted (ran code / read / searched) before settling.
     #[ts(type = "number")]
     pub acts: u32,
-    /// The first 200 chars of what she SPOKE once settled (empty if she ran out of
-    /// the act budget mid-action — an honest "did not finish", never fabricated).
+    /// What she SPOKE once settled — the COMPLETE generation (empty if she ran out of
+    /// the act budget mid-action — an honest "did not finish", never fabricated). For a
+    /// coder exam the answer IS the code, so this must carry the whole thing: a 200-char
+    /// cap stored only the "Sure, I can help..." preamble and made every failure
+    /// undiagnosable AND un-minable for a correction corpus (2026-07-21). Bounded by
+    /// ANSWER_CAPTURE_CHARS against a pathological loop-to-length, which is itself a
+    /// signal worth capturing up to the cap.
     pub answer: String,
     /// Wall-clock latency to SETTLE this task: the summed deliberation-generation
     /// time across every act→observe tick (the model's own measured request time,
@@ -1197,8 +1386,10 @@ impl CognitionEval {
         // drops SECOND: the lane's server is killed first (physical VRAM freed), THEN the
         // accounting reservation is released. Releasing the lease while the process still
         // holds the bytes would flash them as "available" and re-open the grab race.
-        let mut _eval_vram_lease: Option<crate::resources::LeaseGuard> = None;
-        let mut _eval_lane: Option<crate::inference::llama_server::EphemeralServingLane> = None;
+        // Holds the (possibly shared) measurement lane alive for the whole run. The
+        // handle's Arc carries the llama-server process AND the governed VRAM lease, so
+        // one holder keeps both — no separate `_eval_vram_lease` juggling.
+        let mut _eval_lane: Option<EvalLane> = None;
         // The Proctored Exam Session's ACQUIRE for the LIVE-lane case (the `(None, None)`
         // living-persona benchmark): an EXPLICIT `plan_placement` decision (Slice A), not a
         // blind steady-hold. Her base is already resident ⇒ the verdict is `ShareLane` — she
@@ -1215,15 +1406,10 @@ impl CognitionEval {
         let cycle = match (&p.gene, p.base_model_id.as_deref()) {
             // A gene names its own forged base → ephemeral lane + the gene as `--lora`.
             (Some(gene), _) => {
-                let EvalLane {
-                    lane,
-                    adapter,
-                    served_ctx,
-                    placement,
-                    _vram_lease,
-                } = spawn_gene_eval_lane(gene).await?;
-                placement_evidence = Some(placement);
-                _eval_vram_lease = _vram_lease;
+                let el = spawn_gene_eval_lane(gene).await?;
+                placement_evidence = Some(el.placement.clone());
+                let adapter = el.adapter.clone();
+                let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1232,22 +1418,17 @@ impl CognitionEval {
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                 )))?;
-                _eval_lane = Some(lane);
+                _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
             }
             // A bare base_model_id → ephemeral lane for THAT model, no gene. The clean
             // same-model control: measure the full loop on a chosen model in its own
             // throwaway server, living persona untouched (#59).
             (None, Some(base_id)) => {
-                let EvalLane {
-                    lane,
-                    adapter,
-                    served_ctx,
-                    placement,
-                    _vram_lease,
-                } = spawn_base_eval_lane(base_id).await?;
-                placement_evidence = Some(placement);
-                _eval_vram_lease = _vram_lease;
+                let el = spawn_base_eval_lane(base_id).await?;
+                placement_evidence = Some(el.placement.clone());
+                let adapter = el.adapter.clone();
+                let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
                         .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
@@ -1256,7 +1437,7 @@ impl CognitionEval {
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                 )))?;
-                _eval_lane = Some(lane);
+                _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
             }
             // Neither → the living-persona benchmark: she is served on THIS base already,
@@ -1267,17 +1448,96 @@ impl CognitionEval {
             // bounce, 2026-07-20). Same bounded wait-for-template as the lane branches above;
             // the post-reboot register_from_cfg race hits every fork path identically.
             (None, None) => {
-                // Slice A: the strategic ACQUIRE — an explicit `plan_placement` decision
-                // (ShareLane for her own base) + RAII hold, not a blind steady-hold.
-                _exam_serving = Some(acquire_exam_serving_context().await);
-                fork_eval_cycle_waiting(&persona_uuid, || {
-                    crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
-                })
+                // The default benchmark. Prefer a DEDICATED throwaway lane on her own base — the
+                // exam must not co-tenant the live persona lane, where it STARVES behind live
+                // turns (glass-boxed 2026-07-21: 0/3 graded in 12 min, the isolate verdict was
+                // computed but never acted on — the branch forked onto the live lane anyway).
+                // Reuse the SAME governor-leased ephemeral-lane spawn `base_model_id` rides
+                // (proven: 17.9 GB footprint fits beside the live lane per the placement
+                // captures). On ANY failure (won't fit, no active model, template not ready)
+                // fall back to the co-tenant SHARE hold — degrade, never OOM or hard-fail.
+                // WAIT for a READY served model, don't snapshot instantaneously. The
+                // instantaneous `current_serving().active_model` is None in the window right
+                // after a reboot while the live lane is still cold-loading its base + LoRAs —
+                // so the dedicated-lane decision raced the boot, saw None, and fell to a SHARED
+                // lane that ALSO wasn't ready yet → wedge ("lane never recovered: per-task
+                // deadline", glass-boxed 2026-07-21: the same 3-task set scored 2/3 when the
+                // dedicated lane spawned and 0/3 when this race dropped it to share). Awaiting
+                // readiness makes active_model reliably Some, so the isolated lane spawns every
+                // run and the score is trustworthy. Bounded by the spawner's own load budget;
+                // on timeout (genuinely no served model) active stays None and we degrade loud.
+                let active = crate::inference::llama_server::await_ready_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
                 .await
-                .ok_or_else(|| CommandError::NotFound(format!(
-                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-                )))?
+                .and_then(|s| s.active_model);
+                let dedicated = match &active {
+                    Some(base) => match spawn_base_eval_lane(base).await {
+                        Ok(lane) => Some(lane),
+                        // NEVER swallow the spawn failure — a silent `.ok()` degrade to the
+                        // co-tenant SHARE path is a fail-loud violation ([[fallbacks-are-illegal-fail-loud]])
+                        // AND it hides the exact reason the isolated lane didn't come up. The
+                        // co-tenant path is unreliable (it STARVES behind live turns → per-task
+                        // deadline → dropped tasks → a meaningless low score, glass-boxed
+                        // 2026-07-21 run B). We still degrade rather than hard-fail (a share
+                        // score beats no score), but the reason is now VISIBLE in the eval phase
+                        // stream and the log, so we can actually fix the lane instead of guessing.
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "cognition::eval",
+                                base = %base,
+                                error = %e,
+                                "dedicated eval lane failed to come up — DEGRADING to co-tenant share (unreliable: may starve behind live turns). Fix the lane; do not trust a shared-lane score."
+                            );
+                            emit_eval_phase(
+                                "dedicated_lane_failed",
+                                &format!("isolated eval lane failed ({e}) — falling back to shared live lane"),
+                            );
+                            None
+                        }
+                    },
+                    None => {
+                        tracing::warn!(
+                            target: "cognition::eval",
+                            "no active served model in the serving snapshot — cannot stand up a dedicated eval lane, DEGRADING to co-tenant share"
+                        );
+                        emit_eval_phase(
+                            "no_active_model",
+                            "serving snapshot has no active model — falling back to shared live lane",
+                        );
+                        None
+                    }
+                };
+                match dedicated {
+                    Some(el) => {
+                        placement_evidence = Some(el.placement.clone());
+                        let adapter = el.adapter.clone();
+                        let served_ctx = el.served_ctx;
+                        let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
+                            crate::cognition::persona_workspace::global()
+                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                        })
+                        .await
+                        .ok_or_else(|| CommandError::NotFound(format!(
+                            "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                        )))?;
+                        _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
+                        cycle
+                    }
+                    None => {
+                        // A dedicated lane won't fit / isn't available → co-tenant SHARE on her
+                        // live lane, held steady for the run (the historical behavior).
+                        _exam_serving = Some(acquire_exam_serving_context().await);
+                        fork_eval_cycle_waiting(&persona_uuid, || {
+                            crate::cognition::persona_workspace::global()
+                                .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                        })
+                        .await
+                        .ok_or_else(|| CommandError::NotFound(format!(
+                            "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                        )))?
+                    }
+                }
             }
         };
 
@@ -1365,53 +1625,11 @@ impl CognitionEval {
         // on the model choosing to call create-workspace itself. Fail LOUD if requested but unroutable
         // — a silent no-root scores a false ZERO (0-byte diff) that would LIE about the solver
         // ([[fallbacks-are-illegal-fail-loud]]).
+        // Root her hands at the target repo — the canonical mechanism, now shared with
+        // `agent/solve` (drives `code/create-workspace` through her executor; fails LOUD rather
+        // than let a silent no-root score a false 0-byte diff, [[fallbacks-are-illegal-fail-loud]]).
         if let Some(root) = &p.workspace_root {
-            let acting = cycle.acting().ok_or_else(|| {
-                CommandError::Internal(
-                    "workspace_root requested but this eval cycle has no acting body (no hands) — \
-                     cannot root a workspace for a pure-cognition persona"
-                        .to_string(),
-                )
-            })?;
-            let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
-                persona_id: acting.persona_id,
-                persona_name: acting.persona_name.clone(),
-                session_id: Uuid::new_v4(),
-                context_id: Uuid::new_v4(),
-                caller_context: serde_json::Value::Null,
-                persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
-                    auto_load_media: false,
-                    supported_media_types: vec![],
-                },
-            };
-            let ws_call = crate::ai::types::ToolCall {
-                id: "eval-workspace-root".to_string(),
-                name: "code/create-workspace".to_string(),
-                input: serde_json::json!({ "workspace_root": root }),
-            };
-            let ws_out = acting
-                .executor
-                .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx, 8000)
-                .await
-                .map_err(|e| {
-                    CommandError::Internal(format!("failed to root eval workspace at '{root}': {e}"))
-                })?;
-            if let Some(r) = ws_out.results.first() {
-                if r.is_error.is_some() {
-                    return Err(CommandError::Internal(format!(
-                        "code/create-workspace rejected workspace_root '{root}': {} — refusing to \
-                         run the eval with the persona's hands rooted at the wrong directory (would \
-                         score a false zero).",
-                        r.content
-                    )));
-                }
-            }
-            crate::probe!(
-                class = "eval.workspace.rooted",
-                persona = %acting.persona_name,
-                root = %root,
-                "eval persona's file engine rooted at the target repo before her cycle"
-            );
+            crate::cognition::persona_workspace::root_acting_workspace(&cycle, root).await?;
         }
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
@@ -1510,15 +1728,23 @@ impl CognitionEval {
             return Ok(result);
         }
 
-        // Readiness gate (single-pass on her LIVE lane): refuse to grade a COLD
-        // serving lane. After a core/llama-server relaunch the model is not resident
-        // for ~tens of seconds; firing tasks at it returns empty generations that the
-        // grader would silently record as 0-token "no match" failures — a phantom
-        // score produced in an invisible degraded mode. Wait (bounded) for the lane to
-        // actually be able to generate; fail loud if it never is, naming the cause.
-        // (The gene A/B path above stands up its own EphemeralServingLane and waits on
-        // spawn, so this guards only the live-lane single pass.)
-        {
+        // Readiness gate — ONLY for a true LIVE-lane single pass. Refuse to grade a COLD
+        // serving lane: after a core/llama-server relaunch the model is not resident for
+        // ~tens of seconds; firing tasks at it returns empty generations the grader would
+        // silently record as 0-token "no match" failures — a phantom score in an invisible
+        // degraded mode. Wait (bounded) for the live lane to be able to generate; fail loud
+        // if it never is.
+        //
+        // This gate guards the LIVE lane (`await_ready_serving` reads the live serving
+        // snapshot). BOTH the `gene` A/B path (returned above) AND a `base_model_id` run
+        // stand up their OWN `EphemeralServingLane`, which decode-verifies at spawn
+        // (`spawn_base_eval_lane` → `wait_ready` with the ephemeral budget) — they never
+        // touch the live lane, so gating them on live-lane readiness is spurious: a
+        // base_model_id run flakily aborted whenever the UNRELATED live lane happened not
+        // to be snapshot-ready within 90s (glass-boxed 2026-07-21: Qwen-7B webdev 0/0 while
+        // its own dedicated lane was fine; Hermes passed the same gate only by live-lane
+        // luck). Skip the gate when a dedicated lane owns the run.
+        if p.base_model_id.is_none() {
             const LANE_WARMUP: std::time::Duration = std::time::Duration::from_secs(90);
             if crate::inference::llama_server::await_ready_serving(LANE_WARMUP)
                 .await
@@ -1600,14 +1826,26 @@ impl CognitionEval {
             gene_id: None,
             base_pass_rate: None,
             lift: None,
-            // Single-pass forks onto her LIVE lane, which serves on the GPU
-            // (LanePlacement::Gpu default). No throwaway lane was placed, so there's
-            // no free/footprint decision to report — the device is hers.
-            lane_placement: "gpu (live persona lane)".to_string(),
-            lane_placement_reason: "single-pass: measured on the living persona's GPU lane"
-                .to_string(),
-            lane_free_vram_bytes: None,
-            lane_estimated_footprint_bytes: None,
+            // TRUTHFUL placement report — thread the actual decision, don't hardcode a
+            // lie. The (None,None) default benchmark tries to stand up a DEDICATED
+            // throwaway lane (isolated window + slot → reliable, reproducible); only on
+            // spawn failure does it co-tenant the live persona lane (unreliable — starves
+            // behind live turns). A hardcoded "live persona lane" string made the two
+            // indistinguishable in the result, so a wedge-prone shared-lane score looked
+            // identical to a trusted isolated one and glass-boxing was impossible
+            // (2026-07-21). Now the report says which lane actually ran the exam, so a
+            // shared-lane score is visibly flagged as not-to-be-trusted.
+            // [[dedicated-eval-lane-must-keep-its-own-window]]
+            lane_placement: match &placement_evidence {
+                Some(ev) => format!("{} (dedicated eval lane)", ev.device),
+                None => "gpu (SHARED live persona lane — co-tenant, unreliable)".to_string(),
+            },
+            lane_placement_reason: match &placement_evidence {
+                Some(ev) => ev.reason.clone(),
+                None => "no dedicated lane could be placed — measured as a co-tenant on the living persona's GPU lane (may starve behind live turns)".to_string(),
+            },
+            lane_free_vram_bytes: placement_evidence.as_ref().and_then(|e| e.free_vram_bytes),
+            lane_estimated_footprint_bytes: placement_evidence.as_ref().and_then(|e| e.footprint_bytes),
             infra_unavailable,
         };
         result.run_id = p.run_id.clone();
@@ -1999,16 +2237,43 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
         tier: DemandTier::Live,
         pinned: true,
     };
-    // The exam demand: her SAME base (⇒ share, not a second copy), one measured decode slot,
-    // at the live served window, at Eval tier (preemptible by live work, never preempts it).
+    // The exam demand: her SAME base, one measured decode slot, at the live served window, at
+    // Eval tier (preemptible by live work, never preempts it) — and ISOLATED. An exam is a
+    // hard, disruption-intolerant task: a co-tenant slot on the live persona lane starves it
+    // behind their turns (glass-boxed 2026-07-21 — looked like the model "spinning" but was the
+    // lane taken away mid-thought). `isolate: true` makes the planner give it its OWN dedicated
+    // lane when a fresh copy fits (autonomic — no `base_model_id` hand-holding), falling back to
+    // a co-tenant share only under real memory pressure. See `LaneDemand::isolate`.
+    // Size the DEDICATED exam lane's window to what actually fits beside the resident live
+    // lane, instead of mirroring the live window. A fresh copy's KV at the full served window
+    // (e.g. 47872 × 1 slot ≈ 8 GB) on top of the resident lane (2 slots at that window ≈ 30 GB)
+    // can exceed the free budget — which forced the isolate demand back to a co-tenant SHARE
+    // that then STARVED the exam behind live turns (glass-boxed 2026-07-21: dedicated lane never
+    // spawned, 0/3 graded in 12 min). Compute the largest window whose fresh copy fits the free
+    // space; a self-contained coder task needs far less than the live chat window, so this keeps
+    // its OWN lane (the isolation is the point) at a window matched to the budget. If not even a
+    // floor-sized copy fits, `isolate` still degrades to SHARE in plan_placement (never an OOM).
+    let free = capacity.saturating_sub(resident.footprint());
+    let kv_budget = free.saturating_sub(fp.weights_bytes.saturating_add(compute_buffer));
+    let max_fit_window = if fp.kv_per_token > 0 {
+        (kv_budget / fp.kv_per_token).min(u32::MAX as u64) as u32
+    } else {
+        window
+    };
+    // Floor: enough for a self-contained hard-rs task (short prompt + a function + reasoning);
+    // derived from the served window, never a hardcoded ceiling — capped at the live window so
+    // the exam never asks for MORE context than the persona actually has.
+    const EXAM_WINDOW_FLOOR: u32 = 8192;
+    let exam_window = window.min(max_fit_window.max(EXAM_WINDOW_FLOOR));
     let demand = LaneDemand {
         base_model_id: active.to_string(),
         weights_bytes: fp.weights_bytes,
         slots: 1,
-        window,
+        window: exam_window,
         kv_per_token: fp.kv_per_token,
         compute_buffer,
         tier: DemandTier::Eval,
+        isolate: true,
     };
     ExamServingContext::acquire(capacity, std::slice::from_ref(&resident), &demand).await
 }
@@ -2053,6 +2318,21 @@ fn append_progress_ledger(
         // VOID (the lane died mid-exam), and every reader MUST report infra-unavailable
         // instead of a real pass-rate. [[proctored-exam-session-dependable-benchmark]]
         "infraUnavailable": result.infra_unavailable,
+        // Per-task detail for post-hoc glass-boxing (why did THIS task fail?). Compact by
+        // design: every task carries id/ok/acts; only FAILED tasks carry the grade verdict
+        // + answer head, so the row stays lean on a mostly-passing large benchmark.
+        "tasks": result.results.iter().map(|r| {
+            // `outputTokens` disambiguates a FAILED task with an empty answer: >0 means she
+            // GENERATED (and the empty answer is a Pass/silence cognition decision or an
+            // unparseable turn); 0 means the LANE returned nothing (empty generation / wedge).
+            // Without it the two read identical in the ledger and get hand-diagnosed each time.
+            let mut t = serde_json::json!({ "id": r.id, "ok": r.ok, "acts": r.acts, "outputTokens": r.output_tokens });
+            if !r.ok {
+                t["grade"] = serde_json::json!(r.grade.chars().take(LEDGER_FAIL_GRADE_CHARS).collect::<String>());
+                t["answerHead"] = serde_json::json!(r.answer.chars().take(LEDGER_FAIL_ANSWER_CHARS).collect::<String>());
+            }
+            t
+        }).collect::<Vec<_>>(),
     });
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -2061,6 +2341,17 @@ fn append_progress_ledger(
         .open(&path)
     {
         let _ = writeln!(f, "{row}");
+    }
+    // TERMINAL completion event (the fire-and-stream close, #86). Every finished eval —
+    // gene A/B, base-model, single-pass — funnels through here, so this ONE publish gives a
+    // monitoring widget/persona "done + final score + per-task detail" as a single push
+    // instead of inferring completion from `done==total` on the last `eval:progress`. Same
+    // payload as the durable ledger row: score/total/passRate/runId/geneId/lift/
+    // infraUnavailable + the per-task array carrying `outputTokens`, so the CLEAN / SUSPECT /
+    // VOID classification a tile renders comes straight off the wire, no post-hoc ledger read.
+    // [[long-runs-are-handle-plus-events-never-poll-or-timeout]]
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only("eval:complete", row);
     }
 }
 
@@ -2177,12 +2468,50 @@ async fn run_dod(cmd: &str) -> (bool, String) {
 /// ([[dispatch-path-purity-and-load-harness]]). The core is headless and cannot render, so a
 /// perception task requires a connected eye-node adapter; with none, the observe call fails LOUD
 /// and the task grades an honest infra-fail, never a fabricated pass ([[fallbacks-are-illegal-fail-loud]]).
+/// Extract an HTML artifact the persona SPOKE — the last ```html (or doctype/`<html`)
+/// fenced block, or a bare page answer — for the mouth-or-hands web-dev capture below.
+/// Returns the inner HTML, or `None` when her answer carries no page.
+///
+/// The last qualifying fence wins: across a multi-turn build, the FINAL page she emitted
+/// is the one to grade (earlier fences are superseded drafts).
+fn html_artifact_from_answer(answer: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+    let mut rest = answer;
+    while let Some(open) = rest.find("```") {
+        let after = &rest[open + 3..];
+        let nl = after.find('\n').unwrap_or(after.len());
+        let lang = after[..nl].trim().to_ascii_lowercase();
+        let body_area = if nl < after.len() { &after[nl + 1..] } else { "" };
+        let Some(close) = body_area.find("```") else { break };
+        let body = body_area[..close].trim();
+        let head = body.trim_start().to_ascii_lowercase();
+        let looks_html = lang.starts_with("html")
+            || head.starts_with("<!doctype")
+            || head.starts_with("<html");
+        if looks_html && !body.is_empty() {
+            best = Some(body.to_string()); // keep the LAST qualifying fence
+        }
+        rest = &body_area[close + 3..];
+    }
+    if best.is_some() {
+        return best;
+    }
+    // No fence — the whole answer may itself be the page.
+    let trimmed = answer.trim();
+    let head = trimmed.to_ascii_lowercase();
+    if head.starts_with("<!doctype") || head.starts_with("<html") {
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
 async fn perception_grade(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     target: &str,
     checks: &[crate::perception::scoring::UiCheck],
     threshold: f32,
     workspace_root: Option<&str>,
+    answer: &str,
 ) -> (bool, String) {
     let acting = match cycle.acting() {
         Some(a) => a,
@@ -2230,7 +2559,38 @@ async fn perception_grade(
     // parse answers them the way a browser's a11y tree would. A remote URL / live surface
     // still routes to the browser eye below (a persona's real seeing loop).
     if let Some(path) = target_url.strip_prefix("file://") {
-        let obs = crate::perception::static_html::observe_file(std::path::Path::new(path));
+        let p = std::path::Path::new(path);
+        // MOUTH-OR-HANDS capture (#206/#143 fence→act gap). The web-dev grade observes the
+        // file she was told to write. A capable model often EMITS a complete, correct page in
+        // a ```html fence but never routes it through `code/write` — so no file exists and a
+        // model that BUILT the UI perfectly scores 0, measuring tool-routing instead of
+        // ability (glass-boxed 2026-07-21: Qwen2.5-Coder-7B wrote a flawless login form in a
+        // fence, wrote no file, scored 0/6 — below a weaker model). If she did NOT write the
+        // file with her hands but SPOKE a page, materialize it so the grade measures what she
+        // built. A real `code/write` ALWAYS wins (a present, non-empty file is left untouched),
+        // so this only rescues the spoken-artifact case and never overrides her hands. The
+        // deeper fix (make her actually call the tool) is the fence→act cognition work; this
+        // makes the benchmark a fair CAPABILITY measure meanwhile.
+        let wrote_with_hands = std::fs::read_to_string(p)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !wrote_with_hands {
+            if let Some(html) = html_artifact_from_answer(answer) {
+                if let Some(parent) = p.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(p, html.as_bytes()) {
+                    return (
+                        false,
+                        format!(
+                            "web-dev grade: persona spoke an HTML artifact but materializing it \
+                             to '{path}' for observation failed: {e}"
+                        ),
+                    );
+                }
+            }
+        }
+        let obs = crate::perception::static_html::observe_file(p);
         let grade = crate::perception::scoring::grade_ui(&obs, checks, threshold);
         return (grade.passed, grade.summary);
     }
@@ -2321,6 +2681,12 @@ pub struct EvalPassProgress {
     pub current_task: String,
     /// Whether it passed.
     pub last_ok: bool,
+    /// Output tokens the model produced for this task. A near-zero value on a FAILED
+    /// task is the decline/wedge signature (a bare "PASS" is ~2 tokens) — this is the
+    /// LIVE signal a monitoring widget/persona needs to light a cell SUSPECT (harness
+    /// noise) vs a real wrong answer, in real time instead of post-hoc from the ledger.
+    #[ts(type = "number")]
+    pub output_tokens: u32,
     /// Receiver-clock ms — staleness signal for readers (a row older than a task's
     /// typical latency means the pass ended or died; the ledger row is the truth).
     #[ts(type = "number")]
@@ -2378,7 +2744,7 @@ pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPass
 
 /// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
 /// team) — one reporter, no drift.
-fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass: u32, done: usize, total: usize) {
+fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, output_tokens: u32, pass: u32, done: usize, total: usize) {
     // Efficiency axis: sample the live board (lock-free watch read) so every graded
     // task carries the VRAM state it ran under — the tuning signal for knobs like
     // max_acts / context budget / lane count ([[self-improvement-is-a-control-loop]]:
@@ -2397,6 +2763,7 @@ fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass:
         pass,
         current_task: task_id.to_string(),
         last_ok: ok,
+        output_tokens,
         updated_at_ms: crate::persona::trace::now_ms(),
         vram_free_gb,
         run_id: CURRENT_RUN_ID.lock().ok().and_then(|g| g.clone()),
@@ -2553,6 +2920,26 @@ async fn run_pass(
         // rooted at it) so every task grades EXACTLY the artifact it produced. Only from-scratch
         // build tasks are cleaned; setup/dod/solution tasks OWN their state and are never wiped.
         // No pinned root (hands on the core cwd) → nothing to clean.
+        // INDEPENDENT-TASK COGNITION RESET. Every coder benchmark here is a battery of
+        // UNRELATED tasks (conway_step vs edit_distance vs a login-form) — each a standalone
+        // problem. The continuous-session design (reset once at pass start, carry task-to-task)
+        // is right for a RELATED sequence, but for an independent battery it accumulates each
+        // prior task's answer into working memory + episodic recall, and that drift both
+        // overflows a small lane window (→ per-slot compute-error wedge → empty 0-token
+        // generations) AND nudges the model into declining (glass-boxed 2026-07-21: games-rs
+        // 6/6 in isolation but 0/6 with mid-battery declines under accumulation). A task starts
+        // clean UNLESS it explicitly establishes cross-task state via `setup_shell` (gym/mine's
+        // re-break-the-checkout case — the only genuine continuity). So reset the cognitive
+        // slate before every independent task, exactly as #209 wipes an independent build's
+        // WORKSPACE. [[llama-compute-error-wedge-is-per-slot-context-overflow]]
+        let independent_task = t.setup_shell.is_none();
+        if independent_task {
+            cycle.reset_working_memory();
+            isolation.rewind();
+        }
+        // Workspace wipe: only a from-scratch UI build (ui_checks, no setup/dod/solution) grades
+        // an OBSERVED artifact FILE, so only it needs the pinned root cleared between tasks
+        // (#209) — a stale index.html from the prior task would score a false pass/fail.
         let from_scratch_build = !t.ui_checks.is_empty()
             && t.setup_shell.is_none()
             && t.dod_shell.is_none()
@@ -2774,6 +3161,67 @@ async fn run_pass(
             );
             break;
         }
+        // DIRECTED-EXAM ANSWER GUARD. An exam question is DIRECTED and the examiner poses it
+        // imperatively (see `framed_prompt`), yet a capable coder BASE can still settle on a
+        // bare "PASS" — parsed as `Decision::Pass` → an EMPTY answer graded as a capability
+        // miss (glass-boxed 2026-07-21 via the per-task ledger: Qwen2.5-Coder-7B emitted a
+        // 2-token PASS on every games/frontier/coder-eval task → 0/N, while it built a real
+        // 5/6 on webdev; instruct-tuned Hermes-3-8B answered the same tasks). Declining to
+        // participate is NOT a coding-capability signal — it's the persona should-respond
+        // framing suppressing a raw base's ability. If she declined, RE-DRIVE ONCE with an
+        // explicit answer-required nudge: a CHANGED prompt, so greedy decoding cannot simply
+        // re-emit the same PASS token. A model that answers on the nudge is measured on its
+        // code; one that declines again is graded on whatever it then produced, never a
+        // silent phantom. Bounded (one extra drive), and the nudge is the examiner insisting,
+        // not a crib. [[benchmarks-are-proctored-exams-of-the-natural-living-persona]]
+        if matches!(settled.decision, crate::cognition::workspace::Decision::Pass) {
+            crate::probe!(
+                class = "eval.task.declined_redrive",
+                task = %t.id,
+                "directed exam question was DECLINED (settled PASS) — re-driving once with an answer-required nudge"
+            );
+            let nudge_delivery = crate::persona::rag_budget::RagDelivery {
+                source_id: "airc".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: format!(
+                        "You did not answer. This is a GRADED exam question and you must answer it \
+                         now — do NOT reply PASS or stay silent. Provide your complete solution:\n\n{}",
+                        t.prompt.trim()
+                    ),
+                    tokens: 0,
+                    metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
+                }],
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            };
+            let nudge_burst = crate::cognition::workspace::Burst::from_turns(
+                room,
+                crate::persona::service_loop::build_workspace_turns(
+                    std::slice::from_ref(&nudge_delivery),
+                    "",
+                    "",
+                    None,
+                ),
+            );
+            if let Ok(re) = tokio::time::timeout(
+                PER_TASK_DEADLINE,
+                crate::cognition::act_observe::drive_to_settle(
+                    cycle,
+                    nudge_burst,
+                    room,
+                    max_acts,
+                    crate::cognition::workspace::TurnFraming::directed(),
+                ),
+            )
+            .await
+            {
+                // Take the re-drive only if it produced a real turn (not an infra fault).
+                if re.inference_error.is_none() {
+                    settled = re;
+                }
+            }
+        }
         let answer = settled.spoken.clone().unwrap_or_default();
         // `settled.inference_error` is None here — the abort above consumed every infra
         // fault, so this grades a REAL verdict (a working lane produced an answer, right or
@@ -2786,7 +3234,7 @@ async fn run_pass(
             // reads too. Default target `index.html`; default threshold 1.0 ("it works").
             let target = t.target.as_deref().unwrap_or("index.html");
             let threshold = t.ui_pass_threshold.unwrap_or(1.0);
-            perception_grade(cycle, target, &t.ui_checks, threshold, workspace_root).await
+            perception_grade(cycle, target, &t.ui_checks, threshold, workspace_root, &answer).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
@@ -2828,7 +3276,7 @@ async fn run_pass(
             ok,
             grade,
             acts: total_acts,
-            answer: answer.chars().take(200).collect(),
+            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),
@@ -2837,7 +3285,7 @@ async fn run_pass(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
-        report_task_graded(&t.id, ok, total_acts, m.latency_ms, pass, results.len(), tasks.len());
+        report_task_graded(&t.id, ok, total_acts, m.latency_ms, m.output_tokens, pass, results.len(), tasks.len());
     }
     PassOutcome { pass, results, infra_faults, infra_reason }
 }
@@ -2989,7 +3437,7 @@ async fn run_pass_team(
             ok,
             grade,
             acts,
-            answer: answer.chars().take(200).collect(),
+            answer: answer.chars().take(ANSWER_CAPTURE_CHARS).collect(),
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),
@@ -2998,7 +3446,7 @@ async fn run_pass_team(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
-        report_task_graded(&t.id, ok, acts, m.latency_ms, pass, results.len(), tasks.len());
+        report_task_graded(&t.id, ok, acts, m.latency_ms, m.output_tokens, pass, results.len(), tasks.len());
     }
     PassOutcome { pass, results, infra_faults, infra_reason }
 }
@@ -3010,6 +3458,35 @@ crate::register_stateless_command!(CognitionEval);
 mod tests {
     use super::*;
 
+    // what this catches: the web-dev mouth-or-hands capture (#206/#143 fence→act gap).
+    // A capable model that emits a complete page in a ```html fence but never calls
+    // code/write must still be graded on what it BUILT — else the benchmark scores
+    // tool-routing, not ability (Qwen2.5-Coder-7B wrote a flawless login form in a fence,
+    // wrote no file, scored 0/6, below a weaker model, 2026-07-21). Regression pins:
+    // last fence wins, doctype/`<html` detected with or without a lang tag, and a
+    // prose-only answer yields None (nothing to materialize → honest miss).
+    #[test]
+    fn html_artifact_extracts_the_spoken_page_or_nothing() {
+        // tagged ```html fence
+        let a = "Here is the page:\n```html\n<!DOCTYPE html><html><body><h1>Sign in</h1></body></html>\n```\nDone.";
+        assert_eq!(
+            html_artifact_from_answer(a).as_deref(),
+            Some("<!DOCTYPE html><html><body><h1>Sign in</h1></body></html>")
+        );
+        // untagged fence whose body is a page (doctype sniff)
+        let b = "```\n<html><body><form></form></body></html>\n```";
+        assert!(html_artifact_from_answer(b).unwrap().contains("<form>"));
+        // last qualifying fence wins (a corrected draft supersedes the first)
+        let c = "```html\n<html>OLD</html>\n```\nfixed:\n```html\n<html>NEW</html>\n```";
+        assert_eq!(html_artifact_from_answer(c).as_deref(), Some("<html>NEW</html>"));
+        // bare page answer, no fence
+        let d = "<!doctype html>\n<html><h1>Hi</h1></html>";
+        assert_eq!(html_artifact_from_answer(d).as_deref(), Some(d.trim()));
+        // prose-only / a rust fence → nothing to materialize
+        assert_eq!(html_artifact_from_answer("I would build a login form with an h1."), None);
+        assert_eq!(html_artifact_from_answer("```rust\nfn main() {}\n```"), None);
+    }
+
     // what this catches: the mid-run scoreboard's poll surface (#123/#141). One
     // report_task_graded call must land on the watch every reader shares — done/total/
     // pass/current task — so cognition/eval-status (no run_id) and widget bridges see
@@ -3017,7 +3494,7 @@ mod tests {
     // runs go dark again (the exact gap Joel called out mid-run 2026-07-16).
     #[test]
     fn report_task_graded_lands_on_the_progress_watch() {
-        report_task_graded("HumanEval/7", true, 2, 45_000, 6, 7, 164);
+        report_task_graded("HumanEval/7", true, 2, 45_000, 128, 6, 7, 164);
         let snap = subscribe_eval_progress()
             .borrow()
             .clone()
@@ -3319,6 +3796,49 @@ mod tests {
             acc.decode_tokens_per_second(),
             20.0,
             "30 tok / 1.5s lane decode = 20 tok/s real"
+        );
+    }
+
+    // what this catches: the memory veto that was MISSING when the dev machine
+    // kernel-panicked (2026-07-22, watchdog timeout, compressed-pages 100%) — an
+    // eval lane must be REFUSED at High/Critical system pressure or a closed
+    // sustained-pressure gate, and must pass at Normal/Warning so ordinary load
+    // never blocks measurement. Pure-core test; no process-global mutation.
+    #[test]
+    fn eval_lane_memory_veto_refuses_at_high_pressure_or_closed_gate() {
+        use crate::system_resources::PressureLevel;
+        assert!(eval_lane_memory_veto(PressureLevel::Normal, false).is_ok());
+        assert!(eval_lane_memory_veto(PressureLevel::Warning, false).is_ok());
+        assert!(eval_lane_memory_veto(PressureLevel::High, false).is_err());
+        assert!(eval_lane_memory_veto(PressureLevel::Critical, false).is_err());
+        // Sustained gate closed vetoes even when the instantaneous level looks calm
+        // (the gate encodes "we were drowning seconds ago — don't re-load yet").
+        assert!(eval_lane_memory_veto(PressureLevel::Normal, true).is_err());
+        let err = eval_lane_memory_veto(PressureLevel::Critical, false).unwrap_err();
+        assert!(
+            err.to_string().contains("memory pressure"),
+            "refusal must name the cause for the detached ledger: {err}"
+        );
+    }
+
+    // what this catches: the warm-pool key lifecycle — a dead Weak (last handle
+    // dropped) must NOT satisfy a lookup, and a live one must. If lookup ever
+    // returned dangling lanes, a solve would hand its forked cognition an adapter
+    // pointed at a killed llama-server (connection-refused mid-drive).
+    #[test]
+    fn warm_lane_lookup_prunes_dead_entries() {
+        let key = format!("test-warm-lane-{}", uuid::Uuid::new_v4());
+        // No entry → miss.
+        assert!(lookup_warm_eval_lane(&key).is_none());
+        // Registered but immediately dropped inner → the Weak is dead → miss + prune.
+        {
+            let map = &*WARM_EVAL_LANES;
+            map.lock().unwrap().insert(key.clone(), std::sync::Weak::new());
+        }
+        assert!(lookup_warm_eval_lane(&key).is_none(), "dead Weak must not satisfy");
+        assert!(
+            !WARM_EVAL_LANES.lock().unwrap().contains_key(&key),
+            "dead entry must be pruned on the miss"
         );
     }
 }

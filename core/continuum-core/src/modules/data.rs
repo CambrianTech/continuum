@@ -18,7 +18,7 @@ use crate::orm::{
     types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},
 };
 use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, HandleRef, ModuleConfig, ModuleContext,
+    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModuleContext,
     ModulePriority, ServiceModule,
 };
 use crate::{log_error, log_info};
@@ -241,28 +241,34 @@ impl DataState {
             return Ok(format!("{}/.continuum/database/main.db", home));
         }
 
-        // Per-persona slug-shape sentinel: @persona:<slug>
-        // Slug matches the on-disk dir under $HOME/.continuum/personas/.
-        // Mac Option B fix — TS in container would otherwise ship a
-        // /root-rooted path the host-side native core can't open even
-        // though the file is the same on both sides of the mount.
-        if let Some(slug) = handle.strip_prefix("@persona:") {
-            if slug.is_empty() {
-                return Err("resolve_handle('@persona:'): empty slug".to_string());
+        // Per-CITIZEN slug-shape sentinel: @persona:<slug> / @agent:<slug> /
+        // @human:<slug>. Slug matches the on-disk dir under
+        // $HOME/.continuum/<bucket>/. First-class citizenship (Joel 2026-07-25):
+        // an external coding agent and a human get the SAME per-citizen
+        // longterm store a persona has, so the `/continuum:memory` skill gives
+        // an agent durable, own-dir memory (the amnesia fix). One resolution
+        // rule, three buckets. Mac Option B fix — the sentinel lets each side
+        // resolve to its own filesystem view of the shared `~/.continuum` mount.
+        for (sentinel, bucket) in [
+            ("@persona:", "personas"),
+            ("@agent:", "agents"),
+            ("@human:", "humans"),
+        ] {
+            if let Some(slug) = handle.strip_prefix(sentinel) {
+                if slug.is_empty() {
+                    return Err(format!("resolve_handle('{sentinel}'): empty slug"));
+                }
+                // Defensive: slug must be a single path segment — no escapes.
+                if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
+                    return Err(format!(
+                        "resolve_handle('{sentinel}{slug}'): slug must be a single path segment"
+                    ));
+                }
+                let home = std::env::var("HOME").map_err(|_| {
+                    format!("resolve_handle('{sentinel}{slug}'): HOME env not set")
+                })?;
+                return Ok(format!("{home}/.continuum/{bucket}/{slug}/data/longterm.db"));
             }
-            // Defensive: slug must be a single path segment — no escapes.
-            if slug.contains('/') || slug.contains('\\') || slug.contains("..") {
-                return Err(format!(
-                    "resolve_handle('@persona:{}'): slug must be a single path segment",
-                    slug
-                ));
-            }
-            let home = std::env::var("HOME")
-                .map_err(|_| format!("resolve_handle('@persona:{}'): HOME env not set", slug))?;
-            return Ok(format!(
-                "{}/.continuum/personas/{}/data/longterm.db",
-                home, slug
-            ));
         }
 
         // Telemetry SQLite sentinel.
@@ -397,7 +403,9 @@ macro_rules! deserialize_params {
 
 /// Check if a string matches the 36-char UUID shape `8-4-4-4-12` hex.
 /// Intentionally simple — avoids pulling uuid crate just for a shape check.
-fn is_uuid_shape(s: &str) -> bool {
+/// `pub(crate)` so `commands/memory` derives the SAME per-persona handle
+/// mapping `resolve_handle` uses (one shape check, one place).
+pub(crate) fn is_uuid_shape(s: &str) -> bool {
     if s.len() != 36 {
         return false;
     }
@@ -2333,6 +2341,38 @@ mod tests {
         ))
     }
 
+    /// what this catches: first-class citizenship (Joel 2026-07-25) — the
+    /// per-citizen store sentinels resolve to their OWN bucket, so an agent's
+    /// `/continuum:memory` writes land in `agents/<name>/…` (its durable
+    /// amnesia-fixing home), a human's in `humans/<name>/…`, a persona's in
+    /// `personas/<name>/…`. If the bucket mapping drifts, an agent's memory
+    /// collides with a persona of the same name or vanishes into the wrong dir.
+    #[test]
+    fn per_citizen_store_sentinels_resolve_to_their_own_bucket() {
+        // Set an isolated HOME so the resolved absolute path is deterministic.
+        let prior = std::env::var("HOME").ok();
+        std::env::set_var("HOME", "/tmp/continuum-citizen-test");
+        let state = DataState::new();
+        for (sentinel, bucket) in [
+            ("@persona:Asha", "personas/Asha"),
+            ("@agent:claude-code", "agents/claude-code"),
+            ("@human:joel", "humans/joel"),
+        ] {
+            let resolved = state.resolve_handle(sentinel).expect("resolves");
+            assert_eq!(
+                resolved,
+                format!("/tmp/continuum-citizen-test/.continuum/{bucket}/data/longterm.db"),
+                "sentinel {sentinel} → its own bucket"
+            );
+        }
+        // Path-escape defense holds for the new sentinels too.
+        assert!(state.resolve_handle("@agent:../evil").is_err());
+        match prior {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
     #[test]
     fn data_create_params_drop_the_db_path_leak_but_alias_legacy_callers() {
         // what this catches: the persona-facing `data/create` contract dropped the
@@ -3758,7 +3798,13 @@ pub struct DataListParams {
     pub offset: Option<u32>,
     /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
     /// "@persona:<slug>" or "@metrics" to target a specific store.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// WIRE NOTE: on the flat wire the `handle` key is CLAIMED by the
+    /// [`CommandRequest`](crate::runtime::CommandRequest) envelope (a kernel
+    /// `HandleRef`), so a string here never reaches these params under that
+    /// name — callers pass the storage handle as `dbPath` (the alias below),
+    /// same as `data/create`.
+    #[serde(default, alias = "dbPath", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub handle: Option<String>,
 }

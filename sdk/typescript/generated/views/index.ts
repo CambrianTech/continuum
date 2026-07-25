@@ -34,3 +34,27 @@ export type { RosterViewState } from './RosterViewState';
 // foundry widget closure (kind="foundry" → ForgeViewState + its model row)
 export type { ForgeViewState } from './ForgeViewState';
 export type { ForgeModelView } from './ForgeModelView';
+
+// nav closure (kind="nav" → NavViewState) — a citizen's open tabs (with derived
+// unread), current tab, per-room read cursors, and bookmarks. Per-USER, unlike
+// the per-room chat/roster/foundry kinds; served from the citizen's ?me= scoped
+// session substrate.
+export type { NavViewState } from './NavViewState';
+export type { NavTab } from './NavTab';
+export type { NavBookmark } from './NavBookmark';
+export type { NavTargetKind } from './NavTargetKind';
+
+// system-metrics closure (kind="system-metrics" → SystemMetricsViewState) — the
+// node's live CPU/MEM series the SYS gauge draws, core-carried window.
+export type { SystemMetricsViewState } from './SystemMetricsViewState';
+export type { MetricSeriesView } from './MetricSeriesView';
+
+// kanban closure (kind="kanban" → KanbanViewState) — the room's work board;
+// vendored for the persona home's claims feed (cards filtered by assignee).
+export type { KanbanViewState } from './KanbanViewState';
+export type { KanbanCardView } from './KanbanCardView';
+export type { KanbanLaneView } from './KanbanLaneView';
+export type { KanbanCardState } from './KanbanCardState';
+export type { KanbanLaneState } from './KanbanLaneState';
+export type { KanbanPriority } from './KanbanPriority';
+export type { KanbanPullRequest } from './KanbanPullRequest';

@@ -41,6 +41,7 @@ pub mod events;
 pub mod forge;
 pub mod generator;
 pub mod genome;
+pub mod genome_fitness_sentinel;
 pub mod gpu;
 pub mod grant_issuance;
 pub mod grid;

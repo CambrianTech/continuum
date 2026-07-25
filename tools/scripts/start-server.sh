@@ -250,6 +250,20 @@ echo "▶ building cu (Rust CLI client)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin cu $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ cu build failed — CLI client unavailable (core still launches)" >&2
 
+# ── Build the forge-custodian sidecar ────────────────────────────────
+# Like continuum-mcp, this bin is SPAWNED by the core (not launched by us): the
+# genome loop's `forge/export` self-provisions it on demand via
+# `forge::custodian_supervisor::ensure_local_custodian`, which resolves the binary
+# as a SIBLING of the core exe. So it must exist on disk after the build, or the
+# self-improvement loop fails loud at "custodian binary not found" the first time a
+# trained gene needs converting to a pageable gguf-lora. Same manifest/features/
+# profile as the core → a fast incremental once the core is built. Non-fatal: a
+# missing custodian only blocks gene conversion, not core boot; the supervisor
+# already surfaces an actionable error. ([[managed-product-everything-self-provisions-no-operator-steps]], #52/#25)
+echo "▶ building forge-custodian (Rust gguf-lora export sidecar)"
+cargo build --manifest-path "$CORE_MANIFEST" --bin forge-custodian $PROFILE_FLAG $CONTINUUM_FEATURES \
+  || echo "⚠ forge-custodian build failed — genome gene-conversion unavailable (core still launches)" >&2
+
 # Build the server binary BEFORE stopping the old core, so the running core keeps
 # serving through the (cached, fast) compile and downtime is ~0.
 echo "▶ building continuum-core-server"

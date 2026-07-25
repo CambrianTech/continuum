@@ -316,11 +316,20 @@ fn hf_repo_slug(hint: &str) -> Option<String> {
     ))
 }
 
+// Merge: BigMama's pub(crate) visibility (install code calls it) + M5's
+// config.env HF_HOME read (the cold-storage installer writes it there).
 pub(crate) fn huggingface_cache_root() -> Option<PathBuf> {
-    if let Ok(hf_home) = std::env::var("HF_HOME") {
-        if !hf_home.trim().is_empty() {
-            return Some(PathBuf::from(hf_home).join("hub"));
-        }
+    // Process env wins (a launcher's explicit override), then config.env — the
+    // ONE cross-platform source ([[config-env-single-owner]]): Windows persists
+    // user env in the registry and Linux has no equivalent, so the cold-storage
+    // installer writes HF_HOME to config.env and the core must honor it here
+    // (BigMama 16TB routing, 2026-07-24).
+    let hf_home = std::env::var("HF_HOME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| crate::config_env::read("HF_HOME").filter(|s| !s.trim().is_empty()));
+    if let Some(hf_home) = hf_home {
+        return Some(PathBuf::from(hf_home).join("hub"));
     }
     Some(
         PathBuf::from(home_dir_string()?)

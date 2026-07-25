@@ -430,7 +430,83 @@ async fn reboot(force: bool) -> Result<(), String> {
             old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         );
     }
-    launch_core(&old).await
+    launch_core(&old).await?;
+    // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
+    // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
+    // answer on the same socket and this reboot would report success while running dead code.
+    // Prove the swapped-in binary carries the current HEAD, or fail loud.
+    verify_deployed_build()
+}
+
+/// Prove the running core is built from the current git HEAD — the honest half of "reboot
+/// succeeded". Asks the on-disk server binary (which start-server.sh just built and launched)
+/// for its embedded build SHA and compares it to HEAD. A mismatch means the build did NOT pick
+/// up your latest commit (a cache no-op or a failed compile that left a stale binary) — exactly
+/// the #194 trap that turned a whole session into ghost-hunting. Skips (with a warning) only
+/// when it genuinely can't check (not a git tree, or an older server binary without the flag),
+/// never silently passing a known mismatch.
+fn verify_deployed_build() -> Result<(), String> {
+    let expected = match git_head_short_sha() {
+        Some(s) => s,
+        None => {
+            eprintln!("⚠ deploy-verify skipped: not a git checkout (cannot compute HEAD)");
+            return Ok(());
+        }
+    };
+    let server = match server_binary_beside_cu() {
+        Some(p) => p,
+        None => {
+            eprintln!("⚠ deploy-verify skipped: could not locate continuum-core-server next to cu");
+            return Ok(());
+        }
+    };
+    let actual = std::process::Command::new(&server)
+        .arg("--build-sha")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    match actual {
+        Some(a) if a == expected || a == "unknown" => {
+            if a == "unknown" {
+                eprintln!("⚠ deploy-verify: server reports build 'unknown' (built outside a git tree) — cannot confirm freshness");
+            } else {
+                println!("✅ deploy verified: core is running build {a} (== HEAD)");
+            }
+            Ok(())
+        }
+        Some(a) => Err(format!(
+            "DEPLOY MISMATCH (#194): the running core is build {a} but HEAD is {expected}. The \
+             build did NOT pick up your latest source — a stale/cached binary is running while the \
+             reboot claimed success. Do not trust any live test until this is fixed: rebuild \
+             cleanly (`cargo build -p continuum-core --bin continuum-core-server`) and reboot again."
+        )),
+        None => {
+            eprintln!("⚠ deploy-verify skipped: server binary has no --build-sha (pre-#194 build); rebuild once to enable");
+            Ok(())
+        }
+    }
+}
+
+/// Short git HEAD SHA of the current checkout (matches what `build.rs` embeds), or `None`
+/// when not in a git tree.
+fn git_head_short_sha() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The `continuum-core-server` binary sitting next to this `cu` in the target dir — the one
+/// start-server.sh builds and launches. `None` if it can't be resolved.
+fn server_binary_beside_cu() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let server = exe.parent()?.join("continuum-core-server");
+    server.exists().then_some(server)
 }
 
 /// PIDs of live training runs (`mlx_lm` trainers spawned by the MLX adapter) —

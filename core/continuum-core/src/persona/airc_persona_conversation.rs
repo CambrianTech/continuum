@@ -241,14 +241,33 @@ impl PersonaConversation for AircPersonaConversation {
                     let message = match perceptual_from_event(&event) {
                         Ok(message) => message,
                         Err(reason) => {
-                            tracing::info!(
-                                persona = %self.own_peer_id,
-                                from_peer = %event.peer_id,
-                                body_kind,
-                                reason,
-                                probe_class = "persona.inbound.filtered_non_turn",
-                                "raw event was not a perceptual room turn — skipped (#146/#177)"
-                            );
+                            // A decode ERROR is loud — a message-shaped body we
+                            // failed to read is exactly the #177 blindness this
+                            // named-reason contract exists for. The two LEGIT
+                            // non-turn shapes (event-bridge frames, presence,
+                            // work-board events) flooded 38k INFO lines/day
+                            // across the roster and drowned real signal — they
+                            // stay observable at debug, counted by probe_class
+                            // either way.
+                            if reason == "envelope_decode_error" {
+                                tracing::warn!(
+                                    persona = %self.own_peer_id,
+                                    from_peer = %event.peer_id,
+                                    body_kind,
+                                    reason,
+                                    probe_class = "persona.inbound.filtered_non_turn",
+                                    "message-shaped event FAILED to decode — a peer may be structurally unheard (#177)"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    persona = %self.own_peer_id,
+                                    from_peer = %event.peer_id,
+                                    body_kind,
+                                    reason,
+                                    probe_class = "persona.inbound.filtered_non_turn",
+                                    "raw event was not a perceptual room turn — skipped (#146/#177)"
+                                );
+                            }
                             continue;
                         }
                     };
@@ -319,6 +338,10 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'s
         lamport: event.lamport,
         peer_id,
         text,
+        // The transport room is the turn's context (A.6) — without it the
+        // service loop bound operator/CLI turns to a nil room and every
+        // room-scoped source abstained.
+        room_id: event.room_id.as_uuid(),
     })
 }
 
@@ -404,6 +427,42 @@ mod tests {
             assert_eq!(msg.text, "hello from a peer");
             assert_eq!(msg.peer_id, peer.as_uuid());
             assert_eq!(msg.lamport, 7);
+            // regression for the 2026-07-23 nil-room turn: the transport's
+            // room_id MUST ride into the perceptual message (A.6) — dropping
+            // it bound operator/CLI turns to a nil room where every
+            // room-scoped RAG source abstained (no board, no kanban, no
+            // roster) and the reply had no room to land in.
+            assert_eq!(msg.room_id, RoomId::from_u128(2).as_uuid());
+        }
+
+        // what this catches: a live streaming token chunk (airc.stream.* headers,
+        // text body) must NOT be perceived as a spoken room turn — card 65fca48d,
+        // live 2026-07-24: chunks were stamped Durable by the publish path, came
+        // back from page_recent as transcript, and flooded every persona's window
+        // with per-250ms fragments ("Anwen: I", "Anwen: see that you're…"),
+        // waking peers per fragment and leaking a streamed "PASS" sentinel as
+        // room content. The settled utterance arrives separately via say(); the
+        // chunk is typing-indicator-class traffic, skipped with a NAMED reason.
+        #[test]
+        fn stream_chunk_is_not_a_room_turn() {
+            let peer = PeerId::from_u128(42);
+            let mut headers = Headers::new();
+            headers.insert(
+                airc_lib::HEADER_STREAM_ID.into(),
+                "b1946ac9-2a75-4a6f-9182-6b1c6e0e7a11".to_string(),
+            );
+            headers.insert(airc_lib::HEADER_STREAM_SEQ.into(), "3".to_string());
+            headers.insert(
+                airc_lib::HEADER_STREAM_KIND.into(),
+                "text.token".to_string(),
+            );
+            let ev = event(peer, Some(Body::text(" see that you're")), headers);
+            assert_eq!(
+                perceptual_from_event(&ev),
+                Err("stream_chunk"),
+                "a streaming fragment must be skipped with its named reason — \
+                 never surfaced as a spoken room line"
+            );
         }
 
         // what this catches: THE bug. chat/send arrives as a Body::Json

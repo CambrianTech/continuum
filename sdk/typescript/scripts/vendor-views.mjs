@@ -42,6 +42,23 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'ForgeModelView' },
   // roster widget kind — path-3 per-region ViewState; imports ./RosterSlotView (views)
   { src: 'positron', dest: 'views', name: 'RosterViewState' },
+  // nav closure (kind="nav" — a citizen's open tabs / unread / bookmarks)
+  { src: 'positron', dest: 'views', name: 'NavViewState' },
+  { src: 'positron', dest: 'views', name: 'NavTab' },
+  { src: 'positron', dest: 'views', name: 'NavBookmark' },
+  { src: 'positron', dest: 'views', name: 'NavTargetKind' },
+  // system-metrics closure (kind="system-metrics" — the SYS gauge's series)
+  { src: 'positron', dest: 'views', name: 'SystemMetricsViewState' },
+  { src: 'positron', dest: 'views', name: 'MetricSeriesView' },
+  // kanban closure (kind="kanban" — the work board; the persona home's claims
+  // feed renders cards by assignee). Vendored now that a widget renders it.
+  { src: 'positron', dest: 'views', name: 'KanbanViewState' },
+  { src: 'positron', dest: 'views', name: 'KanbanCardView' },
+  { src: 'positron', dest: 'views', name: 'KanbanLaneView' },
+  { src: 'positron', dest: 'views', name: 'KanbanCardState' },
+  { src: 'positron', dest: 'views', name: 'KanbanLaneState' },
+  { src: 'positron', dest: 'views', name: 'KanbanPriority' },
+  { src: 'positron', dest: 'views', name: 'KanbanPullRequest' },
   // Experience / Join Contract manifest closure — mirrored into experience/, keeps
   // its `./Sibling` + `../grid/TrustLevel` relative imports.
   { src: 'experience', dest: 'experience', name: 'Experience' },

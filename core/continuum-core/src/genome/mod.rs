@@ -64,6 +64,7 @@ pub mod bus;
 pub mod candidate_source_store;
 pub mod eviction;
 pub mod fine_tuning;
+pub mod fitness;
 pub mod local_manager;
 pub mod manager;
 pub mod recall;

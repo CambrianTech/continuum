@@ -116,6 +116,7 @@ pub mod experience_resolver;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
+pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
 pub mod positron_source;
@@ -1479,6 +1480,30 @@ pub fn start_server(
     let rag_state = Arc::new(RagState::new(memory_manager.clone()));
     runtime.register(Arc::new(RagModule::new(rag_state)));
 
+    // The LIVE CALL media plane (finish-live-video, 2026-07-25): the WebSocket
+    // call server (mix-minus audio, STT, avatar-state fanout, video frames)
+    // was fully built and NEVER STARTED — the armed-but-idle pattern. Start it
+    // at boot on its own task; the browser's live face dials it on Go-live.
+    // Port from config.env CONTINUUM_CALL_WS (one owner, [[config-env-single-owner]]),
+    // default 8790. Bind failure is LOUD (a squatted port must surface), but
+    // non-fatal: the core serves without a media plane rather than dying —
+    // the live face shows its honest avatar-presence chip in that state.
+    let call_manager = std::sync::Arc::new(crate::live::transport::call_server::CallManager::new());
+    {
+        let port = crate::config_env::read("CONTINUUM_CALL_WS")
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .unwrap_or(8790);
+        let addr = format!("127.0.0.1:{port}");
+        let manager = call_manager.clone();
+        rt_handle.spawn(async move {
+            if let Err(e) =
+                crate::live::transport::call_server::start_call_server(&addr, manager).await
+            {
+                tracing::error!(addr = %addr, error = %e, "call server failed to start — live media plane unavailable (browser live face stays avatar-presence)");
+            }
+        });
+    }
+
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
     let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
     let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
@@ -1763,12 +1788,17 @@ pub fn start_server(
         // SelfReflection per dreaming tick — the first mind-wanderer. Hippocampus +
         // adapter resolve per tick from the live workspace registry (re-home-safe),
         // never a parallel persona→adapter map.
-        let dream_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+        let dream_region_concrete = Arc::new(
             crate::cognition::dream_consolidation::DreamConsolidationRegion::new(
                 crate::cognition::persona_workspace::global()
                     as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>,
             ),
         );
+        // Install the flywheel handle: `cognition/dream-now` drives THIS region
+        // on demand (factory mode) — same instance the governor ticks, so the
+        // per-persona single-flight guard holds across both drivers.
+        crate::cognition::dream_consolidation::install_global(dream_region_concrete.clone());
+        let dream_region: Arc<dyn crate::runtime::BrainRegion> = dream_region_concrete;
         // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
         // budget to the host's current memory band so a society of inference-bearing
         // background regions can't stampede the model backend under load. A homeostatic
@@ -2350,6 +2380,21 @@ pub fn start_server(
             "TrainingCompletionSentinel: registered (L3 train-done → eval → lift>0 → page-in)"
         );
 
+        // GenomeFitnessSentinel: the self-evolving genome's fitness daemon. On a slow
+        // (5-min) Background tick it measures each resident layer's value-density
+        // (lift/GB, from the manifest + eval ledger) and GLASS-BOXES the ranking +
+        // retire-candidates — OBSERVE-ONLY, no eviction (earn the emergent version:
+        // validate the fitness signal against ground truth before it ever evicts,
+        // SELF-EVOLVING-GENOME.md §5). Stateless; reads fresh each tick.
+        runtime.register(Arc::new(
+            crate::modules::genome_fitness_sentinel::GenomeFitnessSentinel::new(),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "GenomeFitnessSentinel: registered (observe-only value-density fitness landscape, 5-min tick)"
+        );
+
         // TrainingTriggerModule: substrate-native batching coordinator
         // sitting between curriculum producers (teacher persona's
         // synthesis, hippocampus's noteworthy drain, operator submits)
@@ -2728,6 +2773,51 @@ pub fn start_server(
                     ws_substrate.clone(),
                 );
 
+                // Per-citizen substrates for per-user views (nav): each connecting
+                // citizen (?me) reads its own nav from here, unioned with the node
+                // substrate for per-room views. Shared instance so the nav projector
+                // (write) and the session (read) agree on for_citizen(me).
+                let per_user =
+                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
+
+                // Nav wiring (nav slice 2, live): ONE room-set fold projecting the
+                // observed airc stream (seeded with the bootstrap room so the
+                // landing room exists before the first event), one live reader
+                // over it, and the registry the WS ingress asks to ensure a
+                // citizen's projector on first connection.
+                let nav_seed: Vec<(Uuid, String)> = node_presence_deps
+                    .clone()
+                    .zip(persona_bootstrap_room_name.clone())
+                    .map(|((_socket, room), name)| vec![(room.as_uuid(), name)])
+                    .unwrap_or_default();
+                let room_set = positron_nav_source::spawn_room_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                    nav_seed,
+                );
+                // Member-name fold (the room fold's identity sibling): resolves a
+                // persona-kind tab's title from the same presence stream.
+                let member_set = positron_nav_source::spawn_member_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                );
+                let nav_registry = Arc::new(positron_nav_source::NavProjectorRegistry::new(
+                    projection_bus.clone(),
+                    Arc::clone(&per_user),
+                    Arc::new(positron_nav_source::ChannelBookmarksNavReader::new(
+                        room_set, member_set,
+                    )),
+                ));
+
+                // SYS gauge source (brick 2): sample the ONE shared resource
+                // monitor into kind="system-metrics" on the served substrate —
+                // the old sidebar's CPU/MEM sparkline, core-carried window.
+                positron_metrics_source::spawn_system_metrics_emitter(
+                    &state.rt_handle,
+                    system_monitor.clone(),
+                    ws_substrate.clone(),
+                );
+
                 // Producer half of the same stream: attach a node-level
                 // roster reader and emit `presence:updated` so the consumer
                 // above has an identity source to fold in — otherwise every
@@ -2827,14 +2917,8 @@ pub fn start_server(
                     }
                 }
 
-                // Per-citizen substrates for per-user views (nav): each connecting
-                // citizen (?me) reads its own nav from here, unioned with the node
-                // substrate for per-room views. Shared instance so the nav projector
-                // (write) and the session (read) agree on for_citizen(me).
-                let per_user =
-                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
                 state.rt_handle.spawn(async move {
-                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user).await;
+                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user, nav_registry).await;
                 });
             }
         }

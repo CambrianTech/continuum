@@ -85,4 +85,25 @@ vitals: Record<string, number>,
  * human, an unresolved agent) carries `None`. `#[serde(default)]` so a
  * slot serialized before this field folds as absent, never dropped.
  */
-loadout?: Loadout, };
+loadout?: Loadout, 
+/**
+ * URL of this member's avatar IMAGE, when the producing node has one
+ * stored (`~/.continuum/avatars/<peer-id>.png`, served under
+ * `/avatars/…` by the client's static tier). Neutral like every other
+ * slot field: positron transports the URL, never the pixels, and never
+ * interprets it. `None` = no stored avatar — the renderer draws its
+ * glyph fallback, never a broken image or a fabricated face
+ * ([[fallbacks-are-illegal-fail-loud]]). `#[serde(default)]` so a slot
+ * serialized before this field folds as absent, never dropped.
+ */
+avatar_url?: string, 
+/**
+ * NAMES of the member's loaded skill overlays (a continuum persona's
+ * paged-in LoRA genes), in load order — the label half of a `genome`
+ * vital that carries only a normalized count. Transported, NOT
+ * interpreted (same neutral discipline as `vitals`): the app decides how
+ * to render them (segment tooltips). Empty = none loaded/reported —
+ * honest-absent, never fabricated labels. `#[serde(default)]` so a slot
+ * serialized before this field folds as empty, never dropped.
+ */
+genes: Array<string>, };

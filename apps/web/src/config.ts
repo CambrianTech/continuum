@@ -23,6 +23,11 @@
 export interface WebChatConfig {
   /** WS URL of the core's thin-client ingress (e.g. `ws://127.0.0.1:8974`). */
   readonly wsUrl: string;
+  /** ws URL of the core's live CALL server (media plane). Optional — absent
+   *  keeps the live face avatar-presence with the mic honestly disabled.
+   *  `?call=ws://host:port` / VITE_CONTINUUM_CALL_WS; defaults to the core
+   *  host's :8790 (the boot default CONTINUUM_CALL_WS). */
+  readonly callUrl?: string;
   /** The human citizen's UUID, threaded as `chat/send`'s `senderId`. */
   readonly senderId: string;
 }
@@ -44,6 +49,9 @@ function lookup(queryKey: string, envKey: string): string | undefined {
  */
 export function resolveConfig(): WebChatConfig {
   const wsUrl = lookup('core', 'VITE_CONTINUUM_WS');
+  const callUrl =
+    lookup('call', 'VITE_CONTINUUM_CALL_WS') ??
+    (wsUrl !== undefined ? wsUrl.replace(/:\d+$/, ':8790') : undefined);
   const senderId = lookup('me', 'VITE_CONTINUUM_USER_ID');
 
   // Narrow on the values themselves (not a separate count) so TS proves both are
@@ -55,5 +63,6 @@ export function resolveConfig(): WebChatConfig {
     throw new Error(`web chat config incomplete:\n  - ${missing.join('\n  - ')}`);
   }
 
-  return { wsUrl, senderId };
+  return { wsUrl,
+    callUrl, senderId };
 }

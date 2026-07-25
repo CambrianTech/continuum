@@ -35,25 +35,77 @@
 
 use std::path::{Path, PathBuf};
 
-/// The on-disk scope for a single citizen (persona for now; humans +
-/// external AIs follow per the chain-of-custody design doc).
+/// What KIND of citizen a home belongs to — the subdir under
+/// `<continuum_root>/` where their scope lives. First-class citizenship
+/// for ALL (Joel 2026-07-25): a coding agent (Claude Code / Codex) and a
+/// human get the SAME home shape a persona has — identity in `airc/`,
+/// engrams in `engrams.sqlite` — differing only in the top-level bucket,
+/// so an agent's OWN durable memory (the `/continuum:memory` skill's
+/// store) lives in its own dir and survives session death exactly like a
+/// persona's. The engram write-through + recall paths are kind-agnostic;
+/// they reach through the typed home either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CitizenKind {
+    /// An internal persona (RAG + optional genome) — `personas/<name>/`.
+    Persona,
+    /// An external coding agent (Claude Code, Codex, …) — `agents/<name>/`.
+    Agent,
+    /// A human citizen (their notes/context engrams) — `humans/<name>/`.
+    Human,
+}
+
+impl CitizenKind {
+    /// The top-level bucket dir for this kind under the continuum root.
+    pub fn bucket(self) -> &'static str {
+        match self {
+            CitizenKind::Persona => "personas",
+            CitizenKind::Agent => "agents",
+            CitizenKind::Human => "humans",
+        }
+    }
+}
+
+/// The on-disk scope for a single citizen — persona, coding agent, or
+/// human. Every kind gets the SAME layout (identity in `airc/`, engrams
+/// in `engrams.sqlite`); only the bucket differs, so the engram
+/// substrate is one mechanism for every citizen ([[first-class-citizenship]]).
 ///
-/// Construct via `PersonaHome::for_persona(continuum_root, agent_name)`.
-/// The home directory is created lazily on first sub-path access
-/// (most callers want the dir to exist before they open a DB).
+/// Construct via [`for_citizen`](Self::for_citizen) (any kind) or the
+/// [`for_persona`](Self::for_persona) convenience wrapper. The home
+/// directory is created lazily — callers that need it call
+/// [`ensure_exists`](Self::ensure_exists) first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersonaHome {
     root: PathBuf,
 }
 
 impl PersonaHome {
-    /// Resolve the home for a given persona under
-    /// `<continuum_root>/personas/<agent_name>/`. Does NOT create the
-    /// directory — callers that need it to exist call
-    /// `ensure_exists()` first.
-    pub fn for_persona(continuum_root: &Path, agent_name: &str) -> Self {
-        let root = continuum_root.join("personas").join(agent_name);
+    /// Resolve the home for any citizen KIND under
+    /// `<continuum_root>/<bucket>/<name>/`. The one constructor; the
+    /// persona/agent/human split is just the bucket.
+    pub fn for_citizen(continuum_root: &Path, kind: CitizenKind, name: &str) -> Self {
+        let root = continuum_root.join(kind.bucket()).join(name);
         Self { root }
+    }
+
+    /// Resolve the home for a given persona under
+    /// `<continuum_root>/personas/<agent_name>/`. A thin wrapper over
+    /// [`for_citizen`](Self::for_citizen) — kept so existing persona
+    /// callsites don't churn. Does NOT create the directory.
+    pub fn for_persona(continuum_root: &Path, agent_name: &str) -> Self {
+        Self::for_citizen(continuum_root, CitizenKind::Persona, agent_name)
+    }
+
+    /// Resolve a coding AGENT's home (`agents/<name>/`) — the durable
+    /// scope for a Claude Code / Codex session's own engram memory.
+    pub fn for_agent(continuum_root: &Path, agent_name: &str) -> Self {
+        Self::for_citizen(continuum_root, CitizenKind::Agent, agent_name)
+    }
+
+    /// Resolve a HUMAN's home (`humans/<name>/`) — their own engram
+    /// scope for notes/context that persists across sessions.
+    pub fn for_human(continuum_root: &Path, name: &str) -> Self {
+        Self::for_citizen(continuum_root, CitizenKind::Human, name)
     }
 
     /// Wrap an ALREADY-resolved persona home directory (e.g. the
@@ -132,6 +184,37 @@ mod tests {
         assert_eq!(
             home.root(),
             Path::new("/tmp/continuum-test-root/personas/Paige")
+        );
+    }
+
+    /// What this catches: first-class citizenship (Joel 2026-07-25) — an
+    /// AGENT and a HUMAN get the SAME home layout as a persona, differing
+    /// only in the top-level bucket. If the bucket mapping drifts, an
+    /// agent's durable engram memory lands in the wrong place (or collides
+    /// with a persona of the same name), breaking the amnesia fix the
+    /// per-agent home exists to deliver.
+    #[test]
+    fn every_citizen_kind_gets_the_same_home_shape() {
+        let root = Path::new("/tmp/continuum-test-root");
+        let agent = PersonaHome::for_agent(root, "claude-code");
+        let human = PersonaHome::for_human(root, "joel");
+        assert_eq!(
+            agent.engrams_db(),
+            Path::new("/tmp/continuum-test-root/agents/claude-code/engrams.sqlite")
+        );
+        assert_eq!(
+            human.engrams_db(),
+            Path::new("/tmp/continuum-test-root/humans/joel/engrams.sqlite")
+        );
+        // Same layout invariant every kind: airc identity beside engrams.
+        assert_eq!(
+            agent.airc_dir(),
+            Path::new("/tmp/continuum-test-root/agents/claude-code/airc")
+        );
+        // The persona wrapper and for_citizen(Persona) resolve identically.
+        assert_eq!(
+            PersonaHome::for_persona(root, "Asha"),
+            PersonaHome::for_citizen(root, CitizenKind::Persona, "Asha")
         );
     }
 

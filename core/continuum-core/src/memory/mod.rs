@@ -148,6 +148,12 @@ impl PersonaMemoryManager {
         }
     }
 
+    /// Whether a corpus is already cached for this persona — the hydrate-on-miss
+    /// gate the `memory/*` commands check before loading from the durable store.
+    pub fn has_corpus(&self, persona_id: &str) -> bool {
+        self.corpora.contains_key(persona_id)
+    }
+
     /// Get a persona's cached corpus (Arc<RwLock>). Caller acquires read/write lock as needed.
     fn get_corpus(&self, persona_id: &str) -> Result<Arc<RwLock<MemoryCorpus>>, MemoryError> {
         self.corpus_access_times

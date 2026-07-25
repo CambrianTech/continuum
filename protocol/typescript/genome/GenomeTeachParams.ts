@@ -38,4 +38,16 @@ outputDir?: string,
 /**
  * Fraction of validated examples placed in the train split. Default 0.8.
  */
-splitRatio?: number, };
+splitRatio?: number, 
+/**
+ * Fire-and-stream (#86): true runs the corpus-gen in the CORE and returns a `run_id`
+ * HANDLE immediately — the client never blocks for the many-minute run, the work
+ * survives disconnect, progress streams as events, and the terminal result lands in
+ * a run ledger polled by `genome/teach-status --run_id`. Default false (inline).
+ */
+detach?: boolean, 
+/**
+ * The run handle. Minted by the command when omitted; the detached ack AND the ledger
+ * row carry it, so the two halves of fire-and-poll join on one id.
+ */
+runId?: string, };

@@ -553,6 +553,26 @@ impl OpenAICompatibleAdapter {
     /// handle the common "persona says short name, DMR stores full
     /// hf.co/…-GGUF ID" pattern. No fuzzy magic beyond that — if neither
     /// contains the other, the adapter honestly does not have the model.
+    /// Ensure `id` is present in the runtime catalog. The llama-server gateway
+    /// calls this with the ServingSnapshot's `active_model` after initialize —
+    /// the SNAPSHOT is the authority on what the lane serves; the `/v1/models`
+    /// catalog is DERIVED, and it can lie about identity: on Windows a mangled
+    /// spawn `--alias` put the GGUF file PATH in `data[].id`, so the served
+    /// model matched nothing and `select()` refused a healthy lane (5090 repro
+    /// 2026-07-24). Not a fallback: this records a fact the daemon's reconcile
+    /// already verified against the live process.
+    pub fn ensure_runtime_model(&self, id: &str) {
+        let mut guard = self.runtime_models.write().unwrap();
+        match guard.as_mut() {
+            Some(set) => {
+                set.insert(id.to_string());
+            }
+            None => {
+                *guard = Some(std::collections::HashSet::from([id.to_string()]));
+            }
+        }
+    }
+
     fn runtime_models_contain(&self, model_name: &str) -> bool {
         let guard = self.runtime_models.read().unwrap();
         match guard.as_ref() {
@@ -1254,6 +1274,13 @@ struct OpenAITimings {
 /// total-request timeout that killed legitimately-long generations.
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 
+/// Bound on the wait for response HEADERS after POSTing a generation — the
+/// pre-stream twin of [`STREAM_IDLE_TIMEOUT_SECS`]. Covers the hung-prefill /
+/// poisoned-backend case where the server accepts and never answers; sized for
+/// a worst-case full-window prefill queued behind co-tenants (minutes), because
+/// its job is releasing ETERNAL holds, not policing slow ones.
+const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
+
 /// A local single-resident lane can be RELAUNCHED out from under an in-flight POST —
 /// grow-back (#214), a genome page-in, or memory pressure all bounce the llama-server
 /// process, and the published serving snapshot can lag at `ready=true` for the ~seconds
@@ -1941,7 +1968,26 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             let attempt_builder = request_builder
                 .try_clone()
                 .expect("bodyless request builder is always cloneable");
-            match attempt_builder.json(&body).send().await {
+            // BOUNDED pre-first-byte wait: a poisoned lane can accept the request
+            // and never return headers (hung prefill) — with no bound here, the
+            // caller's ServingLanePermit is held FOREVER and one wedged call
+            // starves the whole roster's admission (glass-boxed 2026-07-23: the
+            // eternal `nondirected_waiting` park). The stream idle-watchdog only
+            // arms AFTER headers; this is its pre-stream twin. Generous (prefill
+            // of a full window on a busy co-tenant lane is minutes, not seconds)
+            // but FINITE — RTOS rule: every hold is bounded.
+            let sent = tokio::time::timeout(
+                std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
+                attempt_builder.json(&body).send(),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "{}: no response headers for {}s after POST — lane accepted the                      request and went silent (hung prefill / poisoned backend);                      releasing the lane instead of holding it forever",
+                    self.config.name, PRE_STREAM_HEADER_TIMEOUT_SECS
+                )
+            })?;
+            match sent {
                 Ok(resp) => break resp,
                 Err(e)
                     if e.is_connect()

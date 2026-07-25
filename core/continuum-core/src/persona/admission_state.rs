@@ -663,9 +663,21 @@ impl AdmissionState {
     /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
     pub fn fork_detached(&self) -> AdmissionState {
         let cp = self.checkpoint();
-        let fork = Self::new(Arc::new(
-            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
-        ));
+        let fork_registry = crate::persona::recall_metadata::RecallMetadataRegistry::new();
+        // Carry the LIVING registry's state into the fork — salience, rehearsal
+        // counts, protection, supersession demotions. A fresh-empty registry
+        // resets every engram to DEFAULT salience inside the fork, which
+        // soul-strips her learned memory WEIGHTS at the measurement boundary:
+        // glass-boxed 2026-07-23 — 490 live supersessions had ZERO benchmark
+        // effect because every demoted stale belief snapped back to 0.5 in the
+        // fork and out-ranked her fresh knowledge again. She must compete with
+        // the salience landscape she actually LEARNED
+        // ([[eval-measures-the-true-full-being-not-a-stripped-copy]]). Still a
+        // detached COPY: the fork's hits/decay touch nothing living.
+        for (id, meta) in self.recall_metadata().snapshot() {
+            fork_registry.admit(id, meta);
+        }
+        let fork = Self::new(Arc::new(fork_registry));
         fork.restore(&cp);
         // Carry owner identity across the fork, or the eval measurement copy would
         // recall the persona's OWN chatter that the live self now gates (#166): the
@@ -706,6 +718,67 @@ impl AdmissionState {
     /// "Newest first" = reverse insertion order in the in-memory v1 store.
     /// PR-6 will swap to ORM-backed storage indexed by `admitted_at_ms`
     /// for the same ordering guarantee under restart.
+    /// The persona's existing consolidated BELIEFS related to a set of recall
+    /// keys — the dream's supersession-review candidates (#221 slice 2). Pure
+    /// RETRIEVAL by lexical key overlap (the same mechanics recall uses), never
+    /// a judgment: the distiller model decides which, if any, of these a newly
+    /// consolidated fact supersedes. Newest-first, capped at `limit`, Semantic
+    /// only (episodics are experience, not beliefs — they decay, they aren't
+    /// superseded). Keys shorter than 4 chars are skipped as noise.
+    pub fn semantic_beliefs_matching(&self, keys: &[String], limit: usize) -> Vec<Engram> {
+        let needles: Vec<String> = keys
+            .iter()
+            .map(|k| k.trim().to_lowercase())
+            .filter(|k| k.len() >= 4)
+            .collect();
+        if needles.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        let mut hits: Vec<Engram> = engrams
+            .iter()
+            .rev() // newest-first (insertion order store)
+            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| {
+                let content = e.content.to_lowercase();
+                needles.iter().any(|n| content.contains(n.as_str()))
+            })
+            .take(limit)
+            .cloned()
+            .collect();
+        hits.shrink_to_fit();
+        hits
+    }
+
+    /// The persona's OLDEST consolidated beliefs not yet in `exclude` — the
+    /// dream's ROTATING review window (#221 slice 2b). Lexical key-overlap
+    /// retrieval (`semantic_beliefs_matching`) only reaches beliefs that share
+    /// tokens with new experience; glass-boxed 2026-07-22: her stale Rust-era
+    /// beliefs share nothing with python lesson keys, so supersession never saw
+    /// them. The rotating window guarantees EVENTUAL coverage: every dream also
+    /// re-examines a few of her oldest unreviewed beliefs against the new
+    /// understanding, oldest-first because age without rehearsal is where
+    /// staleness lives. Retrieval only — the model judges.
+    pub fn semantic_beliefs_oldest_excluding(
+        &self,
+        exclude: &std::collections::HashSet<Uuid>,
+        admitted_before_ms: u64,
+        limit: usize,
+    ) -> Vec<Engram> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        engrams
+            .iter() // insertion order == oldest first
+            .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
+            .filter(|e| e.admitted_at_ms < admitted_before_ms)
+            .filter(|e| !exclude.contains(&e.id))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     pub fn recall_recent(&self, limit: usize) -> Vec<Engram> {
         if limit == 0 {
             return Vec::new();
@@ -2525,5 +2598,62 @@ mod tests {
             recalled.iter().any(|e| e.content == baseline),
             "the pre-eval baseline reality is preserved (mirror, not sterilize)"
         );
+    }
+
+    // what this catches: the supersession-review retrieval (#221 slice 2) is
+    // RETRIEVAL, not judgment — Semantic-only (episodics are experience, not
+    // beliefs), matched by recall-key overlap on content, short keys skipped as
+    // noise, capped. If this ever returned episodics, the dream would ask the
+    // model to "supersede" raw experience — plasticity eating her history
+    // instead of her stale conclusions.
+    #[test]
+    fn semantic_beliefs_matching_is_semantic_only_key_overlap() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mk = |kind: EngramKind, content: &str| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind,
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection { parent_engram_id: Uuid::new_v4() },
+            recall_keys: vec![],
+            admitted_at_ms: 1,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let stale_belief = mk(EngramKind::Semantic, "You work with main.rs and wordstats.rs");
+        let other_belief = mk(EngramKind::Semantic, "The team prefers ranked-choice votes");
+        let episode = mk(EngramKind::Episodic, "I edited main.rs and it compiled");
+        let stale_id = stale_belief.id;
+        for e in [stale_belief, other_belief, episode] {
+            state.engrams.lock().unwrap().push(e);
+        }
+        let hits = state.semantic_beliefs_matching(
+            &["main.rs".to_string(), "rs".to_string()], // "rs" = noise, skipped
+            8,
+        );
+        assert_eq!(hits.len(), 1, "semantic-only, key-matched: {hits:?}");
+        assert_eq!(hits[0].id, stale_id);
+        // Cap respected; empty needles → empty.
+        assert!(state.semantic_beliefs_matching(&[], 8).is_empty());
+        assert!(state
+            .semantic_beliefs_matching(&["main.rs".to_string()], 0)
+            .is_empty());
+
+        // Rotating window (#221 slice 2b): oldest-first, Semantic-only,
+        // exclusion honored — what guarantees the review EVENTUALLY reaches
+        // beliefs lexical overlap can't (the stale-Rust vs python-keys gap).
+        let mut exclude = std::collections::HashSet::new();
+        let oldest = state.semantic_beliefs_oldest_excluding(&exclude, u64::MAX, 1);
+        assert_eq!(oldest.len(), 1);
+        assert_eq!(
+            oldest[0].content, "You work with main.rs and wordstats.rs",
+            "oldest belief first (insertion order)"
+        );
+        exclude.insert(oldest[0].id);
+        let next = state.semantic_beliefs_oldest_excluding(&exclude, u64::MAX, 4);
+        assert_eq!(next.len(), 1, "episodics never enter the window: {next:?}");
+        assert_eq!(next[0].content, "The team prefers ranked-choice votes");
     }
 }

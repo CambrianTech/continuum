@@ -13,6 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::cognition::competitor::{
+    classify, optional_arms, run_competition, ArmClass, ArmTaskResult, DEFAULT_ENDPOINT,
+};
 use crate::cognition::eval::{CognitionEval, CognitionEvalParams};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -741,6 +744,367 @@ impl ActionCommand for BenchmarkMatrix {
     }
 }
 crate::register_stateless_command!(BenchmarkMatrix);
+
+// ── benchmark/competition — the product-vs-product scoreboard ────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkCompetitionParams.ts")]
+pub struct BenchmarkCompetitionParams {
+    /// Benchmark name (see `benchmark/list`). Its tasks are posed IDENTICALLY to every arm.
+    pub name: String,
+    /// The persona (UUID, must be spawned) whose LIVE cognition is the Continuum arm.
+    pub persona_id: String,
+    /// The shared weights EVERY arm runs — Continuum forks a measurement lane on it, and
+    /// the external arms hit an endpoint serving it. Product vs product on ONE model.
+    pub base_model_id: String,
+    /// OpenAI-compatible endpoint the EXTERNAL arms target. Omit → the default local
+    /// location; the operator/serving system provisions a dedicated opponent lane and
+    /// passes its `base_url` ([[benchmark-needs-its-own-serving-lane]]). Hermes needs this
+    /// lane to serve ≥64K or it refuses at startup and its cell reads VOID (fail loud).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub endpoint: Option<String>,
+    /// Max tasks to run (default 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub limit: Option<u32>,
+    /// Which external arms to run by name (e.g. `["hermes","raw-oneshot"]`). Omit → every
+    /// available optional arm. An unknown name is an ERROR (fail loud, never a silent skip).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub arms: Option<Vec<String>>,
+    /// Fire-and-poll (#86): a wide run (many tasks × the Continuum eval-lane + the Hermes
+    /// agent loop) runs far past any IPC client timeout. `true` spawns it on the runtime,
+    /// returns a `run_id` NOW, and writes the finished scoreboard to
+    /// `~/.continuum/progress/competition-<run_id>.json` (+ a `benchmark:competition:complete`
+    /// event) — the run survives the client disconnecting. Default `false` (inline) is fine
+    /// only for a small `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// Correlation id for a detached run (echoed in the ack + the result file). Omit → minted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+/// One arm's cell on the competition scoreboard.
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../protocol/typescript/benchmark/CompetitionCell.ts")]
+pub struct CompetitionCell {
+    pub arm: String,
+    /// `agent` (a full being — Continuum, Hermes) or `floor` (bare weights, no self). A
+    /// persona is NEVER ranked against a `floor` as a peer; the floor is a reference line
+    /// ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+    pub kind: String,
+    #[ts(type = "number")]
+    pub score: u32,
+    #[ts(type = "number")]
+    pub total: u32,
+    /// `CLEAN` / `SUSPECT` / `VOID` — the trust triage. A SUSPECT/VOID cell is NOT a
+    /// capability number; it is flagged so harness noise never publishes as a result.
+    pub class: String,
+    /// For an `agent` cell: its LIFT OVER FLOOR (`score − floor.score`) — the honest measure of
+    /// what the agent's self+loop ADDS over the bare model. `None` for the floor itself, or when
+    /// no floor arm ran. This, not "did she beat raw", is the number that matters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub lift_over_floor: Option<i32>,
+    /// Extra context: the noisy-task count (SUSPECT) or the reason (VOID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detail: Option<String>,
+}
+
+/// The scoreboard: every arm, same benchmark tasks, same grader, on one model.
+#[derive(Debug, Clone, Serialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkCompetitionResult.ts")]
+pub struct BenchmarkCompetitionResult {
+    pub benchmark: String,
+    pub model: String,
+    pub endpoint: String,
+    pub arms: Vec<CompetitionCell>,
+    /// External arms skipped because their CLI/dep was absent — surfaced, never faked.
+    pub skipped: Vec<String>,
+    /// True when this is the immediate ACK of a detached run (arms empty — poll the result
+    /// file `competition-<run_id>.json` for the real scoreboard).
+    #[serde(default)]
+    pub detached: bool,
+    /// The run's correlation id (set on a detached ack + the written result file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+/// `benchmark/competition` — run a benchmark through Continuum's native cognition AND
+/// external agent harnesses on the SAME model, graded identically, each cell trust-classified.
+/// The product-vs-product scoreboard ([[hermes-agent-is-a-runnable-benchmark-opponent-arm]]).
+///
+/// Pure orchestration: it never hand-spawns a llama-server (that is the serving system's
+/// lifecycle, [[system-owns-its-lifecycle-never-hand-manage-processes]]). Continuum runs
+/// through the ONE grader (`cognition/eval`); the external arms hit the given `endpoint`.
+#[derive(Default)]
+pub struct BenchmarkCompetition;
+
+#[async_trait]
+impl ActionCommand for BenchmarkCompetition {
+    const NAME: &'static str = "benchmark/competition";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Agent-vs-agent coding scoreboard: run a benchmark's tasks through Continuum's native \
+         cognition AND rival AGENTS (Hermes) on the SAME weights, graded by the SAME rustc \
+         grader, each cell trust-classified CLEAN/SUSPECT/VOID. The raw one-shot is a FLOOR \
+         reference (bare model, no self) — NEVER a peer a persona is ranked against; each agent \
+         reports its LIFT OVER FLOOR (what its self+loop adds). External arms hit `endpoint` \
+         (default local); provision a dedicated ≥64K opponent lane for the Hermes arm.";
+    type Params = BenchmarkCompetitionParams;
+    type Output = BenchmarkCompetitionResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkCompetitionParams,
+    ) -> Result<BenchmarkCompetitionResult, CommandError> {
+        // Fire-and-poll (#86): a wide run outlives any IPC client timeout, so `detach`
+        // spawns the body on the runtime, writes the finished scoreboard to a result file
+        // + emits a terminal event, and returns a run_id NOW.
+        if p.detach.unwrap_or(false) {
+            let run_id = p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let run_id_ack = run_id.clone();
+            let endpoint_ack = p
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+            let (name_ack, model_ack) = (p.name.clone(), p.base_model_id.clone());
+            let mut inner = p;
+            inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
+            tokio::spawn(async move {
+                let path = competition_ledger_path(&run_id);
+                match BenchmarkCompetition::run_body(inner).await {
+                    Ok(mut r) => {
+                        r.run_id = Some(run_id.clone());
+                        if let (Some(path), Ok(json)) =
+                            (path.as_ref(), serde_json::to_string_pretty(&r))
+                        {
+                            let _ = std::fs::write(path, json);
+                        }
+                        if let Some(bus) = crate::runtime::MessageBus::global() {
+                            if let Ok(v) = serde_json::to_value(&r) {
+                                bus.publish_async_only("benchmark:competition:complete", v);
+                            }
+                        }
+                        tracing::info!(run_id = %run_id, "benchmark/competition detached run complete");
+                    }
+                    Err(e) => {
+                        // Fail LOUD on the poll surface too, not only the log — a detached run
+                        // that dies must leave a diagnosable marker, never an empty file forever.
+                        if let Some(path) = path {
+                            let _ = std::fs::write(
+                                &path,
+                                serde_json::json!({"failed": true, "run_id": run_id, "error": e.to_string()})
+                                    .to_string(),
+                            );
+                        }
+                        tracing::error!(run_id = %run_id, error = %e, "benchmark/competition detached run failed");
+                    }
+                }
+            });
+            return Ok(BenchmarkCompetitionResult {
+                benchmark: name_ack,
+                model: model_ack,
+                endpoint: endpoint_ack,
+                arms: Vec::new(),
+                skipped: Vec::new(),
+                detached: true,
+                run_id: Some(run_id_ack),
+            });
+        }
+        Self::run_body(p).await
+    }
+}
+
+/// Result file for a detached competition run, polled after the ack.
+fn competition_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
+    let dir = base.join("progress");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join(format!("competition-{run_id}.json")))
+}
+
+impl BenchmarkCompetition {
+    /// The competition body — deliberately ctx-free (CognitionEval ignores ctx; it reaches
+    /// the persona via the global workspace registry), so it runs inline OR spawned detached.
+    async fn run_body(
+        p: BenchmarkCompetitionParams,
+    ) -> Result<BenchmarkCompetitionResult, CommandError> {
+        // 1) Resolve the benchmark and slice its tasks — posed identically to every arm.
+        let spec = known_benchmarks().iter().find(|b| b.name == p.name).ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "unknown benchmark '{}'. Known: {}. Call benchmark/list.",
+                p.name,
+                known_benchmarks().iter().map(|b| b.name).collect::<Vec<_>>().join(", "),
+            ))
+        })?;
+        let eval_set = spec.eval_set.ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "benchmark '{}' is catalogued but not yet runnable through the grader.",
+                spec.name
+            ))
+        })?;
+        let (gym_name, content) =
+            crate::cognition::gym::resolve_gym(eval_set).map_err(CommandError::Invalid)?;
+        let limit = p.limit.unwrap_or(20) as usize;
+        let tasks: Vec<crate::cognition::eval::EvalTask> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .take(limit)
+            .enumerate()
+            .map(|(n, l)| {
+                serde_json::from_str(l).map_err(|e| {
+                    CommandError::Invalid(format!(
+                        "benchmark '{}' gym ({gym_name}) line {}: malformed EvalTask: {e}",
+                        spec.name,
+                        n + 1,
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let total = tasks.len() as u32;
+        let resolved_endpoint = p
+            .endpoint
+            .clone()
+            .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+
+        let mut cells: Vec<CompetitionCell> = Vec::new();
+
+        // 2) The Continuum native arm — through the ONE grader (cognition/eval), converted
+        //    onto the same scoreboard + SAME trust triage. Never reimplement cognition here.
+        let cont_params = CognitionEvalParams {
+            persona_id: p.persona_id.clone(),
+            gene: None,
+            room_id: None,
+            tasks: Some(tasks.clone()),
+            eval_set: None,
+            base_model_id: Some(p.base_model_id.clone()),
+            reviewers: None,
+            max_acts: None,
+            max_retries: None,
+            note: Some(format!("competition:{}", spec.name)),
+            detach: Some(false),
+            run_id: None,
+            workspace_root: None,
+            capture_dir: None,
+            learn: Some(false),
+            suppress_recall: None,
+        };
+        // CognitionEval ignores ctx (reaches cognition via the global registry), so a
+        // default Ctx is correct here and keeps run_body ctx-free (spawnable when detached).
+        let cont_cell = match CognitionEval.run(&Ctx::default(), cont_params).await {
+            Ok(r) => {
+                let class = if r.infra_unavailable.is_some() {
+                    ArmClass::Void {
+                        reason: "infra unavailable — measurement lane never verified".into(),
+                    }
+                } else {
+                    let signals: Vec<ArmTaskResult> = r
+                        .results
+                        .iter()
+                        .map(|t| ArmTaskResult {
+                            task_id: t.id.clone(),
+                            ok: t.ok,
+                            output_tokens: t.output_tokens,
+                            latency_ms: t.latency_ms,
+                            grade: t.grade.clone(),
+                            errored: false,
+                        })
+                        .collect();
+                    classify(&signals)
+                };
+                cell("continuum", "agent", r.score, r.total, &class)
+            }
+            Err(e) => CompetitionCell {
+                arm: "continuum".into(),
+                kind: "agent".into(),
+                score: 0,
+                total,
+                class: "VOID".into(),
+                lift_over_floor: None,
+                detail: Some(format!("eval error: {e}")),
+            },
+        };
+        cells.push(cont_cell);
+
+        // 3) The external arms — filtered by name if given, else every available optional arm.
+        let mut external = optional_arms();
+        if let Some(names) = &p.arms {
+            for n in names {
+                if !external.iter().any(|a| a.name() == n) {
+                    return Err(CommandError::Invalid(format!(
+                        "unknown arm '{n}'. Available: {}.",
+                        external.iter().map(|a| a.name()).collect::<Vec<_>>().join(", "),
+                    )));
+                }
+            }
+            external.retain(|a| names.iter().any(|n| n == a.name()));
+        }
+        let board = run_competition(&p.base_model_id, p.endpoint.as_deref(), &tasks, external).await;
+        for a in &board.arms {
+            cells.push(cell(&a.arm, a.kind.label(), a.score as u32, a.total as u32, &a.class));
+        }
+
+        // Second pass: an AGENT's honest number is its LIFT OVER FLOOR — what its self+loop adds
+        // over the bare model. A persona is never ranked against the floor as a peer; the floor is
+        // a reference line ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+        // Use the best (max-scoring) floor cell as the reference when one ran.
+        let floor_score = cells
+            .iter()
+            .filter(|c| c.kind == "floor")
+            .map(|c| c.score)
+            .max();
+        if let Some(floor) = floor_score {
+            for c in cells.iter_mut().filter(|c| c.kind == "agent") {
+                c.lift_over_floor = Some(c.score as i32 - floor as i32);
+            }
+        }
+
+        Ok(BenchmarkCompetitionResult {
+            benchmark: spec.name.to_string(),
+            model: p.base_model_id,
+            endpoint: resolved_endpoint,
+            arms: cells,
+            skipped: board.skipped,
+            detached: false,
+            run_id: None,
+        })
+    }
+}
+
+/// `ArmClass` + counts → a scoreboard cell (the trust triage projected for the wire).
+/// `lift_over_floor` is filled in a second pass once the floor score is known.
+fn cell(arm: &str, kind: &str, score: u32, total: u32, class: &ArmClass) -> CompetitionCell {
+    let detail = match class {
+        ArmClass::Clean => None,
+        ArmClass::Suspect { noisy } => {
+            Some(format!("{noisy} declined/errored task(s) — not a capability number"))
+        }
+        ArmClass::Void { reason } => Some(reason.clone()),
+    };
+    CompetitionCell {
+        arm: arm.into(),
+        kind: kind.into(),
+        score,
+        total,
+        class: class.label().into(),
+        lift_over_floor: None,
+        detail,
+    }
+}
+
+crate::register_stateless_command!(BenchmarkCompetition);
 
 /// Pure render: ledger rows → one markdown table per benchmark (models down, harness
 /// arms across, `resolved/total (rate)` cells aggregated over contributing rows) + a

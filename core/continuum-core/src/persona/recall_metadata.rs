@@ -395,6 +395,24 @@ impl RecallMetadataRegistry {
     /// protection window (per the cognition-cache-hierarchy
     /// one-shot-protection rule). Also no-op if `last_decayed_ms`
     /// equals or exceeds `now_ms` (clock skew / racing tick).
+    /// SUPERSESSION demotion (#221 slice 2): the dream's distiller judged this
+    /// engram's belief replaced/contradicted by a newly consolidated fact, so
+    /// its recall standing drops to the floor IMMEDIATELY — no waiting out the
+    /// hours-scale half-life — and its protection window is cleared so nothing
+    /// shields it. The ROW survives (the floor is Joel's "memory drains but
+    /// does not disappear" guarantee); it simply stops out-ranking the belief
+    /// that superseded it in relevance×salience recall. The JUDGMENT that
+    /// triggers this is the model's, never a similarity threshold
+    /// ([[cognition-is-always-ml-never-heuristic]]); this method is only the
+    /// mechanical consequence.
+    pub fn demote_to_floor(&self, engram_id: Uuid, now_ms: u64) {
+        self.inner.entry(engram_id).and_modify(|m| {
+            m.salience = SALIENCE_FLOOR;
+            m.protected_until_ms = 0;
+            m.last_decayed_ms = now_ms;
+        });
+    }
+
     pub fn apply_decay(&self, engram_id: Uuid, now_ms: u64) {
         self.inner.entry(engram_id).and_modify(|m| {
             if m.is_protected(now_ms) {
@@ -1030,5 +1048,35 @@ mod tests {
             "ON DELETE CASCADE must wipe the recall-metadata row when its engram is deleted"
         );
 
+    }
+
+    // what this catches: the supersession demotion contract (#221 slice 2) — a
+    // demoted belief drops to the FLOOR immediately (not a gradual decay) and
+    // loses its protection window, but the ROW survives (the floor guarantee:
+    // memory drains, never disappears). If demote_to_floor ever left protection
+    // intact, a freshly-admitted stale belief would shrug off its own
+    // supersession for the whole protection window.
+    #[test]
+    fn demote_to_floor_floors_salience_and_clears_protection() {
+        let reg = RecallMetadataRegistry::new();
+        let id = Uuid::from_u128(7);
+        reg.admit(
+            id,
+            RecallMetadata {
+                salience: 0.9,
+                access_count: 3,
+                last_accessed_ms: 1_000,
+                protected_until_ms: u64::MAX, // even a protected belief demotes
+                last_decayed_ms: 1_000,
+            },
+        );
+        reg.demote_to_floor(id, 5_000);
+        let m = reg.get(id).expect("row survives demotion");
+        assert_eq!(m.salience, SALIENCE_FLOOR, "floored, not deleted");
+        assert_eq!(m.protected_until_ms, 0, "protection cleared");
+        assert_eq!(m.last_decayed_ms, 5_000, "decay clock reset at demotion");
+        // Unknown id: no panic, no phantom row.
+        reg.demote_to_floor(Uuid::from_u128(999), 5_000);
+        assert!(reg.get(Uuid::from_u128(999)).is_none());
     }
 }

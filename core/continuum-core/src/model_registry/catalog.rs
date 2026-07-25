@@ -628,6 +628,10 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"),
+            // Trainable base for the genome forge (mlx LoRA trains against HF
+            // safetensors, not the serving quant) — the battery's benchmark
+            // base becomes gene-forgeable (coder-verify-reflex, 2026-07-23).
+            hf_source: Some("Qwen/Qwen2.5-Coder-7B-Instruct"),
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],

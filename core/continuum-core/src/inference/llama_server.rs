@@ -77,6 +77,21 @@ const PORT_SCAN_WINDOW: u16 = 64;
 /// launch can't hang the daemon's reconcile forever.
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// Readiness budget for an EPHEMERAL lane ([`EphemeralServingLane`]) — the eval /
+/// teacher measurement lanes. These cold-load a SECOND large GGUF (a 24B Devstral)
+/// on a Metal GPU that ALREADY holds the live persona lane's copy, so the weight
+/// mmap + the first-decode Metal graph/command-buffer warmup runs under GPU
+/// co-residency and legitimately exceeds the live lane's 90s budget. Glass-boxed
+/// 2026-07-21: a co-resident cold Devstral-24B teacher lane answered `/health` 200
+/// but its decode smoke-probe was still warming at the 90s cap — a PREMATURE FALSE
+/// FAILURE (the lane served completions immediately after), which then dropped the
+/// teacher onto the live LoRA lane and yielded 0 corpus. Same doctrine as the
+/// 30→90 live-lane bump (see [`DEFAULT_SERVING_WAIT`]): fail LOUD, not FAST — a
+/// generous bound that covers the real physical event, still bounded so a truly
+/// wedged lane fails loud. Scoped to ephemeral lanes via `is_live_lane` so the live
+/// lane's tighter fail-loud budget is untouched.
+const EPHEMERAL_READY_TIMEOUT: Duration = Duration::from_secs(240);
+
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 const READY_POLL: Duration = Duration::from_millis(500);
 
@@ -102,7 +117,24 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// bounded well under the daemon's own budget so a wedged compute path (the very
 /// thing we are probing for) resolves to "cannot decode" fast instead of hanging
 /// the reconcile. A healthy 14B answers a 1-token request in well under a second.
-const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Generous on purpose: the probe shares the lane with LIVE persona traffic, and a
+/// 1,238-token co-tenant prefill alone runs ~9s — measured 2026-07-23: the identical
+/// probe body took 60s / 24s / 0s across three tries behind normal load. The old 10s
+/// budget produced sustained FALSE decode-failures that killed healthy lanes all
+/// night (heartbeat → not-ready → kill+respawn → bind race → "crash loop"). A probe's
+/// job is truth, not speed — it runs on a slow cadence; let it wait out the queue.
+const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
+
+/// A same-model/same-genome relaunch is required when the target per-slot window
+/// exceeds the running server's served window by MORE than this. llama.cpp has no
+/// hot-resize API, so a genuine window GROW can only be honored by a relaunch —
+/// exactly like an adapter-set change. The margin absorbs llama.cpp's internal
+/// 256-multiple padding of the launch `-c/--parallel` window (served ≈ round-up-256
+/// of the launched per-slot value), so a padded steady-state window never reads as
+/// a spurious grow and re-triggers a relaunch every tick. Comfortably above one
+/// 256-pad; the daemon only sends a grow target when it is ≥ 2× the served window
+/// (its `starved` gate), so this margin never masks a real grow.
+const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
 /// The failure mode this guards is the intermittently-wedged fresh lane that answers
@@ -311,8 +343,7 @@ fn server_bin() -> String {
     // Windows: `HOME` is usually unset (the home is `USERPROFILE`) and the binary
     // carries `.exe` — probing only the unix name silently skipped the owned
     // install and fell through to a bare PATH lookup that spawns nothing (live
-    // repro 2026-07-24, BigMama: planned lane, empty log, no server). Mirrors
-    // M5's airc/continuum serving fix 4d4c463fb.
+    // repro 2026-07-24, BigMama: planned lane, empty log, no server).
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     if let Some(home) = home {
         let name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
@@ -369,6 +400,16 @@ pub struct ServingSnapshot {
     /// persisted snapshots (lane-less) readable.
     #[serde(default)]
     pub lanes: u32,
+    /// WHY nothing is serving, when the last reconcile ended Degraded — the
+    /// spawn/probe failure reason, verbatim (e.g. a missing llama-server binary
+    /// names its path here). `None` on healthy and never-attempted snapshots.
+    /// Live repro 2026-07-24 (BigMama/Windows): the daemon planned correctly,
+    /// spawn failed every tick, and `serving/status` showed only
+    /// `active_model=null ready=false` — the reason was dropped on the floor,
+    /// an operator-facing silent failure ([[fallbacks-are-illegal-fail-loud]]).
+    #[serde(default)]
+    #[ts(optional)]
+    pub degraded_reason: Option<String>,
 }
 
 impl ServingSnapshot {
@@ -386,6 +427,18 @@ impl ServingSnapshot {
             // Nothing served → no lanes. A `ready` snapshot always carries the
             // real `--parallel` count; 0 is the "no lanes" sentinel.
             lanes: 0,
+            degraded_reason: None,
+        }
+    }
+
+    /// The "nothing served AND here is why" state — a reconcile that ended
+    /// Degraded publishes its reason so `serving/status` tells the operator
+    /// what failed (a missing binary names its path) instead of a silent
+    /// `active_model=null`.
+    pub fn degraded(reason: String) -> Self {
+        Self {
+            degraded_reason: Some(reason),
+            ..Self::empty()
         }
     }
 }
@@ -404,6 +457,13 @@ static SERVING_STATE: OnceLock<watch::Receiver<ServingSnapshot>> = OnceLock::new
 /// re-init under test) is ignored. Returns `true` iff this call installed it.
 pub fn install_serving_state(rx: watch::Receiver<ServingSnapshot>) -> bool {
     SERVING_STATE.set(rx).is_ok()
+}
+
+/// A clone of the process-wide serving-state receiver, for consumers that
+/// need to FOLLOW the snapshot over time (the gateway-sync task, card
+/// ed3661c4) rather than read it once. `None` before the daemon installs.
+pub fn serving_state_receiver() -> Option<watch::Receiver<ServingSnapshot>> {
+    SERVING_STATE.get().cloned()
 }
 
 /// The model currently served on this node, per the daemon's last reconcile.
@@ -637,29 +697,60 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
         let desired = target.adapter_paths();
         let active_adapters = ctrl.active_adapters().await.unwrap_or_default();
         if active_adapters == desired {
-            // Right model, right genome — but is the COMPUTE path alive? A child
-            // we spawned ourselves was decode-verified at `wait_ready` and is
-            // trusted thereafter (no per-tick decode load). A server we did NOT
-            // spawn (an orphan reclaimed from a dead core) can answer
-            // `/v1/models` while every `llama_decode` 500s — so prove decode
-            // before adopting it. A wedged orphan fails the probe and falls
-            // through to `serve()`, which reaps it and spawns fresh.
-            // Trust a child WE spawned without a per-tick decode probe (it was
-            // decode-verified at `wait_ready`) — UNLESS `force_probe` is set, in which
-            // case the liveness heartbeat has flagged it wedged and we must re-prove
-            // decode before re-adopting (#175). A non-owned orphan is always probed.
-            if (ctrl.owns_child() && !force_probe) || ctrl.decode_smoke_ok().await {
-                return EnsureOutcome::AlreadyServing;
+            // Right model, right genome — but does the running server's per-slot
+            // WINDOW match the target? llama.cpp cannot hot-resize, so a target
+            // window that meaningfully EXCEEDS the served window is a real mismatch
+            // only a relaunch can honor — exactly like the adapter-set change below.
+            // Without this, a daemon-decided starved grow-back (2048→31k, same model
+            // + same genome) short-circuits to AlreadyServing and the lane stays
+            // frozen at the boot floor FOREVER, while the daemon re-decides "starved"
+            // and logs "re-homing" every tick — a relaunch that never happens
+            // (glass-boxed 2026-07-20: window pinned 2048 vs a 31k plan, benchmarks
+            // blocked). Grow-only: a down-plan is kept by the daemon's sticky window
+            // and never reaches here; a `/props` read failure (served 0/Err) is
+            // treated as "window OK" so a probe error never spuriously relaunches.
+            let window_ok = match ctrl.served_context_window().await {
+                Ok(served) => {
+                    served == 0
+                        || target.context_window
+                            <= served.saturating_add(WINDOW_RELAUNCH_TOLERANCE)
+                }
+                Err(_) => true,
+            };
+            if !window_ok {
+                crate::probe!(
+                    class = "serving.window_grow",
+                    model = target.model_id(),
+                    target_window = target.context_window,
+                    "served window is below the target beyond padding tolerance — \
+                     relaunching to grow (llama.cpp has no hot-resize; a genome-set \
+                     match alone must not strand a starved lane at the boot floor)",
+                );
+                // fall through to relaunch at the larger window.
+            } else {
+                // Window matches. Is the COMPUTE path alive? A child we spawned
+                // ourselves was decode-verified at `wait_ready` and is trusted
+                // thereafter (no per-tick decode load). A server we did NOT spawn (an
+                // orphan reclaimed from a dead core) can answer `/v1/models` while
+                // every `llama_decode` 500s — so prove decode before adopting it. A
+                // wedged orphan fails the probe and falls through to `serve()`, which
+                // reaps it and spawns fresh. Trust an owned child without a per-tick
+                // decode probe — UNLESS `force_probe` is set, in which case the
+                // liveness heartbeat flagged it wedged and we must re-prove decode
+                // before re-adopting (#175). A non-owned orphan is always probed.
+                if (ctrl.owns_child() && !force_probe) || ctrl.decode_smoke_ok().await {
+                    return EnsureOutcome::AlreadyServing;
+                }
+                crate::probe!(
+                    class = "serving.adopt_rejected",
+                    model = target.model_id(),
+                    owned = ctrl.owns_child(),
+                    force_probe,
+                    "lane answers /v1/models but fails the decode smoke-probe (compute-wedged \
+                     — a poisoned Metal backend / OOM, #175); reaping + respawning a fresh lane",
+                );
+                // fall through to relaunch.
             }
-            crate::probe!(
-                class = "serving.adopt_rejected",
-                model = target.model_id(),
-                owned = ctrl.owns_child(),
-                force_probe,
-                "lane answers /v1/models but fails the decode smoke-probe (compute-wedged \
-                 — a poisoned Metal backend / OOM, #175); reaping + respawning a fresh lane",
-            );
-            // fall through to relaunch.
         }
         // else: genome set differs → fall through to relaunch.
     }
@@ -766,8 +857,17 @@ impl LlamaServerProcess {
     /// the adopt path in `ensure_model_serving` TRUST a child we own without
     /// re-probing every reconcile tick.)
     async fn wait_ready(&self) -> Result<(), LlamaServerError> {
+        // The live lane keeps the tight 90s fail-loud budget; an ephemeral
+        // measurement lane gets the co-resident cold-large-model budget (it loads a
+        // SECOND large GGUF beside the live one — the warmup legitimately runs
+        // longer). Scoped by `is_live_lane` so a wedged LIVE lane still fails fast.
+        let budget = if self.is_live_lane {
+            READY_TIMEOUT
+        } else {
+            EPHEMERAL_READY_TIMEOUT
+        };
         let health = format!("{}/health", self.root);
-        let deadline = Instant::now() + READY_TIMEOUT;
+        let deadline = Instant::now() + budget;
         let mut last = String::from("no response");
         loop {
             match self.client.get(&health).timeout(PROBE_TIMEOUT).send().await {
@@ -784,7 +884,7 @@ impl LlamaServerProcess {
                 Err(e) => last = e.to_string(),
             }
             if Instant::now() >= deadline {
-                return Err(LlamaServerError::NotReady(READY_TIMEOUT, last));
+                return Err(LlamaServerError::NotReady(budget, last));
             }
             tokio::time::sleep(READY_POLL).await;
         }
@@ -862,16 +962,22 @@ impl EphemeralServingLane {
         let port = first_free_port(base_port);
         let root = format!("http://{}:{}", DEFAULT_HOST, port);
         let proc = LlamaServerProcess::with_root(root);
-        // HARD wall-clock cap on the WHOLE bring-up. `wait_ready`'s READY_TIMEOUT only
+        // HARD wall-clock cap on the WHOLE bring-up. `wait_ready`'s budget only
         // bounds the /health poll, and its deadline is checked BETWEEN attempts — so a
         // hang INSIDE an attempt (a stalled `decode_smoke_ok`, a wedged model-mmap, a
         // process-launch that never returns) can wait past it indefinitely. Glass-boxed
         // 2026-07-19: an ephemeral eval lane hung 11 min with no process and free VRAM,
         // no timeout ever firing — a silent glacial wedge that violated fail-loud. This
-        // net guarantees the eval fails LOUD after the daemon's own load budget instead.
+        // net guarantees the eval fails LOUD after the lane's own load budget instead.
         // On timeout `proc` drops → its `Drop` kills any child it launched. Eval lanes
         // only; the live lane keeps its own (fail-loud-not-fast) bring-up policy.
-        match tokio::time::timeout(DEFAULT_SERVING_WAIT, proc.serve(target)).await {
+        // MUST exceed the ephemeral `wait_ready` budget (EPHEMERAL_READY_TIMEOUT) + margin
+        // so the INNER deadline fires first with its specific `/health`/decode reason —
+        // otherwise this coarse net pre-empts the diagnostic error (glass-boxed 2026-07-21:
+        // a co-resident cold 24B warmup exceeded the old 90s inner budget; the fix raised
+        // the inner budget, so this outer cap must follow or it clips the warmup at 120s).
+        let spawn_cap = EPHEMERAL_READY_TIMEOUT + Duration::from_secs(30);
+        match tokio::time::timeout(spawn_cap, proc.serve(target)).await {
             Ok(res) => res?,
             Err(_) => {
                 return Err(LlamaServerError::NotReady(
@@ -1010,7 +1116,10 @@ impl LlamaServerControl for LlamaServerProcess {
         let url = format!("{}/chat/completions", self.v1_url);
         let body = serde_json::json!({
             "messages": [{ "role": "user", "content": "Count from 1 to 20, separated by spaces." }],
-            "max_tokens": 48,
+            // Enough tokens to prove real decode (MIN_SMOKE_DECODE_TOKENS = 5) with
+            // margin, WITHOUT hogging a busy co-tenant lane for 3s of decode — the
+            // probe must be a light passenger, not another load source.
+            "max_tokens": 12,
             "stream": false,
             "temperature": 0.0,
         });
@@ -1090,6 +1199,45 @@ impl LlamaServerControl for LlamaServerProcess {
                 outcome = format!("{outcome:?}").as_str(),
                 "fresh-claim reclaim of canonical serving port before spawn",
             );
+        }
+
+        // KILL-VERIFY GATE (2026-07-23 ready-flap case): llama-server does NOT
+        // retry a lost bind — spawned against a still-held port it exits
+        // instantly and `wait_ready` burns its whole budget polling a corpse,
+        // which is the flap that killed 3,318 live turns in one day. Verify the
+        // port is actually free BEFORE spawning: a short grace absorbs a normal
+        // teardown (a Metal-resident model takes seconds to release); if the
+        // port is STILL held, name the holder — a verified llama-server (the
+        // predecessor whose pidfile was disarmed, an adopted-then-churned
+        // orphan) is reaped and re-verified; anything else fails loud now
+        // instead of wasting the ready budget ([[fallbacks-are-illegal-fail-loud]]).
+        if !crate::inference::lane_process::wait_port_free(port, Duration::from_secs(8)).await {
+            match crate::inference::lane_process::pid_listening_on_port(port) {
+                Some(pid) if crate::inference::lane_process::is_llama_server(pid) => {
+                    crate::probe!(
+                        class = "serving.lane_kill_verify",
+                        port = port,
+                        holder_pid = pid,
+                        "port still held after teardown grace — reaping the verified llama-server holder",
+                    );
+                    crate::inference::lane_process::kill9(pid);
+                    if !crate::inference::lane_process::wait_port_free(
+                        port,
+                        Duration::from_secs(10),
+                    )
+                    .await
+                    {
+                        return Err(LlamaServerError::Spawn(format!(
+                            "port {port} still held after verified reap of llama-server pid {pid} — refusing to spawn against a bound port"
+                        )));
+                    }
+                }
+                holder => {
+                    return Err(LlamaServerError::Spawn(format!(
+                        "port {port} held by {holder:?} (not a verifiable llama-server) — refusing a blind spawn that would flap ready; free the port or change the lane plan"
+                    )));
+                }
+            }
         }
 
         // llama-server's `-c` is the TOTAL KV cache, split evenly across the
@@ -1230,8 +1378,21 @@ impl LlamaServerControl for LlamaServerProcess {
         }
         // Load each trained genome layer into the `/lora-adapters` catalog at
         // index order; the per-request `"lora":[{id,scale}]` field pages them in.
-        for adapter in &target.adapters {
-            cmd.arg("--lora").arg(&adapter.path);
+        // ONE comma-separated `--lora` value: llama.cpp (b8784+) deprecated
+        // repeated `--lora` flags and SILENTLY keeps only the last — which was
+        // collapsing every multi-layer genome stack to a single adapter
+        // (glass-boxed 2026-07-23 in the lane's own stderr: 'DEPRECATED:
+        // --lora specified multiple times... only last value will be used' ×4
+        // while a 4-layer stack served). The genome's whole premise is layers
+        // that STACK; this arg shape is what actually stacks them.
+        if !target.adapters.is_empty() {
+            let joined = target
+                .adapters
+                .iter()
+                .map(|a| a.path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(",");
+            cmd.arg("--lora").arg(joined);
         }
         // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
         // its load banner AND — critically — the underlying ggml/Metal fault behind a
@@ -1326,7 +1487,57 @@ impl LlamaServerControl for LlamaServerProcess {
         // catalog record for the relaunch decision (llama.cpp can't report it).
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
-        self.wait_ready().await
+        self.wait_ready().await?;
+        // GENOME DORMANCY (glass-boxed 2026-07-23): llama.cpp loads every
+        // `--lora` at scale 1.0 — ALL ACTIVE, superimposed. Four personas'
+        // adapters blended at full scale produced the degenerate-decode plague
+        // (hangs, digit-splices, zero-walls, prompt-echo) the moment the
+        // comma-fix made stacks REALLY load; the month of prior 'stability'
+        // was the only-last-adapter bug accidentally serving one costume. The
+        // design is paged activation: catalog LOADED, scales DORMANT (0.0),
+        // per-request `lora` field activates. Zero them before ready — a lane
+        // is not ready while wearing every costume at once.
+        if !target.adapters.is_empty() {
+            self.zero_adapter_scales().await;
+        }
+        Ok(())
+    }
+}
+
+impl LlamaServerProcess {
+    /// Set every loaded LoRA adapter's GLOBAL scale to 0.0 (dormant catalog —
+    /// per-request activation only). Best-effort: a failure logs loud but does
+    /// not fail bringup (a lane with active adapters still serves; it is the
+    /// degraded-not-dead case, and the log names it).
+    pub async fn zero_adapter_scales(&self) {
+        let root = self.v1_url.trim_end_matches('/').trim_end_matches("/v1");
+        let url = format!("{root}/lora-adapters");
+        let list: Vec<serde_json::Value> = match self.client.get(&url).send().await {
+            Ok(r) => r.json().await.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "genome dormancy: could not read /lora-adapters");
+                return;
+            }
+        };
+        let zeroed: Vec<serde_json::Value> = list
+            .iter()
+            .filter_map(|a| a.get("id").and_then(|i| i.as_i64()))
+            .map(|id| serde_json::json!({"id": id, "scale": 0.0}))
+            .collect();
+        if zeroed.is_empty() {
+            return;
+        }
+        match self.client.post(&url).json(&zeroed).send().await {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!(
+                    adapters = zeroed.len(),
+                    probe_class = "serving.genome.dormant",
+                    "genome catalog loaded DORMANT — all adapter scales zeroed; per-request activation only"
+                );
+            }
+            Ok(r) => tracing::warn!(status = %r.status(), "genome dormancy: scale-zero POST refused"),
+            Err(e) => tracing::warn!(error = %e, "genome dormancy: scale-zero POST failed"),
+        }
     }
 }
 
@@ -1367,6 +1578,11 @@ mod tests {
         /// an adopted orphan (the conservative default that exercises the
         /// smoke-probe gate).
         owns: bool,
+        /// The per-slot window the fake's `/props` reports. Defaults to the tests'
+        /// target window so the window-grow relaunch check (which only fires when
+        /// target > served + tolerance) is a no-op for the model/adapter/decode
+        /// tests; a grow-relaunch test sets it BELOW the target explicitly.
+        served_window: u32,
     }
 
     impl FakeControl {
@@ -1378,7 +1594,14 @@ mod tests {
                 serves: AtomicUsize::new(0),
                 decode_ok: true,
                 owns: false,
+                served_window: 32768,
             }
+        }
+        /// Model a lane whose live per-slot window is SMALLER than the plan target —
+        /// the starved boot-floor case the window-grow relaunch must catch.
+        fn with_served_window(mut self, n: u32) -> Self {
+            self.served_window = n;
+            self
         }
         fn serve_fails(mut self) -> Self {
             self.serve_ok = false;
@@ -1422,10 +1645,11 @@ mod tests {
             }
         }
         async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
-            // Canned per-slot window: the reconcile-decision tests don't probe a
-            // live /props; a fixed value stands in for "the server reports its
-            // real window." Non-zero so a ready outcome publishes a ready snapshot.
-            Ok(11008)
+            // The per-slot window the fake's /props reports (configurable via
+            // `with_served_window`). Non-zero so a ready outcome publishes a ready
+            // snapshot; defaults to the target window so the window-grow relaunch
+            // check is a no-op unless a test deliberately floors it.
+            Ok(self.served_window)
         }
         async fn decode_smoke_ok(&self) -> bool {
             self.decode_ok
@@ -1523,6 +1747,46 @@ mod tests {
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when already serving");
+    }
+
+    // what this catches: a same-model / same-genome lane whose live per-slot window
+    // is STARVED far below the plan target (the 2048 boot-floor vs a 31k plan) must
+    // RELAUNCH to grow — llama.cpp has no hot-resize. Regression here (returning
+    // AlreadyServing on a genome-set match alone) strands the lane at the boot floor
+    // forever while the daemon logs "re-homing starved" every tick and never grows
+    // it — glass-boxed 2026-07-20, blocked all benchmark runs (prompts overflowed
+    // 2048). The daemon's `starved` gate only sends a target ≥ 2× the served window,
+    // so the grow is unambiguous.
+    #[tokio::test]
+    async fn starved_window_relaunches_to_grow() {
+        // Owned + decode-healthy: the ONLY thing wrong is the window (2048 ≪ 32768).
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_window(2048);
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert!(
+            matches!(outcome, EnsureOutcome::Spawned { .. }),
+            "a starved window must relaunch to grow, got {outcome:?}"
+        );
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            1,
+            "exactly one relaunch to the larger window"
+        );
+    }
+
+    // what this catches: the window-grow check must NOT fire on llama.cpp's 256-pad
+    // (served slightly BELOW target after internal rounding is normal) — only a real
+    // step-change grow relaunches. A served window one pad under target stays
+    // AlreadyServing; regression would relaunch every tick on padding noise.
+    #[tokio::test]
+    async fn padded_window_within_tolerance_does_not_relaunch() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .with_served_window(32768 - 256); // one 256-pad under the 32768 target
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert_eq!(outcome, EnsureOutcome::AlreadyServing);
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "padding noise must not relaunch");
     }
 
     // what this catches: an orphan that answers /v1/models with the RIGHT model
@@ -1770,6 +2034,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            degraded_reason: None,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -1780,6 +2045,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            degraded_reason: None,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -1790,6 +2056,7 @@ mod tests {
             adapters: Vec::new(),
             served_context_window: 0,
             lanes: 0,
+            degraded_reason: None,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await

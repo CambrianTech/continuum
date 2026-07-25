@@ -22,11 +22,22 @@ import {
   Continuum,
   WebSocketTransport,
   StateConnection,
+  buildCommandUri,
   type StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
-import { ChatWidget, type SendHandler } from './chat/ChatWidget';
-import { CHAT_KIND, chatStateFromEnvelope, type ChatState } from '@continuum/chat-view';
+import { ChatWidget, type SelectRoomHandler, type SendHandler } from './chat/ChatWidget';
+import {
+  CHAT_KIND,
+  KANBAN_KIND,
+  NAV_KIND,
+  SYSTEM_METRICS_KIND,
+  chatStateFromEnvelope,
+  kanbanStateFromEnvelope,
+  navStateFromEnvelope,
+  systemMetricsFromEnvelope,
+  type ChatState,
+} from '@continuum/chat-view';
 
 // Importing the module registers `<chat-widget>` as a side effect; keep the
 // symbol referenced so bundlers don't tree-shake the definition away.
@@ -35,7 +46,20 @@ void ChatWidget;
 async function main(): Promise<void> {
   const config = resolveConfig();
 
+  // Citizen-scope the session: `?me=<uuid>` on the connect URL is WHO this
+  // session belongs to — the core resolves per-user views (kind="nav") to this
+  // citizen's substrate and spawns their nav projector on first arrival.
+  const scopedWsUrl = `${config.wsUrl}${config.wsUrl.includes('?') ? '&' : '?'}me=${config.senderId}`;
+
   const widget = document.createElement('chat-widget');
+  widget.callUrl = config.callUrl;
+  // The version badge's real source: this build's package version, stamped by vite.
+  widget.version = `v${__APP_VERSION__}`;
+  // `?live` — boot straight into the focused room's LIVE face (the same state
+  // the header's Go-live affordance toggles): a deep link to the call grid,
+  // presentation state only ([[navigation-is-airc-state-one-semantics-many-idioms]]
+  // — the URL is the web idiom; recipe-declared live rooms are the substrate path).
+  if (new URLSearchParams(location.search).has('live')) widget.liveFace = true;
   const mount = document.getElementById('app') ?? document.body;
   mount.replaceChildren(widget);
 
@@ -45,7 +69,8 @@ async function main(): Promise<void> {
 
   // SEND socket: the command client. Fails loud if the send lands before any
   // snapshot named a room (no room to send into is a real error, not a no-op).
-  const continuum = Continuum.connect(new WebSocketTransport(config.wsUrl));
+  const transport = new WebSocketTransport(scopedWsUrl);
+  const continuum = Continuum.connect(transport);
   const sendHandler: SendHandler = async (text: string) => {
     if (!latest) {
       throw new Error('cannot send before the first room snapshot arrived — the room is unknown.');
@@ -70,6 +95,33 @@ async function main(): Promise<void> {
   };
   widget.sendHandler = sendHandler;
 
+  // Room switching: a rooms-rail pick is one `nav/select` into the core — the
+  // NavIntent verb, not a client-side tab swap. The core writes the citizen's
+  // focus, marks the left room read, and refocuses the chat projection; the
+  // active cell + center pane move when those envelopes stream back through the
+  // READ socket. No optimistic local state — substrate truth only, same
+  // discipline as chat send.
+  //
+  // Dispatch rides the SAME facade seam `commands.execute` wraps
+  // (buildCommandUri + transport.execute): `nav/select` is a registered typed
+  // command core-side (modules/nav.rs), but the generated CommandMap predates
+  // it and its re-emit is blocked by pre-existing drift (registered commands
+  // with unexported wire types — see the sdk_codegen ts-codegen emit test).
+  // When that regenerates, this becomes `continuum.commands.execute('nav/select', …)`.
+  // Bare-wire contract: failure is a REJECTED promise (no success field), which
+  // the widget surfaces — never a silently-dead click. `userId` is the command
+  // envelope's caller-identity sibling (CommandRequest), same as nav/mark-read.
+  // `kind` rides the verb (NavSelectParams.kind): 'room' switches the room on
+  // screen; 'persona' opens that citizen's HOME tab (profile/brain) while the
+  // chat projection stays pinned — the content dispatch keys off the tab kind.
+  const selectRoomHandler: SelectRoomHandler = async (target: string, kind: 'room' | 'persona') => {
+    await transport.execute(
+      buildCommandUri('nav/select'),
+      JSON.stringify({ userId: config.senderId, target, kind }),
+    );
+  };
+  widget.selectRoomHandler = selectRoomHandler;
+
   // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
   // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells
   // you WHY (socket closed / connected-but-no-snapshot / connect failed).
@@ -86,12 +138,26 @@ async function main(): Promise<void> {
 
   // READ socket: subscribe to chat state, merge each envelope into the widget.
   let gotState = false;
-  const state = new StateConnection(config.wsUrl);
+  const state = new StateConnection(scopedWsUrl);
   state.on(CHAT_KIND, (envelope: StateEnvelope) => {
     gotState = true;
     banner.remove();
     latest = chatStateFromEnvelope(envelope);
     widget.state = latest;
+  });
+  // The citizen's nav view (room set + unread) — per-user, served from THIS
+  // session's ?me= scoped substrate. Upgrades the rooms rail from the single
+  // focused room to the live room set as soon as the projector delivers.
+  state.on(NAV_KIND, (envelope: StateEnvelope) => {
+    widget.nav = navStateFromEnvelope(envelope);
+  });
+  // The node's resource window (CPU/MEM) — the SYS gauge's core-carried series.
+  state.on(SYSTEM_METRICS_KIND, (envelope: StateEnvelope) => {
+    widget.sys = systemMetricsFromEnvelope(envelope);
+  });
+  // The node's work board — the persona home's claims feed (cards by assignee).
+  state.on(KANBAN_KIND, (envelope: StateEnvelope) => {
+    widget.board = kanbanStateFromEnvelope(envelope);
   });
   // #170 live typing: grow a transient bubble per persona as its turn streams in.
   // Ephemeral — the durable message still arrives via the CHAT_KIND sink above, which

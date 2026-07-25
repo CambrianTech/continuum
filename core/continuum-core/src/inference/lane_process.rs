@@ -88,6 +88,42 @@ pub fn is_llama_server(pid: u32) -> bool {
     command_name(pid).is_some_and(|comm| comm.contains("llama-server"))
 }
 
+/// The pid LISTENING on local TCP `port`, via `lsof -ti tcp:<port> -sTCP:LISTEN`
+/// (macOS + Linux). `None` = nothing listening, or `lsof` unavailable — callers
+/// treat `None` as "unverifiable" and refuse to kill, same doctrine as
+/// [`command_name`]. This is the kill-VERIFY half of the 2026-07-23 flap case:
+/// a spawn must never race a port whose holder it can't name.
+pub fn pid_listening_on_port(port: u16) -> Option<u32> {
+    let out = std::process::Command::new("lsof")
+        .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .and_then(|l| l.trim().parse::<u32>().ok())
+}
+
+/// Poll until local `port` is bindable (a successful bind-then-drop proves it) or
+/// `budget` expires. THE shared port-release verifier: the pidfile reclaim and the
+/// pre-spawn kill-verify gate both wait through this one primitive.
+pub async fn wait_port_free(port: u16, budget: std::time::Duration) -> bool {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

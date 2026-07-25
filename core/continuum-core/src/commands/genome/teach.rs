@@ -49,7 +49,7 @@ use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::gym_grader::test_grade;
 use crate::cognition::inference_session::resolve_model;
-use crate::inference::llama_server::PROVIDER_ID;
+use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT, PROVIDER_ID};
 use crate::modules::ai_provider::global_registry;
 use crate::modules::dataset::DatasetService;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
@@ -122,6 +122,18 @@ pub struct GenomeTeachParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub split_ratio: Option<f64>,
+    /// Fire-and-stream (#86): true runs the corpus-gen in the CORE and returns a `run_id`
+    /// HANDLE immediately — the client never blocks for the many-minute run, the work
+    /// survives disconnect, progress streams as events, and the terminal result lands in
+    /// a run ledger polled by `genome/teach-status --run_id`. Default false (inline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// The run handle. Minted by the command when omitted; the detached ack AND the ledger
+    /// row carry it, so the two halves of fire-and-poll join on one id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 /// Per-task outcome — so a low yield is diagnosable (which tasks the teacher never
@@ -143,10 +155,19 @@ pub struct GenomeTeachTaskOutcome {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachResult.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeTeachResult {
+    /// True = this is a fire-and-stream JOB HANDLE (#86), NOT a completed run: teach was
+    /// spawned detached and its real result is in the run ledger (poll `genome/teach-status
+    /// --run_id`), not in the fields below (which are defaulted on the ack).
+    #[serde(default)]
+    pub detached: bool,
+    /// The run handle — present on a detached ack AND on the ledger row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
     /// The dataset name written.
     pub dataset: String,
     /// The teacher model used (resolved, so the trend row is attributable).
@@ -195,6 +216,197 @@ fn message_text(m: &ChatMessage) -> String {
     }
 }
 
+/// Live teach progress — the queryable snapshot `genome/teach-status` returns, so a
+/// long corpus-gen run is OBSERVABLE (poll `done/total/currentTask`) instead of a
+/// black-box wait or an autopsy of CPU%. Mirrors eval's `EvalPassProgress` watch cell —
+/// bus events are fire-and-forget (a UI subscribes), but a STATUS you can query is what
+/// lets an operator or a poller see where a run actually is. Clean harness = you know
+/// what's going on. [[self-test-via-command-feedback-surface-never-blind]]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/TeachProgress.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct TeachProgress {
+    /// `started` (denominator set, no work yet) | `task` (one graded) | `completed`.
+    pub phase: String,
+    /// Tasks graded so far.
+    #[ts(type = "number")]
+    pub done: usize,
+    /// Total tasks in the set (the progress-bar denominator, known at `started`).
+    #[ts(type = "number")]
+    pub total: usize,
+    /// Validated (test-passing) trajectories so far — the corpus yield.
+    #[ts(type = "number")]
+    pub solved: usize,
+    /// The task just graded (None at `started`/`completed`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub current_task: Option<String>,
+    /// Wall-clock stamp — a poller checks this for staleness on a long-dead run.
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+static TEACH_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<TeachProgress>>> =
+    std::sync::OnceLock::new();
+
+fn teach_progress_tx() -> &'static tokio::sync::watch::Sender<Option<TeachProgress>> {
+    TEACH_PROGRESS.get_or_init(|| tokio::sync::watch::channel(None).0)
+}
+
+/// Subscribe to live teach progress — the watch `genome/teach-status` reads.
+pub fn subscribe_teach_progress() -> tokio::sync::watch::Receiver<Option<TeachProgress>> {
+    teach_progress_tx().subscribe()
+}
+
+fn set_teach_progress(p: TeachProgress) {
+    let _ = teach_progress_tx().send(Some(p));
+}
+
+/// The run ledger for a detached teach job — one JSON row per `run_id`, the DURABLE half of
+/// fire-and-stream (#86). The watch cell + bus carry PROGRESS (push, live); this file carries
+/// the terminal RESULT, cross-process and surviving the run, so `genome/teach-status --run_id`
+/// resolves to complete+result (or a failed row) regardless of who's watching or when.
+fn teach_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
+    std::env::var("HOME").ok().map(|h| {
+        std::path::PathBuf::from(h)
+            .join(".continuum")
+            .join("progress")
+            .join("teach")
+            .join(format!("{run_id}.json"))
+    })
+}
+
+/// Write the terminal row for a detached run — success carries the full result, failure
+/// carries the loud error keyed on the SAME run_id (a poller sees the failure, never waits
+/// on a corpse — the eval `append_failed_ledger` lesson). [[fallbacks-are-illegal-fail-loud]]
+fn write_teach_ledger(run_id: &str, result: Result<&GenomeTeachResult, String>) {
+    let Some(path) = teach_ledger_path(run_id) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let row = match result {
+        Ok(r) => serde_json::json!({ "runId": run_id, "complete": true, "ok": true, "result": r }),
+        Err(e) => serde_json::json!({ "runId": run_id, "complete": true, "ok": false, "error": e }),
+    };
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&row).unwrap_or_default());
+}
+
+fn read_teach_ledger(run_id: &str) -> Option<serde_json::Value> {
+    let path = teach_ledger_path(run_id)?;
+    let txt = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&txt).ok()
+}
+
+/// The run_id of the teach pass executing NOW — set at `run_teach` entry so the emit
+/// helpers can write LIVE progress to that run's ledger file WITHOUT threading run_id
+/// through synthesize_remediation. Cross-process observability needs the file (the
+/// in-process watch cell is invisible to a client-side `teach-status`); this is how the
+/// progress bar advances for any poller/widget. Mirrors eval's CURRENT_RUN_ID.
+static CURRENT_TEACH_RUN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn set_current_teach_run(run_id: Option<String>) {
+    if let Ok(mut g) = CURRENT_TEACH_RUN.lock() {
+        *g = run_id;
+    }
+}
+
+/// Write a LIVE progress row (complete:false) to the current run's ledger — overwritten
+/// each milestone/task, then replaced by the terminal row on completion (last write wins).
+fn write_teach_progress_ledger(prog: &TeachProgress) {
+    let run_id = match CURRENT_TEACH_RUN.lock() {
+        Ok(g) => match g.clone() {
+            Some(r) => r,
+            None => return,
+        },
+        Err(_) => return,
+    };
+    let Some(path) = teach_ledger_path(&run_id) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let row = serde_json::json!({ "runId": run_id, "complete": false, "progress": prog });
+    let _ = std::fs::write(&path, serde_json::to_string(&row).unwrap_or_default());
+}
+
+/// Emit ONE teach progress event to the message bus, so a UI / the operator can WATCH
+/// corpus generation live instead of black-box-waiting for the final result (the whole
+/// point of long jobs being observable — the same `MessageBus` seam `emit_eval_phase`
+/// uses for `eval:phase`). Feedback is a first-class cross-modality dimension: this
+/// long job streams its own progress. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
+fn emit_teach_progress(
+    done: usize,
+    total: usize,
+    task_id: &str,
+    solved: bool,
+    solved_count: usize,
+    with_correction: usize,
+) {
+    let prog = TeachProgress {
+        phase: "task".to_string(),
+        done,
+        total,
+        solved: solved_count,
+        current_task: Some(task_id.to_string()),
+        updated_at_ms: crate::persona::trace::now_ms(),
+    };
+    write_teach_progress_ledger(&prog); // cross-process (file) so teach-status shows it
+    set_teach_progress(prog); // in-process watch (same-process subscribers)
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only(
+            "genome:teach:progress",
+            serde_json::json!({
+                "phase": "task",
+                "done": done,
+                "total": total,
+                "task": task_id,
+                "solved": solved,
+                "withCorrection": with_correction,
+                "atMs": crate::persona::trace::now_ms(),
+            }),
+        );
+    }
+    tracing::info!(
+        target: "genome::teach",
+        done, total, task = task_id, solved, with_correction,
+        "teach task graded"
+    );
+}
+
+/// A lifecycle MILESTONE event — `started` (carries `total`, the progress bar's
+/// denominator, before any work) and `completed` (the terminal fill). Every milestone
+/// emits an event so a UI can render a real progress bar: `started` sizes it, the
+/// per-task `emit_teach_progress` increments it, `completed` closes it. Same seam as
+/// the per-task events. [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]
+fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
+    let prog = TeachProgress {
+        phase: phase.to_string(),
+        done,
+        total,
+        solved,
+        current_task: None,
+        updated_at_ms: crate::persona::trace::now_ms(),
+    };
+    write_teach_progress_ledger(&prog);
+    set_teach_progress(prog);
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        bus.publish_async_only(
+            "genome:teach:progress",
+            serde_json::json!({
+                "phase": phase,
+                "done": done,
+                "total": total,
+                "solved": solved,
+                "atMs": crate::persona::trace::now_ms(),
+            }),
+        );
+    }
+    tracing::info!(target: "genome::teach", phase, done, total, solved, "teach milestone");
+}
+
 /// Convert a validated trajectory (the full write→error→fix→pass turn sequence) into
 /// the ShareGPT `{"messages":[{role,content},...]}` shape `dataset/*` + `mlx_lm.lora`
 /// consume. Order is preserved — that ordering IS the lesson (task → attempt →
@@ -207,10 +419,16 @@ fn build_sharegpt(messages: &[ChatMessage]) -> Value {
     json!({ "messages": msgs })
 }
 
-/// One teacher generation. Resolves the adapter the canonical way (no injected
-/// state — mirrors `cognition/generate_response`), acquiring + dropping the registry
-/// read guard within the call so it's never held across the multi-task loop.
+/// One teacher generation. When `dedicated` is `Some`, it generates against a DEDICATED
+/// bare-base measurement lane (the same isolation `cognition/eval` uses) — never the live
+/// multi-LoRA serving lane, which OOMs the Metal backend on a real generation (#175: the
+/// live lane's 5 co-resident genome LoRAs + big window can't sustain a 300-token decode; a
+/// tiny readiness smoke-decode passes but the real generation wedges → reap/respawn churn →
+/// a 0-corpus teach). When `dedicated` is `None` (the clean lane couldn't be stood up) it
+/// degrades to the live serving lane via the registry — resolved the canonical way, guard
+/// acquired + dropped within the call so it's never held across the multi-task loop.
 async fn teacher_generate(
+    dedicated: Option<&std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
     model: &str,
     messages: Vec<ChatMessage>,
     temperature: f32,
@@ -240,6 +458,20 @@ async fn teacher_generate(
         persona_id: None,
     };
 
+    // Dedicated clean lane: generate directly against its pinned adapter. This is the
+    // path that WORKS — the eval lane proves a bare-base lane sustains real generations
+    // (28/44 on hard-rs) where the live multi-LoRA lane wedges.
+    if let Some(adapter) = dedicated {
+        let response: TextGenerationResponse = adapter
+            .generate_text(request)
+            .await
+            .map_err(CommandError::Internal)?;
+        return Ok(response.text);
+    }
+
+    // Degrade path: no clean lane came up — resolve the live serving adapter the
+    // canonical way. May inherit the #175 OOM, but a shared-lane attempt beats no
+    // attempt, and the reason we're here was already warned loud at spawn.
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
     let (_provider_id, adapter) = registry
@@ -296,6 +528,49 @@ pub async fn synthesize_remediation(
     let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
     let mut with_correction = 0usize;
 
+    // WAIT for the served teacher model to be READY before the first generation. The
+    // teacher runs on the local serving lane; if teach launches while serving is
+    // relaunching that lane (a genome page-in, a window grow-back), the first
+    // `generate_text` hits a not-ready lane and — with no readiness gate and no
+    // timeout — HANGS FOREVER, parking the whole job at 0% with no dataset (glass-boxed
+    // 2026-07-21). This is the same race the eval lane fixed; the teacher path needs
+    // the same discipline. A timeout (below) still recovers if the lane wedges mid-run.
+    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
+        return Err(CommandError::Internal(
+            "no served model became ready within the serving-wait budget — cannot run the teacher. \
+             Bring up serving (ai/inference/serve) before genome/teach."
+                .to_string(),
+        ));
+    }
+
+    // Stand up a DEDICATED bare-base measurement lane for the teacher — the SAME isolation
+    // `cognition/eval` uses to score reliably. The live serving lane carries the persona's
+    // co-resident genome LoRAs + a big window; a real 300-token teacher generation OOMs the
+    // Metal backend there (#175), the daemon reaps+respawns, a tiny readiness smoke-decode
+    // re-passes, and the next generation wedges again → churn → a 0-corpus teach. A clean
+    // lane (no LoRA, eval-sized window) sustains the generation exactly as the eval lane
+    // does. Held for the whole loop; its process is killed on drop (#59). On spawn failure
+    // we DEGRADE-LOUD to the live lane (a shared attempt beats no attempt), mirroring the
+    // eval branch's degrade — the reason is visible, never a silent `.ok()`.
+    let dedicated_lane = match crate::cognition::eval::spawn_base_eval_lane(teacher_model).await {
+        Ok(lane) => Some(lane),
+        Err(e) => {
+            tracing::warn!(
+                target: "genome::teach",
+                teacher_model = %teacher_model,
+                error = %e,
+                "dedicated teacher lane failed to come up — DEGRADING to the live serving lane \
+                 (may inherit the #175 multi-LoRA OOM). Fix the lane; a shared-lane teach may yield 0."
+            );
+            None
+        }
+    };
+    let teacher_adapter = dedicated_lane.as_ref().map(|l| l.adapter.clone());
+
+    // MILESTONE: started — carries the denominator so a progress bar can size itself
+    // before the first (slow) generation.
+    emit_teach_milestone("started", 0, tasks.len(), 0);
+
     for task in tasks {
         // Only test-graded tasks can be validated → become corpus. A task with no
         // `test` is dropped with a named reason, never silently passed.
@@ -320,9 +595,20 @@ pub async fn synthesize_remediation(
         let mut last_error: Option<String> = None;
         let mut solved = false;
 
-        // First generation + up to `max_fix_iters` corrections.
+        // First generation + up to `max_fix_iters` corrections. Readiness is an EVENT
+        // (await_ready_serving above waits on the serving watch — a push, not a poll), so
+        // the generation runs against a lane that IS up; a dead lane surfaces as an adapter
+        // error (a push from the transport), not an indefinite hang. No wall-clock timeout
+        // — a timeout is a guess about health, and guessing is the smell we're removing.
+        // [[command-async-shape-prefer-stream-never-block]]
         for _ in 0..=max_fix_iters {
-            let answer = teacher_generate(teacher_model, trajectory.clone(), temperature).await?;
+            let answer = match teacher_generate(teacher_adapter.as_ref(), teacher_model, trajectory.clone(), temperature).await {
+                Ok(a) => a,
+                Err(e) => {
+                    last_error = Some(format!("teacher generation failed: {e}"));
+                    break;
+                }
+            };
             attempts += 1;
             trajectory.push(ChatMessage::text("assistant", &answer));
 
@@ -355,7 +641,12 @@ pub async fn synthesize_remediation(
             attempts,
             last_error: if solved { None } else { last_error },
         });
+        // Stream progress so the run is watchable live (events, not black-box wait).
+        emit_teach_progress(outcomes.len(), tasks.len(), &task.id, solved, examples.len(), with_correction);
     }
+
+    // MILESTONE: completed — the terminal fill, so the bar closes even on a 0-yield run.
+    emit_teach_milestone("completed", outcomes.len(), tasks.len(), examples.len());
 
     Ok(RemediationCorpus {
         examples,
@@ -383,6 +674,50 @@ impl ActionCommand for GenomeTeach {
     type Output = GenomeTeachResult;
 
     async fn run(&self, _ctx: &Ctx, p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+        // Fire-and-stream (#86): `detach` runs the many-minute corpus-gen IN THE CORE and
+        // returns a run_id HANDLE immediately — never blocking the client, surviving its
+        // disconnect. Progress streams as events (genome:teach:progress); the terminal
+        // result lands in the run ledger, polled by `genome/teach-status --run_id`. This is
+        // the pattern for every long run — mirrors cognition/eval's detach exactly.
+        // [[command-async-shape-prefer-stream-never-block]]
+        if p.detach.unwrap_or(false) {
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let mut inner = p.clone();
+            inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
+            let ledger_run = run_id.clone();
+            tokio::spawn(async move {
+                let res = GenomeTeach::run_teach(inner).await;
+                write_teach_ledger(&ledger_run, res.as_ref().map_err(|e| e.to_string()));
+                match res {
+                    Ok(r) => tracing::info!(
+                        run_id = %ledger_run, solved = r.tasks_solved, total = r.tasks_total,
+                        "genome/teach detached run complete — result in run ledger"
+                    ),
+                    Err(e) => tracing::error!(run_id = %ledger_run, error = %e, "genome/teach detached run failed"),
+                }
+            });
+            return Ok(GenomeTeachResult {
+                detached: true,
+                run_id: Some(run_id),
+                ..Default::default()
+            });
+        }
+        GenomeTeach::run_teach(p).await
+    }
+}
+
+impl GenomeTeach {
+    /// The corpus-gen body — ctx-free so it runs inline OR from a detached `tokio::spawn`
+    /// (#86 fire-and-stream). Owns its params; reaches serving + dataset packaging via their
+    /// global seams, needing neither `self` nor `ctx`.
+    async fn run_teach(p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+        // Bind this pass's run_id so the emit helpers write LIVE progress to its ledger
+        // (cross-process, so `teach-status --run_id` and any widget see the bar advance).
+        set_current_teach_run(p.run_id.clone());
         // Task source: inline → teach_set JSONL → committed default. A missing
         // explicit path is a loud error (don't silently teach an empty set).
         let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
@@ -450,6 +785,8 @@ impl ActionCommand for GenomeTeach {
 
         let tasks_solved = examples.len();
         Ok(GenomeTeachResult {
+            detached: false,
+            run_id: p.run_id.clone(),
             dataset: name,
             teacher_model,
             dataset_dir: dataset_dir.display().to_string(),
@@ -467,6 +804,90 @@ impl ActionCommand for GenomeTeach {
 
 // Stateless → self-register onto the ONE registry (descriptor + runtime object).
 crate::register_stateless_command!(GenomeTeach);
+
+/// `genome/teach-status` — the poll half of a long corpus-gen run. `genome/teach` runs
+/// for many minutes (write→grade→fix over a whole task set); this returns the LIVE
+/// `{done, total, currentTask, solved}` snapshot so an operator, a poller, or a UI
+/// progress bar can SEE where it is — instead of guessing from CPU%. Read-only, ai-safe,
+/// no params: the substrate serializes teach runs, so there's one live board to read.
+/// The queryable companion to the fire-and-forget `genome:teach:progress` bus events —
+/// a status you can ask beats a light you can only hope someone's watching.
+/// [[self-test-via-command-feedback-surface-never-blind]]
+#[derive(Default)]
+pub struct GenomeTeachStatus;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema, Default)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusParams.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct GenomeTeachStatusParams {
+    /// The detached run's handle. With it, the terminal RESULT resolves from the run ledger
+    /// (complete + result/error). Omit for LIVE progress only (the "how's it going" poll).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS, JsonSchema, Default)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachStatusResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct GenomeTeachStatusResult {
+    /// True once the run's ledger row exists (the detached run finished — check
+    /// `result.ok`). Always false when polled without a run_id (live-progress only).
+    pub complete: bool,
+    /// The terminal ledger row `{ok, result|error}` when complete, else null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub result: Option<serde_json::Value>,
+    /// Live progress of the currently-running teach — the mid-run scoreboard a progress
+    /// bar renders (done/total/currentTask/solved). Null until the first milestone fires;
+    /// check `updatedAtMs` for staleness on a long-finished run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub progress: Option<TeachProgress>,
+}
+
+#[async_trait]
+impl ActionCommand for GenomeTeachStatus {
+    const NAME: &'static str = "genome/teach-status";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Poll a detached genome/teach by run_id: {complete, result} from the run ledger + LIVE \
+         {done, total, currentTask, solved} progress. The observable half of fire-and-stream — a \
+         UI renders it as a progress bar, a poller knows alive-vs-done, without holding a \
+         connection open across the many-minute run.";
+    type Params = GenomeTeachStatusParams;
+    type Output = GenomeTeachStatusResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: GenomeTeachStatusParams,
+    ) -> Result<GenomeTeachStatusResult, CommandError> {
+        // The ledger FILE is the cross-process truth (the in-process watch cell is
+        // invisible to a client-side status). A row is either LIVE (complete:false, carries
+        // `progress`) or TERMINAL (complete:true, carries `result`/`error`).
+        let row = p.run_id.as_deref().and_then(read_teach_ledger);
+        let complete = row
+            .as_ref()
+            .and_then(|r| r.get("complete"))
+            .and_then(|c| c.as_bool())
+            .unwrap_or(false);
+        // Live progress: prefer the ledger row (cross-process), fall back to the in-process
+        // watch (same-process subscribers, or a handleless "how's it going" poll).
+        let progress = row
+            .as_ref()
+            .and_then(|r| r.get("progress"))
+            .and_then(|pr| serde_json::from_value::<TeachProgress>(pr.clone()).ok())
+            .or_else(|| subscribe_teach_progress().borrow().clone());
+        Ok(GenomeTeachStatusResult {
+            complete,
+            result: if complete { row } else { None },
+            progress,
+        })
+    }
+}
+
+crate::register_stateless_command!(GenomeTeachStatus);
 
 #[cfg(test)]
 mod tests {

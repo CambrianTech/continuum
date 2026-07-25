@@ -69,6 +69,11 @@ impl ModuleHarness {
         }
 
         let executor = Arc::new(CommandExecutor::new(registry.clone()));
+        // Same contract as `start_server`: fill every module's late-bound
+        // executor slot so cross-module dual-writes (chat→data, memory→data)
+        // work under test exactly as in production. `LateBound::install`
+        // no-ops when a test already injected its own executor.
+        registry.install_executor_on_all(executor.clone());
         Self { executor, registry }
     }
 
