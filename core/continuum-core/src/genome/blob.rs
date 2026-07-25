@@ -18,10 +18,55 @@
 //! callers update to pass the richer values; the trait shape doesn't
 //! change.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::working_set::ArtifactId;
+
+/// Where an artifact's bytes physically live.
+///
+/// Small artifacts (LoRA layers, engrams) carry their bytes **inline** — they
+/// are cheap to move through the value type. Large artifacts (MoE expert tiles,
+/// hundreds of MB) are **mapped**: they reference byte ranges of a backing file
+/// on the cold/frozen tier drive and are memory-mapped on read, so they never
+/// round-trip through the value type or the message bus. This is the tier-aware
+/// handle `ArtifactBlob`'s original `Vec<u8>` doc anticipated.
+///
+/// A single `Mapped` artifact spanning **N ranges** is one whole MoE expert:
+/// its gate / up / down slices live in separate stacked `*_exps` tensors at
+/// different file offsets, so one expert = N disjoint `(offset, len)` ranges.
+/// Making the expert ONE artifact (not one-per-projection) keeps the residency
+/// decision atomic — an expert is co-resident or not, never half — so the
+/// working-set key is naturally `(layer, expert)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArtifactSource {
+    /// Bytes carried inline. LoRA layers, engrams — small enough to move.
+    Inline(Vec<u8>),
+    /// Byte ranges within a backing file, memory-mapped on read. The tier
+    /// store accounts capacity from the range lengths and NEVER reads the
+    /// bytes on write (trust + audit-budget reasons, same as the id contract).
+    Mapped {
+        /// Absolute path to the backing file (e.g. the K3 GGUF on the frozen
+        /// tier drive).
+        path: PathBuf,
+        /// `(absolute_offset, len)` byte ranges. Summed for size accounting.
+        ranges: Vec<(u64, u64)>,
+    },
+}
+
+impl ArtifactSource {
+    /// Physical byte size — the inline length, or the sum of mapped range
+    /// lengths. Must be the *physical* size (what the tier store bills against
+    /// capacity), never a logical one.
+    pub fn size_bytes(&self) -> u64 {
+        match self {
+            ArtifactSource::Inline(bytes) => bytes.len() as u64,
+            ArtifactSource::Mapped { ranges, .. } => ranges.iter().map(|(_, len)| *len).sum(),
+        }
+    }
+}
 
 /// Opaque bytes of an artifact. PR-2 carries the raw bytes inline
 /// for a simple wire shape; later PRs replace with a tier-aware
@@ -39,17 +84,37 @@ pub struct ArtifactBlob {
     /// `sha256-derived-uuid(bytes)`. Producers compute this; the tier
     /// store does not re-hash on write (trust + audit budget reasons).
     pub id: ArtifactId,
-    /// The raw artifact bytes. Empty Vec is valid (a zero-byte
-    /// artifact is a legitimate sentinel).
-    pub bytes: Vec<u8>,
+    /// Where the artifact's bytes live — `Inline` for small artifacts,
+    /// `Mapped` for large file-backed ones (MoE expert tiles). An inline
+    /// empty payload is valid (a zero-byte artifact is a legitimate
+    /// sentinel).
+    pub source: ArtifactSource,
 }
 
 impl ArtifactBlob {
-    /// Byte size of the artifact. Cheap O(1) wrapper around `bytes.len()`
-    /// so tier stores can compute capacity impact without owning a
-    /// reference to the blob.
+    /// Construct an inline blob — the common small-artifact case (LoRA
+    /// layer, engram). Keeps callers that had a `Vec<u8>` unchanged in
+    /// spirit: `ArtifactBlob::inline(id, bytes)`.
+    pub fn inline(id: ArtifactId, bytes: Vec<u8>) -> Self {
+        Self {
+            id,
+            source: ArtifactSource::Inline(bytes),
+        }
+    }
+
+    /// Construct a file-mapped blob — one whole MoE expert as N `(offset,
+    /// len)` ranges into `path`. Zero-copy: the bytes are never read here.
+    pub fn mapped(id: ArtifactId, path: PathBuf, ranges: Vec<(u64, u64)>) -> Self {
+        Self {
+            id,
+            source: ArtifactSource::Mapped { path, ranges },
+        }
+    }
+
+    /// Physical byte size of the artifact — delegates to the source so
+    /// tier stores can compute capacity impact without reading bytes.
     pub fn size_bytes(&self) -> u64 {
-        self.bytes.len() as u64
+        self.source.size_bytes()
     }
 }
 
@@ -108,23 +173,36 @@ mod tests {
     /// on this number being the *physical* size, not a logical one.
     #[test]
     fn artifact_blob_size_matches_byte_length() {
-        let empty = ArtifactBlob {
-            id: sample_id(),
-            bytes: Vec::new(),
-        };
+        let empty = ArtifactBlob::inline(sample_id(), Vec::new());
         assert_eq!(empty.size_bytes(), 0);
 
-        let one_kb = ArtifactBlob {
-            id: sample_id(),
-            bytes: vec![0u8; 1024],
-        };
+        let one_kb = ArtifactBlob::inline(sample_id(), vec![0u8; 1024]);
         assert_eq!(one_kb.size_bytes(), 1024);
 
-        let big = ArtifactBlob {
-            id: sample_id(),
-            bytes: vec![0u8; 1_048_576],
-        };
+        let big = ArtifactBlob::inline(sample_id(), vec![0u8; 1_048_576]);
         assert_eq!(big.size_bytes(), 1_048_576);
+    }
+
+    /// What this catches: a Mapped blob's size is the SUM of its range
+    /// lengths, not a byte read — a whole MoE expert (gate+up+down slices
+    /// at different file offsets) bills the tier store for the total of its
+    /// N ranges without ever touching the backing file. If size accounting
+    /// ever tried to read the mapped bytes, this (with a bogus path) would
+    /// break instead of returning the summed length.
+    #[test]
+    fn mapped_blob_size_is_the_sum_of_range_lengths() {
+        // Three ranges (gate/up/down slices for one expert) at arbitrary
+        // offsets in a file that does NOT exist — size must not read it.
+        let expert = ArtifactBlob::mapped(
+            sample_id(),
+            PathBuf::from("/frozen/k3.gguf"),
+            vec![(1_000, 4_096), (500_000, 4_096), (900_000, 2_048)],
+        );
+        assert_eq!(expert.size_bytes(), 4_096 + 4_096 + 2_048);
+
+        // Zero ranges = zero bytes (a degenerate but valid accounting).
+        let none = ArtifactBlob::mapped(sample_id(), PathBuf::from("/frozen/k3.gguf"), vec![]);
+        assert_eq!(none.size_bytes(), 0);
     }
 
     /// What this catches: ArtifactBlob is intentionally NOT TS-exported.
@@ -134,10 +212,7 @@ mod tests {
     /// download command, not inline them in JSON messages.
     #[test]
     fn artifact_blob_round_trips_through_serde() {
-        let blob = ArtifactBlob {
-            id: sample_id(),
-            bytes: vec![1, 2, 3, 4, 5],
-        };
+        let blob = ArtifactBlob::inline(sample_id(), vec![1, 2, 3, 4, 5]);
         let json = serde_json::to_string(&blob).unwrap();
         let back: ArtifactBlob = serde_json::from_str(&json).unwrap();
         assert_eq!(blob, back);
