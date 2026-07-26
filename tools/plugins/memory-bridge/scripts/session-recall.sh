@@ -15,7 +15,7 @@
 # the continuum binary + persona + scope and passes the command's stdout through.
 set -uo pipefail
 
-cat >/dev/null 2>&1 || true              # drain the hook's stdin payload
+HOOK_INPUT="$(cat 2>/dev/null || true)"  # the hook's stdin payload — carries "source": startup|resume|compact
 
 # Resolve the continuum CLI robustly (NOT bare `cu` — that is the Unix UUCP tool,
 # which shadowed us on PATH and silently no-op'd the whole bridge).
@@ -31,7 +31,14 @@ PROJECT="$(basename "$SCOPE_DIR")"
 PERSONA="$(resolve_agent_persona)"
 [ -n "${PERSONA:-}" ] || exit 0
 
+# Compact-source tuning: a `compact` just FREED context — re-injecting a lot would
+# refill exactly what compaction cleared, defeating it. So inject LEAN on compact,
+# fuller on a fresh startup/resume. (Pairs with recall_hook.rs's per-bullet cap: this
+# bounds the COUNT, that bounds each bullet's LENGTH — together, small × short.)
+SOURCE="$(printf '%s' "$HOOK_INPUT" | grep -oE '"source"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*"([^"]*)"$/\1/')"
+if [ "${SOURCE:-}" = "compact" ]; then MAX=3; else MAX=8; fi
+
 # `memory/recall-hook` returns the EXACT {"hookSpecificOutput":{...}} envelope via
 # serde (valid, escaped, empty-safe). Pass it straight through. Any failure → nothing.
-"$CONTINUUM" memory/recall-hook --persona_id "$PERSONA" --room_id "$PROJECT" --query_text "$PROJECT session context" 2>/dev/null || true
+"$CONTINUUM" memory/recall-hook --persona_id "$PERSONA" --room_id "$PROJECT" --query_text "$PROJECT session context" --max_results "$MAX" 2>/dev/null || true
 exit 0
