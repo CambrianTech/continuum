@@ -2851,6 +2851,11 @@ pub fn start_server(
     // #249: the durable-transcript reader behind persona wake hydration shares
     // the same substrate executor (one dispatch chain, no parallel query stack).
     crate::persona::durable_history::install_executor(Arc::clone(&executor));
+    // Autonomic dream consolidation: the dream region dispatches `memory/consolidate`
+    // through the SAME wired executor, so a persona consolidates the lessons other agents
+    // taught her into her genome WHILE IDLE — the being-loop's received axis going
+    // autonomic. Same install site + same executor as the L2 producer above.
+    crate::cognition::dream_consolidation::install_consolidate_executor(Arc::clone(&executor));
 
     // Round-2 verifier fix on PR #1568: now that the executor is
     // installed on every module, release the persona-supervisor task
