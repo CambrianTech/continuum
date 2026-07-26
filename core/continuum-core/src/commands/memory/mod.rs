@@ -30,6 +30,7 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod append_event;
 pub mod append_memory;
+pub mod consolidate;
 pub mod consciousness_context;
 pub mod load_corpus;
 pub mod multi_layer_recall;
@@ -39,6 +40,7 @@ pub mod remember;
 
 use append_event::MemoryAppendEvent;
 use append_memory::MemoryAppendMemory;
+use consolidate::MemoryConsolidate;
 use consciousness_context::MemoryConsciousnessContext;
 use load_corpus::MemoryLoadCorpus;
 use multi_layer_recall::MemoryMultiLayerRecall;
@@ -65,6 +67,7 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(MemoryImport { state: state.clone() }),
         Arc::new(MemoryRecallHook { state: state.clone() }),
         Arc::new(MemoryRemember { state: state.clone() }),
+        Arc::new(MemoryConsolidate { state: state.clone() }),
         Arc::new(MemoryConsciousnessContext { state: state.clone() }),
         Arc::new(MemoryAppendMemory { state: state.clone() }),
         Arc::new(MemoryAppendEvent { state }),

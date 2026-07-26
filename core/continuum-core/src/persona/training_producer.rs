@@ -213,13 +213,56 @@ pub fn produce_received(
     });
 }
 
+/// Build the wire params for `genome/training-trigger/submit` from a plan — the ONE
+/// payload contract, pure + `pub` so a synchronous caller (`memory/consolidate`
+/// dispatching received lessons on demand) produces byte-identical params to the
+/// fire-and-forget producers. `source: raw` = unfiltered capture; minExamples omitted →
+/// DEFAULT_MIN_EXAMPLES (the trigger auto-fires job-create at the threshold). `evalSet`
+/// rides the {trait → gym} edge: the committed gym that MEASURES `plan.trait_kind`. When
+/// the trait HAS a gym it is declared so the L3 sentinel can A/B and adopt the gene; when
+/// it has NONE the field is OMITTED and the sentinel REFUSES to adopt as unmeasurable
+/// ([[fallbacks-are-illegal-fail-loud]]) — never paged into a live persona on a gym that
+/// doesn't measure its trait. `provenance` is metadata only (live-turn vs received-lesson).
+pub fn build_submit_params(
+    persona_id: Uuid,
+    persona_name: &str,
+    base_model: &str,
+    plan: &SubmitPlan,
+    provenance: &str,
+) -> serde_json::Value {
+    let example = TrainingExample {
+        prompt: plan.prompt.clone(),
+        completion: plan.completion.clone(),
+        metadata: Some(json!({
+            "source": provenance,
+            "quality": plan.quality,
+            "domain": plan.trait_kind,
+        })),
+    };
+    let mut params = json!({
+        "personaId": persona_id,
+        "personaName": persona_name,
+        "baseModel": base_model,
+        "traitKind": plan.trait_kind,
+        "examples": [example],
+        "source": "raw",
+    });
+    if let Some(eval_set) = crate::cognition::gym::gym_for_trait(&plan.trait_kind) {
+        if let serde_json::Value::Object(ref mut map) = params {
+            map.insert(
+                "evalSet".into(),
+                serde_json::Value::String(eval_set.to_string()),
+            );
+        }
+    }
+    params
+}
+
 /// The shared submit tail used by BOTH producers ([`produce`], [`produce_received`]):
-/// build the persona's identity-bearing `Connection`, package the plan as a
-/// `TrainingExample` (provenance in metadata), stamp the trait's MEASURING gym as
-/// `evalSet` (so the auto-produced gene is adoptable only if it lifts the benchmark),
-/// and dispatch `genome/training-trigger/submit`. Identical flywheel entry for a live
-/// turn and a received lesson — only the `provenance` label differs. One submit path,
-/// N experience sources (the compression principle applied to the efferent organ).
+/// build the persona's identity-bearing `Connection`, package the plan via
+/// [`build_submit_params`], and dispatch `genome/training-trigger/submit`. Identical
+/// flywheel entry for a live turn and a received lesson — only the `provenance` label
+/// differs. One submit path, N experience sources.
 async fn submit_plan(
     persona_id: Uuid,
     persona_name: String,
@@ -237,38 +280,7 @@ async fn submit_plan(
             crate::identity::PeerId::from_uuid(persona_id),
         )),
     ));
-    let example = TrainingExample {
-        prompt: plan.prompt,
-        completion: plan.completion,
-        metadata: Some(json!({
-            "source": provenance,
-            "quality": plan.quality,
-            "domain": plan.trait_kind,
-        })),
-    };
-    // Wire form per genome/training-trigger/submit (camelCase). `source: raw` = unfiltered
-    // capture (TrainingSource::Raw); minExamples omitted → DEFAULT_MIN_EXAMPLES; the trigger
-    // auto-fires job-create at the threshold. `evalSet` rides the {trait → gym} edge: the
-    // committed gym that MEASURES `plan.trait_kind`. When the trait HAS a gym it is declared
-    // so the L3 sentinel can A/B and adopt the gene; when it has NONE the field is OMITTED and
-    // the sentinel REFUSES to adopt as unmeasurable ([[fallbacks-are-illegal-fail-loud]]) —
-    // never paged into a live persona on a gym that doesn't measure its trait.
-    let mut params = json!({
-        "personaId": persona_id,
-        "personaName": persona_name,
-        "baseModel": base_model,
-        "traitKind": plan.trait_kind,
-        "examples": [example],
-        "source": "raw",
-    });
-    if let Some(eval_set) = crate::cognition::gym::gym_for_trait(&plan.trait_kind) {
-        if let serde_json::Value::Object(ref mut map) = params {
-            map.insert(
-                "evalSet".into(),
-                serde_json::Value::String(eval_set.to_string()),
-            );
-        }
-    }
+    let params = build_submit_params(persona_id, &persona_name, &base_model, &plan, provenance);
     if let Err(e) = conn
         .commands()
         .execute_value("genome/training-trigger/submit", params)
