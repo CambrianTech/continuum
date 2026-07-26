@@ -63,21 +63,29 @@ impl CrossLayerExpertPredictor {
     /// point is to prefetch experts NOT yet resident, and a fired expert is already hot
     /// (its residency is `hits`, not a prediction).
     pub fn observe_transition(&mut self, prev: &[ExpertId], next: &[ExpertId]) {
-        for &p in prev {
-            let mut counted_p = false;
-            for &n in next {
-                if p == n {
-                    continue;
-                }
-                *self.cooccur.entry(p).or_default().entry(n).or_insert(0) += 1;
-                counted_p = true;
-            }
-            // Count `p` as a predecessor once per transition that yielded ≥1 distinct
-            // successor, so `P(n|p) = cooccur[p][n] / seen[p]` stays a proper fraction.
-            if counted_p {
-                *self.seen.entry(p).or_insert(0) += 1;
-            }
+        let (seen, cooccur) = (&mut self.seen, &mut self.cooccur);
+        fold_transition(
+            prev,
+            next,
+            |p, n| *cooccur.entry(p).or_default().entry(n).or_insert(0) += 1,
+            |p| *seen.entry(p).or_insert(0) += 1,
+        );
+    }
+
+    /// Rebuild a predictor from a co-occurrence SNAPSHOT — the cold-tick path: the live
+    /// observer captures `seen`/`cooccur` as lock-cheap DashMaps on the hot path (mirroring
+    /// `hits`), then hands a plain-map snapshot here to build a predictor for `predict`.
+    /// `cooccur` keys are flat `(predecessor, successor)`; this folds them into the nested
+    /// form `predict` walks efficiently. Same shape as `snapshot_hits → ExpertActivationProfile`.
+    pub fn from_cooccurrence(
+        seen: HashMap<ExpertId, u64>,
+        cooccur: HashMap<(ExpertId, ExpertId), u64>,
+    ) -> Self {
+        let mut nested: HashMap<ExpertId, HashMap<ExpertId, u64>> = HashMap::new();
+        for ((p, n), c) in cooccur {
+            nested.entry(p).or_default().insert(n, c);
         }
+        Self { seen, cooccur: nested }
     }
 
     /// `P(successor n | predecessor p)` — the learned conditional, or `0.0` if `p` was
@@ -142,6 +150,32 @@ pub fn per_token_experts(layer: u32, flat: &[i32], n_expert_used: usize) -> Vec<
                 .collect()
         })
         .collect()
+}
+
+/// The ONE cross-layer transition-counting rule, backend-agnostic: for a `prev`-layer and
+/// `next`-layer per-token expert row, bump the `(predecessor, successor)` co-occurrence for
+/// every distinct pair (self-transitions `p==n` skipped), and count each predecessor once
+/// per transition that yielded ≥1 successor (so `P(n|p) = cooccur[p][n] / seen[p]` stays a
+/// proper fraction). The predictor calls it with HashMap bumps; the live observer calls it
+/// with lock-cheap DashMap bumps on the hot path — same counting, no drift.
+pub fn fold_transition<F, G>(prev: &[ExpertId], next: &[ExpertId], mut bump_cooccur: F, mut bump_seen: G)
+where
+    F: FnMut(ExpertId, ExpertId),
+    G: FnMut(ExpertId),
+{
+    for &p in prev {
+        let mut counted = false;
+        for &n in next {
+            if p == n {
+                continue;
+            }
+            bump_cooccur(p, n);
+            counted = true;
+        }
+        if counted {
+            bump_seen(p);
+        }
+    }
 }
 
 /// Accumulates one forward pass's layer-by-layer expert observations into cross-layer

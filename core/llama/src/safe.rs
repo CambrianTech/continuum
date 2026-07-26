@@ -619,8 +619,11 @@ impl KvCacheType {
 /// on a backend thread; `Debug` so `ContextParams` keeps its derive.
 pub trait ExpertObserver: Send + Sync + std::fmt::Debug {
     /// `layer` = transformer block index; `experts` = the selected expert indices for the
-    /// tokens in this decode batch (flattened row-major `[n_expert_used, n_tokens]`).
-    fn observe(&self, layer: u32, experts: &[i32]);
+    /// tokens in this decode batch (flattened row-major `[n_expert_used, n_tokens]`);
+    /// `n_expert_used` = the row width, so a consumer can unpack `experts` into per-token
+    /// rows (`experts[t*n_expert_used .. (t+1)*n_expert_used]`) for cross-layer trajectory
+    /// capture. `hits`-only consumers ignore it and tally the flat slice.
+    fn observe(&self, layer: u32, experts: &[i32], n_expert_used: usize);
 }
 
 /// Parse the block index from a `ffn_moe_topk` node name. llama.cpp's graph callback
@@ -687,7 +690,9 @@ unsafe extern "C" fn expert_eval_cb(
         0,
         count * std::mem::size_of::<i32>(),
     );
-    bridge.observer.observe(layer, &buf);
+    // ne0 = n_expert_used (the row width); pass it so the observer can unpack per-token
+    // rows for cross-layer trajectory capture. ne0 > 0 guaranteed by the guard above.
+    bridge.observer.observe(layer, &buf, ne0 as usize);
     true
 }
 
@@ -1288,14 +1293,14 @@ mod tests {
             seen: Mutex<Vec<(u32, Vec<i32>)>>,
         }
         impl ExpertObserver for RecordingObserver {
-            fn observe(&self, layer: u32, experts: &[i32]) {
+            fn observe(&self, layer: u32, experts: &[i32], _n_expert_used: usize) {
                 self.seen.lock().unwrap().push((layer, experts.to_vec()));
             }
         }
         let obs = RecordingObserver::default();
         // Two tokens, top-2 at layer 5 (experts [3,7] then [3,1], flattened), then layer 6.
-        obs.observe(5, &[3, 7, 3, 1]);
-        obs.observe(6, &[0, 2]);
+        obs.observe(5, &[3, 7, 3, 1], 2);
+        obs.observe(6, &[0, 2], 2);
         let seen = obs.seen.lock().unwrap();
         assert_eq!(seen.as_slice(), &[(5, vec![3, 7, 3, 1]), (6, vec![0, 2])]);
     }
