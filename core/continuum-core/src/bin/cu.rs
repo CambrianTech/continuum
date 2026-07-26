@@ -59,6 +59,9 @@ async fn run() -> Result<(), String> {
             reboot(force).await
         }
         "stop" => stop().await,
+        // Standalone #194 check: prove the RUNNING core is built from current HEAD,
+        // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
+        "deploy-verify" | "verify" => verify_deployed_build(),
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
@@ -439,12 +442,13 @@ async fn reboot(force: bool) -> Result<(), String> {
 }
 
 /// Prove the running core is built from the current git HEAD — the honest half of "reboot
-/// succeeded". Asks the on-disk server binary (which start-server.sh just built and launched)
-/// for its embedded build SHA and compares it to HEAD. A mismatch means the build did NOT pick
-/// up your latest commit (a cache no-op or a failed compile that left a stale binary) — exactly
-/// the #194 trap that turned a whole session into ghost-hunting. Skips (with a warning) only
-/// when it genuinely can't check (not a git tree, or an older server binary without the flag),
-/// never silently passing a known mismatch.
+/// succeeded". Resolves the ACTUALLY-RUNNING core from its live pid (not a same-dir sibling of
+/// cu, which can be a stale different-profile leftover — see `running_core_binary`) and asks
+/// THAT binary for its embedded build SHA, comparing it to HEAD. A mismatch means the build did
+/// NOT pick up your latest commit (a cache no-op or a failed compile that left a stale binary) —
+/// exactly the #194 trap that turned a whole session into ghost-hunting. Skips (with a warning)
+/// only when it genuinely can't check (not a git tree, no running core, or an older server binary
+/// without the flag), never silently passing a known mismatch.
 fn verify_deployed_build() -> Result<(), String> {
     let expected = match git_head_short_sha() {
         Some(s) => s,
@@ -453,10 +457,10 @@ fn verify_deployed_build() -> Result<(), String> {
             return Ok(());
         }
     };
-    let server = match server_binary_beside_cu() {
+    let server = match running_core_binary() {
         Some(p) => p,
         None => {
-            eprintln!("⚠ deploy-verify skipped: could not locate continuum-core-server next to cu");
+            eprintln!("⚠ deploy-verify skipped: no running continuum-core-server found (cannot resolve the live process image to verify)");
             return Ok(());
         }
     };
@@ -503,10 +507,32 @@ fn git_head_short_sha() -> Option<String> {
 
 /// The `continuum-core-server` binary sitting next to this `cu` in the target dir — the one
 /// start-server.sh builds and launches. `None` if it can't be resolved.
-fn server_binary_beside_cu() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let server = exe.parent()?.join("continuum-core-server");
-    server.exists().then_some(server)
+/// Path to the executable image of the ACTUALLY-RUNNING core, resolved from its live
+/// pid — NOT "the server binary next to cu". cu and the core can be different build
+/// profiles: the deploy defaults to `debug` (fast-iterate) while a stale, hand-invoked
+/// `release/cu` would otherwise verify a stale `release/continuum-core-server` LEFTOVER
+/// that is not the running process at all (observed 2026-07-25 — the guard cried
+/// "mismatch 9e7947b4" about an 11:00 release leftover with zero memory/* symbols while
+/// the running `debug` core was current HEAD). Verifying a binary that isn't running is
+/// the #194 trap inverted: it can false-positive on a fresh deploy, and — worse — pass a
+/// stale one. Resolve the real process image and check THAT.
+fn running_core_binary() -> Option<std::path::PathBuf> {
+    let pid = running_core_pids().into_iter().next()?;
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS/BSD have no /proc; `ps -o comm=` prints the full executable path.
+        let out = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!path.is_empty()).then(|| std::path::PathBuf::from(path))
+    }
 }
 
 /// PIDs of live training runs (`mlx_lm` trainers spawned by the MLX adapter) —
