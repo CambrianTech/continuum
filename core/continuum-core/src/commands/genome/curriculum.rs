@@ -197,6 +197,7 @@ mod tests {
             answer: String::new(),
             world_state: String::new(),
             acts: 1,
+            source: crate::cognition::experience::ExperienceSource::Eval,
         }
     }
 

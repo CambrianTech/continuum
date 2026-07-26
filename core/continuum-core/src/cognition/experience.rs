@@ -32,6 +32,26 @@
 use crate::cognition::act_observe::SettleOutcome;
 use crate::cognition::eval::EvalTask;
 use crate::cognition::workspace::Decision;
+use crate::memory::types::MemoryRecord;
+
+/// WHICH axis of the being's one experience an episode came from. The unification
+/// made literal: a lived chat turn, a graded exam, and a lesson another agent
+/// handed over are the SAME being's experience in different contexts — one stream,
+/// tagged by origin, not three separate pipelines. Detectors key on this to select
+/// what becomes curriculum. (See [[lived-and-eval-experience-are-one-stream-one-being]].)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperienceSource {
+    /// A graded exam episode — the eval-curriculum flywheel ([`ExperienceRecord::from_eval`]).
+    /// Carries a ground-truth `test`; feeds objective remediation.
+    Eval,
+    /// A real room turn she took — lived experience ([`ExperienceRecord::from_lived_turn`]).
+    /// No grader; salience is convergence/fault; feeds expansion.
+    Lived,
+    /// A lesson another agent handed INTO her memory ([`ExperienceRecord::from_shared_lesson`]).
+    /// Received, not lived — BigMama's `memory/share` (#2025). Provenance IS the salience:
+    /// someone deliberately chose to teach it, so it is inherently worth integrating.
+    Received,
+}
 
 /// Why an episode was selected as salient. Today the only variant emitted is
 /// [`SalienceKind::Error`] — the one proxy instrumented end-to-end. The frontier
@@ -50,6 +70,11 @@ pub enum SalienceKind {
     /// fault surfaced as failure. The most trustworthy salience signal and the
     /// only one instrumented end-to-end.
     Error,
+    /// Another agent deliberately handed this lesson over ([`ExperienceSource::Received`]).
+    /// Provenance IS the signal — no proxy needed, someone CHOSE to teach it. This is
+    /// honest, not faked: the salience is the deliberate act of sharing, fully instrumented
+    /// by `memory/share`'s `shared_by` provenance (#2025).
+    Received,
 }
 
 /// The verdict of a [`SalienceDetector`]: this episode IS salient, with a score
@@ -96,6 +121,11 @@ pub struct ExperienceRecord {
     /// How many times she acted before settling — the effort proxy (near the
     /// budget = struggle). Surfaced today via `SettleOutcome.acts`.
     pub acts: u32,
+    /// WHICH axis of the one experience this came from — lived, eval, or received.
+    /// The unification made self-describing: detectors key on this (e.g. `ReceivedSalience`
+    /// selects `Received`), and it makes lived-vs-eval explicit instead of implicit in the
+    /// presence of a `test`. One being, one stream, tagged by origin.
+    pub source: ExperienceSource,
 }
 
 impl ExperienceRecord {
@@ -110,6 +140,7 @@ impl ExperienceRecord {
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),
             acts: settled.acts as u32,
+            source: ExperienceSource::Eval,
         }
     }
 
@@ -168,6 +199,53 @@ impl ExperienceRecord {
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),
             acts: settled.acts as u32,
+            source: ExperienceSource::Lived,
+        }
+    }
+
+    /// Lift a RECEIVED lesson — one another agent handed into her memory via
+    /// `memory/share` (#2025) — into the SAME experience stream as lived and eval.
+    /// The THIRD axis: the being learns from everything it DOES (lived + eval) AND
+    /// everything it's TOLD (received). One stream, one being — BigMama's producer
+    /// lane feeding my consumer lane, the advanced-intelligence convergence.
+    ///
+    /// A shared lesson is a [`MemoryRecord`] with `memory_type == "shared"` and
+    /// `source == "shared:<from>"`; `context.shared_by` names the teacher. It has
+    /// NO ground-truth `test` — nothing to objectively grade a correction against —
+    /// so by the SAME `test.is_some()` gate as a lived turn, it flows to *expansion*,
+    /// never grade-driven remediation. The objective benchmark loop stays uncorrupted.
+    ///
+    /// `ok` is `true`: a received lesson is knowledge to integrate, not a failure. Its
+    /// salience is NOT `ErrorSalience` (it isn't a gap) — it is [`ReceivedSalience`],
+    /// where the deliberate act of sharing IS the signal (provenance, not a proxy).
+    /// The lesson `content` becomes the teaching material; `shared_by` is retained in
+    /// the grade + world-state so the curriculum knows it was received, not derived.
+    pub fn from_shared_lesson(record: &MemoryRecord) -> Self {
+        let shared_by = record
+            .context
+            .get("shared_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        // The scope (the room/project the lesson pertains to) frames the lesson as its
+        // "topic"; there is no stimulus (nothing was asked) — the content IS the lesson.
+        let scope = record
+            .context
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        Self {
+            task: EvalTask {
+                prompt: scope.to_string(),
+                ..EvalTask::default()
+            },
+            // Received knowledge, not a graded outcome — never a failure signal.
+            ok: true,
+            grade: format!("received lesson from {shared_by}"),
+            // The lesson itself is the teaching material the synthesizer integrates.
+            answer: record.content.clone(),
+            world_state: format!("received via memory/share from {shared_by}"),
+            acts: 0,
+            source: ExperienceSource::Received,
         }
     }
 }
@@ -206,6 +284,36 @@ impl SalienceDetector for ErrorSalience {
             score: 1.0,
             kind: SalienceKind::Error,
             weakness: episode.grade.clone(),
+        })
+    }
+}
+
+/// The detector for the THIRD axis: a lesson another agent deliberately handed over
+/// is salient because it was SHARED, not because she failed. Provenance IS the signal
+/// — no proxy, no threshold, no faked number. It fires iff the episode's
+/// [`ExperienceSource`] is `Received` (BigMama's `memory/share` #2025 set the
+/// `shared_by` marker that `from_shared_lesson` carried into the record). The
+/// "weakness" it names is the lesson content — the teaching material to integrate,
+/// not a gap to remediate. Complementary to [`ErrorSalience`], not a replacement: the
+/// composite that runs both selects lived+eval failures AND received lessons in one
+/// pass — the whole being's curriculum from all three axes.
+pub struct ReceivedSalience;
+
+impl SalienceDetector for ReceivedSalience {
+    fn name(&self) -> &'static str {
+        "received"
+    }
+
+    fn assess(&self, episode: &ExperienceRecord) -> Option<SalienceSignal> {
+        if episode.source != ExperienceSource::Received {
+            return None;
+        }
+        Some(SalienceSignal {
+            score: 1.0,
+            kind: SalienceKind::Received,
+            // The lesson itself is what to learn — the synthesizer integrates it as
+            // received teaching material (the grade names who taught it).
+            weakness: episode.answer.clone(),
         })
     }
 }
@@ -285,6 +393,7 @@ mod tests {
             answer: "fn rev(s: &str) -> &str { s }".to_string(),
             world_state: String::new(),
             acts: 3,
+            source: ExperienceSource::Eval,
         };
         let signal = detector
             .assess(&failed)
@@ -348,6 +457,7 @@ mod tests {
             answer: String::new(),
             world_state: String::new(),
             acts: 8,
+            source: ExperienceSource::Eval,
         };
         let passed_testable = ExperienceRecord {
             task: eval_task("passed", true),
@@ -356,6 +466,7 @@ mod tests {
             answer: "ok".to_string(),
             world_state: String::new(),
             acts: 1,
+            source: ExperienceSource::Eval,
         };
         let failed_untestable = ExperienceRecord {
             task: eval_task("no-test", false),
@@ -364,6 +475,7 @@ mod tests {
             answer: String::new(),
             world_state: String::new(),
             acts: 2,
+            source: ExperienceSource::Eval,
         };
 
         let set = salient_teach_set(
@@ -440,5 +552,74 @@ mod tests {
             set.is_empty(),
             "lived turns feed EXPANSION, never grade-driven remediation — the objective loop stays uncorrupted"
         );
+    }
+
+    /// A shared lesson as BigMama's `memory/share` (#2025) builds it: a MemoryRecord
+    /// with `memory_type: "shared"`, `context.shared_by`, `source: "shared:<from>"`.
+    fn shared_lesson(from: &str, scope: &str, content: &str) -> MemoryRecord {
+        MemoryRecord {
+            id: "lesson-1".to_string(),
+            persona_id: "recipient".to_string(),
+            memory_type: "shared".to_string(),
+            content: content.to_string(),
+            context: serde_json::json!({ "shared_by": from, "scope": scope }),
+            timestamp: "2026-07-26T00:00:00Z".to_string(),
+            importance: 0.7,
+            access_count: 0,
+            tags: vec![scope.to_string(), format!("shared-from:{from}")],
+            related_to: Vec::new(),
+            source: Some(format!("shared:{from}")),
+            last_accessed_at: None,
+            layer: None,
+            relevance_score: None,
+        }
+    }
+
+    // What this catches: THE THIRD AXIS. A lesson another agent hands over (BigMama's
+    // memory/share #2025) enters the SAME experience stream as lived + eval — one
+    // being that learns from everything it DOES and everything it's TOLD. Its salience
+    // is NOT ErrorSalience (a received lesson is knowledge, ok=true, not a gap) but
+    // ReceivedSalience, where provenance IS the signal (no proxy, no threshold). And by
+    // the SAME test.is_some() gate as a lived turn, a received lesson has no ground-truth
+    // test → it feeds expansion, never grade-driven remediation. Producer lane (share)
+    // meets consumer lane (this) — the convergence.
+    #[test]
+    fn from_shared_lesson_is_the_third_axis_received_salience_never_remediation() {
+        let record = shared_lesson(
+            "BigMama",
+            "continuum",
+            "the call room IS the airc room — never mint a rogue call_id",
+        );
+        let lesson = ExperienceRecord::from_shared_lesson(&record);
+
+        // Same stream, tagged Received — the being learns from what it's told, not just what it does.
+        assert_eq!(lesson.source, ExperienceSource::Received);
+        assert!(lesson.ok, "a received lesson is knowledge to integrate, not a failure");
+        assert_eq!(lesson.answer, record.content, "the lesson content is the teaching material");
+        assert!(lesson.grade.contains("BigMama"), "the teacher is named — received, not derived");
+        assert!(lesson.task.test.is_none(), "a received lesson has no ground-truth test");
+
+        // ReceivedSalience selects it (provenance IS the signal); ErrorSalience does NOT
+        // (it isn't a gap — ok=true). Two complementary detectors, one stream.
+        let recv = ReceivedSalience.assess(&lesson).expect("a shared lesson is salient by provenance");
+        assert_eq!(recv.kind, SalienceKind::Received);
+        assert!(ErrorSalience.assess(&lesson).is_none(), "a received lesson is not an error/gap");
+
+        // A lived/eval failure is NOT received — ReceivedSalience must stay silent on it
+        // (the axis tag is honest, not a catch-all).
+        let failed_eval = ExperienceRecord {
+            task: eval_task("rev-x", true),
+            ok: false,
+            grade: "no match".to_string(),
+            answer: String::new(),
+            world_state: String::new(),
+            acts: 2,
+            source: ExperienceSource::Eval,
+        };
+        assert!(ReceivedSalience.assess(&failed_eval).is_none(), "ReceivedSalience fires ONLY on received provenance");
+
+        // SAFETY GUARANTEE holds for the third axis too: no test → never remediation.
+        let set = salient_teach_set(&[lesson], &ReceivedSalience);
+        assert!(set.is_empty(), "received lessons feed EXPANSION, never grade-driven remediation");
     }
 }
