@@ -329,6 +329,19 @@ impl SemanticDistiller {
             persona_id: persona_id.map(|id| id.to_string()),
         };
 
+        // Take a NON-directed serving lane before the dream's model call. Dream
+        // distillation is InferenceHeavy background work, but UNGUARDED it called
+        // the adapter directly and grabbed a physical llama decode lane WITHOUT
+        // counting against the non-directed budget — silently bypassing the #139
+        // reservation that always holds one lane for a directed chat turn. A
+        // directed reply then queued INSIDE llama behind the dream, so an idle
+        // persona looked comatose and unresponsive (glass-boxed live 2026-07-26:
+        // 4 personas dreamed continuously 00:00→05:03, no reply to direct chat).
+        // Acquiring the permit here caps ALL dream inference at MAX_LANES-1 and
+        // guarantees a waiting chat turn wins the lane — the same guarantee the
+        // turn path already relies on (llm_deliberation_faculty acquires it too).
+        // Held across the generate call, released on drop.
+        let _lane = crate::cognition::resource_admission::acquire_serving_lane(false).await;
         let response = self
             .adapter
             .generate_text(request)
@@ -468,6 +481,22 @@ const REVIEW_ONLY_BATCH: usize = 6;
 /// re-judging a conclusion made minutes ago is churn, not hygiene. Mechanical
 /// age gate (selection), never judgment.
 const REVIEW_MIN_AGE_MS: u64 = 10 * 60 * 1000;
+
+/// Minimum wall-clock rest between two quiet-day REVIEW-ONLY passes for the SAME
+/// persona. Belief hygiene is a gentle background trickle, not a grind: without
+/// this, a persona with a large belief store (Atlas held 4,336 engrams) drains
+/// `REVIEW_ONLY_BATCH` at a time with NO pause, so the governor re-ticks the
+/// drained-but-not-empty queue every few seconds and the review runs back-to-back
+/// for HOURS — a single-lane inference storm that starves reactive responding and
+/// makes an idle persona look comatose (glass-boxed live 2026-07-26: 4 personas
+/// dreamed continuously 00:00→05:03, unresponsive to chat; compounded by the
+/// in-memory `reviewed` set resetting on each of ~6 dev restarts → full re-review
+/// every boot). This gate does NOT touch consolidation of FRESH experience (that
+/// stays ungated — real learning is never throttled); it only paces the
+/// quiet-day hygiene review so the lane stays free for the being to respond and
+/// act. Code, not env (concurrency guide). [[the-fade-is-necessary...]] — the
+/// fade is right, but it must trickle, never flood.
+const REVIEW_ONLY_COOLDOWN_MS: u64 = 5 * 60 * 1000;
 /// Default minimum cluster size — below this an episode is not yet a pattern
 /// worth generalizing into a fact.
 const DEFAULT_MIN_CLUSTER: usize = 2;
@@ -539,6 +568,10 @@ pub struct DreamConsolidationRegion {
     /// re-reviews from the oldest — harmless (demotion is idempotent, admission
     /// dedups) and self-healing.
     reviewed: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    /// Per-persona wall-clock ms of the last quiet-day review-only pass. The
+    /// [`REVIEW_ONLY_COOLDOWN_MS`] rest gate reads this so belief hygiene trickles
+    /// instead of grinding the serving lane back-to-back (see that const's doc).
+    last_review_ms: Arc<Mutex<HashMap<Uuid, u64>>>,
 }
 
 /// Process-global handle to the ONE live dream region, installed at the ipc
@@ -568,6 +601,7 @@ impl DreamConsolidationRegion {
             consolidated: Arc::new(Mutex::new(HashMap::new())),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             reviewed: Arc::new(Mutex::new(HashMap::new())),
+            last_review_ms: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -709,6 +743,18 @@ impl DreamConsolidationRegion {
         reflector: &PersonaReflector,
         persona_id: Uuid,
     ) -> Option<TickOutcome> {
+        // Rest gate: belief hygiene trickles, never grinds. If this persona ran a
+        // review-only pass within the cooldown, sleep instead of launching another
+        // — the lane stays free for reactive responding + real work rather than
+        // a back-to-back review storm (see REVIEW_ONLY_COOLDOWN_MS). The first
+        // pass (no prior timestamp) is always allowed.
+        let now = now_ms();
+        if let Some(&last) = self.last_review_ms.lock().unwrap().get(&persona_id) {
+            if now.saturating_sub(last) < REVIEW_ONLY_COOLDOWN_MS {
+                return None;
+            }
+        }
+
         let already = self
             .reviewed
             .lock()
@@ -716,7 +762,7 @@ impl DreamConsolidationRegion {
             .get(&persona_id)
             .cloned()
             .unwrap_or_default();
-        let cutoff = now_ms().saturating_sub(REVIEW_MIN_AGE_MS);
+        let cutoff = now.saturating_sub(REVIEW_MIN_AGE_MS);
         let beliefs = reflector.admission.semantic_beliefs_oldest_excluding(
             &already,
             cutoff,
