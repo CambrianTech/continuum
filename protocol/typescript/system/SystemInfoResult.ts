@@ -10,6 +10,6 @@ export type SystemInfoResult = {
  */
 version: string, 
 /**
- * OS process id of the running core — handy for ops (`cu stop` targets it).
+ * OS process id of the running core — handy for ops (`continuum stop` targets it).
  */
 pid: number, };

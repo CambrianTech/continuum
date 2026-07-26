@@ -1,7 +1,7 @@
 fn main() {
     // Deploy-verification (#194). Embed the git commit this binary was built from as
     // `CONTINUUM_BUILD_GIT_SHA`, so the running service can PROVE which source it is and
-    // `cu reboot` can fail loud when a build silently ran stale (a reboot that reports
+    // `continuum reboot` can fail loud when a build silently ran stale (a reboot that reports
     // success while running an old binary is a lie that turns every test into a ghost hunt).
     // Watch `.git/logs/HEAD` (the reflog — updated on every commit/checkout) so the SHA
     // refreshes exactly when HEAD moves, without forcing a rebuild on every `cargo build`.

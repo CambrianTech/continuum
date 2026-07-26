@@ -10,6 +10,9 @@ re-forgetting across amnesia resets by making relevance-recall **automatic**.
   the exact moment an agent would otherwise re-forget.
 - **`/remember <lesson>`** — store a durable lesson (agent-origin engram).
 - **`/recall <query>`** — explicit relevance search.
+- **`/share <recipient> <lesson>`** — hand a lesson directly to another agent's memory
+  (engram handoff / telepathy): lands in THEIR corpus with shared-by provenance, surfaces
+  in their recall, tagged received-from-you.
 
 ## Architecture
 All three shell to ONE seam: `ctm memory {store,recall}` (the runtime-agnostic

@@ -741,7 +741,7 @@ if command -v tailscale &>/dev/null; then
 fi
 echo ""
 echo -e "  ${YELLOW}Start:${NC}  npm start"
-echo -e "  ${YELLOW}Test:${NC}   cu ping"
+echo -e "  ${YELLOW}Test:${NC}   continuum ping"
 echo -e "  ${YELLOW}Config:${NC} $CONFIG_FILE"
 echo ""
 

@@ -203,8 +203,33 @@ impl PersonaMemoryManager {
             None => None,
         };
 
+        let had_query_embedding = query_embedding.is_some();
+
+        // Candidate-vector backfill (only when the query itself embedded — a real
+        // signal to rank by). The semantic layer scores the query against STORED
+        // memory vectors, but agent-authored memories are written WITHOUT one (the
+        // embedding is computed here, not at write) and a cold hydrate carries
+        // none — so `memories_with_embeddings()` is empty and SemanticRecallLayer
+        // no-ops, leaving recall in importance/recency order that IGNORES the query.
+        // That is the exact "same off-topic memories for every query" bug the
+        // agent-memory bridge hit (2026-07). Embed the missing vectors NOW — async,
+        // content-addressed-cached, OUTSIDE the sync recall and outside any lock —
+        // so the semantic layer has vectors to rank against. First recall per
+        // persona pays it; the cache makes repeats free.
+        if had_query_embedding {
+            let embedded = self.ensure_memory_embeddings(&corpus_lock).await;
+            if embedded > 0 {
+                crate::log_info!(
+                    "module",
+                    "memory_recall",
+                    "backfilled {embedded} candidate memory embeddings for {persona_id} (embedder={}) — semantic layer can now rank",
+                    self.embedding.id()
+                );
+            }
+        }
+
         // Phase 1: recall with read lock (pure sync compute on in-memory corpus)
-        let response = {
+        let (response, memories_with_vectors) = {
             let corpus = corpus_lock.read().map_err(|e| {
                 MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
             })?;
@@ -216,9 +241,27 @@ impl PersonaMemoryManager {
                 max_results_per_layer: (req.max_results / 2).max(5),
             };
 
-            self.recall_engine
-                .recall_parallel(&corpus, &query, req.max_results)
+            let resp = self
+                .recall_engine
+                .recall_parallel(&corpus, &query, req.max_results);
+            let vec_count = corpus.memories_with_embeddings().len();
+            (resp, vec_count)
         }; // read lock dropped here
+
+        // Never silent ([[reliability-is-it-works-not-that-it-reports-failure-well]]): if a
+        // query was given but the semantic layer could not contribute — the query embedding
+        // was absent/from a lexical provider, or no memory carries a vector — then recall
+        // degraded to NON-semantic order (the layers ignore query text). Say so LOUD so it
+        // cannot hide as "working recall" (2026-07-26: this is the exact trap the agent-memory
+        // bridge hit — off-topic results looked like working recall).
+        if req.query_text.is_some() && (!had_query_embedding || memories_with_vectors == 0) {
+            crate::log_info!(
+                "module",
+                "memory_recall",
+                "⚠ SEMANTIC RECALL DEGRADED → non-semantic for {persona_id}: embedder={}, memories_with_vectors={memories_with_vectors}, query_embedded={had_query_embedding}. Results are NOT relevance-ranked — wire a neural embedder + populate memory vectors.",
+                self.embedding.id()
+            );
+        }
 
         // Phase 2: mark accessed with write lock (testing effect — retrieval strengthens memory)
         if !response.memories.is_empty() {
@@ -230,6 +273,84 @@ impl PersonaMemoryManager {
         }
 
         Ok(response)
+    }
+
+    /// Ensure candidate memories carry an embedding so [`recall::SemanticRecallLayer`]
+    /// can rank them. Snapshots `(id, content)` for every memory MISSING a vector
+    /// (read lock), embeds each via the manager's embedder (async, content-addressed
+    /// cache — OUTSIDE any lock, never held across the await), then writes the vectors
+    /// back (write lock). Returns the number newly embedded.
+    ///
+    /// In-memory only: the durable store round-trips `CorpusMemory.embedding`, but
+    /// agent memories are currently written with `None`, so this is the on-demand
+    /// backfill that gives the semantic layer something to score until embed-on-write
+    /// lands. A no-op once every memory has a vector (a cheap read-lock scan), so it
+    /// is safe to call on every recall. Content is immutable, so a computed vector
+    /// never goes stale.
+    async fn ensure_memory_embeddings(
+        &self,
+        corpus_lock: &Arc<RwLock<MemoryCorpus>>,
+    ) -> usize {
+        // Bound the work per recall so a SessionStart hook stays responsive:
+        // - MAX_PER_CALL caps how many missing memories we embed in one recall, so a
+        //   large cold corpus is embedded incrementally across several recalls
+        //   (amortized) instead of blocking one call on hundreds of GPU forward
+        //   passes. Content is immutable, so partial progress never goes stale.
+        // - FAIL_FAST: if the first handful of embeds all come back empty, the
+        //   embedder is DOWN/degenerate (e.g. the Qwen3 GGUF returning zero vectors
+        //   under GPU-OOM). Bail immediately rather than grind every remaining
+        //   candidate through a failing forward pass — the loud-degrade signal in
+        //   the caller already reports the resulting non-semantic recall.
+        const MAX_PER_CALL: usize = 64;
+        const FAIL_FAST: usize = 3;
+
+        // 1. Snapshot the memories that lack a vector (read lock, dropped before await).
+        let missing: Vec<(String, String)> = {
+            let corpus = match corpus_lock.read() {
+                Ok(c) => c,
+                Err(_) => return 0,
+            };
+            corpus
+                .memories
+                .iter()
+                .filter(|m| !corpus.memory_embeddings.contains_key(&m.id))
+                .take(MAX_PER_CALL)
+                .map(|m| (m.id.clone(), m.content.clone()))
+                .collect()
+        };
+        if missing.is_empty() {
+            return 0;
+        }
+
+        // 2. Embed each missing memory's content (async, cached) — no lock held.
+        //    An empty vector = "no signal" (embedder down / degenerate); skip it so
+        //    the memory is retried on a later recall rather than cached as zeros.
+        //    Fail fast if the embedder is clearly down (leading run of empties).
+        let mut embedded: Vec<(String, Vec<f32>)> = Vec::with_capacity(missing.len());
+        let mut consecutive_empty = 0usize;
+        for (id, content) in missing {
+            let v = self.embedding.embed(&content).await;
+            if v.is_empty() {
+                consecutive_empty += 1;
+                if embedded.is_empty() && consecutive_empty >= FAIL_FAST {
+                    break; // embedder is down — stop grinding failing forward passes
+                }
+            } else {
+                consecutive_empty = 0;
+                embedded.push((id, v));
+            }
+        }
+
+        // 3. Write the vectors back (write lock).
+        let n = embedded.len();
+        if n > 0 {
+            if let Ok(mut corpus) = corpus_lock.write() {
+                for (id, v) in embedded {
+                    corpus.memory_embeddings.insert(id, v);
+                }
+            }
+        }
+        n
     }
 
     // ─── Consciousness Context ────────────────────────────────────────────────
@@ -443,6 +564,95 @@ mod tests {
         assert_eq!(resp.timeline_event_count, 1);
         assert_eq!(resp.embedded_event_count, 0);
         assert!(resp.load_time_ms >= 0.0);
+    }
+
+    // what this catches: memories written WITHOUT a vector (the agent-memory
+    // bridge's `remember` path sets embedding: None) get embedded on demand so
+    // SemanticRecallLayer has something to rank against, instead of no-op'ing into
+    // non-semantic importance/recency order — the exact "same off-topic memories
+    // for every query" bug the bridge hit (2026-07). Idempotent once populated.
+    #[tokio::test]
+    async fn ensure_memory_embeddings_backfills_missing_vectors() {
+        let manager = test_manager();
+        let mut m_none1 = make_corpus_memory("m1", "alpha lesson", 0.5);
+        m_none1.embedding = None;
+        let mut m_none2 = make_corpus_memory("m2", "beta lesson", 0.5);
+        m_none2.embedding = None;
+        let m_has = make_corpus_memory("m3", "gamma lesson", 0.5); // already Some(vec)
+        manager.load_corpus("p1", vec![m_none1, m_none2, m_has], vec![]);
+
+        let corpus_lock = manager.get_corpus("p1").unwrap();
+        // Precondition: only the pre-embedded memory carries a vector.
+        assert_eq!(
+            corpus_lock.read().unwrap().memories_with_embeddings().len(),
+            1
+        );
+
+        // Backfill embeds the two missing (StubEmbeddingProvider yields a real vec).
+        let n = manager.ensure_memory_embeddings(&corpus_lock).await;
+        assert_eq!(n, 2, "both unembedded memories are backfilled");
+        assert_eq!(
+            corpus_lock.read().unwrap().memories_with_embeddings().len(),
+            3,
+            "every memory now carries a vector the semantic layer can rank"
+        );
+
+        // Idempotent: a second pass finds nothing missing (cheap read-lock scan).
+        let n2 = manager.ensure_memory_embeddings(&corpus_lock).await;
+        assert_eq!(n2, 0, "no re-embedding once every memory has a vector");
+    }
+
+    // A stand-in for a DOWN / degenerate embedder (e.g. the Qwen3 GGUF returning
+    // zero vectors under GPU-OOM): every embed comes back empty. Counts calls so
+    // the test can prove the backfill bails instead of grinding the whole corpus.
+    struct DownEmbeddingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait]
+    impl EmbeddingProvider for DownEmbeddingProvider {
+        fn id(&self) -> &str {
+            "down"
+        }
+        fn dim(&self) -> usize {
+            384
+        }
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Vec::new() // "no signal"
+        }
+    }
+
+    // what this catches: when the embedder is down (all embeds empty), the backfill
+    // FAILS FAST after a few attempts instead of grinding every candidate through a
+    // failing forward pass — so a SessionStart recall over a large cold corpus stays
+    // responsive rather than hanging the hook. (The caller's loud-degrade signal
+    // still reports the resulting non-semantic recall.)
+    #[tokio::test]
+    async fn ensure_memory_embeddings_fails_fast_when_embedder_down() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let manager = PersonaMemoryManager::new(Arc::new(DownEmbeddingProvider {
+            calls: calls.clone(),
+        }));
+        // 20 memories, none embedded.
+        let mems: Vec<_> = (0..20)
+            .map(|i| {
+                let mut m = make_corpus_memory(&format!("m{i}"), "content", 0.5);
+                m.embedding = None;
+                m
+            })
+            .collect();
+        manager.load_corpus("p1", mems, vec![]);
+        let corpus_lock = manager.get_corpus("p1").unwrap();
+
+        let n = manager.ensure_memory_embeddings(&corpus_lock).await;
+        assert_eq!(n, 0, "nothing embedded when the embedder is down");
+        // Bailed after the fail-fast threshold — did NOT attempt all 20.
+        let attempted = calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            attempted <= 4,
+            "should bail after ~3 empty embeds, not grind all 20 (attempted {attempted})"
+        );
     }
 
     #[tokio::test]

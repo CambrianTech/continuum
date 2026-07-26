@@ -6,9 +6,9 @@
 //! script hand-building `{"hookSpecificOutput":{...}}` in shell needs `jq`/`python` to
 //! escape newlines + quotes in the recalled text — fragile, and it violates the no-python
 //! / no-hand-built-wire-format rules. The ROBUST answer is the substrate emitting the
-//! envelope through serde, where escaping is correct by construction. `cu` prints a
-//! command's raw result JSON (`cu.rs`: `to_string_pretty(&result)`), so
-//! `cu memory/recall-hook` writes exactly this envelope to stdout and the hook pipes it
+//! envelope through serde, where escaping is correct by construction. `continuum` prints a
+//! command's raw result JSON (`continuum.rs`: `to_string_pretty(&result)`), so
+//! `continuum memory/recall-hook` writes exactly this envelope to stdout and the hook pipes it
 //! straight through.
 //!
 //! A thin PROJECTION over [`super::multi_layer_recall`] — it reuses
@@ -35,6 +35,24 @@ fn default_header() -> String {
     "## Relevant memories".to_string()
 }
 
+fn default_max_chars_per_memory() -> usize {
+    400
+}
+
+/// Cap one recalled memory's rendered text to `max_chars` (0 = no cap), truncating on a
+/// char boundary and appending `…`. The per-bullet complement to the caller's total budget:
+/// a low `max_results` still floods if each memory is a verbose multi-KB body, so bound the
+/// length too — critical for the `compact` source, where re-injection must not refill the
+/// context compaction just freed.
+fn cap_memory_text(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if max_chars == 0 || text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    format!("{}…", truncated.trim_end())
+}
+
 /// Params for `memory/recall-hook`. Mirror of `memory/multi-layer-recall`'s recall inputs
 /// (so the projection is 1:1) plus the markdown `header` for the injected block.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -58,6 +76,11 @@ pub struct MemoryRecallHookParams {
     /// Markdown header for the injected block.
     #[serde(default = "default_header")]
     pub header: String,
+    /// Cap on each recalled memory's rendered length (chars; 0 = uncapped). Bounds a
+    /// verbose memory so a low `max_results` still can't flood — the per-bullet complement
+    /// to the caller's total-char budget. Default 400.
+    #[serde(default = "default_max_chars_per_memory")]
+    pub max_chars_per_memory: usize,
 }
 
 /// The Claude Code SessionStart hook output envelope. Field names are the CC contract
@@ -132,7 +155,7 @@ crate::action_command! {
             let mut ctx = p.header.clone();
             for m in &resp.memories {
                 ctx.push_str("\n- ");
-                ctx.push_str(m.content.trim());
+                ctx.push_str(&cap_memory_text(&m.content, p.max_chars_per_memory));
             }
             ctx
         };
@@ -164,7 +187,7 @@ mod tests {
         let out = SessionStartHookOutput {
             hook_specific_output: HookSpecificOutput {
                 hook_event_name: "SessionStart".to_string(),
-                additional_context: "## Relevant memories\n- use cu, not ctm\n- a \"quoted\" bit"
+                additional_context: "## Relevant memories\n- use continuum, not ctm\n- a \"quoted\" bit"
                     .to_string(),
             },
         };
@@ -174,10 +197,29 @@ mod tests {
         assert!(json.contains("\"additionalContext\""), "context key: {json}");
         // The literal newline + quote are escaped by serde, not left raw — the fragility a
         // shell here-string / jq hand-build would have to get exactly right.
-        assert!(json.contains("\\n- use cu"), "newline escaped by serde: {json}");
+        assert!(json.contains("\\n- use continuum"), "newline escaped by serde: {json}");
         assert!(json.contains("\\\"quoted\\\""), "inner quotes escaped by serde: {json}");
         // Round-trips back to the same struct.
         let back: SessionStartHookOutput = serde_json::from_str(&json).unwrap();
         assert_eq!(back.hook_specific_output.hook_event_name, "SessionStart");
+    }
+
+    // what this catches: a verbose memory is bounded to the per-bullet cap (on a char
+    // boundary, ellipsized) so low max_results × long content can't flood a post-compact
+    // re-injection; a short memory and cap=0 pass through untouched. Multi-byte safe.
+    #[test]
+    fn cap_memory_text_bounds_verbose_and_passes_short() {
+        let long = "x".repeat(1000);
+        let capped = cap_memory_text(&long, 400);
+        assert_eq!(capped.chars().count(), 401, "400 chars + the … ellipsis");
+        assert!(capped.ends_with('…'));
+        // short memory: untouched (just trimmed), no ellipsis
+        assert_eq!(cap_memory_text("  brief lesson  ", 400), "brief lesson");
+        // cap = 0 ⇒ uncapped
+        assert_eq!(cap_memory_text(&long, 0), long);
+        // multi-byte content truncates on a char boundary without panicking
+        let emoji = "🧠".repeat(10);
+        let c = cap_memory_text(&emoji, 4);
+        assert!(c.starts_with("🧠🧠🧠🧠") && c.ends_with('…'));
     }
 }
