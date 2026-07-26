@@ -279,6 +279,140 @@ impl EmbeddingCache {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    /// Serialize the cache to a compact, dep-free binary snapshot at `path`
+    /// (atomic: write a sibling temp file, then rename). This is what lets a
+    /// content's vector survive a core restart — the difference between
+    /// re-embedding 375 memories (and re-fighting for VRAM) on every boot and a
+    /// warm cache that embeds each unique content ONCE, ever. Format, all
+    /// little-endian: `[u64 count]` then per entry `[u64 key][u32 dim][dim × f32]`.
+    /// Best-effort: the caller treats a failure as a warn, never fatal — a lost
+    /// snapshot just means the cache rebuilds by re-embedding.
+    pub fn snapshot_to(&self, path: &std::path::Path) -> std::io::Result<usize> {
+        use std::io::Write;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("bin.tmp");
+        let mut w = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        // Snapshot the keys first so the count matches the bytes even if the map
+        // grows during the write (a concurrent insert simply lands in the next
+        // snapshot). Iterating clones under DashMap's per-shard locks — brief.
+        let entries: Vec<(u64, Vec<f32>)> =
+            self.map.iter().map(|e| (*e.key(), e.value().clone())).collect();
+        w.write_all(&(entries.len() as u64).to_le_bytes())?;
+        for (key, vec) in &entries {
+            w.write_all(&key.to_le_bytes())?;
+            w.write_all(&(vec.len() as u32).to_le_bytes())?;
+            for f in vec {
+                w.write_all(&f.to_le_bytes())?;
+            }
+        }
+        w.flush()?;
+        drop(w);
+        std::fs::rename(&tmp, path)?;
+        Ok(entries.len())
+    }
+
+    /// Load a snapshot written by [`snapshot_to`] into the map (additive; honors
+    /// the [`EMBEDDING_CACHE_MAX`] cap; skips a truncated tail rather than
+    /// failing). A missing file is `Ok(0)` — first boot, nothing to warm from.
+    /// Returns the count loaded.
+    pub fn load_from(&self, path: &std::path::Path) -> std::io::Result<usize> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        let mut pos = 0usize;
+        let take = |pos: &mut usize, n: usize| -> Option<&[u8]> {
+            if *pos + n > bytes.len() {
+                return None;
+            }
+            let s = &bytes[*pos..*pos + n];
+            *pos += n;
+            Some(s)
+        };
+        let count = match take(&mut pos, 8) {
+            Some(b) => u64::from_le_bytes(b.try_into().unwrap()) as usize,
+            None => return Ok(0),
+        };
+        let mut loaded = 0usize;
+        for _ in 0..count {
+            if self.map.len() >= EMBEDDING_CACHE_MAX {
+                break;
+            }
+            let key = match take(&mut pos, 8) {
+                Some(b) => u64::from_le_bytes(b.try_into().unwrap()),
+                None => break, // truncated tail — keep what parsed
+            };
+            let dim = match take(&mut pos, 4) {
+                Some(b) => u32::from_le_bytes(b.try_into().unwrap()) as usize,
+                None => break,
+            };
+            let raw = match take(&mut pos, dim * 4) {
+                Some(b) => b,
+                None => break,
+            };
+            let vec: Vec<f32> = raw
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            self.map.insert(key, vec);
+            loaded += 1;
+        }
+        Ok(loaded)
+    }
+}
+
+/// Cadence for the embedding-cache snapshot — a background consolidator, so the
+/// slower end of the ladder (concurrency guide: 30s–5min). A crash loses at most
+/// this window of newly-embedded vectors, which simply re-embed on next use.
+const EMBEDDING_CACHE_FLUSH_SECS: u64 = 60;
+
+/// Warm the process-global embedding cache from `path` NOW (boot warm-start), then
+/// snapshot it every [`EMBEDDING_CACHE_FLUSH_SECS`] on its OWN tokio task — the
+/// RTOS shape (own task + `tokio::time::interval`, off every hot path; the file
+/// write itself is `spawn_blocking`). Best-effort throughout: a failed load or
+/// flush is a warn, never fatal. Call once at boot, inside the tokio runtime.
+pub fn spawn_embedding_cache_persistence(cache: Arc<EmbeddingCache>, path: std::path::PathBuf) {
+    match cache.load_from(&path) {
+        Ok(n) => crate::probe!(
+            class = "embedding.cache.loaded",
+            vectors = n,
+            "warmed embedding cache from durable snapshot — no re-embed for cached content"
+        ),
+        Err(e) => tracing::warn!(
+            target = "embedding_cache",
+            "embedding cache warm-load failed ({e}) — starting cold, will re-embed on demand"
+        ),
+    }
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(EMBEDDING_CACHE_FLUSH_SECS));
+        ticker.tick().await; // consume the immediate first tick
+        loop {
+            ticker.tick().await;
+            let cache = cache.clone();
+            let path = path.clone();
+            let result = tokio::task::spawn_blocking(move || cache.snapshot_to(&path)).await;
+            match result {
+                Ok(Ok(n)) => crate::probe!(
+                    class = "embedding.cache.flushed",
+                    vectors = n,
+                    "snapshotted embedding cache to durable store"
+                ),
+                Ok(Err(e)) => tracing::warn!(
+                    target = "embedding_cache",
+                    "embedding cache flush failed ({e}) — cache stays in-memory, retries next tick"
+                ),
+                Err(join) => tracing::warn!(
+                    target = "embedding_cache",
+                    "embedding cache flush task panicked ({join}) — skipping this tick"
+                ),
+            }
+        }
+    });
 }
 
 /// Process-global content-addressed embedding cache — the one place a message's
@@ -609,10 +743,149 @@ pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc
     Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
 }
 
+/// Resolve the recall embedder WITHOUT a chat adapter — for the GLOBAL memory
+/// manager (agent-memory bridge + hydrated corpora), which has no per-persona
+/// chat gateway to offer. Tries the dedicated in-process embed model (GPU, no
+/// HTTP hop), then the lexical floor. Same process-stable, probe-gated,
+/// LOUD-on-degrade contract as [`resolve_recall_embedder`]; it simply omits the
+/// chat-adapter `/v1/embeddings` rung (rung 2) that only a persona's own adapter
+/// can provide. Always returns a usable embedder — never errors, never panics.
+pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
+    let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+
+    if let Some((embed_adapter, gguf_id)) = local_embed_adapter() {
+        if let Some(provider) = try_neural_embedder(embed_adapter, &model).await {
+            crate::probe!(
+                class = "recall.embedder.resolved",
+                kind = "neural",
+                source = "in-process-llamacpp-global",
+                model = %model,
+                gguf = %gguf_id,
+                "global recall embedder = NEURAL (dedicated in-process Qwen3-Embedding)"
+            );
+            return provider;
+        }
+    }
+
+    crate::probe!(
+        class = "recall.embedder.resolved",
+        kind = "lexical",
+        source = "fallback-global",
+        model = %model,
+        "global recall embedder = LEXICAL — no in-process embed model serving; semantic recall DEGRADED to word-overlap"
+    );
+    Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+}
+
+/// A recall embedder that resolves its real backend LAZILY on first use, off the
+/// boot critical path. The global memory manager is constructed during boot,
+/// where NOTHING may gate the IPC socket bind on a GPU/gateway probe (the
+/// concurrency guide's non-negotiable — a probe here previously wedged boot).
+/// So the manager holds THIS: trivially cheap to construct, and on the first
+/// `embed` it resolves the dedicated in-process neural embedder via
+/// [`resolve_recall_embedder_local`] (probe-gated, LOUD-on-degrade), caches it
+/// **process-stably** (one embedding space for the whole process — a query and
+/// the stored vectors must live in the SAME space), and delegates. Every later
+/// call reuses the resolved provider; the resolution's cost (probe + ~16
+/// calibration embeds) is paid once, on the first real recall, never at boot.
+pub struct LazyRecallEmbedder {
+    resolved: tokio::sync::OnceCell<Arc<dyn EmbeddingProvider>>,
+}
+
+impl LazyRecallEmbedder {
+    pub fn new() -> Self {
+        Self {
+            resolved: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The resolved backend, resolving (once) on first call.
+    async fn backend(&self) -> &Arc<dyn EmbeddingProvider> {
+        self.resolved
+            .get_or_init(resolve_recall_embedder_local)
+            .await
+    }
+}
+
+impl Default for LazyRecallEmbedder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for LazyRecallEmbedder {
+    /// The resolved space id once known; a stable placeholder until first embed.
+    /// Only informational (degrade logging) — cache identity lives in the
+    /// resolved provider's own `CachingEmbeddingProvider`/`NeuralEmbeddingProvider`.
+    fn id(&self) -> &str {
+        self.resolved
+            .get()
+            .map(|p| p.id())
+            .unwrap_or("recall-embedder(resolving)")
+    }
+
+    fn dim(&self) -> usize {
+        self.resolved.get().map(|p| p.dim()).unwrap_or(0)
+    }
+
+    async fn embed(&self, text: &str) -> Vec<f32> {
+        self.backend().await.embed(text).await
+    }
+
+    fn unrelated_null(&self) -> Option<(f32, f32)> {
+        self.resolved.get().and_then(|p| p.unrelated_null())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // what this catches: the lazy recall embedder is safe to CONSTRUCT at boot —
+    // no GPU/gateway probe fires until the first `embed` — and reports a stable
+    // "resolving" identity + dim 0 until then, so nothing on the boot path can
+    // wedge the IPC socket bind (the concurrency-guide non-negotiable this exists
+    // to honor). Resolution itself needs the model registry, exercised live.
+    #[test]
+    fn lazy_recall_embedder_is_boot_safe_before_resolution() {
+        let e = LazyRecallEmbedder::new();
+        assert_eq!(e.id(), "recall-embedder(resolving)");
+        assert_eq!(e.dim(), 0);
+        assert!(e.unrelated_null().is_none());
+    }
+
+    // what this catches: the persistent snapshot survives a "restart" — vectors
+    // written by snapshot_to load back byte-identical via load_from, so cached
+    // content never re-embeds (nor re-fights the serving lane for VRAM) across a
+    // core restart. A missing file warms as Ok(0), never an error (first boot).
+    #[test]
+    fn embedding_cache_snapshot_round_trips() {
+        let src = EmbeddingCache::new();
+        let ka = EmbeddingCache::key("qwen3-embedding-0.6b", "the deploy went red");
+        let kb = EmbeddingCache::key("qwen3-embedding-0.6b", "a heron in the shallows");
+        let va = vec![0.1f32, -0.2, 0.3, 0.4];
+        let vb = vec![1.0f32, 2.0, 3.0];
+        src.map.insert(ka, va.clone());
+        src.map.insert(kb, vb.clone());
+
+        let path = std::env::temp_dir().join("continuum-embcache-roundtrip.bin");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(src.snapshot_to(&path).unwrap(), 2);
+
+        // A fresh cache (the "restarted" process) warms from the snapshot.
+        let dst = EmbeddingCache::new();
+        assert_eq!(dst.load_from(&path).unwrap(), 2);
+        assert_eq!(dst.map.get(&ka).map(|e| e.clone()), Some(va));
+        assert_eq!(dst.map.get(&kb).map(|e| e.clone()), Some(vb));
+
+        // Missing file (first boot) → Ok(0), not an error.
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(dst.load_from(&path).unwrap(), 0, "missing snapshot warms as Ok(0)");
+    }
 
     // what this catches: the cosine of identical text is ~1; orthogonal
     // (no shared vocabulary) is ~0. The relevance primitive is sane.
