@@ -125,6 +125,65 @@ impl CrossLayerExpertPredictor {
     }
 }
 
+/// Reshape one `ffn_moe_topk` observation — the flat row-major `[n_expert_used, n_tokens]`
+/// I32 slice the ggml callback hands us — into per-token expert rows for `layer`. Row `t`
+/// is the `n_expert_used` experts selected for batch-position `t`. Negative indices
+/// (padding / not-selected slots) are dropped. Pure so the reshape (the load-bearing,
+/// non-obvious row-major unpack) is testable without a served model.
+pub fn per_token_experts(layer: u32, flat: &[i32], n_expert_used: usize) -> Vec<Vec<ExpertId>> {
+    if n_expert_used == 0 {
+        return Vec::new();
+    }
+    flat.chunks(n_expert_used)
+        .map(|row| {
+            row.iter()
+                .filter(|&&e| e >= 0)
+                .map(|&e| ExpertId { layer, expert: e as u32 })
+                .collect()
+        })
+        .collect()
+}
+
+/// Accumulates one forward pass's layer-by-layer expert observations into cross-layer
+/// transitions, feeding a [`CrossLayerExpertPredictor`]. Under continuous batching a single
+/// graph runs all layers in increasing `il` order over the whole batch, so batch-position
+/// `t` IS the same token's trajectory across layers — no pass-id needed; a DECREASE in
+/// layer index marks the next batch (reset). This is the pure capture brain; the hot-path
+/// wiring (holding one of these behind the observer, lock-cheap) is the integration slice.
+#[derive(Debug, Default)]
+pub struct BatchTrajectoryAccumulator {
+    /// The previous layer observed this batch: `(layer, per-token expert rows)`.
+    prev: Option<(u32, Vec<Vec<ExpertId>>)>,
+}
+
+impl BatchTrajectoryAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one layer's observation (already reshaped to per-token rows). If it continues
+    /// the current batch (layer strictly greater than the previous), learn the transition
+    /// for every batch-position; if the layer index dropped (or is the first), start a new
+    /// batch. Learns into `predictor` directly. Rows are matched by position; a ragged
+    /// count (rare — shouldn't happen within one batch) matches the shorter, never panics.
+    pub fn observe_layer(
+        &mut self,
+        layer: u32,
+        per_token: Vec<Vec<ExpertId>>,
+        predictor: &mut CrossLayerExpertPredictor,
+    ) {
+        if let Some((prev_layer, prev_rows)) = &self.prev {
+            if layer > *prev_layer {
+                for (prev_row, curr_row) in prev_rows.iter().zip(per_token.iter()) {
+                    predictor.observe_transition(prev_row, curr_row);
+                }
+            }
+            // layer <= prev_layer → a new forward pass began; fall through and replace prev.
+        }
+        self.prev = Some((layer, per_token));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +250,47 @@ mod tests {
         let pred = p.predict(&[a]);
         assert_eq!(pred.get(&x).copied(), Some(1.0), "X predicted from A");
         assert!(!pred.contains_key(&a), "A is fired/resident — never predict it");
+    }
+
+    // what this catches: the row-major [n_expert_used, n_tokens] unpack — token t's experts
+    // are the t-th chunk of n_expert_used, and negative padding slots are dropped. Getting
+    // this wrong scrambles which experts belong to which token → garbage co-occurrence.
+    #[test]
+    fn per_token_reshape_unpacks_row_major_and_drops_padding() {
+        // n_expert_used=2, n_tokens=3: [t0: 5,7][t1: 5,-1(pad)][t2: 2,7]
+        let flat = vec![5, 7, 5, -1, 2, 7];
+        let rows = per_token_experts(4, &flat, 2);
+        assert_eq!(rows.len(), 3, "three tokens");
+        assert_eq!(rows[0], vec![eid(4, 5), eid(4, 7)]);
+        assert_eq!(rows[1], vec![eid(4, 5)], "the -1 padding slot is dropped");
+        assert_eq!(rows[2], vec![eid(4, 2), eid(4, 7)]);
+        assert!(per_token_experts(4, &[], 0).is_empty(), "n_expert_used=0 → empty, no panic");
+    }
+
+    // what this catches: the batch trajectory capture — within one forward pass (layers in
+    // increasing order) each batch-position's experts across layers become cross-layer
+    // transitions; a DECREASE in layer index starts a NEW batch so trajectories never
+    // bleed across forward passes. This is what turns raw per-layer observations into the
+    // predictor's learning signal, with no pass-id.
+    #[test]
+    fn accumulator_learns_within_a_pass_and_resets_across_passes() {
+        let mut acc = BatchTrajectoryAccumulator::new();
+        let mut pred = CrossLayerExpertPredictor::new();
+
+        // Pass 1: one token, layer 0 fires expert 3, layer 1 fires expert 7.
+        acc.observe_layer(0, vec![vec![eid(0, 3)]], &mut pred); // first layer: no prev, just stores
+        acc.observe_layer(1, vec![vec![eid(1, 7)]], &mut pred); // 1>0: learns (0,3)→(1,7)
+        // Pass 2 begins: layer index DROPS to 0 → reset, must NOT learn (1,7)→(0,3) across passes.
+        acc.observe_layer(0, vec![vec![eid(0, 3)]], &mut pred);
+        acc.observe_layer(1, vec![vec![eid(1, 7)]], &mut pred); // learns (0,3)→(1,7) again
+
+        // (0,3) precedes (1,7) in both passes → P=1.0; nothing learned backwards or across.
+        let out = pred.predict(&[eid(0, 3)]);
+        assert_eq!(out.get(&eid(1, 7)).copied(), Some(1.0), "forward transition learned each pass");
+        // The cross-pass bleed (1,7)→(0,3) must NOT exist: predicting from (1,7) yields nothing.
+        assert!(
+            pred.predict(&[eid(1, 7)]).is_empty(),
+            "layer-decrease reset prevents trajectories bleeding across forward passes"
+        );
     }
 }
