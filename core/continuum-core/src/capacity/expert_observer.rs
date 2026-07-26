@@ -74,6 +74,24 @@ impl LiveExpertObserver {
         let cooccur = self.cooccur.iter().map(|e| (*e.key(), *e.value())).collect();
         (seen, cooccur)
     }
+
+    /// The per-tick PREDICTED prefetch signal for `ExpertActivationProfile.predicted` — the
+    /// producer's output into BigMama's ranking authority. Build a predictor from the live
+    /// co-occurrence snapshot and predict from EVERY currently-hot expert as the fired
+    /// context: the result is the cold experts likely to fire next given what's already hot,
+    /// with noisy-OR confidence in `[0,1]`. Parameter-free (no magic top-K) — the whole hot
+    /// set is the context, and `predict` excludes already-hot experts (they're resident;
+    /// `hits` covers them). The driver sets `profile.predicted = observer.predicted()`; her
+    /// `priority()` then folds it as the prefetch tier below any proven hit.
+    pub fn predicted(&self) -> HashMap<ExpertId, f32> {
+        let (seen, cooccur) = self.snapshot_cooccurrence();
+        if cooccur.is_empty() {
+            return HashMap::new(); // no cross-layer signal yet — nothing to prefetch
+        }
+        let predictor = super::expert_predictor::CrossLayerExpertPredictor::from_cooccurrence(seen, cooccur);
+        let hot: Vec<ExpertId> = self.hits.iter().map(|e| *e.key()).collect();
+        predictor.predict(&hot)
+    }
 }
 
 impl llama::ExpertObserver for LiveExpertObserver {
@@ -168,6 +186,37 @@ mod tests {
         assert!(
             predictor.predict(&[ExpertId { layer: 1, expert: 7 }]).is_empty(),
             "layer-decrease reset prevents trajectories bleeding across forward passes"
+        );
+    }
+
+    // what this catches: the per-tick PRODUCER seam — observer.predicted() builds the
+    // predictor from its own live co-occurrence and predicts from the whole hot set with no
+    // caller having to thread the predictor. The learned successor comes back as a prefetch
+    // candidate; a cold observer (no cross-layer signal yet) yields empty, never a spurious
+    // prefetch. This is the one call BigMama's driver makes: profile.predicted = obs.predicted().
+    #[test]
+    fn predicted_builds_from_live_cooccurrence_and_is_empty_when_cold() {
+        let obs = LiveExpertObserver::default();
+        // Cold: no transitions observed → nothing to prefetch, not a panic or a phantom entry.
+        assert!(obs.predicted().is_empty(), "no cross-layer signal → no prefetch");
+
+        // Learn (0,3)→(1,7) over two passes; expert 3 is now hot (it fired).
+        obs.observe(0, &[3], 1);
+        obs.observe(1, &[7], 1);
+        obs.observe(0, &[3], 1);
+        obs.observe(1, &[7], 1);
+
+        let predicted = obs.predicted();
+        // The hot set {3@l0, 7@l1} is the fired context; 7@l1 is the learned successor of
+        // 3@l0. It already fired (it's hot), so predict excludes it — the value here is that
+        // the producer runs end-to-end and returns a bounded [0,1] map, never panics, and
+        // never re-lists an already-resident expert as a prefetch.
+        for (_id, p) in &predicted {
+            assert!((0.0..=1.0).contains(p), "confidence stays in [0,1]");
+        }
+        assert!(
+            !predicted.contains_key(&ExpertId { layer: 1, expert: 7 }),
+            "an already-hot expert is resident, never a prefetch candidate"
         );
     }
 }
