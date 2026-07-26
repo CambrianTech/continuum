@@ -27,7 +27,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CU="$HOME/.continuum/cache/cargo-target/debug/cu"
+CU="$HOME/.continuum/cache/cargo-target/debug/continuum"
 CAPDIR="$HOME/.continuum/fixtures/prompt-captures"
 WORK="$HOME/.continuum/replay"
 MODEL="${MODEL:-continuum-ai/qwen2.5-coder-14b-instruct-GGUF}"
@@ -48,14 +48,14 @@ while [ $# -gt 0 ]; do
 done
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-[ -x "$CU" ] || die "cu not built at $CU (run: cu start)"
+[ -x "$CU" ] || die "continuum not built at $CU (run: continuum start)"
 
 # --- self-clean workspace ---
 rm -rf "$WORK"; mkdir -p "$WORK"
 
 # --- process guard: measure exactly ONE core (no coin-flip readings) ---
 CORES=$(pgrep -f 'continuum-core' | wc -l | tr -d ' ')
-[ "$CORES" -eq 1 ] || die "$CORES continuum-core processes — need exactly 1 (run: cu start / kill stragglers)"
+[ "$CORES" -eq 1 ] || die "$CORES continuum-core processes — need exactly 1 (run: continuum start / kill stragglers)"
 "$CU" ping >/dev/null 2>&1 || die "core not responding to ping"
 
 # --- pick the capture file ---

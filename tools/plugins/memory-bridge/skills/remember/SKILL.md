@@ -15,7 +15,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/remember.sh "$ARGUMENTS"
 
 The script resolves the agent's persona (its airc peer id), scopes to the current
 project, and writes the lesson to the shared continuum corpus via
-`cu memory/append-memory`. Confirm to the user in one line what was remembered.
+`continuum memory/append-memory`. Confirm to the user in one line what was remembered.
 
 Good lessons name the invariant/version/correction concretely ("use CUDA 13.2 not
 12.9 for VS2026", not "fix the build"). Other agents (M5, Codex) recall from the same

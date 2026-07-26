@@ -52,7 +52,7 @@ fi
 
 # ── Single-owner build target ────────────────────────────────────────
 # This script is the ONE start path ([[validate-via-pure-rust-not-npm-jtag]]).
-# It must therefore own CARGO_TARGET_DIR so every `cu start` — no matter which
+# It must therefore own CARGO_TARGET_DIR so every `continuum start` — no matter which
 # shell or background task invokes it — builds into and runs from the SAME
 # binary. Without this, a shell that lacks the export builds a 396MB ghost into
 # the repo's ./target while another shell ran from ~/.continuum/cache, leaving
@@ -242,13 +242,13 @@ echo "▶ building continuum-mcp (Rust MCP server bin)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ continuum-mcp build failed — MCP server unavailable (core still launches)" >&2
 
-# ── Build the cu CLI client ──────────────────────────────────────────
-# `cu` is the pure-Rust CLI client (replaces the Node `./jtag`): `cu ping`,
-# `cu <command> [json]` over the core IPC socket via the uniform Connection.
+# ── Build the continuum CLI client ──────────────────────────────────────────
+# `continuum` is the pure-Rust CLI client (replaces the Node `./jtag`): `continuum ping`,
+# `continuum <command> [json]` over the core IPC socket via the uniform Connection.
 # Built here so the headless start produces the client on disk too.
-echo "▶ building cu (Rust CLI client)"
-cargo build --manifest-path "$CORE_MANIFEST" --bin cu $PROFILE_FLAG $CONTINUUM_FEATURES \
-  || echo "⚠ cu build failed — CLI client unavailable (core still launches)" >&2
+echo "▶ building continuum (Rust CLI client)"
+cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
+  || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
 
 # ── Build the forge-custodian sidecar ────────────────────────────────
 # Like continuum-mcp, this bin is SPAWNED by the core (not launched by us): the

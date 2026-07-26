@@ -608,7 +608,7 @@ fn pressure_budget(level: PressureLevel, total_due: usize) -> Option<usize> {
 // ─────────────────────────── governor/status ─────────────────────
 
 /// Observe the governor's last scheduling pass. The read half of the daemon's
-/// command surface — a citizen (or human/cu) asks the deterministic governor what
+/// command surface — a citizen (or human/continuum) asks the deterministic governor what
 /// it's doing. `AiSafe`: read-only telemetry.
 pub struct GovernorStatusCommand {
     snapshot: watch::Receiver<GovernorSnapshot>,

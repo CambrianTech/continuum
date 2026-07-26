@@ -12,22 +12,26 @@
 #
 # The envelope JSON is built ENTIRELY by the substrate (serde, via
 # `memory/recall-hook`) — NO shell JSON, no jq/python. This script only resolves
-# persona + scope and passes the command's stdout straight through.
+# the continuum binary + persona + scope and passes the command's stdout through.
 set -uo pipefail
 
 cat >/dev/null 2>&1 || true              # drain the hook's stdin payload
-command -v cu >/dev/null 2>&1 || exit 0  # no client → silent no-op
+
+# Resolve the continuum CLI robustly (NOT bare `cu` — that is the Unix UUCP tool,
+# which shadowed us on PATH and silently no-op'd the whole bridge).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/lib.sh"
+CONTINUUM="$(resolve_continuum)" || exit 0   # no continuum binary → silent no-op
 
 # Scope recall to the current project (git repo root) when in one, else cwd.
 SCOPE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 PROJECT="$(basename "$SCOPE_DIR")"
 
-# The agent's own persona_id = its airc peer id (M5's convention). Env override
-# wins (lets a runtime pin its identity); else derive from `airc status`.
-PERSONA="${CONTINUUM_AGENT_PERSONA:-$(airc status 2>/dev/null | awk '/^peer_id:/{print $2; exit}')}"
+PERSONA="$(resolve_agent_persona)"
 [ -n "${PERSONA:-}" ] || exit 0
 
 # `memory/recall-hook` returns the EXACT {"hookSpecificOutput":{...}} envelope via
 # serde (valid, escaped, empty-safe). Pass it straight through. Any failure → nothing.
-cu memory/recall-hook --persona_id "$PERSONA" --room_id "$PROJECT" --query_text "$PROJECT session context" 2>/dev/null || true
+"$CONTINUUM" memory/recall-hook --persona_id "$PERSONA" --room_id "$PROJECT" --query_text "$PROJECT session context" 2>/dev/null || true
 exit 0
