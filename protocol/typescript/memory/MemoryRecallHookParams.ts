@@ -25,4 +25,10 @@ max_results: number,
 /**
  * Markdown header for the injected block.
  */
-header: string, };
+header: string, 
+/**
+ * Cap on each recalled memory's rendered length (chars; 0 = uncapped). Bounds a
+ * verbose memory so a low `max_results` still can't flood — the per-bullet complement
+ * to the caller's total-char budget. Default 400.
+ */
+max_chars_per_memory: number, };
