@@ -48,11 +48,6 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-/// Fraction of total VRAM/UMA we treat as ours to serve from — the rest is
-/// OS + non-inference headroom (Bevy avatars, embeddings, the OS itself). A
-/// single source of truth for "how much is actually ours."
-const SERVING_BUDGET_FRACTION: f64 = 0.80;
-
 /// How often the daemon re-evaluates the serving plan. 5s matches the other
 /// pressure-class ticks (pressure-broker, ai_provider) in the runtime. The
 /// next slice makes the re-plan also fire on PressureBroker watch edges so it
@@ -414,13 +409,14 @@ impl ServingDaemonModule {
         // (hard task + room) floors the whole GPU (1.0), Comfort is the everyday 0.80, and
         // Eco (memory starved — a game opened, a crowded call) drops to 0.55 so the base
         // claims less and the rest of the call's KV + render still fit. #56/G8: we do NOT
-        // ALSO apply the static SERVING_BUDGET_FRACTION here — stacking it under the mode
+        // ALSO apply the operator VRAM-headroom fraction here — stacking it under the mode
         // fraction double-discounted the everyday budget to ~0.64 (24.5GB of a 38GB board)
         // and left the more-capable 32B coder + full context unused, WITHOUT buying safety
         // (the concurrent-prefill compute buffer is reserved separately, window-scaled, in
-        // the serving_plan fixpoint). The pin fit-gate still uses `live_host_budget`'s raw
-        // 0.80 directly — "can this model physically fit" is a different question than "how
-        // much should the shared base claim now." [[verify-real-device-numbers-not-a-clamp-premise]]
+        // the serving_plan fixpoint). The pin fit-gate still applies the operator headroom
+        // (`config_env::vram_headroom()`, default 0.80) via `host_budget_from` — "can this
+        // model physically fit" is a different question than "how much should the shared base
+        // claim now." [[verify-real-device-numbers-not-a-clamp-premise]]
         // The governed VRAM board is the ONE authority for available VRAM: its `available`
         // is free-VRAM ALREADY netted over every measured consumer + external pressure AND
         // already ≤ physical VRAM. Trust it directly — do NOT `.min()` it against the raw
@@ -960,14 +956,22 @@ pub struct HostBudgetInputs {
     pub total_vram_bytes: u64,
     /// Performance-core proxy for the lane cap (floored at 1 inside).
     pub perf_cores: u32,
+    /// Fraction of the board this host treats as ours to serve from (`usable =
+    /// live × this`). The operator VRAM-headroom policy: default 0.80 (leave 20%
+    /// for the OS + Bevy + embeddings), a dedicated foundry sets 1.0. Live callers
+    /// pass `config_env::vram_headroom()`; tests pass an explicit fraction so
+    /// `host_budget_from` stays pure + environment-independent.
+    pub budget_fraction: f64,
 }
 
 /// Serving budget from LIVE free memory, capped at physical VRAM, minus headroom.
-/// Pure for tests. Takes [`HostBudgetInputs`] by reference so the byte-count fields
-/// are named at every call site (never transposable).
+/// Pure for tests — the headroom fraction is an INPUT (`budget_fraction`), never
+/// read from config here, so a test can't go environment-dependent. Takes
+/// [`HostBudgetInputs`] by reference so the byte-count fields are named at every
+/// call site (never transposable).
 pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
     let live = inputs.available_bytes.min(inputs.total_vram_bytes);
-    let usable = (live as f64 * SERVING_BUDGET_FRACTION) as u64;
+    let usable = (live as f64 * inputs.budget_fraction) as u64;
     HostBudget {
         usable_bytes: usable,
         perf_cores: inputs.perf_cores.max(1),
@@ -1027,6 +1031,7 @@ pub fn live_host_budget(
         available_bytes: vram_ceiling,
         total_vram_bytes: vram_ceiling,
         perf_cores: perf_cores(),
+        budget_fraction: crate::config_env::vram_headroom(),
     })
 }
 
@@ -1119,6 +1124,7 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
         available_bytes: available,
         total_vram_bytes: available,
         perf_cores: perf_cores(),
+        budget_fraction: crate::config_env::vram_headroom(),
     })
 }
 
@@ -1595,6 +1601,7 @@ mod tests {
             available_bytes: 40 * GB,
             total_vram_bytes: 53 * GB,
             perf_cores: 6,
+            budget_fraction: 0.80,
         });
         assert!(b.usable_bytes < 40 * GB, "must reserve headroom");
         assert!(b.usable_bytes >= 30 * GB, "but most of free is ours: {}", b.usable_bytes);
@@ -1604,6 +1611,7 @@ mod tests {
             available_bytes: 6 * GB,
             total_vram_bytes: 53 * GB,
             perf_cores: 6,
+            budget_fraction: 0.80,
         });
         assert!(busy.usable_bytes < b.usable_bytes, "less free → smaller budget");
 
@@ -1613,6 +1621,7 @@ mod tests {
             available_bytes: 100 * GB,
             total_vram_bytes: 53 * GB,
             perf_cores: 6,
+            budget_fraction: 0.80,
         });
         assert!(capped.usable_bytes <= 53 * GB, "capped at physical VRAM");
 
@@ -1621,6 +1630,7 @@ mod tests {
                 available_bytes: 8 * GB,
                 total_vram_bytes: 8 * GB,
                 perf_cores: 0,
+                budget_fraction: 0.80,
             })
             .perf_cores,
             1,
