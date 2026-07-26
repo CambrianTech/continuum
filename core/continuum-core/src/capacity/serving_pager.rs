@@ -223,7 +223,7 @@ mod tests {
         let obs = sp.observer();
         // Simulate the backend's compute thread firing experts 0..3 heavily.
         for _ in 0..50 {
-            obs.observe(0, &[0, 1, 2]);
+            obs.observe(0, &[0, 1, 2], 3);
         }
         let out = sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
         assert!(out.hot_experts > 0, "recorded activity produced a hot set");
@@ -245,7 +245,7 @@ mod tests {
         // Task A: experts 0,1,2 fire hard for several ticks.
         for _ in 0..10 {
             for _ in 0..100 {
-                obs.observe(0, &[0, 1, 2]);
+                obs.observe(0, &[0, 1, 2], 3);
             }
             sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
         }
@@ -255,7 +255,7 @@ mod tests {
         // Task B: now experts 5,6,7 fire hard; 0,1,2 go silent. Run enough ticks to decay.
         for _ in 0..40 {
             for _ in 0..100 {
-                obs.observe(0, &[5, 6, 7]);
+                obs.observe(0, &[5, 6, 7], 3);
             }
             sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
         }
@@ -279,7 +279,7 @@ mod tests {
         let mut sp = ServingExpertPager::new(GGUF, 2 * GB, 2 * GB, 0, HashMap::new());
         let obs = sp.observer();
         for _ in 0..50 {
-            obs.observe(0, &[0, 1]);
+            obs.observe(0, &[0, 1], 2);
         }
         let out = sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
         assert!(out.relaunch_needed, "set changed → relaunch");
