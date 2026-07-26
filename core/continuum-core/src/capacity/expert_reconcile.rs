@@ -20,7 +20,9 @@
 
 use std::collections::HashSet;
 
-use super::expert_residency::{ExpertId, ExpertResidencyPlan};
+use super::expert_pager::plan_expert_residency_budgeted;
+use super::expert_residency::{ExpertActivationProfile, ExpertId, ExpertResidencyPlan};
+use super::SystemProfile;
 use crate::genome::expert_ingest::expert_set_artifact_id;
 use crate::genome::working_set::{PageKind, PageOffset, PageRef};
 
@@ -179,6 +181,56 @@ impl ExpertPager for RelaunchPager {
     }
 }
 
+/// The outcome of one expert-pager cycle: the ops applied this pass and whether the
+/// served context now needs a relaunch to adopt the changed residency set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PagerStepOutcome {
+    /// The page-in/evict ops the reconcile emitted (already applied to the pager).
+    pub ops: Vec<ReconcileOp>,
+    /// True when the accumulated residency set changed materially vs the served set —
+    /// the serving tick should relaunch the context with the new expert placement.
+    pub relaunch_needed: bool,
+    /// How many experts the plan wants HOT this pass (for telemetry / the probe).
+    pub hot_experts: usize,
+}
+
+/// ONE expert-pager execution cycle — the pure heart of the pager driver.
+///
+/// Composes the merged primitives into the single call the serving tick makes each pass:
+/// the observed [`ExpertActivationProfile`] (M5's observe/predictor writes it) →
+/// [`plan_expert_residency_budgeted`] (hot/warm/cold within the 0.80 serving VRAM budget)
+/// → [`reconcile_ops`] (diff the hot set vs what the pager holds) → [`apply_reconcile`]
+/// (page-in new / evict gone on the [`RelaunchPager`]) → [`RelaunchPager::relaunch_needed`].
+///
+/// Pure + deterministic: no I/O, no clock, no serving-daemon coupling — the serving tick
+/// owns the side effects (calling this, then relaunching when `relaunch_needed`). That
+/// keeps the pager's DECISION logic testable in isolation from the serving control loop it
+/// runs inside (the same split as [`plan_serving`](crate::cognition::serving_plan) vs the
+/// serving_daemon reconcile). Empty activation / unsized experts flow through the planner's
+/// safe cold-start (all-warm) + the reconcile empty-hot guard — never evict-to-zero.
+#[allow(clippy::too_many_arguments)]
+pub fn expert_pager_step(
+    profile: &SystemProfile,
+    activation: &ExpertActivationProfile,
+    gguf_id: &str,
+    expert_bytes: u64,
+    margin_bytes: u64,
+    pager: &mut RelaunchPager,
+    relaunch_threshold: usize,
+) -> Result<PagerStepOutcome, PagerError> {
+    let plan = plan_expert_residency_budgeted(profile, activation, expert_bytes, margin_bytes);
+    let hot_experts = plan.hot.len();
+    // Diff the plan's hot set against what the pager currently holds resident, then apply.
+    let current = pager.resident().clone();
+    let ops = reconcile_ops(&plan, gguf_id, &current);
+    apply_reconcile(pager, ops.clone())?;
+    Ok(PagerStepOutcome {
+        ops,
+        relaunch_needed: pager.relaunch_needed(relaunch_threshold),
+        hot_experts,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +326,68 @@ mod tests {
         apply_reconcile(&mut pager, ops).unwrap();
         assert!(!pager.relaunch_needed(2), "a 1-expert swap (churn 2) is noise under threshold 2");
         assert!(pager.relaunch_needed(1), "the same swap DOES exceed threshold 1");
+    }
+
+    // what this catches: expert_pager_step composes the WHOLE cycle into one call —
+    // plan (budgeted) → reconcile → apply → relaunch decision. First pass on a fresh
+    // pager pages in the hot experts and needs a relaunch (served set empty); after
+    // mark_relaunched, the SAME activation yields no new ops and no relaunch (idempotent,
+    // settled). This is the pure heart the serving tick calls each pass — a regression =
+    // the pager thrashing (relaunching every tick) or never converging.
+    #[test]
+    fn expert_pager_step_runs_the_full_cycle_and_settles() {
+        use crate::capacity::expert_residency::ExpertActivationProfile;
+        use crate::capacity::{DeviceCapacity, SystemProfile};
+        use crate::governor::types::{HardwareClass, PowerSource, TargetSilicon, ThermalClass};
+        use std::collections::HashMap;
+        const GB: u64 = 1024 * 1024 * 1024;
+
+        let profile = SystemProfile::from_parts(
+            HardwareClass {
+                silicon: TargetSilicon::NvidiaCuda,
+                silicon_model: "test".into(),
+                vram_mb: 32 * 1024,
+                system_ram_mb: 128 * 1024,
+                power_source: PowerSource::Plugged,
+                thermal_class: ThermalClass::Workstation,
+                battery_pct: None,
+                thermal_headroom_pct: None,
+            },
+            DeviceCapacity {
+                gpu_total_bytes: 32 * GB,
+                gpu_free_bytes_live: 30 * GB, // → 24 GiB budgeted (0.80)
+                system_ram_free_bytes: 100 * GB,
+            },
+            vec![],
+            24,
+        );
+        // 8 experts firing on layer 0, descending hit counts → a clear hot ranking.
+        let mut hits = HashMap::new();
+        for e in 0..8u32 {
+            hits.insert(eid(0, e), (8 - e) as u64 * 100);
+        }
+        let activation = ExpertActivationProfile {
+            gate_magnitude: HashMap::new(),
+            hits,
+            predicted: HashMap::new(),
+        };
+
+        let mut pager = RelaunchPager::new();
+        // First pass: pages the hot experts in (≤6 fit 24 GiB at 4 GiB each), needs relaunch.
+        let out = expert_pager_step(&profile, &activation, GGUF, 4 * GB, 0, &mut pager, 0).unwrap();
+        assert!(
+            (1..=6).contains(&out.hot_experts),
+            "hot set within the budgeted VRAM, got {}",
+            out.hot_experts
+        );
+        assert!(!out.ops.is_empty(), "first pass pages experts in");
+        assert!(out.relaunch_needed, "first non-empty residency set needs a relaunch");
+
+        pager.mark_relaunched();
+        // Second pass, SAME activation: nothing changed → no ops, no relaunch (settled).
+        let out2 =
+            expert_pager_step(&profile, &activation, GGUF, 4 * GB, 0, &mut pager, 0).unwrap();
+        assert!(out2.ops.is_empty(), "stable activation → no churn");
+        assert!(!out2.relaunch_needed, "settled → no relaunch");
     }
 }
