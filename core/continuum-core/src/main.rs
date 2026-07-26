@@ -345,6 +345,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(continuum_core::cognition::embedding::LazyRecallEmbedder::new());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
+    // Persist the process-global embedding cache across restarts. This is the ONE
+    // cache every persona AND agent shares — their recall embedders all wrap
+    // `global_embedding_cache()` — so warming it here brings back the whole
+    // citizenry's vectors at once: each unique content embeds ONCE, ever, instead
+    // of re-embedding (and re-fighting the serving lane for VRAM) on every boot.
+    // Own background task, snapshot on a slow cadence, best-effort (a lost snapshot
+    // just re-embeds). Off the boot critical path — the load is a fast file read,
+    // no gateway/GPU probe.
+    if let Some(home) = dirs::home_dir() {
+        let cache_path = home
+            .join(".continuum")
+            .join("cache")
+            .join("embedding-cache.bin");
+        continuum_core::cognition::embedding::spawn_embedding_cache_persistence(
+            continuum_core::cognition::embedding::global_embedding_cache(),
+            cache_path,
+        );
+    }
+
     // Capture tokio runtime handle for async operations from IPC thread
     let rt_handle = tokio::runtime::Handle::current();
 
