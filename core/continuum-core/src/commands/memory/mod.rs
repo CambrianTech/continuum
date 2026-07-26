@@ -37,6 +37,7 @@ pub mod multi_layer_recall;
 pub mod import;
 pub mod recall_hook;
 pub mod remember;
+pub mod share;
 
 use append_event::MemoryAppendEvent;
 use append_memory::MemoryAppendMemory;
@@ -47,6 +48,7 @@ use multi_layer_recall::MemoryMultiLayerRecall;
 use import::MemoryImport;
 use recall_hook::MemoryRecallHook;
 use remember::MemoryRemember;
+use share::MemoryShare;
 
 /// Result of an incremental append (`memory/append-memory`, `memory/append-event`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -68,6 +70,7 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(MemoryRecallHook { state: state.clone() }),
         Arc::new(MemoryRemember { state: state.clone() }),
         Arc::new(MemoryConsolidate { state: state.clone() }),
+        Arc::new(MemoryShare { state: state.clone() }),
         Arc::new(MemoryConsciousnessContext { state: state.clone() }),
         Arc::new(MemoryAppendMemory { state: state.clone() }),
         Arc::new(MemoryAppendEvent { state }),
@@ -466,5 +469,6 @@ mod tests {
         );
         assert_eq!(MemoryAppendMemory::NAME, "memory/append-memory");
         assert_eq!(MemoryAppendEvent::NAME, "memory/append-event");
+        assert_eq!(MemoryShare::NAME, "memory/share");
     }
 }

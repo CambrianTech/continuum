@@ -21,6 +21,7 @@
 use crate::capacity::grid::GridSnapshot;
 use crate::capacity::SystemProfile;
 use crate::cognition::serving_plan::{plan_serving, HostBudget, ModelFootprint};
+use crate::identity::PeerId;
 use crate::model_registry::types::Model;
 
 /// How a model resolves against a system + grid. Every case is an ANSWER — there is
@@ -135,19 +136,25 @@ pub fn resolve_placement(
     resolve_from_footprint(profile, fp.as_ref(), is_moe, grid_fit)
 }
 
-/// Does ANY reachable grid peer's live-free VRAM hold this model (weights + one
-/// lane's KV)? The grid verdict for [`resolve_placement`], honoring the "sum of
-/// per-node FITS, never an aggregate pool" doctrine ([`GridSnapshot`]): each reachable
-/// peer is tested with the SAME [`plan_serving`] oracle used locally, against its own
-/// live-free bytes. A peer that could only CPU-spill does NOT count as a fit
-/// (`fits_on_gpu = false`) — the grid resolves a model to a node that can actually
-/// GPU-serve it, or it degrades; it never routes to a node that can't.
-pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool {
+/// WHICH reachable grid peer should serve this model — the grid-side counterpart of the
+/// catalog (Lane A says a model needs a peer via [`PlacementResolution::GridRouted`];
+/// this picks WHICH one). Returns the reachable peer whose live-free VRAM holds the
+/// model whole, MOST-FREE first (spread load toward the emptiest node). `None` = no peer
+/// fits → degrade, never route to a node that can't GPU-serve it. Same per-node
+/// [`plan_serving`] oracle as the local fit, honoring the "sum of per-node FITS, never an
+/// aggregate pool" doctrine ([`GridSnapshot`]) — a peer that could only CPU-spill
+/// (`fits_on_gpu = false`) is not a candidate.
+///
+/// This is the READER half of cross-grid routing. The DISPATCH half — stamping the
+/// chosen `PeerId` onto the inference request's `target_peer` and sending it via the
+/// `airc-remote` adapter ([`AircLiveTransport`](crate::inference::airc_remote)) — is the
+/// LaneDecision→dispatch seam, wired where inference-lane selection lives.
+pub fn select_grid_peer(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> Option<PeerId> {
     snapshot
         .peers
         .iter()
         .filter(|p| p.reachable)
-        .any(|p| {
+        .filter(|p| {
             let host = HostBudget {
                 usable_bytes: p.capacity.gpu_free_bytes_live,
                 perf_cores: 1,
@@ -156,6 +163,16 @@ pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool
                 .map(|plan| plan.fits_on_gpu)
                 .unwrap_or(false)
         })
+        .max_by_key(|p| p.capacity.gpu_free_bytes_live)
+        .map(|p| p.peer)
+}
+
+/// Does ANY reachable grid peer fit this model? The bool verdict for
+/// [`resolve_placement`]'s `grid` argument — [`select_grid_peer`] with the peer identity
+/// discarded, so "can it route" and "where does it route" share ONE definition of a
+/// per-node fit (they can never drift).
+pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool {
+    select_grid_peer(snapshot, footprint).is_some()
 }
 
 #[cfg(test)]
@@ -361,5 +378,57 @@ mod tests {
             peers: vec![peer(5, 60, false)],
         };
         assert!(!grid_has_fit(&unreachable, &fp));
+    }
+
+    // what this catches: select_grid_peer picks the MOST-FREE fitting peer (spread load
+    // toward the emptiest node), returns the identity not just a bool, skips too-small
+    // and unreachable peers, and returns None when none fit. The reader half of
+    // cross-grid routing — the wrong peer here = routing a model to a node that can't
+    // hold it, or piling onto a near-full one. grid_has_fit stays in lockstep (its wrapper).
+    #[test]
+    fn select_grid_peer_picks_the_most_free_fitting_peer() {
+        use crate::capacity::grid::{GridSnapshot, PeerCapacity};
+        use crate::identity::PeerId;
+
+        let peer = |id: u128, free_gb: u64, reachable: bool| PeerCapacity {
+            peer: PeerId::from_u128(id),
+            capacity: DeviceCapacity {
+                gpu_total_bytes: 80 * GB,
+                gpu_free_bytes_live: free_gb * GB,
+                system_ram_free_bytes: 0,
+            },
+            reachable,
+        };
+        let local = DeviceCapacity {
+            gpu_total_bytes: 32 * GB,
+            gpu_free_bytes_live: 4 * GB,
+            system_ram_free_bytes: 0,
+        };
+        let fp = footprint(40); // needs ~40 GiB resident whole
+
+        // Two fitting peers (50, 70), one too-small (20), one biggest-but-unreachable (90).
+        let snap = GridSnapshot {
+            local,
+            peers: vec![
+                peer(1, 20, true),  // too small
+                peer(2, 50, true),  // fits
+                peer(3, 70, true),  // fits, MOST free → should win
+                peer(4, 90, false), // biggest but UNREACHABLE → skipped
+            ],
+        };
+        assert_eq!(
+            select_grid_peer(&snap, &fp),
+            Some(PeerId::from_u128(3)),
+            "most-free fitting REACHABLE peer, not the unreachable 90GiB one"
+        );
+
+        // No peer fits → None (→ degrade). grid_has_fit agrees (it's the .is_some() wrapper).
+        let none = GridSnapshot {
+            local,
+            peers: vec![peer(5, 10, true), peer(6, 20, true)],
+        };
+        assert_eq!(select_grid_peer(&none, &fp), None);
+        assert!(!grid_has_fit(&none, &fp));
+        assert!(grid_has_fit(&snap, &fp));
     }
 }

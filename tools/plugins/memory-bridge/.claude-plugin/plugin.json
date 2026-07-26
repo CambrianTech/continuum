@@ -1,6 +1,6 @@
 {
   "name": "memory-bridge",
-  "description": "Agent memory bridge — automatic relevance-recall at session start (incl. after compaction) plus /remember and /recall, backed by the continuum memory/* substrate. Stops the agent re-forgetting across amnesia resets.",
+  "description": "Agent memory bridge — automatic relevance-recall at session start (incl. after compaction) plus /remember, /recall, and /share (hand a lesson to another agent), backed by the continuum memory/* substrate. Stops the agent re-forgetting across amnesia resets.",
   "version": "0.1.0",
   "author": {
     "name": "Continuum (BigMama + M5)"

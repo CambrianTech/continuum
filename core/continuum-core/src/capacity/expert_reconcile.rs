@@ -56,6 +56,16 @@ pub fn reconcile_ops(
     gguf_id: &str,
     current: &HashSet<PageRef>,
 ) -> Vec<ReconcileOp> {
+    // An empty hot set means "no residency plan yet" — cold-start, or unsized experts
+    // (`plan_expert_residency` returns `hot: []` when `expert_bytes` is unknown and it
+    // warms everything). It does NOT mean "evict every resident expert". Reconciling to
+    // an empty target would evict the whole set and relaunch the MoE with ZERO experts
+    // placed — degenerate, it can't serve. Hold the current residency until a real plan
+    // arrives ([[fallbacks-are-illegal-fail-loud]]: don't silently blank the model).
+    if plan.hot.is_empty() {
+        return Vec::new();
+    }
+
     let target: HashSet<PageRef> = plan
         .hot
         .iter()
@@ -224,6 +234,21 @@ mod tests {
             .any(|op| matches!(op, ReconcileOp::PageIn(p) | ReconcileOp::Evict(p)
                 if *p == expert_page_ref(GGUF, eid(0, 2)))));
         assert_eq!(ops.len(), 2);
+    }
+
+    // what this catches: THE EMPTY-HOT DEGENERATE. An empty hot set (cold-start, or
+    // unsized experts where plan_expert_residency returns hot=[]) must NOT evict the
+    // resident set — that would relaunch the MoE with ZERO experts placed, which can't
+    // serve. Reconcile holds current residency until a real plan arrives. Regression
+    // here = a sizing hiccup silently blanking a live model.
+    #[test]
+    fn empty_hot_plan_holds_residency_never_evicts_to_zero() {
+        let current = refs(GGUF, &[eid(0, 1), eid(0, 2)]);
+        let ops = reconcile_ops(&plan(&[]), GGUF, &current);
+        assert!(
+            ops.is_empty(),
+            "empty hot = no plan yet: hold residency, never evict to zero (got {ops:?})"
+        );
     }
 
     // what this catches: THE SLICE-1 RELAUNCH SEMANTICS. page_in accumulates into the
