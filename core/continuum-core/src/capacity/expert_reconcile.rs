@@ -369,6 +369,7 @@ mod tests {
         let activation = ExpertActivationProfile {
             gate_magnitude: HashMap::new(),
             hits,
+            predicted: HashMap::new(),
         };
 
         let mut pager = RelaunchPager::new();
