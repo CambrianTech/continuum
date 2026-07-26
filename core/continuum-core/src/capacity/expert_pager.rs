@@ -90,6 +90,7 @@ mod tests {
         ExpertActivationProfile {
             gate_magnitude: HashMap::new(),
             hits,
+            predicted: HashMap::new(),
         }
     }
 
