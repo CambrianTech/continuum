@@ -609,10 +609,120 @@ pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc
     Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
 }
 
+/// Resolve the recall embedder WITHOUT a chat adapter — for the GLOBAL memory
+/// manager (agent-memory bridge + hydrated corpora), which has no per-persona
+/// chat gateway to offer. Tries the dedicated in-process embed model (GPU, no
+/// HTTP hop), then the lexical floor. Same process-stable, probe-gated,
+/// LOUD-on-degrade contract as [`resolve_recall_embedder`]; it simply omits the
+/// chat-adapter `/v1/embeddings` rung (rung 2) that only a persona's own adapter
+/// can provide. Always returns a usable embedder — never errors, never panics.
+pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
+    let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+
+    if let Some((embed_adapter, gguf_id)) = local_embed_adapter() {
+        if let Some(provider) = try_neural_embedder(embed_adapter, &model).await {
+            crate::probe!(
+                class = "recall.embedder.resolved",
+                kind = "neural",
+                source = "in-process-llamacpp-global",
+                model = %model,
+                gguf = %gguf_id,
+                "global recall embedder = NEURAL (dedicated in-process Qwen3-Embedding)"
+            );
+            return provider;
+        }
+    }
+
+    crate::probe!(
+        class = "recall.embedder.resolved",
+        kind = "lexical",
+        source = "fallback-global",
+        model = %model,
+        "global recall embedder = LEXICAL — no in-process embed model serving; semantic recall DEGRADED to word-overlap"
+    );
+    Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+}
+
+/// A recall embedder that resolves its real backend LAZILY on first use, off the
+/// boot critical path. The global memory manager is constructed during boot,
+/// where NOTHING may gate the IPC socket bind on a GPU/gateway probe (the
+/// concurrency guide's non-negotiable — a probe here previously wedged boot).
+/// So the manager holds THIS: trivially cheap to construct, and on the first
+/// `embed` it resolves the dedicated in-process neural embedder via
+/// [`resolve_recall_embedder_local`] (probe-gated, LOUD-on-degrade), caches it
+/// **process-stably** (one embedding space for the whole process — a query and
+/// the stored vectors must live in the SAME space), and delegates. Every later
+/// call reuses the resolved provider; the resolution's cost (probe + ~16
+/// calibration embeds) is paid once, on the first real recall, never at boot.
+pub struct LazyRecallEmbedder {
+    resolved: tokio::sync::OnceCell<Arc<dyn EmbeddingProvider>>,
+}
+
+impl LazyRecallEmbedder {
+    pub fn new() -> Self {
+        Self {
+            resolved: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The resolved backend, resolving (once) on first call.
+    async fn backend(&self) -> &Arc<dyn EmbeddingProvider> {
+        self.resolved
+            .get_or_init(resolve_recall_embedder_local)
+            .await
+    }
+}
+
+impl Default for LazyRecallEmbedder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for LazyRecallEmbedder {
+    /// The resolved space id once known; a stable placeholder until first embed.
+    /// Only informational (degrade logging) — cache identity lives in the
+    /// resolved provider's own `CachingEmbeddingProvider`/`NeuralEmbeddingProvider`.
+    fn id(&self) -> &str {
+        self.resolved
+            .get()
+            .map(|p| p.id())
+            .unwrap_or("recall-embedder(resolving)")
+    }
+
+    fn dim(&self) -> usize {
+        self.resolved.get().map(|p| p.dim()).unwrap_or(0)
+    }
+
+    async fn embed(&self, text: &str) -> Vec<f32> {
+        self.backend().await.embed(text).await
+    }
+
+    fn unrelated_null(&self) -> Option<(f32, f32)> {
+        self.resolved.get().and_then(|p| p.unrelated_null())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // what this catches: the lazy recall embedder is safe to CONSTRUCT at boot —
+    // no GPU/gateway probe fires until the first `embed` — and reports a stable
+    // "resolving" identity + dim 0 until then, so nothing on the boot path can
+    // wedge the IPC socket bind (the concurrency-guide non-negotiable this exists
+    // to honor). Resolution itself needs the model registry, exercised live.
+    #[test]
+    fn lazy_recall_embedder_is_boot_safe_before_resolution() {
+        let e = LazyRecallEmbedder::new();
+        assert_eq!(e.id(), "recall-embedder(resolving)");
+        assert_eq!(e.dim(), 0);
+        assert!(e.unrelated_null().is_none());
+    }
 
     // what this catches: the cosine of identical text is ~1; orthogonal
     // (no shared vocabulary) is ~0. The relevance primitive is sane.

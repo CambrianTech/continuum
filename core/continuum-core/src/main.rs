@@ -325,26 +325,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Hippocampus memory subsystem (task #40). Embedding is async +
     // adapter-routed (never an in-process ONNX model). The GLOBAL manager here
-    // bootstraps with the LEXICAL embedder — instant, no network on the boot
-    // critical path. This is non-negotiable per the concurrency guide: NOTHING
-    // may gate the IPC socket bind on a gateway probe (a hanging `/v1/models`
-    // call here previously wedged boot before the socket bound). The LIVE
-    // per-persona recall path resolves its own NEURAL embedder lazily on spawn
-    // (`supervisor` → `cognition::embedding::resolve_recall_embedder`) and logs
-    // gateway availability there — that is where real semantic recall lives.
-    // The lexical embedder is an explicit, logged, non-neural relevance embedder
-    // (allowed; NOT a silent ONNX fallback). Wiring neural embedding for the
-    // global manager (against the dedicated embed server, not the chat gateway)
-    // is a separate addressing follow-up.
+    // now holds the LAZY recall embedder: still constructed with ZERO boot-path
+    // cost (no GPU/gateway probe), but on the FIRST real recall it resolves the
+    // dedicated in-process NEURAL embedder (Qwen3-Embedding-0.6B GGUF) via
+    // `resolve_recall_embedder_local` — probe-gated, process-stable, LOUD if it
+    // has to fall to the lexical floor. This is non-negotiable per the
+    // concurrency guide: NOTHING may gate the IPC socket bind on a gateway probe
+    // (a hanging `/v1/models` call here previously wedged boot before the socket
+    // bound) — the lazy embedder keeps that guarantee while giving the
+    // agent-memory bridge + hydrated corpora real SEMANTIC recall, not the
+    // lexical word-overlap floor they were silently stuck on. (This is the
+    // "separate addressing follow-up" the old comment promised.) The per-persona
+    // recall path still resolves its own neural embedder on spawn.
     info!(
-        "🧠 Initializing Hippocampus (lexical bootstrap embedder; per-persona recall \
-         resolves neural on spawn) — no gateway probe on the boot path"
+        "🧠 Initializing Hippocampus (lazy neural recall embedder; resolves \
+         in-process Qwen3-Embedding on first recall) — no gateway probe on the boot path"
     );
-    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> = Arc::new(
-        continuum_core::cognition::embedding::CachingEmbeddingProvider::new(Arc::new(
-            continuum_core::cognition::embedding::LexicalEmbedder::new(),
-        )),
-    );
+    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
+        Arc::new(continuum_core::cognition::embedding::LazyRecallEmbedder::new());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
     // Capture tokio runtime handle for async operations from IPC thread

@@ -205,6 +205,29 @@ impl PersonaMemoryManager {
 
         let had_query_embedding = query_embedding.is_some();
 
+        // Candidate-vector backfill (only when the query itself embedded — a real
+        // signal to rank by). The semantic layer scores the query against STORED
+        // memory vectors, but agent-authored memories are written WITHOUT one (the
+        // embedding is computed here, not at write) and a cold hydrate carries
+        // none — so `memories_with_embeddings()` is empty and SemanticRecallLayer
+        // no-ops, leaving recall in importance/recency order that IGNORES the query.
+        // That is the exact "same off-topic memories for every query" bug the
+        // agent-memory bridge hit (2026-07). Embed the missing vectors NOW — async,
+        // content-addressed-cached, OUTSIDE the sync recall and outside any lock —
+        // so the semantic layer has vectors to rank against. First recall per
+        // persona pays it; the cache makes repeats free.
+        if had_query_embedding {
+            let embedded = self.ensure_memory_embeddings(&corpus_lock).await;
+            if embedded > 0 {
+                crate::log_info!(
+                    "module",
+                    "memory_recall",
+                    "backfilled {embedded} candidate memory embeddings for {persona_id} (embedder={}) — semantic layer can now rank",
+                    self.embedding.id()
+                );
+            }
+        }
+
         // Phase 1: recall with read lock (pure sync compute on in-memory corpus)
         let (response, memories_with_vectors) = {
             let corpus = corpus_lock.read().map_err(|e| {
@@ -250,6 +273,62 @@ impl PersonaMemoryManager {
         }
 
         Ok(response)
+    }
+
+    /// Ensure candidate memories carry an embedding so [`recall::SemanticRecallLayer`]
+    /// can rank them. Snapshots `(id, content)` for every memory MISSING a vector
+    /// (read lock), embeds each via the manager's embedder (async, content-addressed
+    /// cache — OUTSIDE any lock, never held across the await), then writes the vectors
+    /// back (write lock). Returns the number newly embedded.
+    ///
+    /// In-memory only: the durable store round-trips `CorpusMemory.embedding`, but
+    /// agent memories are currently written with `None`, so this is the on-demand
+    /// backfill that gives the semantic layer something to score until embed-on-write
+    /// lands. A no-op once every memory has a vector (a cheap read-lock scan), so it
+    /// is safe to call on every recall. Content is immutable, so a computed vector
+    /// never goes stale.
+    async fn ensure_memory_embeddings(
+        &self,
+        corpus_lock: &Arc<RwLock<MemoryCorpus>>,
+    ) -> usize {
+        // 1. Snapshot the memories that lack a vector (read lock, dropped before await).
+        let missing: Vec<(String, String)> = {
+            let corpus = match corpus_lock.read() {
+                Ok(c) => c,
+                Err(_) => return 0,
+            };
+            corpus
+                .memories
+                .iter()
+                .filter(|m| !corpus.memory_embeddings.contains_key(&m.id))
+                .map(|m| (m.id.clone(), m.content.clone()))
+                .collect()
+        };
+        if missing.is_empty() {
+            return 0;
+        }
+
+        // 2. Embed each missing memory's content (async, cached) — no lock held.
+        //    An empty vector = "no signal" (embedder down / degenerate); skip it so
+        //    the memory is retried on a later recall rather than cached as zeros.
+        let mut embedded: Vec<(String, Vec<f32>)> = Vec::with_capacity(missing.len());
+        for (id, content) in missing {
+            let v = self.embedding.embed(&content).await;
+            if !v.is_empty() {
+                embedded.push((id, v));
+            }
+        }
+
+        // 3. Write the vectors back (write lock).
+        let n = embedded.len();
+        if n > 0 {
+            if let Ok(mut corpus) = corpus_lock.write() {
+                for (id, v) in embedded {
+                    corpus.memory_embeddings.insert(id, v);
+                }
+            }
+        }
+        n
     }
 
     // ─── Consciousness Context ────────────────────────────────────────────────
@@ -463,6 +542,42 @@ mod tests {
         assert_eq!(resp.timeline_event_count, 1);
         assert_eq!(resp.embedded_event_count, 0);
         assert!(resp.load_time_ms >= 0.0);
+    }
+
+    // what this catches: memories written WITHOUT a vector (the agent-memory
+    // bridge's `remember` path sets embedding: None) get embedded on demand so
+    // SemanticRecallLayer has something to rank against, instead of no-op'ing into
+    // non-semantic importance/recency order — the exact "same off-topic memories
+    // for every query" bug the bridge hit (2026-07). Idempotent once populated.
+    #[tokio::test]
+    async fn ensure_memory_embeddings_backfills_missing_vectors() {
+        let manager = test_manager();
+        let mut m_none1 = make_corpus_memory("m1", "alpha lesson", 0.5);
+        m_none1.embedding = None;
+        let mut m_none2 = make_corpus_memory("m2", "beta lesson", 0.5);
+        m_none2.embedding = None;
+        let m_has = make_corpus_memory("m3", "gamma lesson", 0.5); // already Some(vec)
+        manager.load_corpus("p1", vec![m_none1, m_none2, m_has], vec![]);
+
+        let corpus_lock = manager.get_corpus("p1").unwrap();
+        // Precondition: only the pre-embedded memory carries a vector.
+        assert_eq!(
+            corpus_lock.read().unwrap().memories_with_embeddings().len(),
+            1
+        );
+
+        // Backfill embeds the two missing (StubEmbeddingProvider yields a real vec).
+        let n = manager.ensure_memory_embeddings(&corpus_lock).await;
+        assert_eq!(n, 2, "both unembedded memories are backfilled");
+        assert_eq!(
+            corpus_lock.read().unwrap().memories_with_embeddings().len(),
+            3,
+            "every memory now carries a vector the semantic layer can rank"
+        );
+
+        // Idempotent: a second pass finds nothing missing (cheap read-lock scan).
+        let n2 = manager.ensure_memory_embeddings(&corpus_lock).await;
+        assert_eq!(n2, 0, "no re-embedding once every memory has a vector");
     }
 
     #[tokio::test]
