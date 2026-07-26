@@ -250,6 +250,22 @@ echo "▶ building continuum (Rust CLI client)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
 
+# Put `continuum` on PATH so it works like any installed CLI — self-provisioning, the
+# managed-product principle ([[managed-product-everything-self-provisions-no-operator-steps]]).
+# Symlink the just-built binary into ~/.local/bin (user-writable, conventionally on PATH).
+# NEVER named `cu` — that is /usr/bin/cu, the Unix UUCP tool, which shadows it. Idempotent;
+# refreshes each deploy so PATH always points at the current build.
+CONTINUUM_CLI_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum"
+if [ -x "$CONTINUUM_CLI_BIN" ]; then
+  CONTINUUM_LINK_DIR="$HOME/.local/bin"
+  mkdir -p "$CONTINUUM_LINK_DIR"
+  ln -sf "$CONTINUUM_CLI_BIN" "$CONTINUUM_LINK_DIR/continuum"
+  case ":$PATH:" in
+    *":$CONTINUUM_LINK_DIR:"*) : ;;
+    *) echo "  ⚠ $CONTINUUM_LINK_DIR is not on PATH — add it so \`continuum\` resolves directly" >&2 ;;
+  esac
+fi
+
 # ── Build the forge-custodian sidecar ────────────────────────────────
 # Like continuum-mcp, this bin is SPAWNED by the core (not launched by us): the
 # genome loop's `forge/export` self-provisions it on demand via
