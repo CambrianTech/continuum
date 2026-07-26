@@ -655,6 +655,107 @@ pub async fn synthesize_remediation(
     })
 }
 
+/// The teacher's standing instruction for LIVED expansion — produce a strong, complete
+/// answer to a real question the persona faced but stalled on. Unlike [`TEACHER_SYSTEM`]
+/// (correct CODE, grader-gated), this is a general expert answer with NO objective grader;
+/// the whole-being benchmark-lift gate (#59) validates the CONSOLIDATION, never a single
+/// trajectory. The system turn shapes the teacher's GENERATION but is deliberately NOT
+/// trained in (see [`synthesize_lived_expansion`]) — the being learns to answer the class
+/// of question without needing this scaffold.
+const LIVED_TEACHER_SYSTEM: &str = "You are a thoughtful expert. A teammate was asked the \
+    following in a live conversation and their attempt stalled before they finished. Give a single, \
+    complete, self-contained answer — clear and correct, with no meta-commentary about the attempt.";
+
+/// **Lived-axis expansion — the LLM-teacher path** that [`super::curriculum::expansion_examples`]
+/// deliberately deferred. A salient LIVED turn is untestable (no grader) AND a failure
+/// (non-convergence / infra fault), so it can be neither remediated (no `test` to validate
+/// a correction) nor echoed (training on her stalled answer would teach the failure). The
+/// honest resolution: a teacher RE-ANSWERS the stimulus she faced, and that strong answer —
+/// not her stalled one — becomes the SFT pair. Safe on untestable material for the same
+/// reason the received axis is: validation is per-CONSOLIDATION by whole-being benchmark
+/// lift (#59), never per-trajectory ([[lived-and-eval-experience-are-one-stream-one-being]]).
+///
+/// Mirrors [`synthesize_remediation`]'s lane discipline (readiness gate → dedicated
+/// bare-base lane → degrade-loud to the live lane) but has NO grader loop: ONE teacher
+/// generation per stimulus. Two honesty guards: an empty teacher answer is dropped (never
+/// ship a blank lesson), and the teacher's system turn shapes generation but is NOT in the
+/// example — the SFT pair is the bare `{question → answer}`, so the being learns the class
+/// of question, not a scaffolded reply. Empty stimuli in → empty out (no lane spin-up).
+pub async fn synthesize_lived_expansion(
+    stimuli: &[String],
+    teacher_model: &str,
+    temperature: f32,
+) -> Result<Vec<Value>, CommandError> {
+    // Trim + drop blanks up front: nothing to answer, and it decides whether we even need
+    // a lane. Empty in → empty out is a legitimate outcome (no fitness gap), never a fault.
+    let stimuli: Vec<&str> = stimuli.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if stimuli.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Same readiness discipline as remediation: WAIT for a served lane before the first
+    // generation, or a relaunch race hangs the teacher forever (glass-boxed 2026-07-21).
+    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
+        return Err(CommandError::Internal(
+            "no served model became ready within the serving-wait budget — cannot run the lived \
+             expansion teacher. Bring up serving (ai/inference/serve) first."
+                .to_string(),
+        ));
+    }
+
+    // A DEDICATED bare-base lane (the #175-safe isolation eval + remediation use), degrading
+    // LOUD to the live lane if it can't come up — a shared attempt beats no attempt.
+    let dedicated_lane = match crate::cognition::eval::spawn_base_eval_lane(teacher_model).await {
+        Ok(lane) => Some(lane),
+        Err(e) => {
+            tracing::warn!(
+                target: "genome::teach",
+                teacher_model = %teacher_model,
+                error = %e,
+                "dedicated lived-expansion teacher lane failed to come up — DEGRADING to the live \
+                 serving lane (may inherit the #175 multi-LoRA OOM)."
+            );
+            None
+        }
+    };
+    let teacher_adapter = dedicated_lane.as_ref().map(|l| l.adapter.clone());
+
+    let mut examples: Vec<Value> = Vec::new();
+    for stimulus in stimuli {
+        // The system turn steers the GENERATION only; it is not part of the training pair.
+        let messages = vec![
+            ChatMessage::text("system", LIVED_TEACHER_SYSTEM),
+            ChatMessage::text("user", stimulus),
+        ];
+        let answer =
+            match teacher_generate(teacher_adapter.as_ref(), teacher_model, messages, temperature).await {
+                Ok(a) => a,
+                Err(e) => {
+                    // Fail-loud on the ITEM, resilient on the BATCH — one stimulus failing
+                    // must not abort the whole consolidation (same spirit as remediation
+                    // breaking one task without killing the run).
+                    tracing::warn!(
+                        target: "genome::teach",
+                        error = %e,
+                        "lived-expansion teacher generation failed for one stimulus — skipped"
+                    );
+                    continue;
+                }
+            };
+        if answer.trim().is_empty() {
+            continue; // never ship a blank lesson
+        }
+        // The bare {stimulus → answer} pair — the teacher's scaffold system turn is dropped.
+        examples.push(json!({
+            "messages": [
+                { "role": "user", "content": stimulus },
+                { "role": "assistant", "content": answer.trim() },
+            ]
+        }));
+    }
+    Ok(examples)
+}
+
 /// Stateless — self-registers onto the ONE registry. Holds no module state; resolves
 /// inference + dataset packaging through their global/associated seams.
 #[derive(Default)]
