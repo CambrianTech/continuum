@@ -379,6 +379,35 @@ pub fn salient_teach_set(
         .collect()
 }
 
+/// The COMPLEMENT of [`salient_teach_set`]: the salient episodes that cannot be
+/// objectively remediated (no `test`) — the input to the **expansion** synthesizer
+/// (outlier B, the frontier the `CurriculumSynthesizer` doc deliberately deferred).
+/// Lived turns and received lessons land here: a detector flagged them as worth
+/// learning from, but they carry no ground-truth grader.
+///
+/// Why this is now SAFE to build (it wasn't before): the expansion path was deferred
+/// because "an unvalidated lesson is the confident-garbage the measurement spine
+/// forbids" — a per-*trajectory* validation was missing. Joel's spine supplies a
+/// different, sufficient one: the lesson is validated NOT per-trajectory but
+/// per-**consolidation**, by whole-being **benchmark lift** (the humane-snapshot gate
+/// #59, page-in only if score ≥ prior). Untestable material can drive training because
+/// the gate measures the WHOLE being afterward and rejects anything that didn't lift.
+/// Keeping remediation and expansion as two honest partitions of ONE salient stream is
+/// exactly the routing the dream consolidation needs: `salient_teach_set` → the
+/// test-validated remediation teacher; `expansion_teach_set` → the benchmark-validated
+/// expansion teacher. Same stream, same detector, two efferent organs.
+pub fn expansion_teach_set(
+    records: &[ExperienceRecord],
+    detector: &dyn SalienceDetector,
+) -> Vec<ExperienceRecord> {
+    records
+        .iter()
+        .filter(|r| detector.assess(r).is_some())
+        .filter(|r| r.task.test.is_none())
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,5 +730,60 @@ mod tests {
 
         // Empty composite is never salient (honest degenerate case).
         assert!(AnySalience::of(vec![]).assess(&eval_failure).is_none());
+    }
+
+    // What this catches: the DREAM'S ROUTING — one salient sweep of the unified stream
+    // splits cleanly into two efferent organs. A testable eval failure → remediation
+    // (test-validated teacher); an untestable lived turn AND an untestable received
+    // lesson → expansion (benchmark-validated teacher); a passed eval → neither. The two
+    // partitions are complementary and exhaustive over the salient set — no salient
+    // episode is dropped, none is double-routed. This is the routing that lets the dream
+    // consolidate the whole being's experience without corrupting the graded loop.
+    #[test]
+    fn remediation_and_expansion_partition_the_salient_stream_exhaustively() {
+        let any = AnySalience::all_axes();
+
+        let testable_failure = ExperienceRecord {
+            task: eval_task("exam-fail", true),
+            ok: false,
+            grade: "error[E0308]".to_string(),
+            answer: String::new(),
+            world_state: String::new(),
+            acts: 4,
+            source: ExperienceSource::Eval,
+        };
+        let stuck = SettleOutcome {
+            decision: Decision::Act { calls: Vec::new(), intent: "keep trying".into() },
+            spoken: None,
+            acts: 8,
+            world_state: String::new(),
+            metrics: TurnMetrics::default(),
+            inference_error: None,
+        };
+        let lived = ExperienceRecord::from_lived_turn("a hard live question", &stuck);
+        let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
+            "BigMama", "continuum", "the being learns from what it's told",
+        ));
+        let passed = ExperienceRecord {
+            ok: true,
+            grade: "tests passed".to_string(),
+            ..testable_failure.clone()
+        };
+
+        let batch = [testable_failure, lived, received, passed];
+
+        // Remediation: ONLY the testable failure (objective grader can validate the fix).
+        let remediation = salient_teach_set(&batch, &any);
+        assert_eq!(remediation.len(), 1, "only the testable failure is remediation-eligible");
+        assert_eq!(remediation[0].id, "exam-fail");
+
+        // Expansion: the untestable-but-salient lived + received (benchmark-validated).
+        let expansion = expansion_teach_set(&batch, &any);
+        assert_eq!(expansion.len(), 2, "the lived turn and the received lesson are expansion-eligible");
+        assert!(expansion.iter().any(|r| r.source == ExperienceSource::Lived));
+        assert!(expansion.iter().any(|r| r.source == ExperienceSource::Received));
+
+        // Exhaustive + disjoint over the salient set: 1 + 2 = 3 salient, the pass in neither.
+        assert_eq!(remediation.len() + expansion.len(), 3, "every salient episode is routed exactly once; the pass is dropped");
     }
 }
