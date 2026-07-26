@@ -198,6 +198,8 @@ The amnesiac model keeps adding env-tunable thresholds: `CONTINUUM_DISK_MIN_GB`,
 
 Env vars are reserved for **deployment shape** (socket paths, log roots, GPU device IDs) and **debug overrides** that have no production meaning. They are never the answer to "what threshold does this monitor fire at."
 
+**The single-source exception (operator capacity policy).** One narrow class *is* legitimately operator-settable: **resource headroom / deployment-scale policy** — "how much of THIS box do we hand the substrate?" A dedicated deep-learning *foundry* runs its drive and VRAM to 1.0 (it's an appliance); a shared laptop leaves 20%. That's a real per-deployment fact, closer to *deployment shape* than to a firing threshold. It is allowed **only** when it funnels through the ONE typed config file (`config_env.rs`) — the key name, default, clamp, and read-once cache all live in **one place**, and consumers call a typed getter (`config_env::vram_headroom()`, `config_env::disk_headroom()`), never `config_env::read("KEY").unwrap_or(default)` re-derived per module. The sin forbidden-move #2 names is the **SCATTER** (161 sites each rolling their own key + default), not the existence of an override. One concern, one file everyone goes through, read-once, clamped, defaulted → coherent. Anything per-module → slop.
+
 If you find yourself reaching for an env var to make tests pass, you're testing wrong. Inject the threshold through the constructor or `#[cfg(test)]` a const override. See `BrokerConfig` for the pattern: required fields, no `Option`, defaults via `impl Default`, tests construct with explicit values.
 
 ---
@@ -208,7 +210,7 @@ Each of these is a recurring slop pattern the model reflex-codes under amnesia. 
 
 1. **Synchronous probing on the main thread.** `let used = sysinfo::System::new().refresh_memory()` in `main` or in a request handler. That's the monitor's job, on its own task, on its own interval. The handler reads the watch snapshot.
 
-2. **Env-var-tuned substrate thresholds.** `std::env::var("CONTINUUM_FOO_BAR").unwrap_or("42")`. The code is the policy. Compiled-in `const`s only.
+2. **Env-var-tuned substrate thresholds.** `std::env::var("CONTINUUM_FOO_BAR").unwrap_or("42")` scattered per-module. The code is the policy. Compiled-in `const`s only — **except** the single-source operator capacity policy carved out above (headroom fractions through `config_env.rs`'s typed getters, one file, read-once). The sin is the scatter, not the override.
 
 3. **Sleep-loops where `interval` should be.** `loop { sleep(d).await; do_thing(); }` drifts; `tokio::time::interval(d)` doesn't. Use the latter.
 
