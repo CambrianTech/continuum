@@ -31,6 +31,9 @@ pub mod recursion_depth;
 pub mod residency_detect;
 pub mod score;
 pub mod sim;
+pub mod system_profile;
+
+pub use system_profile::{DriveInfo, DriveRole, SystemProfile};
 
 /// A LIVE reading of one device's usable compute, external consumers already subtracted.
 /// NOT a boot classification — re-taken continuously. `gpu_free_bytes_live` is the
