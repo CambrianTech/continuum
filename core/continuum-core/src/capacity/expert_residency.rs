@@ -59,6 +59,14 @@ pub struct ExpertActivationProfile {
     /// The serving path increments these; a decay is applied by the caller so
     /// the profile tracks the current task, not all history.
     pub hits: HashMap<ExpertId, u64>,
+    /// Forward-looking PREFETCH: the cross-layer predictor's confidence (0..1)
+    /// that an expert is ABOUT to fire, before it shows up in `hits`. Produced
+    /// by the predictor (M5's cross-layer co-occurrence); consumed here to page
+    /// experts in AHEAD of the first token that needs them, dodging the cold
+    /// miss. Empty = no predictor, pure-reactive residency (rides `hits` alone,
+    /// never wrong). Refreshed per tick, so a wrong prediction ages out on its
+    /// own the moment real hits accumulate elsewhere — no demotion timer needed.
+    pub predicted: HashMap<ExpertId, f32>,
 }
 
 impl ExpertActivationProfile {
@@ -68,10 +76,16 @@ impl ExpertActivationProfile {
     /// scale: hits are the integer rank, magnitude the fractional tiebreak.
     fn priority(&self, e: &ExpertId) -> f64 {
         let hits = *self.hits.get(e).unwrap_or(&0) as f64;
+        let predicted = *self.predicted.get(e).unwrap_or(&0.0) as f64;
         let mag = *self.gate_magnitude.get(e).unwrap_or(&0.0) as f64;
-        // hits is the dominant integer term; magnitude in [0,1)-ish rides the
-        // fraction so it only decides among equal-hit experts.
-        hits + (mag.tanh() * 0.999)
+        // hits is the dominant integer term (measured beats predicted — the PGO
+        // principle): any expert that has fired out-ranks any that only MIGHT.
+        // predicted (confidence 0..1) is the forward-looking PREFETCH term — it
+        // lifts a not-yet-fired expert into the resident set ahead of a cold
+        // miss, but rides the fraction (<1) so it never displaces a proven hit
+        // and never claims a slot a fired expert wants. magnitude is the static
+        // GGUF seed — the last-resort cold-start tiebreak under both.
+        hits + predicted.clamp(0.0, 1.0) * 0.9 + mag.tanh() * 0.09
     }
 
     /// Every expert the profile knows about (union of both signals).
@@ -79,6 +93,7 @@ impl ExpertActivationProfile {
         let mut set: std::collections::BTreeSet<ExpertId> =
             self.hits.keys().copied().collect();
         set.extend(self.gate_magnitude.keys().copied());
+        set.extend(self.predicted.keys().copied());
         set.into_iter().collect()
     }
 }
@@ -305,6 +320,39 @@ mod tests {
         // VRAM fits exactly 1 expert.
         let plan = plan_expert_residency(&p, &dev(4, 64), 2 * GB, 2 * GB);
         assert_eq!(plan.hot, vec![e(0, 0)], "highest-magnitude expert leads");
+    }
+
+    // what this catches: the PREFETCH tier (the predictor seam with M5's
+    // cross-layer predictor). A not-yet-fired expert with high predicted
+    // confidence must be promoted into the resident set AHEAD of a cold expert
+    // (so it doesn't cold-miss on its first token) — but a PROVEN hit must still
+    // out-rank any prediction (measured beats predicted; a wrong prediction can
+    // never evict a firing expert). If the priority weighting drifts so predicted
+    // >= 1 hit, speculation would displace proven residency and thrash the pager.
+    #[test]
+    fn predicted_prefetches_a_cold_expert_but_never_beats_a_proven_hit() {
+        let mut p = ExpertActivationProfile::default();
+        p.hits.insert(e(0, 0), 5); // proven hot
+        p.predicted.insert(e(0, 1), 0.9); // predictor: about to fire (hits=0)
+        // e(0,2), e(0,3): pure cold — no hits, no prediction.
+        p.gate_magnitude.insert(e(0, 2), 0.01);
+        p.gate_magnitude.insert(e(0, 3), 0.01);
+        // VRAM fits exactly 2 experts (6GB free, 2GB each, 2GB margin).
+        let plan = plan_expert_residency(&p, &dev(6, 64), 2 * GB, 2 * GB);
+        assert!(plan.hot.contains(&e(0, 0)), "proven expert stays hot");
+        assert!(
+            plan.hot.contains(&e(0, 1)),
+            "predicted expert is prefetched into residency ahead of cold"
+        );
+        assert!(!plan.hot.contains(&e(0, 2)), "pure-cold expert not prefetched");
+
+        // Proven beats predicted even at max confidence: 1 hit (=1.0) out-ranks
+        // predicted 0.99 (=0.891). With a single VRAM slot, the hit wins.
+        let mut q = ExpertActivationProfile::default();
+        q.hits.insert(e(1, 0), 1);
+        q.predicted.insert(e(1, 1), 0.99);
+        let plan2 = plan_expert_residency(&q, &dev(4, 64), 2 * GB, 2 * GB);
+        assert_eq!(plan2.hot, vec![e(1, 0)], "proven hit wins the last slot");
     }
 
     // what this catches: the degenerate-safe contracts — unmeasured expert size
