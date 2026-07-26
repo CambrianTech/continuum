@@ -568,6 +568,9 @@ impl LlamaCppBackend {
                 type_v: self.config.type_v,
                 embeddings: false,
                 pooling_type: llama::PoolingType::None,
+                // MoE expert-selection observer — None for now; the K3 serving path
+                // sets a LiveExpertObserver here to feed the residency PGO tally.
+                expert_observer: None,
             })
             .map_err(|e| format!("new_context failed: {e}"))?;
 
