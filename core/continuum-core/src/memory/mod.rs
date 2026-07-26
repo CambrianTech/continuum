@@ -203,8 +203,10 @@ impl PersonaMemoryManager {
             None => None,
         };
 
+        let had_query_embedding = query_embedding.is_some();
+
         // Phase 1: recall with read lock (pure sync compute on in-memory corpus)
-        let response = {
+        let (response, memories_with_vectors) = {
             let corpus = corpus_lock.read().map_err(|e| {
                 MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
             })?;
@@ -216,9 +218,27 @@ impl PersonaMemoryManager {
                 max_results_per_layer: (req.max_results / 2).max(5),
             };
 
-            self.recall_engine
-                .recall_parallel(&corpus, &query, req.max_results)
+            let resp = self
+                .recall_engine
+                .recall_parallel(&corpus, &query, req.max_results);
+            let vec_count = corpus.memories_with_embeddings().len();
+            (resp, vec_count)
         }; // read lock dropped here
+
+        // Never silent ([[reliability-is-it-works-not-that-it-reports-failure-well]]): if a
+        // query was given but the semantic layer could not contribute — the query embedding
+        // was absent/from a lexical provider, or no memory carries a vector — then recall
+        // degraded to NON-semantic order (the layers ignore query text). Say so LOUD so it
+        // cannot hide as "working recall" (2026-07-26: this is the exact trap the agent-memory
+        // bridge hit — off-topic results looked like working recall).
+        if req.query_text.is_some() && (!had_query_embedding || memories_with_vectors == 0) {
+            crate::log_info!(
+                "module",
+                "memory_recall",
+                "⚠ SEMANTIC RECALL DEGRADED → non-semantic for {persona_id}: embedder={}, memories_with_vectors={memories_with_vectors}, query_embedded={had_query_embedding}. Results are NOT relevance-ranked — wire a neural embedder + populate memory vectors.",
+                self.embedding.id()
+            );
+        }
 
         // Phase 2: mark accessed with write lock (testing effect — retrieval strengthens memory)
         if !response.memories.is_empty() {
