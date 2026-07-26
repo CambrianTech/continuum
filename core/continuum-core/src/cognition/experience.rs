@@ -31,6 +31,7 @@
 
 use crate::cognition::act_observe::SettleOutcome;
 use crate::cognition::eval::EvalTask;
+use crate::cognition::workspace::Decision;
 
 /// Why an episode was selected as salient. Today the only variant emitted is
 /// [`SalienceKind::Error`] — the one proxy instrumented end-to-end. The frontier
@@ -129,14 +130,25 @@ impl ExperienceRecord {
     ///   remediation teach task from a grade it never had — it flows to the
     ///   *expansion* synthesizer (outlier B). The objective-remediation loop stays
     ///   uncorrupted; the being still grows from lived experience.
-    /// - **`ok` means "settled without an infra fault", not "correct".** With no
-    ///   objective grade, the only end-to-end-instrumented lived verdict is whether
-    ///   the settle loop reached a decision or died on an inference/serving fault
-    ///   (`SettleOutcome.inference_error`) — the SAME honesty the eval path applies
-    ///   (an infra hiccup is never a capability miss). Capability-shaped lived
-    ///   salience (STRUGGLE via `acts` near the directed budget, REPETITION via the
-    ///   spin detector) is the named next detector — a real proxy, not faked here.
+    /// - **`ok` means "settled CLEANLY", not "correct".** With no objective grade,
+    ///   the honest, end-to-end-instrumented lived verdict is whether she *converged*
+    ///   — reached a real settle-verdict (`Speak`/`Pass`/`RaiseUnprompted`) without
+    ///   an inference/serving fault. Two magic-number-free failure signals make a
+    ///   lived turn salient: an infra fault (`inference_error`), and NON-CONVERGENCE
+    ///   — the settle loop ran out its action budget mid-`Act` and never reached a
+    ///   verdict (`SettleOutcome.decision` is still `Act`, the "did not finish" the
+    ///   eval grader already recognizes). Both are structural facts of the outcome,
+    ///   not thresholds — no `acts >= 6` constant to drift ([[audit-for-clamps]]).
+    ///   `ErrorSalience` then selects these lived episodes with NO new detector: the
+    ///   data honestly carries the gap, one detector reads it (compression). Richer
+    ///   proxies (REPETITION via the spin brick, graded lived quality) are the named
+    ///   frontier — real signals, not faked here.
     pub fn from_lived_turn(stimulus: &str, settled: &SettleOutcome) -> Self {
+        // Converged = she reached a real verdict. A final `Act` means the drive-loop
+        // hit its budget mid-action and never settled — the lived analog of the
+        // eval's "did not finish", and an honest capability signal with no threshold.
+        let converged = !matches!(settled.decision, Decision::Act { .. });
+        let clean = converged && settled.inference_error.is_none();
         Self {
             // The stimulus IS the task for a lived turn: the message she answered,
             // posed as the prompt. No `test`/`expect` — nothing objective to grade
@@ -145,12 +157,13 @@ impl ExperienceRecord {
                 prompt: stimulus.to_string(),
                 ..EvalTask::default()
             },
-            // Settled cleanly = ok; died on a serving/inference fault = not ok. NOT
-            // a correctness claim — a lived turn has no grader (see doc above).
-            ok: settled.inference_error.is_none(),
-            grade: match &settled.inference_error {
-                Some(cause) => format!("lived turn: inference fault — {cause}"),
-                None => "lived turn: settled".to_string(),
+            // Settled cleanly = ok; infra fault OR non-convergence = not ok. NOT a
+            // correctness claim — a lived turn has no grader (see doc above).
+            ok: clean,
+            grade: match (&settled.inference_error, converged) {
+                (Some(cause), _) => format!("lived turn: inference fault — {cause}"),
+                (None, false) => "lived turn: did not converge (action budget exhausted mid-act)".to_string(),
+                (None, true) => "lived turn: settled".to_string(),
             },
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),
@@ -399,9 +412,30 @@ mod tests {
         assert!(!lived_fault.ok, "an inference-faulted lived turn is not ok (same honesty as eval)");
         assert!(lived_fault.grade.contains("inference fault"), "the fault cause is named in the grade");
 
-        // THE SAFETY GUARANTEE: neither lived record can reach remediation curriculum,
-        // because salient_teach_set gates on test.is_some() and a lived turn has none.
-        let set = salient_teach_set(&[lived, lived_fault], &ErrorSalience);
+        // NON-CONVERGENCE: the drive-loop ran out its action budget mid-Act and never
+        // reached a verdict — the lived analog of the eval's "did not finish". A
+        // structural fact of the outcome (decision is still Act), not a threshold —
+        // ok=false with NO magic-number struggle constant. ErrorSalience selects it.
+        let unconverged = SettleOutcome {
+            decision: Decision::Act { calls: Vec::new(), intent: "re-run the failing test".into() },
+            spoken: None,
+            acts: 8,
+            world_state: "budget exhausted after 8 acts".into(),
+            metrics: TurnMetrics::default(),
+            inference_error: None,
+        };
+        let lived_stuck = ExperienceRecord::from_lived_turn("fix the build", &unconverged);
+        assert!(!lived_stuck.ok, "a lived turn that never converged is not ok — the honest struggle signal");
+        assert!(lived_stuck.grade.contains("did not converge"), "non-convergence is named, not faked as a threshold");
+        assert!(
+            ErrorSalience.assess(&lived_stuck).is_some(),
+            "ErrorSalience selects the non-converged lived turn with NO new detector — one detector, honest data"
+        );
+
+        // THE SAFETY GUARANTEE: none of the salient lived records can reach remediation
+        // curriculum, because salient_teach_set gates on test.is_some() and a lived turn
+        // has none. Salient lived experience feeds EXPANSION only.
+        let set = salient_teach_set(&[lived, lived_fault, lived_stuck], &ErrorSalience);
         assert!(
             set.is_empty(),
             "lived turns feed EXPANSION, never grade-driven remediation — the objective loop stays uncorrupted"
