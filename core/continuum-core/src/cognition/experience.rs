@@ -318,6 +318,47 @@ impl SalienceDetector for ReceivedSalience {
     }
 }
 
+/// The composite selector: salient if ANY constituent detector fires — the whole
+/// being's curriculum from all three axes in ONE pass. [`all_axes`](Self::all_axes)
+/// composes [`ErrorSalience`] (lived + eval failures) with [`ReceivedSalience`]
+/// (taught lessons), so a single sweep over the unified experience stream selects
+/// everything worth learning from, whatever its origin. This is the seam the dream
+/// consolidation reads: gather the stream, run one detector, get the full teach set.
+/// Polymorphic and open — a later `StruggleSalience` / `SurpriseSalience` joins the
+/// composite without touching any caller (the detector list is the extension point).
+pub struct AnySalience {
+    detectors: Vec<Box<dyn SalienceDetector>>,
+}
+
+impl AnySalience {
+    /// The full being: failures (lived + eval) AND received lessons. Order is priority —
+    /// the first detector to fire names the salience kind, so `ErrorSalience` (the gap)
+    /// wins over `ReceivedSalience` on the rare record that is both.
+    pub fn all_axes() -> Self {
+        Self {
+            detectors: vec![Box::new(ErrorSalience), Box::new(ReceivedSalience)],
+        }
+    }
+
+    /// Compose an explicit set (tests, future tuning). Empty = never salient.
+    pub fn of(detectors: Vec<Box<dyn SalienceDetector>>) -> Self {
+        Self { detectors }
+    }
+}
+
+impl SalienceDetector for AnySalience {
+    fn name(&self) -> &'static str {
+        "any"
+    }
+
+    fn assess(&self, episode: &ExperienceRecord) -> Option<SalienceSignal> {
+        // First firing detector wins — priority order, no blending. A composite that
+        // maxes/blends scores across kinds is the named next step; ANY-fires is the
+        // honest first cut (a record is salient iff some axis says so).
+        self.detectors.iter().find_map(|d| d.assess(episode))
+    }
+}
+
 /// The afferent → efferent connection: filter a batch of lived episodes to the
 /// salient ones (via `detector`) and project them onto the **remediation teach
 /// set** — the `EvalTask`s a test-validated synthesizer (`genome/teach`) can teach
@@ -621,5 +662,44 @@ mod tests {
         // SAFETY GUARANTEE holds for the third axis too: no test → never remediation.
         let set = salient_teach_set(&[lesson], &ReceivedSalience);
         assert!(set.is_empty(), "received lessons feed EXPANSION, never grade-driven remediation");
+    }
+
+    // What this catches: the composite selects the whole being's curriculum from all
+    // three axes in ONE pass — an eval failure (Error), a received lesson (Received),
+    // and it drops what nobody flags (a passed eval). This is the single detector the
+    // dream consolidation runs over the unified stream: gather lived+eval+received,
+    // sweep once, get everything worth learning from. Priority order means Error wins
+    // the naming on a record that is both a gap and received.
+    #[test]
+    fn any_salience_selects_the_whole_being_curriculum_in_one_pass() {
+        let detector = AnySalience::all_axes();
+
+        let eval_failure = ExperienceRecord {
+            task: eval_task("rev-9", true),
+            ok: false,
+            grade: "error[E0308]".to_string(),
+            answer: String::new(),
+            world_state: String::new(),
+            acts: 3,
+            source: ExperienceSource::Eval,
+        };
+        let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
+            "BigMama",
+            "continuum",
+            "provenance IS the salience signal",
+        ));
+        let passed_eval = ExperienceRecord {
+            ok: true,
+            grade: "tests passed".to_string(),
+            ..eval_failure.clone()
+        };
+
+        // Error wins the kind (priority), Received fires for the lesson, pass is dropped.
+        assert_eq!(detector.assess(&eval_failure).unwrap().kind, SalienceKind::Error);
+        assert_eq!(detector.assess(&received).unwrap().kind, SalienceKind::Received);
+        assert!(detector.assess(&passed_eval).is_none(), "a passed eval is nobody's gap and nobody's lesson");
+
+        // Empty composite is never salient (honest degenerate case).
+        assert!(AnySalience::of(vec![]).assess(&eval_failure).is_none());
     }
 }
