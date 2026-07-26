@@ -25,6 +25,7 @@
 pub mod consumer;
 pub mod expert_observer;
 pub mod expert_pager;
+pub mod expert_predictor;
 pub mod expert_reconcile;
 pub mod expert_residency;
 pub mod gossip;
