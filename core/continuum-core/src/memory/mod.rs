@@ -291,6 +291,19 @@ impl PersonaMemoryManager {
         &self,
         corpus_lock: &Arc<RwLock<MemoryCorpus>>,
     ) -> usize {
+        // Bound the work per recall so a SessionStart hook stays responsive:
+        // - MAX_PER_CALL caps how many missing memories we embed in one recall, so a
+        //   large cold corpus is embedded incrementally across several recalls
+        //   (amortized) instead of blocking one call on hundreds of GPU forward
+        //   passes. Content is immutable, so partial progress never goes stale.
+        // - FAIL_FAST: if the first handful of embeds all come back empty, the
+        //   embedder is DOWN/degenerate (e.g. the Qwen3 GGUF returning zero vectors
+        //   under GPU-OOM). Bail immediately rather than grind every remaining
+        //   candidate through a failing forward pass — the loud-degrade signal in
+        //   the caller already reports the resulting non-semantic recall.
+        const MAX_PER_CALL: usize = 64;
+        const FAIL_FAST: usize = 3;
+
         // 1. Snapshot the memories that lack a vector (read lock, dropped before await).
         let missing: Vec<(String, String)> = {
             let corpus = match corpus_lock.read() {
@@ -301,6 +314,7 @@ impl PersonaMemoryManager {
                 .memories
                 .iter()
                 .filter(|m| !corpus.memory_embeddings.contains_key(&m.id))
+                .take(MAX_PER_CALL)
                 .map(|m| (m.id.clone(), m.content.clone()))
                 .collect()
         };
@@ -311,10 +325,18 @@ impl PersonaMemoryManager {
         // 2. Embed each missing memory's content (async, cached) — no lock held.
         //    An empty vector = "no signal" (embedder down / degenerate); skip it so
         //    the memory is retried on a later recall rather than cached as zeros.
+        //    Fail fast if the embedder is clearly down (leading run of empties).
         let mut embedded: Vec<(String, Vec<f32>)> = Vec::with_capacity(missing.len());
+        let mut consecutive_empty = 0usize;
         for (id, content) in missing {
             let v = self.embedding.embed(&content).await;
-            if !v.is_empty() {
+            if v.is_empty() {
+                consecutive_empty += 1;
+                if embedded.is_empty() && consecutive_empty >= FAIL_FAST {
+                    break; // embedder is down — stop grinding failing forward passes
+                }
+            } else {
+                consecutive_empty = 0;
                 embedded.push((id, v));
             }
         }
@@ -578,6 +600,59 @@ mod tests {
         // Idempotent: a second pass finds nothing missing (cheap read-lock scan).
         let n2 = manager.ensure_memory_embeddings(&corpus_lock).await;
         assert_eq!(n2, 0, "no re-embedding once every memory has a vector");
+    }
+
+    // A stand-in for a DOWN / degenerate embedder (e.g. the Qwen3 GGUF returning
+    // zero vectors under GPU-OOM): every embed comes back empty. Counts calls so
+    // the test can prove the backfill bails instead of grinding the whole corpus.
+    struct DownEmbeddingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait]
+    impl EmbeddingProvider for DownEmbeddingProvider {
+        fn id(&self) -> &str {
+            "down"
+        }
+        fn dim(&self) -> usize {
+            384
+        }
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Vec::new() // "no signal"
+        }
+    }
+
+    // what this catches: when the embedder is down (all embeds empty), the backfill
+    // FAILS FAST after a few attempts instead of grinding every candidate through a
+    // failing forward pass — so a SessionStart recall over a large cold corpus stays
+    // responsive rather than hanging the hook. (The caller's loud-degrade signal
+    // still reports the resulting non-semantic recall.)
+    #[tokio::test]
+    async fn ensure_memory_embeddings_fails_fast_when_embedder_down() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let manager = PersonaMemoryManager::new(Arc::new(DownEmbeddingProvider {
+            calls: calls.clone(),
+        }));
+        // 20 memories, none embedded.
+        let mems: Vec<_> = (0..20)
+            .map(|i| {
+                let mut m = make_corpus_memory(&format!("m{i}"), "content", 0.5);
+                m.embedding = None;
+                m
+            })
+            .collect();
+        manager.load_corpus("p1", mems, vec![]);
+        let corpus_lock = manager.get_corpus("p1").unwrap();
+
+        let n = manager.ensure_memory_embeddings(&corpus_lock).await;
+        assert_eq!(n, 0, "nothing embedded when the embedder is down");
+        // Bailed after the fail-fast threshold — did NOT attempt all 20.
+        let attempted = calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            attempted <= 4,
+            "should bail after ~3 empty embeds, not grind all 20 (attempted {attempted})"
+        );
     }
 
     #[tokio::test]
