@@ -18,6 +18,7 @@
 //! `plan_grid_placement` over a [`GridSnapshot`](crate::capacity::grid::GridSnapshot),
 //! so the resolution core stays pure and testable (a solo box passes `false`).
 
+use crate::capacity::grid::GridSnapshot;
 use crate::capacity::SystemProfile;
 use crate::cognition::serving_plan::{plan_serving, HostBudget, ModelFootprint};
 use crate::model_registry::types::Model;
@@ -115,19 +116,46 @@ pub fn resolve_from_footprint(
 /// carries (`{arch}.expert_count`), read via
 /// [`locate_layer_sets`](crate::genome::expert_layout::locate_layer_sets) /
 /// `gguf_keys::expert_count` at the site that already loads the header — NOT a
-/// hand-authored catalog field (the catalog's "ask the GGUF" discipline). `grid_has_fit`
-/// is the caller's grid verdict (derive from `plan_grid_placement` over a
-/// `GridSnapshot`); `false` on a solo box.
+/// hand-authored catalog field (the catalog's "ask the GGUF" discipline). `grid` is
+/// the live [`GridSnapshot`] (`None` on a solo box); the grid verdict is derived from
+/// it via [`grid_has_fit`].
 ///
 /// [`footprint_for`]: crate::modules::serving_daemon::footprint_for
 pub fn resolve_placement(
     profile: &SystemProfile,
     model: &Model,
     is_moe: bool,
-    grid_has_fit: bool,
+    grid: Option<&GridSnapshot>,
 ) -> PlacementResolution {
     let fp = crate::modules::serving_daemon::footprint_for(model);
-    resolve_from_footprint(profile, fp.as_ref(), is_moe, grid_has_fit)
+    let grid_fit = match (grid, fp.as_ref()) {
+        (Some(snapshot), Some(f)) => grid_has_fit(snapshot, f),
+        _ => false,
+    };
+    resolve_from_footprint(profile, fp.as_ref(), is_moe, grid_fit)
+}
+
+/// Does ANY reachable grid peer's live-free VRAM hold this model (weights + one
+/// lane's KV)? The grid verdict for [`resolve_placement`], honoring the "sum of
+/// per-node FITS, never an aggregate pool" doctrine ([`GridSnapshot`]): each reachable
+/// peer is tested with the SAME [`plan_serving`] oracle used locally, against its own
+/// live-free bytes. A peer that could only CPU-spill does NOT count as a fit
+/// (`fits_on_gpu = false`) — the grid resolves a model to a node that can actually
+/// GPU-serve it, or it degrades; it never routes to a node that can't.
+pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool {
+    snapshot
+        .peers
+        .iter()
+        .filter(|p| p.reachable)
+        .any(|p| {
+            let host = HostBudget {
+                usable_bytes: p.capacity.gpu_free_bytes_live,
+                perf_cores: 1,
+            };
+            plan_serving(host, std::slice::from_ref(footprint), 1)
+                .map(|plan| plan.fits_on_gpu)
+                .unwrap_or(false)
+        })
 }
 
 #[cfg(test)]
@@ -285,5 +313,53 @@ mod tests {
             resolve_from_footprint(&with_cold, Some(&small_moe), true, false),
             PlacementResolution::LocalRecommended { .. }
         ));
+    }
+
+    // what this catches: the grid verdict is a PER-NODE fit, never an aggregate pool
+    // (the GridSnapshot doctrine). grid_has_fit is true iff SOME reachable peer's
+    // live-free VRAM holds the model WHOLE — two small peers that "sum" to enough do
+    // NOT fit, an unreachable peer that would fit does NOT count, and a peer that could
+    // only CPU-spill does NOT count (fits_on_gpu = false).
+    #[test]
+    fn grid_has_fit_is_per_node_never_a_pool() {
+        use crate::capacity::grid::{GridSnapshot, PeerCapacity};
+        use crate::identity::PeerId;
+
+        let peer = |id: u128, free_gb: u64, reachable: bool| PeerCapacity {
+            peer: PeerId::from_u128(id),
+            capacity: DeviceCapacity {
+                gpu_total_bytes: 80 * GB,
+                gpu_free_bytes_live: free_gb * GB,
+                system_ram_free_bytes: 0,
+            },
+            reachable,
+        };
+        let local = DeviceCapacity {
+            gpu_total_bytes: 32 * GB,
+            gpu_free_bytes_live: 4 * GB,
+            system_ram_free_bytes: 0,
+        };
+        let fp = footprint(40); // needs ~40 GiB resident whole
+
+        // Two reachable 20 GiB peers — an aggregate POOL would "fit", per-node does NOT.
+        let pooled = GridSnapshot {
+            local,
+            peers: vec![peer(1, 20, true), peer(2, 20, true)],
+        };
+        assert!(!grid_has_fit(&pooled, &fp), "two 20GiB peers must NOT fit a 40GiB model — never a pool");
+
+        // One reachable peer with room fits.
+        let has_big = GridSnapshot {
+            local,
+            peers: vec![peer(3, 20, true), peer(4, 60, true)],
+        };
+        assert!(grid_has_fit(&has_big, &fp));
+
+        // A peer big enough but UNREACHABLE is a memory, not an offer.
+        let unreachable = GridSnapshot {
+            local,
+            peers: vec![peer(5, 60, false)],
+        };
+        assert!(!grid_has_fit(&unreachable, &fp));
     }
 }
