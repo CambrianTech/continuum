@@ -497,6 +497,25 @@ const REVIEW_MIN_AGE_MS: u64 = 10 * 60 * 1000;
 /// act. Code, not env (concurrency guide). [[the-fade-is-necessary...]] — the
 /// fade is right, but it must trickle, never flood.
 const REVIEW_ONLY_COOLDOWN_MS: u64 = 5 * 60 * 1000;
+/// Cooldown between autonomic RECEIVED-LESSON consolidation passes for one persona.
+/// Longer than the belief-review cooldown because a consolidation launches a TRAINING
+/// job (far heavier than a hygiene pass) — the being learns what she was taught on a
+/// trickle, never a storm, so the serving lane stays free for reactive work. This
+/// paces only the BACKGROUND self-consolidation; the reactive/explicit train paths are
+/// untouched. Code, not env (concurrency guide). [[the-fade-is-necessary...]] sibling:
+/// autonomy must trickle.
+const CONSOLIDATE_RECEIVED_COOLDOWN_MS: u64 = 30 * 60 * 1000;
+
+/// Pure rest-gate decision for the autonomic consolidation pass: has the cooldown
+/// elapsed since this persona's last pass? `None` last = never run = always allowed
+/// (the first pass). Extracted so the trickle discipline is unit-testable without a
+/// governor tick or an executor.
+fn consolidate_cooldown_elapsed(last_ms: Option<u64>, now: u64) -> bool {
+    match last_ms {
+        Some(last) => now.saturating_sub(last) >= CONSOLIDATE_RECEIVED_COOLDOWN_MS,
+        None => true,
+    }
+}
 /// Default minimum cluster size — below this an episode is not yet a pattern
 /// worth generalizing into a fact.
 const DEFAULT_MIN_CLUSTER: usize = 2;
@@ -572,6 +591,14 @@ pub struct DreamConsolidationRegion {
     /// [`REVIEW_ONLY_COOLDOWN_MS`] rest gate reads this so belief hygiene trickles
     /// instead of grinding the serving lane back-to-back (see that const's doc).
     last_review_ms: Arc<Mutex<HashMap<Uuid, u64>>>,
+    /// Per-persona wall-clock ms of the last autonomic received-lesson consolidation
+    /// pass — the [`CONSOLIDATE_RECEIVED_COOLDOWN_MS`] rest gate (training trickles).
+    last_consolidated_ms: Arc<Mutex<HashMap<Uuid, u64>>>,
+    /// Per-persona idempotence watermark: the newest shared-lesson timestamp already
+    /// consolidated, passed as `memory/consolidate`'s `since_timestamp` so a lesson is
+    /// never re-trained. In-memory; a restart re-consolidates from the corpus once
+    /// (the lift-gate rejects a redundant gene — safe, self-healing, just wasteful once).
+    consolidated_watermark: Arc<Mutex<HashMap<Uuid, String>>>,
 }
 
 /// Process-global handle to the ONE live dream region, installed at the ipc
@@ -592,6 +619,20 @@ pub fn global() -> Option<Arc<DreamConsolidationRegion>> {
     GLOBAL_DREAM_REGION.get().cloned()
 }
 
+/// The substrate-wired `CommandExecutor` the autonomic consolidation pass dispatches
+/// `memory/consolidate` through — the SAME executor `training_producer` + the memory
+/// commands use. Late-bound because the region is constructed before the executor
+/// exists; absent before install (tests, cold boot) makes the pass a quiet no-op.
+static CONSOLIDATE_EXECUTOR: crate::runtime::LateBound<crate::runtime::CommandExecutor> =
+    crate::runtime::LateBound::new("dream_consolidation::consolidate_executor");
+
+/// Install the executor the dream's autonomic consolidation pass dispatches through.
+/// Called once at boot, beside `training_producer::install_executor` (the L2 producer's
+/// install site) — same wired executor, so the background pass is gated identically.
+pub fn install_consolidate_executor(executor: Arc<crate::runtime::CommandExecutor>) {
+    CONSOLIDATE_EXECUTOR.install(executor);
+}
+
 impl DreamConsolidationRegion {
     pub fn new(source: Arc<dyn PersonaReflectionSource>) -> Self {
         Self {
@@ -602,6 +643,8 @@ impl DreamConsolidationRegion {
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             reviewed: Arc::new(Mutex::new(HashMap::new())),
             last_review_ms: Arc::new(Mutex::new(HashMap::new())),
+            last_consolidated_ms: Arc::new(Mutex::new(HashMap::new())),
+            consolidated_watermark: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -690,8 +733,15 @@ impl DreamConsolidationRegion {
         }
         let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
         if fresh.len() < self.min_cluster {
-            // Nothing new to digest — a QUIET day. The dream still works:
-            // review-only pass over her oldest unreviewed beliefs (slice 2c).
+            // Nothing new to digest — a QUIET day. The dream still works. Prefer
+            // consolidating what other agents TAUGHT her (received-lesson → genome,
+            // the being-loop's autonomic completion), else belief-hygiene review
+            // (slice 2c). At most ONE background pass per tick — both spawn onto the
+            // shared in_flight guard, and we return on the first that launches, so a
+            // dream and a consolidation never run for one persona at once.
+            if let Some(launched) = self.try_consolidate_received(persona_id) {
+                return launched;
+            }
             if let Some(launched) = self.try_review_only(&reflector, persona_id) {
                 return launched;
             }
@@ -777,6 +827,99 @@ impl DreamConsolidationRegion {
         let reflector = reflector.clone();
         tokio::spawn(async move {
             review_pass(reflector, persona_id, beliefs, reviewed).await;
+            in_flight.lock().unwrap().remove(&persona_id);
+        });
+        Some(TickOutcome {
+            published: 0,
+            consumed_since_last: 0,
+            pressure_observed: None,
+            cadence_hint: Some(CadenceHint::Sleep),
+        })
+    }
+
+    /// Launch an autonomic RECEIVED-LESSON consolidation pass — the being consolidating
+    /// what other agents taught her (`memory/share` #2025) into her genome WHILE SHE
+    /// SLEEPS, no operator command needed. The autonomic completion of the being-loop's
+    /// received axis: she learns from everything she's told, on her own cadence, and
+    /// benchmark-gated (the L3 sentinel adopts a lesson-gene only if it lifts #59 —
+    /// telepathy that can never make her worse).
+    ///
+    /// Same quiet-day discipline as [`try_review_only`]: a cooldown rest-gate (training
+    /// is expensive — trickle, never storm), the SHARED `in_flight` guard (never a dream
+    /// AND a consolidation for one persona at once), and the idempotence WATERMARK (only
+    /// lessons newer than the last consolidated timestamp — never re-train the same
+    /// lesson). Returns the launch outcome, or `None` when gated (caller falls through).
+    fn try_consolidate_received(&self, persona_id: Uuid) -> Option<TickOutcome> {
+        // Rest gate — trickle, never storm (a pass launches a training job).
+        let now = now_ms();
+        let last = self.last_consolidated_ms.lock().unwrap().get(&persona_id).copied();
+        if !consolidate_cooldown_elapsed(last, now) {
+            return None;
+        }
+        // The executor must be installed (a quiet no-op in tests / cold boot).
+        let executor = CONSOLIDATE_EXECUTOR.cloned()?;
+        // base_model = the live served model (the base a lesson-gene trains on). No
+        // ready lane → nothing to train against, and lane courtesy (never fire training
+        // into a wedged/absent lane — the same gate the dream pass applies at line ~687).
+        let live = crate::inference::llama_server::current_serving();
+        if !live.ready {
+            return None;
+        }
+        let base_model = live.active_model.clone()?;
+
+        // Mark the cooldown + in_flight BEFORE spawning so a governor re-tick during the
+        // pass is a cheap no-op (single caller → mark-then-spawn is race-free).
+        self.last_consolidated_ms.lock().unwrap().insert(persona_id, now);
+        self.in_flight.lock().unwrap().insert(persona_id);
+        let in_flight = Arc::clone(&self.in_flight);
+        let watermark = Arc::clone(&self.consolidated_watermark);
+        let since = watermark.lock().unwrap().get(&persona_id).cloned();
+
+        tokio::spawn(async move {
+            // Dispatch `memory/consolidate` AS the persona (its LocalPersona identity;
+            // the command re-gates the Privileged training submit internally).
+            let conn = continuum_client::Connection::new(crate::runtime::InProcessTransport::new(
+                executor,
+                Some(crate::routing::CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona_id),
+                )),
+            ));
+            let mut params = serde_json::json!({
+                "personaId": persona_id.to_string(),
+                "baseModel": base_model,
+            });
+            if let Some(ts) = since {
+                params["sinceTimestamp"] = serde_json::Value::String(ts);
+            }
+            match conn
+                .commands()
+                .execute_value("memory/consolidate", params)
+                .await
+            {
+                Ok(v) => {
+                    // Advance the watermark from the receipt so the next pass only sees
+                    // lessons newer than this — idempotent self-consolidation.
+                    if let Some(ts) = v
+                        .get("latest_consolidated_ts")
+                        .and_then(|t| t.as_str())
+                    {
+                        watermark.lock().unwrap().insert(persona_id, ts.to_string());
+                    }
+                    crate::probe!(
+                        class = "dream.consolidate_received",
+                        persona = %persona_id,
+                        consolidated = v.get("consolidated").and_then(|c| c.as_u64()).unwrap_or(0),
+                        "autonomic received-lesson consolidation dispatched to the training flywheel"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        persona = %persona_id,
+                        error = %e,
+                        "dream: autonomic received-lesson consolidation failed (best-effort, deferrable)"
+                    );
+                }
+            }
             in_flight.lock().unwrap().remove(&persona_id);
         });
         Some(TickOutcome {
@@ -1347,6 +1490,28 @@ mod tests {
         assert!(kept >= 1 && kept < 10, "dropped the tail to fit; kept {kept}");
         // The LAST kept engram is present whole (not truncated mid-content).
         assert!(block.contains(&format!("{}. {}", kept, big)));
+    }
+
+    // what this catches: the autonomic consolidation trickle gate. The FIRST pass (no
+    // prior timestamp) is always allowed; after a pass, another is refused until the
+    // cooldown elapses — training is expensive, so background self-consolidation must
+    // trickle, never storm the serving lane (same discipline as the belief-review gate).
+    #[test]
+    fn consolidate_cooldown_gates_the_autonomic_trickle() {
+        let now = 1_000_000_000u64;
+        // Never run before → always allowed.
+        assert!(consolidate_cooldown_elapsed(None, now));
+        // Just ran → refused until the cooldown passes.
+        assert!(!consolidate_cooldown_elapsed(Some(now), now));
+        assert!(!consolidate_cooldown_elapsed(
+            Some(now - (CONSOLIDATE_RECEIVED_COOLDOWN_MS - 1)),
+            now
+        ));
+        // Cooldown elapsed → allowed again.
+        assert!(consolidate_cooldown_elapsed(
+            Some(now - CONSOLIDATE_RECEIVED_COOLDOWN_MS),
+            now
+        ));
     }
 
     // what this catches: a single engram larger than the whole budget still distills
