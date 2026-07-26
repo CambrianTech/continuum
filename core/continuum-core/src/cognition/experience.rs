@@ -111,6 +111,52 @@ impl ExperienceRecord {
             acts: settled.acts as u32,
         }
     }
+
+    /// Capture a LIVED turn — a real room turn, not an exam — into the SAME
+    /// experience stream as [`from_eval`]. This is the unification: a lived chat
+    /// turn and an exam task are the SAME being acting in different contexts, so
+    /// they must not be two separate learning paths (the eval-curriculum flywheel
+    /// here, the recorder→dataset path there). One stream, one being.
+    /// (See [[lived-and-eval-experience-are-one-stream-one-being]] — eval may be a
+    /// different ENVIRONMENT, never a different BEING.)
+    ///
+    /// The lived-vs-eval difference is honestly encoded in the DATA, not a fork in
+    /// the machinery:
+    /// - **No ground-truth `test`.** A lived turn has no objective grader, so the
+    ///   synthetic [`EvalTask`] carries only the `stimulus` as its `prompt` and
+    ///   leaves `test`/`expect` empty. [`salient_teach_set`] already gates
+    ///   remediation on `test.is_some()`, so a lived episode can NEVER become a
+    ///   remediation teach task from a grade it never had — it flows to the
+    ///   *expansion* synthesizer (outlier B). The objective-remediation loop stays
+    ///   uncorrupted; the being still grows from lived experience.
+    /// - **`ok` means "settled without an infra fault", not "correct".** With no
+    ///   objective grade, the only end-to-end-instrumented lived verdict is whether
+    ///   the settle loop reached a decision or died on an inference/serving fault
+    ///   (`SettleOutcome.inference_error`) — the SAME honesty the eval path applies
+    ///   (an infra hiccup is never a capability miss). Capability-shaped lived
+    ///   salience (STRUGGLE via `acts` near the directed budget, REPETITION via the
+    ///   spin detector) is the named next detector — a real proxy, not faked here.
+    pub fn from_lived_turn(stimulus: &str, settled: &SettleOutcome) -> Self {
+        Self {
+            // The stimulus IS the task for a lived turn: the message she answered,
+            // posed as the prompt. No `test`/`expect` — nothing objective to grade
+            // against — so this record is expansion input, never remediation.
+            task: EvalTask {
+                prompt: stimulus.to_string(),
+                ..EvalTask::default()
+            },
+            // Settled cleanly = ok; died on a serving/inference fault = not ok. NOT
+            // a correctness claim — a lived turn has no grader (see doc above).
+            ok: settled.inference_error.is_none(),
+            grade: match &settled.inference_error {
+                Some(cause) => format!("lived turn: inference fault — {cause}"),
+                None => "lived turn: settled".to_string(),
+            },
+            answer: settled.spoken.clone().unwrap_or_default(),
+            world_state: settled.world_state.clone(),
+            acts: settled.acts as u32,
+        }
+    }
 }
 
 /// The selector in front of the teacher: decides whether a lived episode is
@@ -318,5 +364,47 @@ mod tests {
             "only the failed, test-graded task feeds remediation"
         );
         assert_eq!(set[0].id, "keep-me");
+    }
+
+    // What this catches: the UNIFICATION — a lived turn enters the SAME experience
+    // stream as an eval episode (untruncated answer, world-state, effort all
+    // retained, one being), yet because it carries NO ground-truth `test`, it can
+    // never leak into the objective-remediation set. A cleanly-settled lived turn
+    // is ok=true; an infra-faulted one is ok=false — but NEITHER becomes a
+    // remediation teach task (no test to validate a correction against). Lived
+    // experience grows the being via the expansion path, never by corrupting the
+    // grade-driven loop. Regression for the "one being, one stream" spine
+    // ([[lived-and-eval-experience-are-one-stream-one-being]]).
+    #[test]
+    fn from_lived_turn_joins_the_stream_but_never_the_remediation_set() {
+        let long_answer = "y".repeat(500); // same anti-truncation guarantee as eval
+        let settled = settled_speaking(&long_answer, 5, "answered in #general after code/search");
+
+        let lived = ExperienceRecord::from_lived_turn(
+            "what does build_workspace_cycle do?",
+            &settled,
+        );
+
+        // Same rich record shape as from_eval — the being is not stripped in either context.
+        assert_eq!(lived.answer.len(), 500, "lived answer survives whole, like eval");
+        assert_eq!(lived.acts, 5, "lived effort is retained");
+        assert!(lived.world_state.contains("code/search"), "lived trajectory retained");
+        assert!(lived.ok, "a cleanly-settled lived turn is ok (no infra fault) — NOT a correctness claim");
+        assert_eq!(lived.task.prompt, "what does build_workspace_cycle do?");
+        assert!(lived.task.test.is_none(), "a lived turn has no objective grader");
+
+        // A lived turn that died on a serving fault: ok=false, honest grade — but STILL untestable.
+        let faulted = SettleOutcome::infra_failure("lane 58057 refused qwen3");
+        let lived_fault = ExperienceRecord::from_lived_turn("ping", &faulted);
+        assert!(!lived_fault.ok, "an inference-faulted lived turn is not ok (same honesty as eval)");
+        assert!(lived_fault.grade.contains("inference fault"), "the fault cause is named in the grade");
+
+        // THE SAFETY GUARANTEE: neither lived record can reach remediation curriculum,
+        // because salient_teach_set gates on test.is_some() and a lived turn has none.
+        let set = salient_teach_set(&[lived, lived_fault], &ErrorSalience);
+        assert!(
+            set.is_empty(),
+            "lived turns feed EXPANSION, never grade-driven remediation — the objective loop stays uncorrupted"
+        );
     }
 }
