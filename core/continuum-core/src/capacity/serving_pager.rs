@@ -26,7 +26,7 @@
 //! let mut sp = ServingExpertPager::new(gguf_id, expert_bytes, margin, threshold, gate_seed);
 //! params.expert_observer = Some(sp.observer());          // attach the tally
 //! // ...each serving tick:
-//! let out = sp.tick(&live_system_profile, predicted)?;   // predicted from M5's predictor (empty ok)
+//! let out = sp.tick(&live_system_profile)?;   // reads hits + predicted from the owned observer
 //! if out.relaunch_needed { relaunch_with_placement(sp.resident()); sp.mark_relaunched(); }
 //! ```
 
@@ -110,19 +110,18 @@ impl ServingExpertPager {
         self.pager.resident()
     }
 
-    /// One serving-tick pass. Folds the decayed live hits, the predictor's forward-looking
-    /// `predicted` prefetch signal (empty = no predictor), and the static gate seed into an
-    /// [`ExpertActivationProfile`], runs [`expert_pager_step`] against the LIVE system
-    /// profile, and returns the outcome. The caller acts on `relaunch_needed`.
-    pub fn tick(
-        &mut self,
-        profile: &SystemProfile,
-        predicted: HashMap<ExpertId, f32>,
-    ) -> Result<PagerStepOutcome, PagerError> {
+    /// One serving-tick pass. Reads BOTH signals from the observer this driver owns —
+    /// the decayed live hits (`snapshot_hits`, RESIDENCY) and the predictor's forward-looking
+    /// prefetch confidence (`predicted`, PREFETCH) — folds them with the static gate seed into
+    /// an [`ExpertActivationProfile`], runs [`expert_pager_step`] against the LIVE system
+    /// profile, and returns the outcome. The caller acts on `relaunch_needed`. No prediction
+    /// arg to thread: the observer produces `predicted()` from the same activations it tallies
+    /// hits from, so the one owned Arc is the whole signal source.
+    pub fn tick(&mut self, profile: &SystemProfile) -> Result<PagerStepOutcome, PagerError> {
         let activation = ExpertActivationProfile {
             gate_magnitude: self.gate_magnitude.clone(),
             hits: self.decay_and_snapshot_hits(),
-            predicted,
+            predicted: self.observer.predicted(),
         };
         expert_pager_step(
             profile,
@@ -225,7 +224,7 @@ mod tests {
         for _ in 0..50 {
             obs.observe(0, &[0, 1, 2], 3);
         }
-        let out = sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
+        let out = sp.tick(&small_budget_profile()).unwrap();
         assert!(out.hot_experts > 0, "recorded activity produced a hot set");
         assert!(
             out.relaunch_needed,
@@ -247,9 +246,9 @@ mod tests {
             for _ in 0..100 {
                 obs.observe(0, &[0, 1, 2], 3);
             }
-            sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
+            sp.tick(&small_budget_profile()).unwrap();
         }
-        let out_a = sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
+        let out_a = sp.tick(&small_budget_profile()).unwrap();
         assert!(out_a.hot_experts > 0, "task A produced a hot set");
 
         // Task B: now experts 5,6,7 fire hard; 0,1,2 go silent. Run enough ticks to decay.
@@ -257,7 +256,7 @@ mod tests {
             for _ in 0..100 {
                 obs.observe(0, &[5, 6, 7], 3);
             }
-            sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
+            sp.tick(&small_budget_profile()).unwrap();
         }
         // The resident set must now include the task-B experts and have shed task-A ones.
         let resident = sp.resident();
@@ -281,11 +280,11 @@ mod tests {
         for _ in 0..50 {
             obs.observe(0, &[0, 1], 2);
         }
-        let out = sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
+        let out = sp.tick(&small_budget_profile()).unwrap();
         assert!(out.relaunch_needed, "set changed → relaunch");
         sp.mark_relaunched();
         // Same activity, no churn: no second relaunch.
-        let out2 = sp.tick(&small_budget_profile(), HashMap::new()).unwrap();
+        let out2 = sp.tick(&small_budget_profile()).unwrap();
         assert!(
             !out2.relaunch_needed,
             "no churn after mark_relaunched → no relaunch"
