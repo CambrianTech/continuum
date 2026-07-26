@@ -397,7 +397,7 @@ fn refuse_eval_lane_under_memory_pressure() -> Result<(), CommandError> {
 
 /// How long a lane bringup will WAIT for a transient pressure spike to clear
 /// before failing loud. Sized for the real spikes observed live (2026-07-22): a
-/// `cu reboot` cargo build or a sibling model cold-load pushes used/total past
+/// `continuum reboot` cargo build or a sibling model cold-load pushes used/total past
 /// 0.90 for a couple of minutes, then the machine returns to Normal. Deferring
 /// briefly turns "battery wiped out by a build" into "battery ran 3 minutes
 /// later"; a SUSTAINED squeeze still fails loud at the deadline.
@@ -2375,7 +2375,7 @@ const WORKSPACE_TEMPLATE_WAIT_TRIES: u32 = 10;
 /// fired seconds after boot can race ahead of it and see `None`. This race is NOT specific
 /// to one lane — it hits the live-lane, base-model-lane, AND gene-lane forks identically —
 /// so ALL of them retry through here (previously only the live-lane branch did, and a
-/// tool-using eval on a base_model_id fired right after `cu reboot` failed loud instead of
+/// tool-using eval on a base_model_id fired right after `continuum reboot` failed loud instead of
 /// waiting). `fork` is the per-lane fork call; retried up to
 /// [`WORKSPACE_TEMPLATE_WAIT_TRIES`] times, 1s apart, then `None` (caller fails loud).
 async fn fork_eval_cycle_waiting(

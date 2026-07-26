@@ -176,7 +176,7 @@ impl ActionCommand for KeysSet {
         Ok(KeysSetResult {
             name,
             provider: provider.clone(),
-            effective: "next core start (cu reboot)".to_string(),
+            effective: "next core start (continuum reboot)".to_string(),
         })
     }
 }

@@ -6,9 +6,9 @@
 //! script hand-building `{"hookSpecificOutput":{...}}` in shell needs `jq`/`python` to
 //! escape newlines + quotes in the recalled text — fragile, and it violates the no-python
 //! / no-hand-built-wire-format rules. The ROBUST answer is the substrate emitting the
-//! envelope through serde, where escaping is correct by construction. `cu` prints a
-//! command's raw result JSON (`cu.rs`: `to_string_pretty(&result)`), so
-//! `cu memory/recall-hook` writes exactly this envelope to stdout and the hook pipes it
+//! envelope through serde, where escaping is correct by construction. `continuum` prints a
+//! command's raw result JSON (`continuum.rs`: `to_string_pretty(&result)`), so
+//! `continuum memory/recall-hook` writes exactly this envelope to stdout and the hook pipes it
 //! straight through.
 //!
 //! A thin PROJECTION over [`super::multi_layer_recall`] — it reuses
@@ -164,7 +164,7 @@ mod tests {
         let out = SessionStartHookOutput {
             hook_specific_output: HookSpecificOutput {
                 hook_event_name: "SessionStart".to_string(),
-                additional_context: "## Relevant memories\n- use cu, not ctm\n- a \"quoted\" bit"
+                additional_context: "## Relevant memories\n- use continuum, not ctm\n- a \"quoted\" bit"
                     .to_string(),
             },
         };
@@ -174,7 +174,7 @@ mod tests {
         assert!(json.contains("\"additionalContext\""), "context key: {json}");
         // The literal newline + quote are escaped by serde, not left raw — the fragility a
         // shell here-string / jq hand-build would have to get exactly right.
-        assert!(json.contains("\\n- use cu"), "newline escaped by serde: {json}");
+        assert!(json.contains("\\n- use continuum"), "newline escaped by serde: {json}");
         assert!(json.contains("\\\"quoted\\\""), "inner quotes escaped by serde: {json}");
         // Round-trips back to the same struct.
         let back: SessionStartHookOutput = serde_json::from_str(&json).unwrap();

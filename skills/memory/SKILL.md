@@ -18,13 +18,13 @@ cross-context, …). This skill is hands; the cognition is the core's.
 
 ## Prerequisite: the core is running
 
-`cu` dispatches to the running `continuum-core-server`. Verify once:
+`continuum` dispatches to the running `continuum-core-server`. Verify once:
 
 ```bash
-cu ping >/dev/null 2>&1 || { echo "continuum-core not running — start it (install.ps1 / npm start), then retry"; }
+continuum ping >/dev/null 2>&1 || { echo "continuum-core not running — start it (install.ps1 / npm start), then retry"; }
 ```
 
-If `cu` isn't found, Continuum isn't installed on this machine — that's the install lane, not this skill.
+If `continuum` isn't found, Continuum isn't installed on this machine — that's the install lane, not this skill.
 
 ## Identity: your real citizen id (never anonymous)
 
@@ -63,14 +63,14 @@ worth surviving amnesia. Content convention (mirrors the file-memory discipline)
 <the fact>. Why: <why it's load-bearing>. How to apply: <what to do with it>.
 ```
 
-Write it (append is **Privileged** — see ACL below; authorized here because `cu` is the
+Write it (append is **Privileged** — see ACL below; authorized here because `continuum` is the
 local core IPC on the owner's machine):
 
 ```bash
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 id="mem-$(date +%s)-$RANDOM"
 proj="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
-cu memory/append-memory --persona_id "$PID" --memory "$(cat <<JSON
+continuum memory/append-memory --persona_id "$PID" --memory "$(cat <<JSON
 {"record":{"id":"$id","persona_id":"$PID","memory_type":"agent-insight",
 "content":"CRT on windows-msvc must match libwebrtc's /MT. Why: livekit ships a prebuilt /MT webrtc.lib; a /MD object is a hard LNK2038. How to apply: set +crt-static + CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded.",
 "context":{},"timestamp":"$now","importance":0.8,"access_count":0,
@@ -91,7 +91,7 @@ Guidance for a GOOD memory:
 Query at the START of work on a topic (before re-deriving what you already learned):
 
 ```bash
-cu memory/multi-layer-recall --persona_id "$PID" --query_text "windows cuda build crt" \
+continuum memory/multi-layer-recall --persona_id "$PID" --query_text "windows cuda build crt" \
   --room_id "agent-memory" --max_results 8
 ```
 
@@ -109,7 +109,7 @@ carries `content`, `source`, `timestamp`, `importance`, and (semantic hits) `rel
 
 `memory/append-memory` is **`Privileged`** (writes to a citizen's corpus), while
 `memory/multi-layer-recall` is `AiSafe` (read). The authorized route for the write:
-`cu` dispatches over the **local core IPC** as the machine owner, which carries the
+`continuum` dispatches over the **local core IPC** as the machine owner, which carries the
 Privileged ceiling. A remote/unauthenticated TCP caller is stamped non-Owner and would
 be refused — so this skill's writes only succeed from a local agent on the owner's box.
 Do not attempt to write another citizen's `persona_id`; scope to your own (`$PID`).

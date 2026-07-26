@@ -1,14 +1,14 @@
-//! `cu` — the pure-Rust Continuum CLI: the ONE surface for both lifecycle and
+//! `continuum` — the pure-Rust Continuum CLI: the ONE surface for both lifecycle and
 //! commands. Replaces the legacy Node `./jtag` and the bare start scripts.
 //!
 //! ```text
-//! cu start            # build + run the headless Rust core (detached), wait until ready
-//! cu reboot           # rebuild + relaunch, replacing any running core (~0 downtime)
+//! continuum start            # build + run the headless Rust core (detached), wait until ready
+//! continuum reboot           # rebuild + relaunch, replacing any running core (~0 downtime)
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
-//! cu stop             # stop the running core
-//! cu ping             # dispatch a command to the running core
-//! cu ping '{"message":"hi"}'
-//! cu data/list '{"collection":"users"}'
+//! continuum stop             # stop the running core
+//! continuum ping             # dispatch a command to the running core
+//! continuum ping '{"message":"hi"}'
+//! continuum data/list '{"collection":"users"}'
 //! ```
 //!
 //! Lifecycle (`start`/`stop`) wraps the pure-Rust `tools/scripts/start-server.sh`
@@ -29,7 +29,7 @@ use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use serde_json::Value;
 
 const DEFAULT_CORE_SOCKET: &str = "/tmp/continuum-core.sock";
-/// Where `cu start` records the detached core's PID so `cu stop` can find it.
+/// Where `continuum start` records the detached core's PID so `continuum stop` can find it.
 fn pidfile_for(socket: &str) -> String {
     format!("{socket}.pid")
 }
@@ -40,7 +40,7 @@ fn start_logfile() -> String {
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        eprintln!("cu: {e}");
+        eprintln!("continuum: {e}");
         std::process::exit(1);
     }
 }
@@ -66,7 +66,7 @@ async fn run() -> Result<(), String> {
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
         command => {
-            // Meet the operator's dialect: `cu read_file ...` / `cu code_read ...`
+            // Meet the operator's dialect: `continuum read_file ...` / `continuum code_read ...`
             // resolve to the canonical `code/read` through the SAME tool_dialect
             // section personas and the socket route use — so the CLI accepts the
             // same vocabulary, and help + param-adaptation below key off the real
@@ -82,7 +82,7 @@ async fn run() -> Result<(), String> {
     }
 }
 
-/// `cu <command> --help` — the CLI adapter for the command's manual: query the
+/// `continuum <command> --help` — the CLI adapter for the command's manual: query the
 /// live registry (`commands/list`) for the command's description + params schema,
 /// then render it as bash usage. Same single source the AI tool adapter reads;
 /// only the rendering differs by paradigm ("the manual matches the paradigm").
@@ -99,7 +99,7 @@ async fn help_for(command: &str) -> Result<(), String> {
             cmds.iter()
                 .find(|c| c.get("name").and_then(|n| n.as_str()) == Some(command))
         })
-        .ok_or_else(|| format!("unknown command `{command}` (try: cu commands/list)"))?;
+        .ok_or_else(|| format!("unknown command `{command}` (try: continuum commands/list)"))?;
     println!("{}", render_cli_help(command, info));
     Ok(())
 }
@@ -113,7 +113,7 @@ fn render_cli_help(command: &str, info: &Value) -> String {
         .unwrap_or("");
     let mut out = format!("{command} — {desc}\n\n");
     out.push_str(&format!(
-        "Usage: cu {command} [--flag value ...]   (or a single JSON object)\n"
+        "Usage: continuum {command} [--flag value ...]   (or a single JSON object)\n"
     ));
 
     let schema = info.get("paramsSchema");
@@ -176,7 +176,7 @@ fn schema_type_str(spec: &Value) -> String {
     }
 }
 
-/// camelCase → kebab-case for display (`roundTripMs` → `round-trip-ms`). cu's
+/// camelCase → kebab-case for display (`roundTripMs` → `round-trip-ms`). continuum's
 /// adapter accepts either form, so the displayed flag is also a valid one.
 fn camel_to_kebab(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
@@ -231,7 +231,7 @@ async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
 /// schema). A user flag is matched against them separator/case-insensitively, so
 /// `--persona_id`, `--persona-id`, `--personaId` all map to the schema's real
 /// `persona_id`. This is what makes snake_case Rust-native commands invokable by
-/// flag (regression: cu used to blanket-camelCase every key, turning `--persona_id`
+/// flag (regression: continuum used to blanket-camelCase every key, turning `--persona_id`
 /// into `personaId`, which the server rejected as `missing field persona_id`).
 /// Flags NOT in the schema — base `CommandParams` like userId, or commands that
 /// expose no schema (`canonical` empty) — fall back to the generic camelCase
@@ -372,7 +372,7 @@ async fn core_is_up() -> bool {
     )
 }
 
-/// `cu start` — build + run the headless Rust core (detached), wait until it
+/// `continuum start` — build + run the headless Rust core (detached), wait until it
 /// answers `ping`. Idempotent: a no-op if a core is already up.
 async fn start() -> Result<(), String> {
     let socket = socket_path();
@@ -385,8 +385,8 @@ async fn start() -> Result<(), String> {
     launch_core(&[]).await
 }
 
-/// `cu reboot` — rebuild + relaunch the core, replacing any running instance.
-/// Unlike `cu start` this never no-ops on an up core: start-server.sh builds the
+/// `continuum reboot` — rebuild + relaunch the core, replacing any running instance.
+/// Unlike `continuum start` this never no-ops on an up core: start-server.sh builds the
 /// fresh binary first (old core keeps serving), then stops the old core and
 /// execs the new one (~0 downtime). This is the canonical operator
 /// rebuild-after-edit verb — one command, no manual kill dance
@@ -403,7 +403,7 @@ async fn reboot(force: bool) -> Result<(), String> {
         return Err(format!(
             "training in flight (mlx_lm pid(s) {}) — a reboot would kill it and the \
              run would be journaled killed-by-reboot. Wait for it to finish, or rerun \
-             with `cu reboot --force` if losing the run is acceptable.",
+             with `continuum reboot --force` if losing the run is acceptable.",
             trainers
                 .iter()
                 .map(|p| p.to_string())
@@ -443,7 +443,7 @@ async fn reboot(force: bool) -> Result<(), String> {
 
 /// Prove the running core is built from the current git HEAD — the honest half of "reboot
 /// succeeded". Resolves the ACTUALLY-RUNNING core from its live pid (not a same-dir sibling of
-/// cu, which can be a stale different-profile leftover — see `running_core_binary`) and asks
+/// continuum, which can be a stale different-profile leftover — see `running_core_binary`) and asks
 /// THAT binary for its embedded build SHA, comparing it to HEAD. A mismatch means the build did
 /// NOT pick up your latest commit (a cache no-op or a failed compile that left a stale binary) —
 /// exactly the #194 trap that turned a whole session into ghost-hunting. Skips (with a warning)
@@ -505,12 +505,12 @@ fn git_head_short_sha() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The `continuum-core-server` binary sitting next to this `cu` in the target dir — the one
+/// The `continuum-core-server` binary sitting next to this `continuum` in the target dir — the one
 /// start-server.sh builds and launches. `None` if it can't be resolved.
 /// Path to the executable image of the ACTUALLY-RUNNING core, resolved from its live
-/// pid — NOT "the server binary next to cu". cu and the core can be different build
+/// pid — NOT "the server binary next to continuum". continuum and the core can be different build
 /// profiles: the deploy defaults to `debug` (fast-iterate) while a stale, hand-invoked
-/// `release/cu` would otherwise verify a stale `release/continuum-core-server` LEFTOVER
+/// `release/continuum` would otherwise verify a stale `release/continuum-core-server` LEFTOVER
 /// that is not the running process at all (observed 2026-07-25 — the guard cried
 /// "mismatch 9e7947b4" about an 11:00 release leftover with zero memory/* symbols while
 /// the running `debug` core was current HEAD). Verifying a binary that isn't running is
@@ -581,12 +581,12 @@ fn pid_alive(pid: i32) -> bool {
 }
 
 /// Spawn the pure-Rust start script detached and wait until the core answers
-/// `ping`. Shared by `cu start` (after an up-check) and `cu reboot` (always).
+/// `ping`. Shared by `continuum start` (after an up-check) and `continuum reboot` (always).
 ///
 /// `wait_for_death` is the set of core PIDs that must EXIT before we trust the
-/// ping. Without it, `cu reboot` would see the OLD core still answering on the
+/// ping. Without it, `continuum reboot` would see the OLD core still answering on the
 /// same socket and falsely report "ready" before the swap happened — a fail-loud
-/// violation that would also hide a failed rebuild. `cu start` passes `&[]`.
+/// violation that would also hide a failed rebuild. `continuum start` passes `&[]`.
 async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
     let socket = socket_path();
     let script = locate_start_script()?;
@@ -600,7 +600,7 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
     println!("▶ starting core via {} (log: {logfile})", script.display());
 
     // Spawn the pure-Rust start script in its OWN session (setsid) so it survives
-    // `cu` exiting — a detached daemon, not a child tied to this process.
+    // `continuum` exiting — a detached daemon, not a child tied to this process.
     let mut cmd = std::process::Command::new("bash");
     cmd.arg(&script)
         .env("CONTINUUM_CORE_SOCKET", &socket)
@@ -608,7 +608,7 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
     // Detach so the core outlives this CLI invocation. Unix: setsid() in the
-    // forked child before exec, off cu's session/controlling terminal. Windows:
+    // forked child before exec, off continuum's session/controlling terminal. Windows:
     // a new process group + detached process (no console tie).
     #[cfg(unix)]
     unsafe {
@@ -629,7 +629,7 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", script.display()))?;
 
-    // Record the PID so `cu stop` can find the detached process group.
+    // Record the PID so `continuum stop` can find the detached process group.
     let pidfile = pidfile_for(&socket);
     let _ = std::fs::write(&pidfile, child.id().to_string());
 
@@ -651,7 +651,7 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
     ))
 }
 
-/// `cu stop` — stop the running core (the detached session started by `cu start`).
+/// `continuum stop` — stop the running core (the detached session started by `continuum start`).
 async fn stop() -> Result<(), String> {
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
@@ -718,7 +718,7 @@ fn locate_start_script() -> Result<PathBuf, String> {
         if !dir.pop() {
             return Err(
                 "could not find tools/scripts/start-server.sh by walking up from the \
-                 cwd. Run `cu start` from inside the repo, or set CONTINUUM_START_SCRIPT."
+                 cwd. Run `continuum start` from inside the repo, or set CONTINUUM_START_SCRIPT."
                     .to_string(),
             );
         }
@@ -801,12 +801,12 @@ mod tests {
     }
 
     // what this catches: snake_case Rust-native command fields (e.g. cognition/eval's
-    // `persona_id`) must be invokable by flag. cu used to blanket-camelCase every key,
+    // `persona_id`) must be invokable by flag. continuum used to blanket-camelCase every key,
     // so `--persona_id` became `personaId` and the server rejected it with
     // `missing field persona_id`. With the command's schema known, any spelling of a
     // schema field canonicalizes to the exact field name; flags NOT in the schema
     // (base fields, schemaless commands) keep the legacy camelCase normalization.
-    // regression for the 2026-06-25 cu flag bug.
+    // regression for the 2026-06-25 continuum flag bug.
     #[test]
     fn flags_canonicalize_to_schema_field_names() {
         let canonical = vec!["persona_id".to_string(), "eval_set".to_string()];
@@ -878,19 +878,19 @@ mod tests {
 }
 
 fn usage() -> String {
-    "usage: cu <start|reboot|stop|command> [json | --key value ...]\n\
+    "usage: continuum <start|reboot|stop|command> [json | --key value ...]\n\
      \n\
      Lifecycle:\n  \
-       cu start                 build + run the headless Rust core (detached), wait until ready\n  \
-       cu reboot                rebuild + relaunch, replacing any running core (~0 downtime)\n  \
-       cu stop                  stop the running core\n\
+       continuum start                 build + run the headless Rust core (detached), wait until ready\n  \
+       continuum reboot                rebuild + relaunch, replacing any running core (~0 downtime)\n  \
+       continuum stop                  stop the running core\n\
      \n\
      Commands (dispatch to the running core):\n  \
-       cu ping\n  \
-       cu ping --message hi                 # --key value, coerced + camelCased automatically\n  \
-       cu ping '{\"message\":\"hi\"}'           # or a single JSON object (AI / power-user path)\n  \
-       cu commands/list                     # discover commands dynamically (single source)\n  \
-       cu commands/list --filter data/\n\
+       continuum ping\n  \
+       continuum ping --message hi                 # --key value, coerced + camelCased automatically\n  \
+       continuum ping '{\"message\":\"hi\"}'           # or a single JSON object (AI / power-user path)\n  \
+       continuum commands/list                     # discover commands dynamically (single source)\n  \
+       continuum commands/list --filter data/\n\
      \n\
      Env: CONTINUUM_CORE_SOCKET (default /tmp/continuum-core.sock)\n     \
           CONTINUUM_START_SCRIPT (override the start script path)"

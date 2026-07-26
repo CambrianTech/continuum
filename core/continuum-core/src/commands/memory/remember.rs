@@ -9,7 +9,7 @@
 //! BUILDS the record via serde: `id` (uuid) and `timestamp` are filled server-side, the
 //! agent provenance (`source`, `memory_type`, `context`, `tags`) is set consistently, and
 //! serde escapes everything by construction. `remember.sh` becomes:
-//! `cu memory/remember --persona-id <peer> --content "$1" --scope <proj>`.
+//! `continuum memory/remember --persona-id <peer> --content "$1" --scope <proj>`.
 //!
 //! Provenance mirrors the corpus half of the bridge (per [[agent-memory-bridge-agents-use-the-engram-substrate]]):
 //! `memory_type = "agent"`, `source = "agent:<peer>"`, `context = {agent_peer_id, session,
@@ -159,7 +159,7 @@ mod tests {
     fn agent_record_carries_the_bridge_provenance() {
         let r = build_agent_record(
             "peer-abc",
-            "use cu for same-machine, not ctm".to_string(),
+            "use continuum for same-machine, not ctm".to_string(),
             "continuum",
             Some("sess-1".to_string()),
             0.6,

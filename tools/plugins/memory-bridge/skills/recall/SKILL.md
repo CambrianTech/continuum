@@ -15,7 +15,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/recall.sh "$ARGUMENTS"
 ```
 
 The script runs the substrate's 6-layer relevance recall (recency / semantic /
-importance / cross-context …) via `cu memory/multi-layer-recall`, scoped to the
+importance / cross-context …) via `continuum memory/multi-layer-recall`, scoped to the
 current project, and prints the matching lessons most-relevant-first.
 
 `disable-model-invocation: true` — explicit lookup only. Automatic session-start

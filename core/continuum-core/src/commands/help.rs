@@ -1,7 +1,7 @@
 //! `commands/help` — the AI-paradigm manual: how to CALL a command, in the exact
 //! tool-call format the caller is expected to emit.
 //!
-//! Symmetry with the CLI: `cu <command> --help` renders the SAME single schema as
+//! Symmetry with the CLI: `continuum <command> --help` renders the SAME single schema as
 //! bash flags ("the manual matches the paradigm"); this renders it as the canonical
 //! tool-call envelope a persona emits. One source (`command_registry()` + the
 //! command's `params_schema`), two paradigms. So when a persona is unsure HOW to
@@ -256,7 +256,7 @@ mod param_shape_tests {
 
     // what this catches: an externally-tagged enum param (code/edit's EditMode) is EXPANDED
     // into its variants + a concrete example instead of collapsing to a useless "any" — the
-    // invisible-contract bug I hit firsthand taking the SWE-bench test through cu (a model
+    // invisible-contract bug I hit firsthand taking the SWE-bench test through continuum (a model
     // literally could not tell what edit_mode wanted). Fixture mirrors schemars output
     // ($ref → definitions with a oneOf of {Variant:{fields}}).
     #[test]

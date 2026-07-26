@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remember.sh — store a durable lesson in the agent's corpus via cu.
+# remember.sh — store a durable lesson in the agent's corpus via the continuum CLI.
 #
 # Usage: remember.sh "<lesson text>" ["tag1,tag2"]
 #
@@ -14,15 +14,20 @@ set -uo pipefail
 
 CONTENT="${1:-}"
 [ -n "$CONTENT" ] || { echo "remember: nothing to store (usage: remember \"lesson\" [tags])" >&2; exit 1; }
-command -v cu >/dev/null 2>&1 || { echo "remember: 'cu' not on PATH (is continuum-core-server installed?)" >&2; exit 1; }
 
-PERSONA="${CONTINUUM_AGENT_PERSONA:-$(airc status 2>/dev/null | awk '/^peer_id:/{print $2; exit}')}"
+# Resolve the continuum CLI robustly (NOT bare `cu` — collides with Unix UUCP).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/lib.sh"
+CONTINUUM="$(resolve_continuum)" || { echo "remember: 'continuum' CLI not found (build the core, or set CONTINUUM_BIN)" >&2; exit 1; }
+
+PERSONA="$(resolve_agent_persona)"
 [ -n "${PERSONA:-}" ] || { echo "remember: could not resolve agent persona (airc peer id)" >&2; exit 1; }
 SCOPE="$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
 
-if cu memory/remember --persona_id "$PERSONA" --content "$CONTENT" --scope "$SCOPE" 2>/dev/null | grep -q '"appended"\|"remembered"\|"id"'; then
+if "$CONTINUUM" memory/remember --persona_id "$PERSONA" --content "$CONTENT" --scope "$SCOPE" 2>/dev/null | grep -q '"appended"\|"remembered"\|"id"'; then
   echo "remembered (scope: $SCOPE): ${CONTENT:0:80}"
 else
-  echo "remember: cu memory/remember failed (is the server up? try: cu ping)" >&2
+  echo "remember: continuum memory/remember failed (is the server up? try: continuum ping)" >&2
   exit 1
 fi
