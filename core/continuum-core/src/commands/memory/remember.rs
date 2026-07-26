@@ -62,7 +62,7 @@ pub struct MemoryRememberParams {
 /// Pure: assemble an agent-authored [`MemoryRecord`] from flat inputs. Separated from the
 /// command so the provenance shaping is unit-testable without the manager. `id` + `timestamp`
 /// are passed in (the command generates them) to keep this deterministic.
-fn build_agent_record(
+pub(super) fn build_agent_record(
     persona_id: &str,
     content: String,
     scope: &str,

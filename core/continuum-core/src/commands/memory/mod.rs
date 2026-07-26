@@ -33,6 +33,7 @@ pub mod append_memory;
 pub mod consciousness_context;
 pub mod load_corpus;
 pub mod multi_layer_recall;
+pub mod import;
 pub mod recall_hook;
 pub mod remember;
 
@@ -41,6 +42,7 @@ use append_memory::MemoryAppendMemory;
 use consciousness_context::MemoryConsciousnessContext;
 use load_corpus::MemoryLoadCorpus;
 use multi_layer_recall::MemoryMultiLayerRecall;
+use import::MemoryImport;
 use recall_hook::MemoryRecallHook;
 use remember::MemoryRemember;
 
@@ -60,6 +62,7 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(MemoryLoadCorpus { state: state.clone() }),
         Arc::new(MemoryMultiLayerRecall { state: state.clone() }),
+        Arc::new(MemoryImport { state: state.clone() }),
         Arc::new(MemoryRecallHook { state: state.clone() }),
         Arc::new(MemoryRemember { state: state.clone() }),
         Arc::new(MemoryConsciousnessContext { state: state.clone() }),
