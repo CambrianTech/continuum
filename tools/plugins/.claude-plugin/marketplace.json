@@ -1,5 +1,6 @@
 {
   "name": "continuum-local-tools",
+  "description": "Continuum's local Claude Code plugins — agent-facing bridges into the continuum substrate (memory recall/remember, and more as they land).",
   "owner": {
     "name": "Continuum"
   },
