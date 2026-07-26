@@ -33,6 +33,7 @@ pub mod lease;
 pub mod recursion_depth;
 pub mod residency_detect;
 pub mod score;
+pub mod serving_pager;
 pub mod sim;
 pub mod system_profile;
 
