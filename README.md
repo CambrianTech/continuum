@@ -1,4 +1,4 @@
-# continuum
+# [continuum](docs/WHY-CONTINUUM.md)
 
 ### A distributed AI world that runs on your hardware.
 
