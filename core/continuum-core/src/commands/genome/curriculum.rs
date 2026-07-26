@@ -43,8 +43,9 @@ use super::teach::{synthesize_remediation, RemediationCorpus};
 use super::teach::{DEFAULT_MAX_FIX_ITERS, DEFAULT_TEMPERATURE};
 use crate::cognition::eval::EvalTask;
 use crate::cognition::experience::{
-    salient_teach_set, ErrorSalience, ExperienceRecord, SalienceDetector,
+    salient_teach_set, ErrorSalience, ExperienceRecord, ExperienceSource, SalienceDetector,
 };
+use serde_json::{json, Value};
 use crate::cognition::inference_session::resolve_model;
 use crate::sdk_codegen::CommandError;
 
@@ -168,6 +169,53 @@ impl CurriculumSynthesizer for RemediationSynthesizer {
     }
 }
 
+/// **Expansion — the received-lesson path (the honest floor of outlier B).** Turn
+/// salient UNtestable episodes into SFT `{"messages":[…]}` examples for the SAME
+/// dataset→train→eval→page-in flywheel the remediation path feeds — the efferent organ
+/// for [`crate::cognition::experience::expansion_teach_set`]. The examples are written
+/// as a dataset (mirroring `dataset/from-turns`) and handed to the existing
+/// `genome/job-create`; validation is per-CONSOLIDATION by whole-being benchmark lift
+/// (#59), never per-trajectory, which is exactly what makes untestable material safe to
+/// train on ([[lived-and-eval-experience-are-one-stream-one-being]]).
+///
+/// Today this builds the **Received** axis directly: a shared lesson's content is
+/// *deliberately-authored true knowledge* (not a synthesized guess), so it becomes a
+/// teaching pair without an LLM teacher — instilling into the GENOME what `memory/share`
+/// (#2025) handed into the corpus. That is the telepathy→weights step: a lesson one
+/// agent learns becomes another's trained-in capability, not just a retrieved note.
+///
+/// The **Lived** axis (generalize a non-converged trajectory into a lesson) is skipped
+/// here on purpose: without a known-correct answer, turning a failure into a "lesson"
+/// needs an LLM teacher to avoid confident garbage — named as the enrichment path
+/// (outlier B of this outlier B), never faked with a low-quality template
+/// ([[fallbacks-are-illegal-fail-loud]]). Empty in → empty out (no fitness gap is a
+/// legitimate outcome, not a fault).
+pub fn expansion_examples(records: &[ExperienceRecord]) -> Vec<Value> {
+    records
+        .iter()
+        // Only the received axis is directly teachable today; lived-generalization is
+        // the named LLM-teacher path, not faked here.
+        .filter(|r| r.source == ExperienceSource::Received)
+        .filter(|r| !r.answer.trim().is_empty())
+        .map(|r| {
+            // The lesson content IS the knowledge (the assistant turn). Frame it by its
+            // topic — `task.prompt` carries the shared lesson's scope; a bare lesson with
+            // no scope still stands on its own as the thing to know.
+            let topic = if r.task.prompt.trim().is_empty() {
+                "What have you learned that's worth remembering?".to_string()
+            } else {
+                format!("What have you learned about {}?", r.task.prompt.trim())
+            };
+            json!({
+                "messages": [
+                    { "role": "user", "content": topic },
+                    { "role": "assistant", "content": r.answer.trim() },
+                ]
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +292,53 @@ mod tests {
     #[test]
     fn name_is_stable() {
         assert_eq!(RemediationSynthesizer::new().name(), "remediation");
+    }
+
+    // What this catches: the expansion floor — a RECEIVED lesson becomes a real SFT
+    // {messages} example (the lesson content as the assistant turn, keyed on its topic),
+    // so telepathy reaches the GENOME: what memory/share wrote into the corpus becomes
+    // trained-in capability. A LIVED non-convergence is skipped (needs an LLM teacher,
+    // not faked), and a received lesson with empty content is dropped. This is the
+    // dataset the dream hands to genome/job-create, validated downstream by benchmark lift.
+    #[test]
+    fn expansion_examples_teaches_received_lessons_and_skips_lived() {
+        let received = ExperienceRecord {
+            task: EvalTask { prompt: "continuum".to_string(), ..EvalTask::default() },
+            ok: true,
+            grade: "received lesson from BigMama".to_string(),
+            answer: "the call room IS the airc room — never mint a rogue call_id".to_string(),
+            world_state: String::new(),
+            acts: 0,
+            source: ExperienceSource::Received,
+        };
+        // A lived turn is salient-untestable too, but not directly teachable — LLM path.
+        let lived = ExperienceRecord {
+            task: EvalTask::default(),
+            ok: false,
+            grade: "lived turn: did not converge".to_string(),
+            answer: "half-finished attempt".to_string(),
+            world_state: String::new(),
+            acts: 8,
+            source: ExperienceSource::Lived,
+        };
+        // An empty received lesson has nothing to teach.
+        let empty_received = ExperienceRecord {
+            answer: "   ".to_string(),
+            ..received.clone()
+        };
+
+        let examples = expansion_examples(&[received, lived, empty_received]);
+        assert_eq!(examples.len(), 1, "only the non-empty received lesson is directly teachable");
+
+        let msgs = examples[0]["messages"].as_array().expect("messages array");
+        assert_eq!(msgs[0]["role"], "user");
+        assert!(msgs[0]["content"].as_str().unwrap().contains("continuum"), "the topic frames the lesson");
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert!(
+            msgs[1]["content"].as_str().unwrap().contains("call room IS the airc room"),
+            "the lesson content is the trained-in knowledge"
+        );
+
+        assert!(expansion_examples(&[]).is_empty(), "empty in → empty out (no gap is a legitimate outcome)");
     }
 }
