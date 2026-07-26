@@ -55,6 +55,26 @@ pub struct MemoryConsolidateParams {
     /// The base model the lesson-gene trains on. The operator names it for this explicit
     /// command; the autonomic tick will resolve it from the serving snapshot instead.
     pub base_model: String,
+    /// Idempotence watermark: consolidate ONLY shared lessons with a timestamp strictly
+    /// after this (rfc3339, lexicographically ordered). Omit to consolidate all (the
+    /// explicit first run). The autonomic tick persists [`ConsolidateResult::latest_consolidated_ts`]
+    /// and passes it back here next cycle, so a lesson is never re-trained — a repeating
+    /// tick without this would re-spend training compute on the same lessons forever.
+    #[serde(default)]
+    #[ts(optional)]
+    pub since_timestamp: Option<String>,
+}
+
+/// Whether a shared lesson is newer than the idempotence watermark. Pure so the
+/// watermark contract (the thing that makes autonomic consolidation not re-train the
+/// same lesson) is unit-testable without the executor. rfc3339 timestamps compare
+/// lexicographically, so a plain `>` is a correct chronological test for same-format
+/// stamps; an absent `since` admits everything (the first, full run).
+pub(crate) fn is_after_watermark(record_ts: &str, since: Option<&str>) -> bool {
+    match since {
+        Some(watermark) => record_ts > watermark,
+        None => true,
+    }
 }
 
 /// What `memory/consolidate` did — a truthful receipt (synchronous submit, so `consolidated`
@@ -65,10 +85,16 @@ pub struct MemoryConsolidateParams {
     export_to = "../../../protocol/typescript/memory/ConsolidateResult.ts"
 )]
 pub struct ConsolidateResult {
-    /// Shared lessons found in the persona's corpus.
+    /// Shared lessons found in the persona's corpus (after the `since_timestamp` watermark).
     pub shared_lessons: usize,
     /// Of those, how many were dispatched into the training flywheel.
     pub consolidated: usize,
+    /// The newest timestamp among the lessons consolidated this run — the caller (the
+    /// autonomic tick) persists this and passes it as the next `since_timestamp`, so no
+    /// lesson is ever re-trained. `None` when nothing was consolidated.
+    #[serde(default)]
+    #[ts(optional)]
+    pub latest_consolidated_ts: Option<String>,
 }
 
 crate::action_command! {
@@ -112,7 +138,10 @@ crate::action_command! {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        let shared_lessons = items.len();
+        // Counted below as those that pass the watermark + are non-empty (the candidates
+        // in scope THIS run), not the raw row count — so a re-run past the watermark
+        // honestly reports "0 new lessons".
+        let mut shared_lessons = 0usize;
 
         // Dispatch AS the persona: its LocalPersona identity gates the Privileged submit,
         // exactly like the live-turn producer ([[persona-is-a-client]]).
@@ -124,6 +153,7 @@ crate::action_command! {
         ));
         let classifier = DomainClassifier::new();
         let mut consolidated = 0usize;
+        let mut latest_consolidated_ts: Option<String> = None;
 
         for item in &items {
             let Some(data) = item.get("data") else { continue };
@@ -142,11 +172,17 @@ crate::action_command! {
             let Ok(record) = serde_json::from_value::<MemoryRecord>(data) else {
                 continue;
             };
+            // Idempotence: skip lessons at/before the watermark — already consolidated on
+            // a prior run/tick. A repeating tick without this re-trains forever.
+            if !is_after_watermark(&record.timestamp, p.since_timestamp.as_deref()) {
+                continue;
+            }
             // ONE source of truth for received → (topic, lesson): from_shared_lesson.
             let episode = ExperienceRecord::from_shared_lesson(&record);
             if episode.answer.trim().is_empty() {
                 continue;
             }
+            shared_lessons += 1; // an in-scope, non-empty candidate this run
             let plan = plan_received(&classifier, &episode.task.prompt, &episode.answer);
             let params =
                 build_submit_params(persona_uuid, &persona_name, &p.base_model, &plan, "received-lesson");
@@ -155,7 +191,16 @@ crate::action_command! {
                 .execute_value("genome/training-trigger/submit", params)
                 .await
             {
-                Ok(_) => consolidated += 1,
+                Ok(_) => {
+                    consolidated += 1;
+                    // Advance the watermark to the newest lesson actually consolidated.
+                    if latest_consolidated_ts
+                        .as_deref()
+                        .map_or(true, |ts| record.timestamp.as_str() > ts)
+                    {
+                        latest_consolidated_ts = Some(record.timestamp.clone());
+                    }
+                }
                 Err(e) => log_info!(
                     "module",
                     "memory_consolidate",
@@ -170,6 +215,28 @@ crate::action_command! {
             "Consolidated {consolidated}/{shared_lessons} shared lessons for {} into the training flywheel",
             p.persona_id
         );
-        Ok(ConsolidateResult { shared_lessons, consolidated })
+        Ok(ConsolidateResult { shared_lessons, consolidated, latest_consolidated_ts })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_after_watermark;
+
+    // what this catches: the idempotence watermark that makes autonomic consolidation
+    // not re-train the same lesson every cycle. No watermark → everything is in scope
+    // (the first full run); a watermark → only strictly-newer lessons, so the tick's
+    // "consolidate what's new since last time" is exact and rfc3339-ordered.
+    #[test]
+    fn watermark_admits_only_strictly_newer_lessons() {
+        // First run: no watermark → every lesson is a candidate.
+        assert!(is_after_watermark("2026-07-26T00:00:00Z", None));
+
+        // A lesson strictly newer than the watermark is admitted...
+        assert!(is_after_watermark("2026-07-26T12:00:00Z", Some("2026-07-26T08:00:00Z")));
+        // ...one AT the watermark is not (already consolidated on the run that set it)...
+        assert!(!is_after_watermark("2026-07-26T08:00:00Z", Some("2026-07-26T08:00:00Z")));
+        // ...and an older one is not (a re-run must not re-train it).
+        assert!(!is_after_watermark("2026-07-25T23:59:59Z", Some("2026-07-26T08:00:00Z")));
     }
 }

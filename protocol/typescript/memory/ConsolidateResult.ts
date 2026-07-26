@@ -6,10 +6,16 @@
  */
 export type ConsolidateResult = { 
 /**
- * Shared lessons found in the persona's corpus.
+ * Shared lessons found in the persona's corpus (after the `since_timestamp` watermark).
  */
 shared_lessons: number, 
 /**
  * Of those, how many were dispatched into the training flywheel.
  */
-consolidated: number, };
+consolidated: number, 
+/**
+ * The newest timestamp among the lessons consolidated this run — the caller (the
+ * autonomic tick) persists this and passes it as the next `since_timestamp`, so no
+ * lesson is ever re-trained. `None` when nothing was consolidated.
+ */
+latest_consolidated_ts?: string, };

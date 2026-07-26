@@ -16,4 +16,12 @@ persona_name?: string,
  * The base model the lesson-gene trains on. The operator names it for this explicit
  * command; the autonomic tick will resolve it from the serving snapshot instead.
  */
-base_model: string, };
+base_model: string, 
+/**
+ * Idempotence watermark: consolidate ONLY shared lessons with a timestamp strictly
+ * after this (rfc3339, lexicographically ordered). Omit to consolidate all (the
+ * explicit first run). The autonomic tick persists [`ConsolidateResult::latest_consolidated_ts`]
+ * and passes it back here next cycle, so a lesson is never re-trained — a repeating
+ * tick without this would re-spend training compute on the same lessons forever.
+ */
+since_timestamp?: string, };
