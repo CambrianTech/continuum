@@ -541,13 +541,14 @@ pub fn plan_serving_stable(
     candidates: &[ModelFootprint],
     incumbent: Option<&str>,
     demand_lanes: u32,
+    demand_ceil: u32,
 ) -> Option<ServingPlan> {
     // NB: do NOT `?`-bail here. A deep transient dip can leave `plan_serving`
     // with nothing fitting the depressed budget (`fresh` = None) while a model
     // is STILL resident and serving fine — its memory is its own. Tearing that
     // down to "nothing" is the exact harm we're guarding against, so `fresh` is
     // an Option we fall back to only when the incumbent genuinely can't hold.
-    let fresh = plan_serving(host, candidates, demand_lanes);
+    let fresh = plan_serving_with_demand(host, candidates, demand_lanes, demand_ceil);
     let Some(inc_id) = incumbent else {
         return fresh;
     };
@@ -599,7 +600,7 @@ pub fn plan_serving_stable(
     if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
         m.capability_rank = u8::MAX;
     }
-    plan_serving(at_rest, &promoted, demand_lanes)
+    plan_serving_with_demand(at_rest, &promoted, demand_lanes, demand_ceil)
 }
 
 fn bytes_gb(bytes: u64) -> f64 {
@@ -1062,7 +1063,7 @@ mod tests {
     fn stable_with_no_incumbent_equals_plain() {
         let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
         assert_eq!(
-            plan_serving_stable(host, &pair(), None, MAX_LANES),
+            plan_serving_stable(host, &pair(), None, MAX_LANES, BOOTSTRAP_WORKING_SET),
             plan_serving(host, &pair(), MAX_LANES)
         );
     }
@@ -1075,7 +1076,7 @@ mod tests {
         // 10GB: big (9.7GB) fits a lane but exceeds the 0.9*10=9GB headroom bar.
         let host = HostBudget { usable_bytes: 10 * GB, perf_cores: 6 };
         assert_eq!(plan_serving(host, &pair(), MAX_LANES).unwrap().base_model_id, "big", "fresh would pick big");
-        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "small", "hysteresis keeps incumbent — no flap");
         assert!(stable.lanes >= 1, "lanes still re-tracked for the kept model");
     }
@@ -1085,7 +1086,7 @@ mod tests {
     #[test]
     fn stable_upgrades_when_better_model_fits_with_headroom() {
         let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 }; // big 9.7 << 0.9*20=18
-        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "big", "more capable + ample headroom → upgrade");
     }
 
@@ -1100,7 +1101,7 @@ mod tests {
     fn stable_forced_down_when_incumbent_gone_from_disk() {
         let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
         let only_small = vec![fp("small", 1, 4_000, 32_768, 1)]; // "big" no longer on disk
-        let stable = plan_serving_stable(host, &only_small, Some("big"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(host, &only_small, Some("big"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "small", "incumbent gone from disk → serve what's present");
     }
 
@@ -1124,7 +1125,7 @@ mod tests {
             "depressed-budget plain plan would flap to the smaller model"
         );
         // With the incumbent credited its own weights back, the resident big stays.
-        let stable = plan_serving_stable(dipped, &pair(), Some("big"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(dipped, &pair(), Some("big"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "big", "incumbent survives its OWN load dip — no flap");
         assert!(stable.lanes >= 1, "kept model still gets ≥1 lane");
     }
