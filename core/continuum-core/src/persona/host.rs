@@ -328,6 +328,10 @@ impl PersonaSpawnSupervisor {
                         as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
                 })
             },
+            // Grid-overflow effector closure (slice 4b-ii wires the live capacity +
+            // residency + airc context here). Until then every persona builds her
+            // local adapter — no off-box routing, the pre-effector behavior.
+            |_profile, _slot| None,
         )
         .await;
 
