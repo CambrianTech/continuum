@@ -20,6 +20,7 @@ use std::path::Path;
 use candle_core::quantized::gguf_file::Content;
 
 use super::expert_residency::ExpertId;
+use super::placement::PlacementRequest;
 use super::serving_pager::ServingExpertPager;
 use crate::genome::expert_layout::locate_layer_sets;
 use crate::genome::gate_magnitude::locate_gate_magnitudes;
@@ -36,6 +37,12 @@ pub struct MoeServingContext {
     /// TOTAL transformer block count — the `-ot` iteration ceiling the launcher needs to
     /// compute the cold (CPU) complement of the hot layers.
     pub n_layers: u32,
+    /// The placement the served process was last (re)launched with — the DEBOUNCED value the
+    /// serving target carries. A layer-placement pass only overwrites this when a relaunch is
+    /// warranted (churn past the threshold), so the target stays byte-stable across ticks that
+    /// don't warrant a respawn and the launcher's target-diff doesn't fire spuriously. `None`
+    /// until the first placement.
+    pub committed_placement: Option<PlacementRequest>,
 }
 
 /// Build a [`MoeServingContext`] from a model's GGUF, or `None` if the model is dense (no MoE
@@ -79,5 +86,6 @@ pub fn moe_serving_context(
         pager,
         n_experts_per_layer,
         n_layers,
+        committed_placement: None,
     })
 }
