@@ -143,12 +143,22 @@ esac
 # installer FAILs LOUD at the cause [[fallbacks-are-illegal-fail-loud]].
 OWNED_BIN="${CONTINUUM_HOME:-$HOME/.continuum}/bin/llama-server"
 if [ -n "${LLAMA_SERVER_BIN:-}" ] && [ -x "${LLAMA_SERVER_BIN}" ]; then
+  # Explicit operator override — use verbatim, no sync (they own it).
   export PATH="$(dirname "${LLAMA_SERVER_BIN}"):$PATH"
-elif [ -x "$OWNED_BIN" ]; then
-  export PATH="$(dirname "$OWNED_BIN"):$PATH"
-elif ! command -v llama-server >/dev/null 2>&1; then
-  echo "→ llama-server not installed; building it from our vendored llama.cpp …" >&2
-  if "$SCRIPT_DIR/install-llama-server.sh" >&2 && [ -x "$OWNED_BIN" ]; then
+else
+  # Run the STAMP-GATED builder unconditionally — NOT only when the binary is missing.
+  # install-llama-server.sh stamps the binary with the vendored-fork commit + backend and
+  # skips instantly when it matches, but REBUILDS when the submodule moved. The old
+  # `elif [ -x "$OWNED_BIN" ]` short-circuit used an EXISTING binary without checking the
+  # stamp, so after a fork sync the serving binary silently drifted a month behind the
+  # vendored lib — the daemon served with OLD llama-server (missing our cold-expert-ot /
+  # get_tensor / upload_expert / MXFP4 patches) while continuum-core linked the NEW lib.
+  # Always calling it is the llama-server twin of the #194 stale-check start-server already
+  # does for continuum-core-server: one artifact, one fork, kept in lockstep by construction.
+  if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
+    echo "⚠ install-llama-server.sh failed; falling back to any existing owned/PATH binary" >&2
+  fi
+  if [ -x "$OWNED_BIN" ]; then
     export PATH="$(dirname "$OWNED_BIN"):$PATH"
   fi
 fi
