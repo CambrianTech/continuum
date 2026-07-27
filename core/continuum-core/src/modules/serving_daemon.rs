@@ -200,6 +200,15 @@ pub struct ServingDaemonModule {
     /// held across an await. The pager inside owns the live-hit observer + the gate seed; each
     /// reconcile ticks it to decide the served expert-layer placement.
     moe_serving: std::sync::Mutex<Option<(String, crate::capacity::moe_serving::MoeServingContext)>>,
+    /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
+    /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
+    /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
+    /// to spill expert layers onto CPU — the only way to measure the B-gate (does cold-expert
+    /// CPU-compute dominate decode?) without a model that genuinely overflows. It is an
+    /// experimental control, NOT a substrate threshold: `None` in all normal operation, and
+    /// every placement made under it is flagged on the `serving.k3_placement` probe so the
+    /// numbers are never mistaken for real capacity. [[k3-slice2-A-vs-B-decision]]
+    measure_force_expert_budget_bytes: Option<u64>,
     /// Model ids the operator has explicitly UNLOADED — the VRAM-axis "free".
     /// The daemon is holistically in charge of VRAM, so freeing a lane is a
     /// runtime act, never a restart: `serving/unload` inserts an id here, the
@@ -288,6 +297,11 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             moe_serving: std::sync::Mutex::new(None),
+            // Read ONCE here (single config entry point, no per-tick I/O). Off by default.
+            measure_force_expert_budget_bytes: crate::config_env::read(
+                "K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES",
+            )
+            .and_then(|s| s.trim().parse::<u64>().ok()),
         }
     }
 
@@ -602,7 +616,11 @@ impl ServingDaemonModule {
     /// unresolved GGUF, or a zero budget. Pure of I/O except the one GGUF read on a model
     /// change; the sync `Mutex` is never held across an await (this whole method is sync).
     fn compute_expert_placement(&self, model: &Model) -> Option<PlacementRequest> {
-        let budget = governed_vram_ceiling(&self.resource_daemon).unwrap_or(0);
+        // MEASUREMENT knob (off by default): a forced budget OVERRIDES the governed ceiling so
+        // a fits-in-VRAM model spills expert layers to CPU, making the B-gate measurable. Every
+        // placement made under it is flagged on the probe below — never mistaken for capacity.
+        let forced = self.measure_force_expert_budget_bytes;
+        let budget = forced.unwrap_or_else(|| governed_vram_ceiling(&self.resource_daemon).unwrap_or(0));
         if budget == 0 {
             return None;
         }
@@ -630,14 +648,18 @@ impl ServingDaemonModule {
             class = "serving.k3_placement",
             model = model.id.as_str(),
             budget_bytes = budget,
+            // TRUE when the budget is the measurement override, not the governed ceiling — so a
+            // reader knows the hot/cold split is under an artificial constraint (the B-gate sweep).
+            measurement_forced = forced.is_some(),
             n_layers = ctx.n_layers,
             n_experts_per_layer = ctx.n_experts_per_layer,
             hot_layers = outcome.request.hot_layers.len(),
             needs_relaunch = outcome.needs_relaunch,
-            "K3 expert-layer placement: fit {} of {} layers hot on {} GiB budget",
+            "K3 expert-layer placement: fit {} of {} layers hot on {} GiB budget{}",
             outcome.request.hot_layers.len(),
             ctx.n_layers,
             budget / (1024 * 1024 * 1024),
+            if forced.is_some() { " [MEASUREMENT-FORCED]" } else { "" },
         );
         if outcome.needs_relaunch {
             ctx.pager.mark_layer_relaunched(&outcome.request.hot_layers);
