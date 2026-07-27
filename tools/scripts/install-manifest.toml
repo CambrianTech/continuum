@@ -159,6 +159,12 @@ formula = "cmake"
 [module.sources.linux]
 type = "apt"              # run-verify pending on a linux node
 package = "cmake"
+[module.runtime_path]
+# The Windows archive installs to ~/.continuum/tools/cmake; its bin/ MUST be on
+# PATH at BUILD time — the llama crate's build.rs shells out to `cmake` to compile
+# vendored llama.cpp, and nvcc-free directml builds still need it. brew/apt already
+# put cmake on PATH, so this is windows-only. [[windows-build-env-drift]]
+windows = ["~/.continuum/tools/cmake/bin"]
 
 [[module]]
 id = "llvm-libclang"
@@ -183,6 +189,11 @@ accept_macos = "test -f /Library/Developer/CommandLineTools/usr/lib/libclang.dyl
 type = "apt"              # run-verify pending on a linux node
 package = "libclang-dev"
 accept_linux = "test -f /usr/lib/llvm-18/lib/libclang.so.1 || ldconfig -p | grep -q libclang"
+[module.runtime_path]
+# The Windows archive installs libclang.dll to ~/.continuum/tools/llvm/bin; on PATH
+# so bindgen (llama crate) can load it at build time. mac/linux resolve libclang via
+# system paths. [[windows-build-env-drift]]
+windows = ["~/.continuum/tools/llvm/bin"]
 
 [[module]]
 id = "cuda"
