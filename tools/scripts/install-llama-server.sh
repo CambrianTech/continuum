@@ -107,13 +107,29 @@ fi
 # ── install + stamp ──────────────────────────────────────────────────
 cp -f "$BUILT_BIN" "$INSTALL_BIN"
 chmod +x "$INSTALL_BIN"
-echo "$STAMP_WANT" > "$STAMP_FILE"
 
-# Verify it actually runs (fail loud here, not at first serve).
-if ! "$INSTALL_BIN" --version >/dev/null 2>&1; then
-  echo "✗ FATAL: installed $INSTALL_BIN does not run (--version failed)." >&2
+# Verify the installed binary runs BEFORE stamping it (2026-07-26, M5+BigMama
+# two-box dogfood). The old order (stamp THEN verify) had two failure modes:
+#   1. STAMP-BEFORE-VERIFY (BigMama): a genuinely-broken build still got its
+#      stamp written, so the next run saw stamp==SUBMODULE_HEAD, decided it was
+#      "already current", skipped the rebuild, and served the broken binary
+#      forever. The stamp must be the LAST step, written only after proof.
+#   2. FLAKY VERIFY (M5): a fresh Mach-O's first exec can transiently SIGKILL
+#      (Killed:9) under concurrent build+serve memory/Metal pressure even though
+#      the binary is perfectly healthy — a single --version check then false-
+#      FATALs a good install. Retry once before declaring failure.
+# On genuine failure, remove the binary so it can't masquerade as installed.
+verify_ok=0
+for _attempt in 1 2; do
+  if "$INSTALL_BIN" --version >/dev/null 2>&1; then verify_ok=1; break; fi
+  sleep 1
+done
+if [ "$verify_ok" -ne 1 ]; then
+  rm -f "$INSTALL_BIN"
+  echo "✗ FATAL: built llama-server does not run (--version failed after retry)." >&2
   exit 1
 fi
+echo "$STAMP_WANT" > "$STAMP_FILE"   # stamp LAST — only a verified-good binary is blessed
 
 echo "✓ llama-server installed: $INSTALL_BIN ($STAMP_WANT)" >&2
 echo "$INSTALL_BIN"
