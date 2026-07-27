@@ -35,7 +35,8 @@ use std::sync::Arc;
 
 use super::expert_observer::LiveExpertObserver;
 use super::expert_reconcile::{expert_pager_step, PagerError, PagerStepOutcome, RelaunchPager};
-use super::expert_residency::{ExpertActivationProfile, ExpertId};
+use super::expert_residency::{plan_layer_residency, ExpertActivationProfile, ExpertId};
+use super::placement::{LayerPlacementOutcome, PlacementRequest};
 use super::system_profile::SystemProfile;
 use crate::genome::working_set::PageRef;
 
@@ -72,6 +73,10 @@ pub struct ServingExpertPager {
     last_raw: HashMap<ExpertId, u64>,
     /// Retention factor (see [`DEFAULT_DECAY_ALPHA`]).
     alpha: f64,
+    /// The hot LAYER set the currently-served process was (re)launched with (slice-1
+    /// buft-override). A layer-placement pass compares against this to decide whether the
+    /// churn justifies the (expensive) process respawn. Empty until the first launch.
+    last_hot_layers: Vec<u32>,
 }
 
 impl ServingExpertPager {
@@ -95,6 +100,7 @@ impl ServingExpertPager {
             decayed: HashMap::new(),
             last_raw: HashMap::new(),
             alpha: DEFAULT_DECAY_ALPHA,
+            last_hot_layers: Vec::new(),
         }
     }
 
@@ -118,11 +124,7 @@ impl ServingExpertPager {
     /// arg to thread: the observer produces `predicted()` from the same activations it tallies
     /// hits from, so the one owned Arc is the whole signal source.
     pub fn tick(&mut self, profile: &SystemProfile) -> Result<PagerStepOutcome, PagerError> {
-        let activation = ExpertActivationProfile {
-            gate_magnitude: self.gate_magnitude.clone(),
-            hits: self.decay_and_snapshot_hits(),
-            predicted: self.observer.predicted(),
-        };
+        let activation = self.current_activation();
         expert_pager_step(
             profile,
             &activation,
@@ -132,6 +134,66 @@ impl ServingExpertPager {
             &mut self.pager,
             self.relaunch_threshold,
         )
+    }
+
+    /// One LAYER-placement pass — the SLICE-1 buft-override path. Aggregates the current
+    /// (decayed hits + predicted + gate) activation to per-layer scores and fits whole layers
+    /// within the serving VRAM budget ([`plan_layer_residency`]), then decides whether the
+    /// hot-layer set changed enough vs what's currently served to justify the (expensive)
+    /// llama-server process respawn. The serving loop relaunches with `request` only when
+    /// `needs_relaunch`, then calls [`mark_layer_relaunched`](Self::mark_layer_relaunched).
+    ///
+    /// `n_experts_per_layer` + `n_layers` come from the GGUF layout (the launcher's `-ot`
+    /// keys on the real `blk.N`; `n_layers` is the total block count). This and [`tick`] are
+    /// the two granularities — layer now (`-ot` load placement), per-expert later (the
+    /// upload fork). A serving loop calls ONE of them per tick, not both (each decays once).
+    pub fn tick_layer_placement(
+        &mut self,
+        profile: &SystemProfile,
+        n_experts_per_layer: u32,
+        n_layers: u32,
+    ) -> LayerPlacementOutcome {
+        let activation = self.current_activation();
+        let hot_layers = plan_layer_residency(
+            &activation,
+            n_experts_per_layer,
+            self.expert_bytes,
+            profile.serving_budget_bytes(),
+            self.margin_bytes,
+        );
+        // Symmetric-difference churn vs the served set — a process respawn reloads every
+        // weight, so only a change beyond `relaunch_threshold` layers earns it. First pass
+        // (served set empty) relaunches to place any non-empty set.
+        let served: std::collections::BTreeSet<u32> = self.last_hot_layers.iter().copied().collect();
+        let want: std::collections::BTreeSet<u32> = hot_layers.iter().copied().collect();
+        let churn = served.symmetric_difference(&want).count();
+        let needs_relaunch = churn > self.relaunch_threshold;
+        LayerPlacementOutcome {
+            request: PlacementRequest {
+                gguf_id: self.gguf_id.clone(),
+                n_layers,
+                hot_layers,
+            },
+            needs_relaunch,
+        }
+    }
+
+    /// Record that the served process was (re)launched with `placed` as its hot-layer set;
+    /// subsequent [`tick_layer_placement`](Self::tick_layer_placement) calls are quiet until
+    /// the set churns past the threshold again.
+    pub fn mark_layer_relaunched(&mut self, placed: &[u32]) {
+        self.last_hot_layers = placed.to_vec();
+    }
+
+    /// Build the per-tick activation profile from the owned observer: decayed live hits
+    /// (RESIDENCY), the predictor's prefetch confidence (PREFETCH), and the static gate seed.
+    /// Advances the hit EWMA exactly once — call it once per serving tick.
+    fn current_activation(&mut self) -> ExpertActivationProfile {
+        ExpertActivationProfile {
+            gate_magnitude: self.gate_magnitude.clone(),
+            hits: self.decay_and_snapshot_hits(),
+            predicted: self.observer.predicted(),
+        }
     }
 
     /// Record that the backend relaunched the served context with the current residency set;
@@ -288,6 +350,38 @@ mod tests {
         assert!(
             !out2.relaunch_needed,
             "no churn after mark_relaunched → no relaunch"
+        );
+    }
+
+    // what this catches: the SLICE-1 layer-placement path end to end (the buft-override seam).
+    // Real expert activity on specific layers must produce a PlacementRequest whose hot_layers
+    // are those layers (the ones -ot keeps on GPU), carry the total n_layers, ask for a
+    // relaunch on the first placement (served set empty), and go QUIET after mark_layer_relaunched
+    // when nothing churns — else the serving loop respawns the llama-server every tick.
+    #[test]
+    fn layer_placement_produces_hot_layers_and_relaunch_signal_clears() {
+        // 1 GiB/expert; 24 GiB serving budget fits several 4-expert (4 GiB) layers.
+        let mut sp = ServingExpertPager::new(GGUF, GB, 2 * GB, 0, HashMap::new());
+        let obs = sp.observer();
+        // Fire layers 2 and 5 hard (4 experts each), layer 8 barely.
+        for _ in 0..50 {
+            obs.observe(2, &[0, 1, 2, 3], 4);
+            obs.observe(5, &[0, 1, 2, 3], 4);
+        }
+        obs.observe(8, &[0], 4);
+        let out = sp.tick_layer_placement(&small_budget_profile(), 4, 12);
+        assert!(out.request.hot_layers.contains(&2), "hot layer 2 placed on GPU");
+        assert!(out.request.hot_layers.contains(&5), "hot layer 5 placed on GPU");
+        assert_eq!(out.request.n_layers, 12, "carries the total block count for -ot");
+        assert_eq!(out.request.gguf_id, GGUF);
+        assert!(out.needs_relaunch, "first placement needs a relaunch (served set empty)");
+
+        sp.mark_layer_relaunched(&out.request.hot_layers);
+        // No new activity → the hot-layer set is stable → no second respawn.
+        let out2 = sp.tick_layer_placement(&small_budget_profile(), 4, 12);
+        assert!(
+            !out2.needs_relaunch,
+            "stable hot-layer set after mark_layer_relaunched → no relaunch"
         );
     }
 }

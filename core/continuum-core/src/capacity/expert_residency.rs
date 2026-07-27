@@ -263,6 +263,61 @@ pub fn plan_tiered_residency(
     TieredResidencyPlan { tiers: out, cold }
 }
 
+/// LAYER-granular residency for the SLICE-1 buft-override relaunch.
+///
+/// llama.cpp's `-ot`/`--override-tensor` places WHOLE stacked tensors, and a MoE layer's
+/// experts are ONE tensor (`blk.N.ffn_*_exps` = `{n_embd, n_ff, n_expert}` — all of layer
+/// N's experts in a single blob). So a load-time relaunch can pin whole LAYERS to VRAM, not
+/// individual experts. This aggregates the per-expert priority ([`plan_expert_residency`]'s
+/// ranking) to a per-LAYER score (sum over the layer's known experts) and greedily fits
+/// whole layers by `layer_bytes` within the serving VRAM budget. The returned layer indices
+/// (ascending) are the ones whose expert blob should be GPU-resident; every other MoE layer
+/// is `-ot`'d to CPU (RAM-faulted per token).
+///
+/// Per-EXPERT residency ([`plan_expert_residency`]) is the SLICE-2 granularity — usable only
+/// once the vendored-llama upload fork can place a single expert into a loaded model. Until
+/// then this is the honest, coarser residency the load-time `-ot` mechanism actually supports.
+///
+/// Degenerate-safe: unsized experts / zero experts-per-layer place NOTHING (every layer
+/// CPU-faulted — never a false VRAM claim). `budget_bytes` is the caller's serving budget
+/// (`SystemProfile::serving_budget_bytes`, already the 0.80-of-live figure), `margin_bytes`
+/// the headroom held below it.
+pub fn plan_layer_residency(
+    profile: &ExpertActivationProfile,
+    n_experts_per_layer: u32,
+    expert_bytes: u64,
+    budget_bytes: u64,
+    margin_bytes: u64,
+) -> Vec<u32> {
+    if n_experts_per_layer == 0 || expert_bytes == 0 {
+        return Vec::new();
+    }
+    let layer_bytes = expert_bytes.saturating_mul(n_experts_per_layer as u64);
+    // Aggregate per-expert priority to a per-layer score (the SAME priority the per-expert
+    // planner ranks by — one ranking authority, layer score is its sum over the layer).
+    let mut layer_score: std::collections::BTreeMap<u32, f64> = std::collections::BTreeMap::new();
+    for e in profile.known_experts() {
+        *layer_score.entry(e.layer).or_insert(0.0) += profile.priority(&e);
+    }
+    let mut ranked: Vec<(u32, f64)> = layer_score.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0)) // stable, deterministic tiebreak by layer index
+    });
+    let usable = budget_bytes.saturating_sub(margin_bytes);
+    let mut used = 0u64;
+    let mut hot: Vec<u32> = Vec::new();
+    for (layer, _) in ranked {
+        if used.saturating_add(layer_bytes) <= usable {
+            used += layer_bytes;
+            hot.push(layer);
+        }
+    }
+    hot.sort_unstable();
+    hot
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +511,33 @@ mod tests {
         assert!(plan.tiers[0].1.is_empty(), "zero-fit VRAM tier skipped");
         assert_eq!(plan.tiers[1].1, vec![e(0, 0), e(0, 1)], "RAM tier takes the hot pair");
         assert_eq!(plan.cold, vec![e(0, 2)]);
+    }
+
+    // what this catches: the SLICE-1 layer-granular fit (the buft-override seam with M5's
+    // -ot arg builder). -ot places whole stacked expert tensors, so the relaunch pins whole
+    // LAYERS. This must (a) rank layers by their AGGREGATE expert priority — a layer whose
+    // experts fire hard beats a quiet one — and (b) fit whole layers within the VRAM budget
+    // by layer_bytes, never overflowing. If the aggregation or the layer-byte fit drifts, the
+    // relaunch would pin the wrong layers (cold-fault the hot ones) or overflow VRAM.
+    #[test]
+    fn layer_residency_fits_hottest_layers_by_layer_bytes() {
+        let mut p = ExpertActivationProfile::default();
+        // 3 MoE layers, 4 experts each. Layer 2 is hammered, layer 5 medium, layer 8 quiet.
+        for x in 0..4 {
+            p.hits.insert(e(2, x), 100);
+            p.hits.insert(e(5, x), 10);
+            p.hits.insert(e(8, x), 1);
+        }
+        // 1 GiB/expert × 4 experts = 4 GiB/layer. Budget 10 GiB, 2 GiB margin → 8 GiB usable
+        // → exactly 2 layers fit. The two hottest (2, 5) are placed; layer 8 stays CPU.
+        let hot = plan_layer_residency(&p, 4, GB, 10 * GB, 2 * GB);
+        assert_eq!(hot, vec![2, 5], "two hottest layers fit, ascending real blk.N indices");
+        assert!(!hot.contains(&8), "the quiet layer is -ot'd to CPU");
+
+        // Unsized experts → place nothing (never a false VRAM claim; all CPU-faulted).
+        assert!(
+            plan_layer_residency(&p, 4, 0, 10 * GB, 2 * GB).is_empty(),
+            "unsized places no layer hot"
+        );
     }
 }
