@@ -1349,12 +1349,38 @@ fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
     let weights_bytes = std::fs::metadata(&path).ok()?.len();
-    footprint_from_parts(
+    let mut fp = footprint_from_parts(
         &model.id,
         weights_bytes,
         model.context_window,
         model.has(Capability::ToolUse),
-    )
+    )?;
+    // KV CACHE QUANTIZATION (#232): a lane running quantized KV holds proportionally
+    // fewer bytes/token, so the plan can size a BIGGER window into the same budget —
+    // this is what turns the launcher's opt-in q8_0 flag into an actual window GROWTH.
+    // Divide the f16 rate by the quant factor; default (f16 / unset) → 1 → byte-identical.
+    // Keep the config key in sync with the launcher arg in inference/llama_server.rs —
+    // one SERVING_KV_CACHE_TYPE key, two consumers (launcher flag + this fit-math rate).
+    fp.kv_per_token = (fp.kv_per_token / kv_cache_quant_divisor()).max(1);
+    Some(fp)
+}
+
+/// The resident-KV divisor implied by `SERVING_KV_CACHE_TYPE`, so the plan sizes the
+/// served window against the KV the lane WILL actually hold, not the f16 default. (#232)
+fn kv_cache_quant_divisor() -> u64 {
+    kv_divisor_for(crate::config_env::read("SERVING_KV_CACHE_TYPE").as_deref())
+}
+
+/// Pure KV-rate divisor for a cache-type string (testable without env). CONSERVATIVE by
+/// design: q8_0 ≈ half of f16 → 2; q4_0/q4_1 ≈ a third → 3 (under the ideal ~3.5×, so the
+/// plan never over-grows the window past the real KV and OOMs). Anything else / f16 → 1
+/// (no change). Over-reserve is a smaller window (safe); under-reserve is an OOM (fatal).
+fn kv_divisor_for(cache_type: Option<&str>) -> u64 {
+    match cache_type.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("q8_0") => 2,
+        Some("q4_0") | Some("q4_1") => 3,
+        _ => 1,
+    }
 }
 
 /// Pure footprint estimate from the fields that drive it — split out from the
@@ -1798,6 +1824,19 @@ mod tests {
     // what this catches: footprint estimate is honest about weights (passed
     // through), tool capability bumps the rank, KV is non-zero, and zero
     // weights → no footprint (we only offer what we can actually serve).
+    #[test]
+    fn kv_divisor_reflects_cache_type_conservatively() {
+        // what this catches: the #232 KV-quant fit-math coupling — the served window grows
+        // only when the lane actually runs quantized KV, and CONSERVATIVELY so the plan
+        // never over-grows past the real KV and OOMs. f16/unset/unknown must never scale.
+        assert_eq!(kv_divisor_for(None), 1, "unset never scales the window");
+        assert_eq!(kv_divisor_for(Some("f16")), 1, "explicit f16 is the no-op default");
+        assert_eq!(kv_divisor_for(Some("q8_0")), 2, "q8_0 ~ half of f16");
+        assert_eq!(kv_divisor_for(Some("  Q8_0 ")), 2, "trimmed + case-insensitive");
+        assert_eq!(kv_divisor_for(Some("q4_0")), 3, "q4_0 conservative, under the ideal ~3.5x");
+        assert_eq!(kv_divisor_for(Some("garbage")), 1, "unknown type → no grow, never a bogus OOM");
+    }
+
     #[test]
     fn footprint_from_parts_is_footprint_aware() {
         let fp = footprint_from_parts("present", 3 * GB, 8192, true).unwrap();
