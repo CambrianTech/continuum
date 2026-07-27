@@ -33,7 +33,10 @@
 //! keeping the two concerns cleanly separate.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
+use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::grid::GridSnapshot;
@@ -92,6 +95,95 @@ impl ModelResidencyView {
         let mut eligible = snapshot.clone();
         eligible.peers.retain(|peer| self.holds(&peer.peer, model_id));
         eligible
+    }
+}
+
+/// One node's residency beacon — the wire payload advertising which models it currently holds
+/// resident. Rides its OWN `grid_residency` `EphemeralCoalesced` envelope, separate from
+/// [`super::gossip::CapacityOffer`]'s `grid_capacity`: residency changes on model page-in/out
+/// (minute-scale), not the 10s capacity beat, so coupling them would either over-publish
+/// residency or under-refresh capacity. Names + timestamp only; peer identity is the WIRE's
+/// (the transcript event's authenticated peer id), never the payload's — same rule as
+/// `CapacityOffer`, so a peer cannot beacon residency on another's behalf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResidencyBeacon {
+    /// Model ids this node holds resident (warm) RIGHT NOW — its base plus any co-resident.
+    pub resident_models: Vec<String>,
+    /// Sender clock when the reading was taken (ms since epoch). Displayed, not trusted:
+    /// freshness is judged by RECEIVER clock at hear-time, exactly like `CapacityOffer.at_ms`.
+    pub at_ms: u64,
+}
+
+/// A heard beacon + the receiver-clock instant it arrived (the freshness anchor).
+#[derive(Debug, Clone)]
+struct HeardBeacon {
+    models: Vec<String>,
+    heard_at_ms: u64,
+}
+
+/// Beacons silent past this drop from the projected view entirely. GENEROUS versus capacity's
+/// eviction because the two abstractions stay orthogonal: residency is STICKY (a model stays
+/// resident across many capacity beats), and the COMPOSED capacity snapshot already gates
+/// reachability — so a residency reading never has to prove liveness itself (that would blur
+/// residency into concurrency). 6× the capacity eviction window: a peer whose residency we
+/// haven't reheard in that long falls back to UNKNOWN (not asserted-resident), keeping the fast
+/// overflow path honest rather than routing to a model a long-silent peer may have paged out.
+pub const RESIDENCY_EVICTION_WINDOW_MS: u64 = 6 * super::gossip::EVICTION_WINDOW_MS;
+
+/// Process-global ledger of heard residency beacons, keyed by the WIRE's peer id — the
+/// residency sibling of [`super::gossip::GridCapacityLedger`], same identity + freshness
+/// discipline, different (slower) cadence and payload.
+#[derive(Default)]
+pub struct ResidencyLedger {
+    heard: DashMap<Uuid, HeardBeacon>,
+}
+
+/// The one process-global residency ledger — the resource it mirrors (this node's view of who
+/// holds what across the grid) is process-global, same granularity argument as
+/// [`super::gossip::global_ledger`].
+pub fn global_residency_ledger() -> &'static ResidencyLedger {
+    static LEDGER: OnceLock<ResidencyLedger> = OnceLock::new();
+    LEDGER.get_or_init(ResidencyLedger::default)
+}
+
+impl ResidencyLedger {
+    /// Fold one heard beacon in (latest per peer wins — residency is a live fact). `from_peer`
+    /// is the transcript event's transport identity, never payload-declared. Returns `true` when
+    /// this peer is NEW to the ledger — the probe-on-join surface; steady re-beacons stay silent.
+    pub fn hear(&self, from_peer: Uuid, beacon: ResidencyBeacon, heard_at_ms: u64) -> bool {
+        self.heard
+            .insert(
+                from_peer,
+                HeardBeacon { models: beacon.resident_models, heard_at_ms },
+            )
+            .is_none()
+    }
+
+    /// Project the ledger into a [`ModelResidencyView`] the governor composes with the capacity
+    /// snapshot, evicting beacons silent past [`RESIDENCY_EVICTION_WINDOW_MS`] as it goes.
+    /// `own_peer` is excluded — the local node's residency is its OWN serving truth (it holds M
+    /// by definition when it overflows), not a round-tripped beacon.
+    pub fn view(&self, own_peer: Uuid, now_ms: u64) -> ModelResidencyView {
+        let mut view = ModelResidencyView::new();
+        self.heard.retain(|peer, heard| {
+            let age = now_ms.saturating_sub(heard.heard_at_ms);
+            if age > RESIDENCY_EVICTION_WINDOW_MS {
+                return false; // silent too long — residency falls back to unknown
+            }
+            if *peer != own_peer {
+                view.by_peer
+                    .insert(*peer, heard.models.iter().cloned().collect());
+            }
+            true
+        });
+        view
+    }
+
+    /// Number of peers currently on the ledger (self included if echoed) — probe surface,
+    /// mirrors [`super::gossip::GridCapacityLedger::heard_count`].
+    pub fn heard_count(&self) -> usize {
+        self.heard.len()
     }
 }
 
@@ -213,5 +305,71 @@ mod tests {
         assert!(peer1_lanes > 0, "resident + reachable peer must carry overflow lanes");
         assert_eq!(peer2_lanes, 0, "resident but unreachable peer is reclaimed by place()");
         assert!(!peer3_present, "non-resident peer never reaches placement");
+    }
+
+    fn beacon(models: &[&str], at_ms: u64) -> ResidencyBeacon {
+        ResidencyBeacon {
+            resident_models: models.iter().map(|s| s.to_string()).collect(),
+            at_ms,
+        }
+    }
+
+    // what this catches: the beacon RECEIVE→PROJECT pipeline — a heard beacon projects into a
+    // ModelResidencyView that holds() reflects, and the node's OWN echoed beacon is excluded
+    // (the local node's residency is its own serving truth, arriving live, not a round-trip).
+    // This is the residency sibling of gossip's loopback contract.
+    #[test]
+    fn heard_beacon_projects_and_own_echo_is_excluded() {
+        let ledger = ResidencyLedger::default();
+        let me = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        ledger.hear(me, beacon(&["qwen-coder"], 1_000), 1_000); // our own beacon, round-tripped
+        ledger.hear(other, beacon(&["qwen-coder", "llama-70b"], 1_000), 1_000);
+
+        let view = ledger.view(me, 2_000);
+        assert!(!view.holds(&peer_id(1), "qwen-coder"), "own echo excluded from the peer view");
+        assert!(view.holds(&peer_id(2), "qwen-coder"), "the real peer's residency projects");
+        assert!(view.holds(&peer_id(2), "llama-70b"));
+        assert_eq!(view.known_peers(), 1, "only the genuine peer, not the echo");
+    }
+
+    // what this catches: eviction after long silence — a peer we haven't reheard past the
+    // (generous) residency window falls back to UNKNOWN residency, so the fast overflow path
+    // won't route to a model that long-silent peer may since have paged out. A fresh beacon
+    // brings it right back (grow is first-class).
+    #[test]
+    fn stale_beacon_evicts_then_a_fresh_one_restores() {
+        let ledger = ResidencyLedger::default();
+        let me = Uuid::from_u128(1);
+        let peer = Uuid::from_u128(2);
+        ledger.hear(peer, beacon(&["qwen-coder"], 0), 0);
+        assert!(ledger.view(me, 1_000).holds(&peer_id(2), "qwen-coder"));
+
+        // Silent past the residency eviction window: gone from the view (unknown, not asserted).
+        let t_evict = RESIDENCY_EVICTION_WINDOW_MS + 1;
+        assert!(
+            !ledger.view(me, t_evict).holds(&peer_id(2), "qwen-coder"),
+            "long-silent peer's residency falls back to unknown"
+        );
+
+        // It beacons again: instantly back.
+        ledger.hear(peer, beacon(&["qwen-coder"], t_evict), t_evict);
+        assert!(
+            ledger.view(me, t_evict + 1).holds(&peer_id(2), "qwen-coder"),
+            "a returning peer's residency is adopted on its first fresh beacon"
+        );
+    }
+
+    // what this catches: the wire payload survives serde round-trip byte-for-byte (camelCase
+    // like every realtime inline payload). If resident_models renamed or at_ms narrowed, heard
+    // residency would silently drift from published — the grid would gate overflow on models
+    // nobody actually beaconed.
+    #[test]
+    fn beacon_round_trips_through_json() {
+        let b = beacon(&["qwen-coder", "embed-small"], 42);
+        let json = serde_json::to_string(&b).expect("serialize");
+        assert!(json.contains("residentModels"), "camelCase wire field: {json}");
+        let back: ResidencyBeacon = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, b, "beacon must survive the wire byte-for-byte");
     }
 }
