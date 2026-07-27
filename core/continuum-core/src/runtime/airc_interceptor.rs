@@ -124,11 +124,11 @@ impl CommandInterceptor for AircInterceptor {
 
             // Room broadcast isn't a request/response inference hop. Fail loud
             // rather than pretend a single-peer RPC — only aircPeer routes today.
-            (None, Some(_room)) => Err(
-                "airc room-broadcast routing (aircRoom) isn't wired into the kernel \
-                 yet — only aircPeer (a single-peer command RPC) routes over airc today."
-                    .to_string(),
-            ),
+            // Echo the target (like the peer path) so callers can correlate logs.
+            (None, Some(room)) => Err(format!(
+                "airc room-broadcast routing (aircRoom '{room}') isn't wired into the \
+                 kernel yet — only aircPeer (a single-peer command RPC) routes over airc today."
+            )),
 
             // Explicit single-peer target: route the command over airc to that
             // peer's continuum-core and return its result — the E=mc² primitive,
