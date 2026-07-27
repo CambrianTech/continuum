@@ -45,6 +45,7 @@ pub mod grid;
 pub mod lease;
 pub mod market;
 pub mod moe_arch_profile;
+pub mod model_residency;
 pub mod moe_serving;
 pub mod pager_capture;
 pub mod trace_tail;
