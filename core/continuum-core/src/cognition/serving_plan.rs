@@ -310,12 +310,25 @@ pub struct ServingPlan {
 /// rendered, and the room degenerated into a greeting loop. 2 slots would
 /// have doubled every mind's window with zero lost concurrency.
 ///
+/// `demand_ceil` is the LIVE demand ceiling for the served window — the ELASTIC,
+/// per-task upper bound. `window_for` sizes the window UP to what the budget
+/// allows; this caps it DOWN to what the task actually needs. A hard coding task
+/// passes a high ceiling and the window GROWS (up to the budget/model bound); a
+/// simple turn passes a low one so more lanes fit. It is NEVER a launch-baked
+/// constant — callers thread live per-persona/per-task demand (measured p95 +
+/// headroom, or a task's explicit request). [`plan_serving`] supplies
+/// [`BOOTSTRAP_WORKING_SET`] only as the cold-start prior until that telemetry
+/// exists (#234). OOM-safe: `window_for` already bounds the window to the budget,
+/// so a higher ceiling only raises the cap toward that bound, never past it.
+/// [[serving-resources-are-elastic-per-task-leases-context-and-model-grow-for-hard-problems]]
+///
 /// The decision is pure classification on memory arithmetic — no model is
 /// loaded, no inference is run.
-pub fn plan_serving(
+pub fn plan_serving_with_demand(
     host: HostBudget,
     candidates: &[ModelFootprint],
     demand_lanes: u32,
+    demand_ceil: u32,
 ) -> Option<ServingPlan> {
     if candidates.is_empty() {
         return None;
@@ -441,7 +454,7 @@ pub fn plan_serving(
     // never forces UP past what the model supports; `.max(MIN_SERVE_CTX)` keeps it
     // runnable. On a small host where window_for < BOOTSTRAP the cap is a no-op.
     let served_context_window = window_for(lanes as u64)
-        .min(BOOTSTRAP_WORKING_SET)
+        .min(demand_ceil.max(MIN_SERVE_CTX))
         .max(MIN_SERVE_CTX);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
@@ -499,6 +512,20 @@ pub fn plan_serving(
             resident,
         ),
     })
+}
+
+/// Cold-start / no-live-demand convenience: [`plan_serving_with_demand`] with the
+/// [`BOOTSTRAP_WORKING_SET`] prior as the demand ceiling. Callers that do not YET
+/// thread live per-task demand use this; the elastic path (a hard task requesting
+/// more context, or the #234 p95 telemetry) calls `plan_serving_with_demand` with
+/// the measured/requested ceiling so the window ebbs and flows with real demand
+/// rather than a baked constant.
+pub fn plan_serving(
+    host: HostBudget,
+    candidates: &[ModelFootprint],
+    demand_lanes: u32,
+) -> Option<ServingPlan> {
+    plan_serving_with_demand(host, candidates, demand_lanes, BOOTSTRAP_WORKING_SET)
 }
 
 /// Hysteresis wrapper around [`plan_serving`]: stops model THRASH from live-
@@ -762,6 +789,50 @@ mod tests {
             plan_tiny.served_context_window <= 4_096,
             "demand cap must not inflate a 4k-ceiling model past its ceiling; got {}",
             plan_tiny.served_context_window
+        );
+    }
+
+    // what this catches: the ELASTIC demand ceiling (Joel 2026-07-27: "context window sizes
+    // should ebb and flow depending on demands of the task and available resources — if it
+    // needs it larger for a moment, don't limit it"). The ceiling is threaded LIVE, not a
+    // launch-baked constant: a hard task passing a HIGH demand_ceil grows the served window
+    // PAST the BOOTSTRAP prior (up to the budget/model bound); a LOW ceiling shrinks it so
+    // more lanes fit. OOM-safe — window_for still bounds it, so a higher ceiling only raises
+    // the cap toward the budget bound, never past it. This is the "stop setting it in stone
+    // at launch" fix that opens the elastic-lease path.
+    #[test]
+    fn demand_ceiling_is_elastic_grows_for_a_hard_task_shrinks_for_a_simple_one() {
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        // Roomy host + high trained ceiling → window_for(1) far exceeds any of these ceilings,
+        // so the DEMAND ceiling (not the budget or the model) decides the served window.
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+
+        // Cold prior: default plan_serving caps at BOOTSTRAP_WORKING_SET.
+        let cold = plan_serving(host, std::slice::from_ref(&devstral), 1).unwrap();
+        assert_eq!(cold.served_context_window, BOOTSTRAP_WORKING_SET);
+
+        // Hard task demands more context → the window GROWS past the prior.
+        let big_ceil = 64_000;
+        let hot =
+            plan_serving_with_demand(host, std::slice::from_ref(&devstral), 1, big_ceil).unwrap();
+        assert!(
+            hot.served_context_window > cold.served_context_window,
+            "a higher demand ceiling must GROW the window: hot {} ≤ cold {}",
+            hot.served_context_window,
+            cold.served_context_window
+        );
+        assert!(
+            hot.served_context_window <= big_ceil,
+            "growth stays bounded by the demand ceiling (and the budget), never past it: got {}",
+            hot.served_context_window
+        );
+
+        // Simple turn demands little → the window SHRINKS below the prior, freeing memory.
+        let lean =
+            plan_serving_with_demand(host, std::slice::from_ref(&devstral), 1, 8_192).unwrap();
+        assert_eq!(
+            lean.served_context_window, 8_192,
+            "a low demand ceiling shrinks the served window to it"
         );
     }
 
