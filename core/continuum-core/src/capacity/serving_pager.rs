@@ -143,13 +143,15 @@ impl ServingExpertPager {
     /// llama-server process respawn. The serving loop relaunches with `request` only when
     /// `needs_relaunch`, then calls [`mark_layer_relaunched`](Self::mark_layer_relaunched).
     ///
-    /// `n_experts_per_layer` + `n_layers` come from the GGUF layout (the launcher's `-ot`
-    /// keys on the real `blk.N`; `n_layers` is the total block count). This and [`tick`] are
-    /// the two granularities — layer now (`-ot` load placement), per-expert later (the
+    /// `serving_budget_bytes` is the live VRAM the placement must fit under (the caller's
+    /// authority — the serving daemon's governed ceiling, or `SystemProfile::serving_budget_bytes`
+    /// off-daemon). `n_experts_per_layer` + `n_layers` come from the GGUF layout (the launcher's
+    /// `-ot` keys on the real `blk.N`; `n_layers` is the total block count). This and [`tick`]
+    /// are the two granularities — layer now (`-ot` load placement), per-expert later (the
     /// upload fork). A serving loop calls ONE of them per tick, not both (each decays once).
     pub fn tick_layer_placement(
         &mut self,
-        profile: &SystemProfile,
+        serving_budget_bytes: u64,
         n_experts_per_layer: u32,
         n_layers: u32,
     ) -> LayerPlacementOutcome {
@@ -158,7 +160,7 @@ impl ServingExpertPager {
             &activation,
             n_experts_per_layer,
             self.expert_bytes,
-            profile.serving_budget_bytes(),
+            serving_budget_bytes,
             self.margin_bytes,
         );
         // Symmetric-difference churn vs the served set — a process respawn reloads every
@@ -369,7 +371,7 @@ mod tests {
             obs.observe(5, &[0, 1, 2, 3], 4);
         }
         obs.observe(8, &[0], 4);
-        let out = sp.tick_layer_placement(&small_budget_profile(), 4, 12);
+        let out = sp.tick_layer_placement(24 * GB, 4, 12);
         assert!(out.request.hot_layers.contains(&2), "hot layer 2 placed on GPU");
         assert!(out.request.hot_layers.contains(&5), "hot layer 5 placed on GPU");
         assert_eq!(out.request.n_layers, 12, "carries the total block count for -ot");
@@ -378,7 +380,7 @@ mod tests {
 
         sp.mark_layer_relaunched(&out.request.hot_layers);
         // No new activity → the hot-layer set is stable → no second respawn.
-        let out2 = sp.tick_layer_placement(&small_budget_profile(), 4, 12);
+        let out2 = sp.tick_layer_placement(24 * GB, 4, 12);
         assert!(
             !out2.needs_relaunch,
             "stable hot-layer set after mark_layer_relaunched → no relaunch"

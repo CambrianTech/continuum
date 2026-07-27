@@ -32,6 +32,7 @@ use crate::inference::llama_server::{
 };
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
+use crate::capacity::placement::PlacementRequest;
 use crate::model_registry::types::{Capability, Model};
 use crate::resources::{LeaseBoard, ResourceDaemon, ResourceKind};
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
@@ -87,6 +88,15 @@ const HEALTH_FAILS_TO_RELAUNCH: u8 = 2;
 /// name (no body parse in middleware), payload fans out as a shared pointer,
 /// emitted only on a rare state change — never on the token hot path.
 const SERVING_SNAPSHOT_EVENT: &str = "serving.snapshot";
+
+/// VRAM headroom held below the governed serving budget when fitting expert LAYERS for K3
+/// placement. `layer_bytes` sizes the stacked expert blob, but the `-ot`'d layer also carries
+/// its router + norms and the per-layer size can drift; this margin keeps the fit honest. 512 MiB.
+const EXPERT_PLACEMENT_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
+/// Hot-layer churn (symmetric difference vs the served set) that justifies a llama-server
+/// RESPAWN. A respawn reloads every weight (seconds), so a 1–2 layer flap must not trigger one;
+/// only a real residency shift (a task change moving > 2 expert layers) does.
+const RELAUNCH_LAYER_CHURN_THRESHOLD: usize = 2;
 
 /// Resolves a base-model id (as named in a [`ServingPlan`]) back to its full
 /// [`Model`] struct. Production resolves through the global registry; tests
@@ -183,6 +193,13 @@ pub struct ServingDaemonModule {
     /// serving candidate on the very next tick — no reboot. This is the consumer
     /// side of the rich API: serving reacts to the universe changing.
     catalog: Arc<ModelCatalog>,
+    /// K3 expert-residency state for the CURRENTLY-served MoE model, `(model_id, context)`.
+    /// Built lazily on the first reconcile that serves a given MoE model and rebuilt when the
+    /// served model changes; `None` for a dense model or before the first MoE reconcile. A
+    /// `std::sync::Mutex` because [`Self::reconcile_to_plan`] is synchronous and this is never
+    /// held across an await. The pager inside owns the live-hit observer + the gate seed; each
+    /// reconcile ticks it to decide the served expert-layer placement.
+    moe_serving: std::sync::Mutex<Option<(String, crate::capacity::moe_serving::MoeServingContext)>>,
     /// Model ids the operator has explicitly UNLOADED — the VRAM-axis "free".
     /// The daemon is holistically in charge of VRAM, so freeing a lane is a
     /// runtime act, never a restart: `serving/unload` inserts an id here, the
@@ -270,6 +287,7 @@ impl ServingDaemonModule {
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            moe_serving: std::sync::Mutex::new(None),
         }
     }
 
@@ -571,6 +589,63 @@ impl ServingDaemonModule {
     /// the tick. Returns the spawned `JoinHandle` (for tests to await
     /// deterministically) or `None` when no reconcile was started.
     ///
+    /// K3 expert-layer placement for the model this reconcile will serve.
+    ///
+    /// For a MoE model it (re)builds the per-model [`MoeServingContext`](crate::capacity::moe_serving::MoeServingContext)
+    /// on a model change (rare — a swap already relaunches), ticks its pager against the
+    /// governed VRAM budget to decide which expert LAYERS fit, and returns the DEBOUNCED
+    /// placement: `committed_placement` only changes when the hot-layer churn passes
+    /// [`RELAUNCH_LAYER_CHURN_THRESHOLD`], so the serving target stays byte-stable across ticks
+    /// that don't warrant a respawn (and the launcher's target-diff doesn't fire spuriously).
+    ///
+    /// `None` — served with no `-ot` override, exactly as before — for a dense model, an
+    /// unresolved GGUF, or a zero budget. Pure of I/O except the one GGUF read on a model
+    /// change; the sync `Mutex` is never held across an await (this whole method is sync).
+    fn compute_expert_placement(&self, model: &Model) -> Option<PlacementRequest> {
+        let budget = governed_vram_ceiling(&self.resource_daemon).unwrap_or(0);
+        if budget == 0 {
+            return None;
+        }
+        let mut guard = self.moe_serving.lock().ok()?;
+        let stale = guard.as_ref().map(|(id, _)| id.as_str()) != Some(model.id.as_str());
+        if stale {
+            let ctx = crate::model_registry::artifacts::resolve_gguf_for_model(model).and_then(|gguf| {
+                crate::capacity::moe_serving::moe_serving_context(
+                    &gguf,
+                    &model.id,
+                    EXPERT_PLACEMENT_MARGIN_BYTES,
+                    RELAUNCH_LAYER_CHURN_THRESHOLD,
+                )
+            });
+            *guard = ctx.map(|c| (model.id.clone(), c));
+        }
+        let (_, ctx) = guard.as_mut()?;
+        let outcome =
+            ctx.pager
+                .tick_layer_placement(budget, ctx.n_experts_per_layer, ctx.n_layers);
+        // Glass-box the K3 residency decision (Joel: the K3 path is observability-first).
+        // Every load-bearing quantity a breakpoint would want: what fit, out of how many, on
+        // what budget, and whether it moves the served process this tick.
+        crate::probe!(
+            class = "serving.k3_placement",
+            model = model.id.as_str(),
+            budget_bytes = budget,
+            n_layers = ctx.n_layers,
+            n_experts_per_layer = ctx.n_experts_per_layer,
+            hot_layers = outcome.request.hot_layers.len(),
+            needs_relaunch = outcome.needs_relaunch,
+            "K3 expert-layer placement: fit {} of {} layers hot on {} GiB budget",
+            outcome.request.hot_layers.len(),
+            ctx.n_layers,
+            budget / (1024 * 1024 * 1024),
+        );
+        if outcome.needs_relaunch {
+            ctx.pager.mark_layer_relaunched(&outcome.request.hot_layers);
+            ctx.committed_placement = Some(outcome.request);
+        }
+        ctx.committed_placement.clone()
+    }
+
     /// No plan → publish the empty snapshot (no servable model = nothing live).
     /// Already serving the desired model & ready → no-op. A reconcile already
     /// in flight → skip (the gate). Otherwise spawn the reconcile.
@@ -705,6 +780,12 @@ impl ServingDaemonModule {
             }
             return None;
         };
+        // K3 expert placement: for a MoE model, the ServingExpertPager plans which expert
+        // LAYERS fit the governed VRAM budget and attaches them; the launcher `-ot`s the
+        // cold complement to CPU. Computed BEFORE the struct literal moves `model`. `None`
+        // for a dense model (or before the pager has committed a placement) — served exactly
+        // as before, no override.
+        let expert_placement = self.compute_expert_placement(&model);
         let target = ServingTarget {
             model,
             context_window: served_ctx,
@@ -713,9 +794,7 @@ impl ServingDaemonModule {
             // The living persona lane: GPU-resident for throughput (every
             // offloadable layer). [[LanePlacement]].
             placement: crate::inference::llama_server::LanePlacement::Gpu,
-            // K3 expert placement is attached by the ServingExpertPager when it owns the
-            // lane's residency; the base serving target starts with no override.
-            expert_placement: None,
+            expert_placement,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already
