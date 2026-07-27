@@ -202,6 +202,16 @@ pub struct ServingTarget {
     /// fallback — when the `ResourceGovernor` (#56) lands it owns this decision
     /// (tier the live lane down, route to a grid peer with free GPU, or pin CPU).
     pub placement: LanePlacement,
+    /// K3 slice-1 expert placement: the layer-granular residency the pager computed
+    /// (`PlacementRequest.hot_layers` = the real `blk.N` whose stacked expert block fits
+    /// GPU). `None` = no expert paging (the default — the whole model places normally).
+    /// When `Some`, the COLD layers' `ffn_*_exps` tensors are offloaded to CPU via `-ot` at
+    /// spawn (see [`ServingTarget::expert_ot_value`]); the hot layers stay GPU-resident.
+    /// llama.cpp places tensors at LOAD time only, so a change to the hot set is honored by
+    /// a relaunch — that relaunch is DECIDED by the pager (`serving_pager`'s
+    /// `relaunch_needed`), not by the probe-based reconcile here, since there is no API to
+    /// read a running server's `-ot`. Per-expert paging (no relaunch) is slice-2.
+    pub expert_placement: Option<crate::capacity::placement::PlacementRequest>,
 }
 
 /// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
@@ -265,6 +275,50 @@ impl ServingTarget {
         paths.sort();
         paths
     }
+
+    /// The `-ot`/`--override-tensor` VALUE that offloads the COLD layers' stacked expert
+    /// tensors to CPU for this target's [`expert_placement`](Self::expert_placement), or
+    /// `None` when there is no placement or nothing is cold (every block hot). Delegates to
+    /// the pure [`cold_expert_offload_ot`] builder, keyed on the placement's real `blk.N`
+    /// hot set. The spawn path applies this as a `--override-tensor` arg.
+    pub fn expert_ot_value(&self) -> Option<String> {
+        let p = self.expert_placement.as_ref()?;
+        cold_expert_offload_ot(&p.hot_layers, p.n_layers)
+    }
+}
+
+/// Build the `--override-tensor` (`-ot`) VALUE that offloads every COLD MoE layer's
+/// stacked expert tensor to CPU, keeping `hot_layers` on the GPU (the default placement).
+/// This is the slice-1 buft-override half of K3 physical expert paging.
+///
+/// Experts are STACKED per layer — `blk.N.ffn_*_exps` is ONE tensor holding all of layer
+/// N's experts — so `-ot`, which places WHOLE tensors, pages at LAYER granularity. The
+/// residency planner (the `ServingExpertPager`) owns the VRAM fit and hands us the
+/// `PlacementRequest.hot_layers` (the real `blk.N` indices that fit GPU); we emit the
+/// inverse: the rest to CPU. (True per-expert paging is slice-2 — a sub-range
+/// `ggml_backend_tensor_set` upload — and does not use `-ot`.)
+///
+/// `n_layers` is the total transformer-block count (the iteration ceiling). Cold =
+/// `(0..n_layers)` minus `hot_layers`. A dense (non-MoE) block in that range is HARMLESS:
+/// it has no `ffn_*_exps` tensor, so its pattern is inert — which is why we need only the
+/// hot set + the block count, never the exact MoE-layer set.
+///
+/// Returns `None` when nothing is cold (every block is hot, or `n_layers == 0`): there is
+/// no override to apply, so the caller omits the flag entirely — never an empty `-ot`,
+/// which llama-server rejects. The value targets the `CPU` buffer type
+/// (`common/arg.cpp::parse_tensor_buffer_overrides`).
+pub fn cold_expert_offload_ot(hot_layers: &[u32], n_layers: u32) -> Option<String> {
+    use std::collections::BTreeSet;
+    // Ignore any hot index outside the block range (a stale plan can't force a bad pattern).
+    let hot: BTreeSet<u32> = hot_layers.iter().copied().filter(|&l| l < n_layers).collect();
+    let cold: Vec<u32> = (0..n_layers).filter(|l| !hot.contains(l)).collect();
+    if cold.is_empty() {
+        return None;
+    }
+    // `\.` on BOTH sides of the block index so `blk.3` never also matches `blk.31`, and
+    // `ffn.*_exps` covers all four stacked projections (gate/up/down/gate_up).
+    let alternation = cold.iter().map(u32::to_string).collect::<Vec<_>>().join("|");
+    Some(format!(r"blk\.({alternation})\.ffn.*_exps=CPU"))
 }
 
 /// Resolve the serving root (`http://host:port`). Deployment shape (which host /
@@ -1394,6 +1448,15 @@ impl LlamaServerControl for LlamaServerProcess {
                 .join(",");
             cmd.arg("--lora").arg(joined);
         }
+        // K3 slice-1 physical expert paging: if the residency planner handed us a layer
+        // placement, offload the COLD layers' stacked expert tensors to CPU via -ot, keeping
+        // the hot layers GPU-resident. Experts are stacked (one blk.N.ffn_*_exps tensor per
+        // layer), so -ot — which places whole tensors — pages at LAYER granularity. None /
+        // all-hot → no flag (an empty -ot is rejected by llama-server). A change to the hot
+        // set is honored on the next relaunch (the pager decides when).
+        if let Some(ot) = target.expert_ot_value() {
+            cmd.arg("--override-tensor").arg(ot);
+        }
         // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
         // its load banner AND — critically — the underlying ggml/Metal fault behind a
         // `{"code":500,"message":"Compute error"}` HTTP reply to stderr. The prior
@@ -1563,6 +1626,36 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // what this catches: the slice-1 K3 -ot builder — the LAYER-granular buft-override that
+    // physically pages MoE experts. Cold = (0..n_layers) minus hot; the value keys on the
+    // real blk.N with `\.` anchors (so blk.3 never matches blk.31), covers all four stacked
+    // ffn_*_exps projections, and targets CPU. None when nothing is cold (empty -ot is
+    // rejected by llama-server). A regression here = the wrong experts offloaded (a stale
+    // plan degrading throughput) or a spawn that 500s on a malformed override.
+    #[test]
+    fn cold_expert_offload_ot_emits_inverse_of_hot_layers() {
+        // Mixed hot/cold: layers 0,2,4 fit GPU → 1,3,5 offload to CPU.
+        let v = cold_expert_offload_ot(&[0, 2, 4], 6).expect("some cold → an override");
+        assert_eq!(v, r"blk\.(1|3|5)\.ffn.*_exps=CPU");
+        // Anchoring intent: the block index is fenced by `\.` on both sides.
+        assert!(v.contains(r"blk\.(1|3|5)\.ffn"), "block index must be dot-anchored");
+
+        // Everything hot → no override at all (NOT an empty string, which llama-server rejects).
+        assert_eq!(cold_expert_offload_ot(&[0, 1, 2, 3], 4), None);
+        // Zero layers → nothing to place.
+        assert_eq!(cold_expert_offload_ot(&[], 0), None);
+        // Empty hot set → offload every block (the all-cold extreme).
+        assert_eq!(
+            cold_expert_offload_ot(&[], 3),
+            Some(r"blk\.(0|1|2)\.ffn.*_exps=CPU".to_string())
+        );
+        // A hot index outside the block range is ignored, never forcing a bogus pattern.
+        assert_eq!(
+            cold_expert_offload_ot(&[99], 2),
+            Some(r"blk\.(0|1)\.ffn.*_exps=CPU".to_string())
+        );
+    }
+
     /// Fake control: scripted probe result + a counter of serve() calls, so the
     /// pure reconcile decision is tested without a live process.
     struct FakeControl {
@@ -1692,6 +1785,7 @@ mod tests {
             lanes: 1,
             adapters: Vec::new(),
             placement: LanePlacement::Gpu,
+            expert_placement: None,
         }
     }
 

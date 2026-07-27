@@ -612,6 +612,7 @@ async fn spawn_gene_eval_lane(
             path: entry.path.clone(),
         }],
         placement: placement_evidence.placement,
+        expert_placement: None, // eval lanes run the whole model; no K3 expert paging
     };
     emit_eval_phase("loading_lane", &format!("cold-loading gene eval lane ({})", gene.name));
     let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
@@ -719,6 +720,7 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         lanes: 1,
         adapters: vec![], // bare base — no gene
         placement: placement_evidence.placement,
+        expert_placement: None, // eval lanes run the whole model; no K3 expert paging
     };
     // The ephemeral lane cold-loads the base model (can be minutes for a 14B+); emit
     // the phase so positronic layers show "loading <model>…", not a frozen bar.
