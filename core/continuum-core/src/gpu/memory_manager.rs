@@ -910,43 +910,25 @@ fn detect_vulkan() -> Option<(u64, String)> {
 // detect_cpu_fallback() removed — see detect_gpu()'s panic for rationale.
 // CPU fallback is forbidden architecturally; absent GPU = absent system.
 
-/// Get total system RAM.
-#[cfg(target_os = "macos")]
+/// Total physical system RAM, cross-platform via `sysinfo` (Windows / Linux / macOS).
+///
+/// The old hand-rolled probes were per-OS: macOS shelled out to `sysctl hw.memsize`, and the
+/// `#[cfg(not(target_os = "macos"))]` branch read `/proc/meminfo` — which is LINUX-ONLY. On
+/// Windows there is no `/proc/meminfo`, so the read failed and the function fell through to an
+/// 8 GiB fallback. Every downstream fit decision (which model fits, what serving budget) was
+/// then made against a phantom 8 GiB box regardless of the real machine — a 5090 workstation
+/// with 63 GiB looked like an 8 GiB laptop and refused to serve anything bigger than a toy.
+/// `sysinfo` (already a dependency) reports real physical memory uniformly on all three OSes.
 fn get_system_ram() -> u64 {
-    // sysctl hw.memsize returns total physical memory
-    use std::process::Command;
-
-    let output = Command::new("sysctl").args(["-n", "hw.memsize"]).output();
-
-    match output {
-        Ok(out) => {
-            let s = String::from_utf8_lossy(&out.stdout);
-            s.trim().parse::<u64>().unwrap_or(8 * 1024 * 1024 * 1024) // 8GB fallback
-        }
-        Err(_) => 8 * 1024 * 1024 * 1024,
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    let total = sys.total_memory(); // bytes in sysinfo 0.30+
+    if total > 0 {
+        total
+    } else {
+        8 * 1024 * 1024 * 1024 // last-resort only if the OS probe genuinely returns 0
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn get_system_ram() -> u64 {
-    // Linux: read /proc/meminfo
-    use std::fs;
-
-    if let Ok(contents) = fs::read_to_string("/proc/meminfo") {
-        for line in contents.lines() {
-            if line.starts_with("MemTotal:") {
-                // Format: "MemTotal:       16384000 kB"
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(kb) = parts[1].parse::<u64>() {
-                        return kb * 1024; // kB to bytes
-                    }
-                }
-            }
-        }
-    }
-
-    8 * 1024 * 1024 * 1024 // 8GB fallback
 }
 
 // =============================================================================
