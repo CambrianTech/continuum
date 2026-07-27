@@ -42,6 +42,7 @@ pub mod expert_residency;
 pub mod expert_tier_policy;
 pub mod gossip;
 pub mod grid;
+pub mod grid_overflow;
 pub mod lease;
 pub mod market;
 pub mod moe_arch_profile;
