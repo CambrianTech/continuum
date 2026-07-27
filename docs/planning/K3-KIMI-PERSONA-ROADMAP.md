@@ -24,24 +24,36 @@ ONE debounced relaunch (no per-tick thrash); decode stays correct (no Metal OOM)
 tracks observed expert hits. **This validates the residency PLAN on real weights — the gate
 everything below waits on.**
 
-## Phase B — Slice-2 live per-expert paging (mechanism now, cut-over after Gate A)
+## Phase B — Slice-2: TWO distinct capabilities (decided on purpose, 2026-07-26)
 
-Per-expert upload, no relaunch — the real subset-thesis win.
+The slice-2 crux (surfaced by BigMama): `upload_expert` writes into `blk.{layer}.ffn_*_exps`
+at SLOT `expert_index`, which implies the VRAM tensor holds ALL n_expert slots. The MoE
+kernel (`ggml_mul_mat_id`) indexes the stacked tensor by the router's LOGICAL expert id. So
+"A" and "B" are **not two definitions of slice-2 — they are different capabilities**, and
+`ExpertPager::page_in`/`evict` is inherently B's semantics.
 
-- **upload_expert** (M5): Rust safe-wrapper in `core/llama/src/safe.rs` over the shipped
-  `llama_model_get_tensor` + `ggml_backend_tensor_set`. Sig:
-  `upload_expert(model, layer, expert_index, gate:&[u8], up:&[u8], down:&[u8])`. Loops all 3
-  projections internally; computes each offset from the LIVE tensor's own `nb[2]` (ggml's
-  quant-aware stride — no parsed-stride mismatch). No new fork change.
-- **LiveUploadPager** (BigMama): new `ExpertPager` impl. `page_in` reads expert e's 3
-  projection byte-slices from the genome tier (expert_layout stride) → `upload_expert`;
-  `evict` frees the residency slot.
+### B.A — Expert weight-WRITE (`upload_expert`) — build NOW (M5)
+Full-size tensor resident; `upload_expert` replaces expert e's weights in place. Consumer is
+**NOT a pager** — it's the per-expert GENOME path (#226 LoRA-specialize an expert, #228
+surgical training). `page_in`/`evict` are meaningless here (all slots resident). Sig:
+`upload_expert(model, layer, expert_index, gate:&[u8], up:&[u8], down:&[u8])` — loops the 3
+projections, offsets each from the LIVE tensor's own `nb[2]` (ggml's quant-aware stride). Rust
+safe-wrapper in `core/llama/src/safe.rs` over the shipped `llama_model_get_tensor` +
+`ggml_backend_tensor_set`. **No new fork change; small; unblocked.**
 
-Both built + merged **DORMANT** (mechanism is compile-validated; behavior needs a live MoE).
+### B.B — True per-expert PAGING (K-slot + remap) — GATED on Gate-A numbers
+A SMALLER K-slot VRAM tensor + a logical→physical **REMAP** (rewrite the `ffn_moe_topk` ids
+to resident slots + fault misses, or a custom `mul_mat_id`). **The remap is the real missing
+primitive — NOT `get_tensor`.** A genuine kernel/graph fork, on the hot path. THIS is where
+`LiveUploadPager` (the `ExpertPager` impl: `page_in` a logical expert into a physical slot,
+`evict` frees a slot) belongs — BigMama HOLDS it until B is decided.
 
-**GATE B (after Gate A):** cut LiveUploadPager in as the live pager; glass-box per-expert
-paging — bytes land in the right sub-range, decode stays correct, expert churn causes NO
-relaunch. Only trust the per-expert PLAN live once this passes.
+**GATE B is a NUMBERS decision, not a default.** Slice-1 layer `-ot` already makes K3 *run*
+on 32GB (cold layers' experts compute on CPU). Gate A's live glass-box measures whether
+cold-CPU-compute actually bottlenecks the K3 persona. If it dominates → B is justified, design
+the remap deliberately as a joint spike. If the hot working set is small enough that layer
+`-ot` (+ occasional relaunch) suffices → B's kernel fork may not earn its cost.
+[[verify-real-device-numbers-not-a-clamp-premise]] — don't build the big fork on a premise.
 
 ## Phase C — Stand up the K3-scale MoE persona base (joint)
 
