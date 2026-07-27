@@ -1995,6 +1995,14 @@ pub fn start_server(
                 default_room,
             ),
         ));
+        // Grid residency beacon (grid-overflow eligibility, slice 3): advertise which models
+        // this node holds resident on a slower cadence, folded by inbound_attach into
+        // capacity::model_residency::global_residency_ledger. Reads the SAME serving plan the
+        // daemon computes (watch snapshot, no parallel probe); orthogonal sibling of capacity.
+        runtime.register(Arc::new(crate::modules::grid_residency::GridResidencyModule::new(
+            serving_daemon.subscribe(),
+            default_room,
+        )));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();

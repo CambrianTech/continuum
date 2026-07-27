@@ -131,6 +131,13 @@ struct HeardBeacon {
 /// overflow path honest rather than routing to a model a long-silent peer may have paged out.
 pub const RESIDENCY_EVICTION_WINDOW_MS: u64 = 6 * super::gossip::EVICTION_WINDOW_MS;
 
+/// The residency beacon heartbeat — deliberately SLOWER than capacity's 10s
+/// ([`super::gossip::PUBLISH_INTERVAL_MS`]) because residency changes on model page-in/out
+/// (minute-scale), not the free-VRAM beat. 12 beats fit inside
+/// [`RESIDENCY_EVICTION_WINDOW_MS`] — the same publish:eviction ratio capacity gossip uses,
+/// so a couple of dropped beacons never evicts a still-resident peer.
+pub const RESIDENCY_PUBLISH_INTERVAL_MS: u64 = RESIDENCY_EVICTION_WINDOW_MS / 12;
+
 /// Process-global ledger of heard residency beacons, keyed by the WIRE's peer id — the
 /// residency sibling of [`super::gossip::GridCapacityLedger`], same identity + freshness
 /// discipline, different (slower) cadence and payload.
