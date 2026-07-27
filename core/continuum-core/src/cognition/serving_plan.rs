@@ -88,11 +88,32 @@ pub const MAX_LANES: u32 = 2;
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is
-/// sized UP from here to the largest that fits the host budget, capped only by
-/// the model's own trained `context_window`. A model whose weights + KV at even
-/// this floor won't fit the GPU budget is simply not a serving option on this
-/// host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
+/// sized UP from here to the largest that fits the host budget, capped by BOTH
+/// the model's own trained `context_window` AND the DEMAND ceiling
+/// ([`BOOTSTRAP_WORKING_SET`] / measured p95) — a lane is provisioned for what
+/// personas actually USE, never maximized to fill RAM. A model whose weights + KV
+/// at even this floor won't fit the GPU budget is simply not a serving option on
+/// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
 pub const MIN_SERVE_CTX: u32 = 2048;
+
+/// Cold-start DEMAND ceiling for the served window — the "B-now" half of the
+/// demand-derived cap (M5 + BigMama, 2026-07-26). Sizing a lane's window to fill
+/// the memory budget instead of to real demand is the cross-node serving-quality
+/// bug: on a roomy host `window_for` returns e.g. 94k, whose pre-allocated KV is
+/// ~33GB × parallel lanes — it SWAPS a 64GB Mac (5M swapouts → 1.77 tok/s) and
+/// WEDGES a 32GB 5090 (decode hangs), while personas fill only ~9k. This is the
+/// conservative PRIOR — ~one full persona turn (assembled prompt ~9k + generation
+/// headroom) — used until live per-persona working-set telemetry (p95 observed +
+/// gen headroom) refines it UP toward measured demand (task #234, the A-next
+/// robustness layer): `DEMAND_CEIL = max(BOOTSTRAP_WORKING_SET, p95 + headroom)`.
+/// It only ever caps the window DOWN from the budget-max, is itself bounded by the
+/// model's trained ceiling in `window_for`, and refines UP with data — never
+/// toward filling RAM. This is NOT the forbidden per-tier PROMPT clamp
+/// ([[no-hardcoded-context-numbers-derive-from-the-live-window]]): that doctrine
+/// bars clamping the prompt to a static tier cap; this is a demand PRIOR on
+/// serving-lane residency, superseded by measurement, anchored to the ONE runnable
+/// floor (`MIN_SERVE_CTX × 8 = 16384`) rather than a second bare magic number.
+pub const BOOTSTRAP_WORKING_SET: u32 = MIN_SERVE_CTX * 8;
 
 /// Hysteresis margin for switching UP to a more capable model: it must fit
 /// within `(1 - SWITCH_UP_HEADROOM)` of the budget — i.e. with headroom to
@@ -399,7 +420,16 @@ pub fn plan_serving(
         .rev()
         .find(|&l| window_for(l as u64) > MIN_SERVE_CTX)
         .unwrap_or(1);
-    let served_context_window = window_for(lanes as u64).max(MIN_SERVE_CTX);
+    // DEMAND cap (M5+BigMama 2026-07-26): provision for what personas USE, not for
+    // what RAM allows. `window_for` maximizes the window to fill the budget (94k on
+    // a roomy host) → ~33GB pre-allocated KV × lanes → swap/wedge, while personas
+    // fill ~9k. Cap DOWN to the demand ceiling (BOOTSTRAP_WORKING_SET now; measured
+    // p95 later, #234). Ordering: window_for already ≤ model ceiling, so `.min`
+    // never forces UP past what the model supports; `.max(MIN_SERVE_CTX)` keeps it
+    // runnable. On a small host where window_for < BOOTSTRAP the cap is a no-op.
+    let served_context_window = window_for(lanes as u64)
+        .min(BOOTSTRAP_WORKING_SET)
+        .max(MIN_SERVE_CTX);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -656,6 +686,43 @@ mod tests {
         assert!(c < naive, "window-scaled + headroom reserve must shrink the window ({c} < {naive})");
     }
 
+    // what this catches: the cross-node serving-QUALITY bug (2026-07-26). On a roomy
+    // host `window_for` maximizes the served window to fill the memory budget — tens
+    // of thousands of tokens (the pre-fix devstral shape sized ~53k; live it was 94k),
+    // pre-allocating ~33GB of KV × lanes → SWAP on a 64GB Mac (5M swapouts, 1.77 tok/s)
+    // and DECODE-WEDGE on a 32GB 5090 — while personas fill only ~9k. The DEMAND cap
+    // (BOOTSTRAP_WORKING_SET now, measured p95 later, #234) must hold the served window
+    // at the working set, provisioned for USE not for RAM. The ceiling here (131k) is
+    // far above the cap, so a served window ≤ BOOTSTRAP proves the DEMAND cap held it
+    // (not the ceiling). Regression for M5+BigMama's 94k→swap/wedge.
+    #[test]
+    fn demand_cap_holds_served_window_at_working_set_not_budget_max() {
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        assert!(
+            devstral.context_window > BOOTSTRAP_WORKING_SET,
+            "precondition: model ceiling must exceed the demand cap, else the ceiling (not the cap) could explain the result"
+        );
+        let plan = plan_serving(host, std::slice::from_ref(&devstral), 4).unwrap();
+        assert!(
+            plan.served_context_window <= BOOTSTRAP_WORKING_SET,
+            "served window {} must be capped to working-set demand ({}), never budget-maxed toward the ceiling",
+            plan.served_context_window,
+            BOOTSTRAP_WORKING_SET
+        );
+
+        // The cap NEVER inflates a small-ceiling model UP toward BOOTSTRAP — a model
+        // whose trained ceiling is below the demand cap is still served at/below its
+        // own ceiling (`.min` only ever caps DOWN).
+        let tiny = fp("tiny-4k", 3, 30_000, 4_096, 2);
+        let plan_tiny = plan_serving(host, std::slice::from_ref(&tiny), 1).unwrap();
+        assert!(
+            plan_tiny.served_context_window <= 4_096,
+            "demand cap must not inflate a 4k-ceiling model past its ceiling; got {}",
+            plan_tiny.served_context_window
+        );
+    }
+
     // what this catches: lanes DEGRADE on a tight host — MAX_LANES is a sanity backstop,
     // the fit math is the real cap. A 4-persona demand on a budget that can't feed 4 warm
     // slots must serve FEWER (well-fed) lanes, never 4 starving ones that OOM. The window
@@ -743,38 +810,50 @@ mod tests {
             "the surviving lane gets a window big enough to think in, got {}",
             plan.served_context_window,
         );
-        // And when there IS room, demand is honored at real windows — concurrency preserved.
+        // And when there IS room, demand is honored: concurrency preserved AND each
+        // mind at a real, DEMAND-sized window — capped at the working-set bootstrap
+        // (2026-07-26), NOT maximized to fill RAM (the 94k→swap/wedge bug). A roomy
+        // box buys more LANES (concurrent minds), not a bloated per-lane KV cache.
         let roomy = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let plan2 = plan_serving(roomy, std::slice::from_ref(&devstral), 2).unwrap();
         assert_eq!(plan2.lanes, 2, "roomy host serves both minds concurrently");
         assert!(
-            plan2.served_context_window > 32_768,
-            "each mind at a real window, got {}",
+            plan2.served_context_window > 4096
+                && plan2.served_context_window <= BOOTSTRAP_WORKING_SET,
+            "each mind at a real window, demand-capped not budget-maxed, got {}",
             plan2.served_context_window,
         );
     }
 
-    // what this catches: the M5 Pro must use its headroom — pick the most
-    // capable model (the 14B coding sentinel), run multiple lanes, AND size the
-    // served window UP from the budget instead of clamping it to a constant.
-    // The "stop dumbing down / use the machine / don't cheapen the window" case.
+    // what this catches: the M5 Pro must USE its headroom — pick the most capable
+    // model (the 14B coding sentinel) and run multiple concurrent lanes. But the
+    // per-lane WINDOW sizes to DEMAND, not to the budget (M5+BigMama 2026-07-26):
+    // a roomy box buys more MINDS (lanes), not a bloated per-lane KV cache that
+    // pre-allocates ~33GB and swaps (the 94k bug). This REPLACES the old
+    // "size the window UP from the budget" contract — window scales with demand
+    // (BOOTSTRAP_WORKING_SET cold-start, measured p95 later, #234), never RAM.
+    // (Supersedes the #216 "don't cheapen the window" framing: right-sizing to a
+    // 16k+ working set is not cheapening — flooring below the ~9k turn was. The
+    // coding-headroom question — a bigger BOOTSTRAP for coders — is #234 A-next.)
     #[test]
-    fn big_box_picks_most_capable_runs_lanes_sizes_window_up() {
+    fn big_box_picks_most_capable_runs_lanes_but_sizes_window_to_demand() {
         // ~45GB usable on a 64GB M5 Pro after headroom.
         let host = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let plan = plan_serving(host, &candidates(), MAX_LANES).unwrap();
         assert_eq!(plan.base_model_id, "coder-sentinel-14b", "most capable, fits easily");
         assert!(plan.lanes >= 2, "M5 Pro has the budget for multiple lanes, got {}", plan.lanes);
-        // The window is derived from the per-lane budget, not a constant — on a
-        // 45GB box that's far above any 8k/32k clamp we used to cheapen it with.
+        // Window sized to DEMAND (capped at the working-set bootstrap), NOT maximized
+        // to fill the 45GB budget — the fix for the cross-node swap/wedge. Still a
+        // real window (well above the ~9k persona turn), never exceeds the ceiling.
         assert!(
-            plan.served_context_window > 32_768,
-            "served window must scale with the budget, got {}",
+            plan.served_context_window > 4096
+                && plan.served_context_window <= BOOTSTRAP_WORKING_SET,
+            "served window sizes to demand (≤ bootstrap cap), not budget-maxed, got {}",
             plan.served_context_window,
         );
         assert!(
             plan.served_context_window <= 262_144,
-            "but never exceed the model's trained ceiling, got {}",
+            "never exceed the model's trained ceiling, got {}",
             plan.served_context_window,
         );
     }

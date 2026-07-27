@@ -70,6 +70,37 @@ if [ -z "$ORT_DYLIB_PATH" ]; then
   fi
 fi
 
+# Launcher runtime PATH — manifest-driven. The install manifest
+# (tools/scripts/install-manifest.toml) declares, per module, the directories the RUNNING
+# binary needs on PATH to load its runtime DLLs/.so's (e.g. CUDA's cudart64_*.dll /
+# cublas64_*.dll). Without this the native server on Windows is killed BEFORE main() with
+# 0xC0000135 (STATUS_DLL_NOT_FOUND) — a silent zero-output exit. ONE declaration in the
+# manifest is consumed by BOTH the installer (accept-check) and here (launch), so a fresh
+# install is runnable by construction. We source the bash projection (the PS manifest is the
+# installer's; both derive from the toml) and glob-expand each version-agnostic path.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) _mf_os=windows ;;
+  Darwin)               _mf_os=macos ;;
+  *)                    _mf_os=linux ;;
+esac
+_mf_runtime="$SCRIPT_DIR/generated/manifest.${_mf_os}.sh"
+if [ -f "$_mf_runtime" ]; then
+  # shellcheck source=/dev/null
+  source "$_mf_runtime"
+  if declare -p MOD_RUNTIME_PATH >/dev/null 2>&1; then
+    for _mid in "${!MOD_RUNTIME_PATH[@]}"; do
+      IFS=':' read -ra _rp_dirs <<<"${MOD_RUNTIME_PATH[$_mid]}"
+      for _rp in "${_rp_dirs[@]}"; do
+        # eval expands ~ and the version glob (cuda-*); prepend each existing match once.
+        for _rp_hit in $(eval echo "$_rp"); do
+          [ -d "$_rp_hit" ] || continue
+          case ":$PATH:" in *":$_rp_hit:"*) ;; *) export PATH="$_rp_hit:$PATH" ;; esac
+        done
+      done
+    done
+  fi
+fi
+
 # ── Per-platform feature flags ───────────────────────────────────────
 # Mac Intel can't use Metal (task #131 — ggml_metal_device_init hangs on
 # Intel + AMD discrete). Force mac-cpu-only on Intel Mac.
