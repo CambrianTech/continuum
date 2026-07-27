@@ -264,6 +264,15 @@ impl PersonaSpawnSupervisor {
         // persona's HANDS are built over it (identity-scoped), so the ACL gates
         // what they may do. `None` → personas spawn speak-only (no hands).
         tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
+        // The grid-overflow effector (governor consumer slice 4b): given a persona's
+        // profile + slot, `Some(remote adapter)` routes her brain to a peer that holds
+        // her model (the ipc bootstrap builds this from the live serving plan + residency
+        // ledger + airc handle); `None` → local adapter. Forwarded verbatim to
+        // `materialize_adapters`. `|_, _| None` is the pre-effector (all-local) behavior.
+        overflow_adapter_for: impl Fn(
+            &crate::persona::inference_profile::PersonaInferenceProfile,
+            usize,
+        ) -> Option<Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
     ) -> BootSummary {
         let plans = match bootstrap_planned(
             &self.spawner,
@@ -328,10 +337,10 @@ impl PersonaSpawnSupervisor {
                         as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
                 })
             },
-            // Grid-overflow effector closure (slice 4b-ii wires the live capacity +
-            // residency + airc context here). Until then every persona builds her
-            // local adapter — no off-box routing, the pre-effector behavior.
-            |_profile, _slot| None,
+            // Grid-overflow effector: the ipc bootstrap supplies the live decision
+            // (capacity + residency + airc). `|_, _| None` from a caller that doesn't
+            // route keeps the pre-effector all-local behavior.
+            overflow_adapter_for,
         )
         .await;
 
