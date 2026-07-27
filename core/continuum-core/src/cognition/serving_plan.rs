@@ -260,6 +260,29 @@ impl ModelFootprint {
         self.resident_bytes(served_window, lanes)
             .saturating_add(self.prefill_compute_reserve(served_window, lanes))
     }
+
+    /// The capacity-fabric [`LeaseRequest`](crate::capacity::LeaseRequest) for serving
+    /// this model at `served_window` with `demand_lanes` concurrent minds — the bridge
+    /// from the serving plan's MODEL-RESIDENCY view (weights + per-lane KV) to the grid's
+    /// CONCURRENCY-SPIKE view, so [`GridPlacementPolicy`](crate::capacity::grid) can place
+    /// overflow lanes onto peers (#180 grid spill / [[frontier-is-a-scaling-question-over-misfits-not-a-capability-question]]).
+    /// `want_concurrency` = the minds that want a lane; `spike_bytes` = ONE lane's transient
+    /// prefill compute buffer at this window (the term the 2026-07-14 OOM turned on), so a
+    /// peer is only offered a spill lane it can actually hold. NOTE: this sizes the
+    /// CONCURRENCY spike only; a peer must ALSO already hold this model resident — that
+    /// residency gate is the gossip-side half of the routing (owned with the grid snapshot),
+    /// NOT this pure mapping.
+    pub fn grid_lease_request(
+        &self,
+        served_window: u32,
+        demand_lanes: u32,
+    ) -> crate::capacity::LeaseRequest {
+        crate::capacity::LeaseRequest {
+            consumer: self.model_id.clone(),
+            want_concurrency: demand_lanes.max(1),
+            spike_bytes: self.prefill_compute_reserve(served_window, 1),
+        }
+    }
 }
 
 /// The serving decision for this host.
@@ -801,6 +824,26 @@ mod tests {
     // more lanes fit. OOM-safe — window_for still bounds it, so a higher ceiling only raises
     // the cap toward the budget bound, never past it. This is the "stop setting it in stone
     // at launch" fix that opens the elastic-lease path.
+    // what this catches: the serving→grid bridge (#180 spill) — a model footprint maps to a
+    // capacity-fabric LeaseRequest whose want_concurrency is the demanded lanes and whose
+    // spike_bytes is ONE lane's transient prefill compute reserve at the served window (the
+    // 2026-07-14 OOM term), so GridPlacementPolicy offers a peer only a spill lane it can hold.
+    #[test]
+    fn grid_lease_request_maps_demand_and_the_prefill_spike() {
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        let window = 16_384;
+        let lease = devstral.grid_lease_request(window, 3);
+        assert_eq!(lease.consumer, "devstral-24b");
+        assert_eq!(lease.want_concurrency, 3, "want_concurrency = demanded lanes");
+        assert_eq!(
+            lease.spike_bytes,
+            devstral.prefill_compute_reserve(window, 1),
+            "spike_bytes = ONE lane's prefill compute reserve at the served window"
+        );
+        // Zero demand floors at one lane — never a degenerate 0-concurrency lease.
+        assert_eq!(devstral.grid_lease_request(window, 0).want_concurrency, 1);
+    }
+
     #[test]
     fn demand_ceiling_is_elastic_grows_for_a_hard_task_shrinks_for_a_simple_one() {
         let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
