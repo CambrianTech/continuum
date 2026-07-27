@@ -22,6 +22,17 @@ servedContextWindow: number,
  */
 lanes: number, 
 /**
+ * Personas that DEMANDED a concurrent lane but couldn't get a local one — the
+ * overflow the governor must PLACE on a grid peer (or queue), never cram into
+ * `lanes` and thrash. `demand_lanes − lanes` (saturating) on the GPU path, or
+ * the FULL demand when nothing fits locally (`fits_on_gpu = false`). This is the
+ * honest "over local capacity by N" signal (#234/#56 — the good governor
+ * recognizing its own overload): the caller routes these off-box; `0` means
+ * demand fit locally. Surfaced, never silently dropped
+ * ([[fallbacks-are-illegal-fail-loud]]).
+ */
+gridOverflowLanes: number, 
+/**
  * How many distinct models to keep resident (warm), including the base.
  */
 residentModels: number, 

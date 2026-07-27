@@ -278,6 +278,15 @@ pub struct ServingPlan {
     pub served_context_window: u32,
     /// Continuous-batching lanes (`n_seq_max`). ≥ 1.
     pub lanes: u32,
+    /// Personas that DEMANDED a concurrent lane but couldn't get a local one — the
+    /// overflow the governor must PLACE on a grid peer (or queue), never cram into
+    /// `lanes` and thrash. `demand_lanes − lanes` (saturating) on the GPU path, or
+    /// the FULL demand when nothing fits locally (`fits_on_gpu = false`). This is the
+    /// honest "over local capacity by N" signal (#234/#56 — the good governor
+    /// recognizing its own overload): the caller routes these off-box; `0` means
+    /// demand fit locally. Surfaced, never silently dropped
+    /// ([[fallbacks-are-illegal-fail-loud]]).
+    pub grid_overflow_lanes: u32,
     /// How many distinct models to keep resident (warm), including the base.
     pub resident_models: u32,
     /// True when the chosen base fits at least one lane on the GPU/UMA budget.
@@ -349,6 +358,10 @@ pub fn plan_serving(
             base_model_id: smallest.model_id.clone(),
             served_context_window: MIN_SERVE_CTX,
             lanes: 1,
+            // Nothing fits the GPU budget → the WHOLE demand is off-box work (the
+            // caller CPU-serves or routes every lane to a peer). fits_on_gpu = false
+            // is the hard signal; grid_overflow_lanes quantifies "how much to place."
+            grid_overflow_lanes: demand_lanes,
             resident_models: 1,
             fits_on_gpu: false,
             rationale: format!(
@@ -468,6 +481,10 @@ pub fn plan_serving(
         base_model_id: model.model_id.clone(),
         served_context_window,
         lanes,
+        // Demand the local lanes couldn't absorb (2 slots < N personas is the misfit
+        // norm) → the governor must place these on a grid peer, NOT cram them into
+        // `lanes` and pay the ~8s KV cache-swap round-trip per turn. 0 when demand fit.
+        grid_overflow_lanes: demand_lanes.saturating_sub(lanes),
         resident_models: resident,
         fits_on_gpu: true,
         rationale: format!(
@@ -684,6 +701,31 @@ mod tests {
         // (weights + KV filling the FULL usable budget) — the fix demonstrably shrinks it.
         let naive = (host.usable_bytes - devstral.weights_bytes) / lanes / devstral.kv_per_token;
         assert!(c < naive, "window-scaled + headroom reserve must shrink the window ({c} < {naive})");
+    }
+
+    // what this catches: the governor now SURFACES demand it can't serve locally instead
+    // of silently cramming it into `lanes` and thrashing (the log-proven 65%-LRU / ~8s
+    // KV-cache-swap-per-turn bug, 2026-07-27). Demand 4 > 2 local lanes → the excess 2 are
+    // reported as `grid_overflow_lanes` — the honest "over local capacity by N" signal the
+    // pooled governor routes to a grid peer (Σdemand vs Σresource, one decision; a single
+    // box is the pool-of-one case). Demand within capacity → zero overflow. Regression for
+    // #234/#56 — the good governor recognizing its own overload, never a silent clamp.
+    #[test]
+    fn demand_over_local_capacity_surfaces_grid_overflow_not_silent_cram() {
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        // 4 personas demand a lane; only MAX_LANES fit locally → the rest is overflow.
+        let over = plan_serving(host, std::slice::from_ref(&devstral), 4).unwrap();
+        assert_eq!(over.lanes, MAX_LANES, "precondition: local lanes clamp to MAX_LANES");
+        assert_eq!(
+            over.grid_overflow_lanes,
+            4 - over.lanes,
+            "demand the local lanes couldn't absorb must be surfaced for grid placement, not crammed"
+        );
+        // Demand within local capacity → zero overflow (nothing to place off-box).
+        let fits = plan_serving(host, std::slice::from_ref(&devstral), 1).unwrap();
+        assert_eq!(fits.lanes, 1, "precondition: single demand fits one local lane");
+        assert_eq!(fits.grid_overflow_lanes, 0, "demand ≤ local lanes → no overflow");
     }
 
     // what this catches: the cross-node serving-QUALITY bug (2026-07-26). On a roomy
