@@ -713,6 +713,9 @@ impl ServingDaemonModule {
             // The living persona lane: GPU-resident for throughput (every
             // offloadable layer). [[LanePlacement]].
             placement: crate::inference::llama_server::LanePlacement::Gpu,
+            // K3 expert placement is attached by the ServingExpertPager when it owns the
+            // lane's residency; the base serving target starts with no override.
+            expert_placement: None,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already

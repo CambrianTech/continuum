@@ -202,6 +202,16 @@ pub struct ServingTarget {
     /// fallback — when the `ResourceGovernor` (#56) lands it owns this decision
     /// (tier the live lane down, route to a grid peer with free GPU, or pin CPU).
     pub placement: LanePlacement,
+    /// K3 slice-1 expert placement: the layer-granular residency the pager computed
+    /// (`PlacementRequest.hot_layers` = the real `blk.N` whose stacked expert block fits
+    /// GPU). `None` = no expert paging (the default — the whole model places normally).
+    /// When `Some`, the COLD layers' `ffn_*_exps` tensors are offloaded to CPU via `-ot` at
+    /// spawn (see [`ServingTarget::expert_ot_value`]); the hot layers stay GPU-resident.
+    /// llama.cpp places tensors at LOAD time only, so a change to the hot set is honored by
+    /// a relaunch — that relaunch is DECIDED by the pager (`serving_pager`'s
+    /// `relaunch_needed`), not by the probe-based reconcile here, since there is no API to
+    /// read a running server's `-ot`. Per-expert paging (no relaunch) is slice-2.
+    pub expert_placement: Option<crate::capacity::placement::PlacementRequest>,
 }
 
 /// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
@@ -264,6 +274,16 @@ impl ServingTarget {
             .collect();
         paths.sort();
         paths
+    }
+
+    /// The `-ot`/`--override-tensor` VALUE that offloads the COLD layers' stacked expert
+    /// tensors to CPU for this target's [`expert_placement`](Self::expert_placement), or
+    /// `None` when there is no placement or nothing is cold (every block hot). Delegates to
+    /// the pure [`cold_expert_offload_ot`] builder, keyed on the placement's real `blk.N`
+    /// hot set. The spawn path applies this as a `--override-tensor` arg.
+    pub fn expert_ot_value(&self) -> Option<String> {
+        let p = self.expert_placement.as_ref()?;
+        cold_expert_offload_ot(&p.hot_layers, p.n_layers)
     }
 }
 
@@ -1428,6 +1448,15 @@ impl LlamaServerControl for LlamaServerProcess {
                 .join(",");
             cmd.arg("--lora").arg(joined);
         }
+        // K3 slice-1 physical expert paging: if the residency planner handed us a layer
+        // placement, offload the COLD layers' stacked expert tensors to CPU via -ot, keeping
+        // the hot layers GPU-resident. Experts are stacked (one blk.N.ffn_*_exps tensor per
+        // layer), so -ot — which places whole tensors — pages at LAYER granularity. None /
+        // all-hot → no flag (an empty -ot is rejected by llama-server). A change to the hot
+        // set is honored on the next relaunch (the pager decides when).
+        if let Some(ot) = target.expert_ot_value() {
+            cmd.arg("--override-tensor").arg(ot);
+        }
         // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
         // its load banner AND — critically — the underlying ggml/Metal fault behind a
         // `{"code":500,"message":"Compute error"}` HTTP reply to stderr. The prior
@@ -1756,6 +1785,7 @@ mod tests {
             lanes: 1,
             adapters: Vec::new(),
             placement: LanePlacement::Gpu,
+            expert_placement: None,
         }
     }
 
