@@ -2244,6 +2244,19 @@ impl LlamaServerControl for LlamaServerProcess {
                 .arg("--cache-type-v")
                 .arg(&kv_type);
         }
+        // FLASH ATTENTION (#232, opt-in field-proven technique). The fused attention kernel
+        // is faster on BOTH prefill and decode and lowers peak memory — directly attacking
+        // the prefill-bound turn latency (#139) and freeing room the elastic window (#234)
+        // can spend. OFF by default: Metal/backend flash-attn support + quality vary by build
+        // ([[verify-real-device-numbers-not-a-clamp-premise]]), so it's an operator opt-in,
+        // never a blind assumption. SERVING_FLASH_ATTN=1|on|true → enable; absent → llama.cpp
+        // default (no flag), byte-identical.
+        if crate::config_env::read("SERVING_FLASH_ATTN")
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
+            .unwrap_or(false)
+        {
+            cmd.arg("--flash-attn");
+        }
         // MULTIMODAL PROJECTOR (#106): a vision/audio-capable model needs its mmproj GGUF so
         // llama-server loads the vision (or audio) encoder and can tokenize image/audio content
         // parts. Present → the model actually SEES (the `ContentPart::Image` the persona render
