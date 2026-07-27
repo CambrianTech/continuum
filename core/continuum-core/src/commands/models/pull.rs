@@ -135,17 +135,25 @@ crate::action_command! {
         let gguf_file = pick_gguf(&files, p.quant.as_deref())?;
         let mmproj_file = if wants_vision { pick_mmproj(&files) } else { None };
 
-        // 5. Download — into the HF cache, content-addressed, re-pull is instant.
-        let gguf_path = repo.get(&gguf_file).await.map_err(|e| {
-            CommandError::Internal(format!("download of '{gguf_file}' from '{repo_id}' failed: {e}"))
-        })?;
+        // 5. Download the FULL shard set (giants ship as N shards) with retry/backoff, into the
+        //    HF cache (content-addressed → completed shards are skipped instantly on a retry, so
+        //    a mid-set failure resumes from the dropped shard, not from zero).
+        let shard_set = expand_shard_set(&gguf_file, &files);
+        let shard_count = shard_set.len();
+        let mut gguf_path = None;
+        let mut bytes = 0u64;
+        for shard in &shard_set {
+            let p = download_with_retry(&repo, shard).await?;
+            bytes += std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            if gguf_path.is_none() {
+                gguf_path = Some(p); // shard 1 (sorted) is llama.cpp's load entrypoint
+            }
+        }
+        let gguf_path = gguf_path.expect("expand_shard_set never returns empty");
         let mmproj_path = match &mmproj_file {
-            Some(f) => Some(repo.get(f).await.map_err(|e| {
-                CommandError::Internal(format!("download of projector '{f}' from '{repo_id}' failed: {e}"))
-            })?),
+            Some(f) => Some(download_with_retry(&repo, f).await?),
             None => None,
         };
-        let bytes = std::fs::metadata(&gguf_path).map(|m| m.len()).unwrap_or(0);
 
         // 6. Record the artifact onto the live universe — sets the path + flips Ready.
         if !this.catalog.attach_local_artifact(&p.model_id, gguf_path.clone(), mmproj_path) {
@@ -155,12 +163,17 @@ crate::action_command! {
             )));
         }
 
+        let shards_note = if shard_count > 1 {
+            format!(" ({shard_count} shards)")
+        } else {
+            String::new()
+        };
         let detail = match &mmproj_file {
-            Some(f) => format!("pulled {gguf_file} + projector {f} from {repo_id}"),
+            Some(f) => format!("pulled {gguf_file}{shards_note} + projector {f} from {repo_id}"),
             None if wants_vision => format!(
-                "pulled {gguf_file} from {repo_id}; WARNING: vision model but no mmproj-*.gguf found in repo — vision will be unservable"
+                "pulled {gguf_file}{shards_note} from {repo_id}; WARNING: vision model but no mmproj-*.gguf found in repo — vision will be unservable"
             ),
-            None => format!("pulled {gguf_file} from {repo_id}"),
+            None => format!("pulled {gguf_file}{shards_note} from {repo_id}"),
         };
 
         Ok(PullReport {
@@ -200,6 +213,84 @@ fn hf_token() -> Option<String> {
 /// Quant tiers we prefer when the caller does not name one, best-balance first.
 /// Q4_K_M is the standard "good enough, half the size" local default.
 const QUANT_PREFERENCE: &[&str] = &["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q8_0", "q6_k"];
+
+/// A large GGUF is published SHARDED — `<base>-00001-of-000NN.gguf`, `…-00002-of-000NN.gguf`,
+/// … (GLM-5.2 UD-IQ1_M is 6 shards, Kimi-K2.7 is 8, K3 will be more). llama.cpp loads shard 1
+/// and finds the rest BY NAME in the same dir — but only if they were actually pulled. Given
+/// the chosen file and the full repo listing, return EVERY shard in its set; for a single-file
+/// model, `[chosen]`. Without this, `pull` fetches one shard of six and the model is silently
+/// unloadable — the exact failure mode that made me babysit a manual download.
+fn expand_shard_set(chosen: &str, all_files: &[String]) -> Vec<String> {
+    // Shard suffix: `-<idx>-of-<total>.gguf` with `<idx>` all-digits just before `-of-`.
+    let Some(of_at) = chosen.rfind("-of-") else {
+        return vec![chosen.to_string()];
+    };
+    let before_of = &chosen[..of_at];
+    let idx_is_digits = before_of
+        .rsplit('-')
+        .next()
+        .map(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or(false);
+    if !idx_is_digits || !chosen.to_lowercase().ends_with(".gguf") {
+        return vec![chosen.to_string()];
+    }
+    // base = everything up to (not incl.) the `-` before `<idx>`; total_suffix = `-of-<total>.gguf`.
+    let Some(idx_dash) = before_of.rfind('-') else {
+        return vec![chosen.to_string()];
+    };
+    let base = &chosen[..idx_dash];
+    let total_suffix = &chosen[of_at..];
+    let mut set: Vec<String> = all_files
+        .iter()
+        .filter(|f| {
+            f.starts_with(base) && f.ends_with(total_suffix) && f.to_lowercase().ends_with(".gguf")
+        })
+        .cloned()
+        .collect();
+    set.sort();
+    if set.is_empty() {
+        vec![chosen.to_string()]
+    } else {
+        set
+    }
+}
+
+/// Download one file with retry + exponential backoff. hf-hub is content-addressed, so a
+/// completed shard is skipped instantly on a retry — meaning a mid-set failure resumes from
+/// the shard that dropped, not from zero. Transient network / rate-limit hiccups on a
+/// multi-hundred-GB pull are the norm, not the exception; one `.get()` with no retry (the old
+/// path) turned any blip into a total-command failure a human had to restart.
+async fn download_with_retry(
+    repo: &hf_hub::api::tokio::ApiRepo,
+    file: &str,
+) -> Result<std::path::PathBuf, CommandError> {
+    const MAX_ATTEMPTS: u32 = 5;
+    let mut backoff = std::time::Duration::from_secs(2);
+    let mut last_err = String::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        match repo.get(file).await {
+            Ok(p) => return Ok(p),
+            Err(e) => {
+                last_err = e.to_string();
+                if attempt < MAX_ATTEMPTS {
+                    tracing::warn!(
+                        probe_class = "models.pull.retry",
+                        file = file,
+                        attempt = attempt,
+                        max = MAX_ATTEMPTS,
+                        error = %last_err,
+                        "shard download failed — retrying with backoff",
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
+                }
+            }
+        }
+    }
+    Err(CommandError::Internal(format!(
+        "download of '{file}' failed after {MAX_ATTEMPTS} attempts: {last_err}"
+    )))
+}
 
 /// Choose the main model GGUF from a repo's file list. A projector (`mmproj-*`)
 /// is never the main file. With a requested quant, only a matching file is
@@ -259,6 +350,35 @@ fn is_mmproj(filename: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: THE multi-shard correctness bug. A giant GGUF ships as N shards;
+    // picking one and pulling only it leaves the model silently unloadable. expand_shard_set
+    // must return EVERY shard of the chosen file's set — and must NOT false-positive a
+    // single-file model (or a filename that merely contains "-of-" without a digit index).
+    #[test]
+    fn shard_set_expands_all_shards_but_leaves_single_files_alone() {
+        let sharded = vec![
+            "UD-IQ1_M/GLM-5.2-UD-IQ1_M-00001-of-00006.gguf".to_string(),
+            "UD-IQ1_M/GLM-5.2-UD-IQ1_M-00002-of-00006.gguf".to_string(),
+            "UD-IQ1_M/GLM-5.2-UD-IQ1_M-00003-of-00006.gguf".to_string(),
+            "UD-IQ1_M/GLM-5.2-UD-IQ1_M-00004-of-00006.gguf".to_string(),
+            "UD-IQ1_M/GLM-5.2-UD-IQ1_M-00005-of-00006.gguf".to_string(),
+            "UD-IQ1_M/GLM-5.2-UD-IQ1_M-00006-of-00006.gguf".to_string(),
+            "UD-Q4_K_M/GLM-5.2-UD-Q4_K_M-00001-of-00011.gguf".to_string(), // a DIFFERENT quant set
+        ];
+        let set = expand_shard_set(&sharded[0], &sharded);
+        assert_eq!(set.len(), 6, "all 6 IQ1 shards, and NOT the Q4 set");
+        assert!(set.contains(&sharded[5]), "the last shard is included");
+        assert!(!set.contains(&sharded[6]), "a different quant's shards are excluded");
+
+        // Single-file model → just itself.
+        let single = vec!["qwen3-coder-compacted.Q4_K_M.gguf".to_string()];
+        assert_eq!(expand_shard_set(&single[0], &single), single);
+
+        // "-of-" with no digit index before it is NOT a shard (don't false-positive).
+        let not_shard = vec!["model-proof-of-concept.gguf".to_string()];
+        assert_eq!(expand_shard_set(&not_shard[0], &not_shard), not_shard);
+    }
 
     // what this catches: the hint parser yields the owner/repo id hf-hub needs
     // for a HuggingFace hint, strips a `:tag`, and returns None (⇒ caller fails
