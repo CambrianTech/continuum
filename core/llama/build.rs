@@ -25,6 +25,11 @@ fn main() {
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
+        // Upstream 2026-07 added the unified `llama` app (LLAMA_BUILD_APP, default ON
+        // standalone) which links llama-server-impl — a lib that never builds when
+        // LLAMA_BUILD_SERVER=OFF, so the install target dies at link. We consume the
+        // LIBRARIES only; never build the app. (No-op on older trees: unknown -D is ignored.)
+        .define("LLAMA_BUILD_APP", "OFF")
         // We want libmtmd (multimodal projector + image/audio encoder) so
         // the in-process LlamaCppAdapter can route ContentPart::Image to
         // the model natively instead of dropping it. mtmd lives under
