@@ -560,7 +560,7 @@ impl ServingDaemonModule {
     /// one candidate, so the reconcile serves that model or (if it has dropped off
     /// disk) nothing. Suppress subtracts; pin intersects; the planner still owns
     /// the choice among whatever remains.
-    fn live_candidates(&self) -> Vec<ModelFootprint> {
+    pub(crate) fn live_candidates(&self) -> Vec<ModelFootprint> {
         let suppressed = self.suppressed.borrow();
         let pinned = self.pinned.borrow();
         servable_candidates(&self.catalog.snapshot(), &**suppressed, &pinned)

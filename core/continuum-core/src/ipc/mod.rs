@@ -2108,6 +2108,15 @@ pub fn start_server(
         // below). Subscribe BEFORE the spawn so no plan edge is missed while
         // the task waits on the executor-ready oneshot.
         let mut serving_plan_rx = serving_daemon.subscribe();
+        // A DEDICATED clone of the interceptor's airc-handle cell for the grid-overflow
+        // effector (slice 4b): the boot-spawn `async move` below captures by move, and the
+        // interceptor still needs the original `airc_interceptor_cell` further down — so the
+        // effector rides its own Arc clone of the SAME shared cell (both see the handle once
+        // attach_as fills it).
+        let overflow_airc_cell = airc_interceptor_cell.clone();
+        // Same reason for the serving daemon: the reconcile task below still needs the
+        // original `serving_daemon` handle, so the effector rides its own clone.
+        let overflow_serving = serving_daemon.clone();
         rt_handle.spawn(async move {
             // Wait for the IPC thread to deliver the WIRED executor (this both
             // gates ordering AND hands us the executor the personas' hands ride).
@@ -2195,7 +2204,22 @@ pub fn start_server(
                     } else {
                         attempt += 1;
                         let summary = supervisor
-                            .spawn_all(&mut provider, Some(tool_executor.clone()))
+                            .spawn_all(
+                                &mut provider,
+                                Some(tool_executor.clone()),
+                                // Grid-overflow effector (slice 4b): the LIVE closure. Reads
+                                // the serving plan's grid_overflow_lanes, filters residency-
+                                // eligible reachable peers (from the beacon ledger), runs
+                                // route_grid_overflow, and re-homes the persona's adapter to an
+                                // AircRemoteInferenceAdapter over the interceptor's airc handle.
+                                // DEFENSIVE: None on any uncertainty → local adapter (no
+                                // regression); can only be a safe no-op or a correct off-box
+                                // route (self excluded via airc.peer_id()).
+                                crate::persona::grid_overflow_effector::build_overflow_effector(
+                                    overflow_airc_cell.clone(),
+                                    overflow_serving.clone(),
+                                ),
+                            )
                             .await;
                         if summary.hosted > 0 {
                             tracing::info!(
