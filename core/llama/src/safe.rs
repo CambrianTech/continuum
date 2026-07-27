@@ -532,6 +532,71 @@ impl Model {
     pub fn as_ptr(&self) -> *mut sys::llama_model {
         self.ptr.as_ptr()
     }
+
+    /// K3 slice-2 (Model A — weight WRITE): replace expert `expert_index`'s weights in the
+    /// three resident stacked MoE projection tensors (`blk.{layer}.ffn_{gate,up,down}_exps`)
+    /// with `gate`/`up`/`down` bytes. This is weight-REPLACEMENT into a loaded model — the
+    /// per-expert genome path (specialize / compact an expert in place) — NOT paging: the
+    /// full tensor must be resident (all `n_expert` slots). True per-expert paging (a K-slot
+    /// tensor + a router logical→physical remap) is the separate Model-B fork.
+    ///
+    /// The byte offset for each projection is computed from the LIVE tensor's own `nb[2]`
+    /// (ggml's quant-aware stride of the expert dim — the outermost of `{n_embd, n_ff,
+    /// n_expert}`), so it is correct for any quantization with zero parsed-stride guessing.
+    /// Each slice must be exactly one expert's stride (`nb[2]`).
+    ///
+    /// Fail-loud (never a silent partial write): a projection tensor is absent (not an MoE
+    /// layer / wrong index), `expert_index` is out of range, or a byte length ≠ the live
+    /// per-expert stride. Behavioral validation is Gate B (needs a loaded MoE) — this is the
+    /// compile-validated mechanism; nothing calls it until the genome path (#226/#228) does.
+    pub fn upload_expert(
+        &self,
+        layer: u32,
+        expert_index: u32,
+        gate: &[u8],
+        up: &[u8],
+        down: &[u8],
+    ) -> Result<(), String> {
+        for (proj, bytes) in [("ffn_gate_exps", gate), ("ffn_up_exps", up), ("ffn_down_exps", down)] {
+            let name = std::ffi::CString::new(format!("blk.{layer}.{proj}"))
+                .map_err(|e| format!("upload_expert: bad tensor name: {e}"))?;
+            // SAFETY: `as_ptr` is a live model for its lifetime; the fork's accessor returns a
+            // tensor from `tensors_by_name` or null (never a dangling pointer).
+            let tensor = unsafe { sys::llama_model_get_tensor(self.as_ptr(), name.as_ptr()) };
+            if tensor.is_null() {
+                return Err(format!(
+                    "upload_expert: no tensor blk.{layer}.{proj} (not an MoE layer, or layer out of range)"
+                ));
+            }
+            // SAFETY: `tensor` is non-null and valid for the model's lifetime; reading its
+            // dims/strides is a plain field read.
+            let (n_expert, stride) = unsafe { ((*tensor).ne[2], (*tensor).nb[2]) };
+            if (expert_index as i64) >= n_expert {
+                return Err(format!(
+                    "upload_expert: expert {expert_index} out of range (blk.{layer}.{proj} has {n_expert})"
+                ));
+            }
+            if bytes.len() != stride {
+                return Err(format!(
+                    "upload_expert: {} bytes != live per-expert stride {stride} for blk.{layer}.{proj}",
+                    bytes.len()
+                ));
+            }
+            let offset = expert_index as usize * stride;
+            // SAFETY: offset + len == (expert_index+1)*stride ≤ n_expert*stride (the tensor's
+            // expert-dim extent, checked above), so the write stays in-bounds. The backend
+            // copies host→device (GPU) or host→host (CPU) transparently.
+            unsafe {
+                sys::ggml_backend_tensor_set(
+                    tensor,
+                    bytes.as_ptr() as *const std::os::raw::c_void,
+                    offset,
+                    bytes.len(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Model {
