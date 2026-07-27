@@ -1701,7 +1701,16 @@ pub fn start_server(
     if let Some((interceptor_daemon_socket, _room)) = interceptor_airc_deps {
         let cell = airc_interceptor_cell.clone();
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
-        tokio::spawn(async move {
+        // MUST be `rt_handle.spawn`, NOT bare `tokio::spawn`: this runs during
+        // start_server on the IPC thread, and the `rt_handle.enter()` guard (above) is
+        // scoped and has already dropped by here — so there is NO ambient runtime and
+        // `tokio::spawn` panics "there is no reactor running". That panic kills the
+        // attach task, the OnceCell never fills, and EVERYTHING that reads it silently
+        // no-ops: the AircInterceptor's aircPeer routing AND the grid-overflow effector
+        // (build_overflow_effector reads this same cell). rt_handle.spawn targets the
+        // runtime by handle without needing ambient context. (BigMama diagnosed the
+        // panic 2026-07-27; this is the one-line fix.)
+        rt_handle.spawn(async move {
             match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
                 .await
             {
