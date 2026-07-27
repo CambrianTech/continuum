@@ -316,7 +316,13 @@ impl Model {
 
         let mut ffi_params = unsafe { sys::llama_model_default_params() };
         ffi_params.n_gpu_layers = params.n_gpu_layers;
-        ffi_params.use_mmap = params.use_mmap;
+        // Upstream 2026-07 replaced `use_mmap: bool` with the load_mode enum
+        // (NONE/MMAP/MLOCK/DIRECT_IO — DIRECT_IO is the future NVMe cold-expert read path).
+        ffi_params.load_mode = if params.use_mmap {
+            sys::llama_load_mode_LLAMA_LOAD_MODE_MMAP
+        } else {
+            sys::llama_load_mode_LLAMA_LOAD_MODE_NONE
+        };
 
         let raw = unsafe { sys::llama_model_load_from_file(c_path.as_ptr(), ffi_params) };
         let ptr = NonNull::new(raw)
