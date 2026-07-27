@@ -205,6 +205,13 @@ type = "redist"           # schema-complete; run-verify pending on a linux+nvidi
 manifest = "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json"
 version = "12.9.1"
 components = ["cuda_nvcc", "cuda_cudart", "libcublas", "libcurand", "cuda_nvrtc", "cuda_cccl"]
+# LAUNCH-time PATH: the running continuum-core-server must find cudart64_*.dll / cublas64_*.dll
+# etc. at load, or Windows kills it BEFORE main() with 0xC0000135 (STATUS_DLL_NOT_FOUND) —
+# zero output, the exact silent-exit we hit on the 5090. Version-agnostic globs so a CUDA
+# minor bump never rots the path. The launcher expands + prepends these to PATH before exec.
+[module.runtime_path]
+windows = ["~/.continuum/cuda-*/Library/bin"]
+linux = ["~/.continuum/cuda-*/lib", "~/.continuum/cuda-*/lib64"]
 
 # ── The build itself (a module: env is data) ─────────────────────────────────
 [[module]]
