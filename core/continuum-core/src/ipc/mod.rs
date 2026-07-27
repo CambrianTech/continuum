@@ -1686,6 +1686,40 @@ pub fn start_server(
     // can attach a heartbeat-less node reader against the same daemon +
     // room the citizens attach to.
     let node_presence_deps = persona_bootstrap_deps.clone();
+
+    // AircInterceptor's late-bind Arc<Airc>: the interceptor is built ~800 lines
+    // below (inside the executor), synchronously, but `Airc::attach_as` is async and
+    // must not block the boot critical path. Create the cell HERE (where the daemon
+    // socket is in scope), spawn a task that attaches the interceptor's own handle —
+    // same daemon_socket + continuum_root the citizens use — and fills the cell, then
+    // hand the SAME cell to the interceptor at construction. Until it's filled an
+    // aircPeer-targeted command fails loud (never a silent fallthrough). Mirrors the
+    // node-presence reader's own attach.
+    let interceptor_airc_deps = persona_bootstrap_deps.clone();
+    let airc_interceptor_cell: Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>> =
+        Arc::new(tokio::sync::OnceCell::new());
+    if let Some((interceptor_daemon_socket, _room)) = interceptor_airc_deps {
+        let cell = airc_interceptor_cell.clone();
+        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        tokio::spawn(async move {
+            match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
+                .await
+            {
+                Ok(airc) => {
+                    // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
+                    // share it as `Arc<Airc>`.
+                    let _ = cell.set(Arc::new(airc));
+                }
+                Err(err) => tracing::error!(
+                    error = %err,
+                    "airc interceptor: attach_as failed — aircPeer command routing stays \
+                     unavailable (commands with aircPeer will fail loud until a boot with a \
+                     reachable airc daemon)"
+                ),
+            }
+        });
+    }
+
     runtime.register(airc_module);
 
     // A.2 [[no-fallbacks-ever]]: in `FullCitizen` or `FailFast` mode,
@@ -2520,7 +2554,9 @@ pub fn start_server(
             // event source and `message_bus()` is None — the boot-loud
             // panic the `CONTINUUM_CORE_WS` block asserts against.
             .with_message_bus(runtime.bus_arc())
-            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
+            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::with_airc_cell(
+                airc_interceptor_cell,
+            )))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
             // `provided` sits at the TAIL of the chain: airc/grid get first look
             // so an explicitly remote-targeted perception/observe still hops to a
