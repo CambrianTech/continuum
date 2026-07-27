@@ -27,6 +27,26 @@ use crate::cognition::serving_plan::{
     ServingPlan, BOOTSTRAP_WORKING_SET, MIN_SERVE_CTX,
 };
 use crate::cognition::working_set_demand::WorkingSetDemand;
+
+/// Process-wide sink for per-turn working-set observations — the serving daemon
+/// installs its own `WorkingSetDemand` here at [`ServingDaemonModule::initialize`],
+/// so the cognition turn path feeds each turn's assembled-prompt size WITHOUT a
+/// daemon handle (the same process-wide-readable-seam shape as `install_serving_state`).
+/// Unset until a daemon boots → [`observe_serving_working_set`] is a no-op and the
+/// served window simply holds its cold prior. (#234)
+static SERVING_WORKING_SET: OnceLock<Arc<std::sync::Mutex<WorkingSetDemand>>> = OnceLock::new();
+
+/// Feed one completed turn's assembled-prompt token count into the live serving
+/// demand. Called from the persona turn path; the next plan tick sizes the served
+/// window to the p95 of recent turns. No-op before a serving daemon has booted, so
+/// the caller never needs to know whether serving is up. (#234)
+pub fn observe_serving_working_set(prompt_tokens: u32) {
+    if let Some(ws) = SERVING_WORKING_SET.get() {
+        if let Ok(mut w) = ws.lock() {
+            w.observe(prompt_tokens);
+        }
+    }
+}
 use crate::gpu::GpuMemoryManager;
 use crate::inference::llama_server::{
     ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
@@ -246,7 +266,7 @@ pub struct ServingDaemonModule {
     /// served window ebbs and flows with real demand instead of the baked prior
     /// (#234). A Mutex (not atomic) for the rolling window; read only on the plan
     /// tick, never a hot path. `observe_working_set` feeds it from the cognition turn.
-    working_set: std::sync::Mutex<WorkingSetDemand>,
+    working_set: Arc<std::sync::Mutex<WorkingSetDemand>>,
 }
 
 impl ServingDaemonModule {
@@ -308,11 +328,11 @@ impl ServingDaemonModule {
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
-            working_set: std::sync::Mutex::new(WorkingSetDemand::new(
+            working_set: Arc::new(std::sync::Mutex::new(WorkingSetDemand::new(
                 WORKING_SET_WINDOW,
                 BOOTSTRAP_WORKING_SET,
                 MIN_SERVE_CTX, // one generation of headroom above the assembled prompt
-            )),
+            ))),
             moe_serving: std::sync::Mutex::new(None),
             // Read ONCE here (single config entry point, no per-tick I/O). Off by default.
             measure_force_expert_budget_bytes: crate::config_env::read(
@@ -1557,6 +1577,10 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
+        // Install this daemon's working-set demand as the process-wide sink so the
+        // cognition turn path feeds per-turn prompt sizes without a daemon handle, and
+        // the served window ebbs and flows with real demand (#234).
+        let _ = SERVING_WORKING_SET.set(self.working_set.clone());
         // Register serving as a MEASURED ResourceConsumer with the one per-machine
         // authority (#79). See `register_as_consumer` — this is monitor-not-reserve:
         // no lease acquired, `available` math untouched, the authority simply stops
