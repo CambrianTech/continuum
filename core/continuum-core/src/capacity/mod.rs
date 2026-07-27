@@ -30,6 +30,7 @@ pub mod expert_reconcile;
 pub mod expert_residency;
 pub mod gossip;
 pub mod grid;
+pub mod grid_overflow;
 pub mod lease;
 pub mod model_residency;
 pub mod moe_serving;
