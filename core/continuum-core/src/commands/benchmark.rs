@@ -430,52 +430,72 @@ impl ActionCommand for BenchmarkRun {
     type Output = BenchmarkRunResult;
 
     async fn run(&self, ctx: &Ctx, p: BenchmarkRunParams) -> Result<BenchmarkRunResult, CommandError> {
-        let spec = known_benchmarks()
-            .iter()
-            .find(|b| b.name == p.name)
-            .ok_or_else(|| {
-                CommandError::NotFound(format!(
-                    "unknown benchmark '{}'. Known: {}. Call benchmark/list.",
+        let limit = p.limit.unwrap_or(20) as usize;
+
+        // Resolve `(label, tasks)` from EITHER the static catalog OR the BenchmarkAdapter
+        // registry. The catalog wins for names it knows so resident benchmarks keep their
+        // proven, DEPLOY-SAFE embedded-gym path (`resolve_gym` finds the gym even when the repo
+        // isn't checked out). The adapter registry is the EXTENSION seam for benchmarks the
+        // catalog can't express — downloadable / custom-graded ones (Terminal-Bench, SWE-bench)
+        // land there as pure adapters with no change here. Inline tasks (not a temp-file path)
+        // carry no CWD dependence and survive a DETACHED run that outlives this handler.
+        let (bench_label, sliced_tasks): (String, Vec<crate::cognition::eval::EvalTask>) =
+            if let Some(spec) = known_benchmarks().iter().find(|b| b.name == p.name) {
+                let eval_set = spec.eval_set.ok_or_else(|| {
+                    CommandError::Invalid(format!(
+                        "benchmark '{}' is catalogued but not yet runnable through the grader \
+                         (needs its dataset pulled + a {:?} grader). Runnable today: {}.",
+                        spec.name,
+                        spec.grader,
+                        known_benchmarks().iter().filter(|b| b.eval_set.is_some()).map(|b| b.name).collect::<Vec<_>>().join(", "),
+                    ))
+                })?;
+                let (gym_name, content) =
+                    crate::cognition::gym::resolve_gym(eval_set).map_err(CommandError::Invalid)?;
+                let tasks = content
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .take(limit)
+                    .enumerate()
+                    .map(|(n, l)| {
+                        serde_json::from_str::<crate::cognition::eval::EvalTask>(l).map_err(|e| {
+                            CommandError::Invalid(format!(
+                                "benchmark '{}' gym ({gym_name}) line {}: malformed EvalTask: {e}",
+                                spec.name,
+                                n + 1,
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                (spec.name.to_string(), tasks)
+            } else if let Some(adapter) = crate::cognition::benchmark::get(&p.name) {
+                // A downloadable adapter needs its dataset fetched first; that on-demand fetch
+                // is the NEXT slice. Fail LOUD rather than silently score an empty set — a
+                // resident adapter (dataset() == None) runs today.
+                if let Some(ds) = adapter.dataset() {
+                    return Err(CommandError::Invalid(format!(
+                        "benchmark '{}' needs its dataset fetched from '{}' ({:?}) — the \
+                         on-demand download is not wired yet; resident adapters (no download) \
+                         run today.",
+                        p.name, ds.source, ds.kind,
+                    )));
+                }
+                let tasks = adapter
+                    .tasks(None, Some(limit))
+                    .await
+                    .map_err(|e| CommandError::Invalid(format!(
+                        "benchmark adapter '{}' failed to load tasks: {e}",
+                        p.name
+                    )))?;
+                (adapter.name().to_string(), tasks)
+            } else {
+                return Err(CommandError::NotFound(format!(
+                    "unknown benchmark '{}'. Catalog: {}. Adapters: {}. Call benchmark/list.",
                     p.name,
                     known_benchmarks().iter().map(|b| b.name).collect::<Vec<_>>().join(", "),
-                ))
-            })?;
-        let eval_set = spec.eval_set.ok_or_else(|| {
-            CommandError::Invalid(format!(
-                "benchmark '{}' is catalogued but not yet runnable through the grader (needs its \
-                 dataset pulled + a {:?} grader). Runnable today: {}.",
-                spec.name,
-                spec.grader,
-                known_benchmarks().iter().filter(|b| b.eval_set.is_some()).map(|b| b.name).collect::<Vec<_>>().join(", "),
-            ))
-        })?;
-
-        // The eval runs a whole eval_set and has no task limit; a full 164-task agentic run is
-        // impractical live. Resolve the gym CONTENT (embedded or on-disk), slice to `limit`, and
-        // hand the eval the parsed tasks INLINE. Inline `tasks` takes precedence over `eval_set`
-        // and — unlike a temp-file path — carries no CWD dependence and no cleanup race: a DETACHED
-        // run's eval executes in a spawned task that outlives this handler, so a temp file we wrote
-        // here and removed on return (the old shape) had already vanished by the time the detached
-        // eval tried to read it ("no such file on disk"). Inline tasks live in the params moved
-        // into the spawned task — they cannot go missing. Default a small, quick slice.
-        let (gym_name, content) =
-            crate::cognition::gym::resolve_gym(eval_set).map_err(CommandError::Invalid)?;
-        let limit = p.limit.unwrap_or(20) as usize;
-        let sliced_tasks: Vec<crate::cognition::eval::EvalTask> = content
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .take(limit)
-            .enumerate()
-            .map(|(n, l)| {
-                serde_json::from_str::<crate::cognition::eval::EvalTask>(l).map_err(|e| {
-                    CommandError::Invalid(format!(
-                        "benchmark '{}' gym ({gym_name}) line {}: malformed EvalTask: {e}",
-                        spec.name,
-                        n + 1,
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+                    crate::cognition::benchmark::names().join(", "),
+                )));
+            };
 
         // BUILD-FROM-SCRATCH → clean workspace (#206). A UI-build benchmark (ui_checks,
         // no seeded files) must run in an EMPTY dir: create-workspace re-roots her hands
@@ -497,7 +517,7 @@ impl ActionCommand for BenchmarkRun {
                 .ok()
                 .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
                 .ok_or_else(|| CommandError::Internal("no home dir for eval workspace".into()))?;
-            let root = home.join("eval-workspaces").join(spec.name);
+            let root = home.join("eval-workspaces").join(&bench_label);
             // Clean start each run — never grade against a prior run's leftover files.
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).map_err(|e| {
@@ -534,15 +554,15 @@ impl ActionCommand for BenchmarkRun {
                     // reproducible-absolute knob is opt-in on cognition/eval directly.
                     suppress_recall: None,
                     note: Some(match &p.base_model_id {
-                        Some(m) => format!("benchmark/run {} on {m}", spec.name),
-                        None => format!("benchmark/run {}", spec.name),
+                        Some(m) => format!("benchmark/run {bench_label} on {m}"),
+                        None => format!("benchmark/run {bench_label}"),
                     }),
                 },
             )
             .await?;
 
         Ok(BenchmarkRunResult {
-            benchmark: spec.name.to_string(),
+            benchmark: bench_label,
             // Surface the eval's run handle so a detached run is pollable by run_id
             // (the finalized ledger row), not by persona-only live progress.
             run_id: result.run_id.clone(),
