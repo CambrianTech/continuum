@@ -293,14 +293,29 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONT
 
 # Put `continuum` on PATH so it works like any installed CLI — self-provisioning, the
 # managed-product principle ([[managed-product-everything-self-provisions-no-operator-steps]]).
-# Symlink the just-built binary into ~/.local/bin (user-writable, conventionally on PATH).
-# NEVER named `cu` — that is /usr/bin/cu, the Unix UUCP tool, which shadows it. Idempotent;
-# refreshes each deploy so PATH always points at the current build.
+# COPY the just-built binary into ~/.local/bin (user-writable, conventionally on PATH) —
+# do NOT symlink into the cargo target dir. That dir is an ephemeral BUILD artifact: cargo
+# replaces the binary mid-rebuild, `cargo clean` and rust-analyzer's feature-mismatched
+# rebuilds delete it, and a symlink then DANGLES — the exact flaky mess where `continuum`
+# vanishes post-boot ([[deploy-cli-binary-deleted-from-target-dir-post-boot]]). A real copy
+# is decoupled from that churn; it only changes when we deploy. NEVER named `cu` — that is
+# /usr/bin/cu, the Unix UUCP tool, which shadows it. Idempotent; refreshes each deploy so
+# PATH always points at the current build. Copy atomically (temp + mv) so a `continuum`
+# invocation concurrent with a deploy never sees a half-written binary.
 CONTINUUM_CLI_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum"
 if [ -x "$CONTINUUM_CLI_BIN" ]; then
   CONTINUUM_LINK_DIR="$HOME/.local/bin"
   mkdir -p "$CONTINUUM_LINK_DIR"
-  ln -sf "$CONTINUUM_CLI_BIN" "$CONTINUUM_LINK_DIR/continuum"
+  # A stale symlink from an earlier install would otherwise make `cp` follow it back into
+  # the target dir — remove any existing entry first, then copy the real bytes.
+  rm -f "$CONTINUUM_LINK_DIR/continuum"
+  if cp "$CONTINUUM_CLI_BIN" "$CONTINUUM_LINK_DIR/continuum.tmp.$$" \
+     && mv -f "$CONTINUUM_LINK_DIR/continuum.tmp.$$" "$CONTINUUM_LINK_DIR/continuum"; then
+    :
+  else
+    rm -f "$CONTINUUM_LINK_DIR/continuum.tmp.$$"
+    echo "  ⚠ could not install continuum CLI into $CONTINUUM_LINK_DIR" >&2
+  fi
   case ":$PATH:" in
     *":$CONTINUUM_LINK_DIR:"*) : ;;
     *) echo "  ⚠ $CONTINUUM_LINK_DIR is not on PATH — add it so \`continuum\` resolves directly" >&2 ;;
