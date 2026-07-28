@@ -28,7 +28,9 @@ use serde::{Deserialize, Serialize};
 
 /// One journaled durable admit. `record` is the exact JSON that went to the
 /// durable store (embedding included) — replay re-issues it verbatim.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Crosses the wire in `memory/replicate-batch`, hence the schema derives.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/JournalEntry.ts")]
 pub struct JournalEntry {
     pub seq: u64,
     pub persona_id: String,
@@ -190,6 +192,92 @@ pub fn snapshot(persona_id: &str) -> Option<ReplicationSnapshot> {
     })
 }
 
+// ─── Replica store (the RECEIVING side of slice 2) ──────────────────────────
+//
+// A peer node holds passive copies under `~/.continuum/replicas/<persona>/
+// journal.jsonl` — its cold store IS another being's backup (the grid is the
+// backup). Idempotent by (origin_node, seq) high-water: re-shipped batches
+// append nothing and re-ack the same high-water, so the shipper can retry
+// blindly. Single-writer discipline holds: entries for one persona from one
+// origin arrive in seq order from that origin's shipper.
+
+static REPLICA_HW: OnceLock<Mutex<HashMap<(String, String), u64>>> = OnceLock::new();
+
+fn replica_hw() -> &'static Mutex<HashMap<(String, String), u64>> {
+    REPLICA_HW.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn replica_journal_path(persona_id: &str) -> Option<PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()?;
+    let bare = persona_id.strip_prefix("@persona:").unwrap_or(persona_id);
+    Some(
+        PathBuf::from(home)
+            .join(".continuum/replicas")
+            .join(bare)
+            .join("journal.jsonl"),
+    )
+}
+
+/// Recover this replica's high-water per origin_node from disk (once per boot).
+fn recover_replica_hw(persona_id: &str, path: &PathBuf, map: &mut HashMap<(String, String), u64>) {
+    let Ok(f) = fs::File::open(path) else { return };
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        if let Ok(e) = serde_json::from_str::<JournalEntry>(&line) {
+            let key = (persona_id.to_string(), e.origin_node);
+            let hw = map.entry(key).or_insert(0);
+            if e.seq > *hw {
+                *hw = e.seq;
+            }
+        }
+    }
+}
+
+/// Append a shipped batch to this node's replica journal for `persona_id`.
+/// All entries must share ONE origin_node (a batch is one shipper's tail).
+/// Entries at or below the current high-water are skipped (idempotent retry).
+/// Returns the acked high-water for that (persona, origin) after the append.
+pub fn replica_append_batch(
+    persona_id: &str,
+    entries: &[JournalEntry],
+) -> Result<u64, String> {
+    let Some(first) = entries.first() else {
+        // A batch names its origin via its entries; an empty one can't be
+        // acked meaningfully. The shipper never sends empty — fail loud.
+        return Err("empty replicate batch".into());
+    };
+    let origin = first.origin_node.clone();
+    if entries.iter().any(|e| e.origin_node != origin) {
+        return Err("mixed origin_node in one batch — a batch is one shipper's tail".into());
+    }
+    let path = replica_journal_path(persona_id).ok_or("no home dir for replica store")?;
+    let mut map = replica_hw().lock().map_err(|e| e.to_string())?;
+    let key = (persona_id.to_string(), origin.clone());
+    if !map.contains_key(&key) {
+        recover_replica_hw(persona_id, &path, &mut map);
+    }
+    let hw = map.entry(key).or_insert(0);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    for e in entries {
+        if e.seq <= *hw {
+            continue; // already replicated — idempotent retry
+        }
+        let line = serde_json::to_string(e).map_err(|e| e.to_string())?;
+        f.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(b"\n").map_err(|e| e.to_string())?;
+        *hw = e.seq;
+    }
+    Ok(*hw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +321,38 @@ mod tests {
             assert_eq!(lines[0].seq, 1);
             assert_eq!(lines[1].seq, 2);
             assert_eq!(lines[1].record["id"], "m2");
+        });
+    }
+
+    // what this catches: a re-shipped batch (shipper retry after a lost ack)
+    // must append NOTHING and re-ack the same high-water — duplicate replica
+    // lines would double memories on slice-3 replay.
+    #[test]
+    fn replica_batch_is_idempotent() {
+        with_temp_home(|| {
+            let pid = "raid-test-persona-c";
+            let e = |seq: u64| JournalEntry {
+                seq,
+                persona_id: pid.into(),
+                origin_node: "node-a".into(),
+                ts_ms: 1,
+                kind: "memory".into(),
+                record: serde_json::json!({"id": format!("m{seq}")}),
+            };
+            let batch = vec![e(1), e(2)];
+            assert_eq!(replica_append_batch(pid, &batch).unwrap(), 2);
+            // Retry the same batch: same ack, no new lines.
+            assert_eq!(replica_append_batch(pid, &batch).unwrap(), 2);
+            let path = replica_journal_path(pid).unwrap();
+            let n = std::io::BufRead::lines(std::io::BufReader::new(
+                std::fs::File::open(&path).unwrap(),
+            ))
+            .count();
+            assert_eq!(n, 2, "retry must not duplicate replica lines");
+            // Mixed-origin batch fails loud.
+            let mut bad = vec![e(3)];
+            bad.push(JournalEntry { origin_node: "node-b".into(), ..e(4) });
+            assert!(replica_append_batch(pid, &bad).is_err());
         });
     }
 

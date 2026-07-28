@@ -37,6 +37,7 @@ pub mod multi_layer_recall;
 pub mod import;
 pub mod recall_hook;
 pub mod remember;
+pub mod replicate_batch;
 pub mod share;
 
 use append_event::MemoryAppendEvent;
