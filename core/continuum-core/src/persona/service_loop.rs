@@ -1058,6 +1058,11 @@ async fn serve_persona_loop_inner(
                         tokens_per_second = m.tokens_per_second(),
                         "deliberation generation cost"
                     );
+                    // Feed this turn's assembled-prompt size into the elastic serving
+                    // demand so the served window ebbs and flows with real work — a lean
+                    // chat turn keeps it small (more personas warm), a heavy coding turn
+                    // grows it (#234). No-op until a serving daemon has booted.
+                    crate::modules::serving_daemon::observe_serving_working_set(m.input_tokens);
                 }
                 match step {
                     crate::cognition::act_observe::SettleStep::Spoke(text) => text,
