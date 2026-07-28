@@ -1,6 +1,3 @@
 fn main() {
-    println!("Hello from Sahar's workspace!");
-}
-fn main() {
-    println!("Hello, world!");
+    println!("Sahar is alive.");
 }
