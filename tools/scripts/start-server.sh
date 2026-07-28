@@ -402,8 +402,15 @@ echo "▶ building forge-custodian (Rust gguf-lora export sidecar)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin forge-custodian $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ forge-custodian build failed — genome gene-conversion unavailable (core still launches)" >&2
 
-# Build the server binary BEFORE stopping the old core, so the running core keeps
-# serving through the (cached, fast) compile and downtime is ~0.
+# Stop the running core BEFORE building the server bin. Restarts are commonplace
+# BY DESIGN ([[restarts-are-commonplace]], Joel 2026-07-28): a stopped node is a
+# sleeping citizen — the grid absorbs the capacity dip, personas resume on boot.
+# Zero-downtime build-before-stop was the OLD value here and it bought real bugs:
+# on Windows an EXECUTING exe cannot be overwritten (os error 5), so building
+# while the old core ran either failed the link or needed rename-aside tricks.
+# Stop-then-build is simpler, uniform across platforms, and optimizes the thing
+# we actually value: a clean fast restart, not uptime.
+stop_existing_core
 echo "▶ building continuum-core-server"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
   || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }
