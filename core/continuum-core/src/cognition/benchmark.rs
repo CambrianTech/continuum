@@ -159,13 +159,25 @@ pub struct BenchGrade {
     pub reason: String,
 }
 
-/// Process-global registry of benchmark adapters, keyed by [`BenchmarkAdapter::name`].
-/// Adapters register at startup; `benchmark/run` looks one up by name. Same shape as the
-/// RAG source registry — one canonical place, discovered not hard-switched.
+/// A builtin adapter that self-registers at link time — the SAME `inventory` mechanism
+/// commands use (`register_stateless_command!` → `inventory::submit!`), so a resident
+/// benchmark is discoverable with NO boot hook and NO central list to edit (the
+/// dynamic-discovery contract, not a hard-switched registry). A resident adapter submits one
+/// of these next to its `impl BenchmarkAdapter`; [`get`]/[`names`] fold them in.
+pub struct BuiltinBenchmarkAdapter {
+    /// Constructs the adapter. `fn` pointer (not a value) so submission stays const-evaluable.
+    pub make: fn() -> Arc<dyn BenchmarkAdapter>,
+}
+inventory::collect!(BuiltinBenchmarkAdapter);
+
+/// Runtime-registered adapters (tests + any future dynamic registration). Builtins come from
+/// `inventory` and are folded in by [`get`]/[`names`] — this holds only the imperatively-added
+/// ones, so a test fixture never has to touch the link-time set.
 static REGISTRY: LazyLock<RwLock<HashMap<String, Arc<dyn BenchmarkAdapter>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Register (or replace) a benchmark adapter. Idempotent by name.
+/// Register (or replace) a benchmark adapter at runtime. Idempotent by name. Builtins
+/// self-register via `inventory` and need NOT be passed here.
 pub fn register(adapter: Arc<dyn BenchmarkAdapter>) {
     REGISTRY
         .write()
@@ -173,17 +185,25 @@ pub fn register(adapter: Arc<dyn BenchmarkAdapter>) {
         .insert(adapter.name().to_string(), adapter);
 }
 
-/// Look up an adapter by name, or `None` if unregistered.
+/// Look up an adapter by name, or `None` if unknown. Runtime registrations win over builtins
+/// (a test can shadow a builtin by name); otherwise the link-time `inventory` set is searched.
 pub fn get(name: &str) -> Option<Arc<dyn BenchmarkAdapter>> {
-    REGISTRY
+    if let Some(a) = REGISTRY
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .get(name)
         .cloned()
+    {
+        return Some(a);
+    }
+    inventory::iter::<BuiltinBenchmarkAdapter>
+        .into_iter()
+        .map(|b| (b.make)())
+        .find(|a| a.name() == name)
 }
 
-/// All registered benchmark names, sorted — for `benchmark/list` + a fail-loud "unknown
-/// benchmark 'X'; known: …" error instead of a silent miss.
+/// All known benchmark names (runtime-registered ∪ builtins), sorted+deduped — for
+/// `benchmark/list` + a fail-loud "unknown benchmark 'X'; known: …" instead of a silent miss.
 pub fn names() -> Vec<String> {
     let mut v: Vec<String> = REGISTRY
         .read()
@@ -191,7 +211,13 @@ pub fn names() -> Vec<String> {
         .keys()
         .cloned()
         .collect();
+    v.extend(
+        inventory::iter::<BuiltinBenchmarkAdapter>
+            .into_iter()
+            .map(|b| (b.make)().name().to_string()),
+    );
     v.sort();
+    v.dedup();
     v
 }
 

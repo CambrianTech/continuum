@@ -29,6 +29,15 @@ const HUMANEVAL_RS_JSONL: &str = "docs/genome/humaneval-rs.jsonl";
 /// The HumanEval-rs benchmark as a plug-in adapter.
 pub struct HumanEvalRsAdapter;
 
+// Self-register at link time — the same `inventory` mechanism commands use, so
+// `benchmark::get("humaneval-rs")` resolves with no boot hook (a resident adapter needs no
+// dataset download, so it is safe to expose unconditionally).
+inventory::submit! {
+    crate::cognition::benchmark::BuiltinBenchmarkAdapter {
+        make: || std::sync::Arc::new(HumanEvalRsAdapter),
+    }
+}
+
 #[async_trait]
 impl BenchmarkAdapter for HumanEvalRsAdapter {
     fn name(&self) -> &str {
@@ -142,5 +151,20 @@ mod tests {
         let a = HumanEvalRsAdapter;
         assert_eq!(a.name(), "humaneval-rs");
         assert!(a.dataset().is_none(), "resident benchmark = no download");
+    }
+
+    // what this catches: the `inventory::submit!` above must make the adapter resolvable
+    // through the registry with NO boot hook — this is what lets `benchmark/run` fall back to
+    // the adapter registry by name. A missing/typo'd submission fails here, not silently at
+    // dispatch time as an "unknown benchmark".
+    #[test]
+    fn humaneval_self_registers_via_inventory() {
+        let a = crate::cognition::benchmark::get("humaneval-rs")
+            .expect("humaneval-rs must self-register via inventory (no boot hook)");
+        assert_eq!(a.name(), "humaneval-rs");
+        assert!(
+            crate::cognition::benchmark::names().contains(&"humaneval-rs".to_string()),
+            "names() must fold in the inventory builtins for benchmark/list + fail-loud errors"
+        );
     }
 }
