@@ -1,1 +1,5 @@
-hello world hello rust world
+This is a sample text file.
+
+It contains several lines of text.
+The word count program will analyze this file.
+Each line has different words, and some words may appear more than once.
