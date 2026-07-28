@@ -180,6 +180,42 @@ impl ReplicationLedger {
         }
     }
 
+    /// Read this persona's journal entries with `seq > after_seq`, up to
+    /// `limit`, ascending. The shipper's tail read (slice 2b). Reads from disk
+    /// (the journal is the durable truth; the in-memory handle only tracks the
+    /// write head), so it works for any persona with a journal on this node.
+    pub fn read_tail(&self, persona_id: &str, after_seq: u64, limit: usize) -> Vec<JournalEntry> {
+        let Some(path) = self.journal_path_for(persona_id) else {
+            return Vec::new();
+        };
+        let Ok(f) = fs::File::open(&path) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for line in BufReader::new(f).lines().map_while(Result::ok) {
+            if let Ok(e) = serde_json::from_str::<JournalEntry>(&line) {
+                if e.seq > after_seq {
+                    out.push(e);
+                    if out.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Persona ids with an active in-memory journal handle (touched since boot).
+    /// The shipper iterates these each tick. (Cold personas not yet admitted
+    /// this boot are shipped once they next admit — acceptable: a persona with
+    /// zero writes this boot has nothing new to replicate.)
+    pub fn journaled_personas(&self) -> Vec<String> {
+        self.journals
+            .lock()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// This persona's replication state, or None if nothing journaled since boot.
     pub fn snapshot(&self, persona_id: &str) -> Option<ReplicationSnapshot> {
         let map = self.journals.lock().ok()?;

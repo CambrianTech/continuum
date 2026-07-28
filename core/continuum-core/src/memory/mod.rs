@@ -31,6 +31,7 @@ pub mod embedding;
 pub mod raw_adapter;
 pub mod recall;
 pub mod replication;
+pub mod replication_shipper;
 pub mod timeline;
 pub mod types;
 
