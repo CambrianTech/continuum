@@ -110,9 +110,14 @@ crate::action_command! {
     run(this, _ctx, p) => {
         let _timer = TimingGuard::new("module", "memory_consolidate");
 
-        let persona_uuid = uuid::Uuid::parse_str(&p.persona_id).map_err(|e| {
-            CommandError::Internal(format!("memory/consolidate: persona_id must be a uuid: {e}"))
-        })?;
+        // #164: accept the short-form persona id rosters display, not just a full UUID —
+        // the same id_resolve primitive persona/* and work/* already use.
+        let persona_uuid = crate::id_resolve::resolve(
+            &p.persona_id,
+            &crate::persona::card::ids(),
+            "persona",
+        )
+        .map_err(CommandError::Invalid)?;
         let persona_name = p.persona_name.clone().unwrap_or_else(|| p.persona_id.clone());
 
         let executor = this.state.executor().map_err(CommandError::Internal)?;
