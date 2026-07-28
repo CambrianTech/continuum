@@ -58,11 +58,42 @@ Schedule slice-3 passes in the existing dream/idle rhythm: memory consolidates (
 compact (new) during sleep; validate on wake; regression → rollback to the pre-compaction genome tier.
 Idle GPU at night is foundry time. Same cadence ladder, same quarantine discipline.
 
-### 5. Regrowth = paging + heal *(unifies with K3 slice-2)*
+### 5. Regrowth + CLONING = paging, mitosis, heal *(unifies with K3 slice-2)*
 Pruned experts/heads are demoted to L4/L5 cold storage, never deleted. When the live profile shifts
 (entropy rising, fire-counts on absent experts via router logits, eval guard failing), the pager pages
 them BACK; optional LoRA heal via `forge-custodian`. **Sentinel's "regrow" and the K3 expert pager are
 the same mechanism** — one delta rule at the weight tier: erase-stale / write-fresh / bounded budget.
+
+**Cloning (sentinel's head-mitosis, MoE-native):** the other half of experiential plasticity — a
+SATURATED high-utility head/expert (entropy shows concentration + overload) is DUPLICATED (+ small
+noise, brief LoRA differentiation) into a slot freed by culling. Cull-dead + clone-hot at constant
+budget = capacity REALLOCATION, the actual biological analog. The pager's slot model fits exactly:
+a clone is just a page-in of a copied artifact into a culled expert's slot, then the router learns to
+split traffic during the next heal pass. Per-head/per-expert **quantization levels** ride the same
+decision (the plasticity formula's Precision column, driven by live utilization instead of a
+calibration pass): hot experts get more bits, cold survivors get fewer — mixed precision as a
+continuous dial, not a per-model constant.
+
+### 6. The uber skip path — depth elasticity via K3's AttnRes *(rides the fork's K3 ops)*
+sentinel-ai tried U-Net-style skip connections between layers and its own DEBUGGING_NOTES record the
+outcome: **instability, disabled**. Raw dense skips across transformer depth destabilize training.
+K3 ships the STABLE formulation of the same idea at 1.45T scale: **AttnRes** — every
+`attn_res_block_size` layers checkpoint the residual stream, and each layer applies a LEARNED,
+SOFTMAX-NORMALIZED attention over those block checkpoints (`self_attention_res_norm/_proj` +
+`_apply_attn_res`). A principled residual highway: normalized (softmax over blocks), learned (scored
+per token), cheap (one scalar proj per block). We are already implementing this op in our llama.cpp
+fork for K3 — the same graph machinery then serves forged models.
+
+Plasticity payoffs, in order of arrival:
+1. **Safe depth culling** — with a highway in place, whole low-utility BLOCKS can be culled/skipped and
+   information routes around them (the redundancy that makes biological pruning survivable).
+2. **Inference-time depth elasticity** — the controller (slice 2) can gate blocks off per-request when
+   their marginal utility is low (entropy signal): adaptive compute on the depth axis, the complement
+   of MoE's width axis.
+3. **Generalization** — a skip highway trained with stochastic block-drop is an implicit ensemble over
+   depths (stochastic-depth literature); the "uber path" generalizes better on inputs where the deep
+   specialized path overfits. Forge cycles can GRAFT a highway onto highway-less models (train only
+   res_norm/res_proj per block — LoRA-heal-sized, not a retrain).
 
 ## What stays out (for now)
 - Head-level *regrowth inside a live CUDA graph* (llama.cpp static graph can't resize; regrowth is
