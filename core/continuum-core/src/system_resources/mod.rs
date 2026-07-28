@@ -29,9 +29,9 @@ pub use disk_reporters::{
     install_tracked_dirs, standard_tracked_dirs, tracked_dir, DiskUsageScanner, TrackedDir,
 };
 pub use memory_pressure::{
-    is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec,
-    MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel,
-    PressureSnapshot,
+    current_available_bytes, is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot,
+    MemoryBudgetSpec, MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport,
+    PressureLevel, PressureSnapshot,
 };
 pub use monitor::{
     CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,

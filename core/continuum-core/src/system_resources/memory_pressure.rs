@@ -97,10 +97,32 @@ static MEMORY_GATE_CLOSED: std::sync::atomic::AtomicBool =
 /// Any subsystem can read this lock-free to make graduated decisions.
 static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0); // 0=Normal
 
+/// Global atomic free-physical-memory reading (bytes), updated every 2s by the
+/// monitor loop from `sysinfo::available_memory()` — the honest "how much can I
+/// allocate before the OS OOM-kills me" number. The pressure LEVEL is a ratio and
+/// macOS reports it Normal while counting compressible/cached pages as available;
+/// a subsystem about to allocate a KNOWN large footprint (e.g. standing up a second
+/// llama-server) must size against these real free bytes, not the level, or it gets
+/// jetsam-SIGKILLed on a memory-tight machine. 0 until the first monitor poll (then
+/// treat as "unknown — don't veto on it"). Lock-free read from anywhere.
+static CURRENT_AVAILABLE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Check if the memory gate is closed (critical pressure sustained).
 /// Subsystems should refuse new allocations when this returns true.
 pub fn is_memory_gate_closed() -> bool {
     MEMORY_GATE_CLOSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The latest free physical memory (bytes) the monitor observed, or `None` before
+/// the first poll. This is the number to size a large elective allocation against —
+/// unlike [`MemoryPressureMonitor::current_level`], it does not lie when the OS
+/// counts compressible/cached pages as available.
+pub fn current_available_bytes() -> Option<u64> {
+    match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        n => Some(n),
+    }
 }
 
 /// Force-close the memory gate (for emergency use).
@@ -754,6 +776,9 @@ impl MemoryPressureMonitor {
             self.current_rss.store(rss, Ordering::Relaxed);
             self.current_pressure.store(pressure.to_bits(), Ordering::Relaxed);
             CURRENT_PRESSURE_LEVEL.store(level.to_u8(), Ordering::Relaxed);
+            // Publish the honest free-physical-bytes number too, so a subsystem sizing
+            // a large elective allocation can veto against real headroom, not the ratio.
+            CURRENT_AVAILABLE_BYTES.store(available, Ordering::Relaxed);
 
             // Hysteresis.
             if level == st.prev_level {
