@@ -101,6 +101,63 @@ if [ -f "$_mf_runtime" ]; then
   fi
 fi
 
+# ── Windows-CUDA build env (2026-07-28, BigMama) ─────────────────────
+# The core's `cuda` feature needs the MSVC toolchain visible to cargo's build
+# scripts (candle-kernels runs nvcc→cl.exe; the llama crate links cuda.lib).
+# On a stock Git-Bash shell NONE of that is on PATH, so cargo-features.sh
+# (below) silently degrades to directml-only — and the core then mis-detects
+# a 32GB card as ~4GB (no detect_cuda) and serves a toy model. Establish the
+# env HERE, before feature detection, so a fresh Windows+NVIDIA box gets the
+# real build with zero hand steps:
+#   1. cl.exe absent but VS2022 BuildTools installed → re-exec this script
+#      once through vcvars64 (same cmd/.bat bridge install-llama-server.sh
+#      uses; VS2022 pinned — nvcc rejects VS18/14.5x toolsets).
+#   2. MSVC link.exe must BEAT Git's /usr/bin/link.exe (coreutils) or every
+#      build-script link dies — prepend the cl.exe dir to PATH.
+#   3. cuda.lib/cublas.lib etc live in the toolkit's lib/x64 which vcvars
+#      does NOT add — prepend to LIB for link.exe (LNK1181 otherwise).
+#   4. bindgen reads LIBCLANG_PATH (the env var — PATH is not enough).
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if command -v nvidia-smi >/dev/null 2>&1 && ! command -v cl.exe >/dev/null 2>&1 \
+       && [ -z "${CONTINUUM_MSVC_REENTER:-}" ]; then
+      _vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+      _vs_path=""
+      [ -x "$_vswhere" ] && _vs_path="$("$_vswhere" -version "[17.0,18.0)" -products '*' \
+          -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+          -property installationPath 2>/dev/null | head -1)"
+      if [ -n "$_vs_path" ]; then
+        echo "→ NVIDIA GPU + VS2022 present but cl.exe not on PATH — re-entering via vcvars64 for the CUDA build" >&2
+        _reenter_bat="$(mktemp --suffix=.bat 2>/dev/null || echo "${TMPDIR:-/tmp}/continuum-msvc-reenter.bat")"
+        _win_bash="$(cygpath -w "$(command -v bash)")"
+        _script_unix="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+        {
+          echo "@echo off"
+          echo "call \"$(cygpath -w "$_vs_path")\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul || exit /b 1"
+          echo "set CONTINUUM_MSVC_REENTER=1"
+          echo "\"$_win_bash\" \"$_script_unix\" || exit /b 1"
+        } > "$_reenter_bat"
+        exec cmd //c "$(cygpath -w "$_reenter_bat")"
+      else
+        echo "⚠  NVIDIA GPU present but VS2022 BuildTools not found — core builds directml-only" >&2
+        echo "   (install-manifest 'msvc' module provisions it; cuda serving needs it)" >&2
+      fi
+    fi
+    if command -v cl.exe >/dev/null 2>&1; then
+      # (2) MSVC linker precedence over Git's coreutils link.exe.
+      _cl_dir="$(dirname "$(command -v cl.exe)")"
+      case ":$PATH:" in "$_cl_dir":*) ;; *) export PATH="$_cl_dir:$PATH" ;; esac
+      # (3) CUDA import libs onto LIB (version-agnostic glob, mirrors runtime_path).
+      for _cuda_lib in "$HOME/.continuum"/cuda-*/Library/lib/x64 "$HOME/.continuum"/cuda-*/lib/x64; do
+        [ -d "$_cuda_lib" ] && export LIB="$(cygpath -w "$_cuda_lib");${LIB:-}"
+      done
+      # (4) bindgen's libclang (manifest llvm-libclang install location).
+      [ -f "$HOME/.continuum/tools/llvm/bin/libclang.dll" ] \
+        && export LIBCLANG_PATH="$HOME/.continuum/tools/llvm/bin"
+    fi
+    ;;
+esac
+
 # ── Per-platform feature flags ───────────────────────────────────────
 # Mac Intel can't use Metal (task #131 — ggml_metal_device_init hangs on
 # Intel + AMD discrete). Force mac-cpu-only on Intel Mac.
@@ -245,22 +302,46 @@ CONTINUUM_SOCKET="${CONTINUUM_SOCKET:-/tmp/continuum-core.sock}"
 # Called AFTER the build (below) so downtime is ~0: the new binary is ready, we
 # stop the old, and exec immediately.
 stop_existing_core() {
-  local pids
-  pids="$(pgrep -f "continuum-core-server" 2>/dev/null | grep -v "^$$\$" || true)"
-  if [ -n "$pids" ]; then
-    echo "▶ stopping existing core (pids: $(echo $pids | tr '\n' ' '))"
-    # shellcheck disable=SC2086
-    kill -TERM $pids 2>/dev/null || true
-    for _ in $(seq 1 15); do
-      pgrep -f "continuum-core-server" >/dev/null 2>&1 || break
-      sleep 1
-    done
-    if pgrep -f "continuum-core-server" >/dev/null 2>&1; then
-      echo "  graceful stop timed out — SIGKILL"
-      pkill -9 -f "continuum-core-server" 2>/dev/null || true
-      sleep 1
-    fi
-  fi
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # POSIX signals are a SILENT NO-OP against native Windows exes from
+      # Git-Bash: pgrep -f matches nothing and kill/pkill can't touch them, so
+      # this block never stopped anything on Windows — every `npm start` boot
+      # then died fighting the immortal old core for its ports (observed
+      # 2026-07-28 BigMama: an 8:22AM core survived three "restarts"; each new
+      # boot failed binding 0.0.0.0:7117 and exited, masked as "leaving the
+      # running core untouched"). Use tasklist/taskkill — the native tools.
+      if tasklist 2>/dev/null | grep -qi "continuum-core-server.exe"; then
+        echo "▶ stopping existing core (taskkill)"
+        # No graceful console signal exists for a detached native service from
+        # here (WM_CLOSE is ignored by console apps); the core's state is
+        # crash-safe by design ([[no-fallbacks-ever]] boot contract), so /F.
+        taskkill //F //IM continuum-core-server.exe >/dev/null 2>&1 || true
+        for _ in $(seq 1 10); do
+          tasklist 2>/dev/null | grep -qi "continuum-core-server.exe" || break
+          sleep 1
+        done
+      fi
+      ;;
+    *)
+      local pids
+      pids="$(pgrep -f "continuum-core-server" 2>/dev/null | grep -v "^$$\$" || true)"
+      if [ -n "$pids" ]; then
+        echo "▶ stopping existing core (pids: $(echo $pids | tr '\n' ' '))"
+        # shellcheck disable=SC2086
+        kill -TERM $pids 2>/dev/null || true
+        for _ in $(seq 1 15); do
+          pgrep -f "continuum-core-server" >/dev/null 2>&1 || break
+          sleep 1
+        done
+        if pgrep -f "continuum-core-server" >/dev/null 2>&1; then
+          echo "  graceful stop timed out — SIGKILL"
+          pkill -9 -f "continuum-core-server" 2>/dev/null || true
+          sleep 1
+        fi
+      fi
+      ;;
+  esac
   rm -f "$CONTINUUM_SOCKET"
 }
 
