@@ -310,14 +310,22 @@ impl ServingTarget {
 pub fn cold_expert_offload_ot(hot_layers: &[u32], n_layers: u32) -> Option<String> {
     use std::collections::BTreeSet;
     // Ignore any hot index outside the block range (a stale plan can't force a bad pattern).
-    let hot: BTreeSet<u32> = hot_layers.iter().copied().filter(|&l| l < n_layers).collect();
+    let hot: BTreeSet<u32> = hot_layers
+        .iter()
+        .copied()
+        .filter(|&l| l < n_layers)
+        .collect();
     let cold: Vec<u32> = (0..n_layers).filter(|l| !hot.contains(l)).collect();
     if cold.is_empty() {
         return None;
     }
     // `\.` on BOTH sides of the block index so `blk.3` never also matches `blk.31`, and
     // `ffn.*_exps` covers all four stacked projections (gate/up/down/gate_up).
-    let alternation = cold.iter().map(u32::to_string).collect::<Vec<_>>().join("|");
+    let alternation = cold
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join("|");
     Some(format!(r"blk\.({alternation})\.ffn.*_exps=CPU"))
 }
 
@@ -400,8 +408,15 @@ fn server_bin() -> String {
     // repro 2026-07-24, BigMama: planned lane, empty log, no server).
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     if let Some(home) = home {
-        let name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
-        let owned = std::path::Path::new(&home).join(".continuum").join("bin").join(name);
+        let name = if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        let owned = std::path::Path::new(&home)
+            .join(".continuum")
+            .join("bin")
+            .join(name);
         if owned.is_file() {
             return owned.to_string_lossy().into_owned();
         }
@@ -414,7 +429,10 @@ fn server_bin() -> String {
 /// (adapters, operators, a future grid allocator) reads it instead of probing
 /// the process directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/persona/ServingSnapshot.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/persona/ServingSnapshot.ts"
+)]
 pub struct ServingSnapshot {
     /// The model id currently being served, if any. `None` = nothing live yet.
     #[ts(optional)]
@@ -577,8 +595,11 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     }
     // Bind the timeout result before matching so its `watch::Ref` temporary
     // drops before `rx` does (else the borrow outlives `rx` — E0597).
-    let waited =
-        tokio::time::timeout(timeout, rx.wait_for(|s| s.ready && s.active_model.is_some())).await;
+    let waited = tokio::time::timeout(
+        timeout,
+        rx.wait_for(|s| s.ready && s.active_model.is_some()),
+    )
+    .await;
     match waited {
         Ok(Ok(guard)) => Some(guard.clone()),
         _ => None,
@@ -615,8 +636,11 @@ pub async fn wait_for_serving_window_settle(
     // Phase 2: wait for the relaunched lane to come back decode-ready. Bind the timeout result
     // before matching so its `watch::Ref` temporary drops before `rx` does (else E0597).
     let remaining = timeout.saturating_sub(start.elapsed());
-    let waited =
-        tokio::time::timeout(remaining, rx.wait_for(|s| s.ready && s.active_model.is_some())).await;
+    let waited = tokio::time::timeout(
+        remaining,
+        rx.wait_for(|s| s.ready && s.active_model.is_some()),
+    )
+    .await;
     match waited {
         Ok(Ok(guard)) => Some(guard.served_context_window),
         _ => None,
@@ -766,8 +790,7 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
             let window_ok = match ctrl.served_context_window().await {
                 Ok(served) => {
                     served == 0
-                        || target.context_window
-                            <= served.saturating_add(WINDOW_RELAUNCH_TOLERANCE)
+                        || target.context_window <= served.saturating_add(WINDOW_RELAUNCH_TOLERANCE)
                 }
                 Err(_) => true,
             };
@@ -910,6 +933,47 @@ impl LlamaServerProcess {
     /// silently-adopted wedged lane. (This is the spawn-side guarantee that lets
     /// the adopt path in `ensure_model_serving` TRUST a child we own without
     /// re-probing every reconcile tick.)
+    /// Non-blocking: has the child WE spawned already exited? `Some(status)` once
+    /// it has, `None` while it runs (or when we own no child — the adopt path).
+    /// Lets [`wait_ready`] fail LOUD the instant a bring-up dies instead of polling
+    /// a dead port for the whole budget.
+    fn child_exit_status(&self) -> Option<std::process::ExitStatus> {
+        self.child
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|c| c.try_wait().ok().flatten())
+    }
+
+    /// The tail of this lane's stderr log (`llama-server-<port>.log`, the file the
+    /// spawn wires stderr to) — the llama.cpp load banner or ggml/Metal fault that
+    /// explains a bring-up failure. Best-effort: an unreadable/absent log yields a
+    /// marker, never blocks the error path. An EMPTY log is itself a signal — a
+    /// child that produced no output before the deadline hung in early init (e.g.
+    /// a co-resident second Metal context that never acquired the device), distinct
+    /// from a crash (which prints a banner + fault first).
+    fn stderr_log_tail(&self) -> String {
+        let Some(port) = self
+            .root
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+        else {
+            return "<lane port unparseable>".to_string();
+        };
+        let Some(path) = dirs::home_dir().map(|h| {
+            h.join(".continuum")
+                .join("logs")
+                .join(format!("llama-server-{port}.log"))
+        }) else {
+            return "<no home dir>".to_string();
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(s) => tail_or_hang_marker(&s),
+            Err(_) => "<stderr log unreadable>".to_string(),
+        }
+    }
+
     async fn wait_ready(&self) -> Result<(), LlamaServerError> {
         // The live lane keeps the tight 90s fail-loud budget; an ephemeral
         // measurement lane gets the co-resident cold-large-model budget (it loads a
@@ -937,11 +1001,60 @@ impl LlamaServerProcess {
                 Ok(resp) => last = format!("status {}", resp.status()),
                 Err(e) => last = e.to_string(),
             }
+            // #205 unmask: the instant our OWN child exits, fail LOUD with its exit
+            // status + stderr tail — the real cause (bad args, model-load failure, an
+            // aborted Metal init) — instead of polling a dead port for the whole budget
+            // and reporting a bare "/health request failed" that discards the reason.
+            // No-op for the adopt path (we own no child); benefits live + ephemeral alike.
+            if let Some(status) = self.child_exit_status() {
+                return Err(LlamaServerError::Spawn(format!(
+                    "llama-server exited during bring-up ({status}) before it served on {} \
+                     — last stderr:\n{}",
+                    self.root,
+                    self.stderr_log_tail()
+                )));
+            }
             if Instant::now() >= deadline {
-                return Err(LlamaServerError::NotReady(budget, last));
+                // Even a non-exiting HANG now surfaces the stderr state: an empty log
+                // fingerprints "child emitted nothing before it stopped" — the diagnostic
+                // that was missing when this masked as a bare 240s /health timeout. The
+                // exit-status arm above disambiguates the two empty-log causes: an OS
+                // OOM/jetsam kill (SIGKILL/137 — the proven cause when a second large
+                // model won't fit in free unified memory) vs. a genuine early-init hang
+                // (no exit status). Glass-boxed 2026-07-28: a second 24B eval lane co-resident
+                // with the live 24B lane was jetsam-killed with 9.6 GB free.
+                return Err(LlamaServerError::NotReady(
+                    budget,
+                    format!("{last} — last stderr:\n{}", self.stderr_log_tail()),
+                ));
             }
             tokio::time::sleep(READY_POLL).await;
         }
+    }
+}
+
+/// The last lines of an llama-server stderr log, OR — when the log is empty — a
+/// diagnostic marker naming what an empty log MEANS: the child produced NO output
+/// before it stopped. Read alongside the exit-status arm in `wait_ready`, that
+/// disambiguates the two causes: an OS OOM/jetsam kill (SIGKILL/137 — the proven
+/// cause when a second large model can't fit in free unified memory; the child
+/// dies before llama.cpp prints its banner) vs. a genuine early-init hang (child
+/// still running at the deadline). A crash from bad args or a model-load fault
+/// prints the banner + fault FIRST, so a non-empty tail carries that directly.
+/// Pure so the load-bearing empty-vs-tail decision is unit-tested without touching
+/// the real `~/.continuum/logs` path ([[self-test-via-command-feedback-surface-
+/// never-blind]], and #72's env-dependent-test lesson).
+fn tail_or_hang_marker(contents: &str) -> String {
+    let mut lines: Vec<&str> = contents.lines().rev().take(20).collect();
+    lines.reverse();
+    let tail = lines.join("\n");
+    if tail.trim().is_empty() {
+        "<stderr log empty — child produced no output before it stopped: with a SIGKILL/137 \
+         exit this is an OS OOM/jetsam kill (a second large model that didn't fit in free \
+         memory); with no exit status it is a genuine early-init hang>"
+            .to_string()
+    } else {
+        tail
     }
 }
 
@@ -1362,7 +1475,8 @@ impl LlamaServerControl for LlamaServerProcess {
         // than fabricate sight ([[fallbacks-are-illegal-fail-loud]]). Safe on a generation lane
         // (unlike `--embeddings` below): the projector only adds the encoder, it does not switch
         // the server out of causal-generation mode.
-        if let Some(mmproj) = crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
+        if let Some(mmproj) =
+            crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
         {
             cmd.arg("--mmproj").arg(&mmproj);
         } else if target
@@ -1598,7 +1712,9 @@ impl LlamaServerProcess {
                     "genome catalog loaded DORMANT — all adapter scales zeroed; per-request activation only"
                 );
             }
-            Ok(r) => tracing::warn!(status = %r.status(), "genome dormancy: scale-zero POST refused"),
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), "genome dormancy: scale-zero POST refused")
+            }
             Err(e) => tracing::warn!(error = %e, "genome dormancy: scale-zero POST failed"),
         }
     }
@@ -1614,7 +1730,11 @@ fn split_host_port(root: &str) -> (String, u16) {
     let authority = no_scheme.split('/').next().unwrap_or(no_scheme);
     match authority.rsplit_once(':') {
         Some((h, p)) => (
-            if h.is_empty() { DEFAULT_HOST.to_string() } else { h.to_string() },
+            if h.is_empty() {
+                DEFAULT_HOST.to_string()
+            } else {
+                h.to_string()
+            },
             p.parse().unwrap_or(DEFAULT_PORT),
         ),
         None => (authority.to_string(), DEFAULT_PORT),
@@ -1625,6 +1745,37 @@ fn split_host_port(root: &str) -> (String, u16) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // what this catches (#205 unmask, glass-boxed 2026-07-28): an ephemeral eval lane
+    // whose child was OS-killed (SIGKILL/137) before it emitted anything produced an
+    // EMPTY stderr log and masked as a bare 240s /health timeout. `tail_or_hang_marker`
+    // must turn an empty log into the "no output before it stopped" fingerprint naming
+    // the OOM-kill vs. early-init-hang split (so the error names the real memory-wall
+    // failure mode) while a non-empty log yields its last lines in order. Mutation
+    // checks: dropping the empty-branch fails the OOM/jetsam assert; a non-reversed tail
+    // fails the ordering assert.
+    #[test]
+    fn tail_or_hang_marker_fingerprints_empty_and_tails_nonempty() {
+        assert!(
+            tail_or_hang_marker("").contains("OOM/jetsam"),
+            "an empty log is the no-output fingerprint naming the OOM-kill cause, not a silent blank"
+        );
+        assert!(
+            tail_or_hang_marker("   \n\n \t \n").contains("OOM/jetsam"),
+            "whitespace-only counts as empty"
+        );
+        let log = (1..=30)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tail = tail_or_hang_marker(&log);
+        assert!(
+            tail.contains("line30") && tail.contains("line11") && !tail.contains("line10"),
+            "keeps the LAST 20 lines in original order, not the first: {tail}"
+        );
+        // sanity: order preserved (line11 appears before line30)
+        assert!(tail.find("line11") < tail.find("line30"));
+    }
 
     // what this catches: the slice-1 K3 -ot builder — the LAYER-granular buft-override that
     // physically pages MoE experts. Cold = (0..n_layers) minus hot; the value keys on the
@@ -1638,7 +1789,10 @@ mod tests {
         let v = cold_expert_offload_ot(&[0, 2, 4], 6).expect("some cold → an override");
         assert_eq!(v, r"blk\.(1|3|5)\.ffn.*_exps=CPU");
         // Anchoring intent: the block index is fenced by `\.` on both sides.
-        assert!(v.contains(r"blk\.(1|3|5)\.ffn"), "block index must be dot-anchored");
+        assert!(
+            v.contains(r"blk\.(1|3|5)\.ffn"),
+            "block index must be dot-anchored"
+        );
 
         // Everything hot → no override at all (NOT an empty string, which llama-server rejects).
         assert_eq!(cold_expert_offload_ot(&[0, 1, 2, 3], 4), None);
@@ -1840,7 +1994,11 @@ mod tests {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())));
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when already serving");
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "no relaunch when already serving"
+        );
     }
 
     // what this catches: a same-model / same-genome lane whose live per-slot window
@@ -1880,7 +2038,11 @@ mod tests {
             .with_served_window(32768 - 256); // one 256-pad under the 32768 target
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "padding noise must not relaunch");
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "padding noise must not relaunch"
+        );
     }
 
     // what this catches: an orphan that answers /v1/models with the RIGHT model
@@ -1896,10 +2058,16 @@ mod tests {
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         assert_eq!(
             outcome,
-            EnsureOutcome::Spawned { model: "coder-14b".into() },
+            EnsureOutcome::Spawned {
+                model: "coder-14b".into()
+            },
             "a compute-wedged orphan must be rejected and respawned, never adopted"
         );
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "wedged orphan → fresh spawn");
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            1,
+            "wedged orphan → fresh spawn"
+        );
     }
 
     // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode
@@ -1921,12 +2089,18 @@ mod tests {
             EnsureOutcome::AlreadyServing,
             "an owned child is trusted without force_probe (the pre-#175 blindness)"
         );
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch without force");
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "no relaunch without force"
+        );
         // With force_probe: re-prove decode → fails → reap + respawn a fresh backend.
         let healed = ensure_model_serving(&ctrl, &target("coder-14b"), true).await;
         assert_eq!(
             healed,
-            EnsureOutcome::Spawned { model: "coder-14b".into() },
+            EnsureOutcome::Spawned {
+                model: "coder-14b".into()
+            },
             "force_probe relaunches an owned wedged lane — the #175 self-heal"
         );
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "exactly one respawn");
@@ -1949,7 +2123,11 @@ mod tests {
             EnsureOutcome::AlreadyServing,
             "our own decode-verified child is trusted without a per-tick re-probe"
         );
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch for an owned child");
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "no relaunch for an owned child"
+        );
     }
 
     // what this catches: a different model live → relaunch to the desired one.
@@ -1957,7 +2135,12 @@ mod tests {
     async fn wrong_model_triggers_relaunch() {
         let ctrl = FakeControl::probe(Ok(Some("general-4b".into())));
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
-        assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
+        assert_eq!(
+            outcome,
+            EnsureOutcome::Spawned {
+                model: "coder-14b".into()
+            }
+        );
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1);
     }
 
@@ -1969,11 +2152,18 @@ mod tests {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into(), "/genes/b.gguf".into()]);
         // Desired set equal but given out of order — adapter_paths() sorts, so it matches.
-        let outcome =
-            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/b.gguf", "/genes/a.gguf"]), false)
-                .await;
+        let outcome = ensure_model_serving(
+            &ctrl,
+            &target_with_adapters("coder-14b", &["/genes/b.gguf", "/genes/a.gguf"]),
+            false,
+        )
+        .await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when genome set matches");
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            0,
+            "no relaunch when genome set matches"
+        );
     }
 
     // what this catches: SAME model but a NEW gene trained (set grew) → relaunch.
@@ -1984,11 +2174,23 @@ mod tests {
     async fn new_gene_triggers_relaunch_on_same_model() {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()]);
-        let outcome =
-            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]), false)
-                .await;
-        assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "new gene must relaunch to repopulate the catalog");
+        let outcome = ensure_model_serving(
+            &ctrl,
+            &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]),
+            false,
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::Spawned {
+                model: "coder-14b".into()
+            }
+        );
+        assert_eq!(
+            ctrl.serves.load(Ordering::SeqCst),
+            1,
+            "new gene must relaunch to repopulate the catalog"
+        );
     }
 
     // what this catches: nothing running (Unreachable) is NOT an error — it's
@@ -1997,7 +2199,12 @@ mod tests {
     async fn unreachable_means_spawn_not_degrade() {
         let ctrl = FakeControl::probe(Err("connection refused"));
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
-        assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
+        assert_eq!(
+            outcome,
+            EnsureOutcome::Spawned {
+                model: "coder-14b".into()
+            }
+        );
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1);
     }
 
@@ -2008,7 +2215,9 @@ mod tests {
         let ctrl = FakeControl::probe(Ok(None)).serve_fails();
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
         match outcome {
-            EnsureOutcome::Degraded { reason } => assert!(reason.contains("boom"), "reason: {reason}"),
+            EnsureOutcome::Degraded { reason } => {
+                assert!(reason.contains("boom"), "reason: {reason}")
+            }
             other => panic!("expected Degraded, got {other:?}"),
         }
     }
@@ -2017,9 +2226,18 @@ mod tests {
     // /v1-stripped root and a missing port falling back to the default.
     #[test]
     fn split_host_port_parses_root() {
-        assert_eq!(split_host_port("http://127.0.0.1:58057"), ("127.0.0.1".into(), 58057));
-        assert_eq!(split_host_port("http://0.0.0.0:9090"), ("0.0.0.0".into(), 9090));
-        assert_eq!(split_host_port("http://localhost"), ("localhost".into(), DEFAULT_PORT));
+        assert_eq!(
+            split_host_port("http://127.0.0.1:58057"),
+            ("127.0.0.1".into(), 58057)
+        );
+        assert_eq!(
+            split_host_port("http://0.0.0.0:9090"),
+            ("0.0.0.0".into(), 9090)
+        );
+        assert_eq!(
+            split_host_port("http://localhost"),
+            ("localhost".into(), DEFAULT_PORT)
+        );
     }
 
     // what this catches: serving_root normalizes a configured `.../v1` back to
