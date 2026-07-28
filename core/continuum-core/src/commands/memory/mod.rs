@@ -49,6 +49,7 @@ use multi_layer_recall::MemoryMultiLayerRecall;
 use import::MemoryImport;
 use recall_hook::MemoryRecallHook;
 use remember::MemoryRemember;
+use replicate_batch::MemoryReplicateBatch;
 use share::MemoryShare;
 
 /// Result of an incremental append (`memory/append-memory`, `memory/append-event`).
@@ -72,6 +73,7 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(MemoryRemember { state: state.clone() }),
         Arc::new(MemoryConsolidate { state: state.clone() }),
         Arc::new(MemoryShare { state: state.clone() }),
+        Arc::new(MemoryReplicateBatch { state: state.clone() }),
         Arc::new(MemoryConsciousnessContext { state: state.clone() }),
         Arc::new(MemoryAppendMemory { state: state.clone() }),
         Arc::new(MemoryAppendEvent { state }),
@@ -151,7 +153,7 @@ pub(crate) async fn persist_memory(
         // journal (docs/architecture/PERSONA-RAID-WRITE-BEHIND.md). This is the
         // ONE durable-admit funnel, so this is the one tee. Best-effort-loud —
         // never fails the admit.
-        crate::memory::replication::journal_admit(persona_id, "memory", &data);
+        state.replication.journal_admit(persona_id, "memory", &data);
     }
     result
         .map_err(|e| {

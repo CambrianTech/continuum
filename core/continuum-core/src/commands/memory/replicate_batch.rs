@@ -11,7 +11,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::memory::replication::{replica_append_batch, JournalEntry};
+use std::sync::Arc;
+
+use crate::memory::replication::JournalEntry;
+use crate::modules::memory::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 /// Params for `memory/replicate-batch`. Wire keys are snake_case.
@@ -43,14 +46,14 @@ pub struct MemoryReplicateBatchResult {
 crate::action_command! {
     /// Accept a replica batch of another node's persona journal into this
     /// node's cold store. Privileged: grid peers reach it through the
-    /// command-RPC pump; it writes only under `~/.continuum/replicas/`.
-    pub struct MemoryReplicateBatch;
+    /// command-RPC pump; it writes only under the node's replicas root.
+    pub struct MemoryReplicateBatch { state: Arc<MemoryState> }
     name: "memory/replicate-batch",
     access: Privileged,
     params: MemoryReplicateBatchParams,
     output: MemoryReplicateBatchResult,
-    run(_this, _ctx, p) => {
-        let acked = replica_append_batch(&p.persona_id, &p.entries)
+    run(this, _ctx, p) => {
+        let acked = this.state.replication.replica_append_batch(&p.persona_id, &p.entries)
             .map_err(|e| CommandError::Invalid(format!("memory/replicate-batch: {e}")))?;
         Ok(MemoryReplicateBatchResult { acked_seq: acked })
     }
