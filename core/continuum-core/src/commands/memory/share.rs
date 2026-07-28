@@ -100,7 +100,8 @@ pub(super) fn build_shared_record(
         last_accessed_at: None,
         layer: None,
         relevance_score: None,
-    }
+        origin_node: None,
+        origin_seq: None,    }
 }
 
 crate::action_command! {

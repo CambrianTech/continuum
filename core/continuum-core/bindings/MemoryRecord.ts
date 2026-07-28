@@ -12,4 +12,21 @@ layer: string | null,
 /**
  * Set by semantic recall — cosine similarity score
  */
-relevance_score: number | null, };
+relevance_score: number | null, 
+/**
+ * Persona-RAID replication provenance (#2056): the node that ORIGINALLY admitted
+ * this record. `None` = admitted locally by the persona herself on this node (lived,
+ * no migration). ORTHOGONAL to `memory_type` (the lived-vs-`shared-by` EXPERIENCE
+ * axis): a REPLICATED record keeps its experience kind — a replayed lived memory
+ * stays lived (same being, restored), a `shared-by` lesson stays taught — and gains
+ * `(origin_node, origin_seq)` purely as auditable replay metadata, so recall needs
+ * zero changes and audit gets everything. Co-designed with BigMama on the seam.
+ */
+origin_node?: string, 
+/**
+ * Monotonic per-`(persona, origin_node)` admit sequence — the newest-wins key for
+ * replicated replay (#2056). `None` = a pre-replication record. `u64 → number`
+ * (not bigint) per the ts-rs contract rule ([[sdk-ts-rs-u64-bigint-drift]]); a
+ * per-persona admit counter stays well under 2^53.
+ */
+origin_seq?: number, };
