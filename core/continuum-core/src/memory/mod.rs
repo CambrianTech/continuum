@@ -30,6 +30,7 @@ pub mod corpus;
 pub mod embedding;
 pub mod raw_adapter;
 pub mod recall;
+pub mod replication;
 pub mod timeline;
 pub mod types;
 

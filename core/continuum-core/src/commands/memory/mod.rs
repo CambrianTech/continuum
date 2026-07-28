@@ -134,7 +134,7 @@ pub(crate) async fn persist_memory(
     if let Some(embedding) = &memory.embedding {
         data[EMBEDDING_KEY] = serde_json::json!(embedding);
     }
-    executor
+    let result = executor
         .execute_json(
             "data/create",
             serde_json::json!({
@@ -144,7 +144,15 @@ pub(crate) async fn persist_memory(
                 "data": data,
             }),
         )
-        .await
+        .await;
+    if result.is_ok() {
+        // Persona-RAID slice 1: tee the ADMITTED record into the write-behind
+        // journal (docs/architecture/PERSONA-RAID-WRITE-BEHIND.md). This is the
+        // ONE durable-admit funnel, so this is the one tee. Best-effort-loud —
+        // never fails the admit.
+        crate::memory::replication::journal_admit(persona_id, "memory", &data);
+    }
+    result
         .map_err(|e| {
             CommandError::Internal(format!(
                 "memory/append-memory: durable write to {} failed: {e}",
