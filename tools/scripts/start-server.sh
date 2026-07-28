@@ -239,16 +239,34 @@ echo "✓ llama-server: $(command -v llama-server) — the engine we own & launc
 #     dies and would keep holding the port + GPU, so stop that too.
 # The core's fresh llama-server is launched afterward by the serving daemon, on a
 # port it SCANS for — so this is GPU/excision hygiene, not a correctness gate.
-if pgrep -f 'studio run' >/dev/null 2>&1; then
-  echo "  stopping excised Unsloth Studio (freeing GPU for the core's engine)" >&2
-  pkill -f 'studio run' 2>/dev/null || true
-fi
-if pgrep -f 'llama-server' >/dev/null 2>&1; then
-  echo "  clearing orphaned llama-server backend(s) so the core owns the engine" >&2
-  pkill -f 'llama-server' 2>/dev/null || true
-  # Give the OS a moment to release the listening socket before the core binds.
-  sleep 1
-fi
+# Windows: pgrep/pkill are SILENT NO-OPS against native exes (same class as the
+# stop_existing_core fix above) — orphaned engines survived every launch and held
+# the canonical serving port, wedging the daemon's fresh-claim reclaim forever
+# (observed 2026-07-28: pinned model stuck ready=false behind a dead core's
+# llama-server). Use tasklist/taskkill by image name.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    for _img in llama-server.exe llama-server-static.exe; do
+      if tasklist 2>/dev/null | grep -qi "$_img"; then
+        echo "  clearing orphaned $_img so the core owns the engine" >&2
+        taskkill //F //IM "$_img" >/dev/null 2>&1 || true
+      fi
+    done
+    sleep 1
+    ;;
+  *)
+    if pgrep -f 'studio run' >/dev/null 2>&1; then
+      echo "  stopping excised Unsloth Studio (freeing GPU for the core's engine)" >&2
+      pkill -f 'studio run' 2>/dev/null || true
+    fi
+    if pgrep -f 'llama-server' >/dev/null 2>&1; then
+      echo "  clearing orphaned llama-server backend(s) so the core owns the engine" >&2
+      pkill -f 'llama-server' 2>/dev/null || true
+      # Give the OS a moment to release the listening socket before the core binds.
+      sleep 1
+    fi
+    ;;
+esac
 
 # ── Airc context ─────────────────────────────────────────────────────
 # Substrate auto-discovers airc daemon socket via `airc ipc-endpoint`
