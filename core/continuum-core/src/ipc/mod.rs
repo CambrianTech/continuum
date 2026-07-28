@@ -1701,7 +1701,14 @@ pub fn start_server(
     if let Some((interceptor_daemon_socket, _room)) = interceptor_airc_deps {
         let cell = airc_interceptor_cell.clone();
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
-        tokio::spawn(async move {
+        // `rt_handle.spawn`, NOT bare `tokio::spawn` — this runs in the SYNCHRONOUS boot
+        // region, AFTER the `rt_handle.enter()` guard (line ~1111) has dropped, so there is no
+        // ambient Tokio runtime here. Bare `tokio::spawn` panics "there is no reactor running"
+        // and kills the IPC listener thread → the socket never binds → the whole core is a
+        // zombie (regression from #2051's AircInterceptor block; every sibling spawn in this fn
+        // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
+        // boot on every airc-configured host.
+        rt_handle.spawn(async move {
             match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
                 .await
             {

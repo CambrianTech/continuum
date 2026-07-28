@@ -84,7 +84,14 @@ case "$(uname -s)" in
   *)                    _mf_os=linux ;;
 esac
 _mf_runtime="$SCRIPT_DIR/generated/manifest.${_mf_os}.sh"
-if [ -f "$_mf_runtime" ]; then
+# The generated manifest uses bash-4 associative arrays (`declare -A`). macOS ships bash 3.2,
+# where those are a hard `invalid option` error — and under this script's `set -e` a mid-file
+# failure ABORTS the whole boot (regression from #2046 "serve on Windows", which regenerated
+# manifest.macos.sh with `declare -A`; it silently broke every macOS reboot until the last
+# long-running core died). Only source it on bash 4+. The manifest solely feeds the
+# runtime-PATH augmentation below (a Windows/CUDA concern), whose own guard already tolerates
+# absence — so skipping it on bash 3.2 costs macOS nothing and the boot proceeds to the build.
+if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
   # shellcheck source=/dev/null
   source "$_mf_runtime"
   if declare -p MOD_RUNTIME_PATH >/dev/null 2>&1; then
