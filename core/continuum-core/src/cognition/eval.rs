@@ -312,12 +312,9 @@ fn decide_eval_lane_placement(
     served_ctx: u32,
     context: &str,
 ) -> (PlacementEvidence, Option<crate::resources::LeaseGuard>) {
-    // Q4_K_M GGUF file bytes ≈ resident weight bytes; ×1.25 covers KV cache +
-    // scratch at the bounded eval ctx. None → couldn't size (treated optimistically
-    // as GPU-first below).
-    let footprint = crate::model_registry::artifacts::resolve_gguf_for_model(base)
-        .and_then(|p| std::fs::metadata(&p).ok())
-        .map(|m| (m.len() as f64 * 1.25) as u64);
+    // ONE sizing, shared with the pre-spawn RAM gate (compression). None → couldn't
+    // size (treated optimistically as GPU-first below).
+    let footprint = eval_lane_footprint(base);
 
     // #56/G1 — ASK THE ONE GOVERNOR FOR THE SLOT, don't read raw free and race.
     // The eval lane is the top concurrent-OOM source: it stands up a SECOND
@@ -388,11 +385,64 @@ fn decide_eval_lane_placement(
 /// silent degrade: the detached ledger carries this exact string, and the harness
 /// retries when pressure clears. Live serving is untouched — it has its own
 /// shedding machinery; this gates only the deferrable measurement load.
-fn refuse_eval_lane_under_memory_pressure() -> Result<(), CommandError> {
+fn refuse_eval_lane_under_memory_pressure(footprint: Option<u64>) -> Result<(), CommandError> {
     eval_lane_memory_veto(
         crate::system_resources::MemoryPressureMonitor::current_level(),
         crate::system_resources::is_memory_gate_closed(),
+    )?;
+    // The pressure LEVEL passed — but on unified memory a macOS "Normal" level can
+    // still sit atop only a few GB of real free RAM (it counts compressible/cached
+    // pages as available). Standing up a SECOND llama-server of a known footprint into
+    // that is a jetsam-SIGKILL wall the level never sees (glass-boxed 2026-07-27: a 24B
+    // eval lane co-resident with a 24B live lane, 9.6 GB free → exit 137, zero-byte
+    // log). Size against the honest free-bytes number so we REFUSE cleanly (deferrable
+    // load, retried by `await_eval_lane_memory_headroom`) instead of OOM-crashing.
+    eval_lane_ram_veto(
+        crate::system_resources::current_available_bytes(),
+        footprint,
+        EVAL_LANE_RAM_HEADROOM_BYTES,
     )
+}
+
+/// Weight-file bytes ≈ resident weight bytes; ×1.25 covers KV cache + scratch at the
+/// bounded eval ctx. `None` → couldn't size (no GGUF on disk / unstatable). ONE place
+/// so the pre-spawn RAM gate and the GPU/CPU placement decision size identically.
+fn eval_lane_footprint(base: &crate::model_registry::Model) -> Option<u64> {
+    crate::model_registry::artifacts::resolve_gguf_for_model(base)
+        .and_then(|p| std::fs::metadata(&p).ok())
+        .map(|m| (m.len() as f64 * 1.25) as u64)
+}
+
+/// Free physical memory kept in reserve beyond the lane's own footprint — the OS, the
+/// live persona lane's in-flight buffers, and page-cache churn all need slack, and a
+/// lane placed at the exact edge is the one jetsam picks. If a bigger cushion is ever
+/// wanted it belongs here, one named constant, not scattered magic.
+const EVAL_LANE_RAM_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
+/// Whether a lane of `footprint` bytes fits in `available` free physical memory with
+/// `headroom` to spare. Pure so the load-bearing "would this OOM the machine" decision
+/// is unit-tested without process-global memory state. Refuses ONLY when BOTH numbers
+/// are known and it genuinely won't fit — an unknown footprint or an unread free-bytes
+/// reading is NOT a veto (the pressure-level gate and the placement lease remain the
+/// backstops; we never refuse a lane we couldn't size, to avoid starving a node whose
+/// probe is momentarily blind).
+fn eval_lane_ram_veto(
+    available: Option<u64>,
+    footprint: Option<u64>,
+    headroom: u64,
+) -> Result<(), CommandError> {
+    if let (Some(avail), Some(fp)) = (available, footprint) {
+        let need = fp.saturating_add(headroom);
+        if avail < need {
+            return Err(CommandError::Internal(format!(
+                "refusing to stand up an eval lane: only {avail} B free physical memory, but this \
+                 lane needs ~{fp} B (+{headroom} B headroom = {need} B) — standing it up would be \
+                 OOM-killed by the OS. A measurement lane is deferrable; free memory (e.g. unload a \
+                 resident model) and retry."
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// How long a lane bringup will WAIT for a transient pressure spike to clear
@@ -409,10 +459,10 @@ const EVAL_LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::from_s
 /// solve/eval there is no operator watching to retry, so the system honors its
 /// own advice for one bounded window. Never a silent wait: each deferred tick
 /// probes, so a stall is visible in the trace, not a mystery hang.
-async fn await_eval_lane_memory_headroom() -> Result<(), CommandError> {
+async fn await_eval_lane_memory_headroom(footprint: Option<u64>) -> Result<(), CommandError> {
     let deadline = tokio::time::Instant::now() + EVAL_LANE_PRESSURE_WAIT;
     loop {
-        let verdict = refuse_eval_lane_under_memory_pressure();
+        let verdict = refuse_eval_lane_under_memory_pressure(footprint);
         match verdict {
             Ok(()) => return Ok(()),
             Err(e) => {
@@ -552,7 +602,6 @@ async fn spawn_gene_eval_lane(
         AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
     };
 
-    await_eval_lane_memory_headroom().await?;
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
         .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
@@ -580,6 +629,10 @@ async fn spawn_gene_eval_lane(
                 gene.name
             ))
         })?;
+
+    // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
+    // (a jetsam SIGKILL otherwise), before paying the cold-load.
+    await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
 
     // 3. Host-fit PHYSICAL window (`-c`) for the throwaway lane, derived from the
     //    live serving budget (see `plan_eval_lane_ctx`). One lane: a single
@@ -703,7 +756,6 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
-    await_eval_lane_memory_headroom().await?;
     let base = crate::model_registry::try_global()
         .and_then(|r| r.model(base_id).cloned())
         .ok_or_else(|| {
@@ -711,6 +763,9 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
                 "base_model_id '{base_id}' is not in the model registry — cannot stand up a measurement lane for it. Call ai/inference/models for loadable ids."
             ))
         })?;
+    // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
+    // (a jetsam SIGKILL otherwise), before paying the cold-load.
+    await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
     let lane_ctx = plan_eval_lane_ctx(&base);
     let (placement_evidence, vram_lease) =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
@@ -3821,6 +3876,33 @@ mod tests {
             err.to_string().contains("memory pressure"),
             "refusal must name the cause for the detached ledger: {err}"
         );
+    }
+
+    // what this catches (glass-boxed 2026-07-27): the SIGKILL wall the pressure LEVEL
+    // never saw — a 24B eval lane co-resident with a 24B live lane, macOS reporting
+    // "Normal" atop 9.6 GB free, spawned into a jetsam kill (exit 137, zero-byte log).
+    // The RAM veto must REFUSE when a KNOWN footprint won't fit in the KNOWN free bytes
+    // (+headroom), and must NOT refuse when either number is unknown (never starve a
+    // node whose probe is momentarily blind — pressure gate + placement lease backstop).
+    #[test]
+    fn eval_lane_ram_veto_refuses_only_a_known_oversize_lane() {
+        const H: u64 = EVAL_LANE_RAM_HEADROOM_BYTES;
+        let gb = |n: u64| n * 1024 * 1024 * 1024;
+        // 14 GB lane + 2 GB headroom = 16 GB needed; 9.6 GB free → refuse (the exact case).
+        let err = eval_lane_ram_veto(Some(9_600_000_000), Some(gb(14)), H).unwrap_err();
+        assert!(
+            err.to_string().contains("free physical memory") && err.to_string().contains("OOM"),
+            "refusal must name the OOM wall for the detached ledger: {err}"
+        );
+        // Comfortably fits (50 GB free, 14 GB lane) → pass.
+        assert!(eval_lane_ram_veto(Some(gb(50)), Some(gb(14)), H).is_ok());
+        // Exactly footprint+headroom is enough (>= boundary), one byte less is not.
+        assert!(eval_lane_ram_veto(Some(gb(14) + H), Some(gb(14)), H).is_ok());
+        assert!(eval_lane_ram_veto(Some(gb(14) + H - 1), Some(gb(14)), H).is_err());
+        // Unknown footprint OR unknown free bytes → never a veto (can't size = don't block).
+        assert!(eval_lane_ram_veto(Some(gb(1)), None, H).is_ok());
+        assert!(eval_lane_ram_veto(None, Some(gb(14)), H).is_ok());
+        assert!(eval_lane_ram_veto(None, None, H).is_ok());
     }
 
     // what this catches: the warm-pool key lifecycle — a dead Weak (last handle
