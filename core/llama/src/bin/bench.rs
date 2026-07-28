@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use llama::{Batch, Context, ContextParams, Model, ModelParams, Sampler};
+use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

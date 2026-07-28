@@ -33,5 +33,11 @@ offset?: number,
 /**
  * Storage handle. Defaults to "main" (the shared DB). Power callers may pass
  * "@persona:<slug>" or "@metrics" to target a specific store.
+ *
+ * WIRE NOTE: on the flat wire the `handle` key is CLAIMED by the
+ * [`CommandRequest`](crate::runtime::CommandRequest) envelope (a kernel
+ * `HandleRef`), so a string here never reaches these params under that
+ * name — callers pass the storage handle as `dbPath` (the alias below),
+ * same as `data/create`.
  */
 handle?: string, };

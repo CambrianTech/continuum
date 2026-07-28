@@ -17,7 +17,7 @@ import type { ChatMessageView, RosterSlotView, SenderKind } from '@continuum/sdk
 const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k });
 const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   member_id: 'm-1', display_name: 'Asha', kind: kind('agent'), integrations: {},
-  provenance: { runtime: '' }, active: true, last_seen_ms: 0, vitals: {}, ...over,
+  provenance: { runtime: '' }, active: true, last_seen_ms: 0, vitals: {}, genes: [], ...over,
 });
 const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
   id: 'msg-1', room_id: 'room-1', sender_id: 's-1', sender_name: 'Joel',

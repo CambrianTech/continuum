@@ -64,6 +64,17 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         include_str!("../../../../docs/genome/hard-rs.jsonl"),
     ),
     (
+        // hard-rs-big: the 44-task widening of hard-rs — the 8 originals plus 36 new hard
+        // algorithmic tasks (DP, two-pointer, sliding-window, matrix, string, graph-flood),
+        // every one reference-verified through rustc (a wrong test can't reach the exam) and
+        // zero fn-name overlap with the training pools. ±1/44 = ±0.023 resolution vs hard-rs's
+        // ±0.125, so a genome forge's small lift is finally legible. Embedded here so it
+        // resolves from any CWD / a deployed binary — the relative-path refusal (#194 sibling)
+        // that cost this session hours can't recur.
+        "hard-rs-big.jsonl",
+        include_str!("../../../../docs/genome/hard-rs-big.jsonl"),
+    ),
+    (
         // frontier-rs: the "strive-toward" tier — real algorithms (Levenshtein,
         // Dijkstra, O(n log n) LIS, topological sort, arbitrary-precision add, a
         // precedence-climbing calculator, `.`/`*` regex matching). Problems a small

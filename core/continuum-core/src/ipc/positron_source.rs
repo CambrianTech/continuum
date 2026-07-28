@@ -104,6 +104,16 @@ pub(crate) const CHAT_POSTED: &str = "chat:posted";
 /// EMITTER (`crate::ipc::positron_presence`) and this CONSUMER must agree
 /// on the wire name — one string, one source of truth.
 pub(crate) const PRESENCE_UPDATED: &str = "presence:updated";
+/// Bus event carrying an EXPLICIT chat-focus switch — the `nav/select` verb's
+/// projection cue. Where `chat:posted` / `presence:updated` move the focused
+/// room *implicitly* (the accumulator follows events), this is the citizen
+/// saying "show me THIS room" (NAVIGATION-ACROSS-MODALITIES.md §2, the
+/// `switchTo`/`select` intent reaching the chat face).
+///
+/// `pub(crate)` for the same reason as [`CHAT_POSTED`]: the EMITTER
+/// (`crate::modules::nav`, the `nav/select` command) and this CONSUMER must
+/// agree on the wire name — one string, one source of truth.
+pub(crate) const CHAT_FOCUSED: &str = "chat:focused";
 /// Bounded message window carried in each snapshot. Matches the
 /// `chat/poll` default (`ChatPollParams.limit` defaults to 50) — the
 /// renderer shows a recent window; deeper history is a `chat/history`
@@ -178,6 +188,16 @@ pub(crate) struct AircPresenceUpdate {
     pub(crate) roster: Vec<RosterSlotView>,
 }
 
+/// Typed `chat:focused` payload — an explicit focus switch to `room_id`. Same
+/// `pub(crate)` + `Serialize` "agree by construction" discipline as
+/// [`AircPresenceUpdate`]: the emitter (`modules::nav`'s `nav/select`) builds
+/// THIS struct, never a hand JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AircChatFocused {
+    pub(crate) room_id: Uuid,
+}
+
 /// Event name a persona radiates its live vitals under.
 pub(crate) const PERSONA_VITALS: &str = "persona:vitals";
 
@@ -202,6 +222,13 @@ pub(crate) struct PersonaVitalsUpdate {
     /// vitals payload minted before this field deserializes with no loadout.
     #[serde(default)]
     pub(crate) loadout: Option<Loadout>,
+    /// NAMES of the paged-in LoRA genes, in page-in order — the label half of
+    /// the `genome` vital (which carries only the normalized count). Lets the
+    /// tile name each lit genome segment. Empty = base model, no genes.
+    /// `#[serde(default)]` so a payload minted before this field deserializes
+    /// with no names — honest-absent, never fabricated labels.
+    #[serde(default)]
+    pub(crate) genes: Vec<String>,
 }
 
 /// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's
@@ -282,6 +309,14 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // `store` time. `None` here = no bound model reported (a human, an
         // unresolved agent) — honest-absent, never a fabricated model.
         loadout: None,
+        // The avatar IMAGE is a node-local disk fact the presence EMITTER
+        // enriches (it owns the store scan); this shared projection stays
+        // pure — no I/O here, absent by default.
+        avatar_url: None,
+        // Gene names arrive on the persona's OWN `persona:vitals` radiate and
+        // are folded in at `store` time, same as vitals/loadout — never
+        // through this presence path. Empty = none reported.
+        genes: Vec::new(),
     }
 }
 
@@ -317,6 +352,8 @@ pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> Ro
         last_seen_ms: 0,
         vitals: BTreeMap::new(),
         loadout: None,
+        genes: Vec::new(),
+        avatar_url: None,
     }
 }
 
@@ -384,6 +421,13 @@ struct ChatProjection {
     /// The room this accumulator currently describes. `None` before the
     /// first recognized event.
     room_id: Option<Uuid>,
+    /// An EXPLICIT focus (the `nav/select` verb via [`CHAT_FOCUSED`]). While
+    /// held, the single-cache-per-kind view is PINNED to this room: events for
+    /// other rooms no longer steal it (the exact "room B's presence yanks the
+    /// chat projector off room A" hazard `positron_presence`'s resync doc
+    /// warns about). `None` before the first select — the accumulator then
+    /// follows events, the pre-nav behavior.
+    explicit_focus: Option<Uuid>,
     room_name: String,
     /// Bounded ring of recent messages, oldest first (the order
     /// `ChatViewState.messages` is documented to carry).
@@ -402,6 +446,11 @@ struct ChatProjection {
     /// time, surviving roster churn. A member with no entry carries `None` (no
     /// loadout strip), never a fabricated model.
     loadout: HashMap<Uuid, Loadout>,
+    /// Latest radiated gene NAMES per member id, folded from the SAME
+    /// `persona:vitals` events — the label half of the `genome` vital. Same
+    /// separate-overlay discipline as `vitals`/`loadout` (survives roster
+    /// churn). Empty entry = base model, no genes.
+    genes: HashMap<Uuid, Vec<String>>,
     /// Resolves this room's activity **purpose** (the `Content` dispatch key) — #6.
     /// The projection no longer hardcodes `"chat"`; it routes through this seam so a
     /// foundry / scada / academy room reports its own recipe-defined purpose with NO
@@ -444,11 +493,13 @@ impl ChatProjection {
             // monotonic source for that kind.
             builder: StateBuilder::standalone(),
             room_id: None,
+            explicit_focus: None,
             room_name: String::new(),
             messages: VecDeque::new(),
             roster: Vec::new(),
             vitals: HashMap::new(),
             loadout: HashMap::new(),
+            genes: HashMap::new(),
             experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
             experience_builder: StateBuilder::standalone(),
             last_experience: std::cell::RefCell::new(None),
@@ -472,7 +523,29 @@ impl ChatProjection {
             self.roster.clear();
             self.vitals.clear();
             self.loadout.clear();
+            self.genes.clear();
         }
+    }
+
+    /// Is `room` shut out by a held explicit focus? While the citizen has
+    /// selected a room, events for OTHER rooms must not steal the single
+    /// focused view (they still reach the nav rail's unread badges through the
+    /// digest path — nothing is lost, only the center pane stops following).
+    fn pinned_away_from(&self, room: Uuid) -> bool {
+        self.explicit_focus.is_some_and(|focus| focus != room)
+    }
+
+    /// Apply an EXPLICIT focus switch (the `nav/select` verb): pin the
+    /// accumulator to `room` and store the view. A quiet room (no events
+    /// observed since boot) stores the HONEST empty view — room id set, no
+    /// messages/roster/name until events or the presence re-assert arrive.
+    /// Deeper history for a quiet room is a `chat/history` backfill pull, the
+    /// documented follow-up (see the `MAX_MESSAGES_PER_SNAPSHOT` doc) — never
+    /// a fabricated transcript.
+    fn apply_focus(&mut self, room: Uuid) {
+        self.explicit_focus = Some(room);
+        self.switch_room(room);
+        self.store();
     }
 
     /// Fold a persona's radiated vitals into the per-member map and re-store.
@@ -490,6 +563,9 @@ impl ChatProjection {
             self.loadout.insert(update.member_id, loadout);
         }
         self.vitals.insert(update.member_id, update.vitals);
+        // Genes REPLACE (not merge): an empty list is a real "paged out to
+        // base" fact from the radiator, not an absence to preserve across.
+        self.genes.insert(update.member_id, update.genes);
         self.store();
     }
 
@@ -504,6 +580,12 @@ impl ChatProjection {
     /// ids the bus minted for it. Identity is resolved from the roster, never
     /// carried on the message (see `AircChatPosted`).
     fn apply_message(&mut self, msg: AircChatPosted) {
+        // A held explicit focus pins the view: a message in another room no
+        // longer refocuses the accumulator (its unread still reaches the nav
+        // rail via the digest path).
+        if self.pinned_away_from(msg.room_id) {
+            return;
+        }
         self.switch_room(msg.room_id);
         let is_duplicate = self.messages.iter().any(|m| {
             m.id == msg.message_id || (m.sender_id == msg.sender_id && m.content == msg.content)
@@ -535,6 +617,13 @@ impl ChatProjection {
     /// any message whose sender was provisional (posted before its card
     /// arrived) now that the card is known.
     fn apply_presence(&mut self, update: AircPresenceUpdate) {
+        // Same pin as `apply_message`: this is the guard the resync doc in
+        // `positron_presence` names — once a citizen explicitly selects a room,
+        // a broadcast presence re-assert for a DIFFERENT room must not yank
+        // the view off it.
+        if self.pinned_away_from(update.room_id) {
+            return;
+        }
         self.switch_room(update.room_id);
         self.room_name = update.room_name;
         // The update's roster IS the neutral slot type — move it in directly,
@@ -578,13 +667,15 @@ impl ChatProjection {
             .map(|slot| {
                 let vitals = self.vitals.get(&slot.member_id);
                 let loadout = self.loadout.get(&slot.member_id);
+                let genes = self.genes.get(&slot.member_id);
                 // No live overlay for this member → the presence slot, verbatim.
-                if vitals.is_none() && loadout.is_none() {
+                if vitals.is_none() && loadout.is_none() && genes.is_none() {
                     return slot.clone();
                 }
                 RosterSlotView {
                     vitals: vitals.cloned().unwrap_or_else(|| slot.vitals.clone()),
                     loadout: loadout.cloned().or_else(|| slot.loadout.clone()),
+                    genes: genes.cloned().unwrap_or_else(|| slot.genes.clone()),
                     ..slot.clone()
                 }
             })
@@ -666,6 +757,8 @@ enum ProjectionInput {
     Message(AircChatPosted),
     Presence(AircPresenceUpdate),
     Vitals(PersonaVitalsUpdate),
+    /// An explicit focus switch (`chat:focused` — the `nav/select` verb).
+    Focus(AircChatFocused),
 }
 
 fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> {
@@ -683,6 +776,9 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> 
         PERSONA_VITALS => serde_json::from_value::<PersonaVitalsUpdate>(body.clone())
             .ok()
             .map(ProjectionInput::Vitals),
+        CHAT_FOCUSED => serde_json::from_value::<AircChatFocused>(body.clone())
+            .ok()
+            .map(ProjectionInput::Focus),
         _ => None,
     }
 }
@@ -713,6 +809,7 @@ pub fn spawn(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>, substrate: Subst
                             ProjectionInput::Message(m) => projection.apply_message(m),
                             ProjectionInput::Presence(p) => projection.apply_presence(p),
                             ProjectionInput::Vitals(v) => projection.apply_vitals(v),
+                            ProjectionInput::Focus(f) => projection.apply_focus(f.room_id),
                         }
                     }
                 }
@@ -846,6 +943,7 @@ mod tests {
                 ("attention".to_string(), 90u8),
             ]),
             loadout: None,
+            genes: Vec::new(),
         })
         .unwrap();
         match classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -901,6 +999,7 @@ mod tests {
                 params: Some(24_000_000_000),
                 context_window: Some(32_768),
             }),
+            genes: Vec::new(),
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -917,6 +1016,7 @@ mod tests {
             member_id: asha,
             vitals: BTreeMap::from([("activity".to_string(), 50u8)]),
             loadout: None,
+            genes: Vec::new(),
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &vitals_only).unwrap() {
@@ -1236,6 +1336,7 @@ mod tests {
             member_id: m,
             vitals: BTreeMap::from([("energy".to_string(), 70u8)]),
             loadout: None,
+            genes: Vec::new(),
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -1261,6 +1362,89 @@ mod tests {
             view.roster[0].vitals.is_empty(),
             "vitals leaked from room A into room B"
         );
+    }
+
+    #[test]
+    fn explicit_focus_switches_to_a_quiet_room_with_an_honest_empty_view() {
+        // what this catches: the nav/select → chat seam. A `chat:focused` event
+        // (built from the REAL AircChatFocused struct — the emitter's wire shape)
+        // must refocus the accumulator onto the selected room, and a QUIET room
+        // (no events observed since boot) must render the honest empty view —
+        // room id set, no messages/roster/name — never room A's leftovers and
+        // never a fabricated transcript. (`chat/history` backfill for quiet
+        // rooms is the documented follow-up.)
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room_a = Uuid::from_u128(0xa);
+        let quiet = Uuid::from_u128(0x40);
+        if let ProjectionInput::Message(m) =
+            classify(CHAT_POSTED, &posted(room_a, Uuid::from_u128(0xb), "hi")).unwrap()
+        {
+            p.apply_message(m);
+        }
+        let focus = serde_json::to_value(AircChatFocused { room_id: quiet }).unwrap();
+        match classify(CHAT_FOCUSED, &focus).unwrap() {
+            ProjectionInput::Focus(f) => p.apply_focus(f.room_id),
+            _ => panic!("chat:focused must classify as Focus"),
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.room_id, quiet);
+        assert!(view.messages.is_empty(), "quiet room renders empty, honestly");
+        assert!(view.roster.is_empty());
+        assert_eq!(view.room_name, "", "no fabricated name before presence");
+    }
+
+    #[test]
+    fn explicit_focus_pins_the_view_against_other_rooms_events() {
+        // what this catches: the yank-back regression the presence-resync doc
+        // warns about — once a citizen explicitly selects room B, a later
+        // `chat:posted` or `presence:updated` in room A must NOT steal the
+        // focused view (pre-select, the accumulator follows events; post-select
+        // it is pinned). Events for the SELECTED room still fold in.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room_a = Uuid::from_u128(0xa);
+        let room_b = Uuid::from_u128(0xf);
+        p.apply_focus(room_b);
+        // Room A activity: must not refocus, must not fold.
+        if let ProjectionInput::Message(m) =
+            classify(CHAT_POSTED, &posted(room_a, Uuid::from_u128(0x1), "noise")).unwrap()
+        {
+            p.apply_message(m);
+        }
+        if let ProjectionInput::Presence(u) = classify(
+            PRESENCE_UPDATED,
+            &presence_one(room_a, Uuid::from_u128(0xd), "Helper", "agent", json!({})),
+        )
+        .unwrap()
+        {
+            p.apply_presence(u);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.room_id, room_b, "pinned focus survives other rooms' events");
+        assert!(view.messages.is_empty());
+        assert!(view.roster.is_empty());
+        // The selected room's own events fold in normally.
+        if let ProjectionInput::Message(m) =
+            classify(CHAT_POSTED, &posted(room_b, Uuid::from_u128(0x2), "here")).unwrap()
+        {
+            p.apply_message(m);
+        }
+        if let ProjectionInput::Presence(u) = classify(
+            PRESENCE_UPDATED,
+            &presence_one(room_b, Uuid::from_u128(0xe), "Asha", "agent", json!({})),
+        )
+        .unwrap()
+        {
+            p.apply_presence(u);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(view.messages[0].content, "here");
+        assert_eq!(view.roster.len(), 1);
+        // A second select moves the pin — focus is switchable, not one-way.
+        p.apply_focus(room_a);
+        assert_eq!(current_chat(&substrate).room_id, room_a);
     }
 
     #[test]

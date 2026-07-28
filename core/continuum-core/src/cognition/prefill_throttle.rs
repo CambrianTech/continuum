@@ -83,6 +83,14 @@ pub fn publish_serving(spike_bytes: u64, lanes: usize) {
 /// The fit rule is the SAME `capacity::FitPolicy` the simulator proves scenarios against —
 /// sim == prod at the policy seam. Safety margin: one spike of headroom, so measurement
 /// jitter of one lane never turns a fit into an overflow.
+/// The plan-published per-prefill spike bytes (0 = no plan yet). The SAME live
+/// value the throttle fits with — exposed so the lane decision (#108 step 2)
+/// prices "can local serve one more?" with one spike truth, never a second
+/// estimate ([[the compression principle]]).
+pub fn published_spike_bytes() -> u64 {
+    throttle().spike_bytes.load(Ordering::Acquire)
+}
+
 pub fn reconcile(gpu_free_bytes_live: u64) -> usize {
     let t = throttle();
     let spike = t.spike_bytes.load(Ordering::Acquire);

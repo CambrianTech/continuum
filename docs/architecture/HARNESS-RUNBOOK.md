@@ -37,11 +37,11 @@ tools/scripts/harness/cognition-cycle.sh --persona Asha --note "what I changed t
 That script (read its header — it is the authoritative procedure) does, idempotently,
 failing loud at the first missing precondition:
 
-1. resolves the `cu` client (prints the build command if absent),
+1. resolves the `continuum` client (prints the build command if absent),
 2. confirms the core answers `ping` on its IPC socket,
 3. resolves the persona by name or UUID (`cognition/personas`),
 4. snapshots every glass-box stream's length,
-5. runs `cu cognition/eval` (single-pass, or A/B with `--gene`),
+5. runs `continuum cognition/eval` (single-pass, or A/B with `--gene`),
 6. deltas the streams and collects *this run's* new capture lines,
 7. writes a timestamped report dir and prints the headline record.
 
@@ -55,11 +55,11 @@ spending any inference.
 export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"   # the ONE shared cache
 # 1. build + run the headless core (pure Rust — never npm/jtag):
 bash tools/scripts/start-server.sh                              # binds /tmp/continuum-core.sock
-# 2. build the cu client once:
-cargo build --manifest-path core/continuum-core/Cargo.toml --bin cu --features metal,accelerate
+# 2. build the continuum client once:
+cargo build --manifest-path core/continuum-core/Cargo.toml --bin continuum --features metal,accelerate
 # 3. confirm a persona is online (they resume from disk at boot):
-$CARGO_TARGET_DIR/debug/cu cognition/personas
-#    none online? spawn one:  cu persona/instances/bootstrap
+$CARGO_TARGET_DIR/debug/continuum cognition/personas
+#    none online? spawn one:  continuum persona/instances/bootstrap
 ```
 
 ## The iteration loop (what "iterate here till it's pretty good" means)
@@ -151,7 +151,7 @@ glass box tells you *what*.** Always open the capture stream before theorizing.
 3. Read the most recent `~/.continuum/harness-runs/*/report.md`.
 4. Pick the top unaddressed lever above, change ONE variable, run the cycle, compare.
 5. The standing constraints (no fallbacks/fail-loud, no heuristics steering cognition,
-   Rust-only, validate via `cu` never npm/jtag) are in `CLAUDE.md` and the memory index.
+   Rust-only, validate via `continuum` never npm/jtag) are in `CLAUDE.md` and the memory index.
 
 ## Cross-references
 

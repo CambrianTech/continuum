@@ -53,6 +53,13 @@ pub enum AircRealtimeSchema {
     /// presence-of-compute. EphemeralCoalesced: latest wins, never replayed
     /// (a stale capacity reading is a lie).
     GridCapacity,
+    /// A node's residency beacon (`capacity::model_residency::ResidencyBeacon`) —
+    /// which models it holds resident, the grid-overflow ELIGIBILITY signal (a peer
+    /// is only a fast overflow target for a model it already holds). Orthogonal to
+    /// GridCapacity (concurrency): the governor composes the two. EphemeralCoalesced
+    /// like capacity, but published on a slower cadence — residency changes on model
+    /// page-in/out (minute-scale), not the 10s capacity beat.
+    GridResidency,
 }
 
 /// Handle to a payload already defined by a Continuum schema.
@@ -458,7 +465,9 @@ impl AircRealtimePayload {
                 | AircRealtimeSchema::LiveKitBridgeEvent => AircRealtimeDelivery::Control,
                 // Capacity offers are presence-of-compute: latest wins, never
                 // replayed — a stale reading must not outlive its freshness.
-                AircRealtimeSchema::GridCapacity => AircRealtimeDelivery::EphemeralCoalesced,
+                AircRealtimeSchema::GridCapacity | AircRealtimeSchema::GridResidency => {
+                    AircRealtimeDelivery::EphemeralCoalesced
+                }
                 _ => AircRealtimeDelivery::Durable,
             },
             Self::Presence { event } => event.delivery(),

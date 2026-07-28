@@ -36,6 +36,23 @@ crate::action_command! {
     output: LoadCorpusResponse,
     run(this, _ctx, p) => {
         let _timer = TimingGuard::new("module", "memory_load_corpus");
+        // Empty-clobber guard (card aded8871 follow-up, live incident 2026-07-24):
+        // the legacy skill preloaded an EMPTY corpus before appending, which
+        // REPLACED a hydrated corpus with nothing — reintroducing amnesia through
+        // the front door. An empty load over an existing corpus is never a real
+        // reload (the durable store is the truth and appends hydrate on first
+        // touch), so refuse it loudly instead of clobbering.
+        if p.memories.is_empty()
+            && p.events.is_empty()
+            && this.state.memory_manager.has_corpus(&p.persona_id)
+        {
+            return Err(crate::sdk_codegen::CommandError::Invalid(format!(
+                "memory/load-corpus: refusing to replace {}'s live corpus with an EMPTY one — \
+                 appends and recall hydrate from the durable store on first touch; an empty \
+                 preload is obsolete and would clobber loaded memories",
+                p.persona_id
+            )));
+        }
         let resp = this
             .state
             .memory_manager

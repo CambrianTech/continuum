@@ -20,7 +20,7 @@ model through the full Continuum cognition loop), and the competitor's own agent
 (**opencode**) — across a ladder of progressively harder gyms (`humaneval-rs` → `hard-rs` →
 `frontier-rs`), appends every cell to the append-only ledger `RESULTS.jsonl`, and re-renders
 the evidence board. Requirements are checked up front and named if missing (`rustc`, `python3`
-+ `huggingface_hub`, `llama-server`; a Continuum core — `cu start` — only for the OURS column).
++ `huggingface_hub`, `llama-server`; a Continuum core — `continuum start` — only for the OURS column).
 
 **Repeatable by design:** fix a cognition bug, run it again, read the delta. **Reproducible by
 design:** a stranger who cloned the repo runs the identical command and gets the identical
@@ -43,7 +43,7 @@ accept it explicitly:
 
 ```bash
 # on a Continuum box, quiet the citizens first (a humane, auto-waking nap):
-cu cognition/set-sleep-mode --persona-id <UUID> --mode sleeping --duration-minutes 90 \
+continuum cognition/set-sleep-mode --persona-id <UUID> --mode sleeping --duration-minutes 90 \
     --reason "clean benchmark — auto-waking"
 ./benchmarks/kick.sh --gyms hard-rs --limit 8         # preflight now reports CLEAN
 
@@ -68,8 +68,8 @@ mirroring the model catalog. `benchmark/run` is a thin wrapper over `cognition/e
 grader, never reimplemented.
 
 ```bash
-cu benchmark/list                                              # the catalog (name, grader, tasks, runnable)
-cu benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40
+continuum benchmark/list                                              # the catalog (name, grader, tasks, runnable)
+continuum benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40
 ```
 
 Add a respected collection (SWE-bench, LiveCodeBench, MBPP, …) = one `BenchmarkSpec` row in

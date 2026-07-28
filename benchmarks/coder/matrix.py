@@ -149,7 +149,12 @@ def main():
     ap.add_argument("--limit", type=int, default=40)
     ap.add_argument("--persona-id", default=None,
                     help="resident persona UUID; omitted -> headtohead resolves live from the core")
-    ap.add_argument("--cu", default=os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"))
+    # Default to the RELEASE cu (the deployed binary); debug is the fallback for
+    # dev loops. The stale debug-only default made the whole sweep silently
+    # no-op into doc regeneration when no debug build existed (2026-07-22).
+    _cu_release = os.path.expanduser("~/.continuum/cache/cargo-target/release/cu")
+    _cu_debug = os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu")
+    ap.add_argument("--cu", default=_cu_release if os.access(_cu_release, os.X_OK) else _cu_debug)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     if not args.gym:

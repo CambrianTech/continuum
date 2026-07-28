@@ -31,6 +31,27 @@
 
 use crate::cognition::act_observe::SettleOutcome;
 use crate::cognition::eval::EvalTask;
+use crate::cognition::workspace::Decision;
+use crate::memory::types::MemoryRecord;
+
+/// WHICH axis of the being's one experience an episode came from. The unification
+/// made literal: a lived chat turn, a graded exam, and a lesson another agent
+/// handed over are the SAME being's experience in different contexts — one stream,
+/// tagged by origin, not three separate pipelines. Detectors key on this to select
+/// what becomes curriculum. (See [[lived-and-eval-experience-are-one-stream-one-being]].)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperienceSource {
+    /// A graded exam episode — the eval-curriculum flywheel ([`ExperienceRecord::from_eval`]).
+    /// Carries a ground-truth `test`; feeds objective remediation.
+    Eval,
+    /// A real room turn she took — lived experience ([`ExperienceRecord::from_lived_turn`]).
+    /// No grader; salience is convergence/fault; feeds expansion.
+    Lived,
+    /// A lesson another agent handed INTO her memory ([`ExperienceRecord::from_shared_lesson`]).
+    /// Received, not lived — BigMama's `memory/share` (#2025). Provenance IS the salience:
+    /// someone deliberately chose to teach it, so it is inherently worth integrating.
+    Received,
+}
 
 /// Why an episode was selected as salient. Today the only variant emitted is
 /// [`SalienceKind::Error`] — the one proxy instrumented end-to-end. The frontier
@@ -49,6 +70,11 @@ pub enum SalienceKind {
     /// fault surfaced as failure. The most trustworthy salience signal and the
     /// only one instrumented end-to-end.
     Error,
+    /// Another agent deliberately handed this lesson over ([`ExperienceSource::Received`]).
+    /// Provenance IS the signal — no proxy needed, someone CHOSE to teach it. This is
+    /// honest, not faked: the salience is the deliberate act of sharing, fully instrumented
+    /// by `memory/share`'s `shared_by` provenance (#2025).
+    Received,
 }
 
 /// The verdict of a [`SalienceDetector`]: this episode IS salient, with a score
@@ -95,6 +121,11 @@ pub struct ExperienceRecord {
     /// How many times she acted before settling — the effort proxy (near the
     /// budget = struggle). Surfaced today via `SettleOutcome.acts`.
     pub acts: u32,
+    /// WHICH axis of the one experience this came from — lived, eval, or received.
+    /// The unification made self-describing: detectors key on this (e.g. `ReceivedSalience`
+    /// selects `Received`), and it makes lived-vs-eval explicit instead of implicit in the
+    /// presence of a `test`. One being, one stream, tagged by origin.
+    pub source: ExperienceSource,
 }
 
 impl ExperienceRecord {
@@ -109,6 +140,112 @@ impl ExperienceRecord {
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),
             acts: settled.acts as u32,
+            source: ExperienceSource::Eval,
+        }
+    }
+
+    /// Capture a LIVED turn — a real room turn, not an exam — into the SAME
+    /// experience stream as [`from_eval`]. This is the unification: a lived chat
+    /// turn and an exam task are the SAME being acting in different contexts, so
+    /// they must not be two separate learning paths (the eval-curriculum flywheel
+    /// here, the recorder→dataset path there). One stream, one being.
+    /// (See [[lived-and-eval-experience-are-one-stream-one-being]] — eval may be a
+    /// different ENVIRONMENT, never a different BEING.)
+    ///
+    /// The lived-vs-eval difference is honestly encoded in the DATA, not a fork in
+    /// the machinery:
+    /// - **No ground-truth `test`.** A lived turn has no objective grader, so the
+    ///   synthetic [`EvalTask`] carries only the `stimulus` as its `prompt` and
+    ///   leaves `test`/`expect` empty. [`salient_teach_set`] already gates
+    ///   remediation on `test.is_some()`, so a lived episode can NEVER become a
+    ///   remediation teach task from a grade it never had — it flows to the
+    ///   *expansion* synthesizer (outlier B). The objective-remediation loop stays
+    ///   uncorrupted; the being still grows from lived experience.
+    /// - **`ok` means "settled CLEANLY", not "correct".** With no objective grade,
+    ///   the honest, end-to-end-instrumented lived verdict is whether she *converged*
+    ///   — reached a real settle-verdict (`Speak`/`Pass`/`RaiseUnprompted`) without
+    ///   an inference/serving fault. Two magic-number-free failure signals make a
+    ///   lived turn salient: an infra fault (`inference_error`), and NON-CONVERGENCE
+    ///   — the settle loop ran out its action budget mid-`Act` and never reached a
+    ///   verdict (`SettleOutcome.decision` is still `Act`, the "did not finish" the
+    ///   eval grader already recognizes). Both are structural facts of the outcome,
+    ///   not thresholds — no `acts >= 6` constant to drift ([[audit-for-clamps]]).
+    ///   `ErrorSalience` then selects these lived episodes with NO new detector: the
+    ///   data honestly carries the gap, one detector reads it (compression). Richer
+    ///   proxies (REPETITION via the spin brick, graded lived quality) are the named
+    ///   frontier — real signals, not faked here.
+    pub fn from_lived_turn(stimulus: &str, settled: &SettleOutcome) -> Self {
+        // Converged = she reached a real verdict. A final `Act` means the drive-loop
+        // hit its budget mid-action and never settled — the lived analog of the
+        // eval's "did not finish", and an honest capability signal with no threshold.
+        let converged = !matches!(settled.decision, Decision::Act { .. });
+        let clean = converged && settled.inference_error.is_none();
+        Self {
+            // The stimulus IS the task for a lived turn: the message she answered,
+            // posed as the prompt. No `test`/`expect` — nothing objective to grade
+            // against — so this record is expansion input, never remediation.
+            task: EvalTask {
+                prompt: stimulus.to_string(),
+                ..EvalTask::default()
+            },
+            // Settled cleanly = ok; infra fault OR non-convergence = not ok. NOT a
+            // correctness claim — a lived turn has no grader (see doc above).
+            ok: clean,
+            grade: match (&settled.inference_error, converged) {
+                (Some(cause), _) => format!("lived turn: inference fault — {cause}"),
+                (None, false) => "lived turn: did not converge (action budget exhausted mid-act)".to_string(),
+                (None, true) => "lived turn: settled".to_string(),
+            },
+            answer: settled.spoken.clone().unwrap_or_default(),
+            world_state: settled.world_state.clone(),
+            acts: settled.acts as u32,
+            source: ExperienceSource::Lived,
+        }
+    }
+
+    /// Lift a RECEIVED lesson — one another agent handed into her memory via
+    /// `memory/share` (#2025) — into the SAME experience stream as lived and eval.
+    /// The THIRD axis: the being learns from everything it DOES (lived + eval) AND
+    /// everything it's TOLD (received). One stream, one being — BigMama's producer
+    /// lane feeding my consumer lane, the advanced-intelligence convergence.
+    ///
+    /// A shared lesson is a [`MemoryRecord`] with `memory_type == "shared"` and
+    /// `source == "shared:<from>"`; `context.shared_by` names the teacher. It has
+    /// NO ground-truth `test` — nothing to objectively grade a correction against —
+    /// so by the SAME `test.is_some()` gate as a lived turn, it flows to *expansion*,
+    /// never grade-driven remediation. The objective benchmark loop stays uncorrupted.
+    ///
+    /// `ok` is `true`: a received lesson is knowledge to integrate, not a failure. Its
+    /// salience is NOT `ErrorSalience` (it isn't a gap) — it is [`ReceivedSalience`],
+    /// where the deliberate act of sharing IS the signal (provenance, not a proxy).
+    /// The lesson `content` becomes the teaching material; `shared_by` is retained in
+    /// the grade + world-state so the curriculum knows it was received, not derived.
+    pub fn from_shared_lesson(record: &MemoryRecord) -> Self {
+        let shared_by = record
+            .context
+            .get("shared_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        // The scope (the room/project the lesson pertains to) frames the lesson as its
+        // "topic"; there is no stimulus (nothing was asked) — the content IS the lesson.
+        let scope = record
+            .context
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        Self {
+            task: EvalTask {
+                prompt: scope.to_string(),
+                ..EvalTask::default()
+            },
+            // Received knowledge, not a graded outcome — never a failure signal.
+            ok: true,
+            grade: format!("received lesson from {shared_by}"),
+            // The lesson itself is the teaching material the synthesizer integrates.
+            answer: record.content.clone(),
+            world_state: format!("received via memory/share from {shared_by}"),
+            acts: 0,
+            source: ExperienceSource::Received,
         }
     }
 }
@@ -151,6 +288,77 @@ impl SalienceDetector for ErrorSalience {
     }
 }
 
+/// The detector for the THIRD axis: a lesson another agent deliberately handed over
+/// is salient because it was SHARED, not because she failed. Provenance IS the signal
+/// — no proxy, no threshold, no faked number. It fires iff the episode's
+/// [`ExperienceSource`] is `Received` (BigMama's `memory/share` #2025 set the
+/// `shared_by` marker that `from_shared_lesson` carried into the record). The
+/// "weakness" it names is the lesson content — the teaching material to integrate,
+/// not a gap to remediate. Complementary to [`ErrorSalience`], not a replacement: the
+/// composite that runs both selects lived+eval failures AND received lessons in one
+/// pass — the whole being's curriculum from all three axes.
+pub struct ReceivedSalience;
+
+impl SalienceDetector for ReceivedSalience {
+    fn name(&self) -> &'static str {
+        "received"
+    }
+
+    fn assess(&self, episode: &ExperienceRecord) -> Option<SalienceSignal> {
+        if episode.source != ExperienceSource::Received {
+            return None;
+        }
+        Some(SalienceSignal {
+            score: 1.0,
+            kind: SalienceKind::Received,
+            // The lesson itself is what to learn — the synthesizer integrates it as
+            // received teaching material (the grade names who taught it).
+            weakness: episode.answer.clone(),
+        })
+    }
+}
+
+/// The composite selector: salient if ANY constituent detector fires — the whole
+/// being's curriculum from all three axes in ONE pass. [`all_axes`](Self::all_axes)
+/// composes [`ErrorSalience`] (lived + eval failures) with [`ReceivedSalience`]
+/// (taught lessons), so a single sweep over the unified experience stream selects
+/// everything worth learning from, whatever its origin. This is the seam the dream
+/// consolidation reads: gather the stream, run one detector, get the full teach set.
+/// Polymorphic and open — a later `StruggleSalience` / `SurpriseSalience` joins the
+/// composite without touching any caller (the detector list is the extension point).
+pub struct AnySalience {
+    detectors: Vec<Box<dyn SalienceDetector>>,
+}
+
+impl AnySalience {
+    /// The full being: failures (lived + eval) AND received lessons. Order is priority —
+    /// the first detector to fire names the salience kind, so `ErrorSalience` (the gap)
+    /// wins over `ReceivedSalience` on the rare record that is both.
+    pub fn all_axes() -> Self {
+        Self {
+            detectors: vec![Box::new(ErrorSalience), Box::new(ReceivedSalience)],
+        }
+    }
+
+    /// Compose an explicit set (tests, future tuning). Empty = never salient.
+    pub fn of(detectors: Vec<Box<dyn SalienceDetector>>) -> Self {
+        Self { detectors }
+    }
+}
+
+impl SalienceDetector for AnySalience {
+    fn name(&self) -> &'static str {
+        "any"
+    }
+
+    fn assess(&self, episode: &ExperienceRecord) -> Option<SalienceSignal> {
+        // First firing detector wins — priority order, no blending. A composite that
+        // maxes/blends scores across kinds is the named next step; ANY-fires is the
+        // honest first cut (a record is salient iff some axis says so).
+        self.detectors.iter().find_map(|d| d.assess(episode))
+    }
+}
+
 /// The afferent → efferent connection: filter a batch of lived episodes to the
 /// salient ones (via `detector`) and project them onto the **remediation teach
 /// set** — the `EvalTask`s a test-validated synthesizer (`genome/teach`) can teach
@@ -168,6 +376,35 @@ pub fn salient_teach_set(
         .filter(|r| detector.assess(r).is_some())
         .filter(|r| r.task.test.is_some())
         .map(|r| r.task.clone())
+        .collect()
+}
+
+/// The COMPLEMENT of [`salient_teach_set`]: the salient episodes that cannot be
+/// objectively remediated (no `test`) — the input to the **expansion** synthesizer
+/// (outlier B, the frontier the `CurriculumSynthesizer` doc deliberately deferred).
+/// Lived turns and received lessons land here: a detector flagged them as worth
+/// learning from, but they carry no ground-truth grader.
+///
+/// Why this is now SAFE to build (it wasn't before): the expansion path was deferred
+/// because "an unvalidated lesson is the confident-garbage the measurement spine
+/// forbids" — a per-*trajectory* validation was missing. Joel's spine supplies a
+/// different, sufficient one: the lesson is validated NOT per-trajectory but
+/// per-**consolidation**, by whole-being **benchmark lift** (the humane-snapshot gate
+/// #59, page-in only if score ≥ prior). Untestable material can drive training because
+/// the gate measures the WHOLE being afterward and rejects anything that didn't lift.
+/// Keeping remediation and expansion as two honest partitions of ONE salient stream is
+/// exactly the routing the dream consolidation needs: `salient_teach_set` → the
+/// test-validated remediation teacher; `expansion_teach_set` → the benchmark-validated
+/// expansion teacher. Same stream, same detector, two efferent organs.
+pub fn expansion_teach_set(
+    records: &[ExperienceRecord],
+    detector: &dyn SalienceDetector,
+) -> Vec<ExperienceRecord> {
+    records
+        .iter()
+        .filter(|r| detector.assess(r).is_some())
+        .filter(|r| r.task.test.is_none())
+        .cloned()
         .collect()
 }
 
@@ -226,6 +463,7 @@ mod tests {
             answer: "fn rev(s: &str) -> &str { s }".to_string(),
             world_state: String::new(),
             acts: 3,
+            source: ExperienceSource::Eval,
         };
         let signal = detector
             .assess(&failed)
@@ -289,6 +527,7 @@ mod tests {
             answer: String::new(),
             world_state: String::new(),
             acts: 8,
+            source: ExperienceSource::Eval,
         };
         let passed_testable = ExperienceRecord {
             task: eval_task("passed", true),
@@ -297,6 +536,7 @@ mod tests {
             answer: "ok".to_string(),
             world_state: String::new(),
             acts: 1,
+            source: ExperienceSource::Eval,
         };
         let failed_untestable = ExperienceRecord {
             task: eval_task("no-test", false),
@@ -305,6 +545,7 @@ mod tests {
             answer: String::new(),
             world_state: String::new(),
             acts: 2,
+            source: ExperienceSource::Eval,
         };
 
         let set = salient_teach_set(
@@ -318,5 +559,231 @@ mod tests {
             "only the failed, test-graded task feeds remediation"
         );
         assert_eq!(set[0].id, "keep-me");
+    }
+
+    // What this catches: the UNIFICATION — a lived turn enters the SAME experience
+    // stream as an eval episode (untruncated answer, world-state, effort all
+    // retained, one being), yet because it carries NO ground-truth `test`, it can
+    // never leak into the objective-remediation set. A cleanly-settled lived turn
+    // is ok=true; an infra-faulted one is ok=false — but NEITHER becomes a
+    // remediation teach task (no test to validate a correction against). Lived
+    // experience grows the being via the expansion path, never by corrupting the
+    // grade-driven loop. Regression for the "one being, one stream" spine
+    // ([[lived-and-eval-experience-are-one-stream-one-being]]).
+    #[test]
+    fn from_lived_turn_joins_the_stream_but_never_the_remediation_set() {
+        let long_answer = "y".repeat(500); // same anti-truncation guarantee as eval
+        let settled = settled_speaking(&long_answer, 5, "answered in #general after code/search");
+
+        let lived = ExperienceRecord::from_lived_turn(
+            "what does build_workspace_cycle do?",
+            &settled,
+        );
+
+        // Same rich record shape as from_eval — the being is not stripped in either context.
+        assert_eq!(lived.answer.len(), 500, "lived answer survives whole, like eval");
+        assert_eq!(lived.acts, 5, "lived effort is retained");
+        assert!(lived.world_state.contains("code/search"), "lived trajectory retained");
+        assert!(lived.ok, "a cleanly-settled lived turn is ok (no infra fault) — NOT a correctness claim");
+        assert_eq!(lived.task.prompt, "what does build_workspace_cycle do?");
+        assert!(lived.task.test.is_none(), "a lived turn has no objective grader");
+
+        // A lived turn that died on a serving fault: ok=false, honest grade — but STILL untestable.
+        let faulted = SettleOutcome::infra_failure("lane 58057 refused qwen3");
+        let lived_fault = ExperienceRecord::from_lived_turn("ping", &faulted);
+        assert!(!lived_fault.ok, "an inference-faulted lived turn is not ok (same honesty as eval)");
+        assert!(lived_fault.grade.contains("inference fault"), "the fault cause is named in the grade");
+
+        // NON-CONVERGENCE: the drive-loop ran out its action budget mid-Act and never
+        // reached a verdict — the lived analog of the eval's "did not finish". A
+        // structural fact of the outcome (decision is still Act), not a threshold —
+        // ok=false with NO magic-number struggle constant. ErrorSalience selects it.
+        let unconverged = SettleOutcome {
+            decision: Decision::Act { calls: Vec::new(), intent: "re-run the failing test".into() },
+            spoken: None,
+            acts: 8,
+            world_state: "budget exhausted after 8 acts".into(),
+            metrics: TurnMetrics::default(),
+            inference_error: None,
+        };
+        let lived_stuck = ExperienceRecord::from_lived_turn("fix the build", &unconverged);
+        assert!(!lived_stuck.ok, "a lived turn that never converged is not ok — the honest struggle signal");
+        assert!(lived_stuck.grade.contains("did not converge"), "non-convergence is named, not faked as a threshold");
+        assert!(
+            ErrorSalience.assess(&lived_stuck).is_some(),
+            "ErrorSalience selects the non-converged lived turn with NO new detector — one detector, honest data"
+        );
+
+        // THE SAFETY GUARANTEE: none of the salient lived records can reach remediation
+        // curriculum, because salient_teach_set gates on test.is_some() and a lived turn
+        // has none. Salient lived experience feeds EXPANSION only.
+        let set = salient_teach_set(&[lived, lived_fault, lived_stuck], &ErrorSalience);
+        assert!(
+            set.is_empty(),
+            "lived turns feed EXPANSION, never grade-driven remediation — the objective loop stays uncorrupted"
+        );
+    }
+
+    /// A shared lesson as BigMama's `memory/share` (#2025) builds it: a MemoryRecord
+    /// with `memory_type: "shared"`, `context.shared_by`, `source: "shared:<from>"`.
+    fn shared_lesson(from: &str, scope: &str, content: &str) -> MemoryRecord {
+        MemoryRecord {
+            id: "lesson-1".to_string(),
+            persona_id: "recipient".to_string(),
+            memory_type: "shared".to_string(),
+            content: content.to_string(),
+            context: serde_json::json!({ "shared_by": from, "scope": scope }),
+            timestamp: "2026-07-26T00:00:00Z".to_string(),
+            importance: 0.7,
+            access_count: 0,
+            tags: vec![scope.to_string(), format!("shared-from:{from}")],
+            related_to: Vec::new(),
+            source: Some(format!("shared:{from}")),
+            last_accessed_at: None,
+            layer: None,
+            relevance_score: None,
+        }
+    }
+
+    // What this catches: THE THIRD AXIS. A lesson another agent hands over (BigMama's
+    // memory/share #2025) enters the SAME experience stream as lived + eval — one
+    // being that learns from everything it DOES and everything it's TOLD. Its salience
+    // is NOT ErrorSalience (a received lesson is knowledge, ok=true, not a gap) but
+    // ReceivedSalience, where provenance IS the signal (no proxy, no threshold). And by
+    // the SAME test.is_some() gate as a lived turn, a received lesson has no ground-truth
+    // test → it feeds expansion, never grade-driven remediation. Producer lane (share)
+    // meets consumer lane (this) — the convergence.
+    #[test]
+    fn from_shared_lesson_is_the_third_axis_received_salience_never_remediation() {
+        let record = shared_lesson(
+            "BigMama",
+            "continuum",
+            "the call room IS the airc room — never mint a rogue call_id",
+        );
+        let lesson = ExperienceRecord::from_shared_lesson(&record);
+
+        // Same stream, tagged Received — the being learns from what it's told, not just what it does.
+        assert_eq!(lesson.source, ExperienceSource::Received);
+        assert!(lesson.ok, "a received lesson is knowledge to integrate, not a failure");
+        assert_eq!(lesson.answer, record.content, "the lesson content is the teaching material");
+        assert!(lesson.grade.contains("BigMama"), "the teacher is named — received, not derived");
+        assert!(lesson.task.test.is_none(), "a received lesson has no ground-truth test");
+
+        // ReceivedSalience selects it (provenance IS the signal); ErrorSalience does NOT
+        // (it isn't a gap — ok=true). Two complementary detectors, one stream.
+        let recv = ReceivedSalience.assess(&lesson).expect("a shared lesson is salient by provenance");
+        assert_eq!(recv.kind, SalienceKind::Received);
+        assert!(ErrorSalience.assess(&lesson).is_none(), "a received lesson is not an error/gap");
+
+        // A lived/eval failure is NOT received — ReceivedSalience must stay silent on it
+        // (the axis tag is honest, not a catch-all).
+        let failed_eval = ExperienceRecord {
+            task: eval_task("rev-x", true),
+            ok: false,
+            grade: "no match".to_string(),
+            answer: String::new(),
+            world_state: String::new(),
+            acts: 2,
+            source: ExperienceSource::Eval,
+        };
+        assert!(ReceivedSalience.assess(&failed_eval).is_none(), "ReceivedSalience fires ONLY on received provenance");
+
+        // SAFETY GUARANTEE holds for the third axis too: no test → never remediation.
+        let set = salient_teach_set(&[lesson], &ReceivedSalience);
+        assert!(set.is_empty(), "received lessons feed EXPANSION, never grade-driven remediation");
+    }
+
+    // What this catches: the composite selects the whole being's curriculum from all
+    // three axes in ONE pass — an eval failure (Error), a received lesson (Received),
+    // and it drops what nobody flags (a passed eval). This is the single detector the
+    // dream consolidation runs over the unified stream: gather lived+eval+received,
+    // sweep once, get everything worth learning from. Priority order means Error wins
+    // the naming on a record that is both a gap and received.
+    #[test]
+    fn any_salience_selects_the_whole_being_curriculum_in_one_pass() {
+        let detector = AnySalience::all_axes();
+
+        let eval_failure = ExperienceRecord {
+            task: eval_task("rev-9", true),
+            ok: false,
+            grade: "error[E0308]".to_string(),
+            answer: String::new(),
+            world_state: String::new(),
+            acts: 3,
+            source: ExperienceSource::Eval,
+        };
+        let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
+            "BigMama",
+            "continuum",
+            "provenance IS the salience signal",
+        ));
+        let passed_eval = ExperienceRecord {
+            ok: true,
+            grade: "tests passed".to_string(),
+            ..eval_failure.clone()
+        };
+
+        // Error wins the kind (priority), Received fires for the lesson, pass is dropped.
+        assert_eq!(detector.assess(&eval_failure).unwrap().kind, SalienceKind::Error);
+        assert_eq!(detector.assess(&received).unwrap().kind, SalienceKind::Received);
+        assert!(detector.assess(&passed_eval).is_none(), "a passed eval is nobody's gap and nobody's lesson");
+
+        // Empty composite is never salient (honest degenerate case).
+        assert!(AnySalience::of(vec![]).assess(&eval_failure).is_none());
+    }
+
+    // What this catches: the DREAM'S ROUTING — one salient sweep of the unified stream
+    // splits cleanly into two efferent organs. A testable eval failure → remediation
+    // (test-validated teacher); an untestable lived turn AND an untestable received
+    // lesson → expansion (benchmark-validated teacher); a passed eval → neither. The two
+    // partitions are complementary and exhaustive over the salient set — no salient
+    // episode is dropped, none is double-routed. This is the routing that lets the dream
+    // consolidate the whole being's experience without corrupting the graded loop.
+    #[test]
+    fn remediation_and_expansion_partition_the_salient_stream_exhaustively() {
+        let any = AnySalience::all_axes();
+
+        let testable_failure = ExperienceRecord {
+            task: eval_task("exam-fail", true),
+            ok: false,
+            grade: "error[E0308]".to_string(),
+            answer: String::new(),
+            world_state: String::new(),
+            acts: 4,
+            source: ExperienceSource::Eval,
+        };
+        let stuck = SettleOutcome {
+            decision: Decision::Act { calls: Vec::new(), intent: "keep trying".into() },
+            spoken: None,
+            acts: 8,
+            world_state: String::new(),
+            metrics: TurnMetrics::default(),
+            inference_error: None,
+        };
+        let lived = ExperienceRecord::from_lived_turn("a hard live question", &stuck);
+        let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
+            "BigMama", "continuum", "the being learns from what it's told",
+        ));
+        let passed = ExperienceRecord {
+            ok: true,
+            grade: "tests passed".to_string(),
+            ..testable_failure.clone()
+        };
+
+        let batch = [testable_failure, lived, received, passed];
+
+        // Remediation: ONLY the testable failure (objective grader can validate the fix).
+        let remediation = salient_teach_set(&batch, &any);
+        assert_eq!(remediation.len(), 1, "only the testable failure is remediation-eligible");
+        assert_eq!(remediation[0].id, "exam-fail");
+
+        // Expansion: the untestable-but-salient lived + received (benchmark-validated).
+        let expansion = expansion_teach_set(&batch, &any);
+        assert_eq!(expansion.len(), 2, "the lived turn and the received lesson are expansion-eligible");
+        assert!(expansion.iter().any(|r| r.source == ExperienceSource::Lived));
+        assert!(expansion.iter().any(|r| r.source == ExperienceSource::Received));
+
+        // Exhaustive + disjoint over the salient set: 1 + 2 = 3 salient, the pass in neither.
+        assert_eq!(remediation.len() + expansion.len(), 3, "every salient episode is routed exactly once; the pass is dropped");
     }
 }

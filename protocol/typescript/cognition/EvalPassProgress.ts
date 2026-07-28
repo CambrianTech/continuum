@@ -22,6 +22,13 @@ currentTask: string,
  */
 lastOk: boolean, 
 /**
+ * Output tokens the model produced for this task. A near-zero value on a FAILED
+ * task is the decline/wedge signature (a bare "PASS" is ~2 tokens) — this is the
+ * LIVE signal a monitoring widget/persona needs to light a cell SUSPECT (harness
+ * noise) vs a real wrong answer, in real time instead of post-hoc from the ledger.
+ */
+outputTokens: number, 
+/**
  * Receiver-clock ms — staleness signal for readers (a row older than a task's
  * typical latency means the pass ended or died; the ledger row is the truth).
  */

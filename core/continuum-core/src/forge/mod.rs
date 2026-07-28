@@ -11,6 +11,7 @@
 pub mod adapter_manifest;
 pub mod artifact;
 pub mod custodian_client;
+pub mod custodian_supervisor;
 pub mod endpoint;
 pub mod gene_handle;
 pub mod grid_custodian;

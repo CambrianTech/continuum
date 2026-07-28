@@ -116,6 +116,7 @@ pub mod experience_resolver;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
+pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
 pub mod positron_source;
@@ -1479,6 +1480,30 @@ pub fn start_server(
     let rag_state = Arc::new(RagState::new(memory_manager.clone()));
     runtime.register(Arc::new(RagModule::new(rag_state)));
 
+    // The LIVE CALL media plane (finish-live-video, 2026-07-25): the WebSocket
+    // call server (mix-minus audio, STT, avatar-state fanout, video frames)
+    // was fully built and NEVER STARTED — the armed-but-idle pattern. Start it
+    // at boot on its own task; the browser's live face dials it on Go-live.
+    // Port from config.env CONTINUUM_CALL_WS (one owner, [[config-env-single-owner]]),
+    // default 8790. Bind failure is LOUD (a squatted port must surface), but
+    // non-fatal: the core serves without a media plane rather than dying —
+    // the live face shows its honest avatar-presence chip in that state.
+    let call_manager = std::sync::Arc::new(crate::live::transport::call_server::CallManager::new());
+    {
+        let port = crate::config_env::read("CONTINUUM_CALL_WS")
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .unwrap_or(8790);
+        let addr = format!("127.0.0.1:{port}");
+        let manager = call_manager.clone();
+        rt_handle.spawn(async move {
+            if let Err(e) =
+                crate::live::transport::call_server::start_call_server(&addr, manager).await
+            {
+                tracing::error!(addr = %addr, error = %e, "call server failed to start — live media plane unavailable (browser live face stays avatar-presence)");
+            }
+        });
+    }
+
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
     let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
     let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
@@ -1661,6 +1686,49 @@ pub fn start_server(
     // can attach a heartbeat-less node reader against the same daemon +
     // room the citizens attach to.
     let node_presence_deps = persona_bootstrap_deps.clone();
+
+    // AircInterceptor's late-bind Arc<Airc>: the interceptor is built ~800 lines
+    // below (inside the executor), synchronously, but `Airc::attach_as` is async and
+    // must not block the boot critical path. Create the cell HERE (where the daemon
+    // socket is in scope), spawn a task that attaches the interceptor's own handle —
+    // same daemon_socket + continuum_root the citizens use — and fills the cell, then
+    // hand the SAME cell to the interceptor at construction. Until it's filled an
+    // aircPeer-targeted command fails loud (never a silent fallthrough). Mirrors the
+    // node-presence reader's own attach.
+    let interceptor_airc_deps = persona_bootstrap_deps.clone();
+    let airc_interceptor_cell: Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>> =
+        Arc::new(tokio::sync::OnceCell::new());
+    if let Some((interceptor_daemon_socket, _room)) = interceptor_airc_deps {
+        let cell = airc_interceptor_cell.clone();
+        let root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        // MUST be `rt_handle.spawn`, NOT bare `tokio::spawn`: this runs during
+        // start_server on the IPC thread, and the `rt_handle.enter()` guard (above) is
+        // scoped and has already dropped by here — so there is NO ambient runtime and
+        // `tokio::spawn` panics "there is no reactor running". That panic kills the
+        // attach task, the OnceCell never fills, and EVERYTHING that reads it silently
+        // no-ops: the AircInterceptor's aircPeer routing AND the grid-overflow effector
+        // (build_overflow_effector reads this same cell). rt_handle.spawn targets the
+        // runtime by handle without needing ambient context. (BigMama diagnosed the
+        // panic 2026-07-27; this is the one-line fix.)
+        rt_handle.spawn(async move {
+            match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
+                .await
+            {
+                Ok(airc) => {
+                    // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
+                    // share it as `Arc<Airc>`.
+                    let _ = cell.set(Arc::new(airc));
+                }
+                Err(err) => tracing::error!(
+                    error = %err,
+                    "airc interceptor: attach_as failed — aircPeer command routing stays \
+                     unavailable (commands with aircPeer will fail loud until a boot with a \
+                     reachable airc daemon)"
+                ),
+            }
+        });
+    }
+
     runtime.register(airc_module);
 
     // A.2 [[no-fallbacks-ever]]: in `FullCitizen` or `FailFast` mode,
@@ -1723,6 +1791,14 @@ pub fn start_server(
             resource_daemon.clone(),
             default_room,
         )));
+        // Grid residency beacon (grid-overflow eligibility, slice 3): advertise which models
+        // this node holds resident on a slower cadence, folded by inbound_attach into
+        // capacity::model_residency::global_residency_ledger. Reads the SAME serving plan the
+        // daemon computes (watch snapshot, no parallel probe); orthogonal sibling of capacity.
+        runtime.register(Arc::new(crate::modules::grid_residency::GridResidencyModule::new(
+            serving_daemon.subscribe(),
+            default_room,
+        )));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -1763,12 +1839,17 @@ pub fn start_server(
         // SelfReflection per dreaming tick — the first mind-wanderer. Hippocampus +
         // adapter resolve per tick from the live workspace registry (re-home-safe),
         // never a parallel persona→adapter map.
-        let dream_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+        let dream_region_concrete = Arc::new(
             crate::cognition::dream_consolidation::DreamConsolidationRegion::new(
                 crate::cognition::persona_workspace::global()
                     as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>,
             ),
         );
+        // Install the flywheel handle: `cognition/dream-now` drives THIS region
+        // on demand (factory mode) — same instance the governor ticks, so the
+        // per-persona single-flight guard holds across both drivers.
+        crate::cognition::dream_consolidation::install_global(dream_region_concrete.clone());
+        let dream_region: Arc<dyn crate::runtime::BrainRegion> = dream_region_concrete;
         // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
         // budget to the host's current memory band so a society of inference-bearing
         // background regions can't stampede the model backend under load. A homeostatic
@@ -2036,6 +2117,15 @@ pub fn start_server(
         // below). Subscribe BEFORE the spawn so no plan edge is missed while
         // the task waits on the executor-ready oneshot.
         let mut serving_plan_rx = serving_daemon.subscribe();
+        // A DEDICATED clone of the interceptor's airc-handle cell for the grid-overflow
+        // effector (slice 4b): the boot-spawn `async move` below captures by move, and the
+        // interceptor still needs the original `airc_interceptor_cell` further down — so the
+        // effector rides its own Arc clone of the SAME shared cell (both see the handle once
+        // attach_as fills it).
+        let overflow_airc_cell = airc_interceptor_cell.clone();
+        // Same reason for the serving daemon: the reconcile task below still needs the
+        // original `serving_daemon` handle, so the effector rides its own clone.
+        let overflow_serving = serving_daemon.clone();
         rt_handle.spawn(async move {
             // Wait for the IPC thread to deliver the WIRED executor (this both
             // gates ordering AND hands us the executor the personas' hands ride).
@@ -2123,7 +2213,22 @@ pub fn start_server(
                     } else {
                         attempt += 1;
                         let summary = supervisor
-                            .spawn_all(&mut provider, Some(tool_executor.clone()))
+                            .spawn_all(
+                                &mut provider,
+                                Some(tool_executor.clone()),
+                                // Grid-overflow effector (slice 4b): the LIVE closure. Reads
+                                // the serving plan's grid_overflow_lanes, filters residency-
+                                // eligible reachable peers (from the beacon ledger), runs
+                                // route_grid_overflow, and re-homes the persona's adapter to an
+                                // AircRemoteInferenceAdapter over the interceptor's airc handle.
+                                // DEFENSIVE: None on any uncertainty → local adapter (no
+                                // regression); can only be a safe no-op or a correct off-box
+                                // route (self excluded via airc.peer_id()).
+                                crate::persona::grid_overflow_effector::build_overflow_effector(
+                                    overflow_airc_cell.clone(),
+                                    overflow_serving.clone(),
+                                ),
+                            )
                             .await;
                         if summary.hosted > 0 {
                             tracing::info!(
@@ -2350,6 +2455,21 @@ pub fn start_server(
             "TrainingCompletionSentinel: registered (L3 train-done → eval → lift>0 → page-in)"
         );
 
+        // GenomeFitnessSentinel: the self-evolving genome's fitness daemon. On a slow
+        // (5-min) Background tick it measures each resident layer's value-density
+        // (lift/GB, from the manifest + eval ledger) and GLASS-BOXES the ranking +
+        // retire-candidates — OBSERVE-ONLY, no eviction (earn the emergent version:
+        // validate the fitness signal against ground truth before it ever evicts,
+        // SELF-EVOLVING-GENOME.md §5). Stateless; reads fresh each tick.
+        runtime.register(Arc::new(
+            crate::modules::genome_fitness_sentinel::GenomeFitnessSentinel::new(),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "GenomeFitnessSentinel: registered (observe-only value-density fitness landscape, 5-min tick)"
+        );
+
         // TrainingTriggerModule: substrate-native batching coordinator
         // sitting between curriculum producers (teacher persona's
         // synthesis, hippocampus's noteworthy drain, operator submits)
@@ -2475,7 +2595,9 @@ pub fn start_server(
             // event source and `message_bus()` is None — the boot-loud
             // panic the `CONTINUUM_CORE_WS` block asserts against.
             .with_message_bus(runtime.bus_arc())
-            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
+            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::with_airc_cell(
+                airc_interceptor_cell,
+            )))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
             // `provided` sits at the TAIL of the chain: airc/grid get first look
             // so an explicitly remote-targeted perception/observe still hops to a
@@ -2728,6 +2850,51 @@ pub fn start_server(
                     ws_substrate.clone(),
                 );
 
+                // Per-citizen substrates for per-user views (nav): each connecting
+                // citizen (?me) reads its own nav from here, unioned with the node
+                // substrate for per-room views. Shared instance so the nav projector
+                // (write) and the session (read) agree on for_citizen(me).
+                let per_user =
+                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
+
+                // Nav wiring (nav slice 2, live): ONE room-set fold projecting the
+                // observed airc stream (seeded with the bootstrap room so the
+                // landing room exists before the first event), one live reader
+                // over it, and the registry the WS ingress asks to ensure a
+                // citizen's projector on first connection.
+                let nav_seed: Vec<(Uuid, String)> = node_presence_deps
+                    .clone()
+                    .zip(persona_bootstrap_room_name.clone())
+                    .map(|((_socket, room), name)| vec![(room.as_uuid(), name)])
+                    .unwrap_or_default();
+                let room_set = positron_nav_source::spawn_room_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                    nav_seed,
+                );
+                // Member-name fold (the room fold's identity sibling): resolves a
+                // persona-kind tab's title from the same presence stream.
+                let member_set = positron_nav_source::spawn_member_set_fold(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                );
+                let nav_registry = Arc::new(positron_nav_source::NavProjectorRegistry::new(
+                    projection_bus.clone(),
+                    Arc::clone(&per_user),
+                    Arc::new(positron_nav_source::ChannelBookmarksNavReader::new(
+                        room_set, member_set,
+                    )),
+                ));
+
+                // SYS gauge source (brick 2): sample the ONE shared resource
+                // monitor into kind="system-metrics" on the served substrate —
+                // the old sidebar's CPU/MEM sparkline, core-carried window.
+                positron_metrics_source::spawn_system_metrics_emitter(
+                    &state.rt_handle,
+                    system_monitor.clone(),
+                    ws_substrate.clone(),
+                );
+
                 // Producer half of the same stream: attach a node-level
                 // roster reader and emit `presence:updated` so the consumer
                 // above has an identity source to fold in — otherwise every
@@ -2827,14 +2994,8 @@ pub fn start_server(
                     }
                 }
 
-                // Per-citizen substrates for per-user views (nav): each connecting
-                // citizen (?me) reads its own nav from here, unioned with the node
-                // substrate for per-room views. Shared instance so the nav projector
-                // (write) and the session (read) agree on for_citizen(me).
-                let per_user =
-                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
                 state.rt_handle.spawn(async move {
-                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user).await;
+                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user, nav_registry).await;
                 });
             }
         }

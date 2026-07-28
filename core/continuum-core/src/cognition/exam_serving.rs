@@ -206,17 +206,33 @@ mod tests {
             kv_per_token: KV_PER_TOKEN,
             compute_buffer: COMPUTE,
             tier: DemandTier::Eval,
+            // An exam is a hard, disruption-intolerant task: it demands its OWN lane so it is
+            // never a co-tenant slot the live personas starve. Matches the real exam demand.
+            isolate: true,
         }
     }
 
-    // what this catches: the living-persona exam (same base already resident) resolves to a
-    // SHARE on her real lane — never a second weight copy. The pure decision the (None,None)
-    // branch used to only ASSUME. [[proctored-exam-session-dependable-benchmark]]
+    // what this catches: the living-persona exam (same base already resident) now takes its OWN
+    // DEDICATED lane when a fresh copy fits, rather than a co-tenant slot on her live lane that
+    // the personas would starve. This is the 2026-07-21 isolation-policy reversal: the exam is a
+    // hard task and must not be disrupted — autonomic, no `base_model_id` hand-holding.
+    // [[proctored-exam-session-dependable-benchmark]] [[dedicated-eval-lane-must-keep-its-own-window]]
     #[test]
-    fn living_persona_exam_decides_share_on_the_live_lane() {
+    fn living_persona_exam_takes_a_dedicated_lane_when_it_fits() {
         let resident = [live_lane("devstral-24b")];
+        // 40 GiB: live ~17.5 GiB + a fresh exam copy ~16.25 GiB both fit → dedicated Spawn.
         let v = ExamServingContext::decide(40 * GIB, &resident, &exam_demand("devstral-24b"));
-        assert!(matches!(v, ExamAcquire::SharedLane { lane_id, .. } if lane_id == "live"));
+        assert!(matches!(v, ExamAcquire::Spawn { .. }), "exam must isolate onto its own lane, got {v:?}");
+    }
+
+    // what this catches: the isolation policy degrades GRACEFULLY — when a dedicated second copy
+    // won't fit, the exam falls back to a co-tenant SHARE of the live lane rather than spilling.
+    #[test]
+    fn living_persona_exam_falls_back_to_share_under_pressure() {
+        let resident = [live_lane("devstral-24b")];
+        // 28 GiB: live ~17.5 GiB leaves ~10.5 free — a fresh ~16.25 copy won't fit, share does.
+        let v = ExamServingContext::decide(28 * GIB, &resident, &exam_demand("devstral-24b"));
+        assert!(matches!(v, ExamAcquire::SharedLane { ref lane_id, .. } if lane_id == "live"), "got {v:?}");
     }
 
     // what this catches: a DIFFERENT-base exam does NOT co-tenant her lane — the verdict is
@@ -251,8 +267,9 @@ mod tests {
         let spawn = ExamServingContext::acquire(64 * GIB, &resident, &exam_demand("qwen-coder-32b")).await;
         assert!(!spawn.holds(), "a spawn verdict holds no local grow/pin");
 
-        // Share verdict: grows Ludicrous + pins steady; both global gauges reflect it.
-        let ctx = ExamServingContext::acquire(40 * GIB, &resident, &exam_demand("devstral-24b")).await;
+        // Share verdict (under memory pressure — a dedicated copy won't fit at 28 GiB, so the
+        // isolate demand falls back to a co-tenant share): grows Ludicrous + pins steady.
+        let ctx = ExamServingContext::acquire(28 * GIB, &resident, &exam_demand("devstral-24b")).await;
         assert!(ctx.holds(), "a shared-lane exam holds the grown, pinned lane");
         assert!(serving_ludicrous_active(), "Ludicrous (Performance) is declared for the exam");
         assert!(serving_held_steady(), "and the lane is pinned steady against further relaunch");

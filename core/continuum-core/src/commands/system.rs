@@ -5,7 +5,7 @@
 //!
 //! `system/info` is the zero-ceremony stateless example (after `commands/list`): one
 //! file, one `run` body, `register_stateless_command!`, instantly callable via
-//! `cu system/info`, the persona's tools, and every SDK — derived param schema + ACL
+//! `continuum system/info`, the persona's tools, and every SDK — derived param schema + ACL
 //! gating, no wiring anywhere else. The resource reads are the dep-holding shape: they
 //! capture the module's [`SystemResourceService`] and are assembled by
 //! [`command_objects`].
@@ -78,7 +78,7 @@ pub struct SystemInfoParams {}
 pub struct SystemInfoResult {
     /// The continuum-core crate version (`CARGO_PKG_VERSION`).
     pub version: String,
-    /// OS process id of the running core — handy for ops (`cu stop` targets it).
+    /// OS process id of the running core — handy for ops (`continuum stop` targets it).
     pub pid: u32,
 }
 

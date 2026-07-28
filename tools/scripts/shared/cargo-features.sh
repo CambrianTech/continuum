@@ -59,7 +59,13 @@ case "$(uname -s)" in
     # top if Nvidia is present so ORT picks CUDA first (faster) +
     # DirectML stays as a co-listed EP for non-CUDA-supported ops.
     CARGO_GPU_FEATURES="--features directml"
-    if command -v nvidia-smi &>/dev/null; then
+    # candle-cuda's affine.cu compiles via nvcc, which needs the MSVC host
+    # compiler cl.exe on PATH (an active vcvars env). Only add cuda when cl.exe
+    # is actually reachable; otherwise nvcc fatals "Cannot find compiler
+    # 'cl.exe'" and the ENTIRE core build dies. directml needs no kernel
+    # compilation, so it stays as the universal Windows GPU EP and the build
+    # degrades gracefully instead of hard-failing. [[windows-build-env-drift]]
+    if command -v nvidia-smi &>/dev/null && command -v cl.exe &>/dev/null; then
       CARGO_GPU_FEATURES="--features cuda,directml"
     fi
     ;;

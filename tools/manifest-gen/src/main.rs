@@ -51,6 +51,13 @@ struct Module {
     /// os -> build spec (build-core only).
     #[serde(default)]
     build: BTreeMap<String, BuildSpec>,
+    /// os -> directories the LAUNCHER must prepend to PATH so the running binary can load
+    /// this module's runtime DLLs/.so's (e.g. CUDA's `cudart64_*.dll` / `cublas64_*.dll`).
+    /// Version-agnostic globs (`~/.continuum/cuda-*/Library/bin`) so a CUDA minor bump never
+    /// rots the path. Install VERIFIES the module is present (its `accept`); the launcher
+    /// consumes THIS to make the same install runnable — one declaration, both processes.
+    #[serde(default)]
+    runtime_path: BTreeMap<String, Vec<String>>,
 }
 
 /// A per-OS install source. One flat struct covers every `type` in the schema
@@ -222,6 +229,10 @@ fn render_windows(m: &Manifest) -> String {
         if let Some(b) = module.build.get("windows") {
             fields.push(format!("build = @{{ {} }}", ps_build_body(b)));
         }
+        if let Some(rp) = module.runtime_path.get("windows").filter(|v| !v.is_empty()) {
+            let arr = rp.iter().map(|p| ps(p)).collect::<Vec<_>>().join(", ");
+            fields.push(format!("runtime_path = @({arr})"));
+        }
         out.push_str(&format!("  {} = @{{ {} }}\n", ps(&module.id), fields.join("; ")));
     }
     out.push_str("}\n");
@@ -306,6 +317,14 @@ fn render_unix(m: &Manifest, os: &str) -> String {
     array("MOD_BUILD_PROFILE", &|x| {
         x.build.get(os).and_then(|b| b.profile.clone())
     });
+    // Launcher runtime PATH additions (colon-joined; the launcher expands the globs and
+    // prepends to PATH before exec'ing the binary). Same source as the PS `runtime_path`.
+    array("MOD_RUNTIME_PATH", &|x| {
+        x.runtime_path
+            .get(os)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.join(":"))
+    });
     out
 }
 
@@ -317,6 +336,10 @@ fn rendered_files(m: &Manifest) -> Vec<(PathBuf, String)> {
         (d.join("manifest.windows.ps1"), render_windows(m)),
         (d.join("manifest.macos.sh"), render_unix(m, "macos")),
         (d.join("manifest.linux.sh"), render_unix(m, "linux")),
+        // Bash projection for Windows: the LAUNCHER (start-server.sh) is bash on every OS and
+        // can't source the PowerShell manifest, so it sources this for MOD_RUNTIME_PATH. The
+        // PS file remains the install-side (win-modules.ps1) source; both derive from the toml.
+        (d.join("manifest.windows.sh"), render_unix(m, "windows")),
     ]
 }
 

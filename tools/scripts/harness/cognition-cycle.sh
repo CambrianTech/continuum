@@ -8,11 +8,11 @@
 # read the runbook, then run THIS. It does, in order, idempotently and failing
 # loud at the first missing precondition:
 #
-#   1. resolve the `cu` client (build hint if absent)
-#   2. confirm the headless core is up on its IPC socket   (cu ping)
+#   1. resolve the `continuum` client (build hint if absent)
+#   2. confirm the headless core is up on its IPC socket   (continuum ping)
 #   3. resolve the target persona (by name or uuid)        (cognition/personas)
 #   4. snapshot every glass-box capture stream's length BEFORE the run
-#   5. run `cu cognition/eval` (single-pass, or A/B with --gene)
+#   5. run `continuum cognition/eval` (single-pass, or A/B with --gene)
 #   6. delta the capture streams; collect THIS run's new lines
 #   7. write a timestamped report dir + print the headline VDD-shaped record
 #
@@ -20,8 +20,8 @@
 # degrades the living citizen. Safe to run against a live, working core.
 #
 # Doctrine honored: no fallbacks — every missing precondition fails loud naming the
-# cause + the fix (`cu` returns rc=0 even on substrate refusal, so we parse output,
-# never trust $?). Pure-Rust core + cu only; never npm/jtag.
+# cause + the fix (`continuum` returns rc=0 even on substrate refusal, so we parse output,
+# never trust $?). Pure-Rust core + continuum only; never npm/jtag.
 #
 # Usage:
 #   cognition-cycle.sh [--persona NAME|UUID] [--eval-set PATH] [--note LABEL]
@@ -74,16 +74,16 @@ need() { command -v "$1" >/dev/null || die "missing '$1' on PATH — $2"; }
 
 need jq "install with: brew install jq"
 
-# ---- 1. resolve cu -----------------------------------------------------------
-CU="$TARGET_DIR/debug/cu"
-[[ -x "$CU" ]] || CU="$TARGET_DIR/release/cu"
-[[ -x "$CU" ]] || die "cu client not built. Build it:
+# ---- 1. resolve continuum -----------------------------------------------------------
+CU="$TARGET_DIR/debug/continuum"
+[[ -x "$CU" ]] || CU="$TARGET_DIR/release/continuum"
+[[ -x "$CU" ]] || die "continuum client not built. Build it:
     export CARGO_TARGET_DIR=\"$TARGET_DIR\"
-    cargo build --manifest-path core/continuum-core/Cargo.toml --bin cu --features metal,accelerate"
+    cargo build --manifest-path core/continuum-core/Cargo.toml --bin continuum --features metal,accelerate"
 export CONTINUUM_CORE_SOCKET="$SOCKET"
 
-# cu_json CMD [ARGS...] — run a cu command, return stdout. Fail loud if the
-# substrate refused (cu prints to stderr + still exits 0, so we sniff the text).
+# cu_json CMD [ARGS...] — run a continuum command, return stdout. Fail loud if the
+# substrate refused (continuum prints to stderr + still exits 0, so we sniff the text).
 # A genuine result is always valid JSON; a refusal is plain stderr text. So the
 # refusal sniff runs ONLY when the output does not parse as JSON — otherwise a
 # legitimate eval payload whose answer text happens to contain "FAIL"/"error:"
@@ -93,7 +93,7 @@ cu_json() {
   out="$("$CU" "$@" 2>&1)" || true
   if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
     if grep -qiE "substrate refused|Unknown command|FAIL|error:" <<<"$out"; then
-      die "cu $* refused:
+      die "continuum $* refused:
 $out"
     fi
   fi

@@ -42,7 +42,7 @@ machine.
 ## 5. `install.sh` on a fresh Ubuntu / WSL2 — ~2–3h, iterate
 Run the 9-step installer end-to-end on a clean box: system deps → node → rust → python ML → (postgres
 opt-in) → livekit → native engine note (now: llama-server + mlx, no Unsloth) → (tailscale opt-in). Confirm
-the final `npm start` + `cu ping` actually work (the message this PR fixed). WSL2 additionally exercises the
+the final `npm start` + `continuum ping` actually work (the message this PR fixed). WSL2 additionally exercises the
 `install.ps1` → `bootstrap.sh` handoff.
 
 ## 6. postgres profile — ~1h

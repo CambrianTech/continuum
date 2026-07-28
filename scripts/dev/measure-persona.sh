@@ -24,7 +24,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CU="$HOME/.continuum/cache/cargo-target/debug/cu"
+CU="$HOME/.continuum/cache/cargo-target/debug/continuum"
 WORK="$HOME/.continuum/measure"
 BASELINE="$REPO/scripts/dev/measure-baseline.json"
 MODEL="${MODEL:-continuum-ai/qwen2.5-coder-14b-instruct-GGUF}"
@@ -42,7 +42,7 @@ for arg in "$@"; do
 done
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-[ -x "$CU" ] || die "cu not built at $CU (run: cu start)"
+[ -x "$CU" ] || die "continuum not built at $CU (run: continuum start)"
 
 # --- (1) self-clean: wipe our own workspace at the start of every run ---
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -50,15 +50,15 @@ echo "workspace: $WORK (wiped clean)"
 
 # --- (2) build + boot exactly ONE fresh server ---
 if [ "$DO_REBOOT" = 1 ]; then
-  echo "rebuilding + rebooting core (cu reboot)…"
-  "$CU" reboot >"$WORK/reboot.log" 2>&1 || { tail -30 "$WORK/reboot.log" >&2; die "cu reboot failed"; }
+  echo "rebuilding + rebooting core (continuum reboot)…"
+  "$CU" reboot >"$WORK/reboot.log" 2>&1 || { tail -30 "$WORK/reboot.log" >&2; die "continuum reboot failed"; }
 fi
 # BSD pgrep has no -c; count with wc. One core is required; >1 means a stale
 # server is racing this measurement — fail loud rather than measure a coin flip.
 CORES=$(pgrep -f 'continuum-core' | wc -l | tr -d ' ')
 LLAMAS=$(pgrep -f 'llama-server' | wc -l | tr -d ' ')
 echo "processes: core=${CORES} llama-server=${LLAMAS}"
-[ "$CORES" -ge 1 ] || die "no continuum-core process running (run: cu start)"
+[ "$CORES" -ge 1 ] || die "no continuum-core process running (run: continuum start)"
 [ "$CORES" -le 1 ] || die "$CORES continuum-core processes running — kill the stragglers; the harness measures ONE"
 "$CU" ping >/dev/null 2>&1 || die "core not responding to ping after boot"
 

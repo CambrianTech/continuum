@@ -12,10 +12,10 @@ name = "continuum-core-server"
 path = "src/main.rs"
 
 # `cu` — the pure-Rust CLI client (replaces the legacy Node `./jtag`). Talks to a
-# running core over its IPC socket via the uniform Connection. See src/bin/cu.rs.
+# running core over its IPC socket via the uniform Connection. See src/bin/continuum.rs.
 [[bin]]
-name = "cu"
-path = "src/bin/cu.rs"
+name = "continuum"
+path = "src/bin/continuum.rs"
 
 [[bin]]
 name = "dequantize-gguf"

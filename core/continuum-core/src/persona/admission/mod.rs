@@ -415,11 +415,15 @@ pub fn build_engram_from_candidate(
 fn verify_envelope(origin: &EngramOrigin) -> Result<(), AdmissionError> {
     match origin {
         EngramOrigin::Airc(r) => verify_airc_envelope(r),
-        // Local-trust origins (chat/tool/self-reflection) don't carry
-        // signed envelopes; structural verification is trivially OK.
-        EngramOrigin::Chat(_) | EngramOrigin::Tool(_) | EngramOrigin::SelfReflection { .. } => {
-            Ok(())
-        }
+        // Local-trust origins (chat/tool/self-reflection/agent) don't carry
+        // signed envelopes; structural verification is trivially OK. An agent
+        // memory is authored by the local agent's own `/remember` — trusted as
+        // its own. (When cross-agent shared memories travel signed with the
+        // author's peer key, this arm gains a verify like AIRC's — future.)
+        EngramOrigin::Chat(_)
+        | EngramOrigin::Tool(_)
+        | EngramOrigin::SelfReflection { .. }
+        | EngramOrigin::Agent(_) => Ok(()),
     }
 }
 

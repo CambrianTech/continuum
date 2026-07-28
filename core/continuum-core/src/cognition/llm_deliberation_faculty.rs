@@ -1734,19 +1734,20 @@ mod tests {
             );
         }
 
-        // what this catches: progressive disclosure — the per-turn tool PAYLOAD is the
-        // two-tool DISCOVERY PAIR (`commands/list` + `commands/help`), not the whole
-        // authorized registry, and the system prompt carries only a CATEGORY INDEX, not
-        // every tool. The old dump injected ~150 full schemas / one-liners (~4–5k tokens)
-        // into EVERY turn, overflowing n_ctx → 400 "exceeds context size" → mute. Now the
-        // surface is a tiny category index inside the system prompt + the two-tool native
-        // offering, so even a huge tool set leaves system + user + the offered tools well
-        // within the served window. Invariant: the category index (not tool names) rides
-        // the system prompt, the native offering is exactly the discovery pair, and the
-        // whole prompt + its tools + reserve fit the window. A regression means the dump
-        // came back.
+        // what this catches: progressive disclosure — the system prompt carries only a
+        // CATEGORY INDEX (names, not the ~150 full schemas), and the native offering is the
+        // FULL authorized coding surface, which is NEVER window-amputated. Two failure modes
+        // this pins the absence of: (1) the old dump that injected ~150 schemas (~4–5k
+        // tokens) into EVERY turn, overflowing n_ctx → 400 "exceeds context size" → mute;
+        // (2) the later "tight window ⇒ discovery-pair only" shrink cliff (deleted in #206 /
+        // 74acbb36c) that amputated the native surface to `commands/list`+`commands/help` on
+        // a tight window, stranding native-tool models in a help loop with 0 edits. Now the
+        // category index rides the system prompt, the full native surface rides beside it
+        // un-amputated, and the budget (`prompt_view_within`) reserves the specs' tokens and
+        // trims VOLATILE context so prompt + tools + reserve fit the window. A regression
+        // means either the dump came back or the amputation cliff did.
         #[test]
-        fn tool_surface_is_a_category_index_plus_discovery_pair() {
+        fn tool_surface_is_a_category_index_plus_the_unamputated_native_surface() {
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             // A tool set whose FULL schemas would dwarf the window — the live shape

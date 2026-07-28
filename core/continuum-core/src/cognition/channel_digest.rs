@@ -204,13 +204,39 @@ impl ChannelDigestBuilder {
     }
 }
 
+/// Test-only shared fixture: a minimal room message `TranscriptEvent` at a
+/// given lamport. ONE construction site for every test that needs to stage
+/// channel events (this file's split tests, the vitals radiator's QUE test)
+/// — never re-built per test file (CLAUDE.md test-fixture rule 5).
+#[cfg(test)]
+pub(crate) fn test_event_in(
+    room: airc_core::RoomId,
+    text: &str,
+    lamport: u64,
+) -> TranscriptEvent {
+    use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, TranscriptKind};
+    TranscriptEvent {
+        event_id: EventId::new(),
+        room_id: room,
+        peer_id: PeerId::new(),
+        client_id: ClientId::new(),
+        kind: TranscriptKind::Message,
+        occurred_at_ms: 1_000_000 + lamport,
+        lamport,
+        target: MentionTarget::Room(room),
+        headers: Headers::default(),
+        body: Some(Body::text(text)),
+        attachment: None,
+        receipt: None,
+        metadata: serde_json::Value::Null,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cognition::embedding::EmbeddingProvider;
-    use airc_core::{
-        Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,
-    };
+    use airc_core::RoomId;
     use async_trait::async_trait;
     use std::sync::Mutex;
 
@@ -249,24 +275,6 @@ mod tests {
         }
     }
 
-    fn event_in(room: RoomId, text: &str, lamport: u64) -> TranscriptEvent {
-        TranscriptEvent {
-            event_id: EventId::new(),
-            room_id: room,
-            peer_id: PeerId::new(),
-            client_id: ClientId::new(),
-            kind: TranscriptKind::Message,
-            occurred_at_ms: 1_000_000 + lamport,
-            lamport,
-            target: MentionTarget::Room(room),
-            headers: Headers::default(),
-            body: Some(Body::text(text)),
-            attachment: None,
-            receipt: None,
-            metadata: serde_json::Value::Null,
-        }
-    }
-
     fn builder() -> (ChannelDigestBuilder, Arc<ChannelBookmarks>) {
         let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
         let bookmarks = Arc::new(ChannelBookmarks::new());
@@ -283,9 +291,9 @@ mod tests {
         let room = RoomId::new();
         let persona = Uuid::new_v4();
         let reader = StubReader::new(vec![
-            event_in(room, "a", 1),
-            event_in(room, "b", 2),
-            event_in(room, "c", 3),
+            test_event_in(room, "a", 1),
+            test_event_in(room, "b", 2),
+            test_event_in(room, "c", 3),
         ]);
         let (b, _) = builder();
         let d = b.build(persona, room.as_uuid(), &reader, 100, 0).await.unwrap();
@@ -302,9 +310,9 @@ mod tests {
         let room = RoomId::new();
         let persona = Uuid::new_v4();
         let reader = StubReader::new(vec![
-            event_in(room, "a", 1),
-            event_in(room, "b", 2),
-            event_in(room, "c", 3),
+            test_event_in(room, "a", 1),
+            test_event_in(room, "b", 2),
+            test_event_in(room, "c", 3),
         ]);
         let (b, marks) = builder();
         marks.advance(persona, room.as_uuid(), 2); // read through lamport 2
@@ -320,9 +328,9 @@ mod tests {
         let room = RoomId::new();
         let persona = Uuid::new_v4();
         let reader = StubReader::new(vec![
-            event_in(room, "a", 1),
-            event_in(room, "b", 2),
-            event_in(room, "c", 3),
+            test_event_in(room, "a", 1),
+            test_event_in(room, "b", 2),
+            test_event_in(room, "c", 3),
         ]);
         let (b, marks) = builder();
         marks.advance(persona, room.as_uuid(), 2);
@@ -340,9 +348,9 @@ mod tests {
         let room = RoomId::new();
         let persona = Uuid::new_v4();
         let reader = StubReader::new(vec![
-            event_in(room, "a", 1),
-            event_in(room, "b", 2),
-            event_in(room, "c", 3),
+            test_event_in(room, "a", 1),
+            test_event_in(room, "b", 2),
+            test_event_in(room, "c", 3),
         ]);
         let (b, marks) = builder();
         marks.advance(persona, room.as_uuid(), 3); // read everything
@@ -371,9 +379,9 @@ mod tests {
         let room_b = RoomId::new();
         let persona = Uuid::new_v4();
         let reader = StubReader::new(vec![
-            event_in(room_a, "a-only", 1),
-            event_in(room_b, "b-only", 1),
-            event_in(room_a, "a-two", 2),
+            test_event_in(room_a, "a-only", 1),
+            test_event_in(room_b, "b-only", 1),
+            test_event_in(room_a, "a-two", 2),
         ]);
         let (b, _) = builder();
         let d = b.build(persona, room_a.as_uuid(), &reader, 100, 0).await.unwrap();
@@ -397,7 +405,7 @@ mod tests {
     async fn tip_advance_plus_grounding_window_starves_low_frequency_speakers() {
         let room = RoomId::new();
         let persona = Uuid::new_v4();
-        let mut events = vec![event_in(room, "OPERATOR: your card is 0b1a6230", 10)];
+        let mut events = vec![test_event_in(room, "OPERATOR: your card is 0b1a6230", 10)];
         // Tick 1: persona engages (even a silent PASS marks read to tip).
         // Digest at this point still shows the operator message as unread.
         let (b, _) = builder();
@@ -408,7 +416,7 @@ mod tests {
 
         // Peers flood: 6 newer messages (> grounding=5), persona engages again.
         for (i, l) in (11..=16).enumerate() {
-            events.push(event_in(room, &format!("peer chatter {i}"), l));
+            events.push(test_event_in(room, &format!("peer chatter {i}"), l));
         }
         let reader = StubReader::new(events.clone());
         let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
@@ -417,7 +425,7 @@ mod tests {
         // Next build: the operator message is GONE — not in unread (read long
         // ago), not in grounding (displaced by 5 newer read peer messages).
         for (i, l) in (17..=18).enumerate() {
-            events.push(event_in(room, &format!("more chatter {i}"), l));
+            events.push(test_event_in(room, &format!("more chatter {i}"), l));
         }
         let reader = StubReader::new(events);
         let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
@@ -436,7 +444,7 @@ mod tests {
         let room = RoomId::new();
         let p1 = Uuid::new_v4();
         let p2 = Uuid::new_v4();
-        let reader = StubReader::new(vec![event_in(room, "shared", 1)]);
+        let reader = StubReader::new(vec![test_event_in(room, "shared", 1)]);
         let (b, _) = builder();
         let d1 = b.build(p1, room.as_uuid(), &reader, 100, 0).await.unwrap();
         let d2 = b.build(p2, room.as_uuid(), &reader, 100, 0).await.unwrap();

@@ -1,0 +1,32 @@
+{
+  "name": "design-basics",
+  "version": "1.0",
+  "description": "The design-basics gene: metric->fix reflexes for the computable fundamentals of visual design (contrast, type floors, overflow, alignment, palette harmony, line-height). The curriculum is procedurally generated and validated by construction — the mutation generator knows the inverse of every defect it injects, so no pair is hand-authored and no teacher inference is spent.",
+  "traitKind": "design-basics",
+  "source": {
+    "generator": "benchmarks/design-gym/generate_curriculum.py",
+    "seed": 7,
+    "count": 300,
+    "note": "infinite via --seed/--count; regenerate bigger before each training round — corpus size is the lift lever"
+  },
+  "dataset": {
+    "installedName": "design-basics-v1",
+    "format": "mlx chat {messages} JSONL, train/eval split + manifest (the genome/job-create datasetName contract)"
+  },
+  "training": {
+    "baseModel": "unsloth/Devstral-Small-2507-GGUF",
+    "path": "genome/job-create --datasetName design-basics-v1 --traitKind design-basics",
+    "gate": "training-completion-sentinel: adopt ONLY on measured lift vs the held-out eval split; a gene with lift <= 0 is rejected, same as the 28-example coder gene was"
+  },
+  "evaluation": {
+    "heldOut": "eval.jsonl (same generator, unseen seeds count too)",
+    "liveProof": "benchmarks/project website tier — the launch+see loop; the gene should raise the structural-grade pass rate and reduce appearance-defect turns"
+  },
+  "growthPath": [
+    "v2: mutation stacking (2-3 simultaneous defects, graded severity)",
+    "v2: WebSight real-page mutations (2M-page corpus, same defect injectors)",
+    "v3: AIM pixel-metric feedback (clutter/grid/colorfulness) once the capture->metric harness lands",
+    "v3: vision-describer taste feedback (the eyes+media sprint)"
+  ],
+  "provenance": "Recipe-as-data per the forge-template doctrine (CLAUDE.md): the pipeline consumes THIS file; artifacts are generated, never hand-authored. When the ForgeRecipe entity layer lands, this JSON is its seed row."
+}

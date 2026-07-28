@@ -23,11 +23,26 @@
 //! IS a real regression test.
 
 pub mod consumer;
+pub mod expert_observer;
+pub mod expert_pager;
+pub mod expert_predictor;
+pub mod expert_reconcile;
+pub mod expert_residency;
 pub mod gossip;
 pub mod grid;
+pub mod grid_overflow;
 pub mod lease;
+pub mod model_residency;
+pub mod moe_serving;
+pub mod placement;
+pub mod recursion_depth;
+pub mod residency_detect;
 pub mod score;
+pub mod serving_pager;
 pub mod sim;
+pub mod system_profile;
+
+pub use system_profile::{DriveInfo, DriveRole, SystemProfile};
 
 /// A LIVE reading of one device's usable compute, external consumers already subtracted.
 /// NOT a boot classification — re-taken continuously. `gpu_free_bytes_live` is the

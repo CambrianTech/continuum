@@ -91,12 +91,13 @@ crate::action_command! {
     params: PersonaWallPinParams,
     output: PersonaWallPinResult,
     run(this, _ctx, p) => {
-        let persona_id = Uuid::parse_str(&p.persona_id).map_err(|e| {
-            CommandError::Invalid(format!(
-                "persona_id '{}' is not a valid uuid: {e} — call persona/instances/list",
-                p.persona_id
-            ))
-        })?;
+        // #164: resolve the short/mistyped id a caller quotes back against the
+        // personas this process knows — the ONE id_resolve primitive, same as
+        // persona/identity/get. What a surface displays (8-char short form), its
+        // verbs must accept.
+        let persona_id =
+            crate::id_resolve::resolve(&p.persona_id, &crate::persona::card::ids(), "persona")
+                .map_err(CommandError::Invalid)?;
         let supersedes = match p.supersedes.as_deref() {
             Some(s) => Some(Uuid::parse_str(s).map_err(|e| {
                 CommandError::Invalid(format!("supersedes '{s}' is not a valid post_id uuid: {e}"))

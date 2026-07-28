@@ -571,6 +571,70 @@ fn repoint_workspace_map_if_pinned(
     }
 }
 
+/// Root a forked cycle's file-engine (its `ToolExecutor`) at `root` by driving the
+/// `code/create-workspace` act through her hands — the SAME mechanism `cognition/eval`
+/// uses to point a measurement persona at a target repo, and now `agent/solve` uses to
+/// point her at a benchmark sandbox. This is the counterpart to
+/// [`repoint_workspace_map_if_pinned`]: that fixes what she *sees* (the workspace-map RAG
+/// block); THIS moves where her hands *write*. Without it a forked persona writes to her
+/// durable per-persona workspace (`<home>/citizens/peers/<id>/workspace/`) and the caller's
+/// `git diff` on the sandbox scores a false ZERO — a lie about the solver
+/// ([[fallbacks-are-illegal-fail-loud]]). Fails LOUD if the cycle has no hands or the
+/// executor rejects the root; never silently no-ops.
+pub(crate) async fn root_acting_workspace(
+    cycle: &WorkspaceCycle,
+    root: &str,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    let acting = cycle.acting().ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal(
+            "workspace_root requested but this cycle has no acting body (no hands) — cannot root \
+             a workspace for a pure-cognition persona"
+                .to_string(),
+        )
+    })?;
+    let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
+        persona_id: acting.persona_id,
+        persona_name: acting.persona_name.clone(),
+        session_id: Uuid::new_v4(),
+        context_id: Uuid::new_v4(),
+        caller_context: serde_json::Value::Null,
+        persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+            auto_load_media: false,
+            supported_media_types: vec![],
+        },
+    };
+    let ws_call = crate::ai::types::ToolCall {
+        id: "root-acting-workspace".to_string(),
+        name: "code/create-workspace".to_string(),
+        input: serde_json::json!({ "workspace_root": root }),
+    };
+    let ws_out = acting
+        .executor
+        .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx, 8000)
+        .await
+        .map_err(|e| {
+            crate::sdk_codegen::CommandError::Internal(format!(
+                "failed to root workspace at '{root}': {e}"
+            ))
+        })?;
+    if let Some(r) = ws_out.results.first() {
+        if r.is_error.is_some() {
+            return Err(crate::sdk_codegen::CommandError::Internal(format!(
+                "code/create-workspace rejected workspace_root '{root}': {} — refusing to run with \
+                 the persona's hands rooted at the wrong directory (would score a false zero).",
+                r.content
+            )));
+        }
+    }
+    crate::probe!(
+        class = "workspace.rooted",
+        persona = %acting.persona_name,
+        root = %root,
+        "forked persona's file engine rooted at the target directory before her cycle"
+    );
+    Ok(())
+}
+
 impl PersonaWorkspaceRegistry {
     pub fn new() -> Self {
         Self {

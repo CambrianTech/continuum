@@ -20,13 +20,13 @@ Keystone = end of L3: a real `lift > 0` produced by the persona's **own** dev wo
 
 Two senses, both used:
 - **Subject:** the persona does dev tasks; its measured `lift` on the `coder-eval.jsonl` gym (`gym_grader`, rustc exit-0 — no prose-matching) is the loop's integration test.
-- **QA agent:** for each new verb (`forge/publish`, `web/fetch`, `genome/recall`) ask the persona over airc/`cu` to use it and report confusing errors → fix error/help text before commit (CLAUDE.md AI-QA doctrine).
+- **QA agent:** for each new verb (`forge/publish`, `web/fetch`, `genome/recall`) ask the persona over airc/`continuum` to use it and report confusing errors → fix error/help text before commit (CLAUDE.md AI-QA doctrine).
 
-Glass box: `~/.continuum/fixtures/prompt-captures/<persona>.jsonl` (per-iteration tool decisions), `~/.continuum/progress/<persona>.jsonl` (lift trend), recorder fixtures. One variable at a time. Validate via pure Rust + `cu` only — never `npm start`/`./jtag`.
+Glass box: `~/.continuum/fixtures/prompt-captures/<persona>.jsonl` (per-iteration tool decisions), `~/.continuum/progress/<persona>.jsonl` (lift trend), recorder fixtures. One variable at a time. Validate via pure Rust + `continuum` only — never `npm start`/`./jtag`.
 
 ## Phase 0 — Persona ground-truth (QA baseline, before any build)
 
-Boot the headless Rust core with **`cu start`** (it owns the per-platform build flags via `start-server.sh` — the operator never types `--features …`), one llama-server lane, single core process. Run Asha on the embedded `coder-eval.jsonl` gym via `cu cognition/eval --persona_id <id> --note baseline`. Capture: pass rate; **what tools she is offered**; **whether she calls `code/run`/`cargo` to self-verify (`acts` count)**. Resolves the contradiction between the hands audit (`code/run` is a registered AiSafe ActionCommand → a Trusted local persona should be offered it) and the baseline note (`acts=0` on 29/30). If offered-but-unused → operational-genome gap the loop fixes. If not-offered → registry consolidation (#62) jumps the queue.
+Boot the headless Rust core with **`continuum start`** (it owns the per-platform build flags via `start-server.sh` — the operator never types `--features …`), one llama-server lane, single core process. Run Asha on the embedded `coder-eval.jsonl` gym via `continuum cognition/eval --persona_id <id> --note baseline`. Capture: pass rate; **what tools she is offered**; **whether she calls `code/run`/`cargo` to self-verify (`acts` count)**. Resolves the contradiction between the hands audit (`code/run` is a registered AiSafe ActionCommand → a Trusted local persona should be offered it) and the baseline note (`acts=0` on 29/30). If offered-but-unused → operational-genome gap the loop fixes. If not-offered → registry consolidation (#62) jumps the queue.
 **Gate:** committed baseline row (pass rate, offered-tool list, acts).
 
 **RESULT (2026-06-30, persona `0d3209a1`, committed to `~/.continuum/progress/0d3209a1….jsonl`):**
@@ -85,4 +85,4 @@ L1→L2→L3 = single-machine automatic loop (core of #35/#36). L4→L5 = shared
 
 ## Discipline
 
-Pure-Rust + `cu` validation (never npm/jtag); `export CARGO_TARGET_DIR=…` then `df -h /` after each cargo cycle; prefer `cargo check`; fail-loud at every gate (negative lift never silently adopts); one `#[cfg(test)] mod tests` per file with `// what this catches:`; sentinels follow CONCURRENCY-STYLE-GUIDE; feature-branch commit per validated layer; merge to main only on Joel's approval.
+Pure-Rust + `continuum` validation (never npm/jtag); `export CARGO_TARGET_DIR=…` then `df -h /` after each cargo cycle; prefer `cargo check`; fail-loud at every gate (negative lift never silently adopts); one `#[cfg(test)] mod tests` per file with `// what this catches:`; sentinels follow CONCURRENCY-STYLE-GUIDE; feature-branch commit per validated layer; merge to main only on Joel's approval.

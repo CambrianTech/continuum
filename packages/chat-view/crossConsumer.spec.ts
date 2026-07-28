@@ -49,6 +49,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   active: true,
   last_seen_ms: 0,
   vitals: {},
+  genes: [],
   ...over,
 });
 

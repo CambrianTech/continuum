@@ -130,6 +130,7 @@ pub mod observer;
 pub mod revisions;
 pub mod scoping;
 pub mod session;
+pub mod system_metrics;
 pub mod session_task;
 pub mod state;
 pub mod substrate;

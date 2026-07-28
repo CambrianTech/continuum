@@ -23,12 +23,12 @@
 # Requirements (checked below; a stranger sees exactly what's missing):
 #   rustc            — the grader compiles+runs each answer (pass = exit 0)
 #   python3 + huggingface_hub — opponent download + harness glue
-#   a Continuum core — serves the OURS lane (`cu start`); RAW/opponent arms don't need it
+#   a Continuum core — serves the OURS lane (`continuum start`); RAW/opponent arms don't need it
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CODER="$HERE/coder"
-CU="${CU:-$HOME/.continuum/cache/cargo-target/debug/cu}"
+CU="${CU:-$HOME/.continuum/cache/cargo-target/debug/continuum}"
 
 # Easy → unsaturated. Frontier is where OURS pulls decisively ahead of RAW and the
 # competitor: the harder the task, the more the cognition loop (act→observe→act,
@@ -62,7 +62,7 @@ if "$CU" ping >/dev/null 2>&1; then
   echo "  core: up (OURS lane available)"
   OURS_OK=1
 else
-  echo "  core: DOWN — RAW + opponent arms will still run; the OURS column needs 'cu start'."
+  echo "  core: DOWN — RAW + opponent arms will still run; the OURS column needs 'continuum start'."
   OURS_OK=0
 fi
 echo "  rustc: $(rustc --version)"
@@ -73,7 +73,7 @@ echo "  rustc: $(rustc --version)"
 # corrupts them silently. Refuse a contended run unless the operator accepts it.
 GATE_FLAG=""; [ "$ALLOW_CONTENDED" = 1 ] && GATE_FLAG="--allow-contended"
 if [ -f "$CODER/preflight_gpu.py" ]; then
-  if ! python3 "$CODER/preflight_gpu.py" --cu "$CU" $GATE_FLAG; then
+  if ! python3 "$CODER/preflight_gpu.py" --continuum "$CU" $GATE_FLAG; then
     die "GPU is CONTENDED — numbers taken now are not clean. Quiet the box (the OURS
        eval auto-quiesces personas; stop any other GPU job), then re-run — or pass
        --allow-contended to measure anyway and stamp the cells CONTENDED."
@@ -90,7 +90,7 @@ for gym in "${GYMS[@]}"; do
   say "KICK: $gym  (serve → RAW + OURS + opencode → grade → teardown, per model)"
   # sweep_all serves each opponent on its scratch port, runs matrix (which appends
   # every cell to RESULTS.jsonl), and tears the server down before the next model.
-  python3 "$CODER/sweep_all.py" --models "$FLEET_RESOLVED" --benchmark "$gym" --limit "$LIMIT" --cu "$CU" \
+  python3 "$CODER/sweep_all.py" --models "$FLEET_RESOLVED" --benchmark "$gym" --limit "$LIMIT" --continuum "$CU" \
     || echo "  [gym $gym] sweep returned nonzero — cells that DID land are in the ledger; continuing"
 done
 
@@ -100,5 +100,5 @@ python3 "$HERE/render_results.py" || echo "  (render skipped — inspect benchma
 say "done"
 echo "  ledger:  benchmarks/RESULTS.jsonl   (append-only source of truth)"
 echo "  board:   benchmarks/coder/MATRIX.md + benchmarks/charts/*.svg"
-[ "$OURS_OK" = 0 ] && echo "  NOTE: OURS column is blank — start a core ('cu start') and re-run to fill it."
+[ "$OURS_OK" = 0 ] && echo "  NOTE: OURS column is blank — start a core ('continuum start') and re-run to fill it."
 rm -f "$FLEET_RESOLVED"

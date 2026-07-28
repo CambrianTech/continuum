@@ -22,10 +22,14 @@ pub mod downloader;
 pub mod fetch;
 pub mod model_catalog;
 pub mod model_source;
+pub mod placement_planner;
 pub mod provisioner;
 pub mod scaling;
 
 pub use avatar_source::AvatarSource;
+pub use placement_planner::{
+    grid_has_fit, resolve_from_footprint, resolve_placement, PlacementResolution,
+};
 pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
 pub use downloader::{DownloadError, Downloader};
 pub use fetch::{fetch_and_place, FetchError};

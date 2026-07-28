@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from oneshot_opponent import grade, extract_code  # identical grader + fenced-block extractor
 from harness_opencode import _strip_gym_framing     # identical spoken-framing strip
+from rival_integrity import classify_cli, run_battery  # the ONE integrity standard
 
 
 def run_hermes(prompt, ws, model, timeout):
@@ -38,19 +39,16 @@ def run_hermes(prompt, ws, model, timeout):
     task = _strip_gym_framing(prompt)
     full = (f"Implement this Rust function and write ONLY the finished code to the file at this "
             f"exact absolute path: {sol}\nUse your write/edit tool with that absolute path.\n\n" + task)
-    stdout = ""
-    try:
-        r = subprocess.run(
-            ["hermes", "-z", full, "-m", model, "--provider", "custom",
-             "--yolo", "--cli", "--safe-mode"],
-            cwd=ws, capture_output=True, text=True, timeout=timeout,
-        )
-        stdout = (r.stdout or "") + (r.stderr or "")
-    except subprocess.TimeoutExpired:
-        pass
+    stdout, infra = classify_cli(
+        ["hermes", "-z", full, "-m", model, "--provider", "custom",
+         "--yolo", "--cli", "--safe-mode"],
+        cwd=ws, timeout=timeout, tool_name="hermes",
+    )
     if os.path.isfile(sol):
-        return open(sol).read()
-    return extract_code(stdout) if "```" in stdout else ""
+        return open(sol).read(), None
+    if "```" in stdout:
+        return extract_code(stdout), None
+    return "", infra
 
 
 def main():
@@ -62,25 +60,11 @@ def main():
     ap.add_argument("--timeout", type=int, default=240)
     a = ap.parse_args()
     tasks = [json.loads(l) for l in open(a.gym) if l.strip()][:a.limit]
-    passed, no_file = 0, 0
-    for i, t in enumerate(tasks):
-        ws = tempfile.mkdtemp()
-        gdir = tempfile.mkdtemp()
-        try:
-            code = run_hermes(t["prompt"], ws, a.model, a.timeout)
-            if not code:
-                no_file += 1
-                ok = False
-            else:
-                ok, _ = grade(code, t.get("test", ""), gdir)
-            passed += 1 if ok else 0
-            print(f"  [{i+1}/{len(tasks)}] {t.get('id','')} "
-                  f"{'PASS' if ok else 'fail'}{'' if code else ' (no file written)'}", file=sys.stderr)
-        finally:
-            shutil.rmtree(ws, ignore_errors=True)
-            shutil.rmtree(gdir, ignore_errors=True)
-    n = len(tasks)
-    print(f"| {a.label} | {passed}/{n} | {round(100*passed/n)}% | agentic (Hermes CLI) | no-file {no_file} |")
+    run_battery(
+        tasks, a.label, "agentic (Hermes CLI)",
+        lambda prompt, ws: run_hermes(prompt, ws, a.model, a.timeout),
+        grade,
+    )
 
 
 if __name__ == "__main__":

@@ -34,8 +34,8 @@ describe('renderChat (ANSI)', () => {
         memberCount: 2,
         activeCount: 1,
         members: [
-          { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: '', vitals: {} },
-          { id: 'b', name: 'Bo', kind: 'human', active: false, runtime: '', vitals: {} },
+          { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: '', vitals: {}, lastSeenMs: 0 },
+          { id: 'b', name: 'Bo', kind: 'human', active: false, runtime: '', vitals: {}, lastSeenMs: 0 },
         ],
       }),
       false,
@@ -52,8 +52,8 @@ describe('renderChat (ANSI)', () => {
         memberCount: 2,
         activeCount: 2,
         members: [
-          { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'claude', vitals: {} },
-          { id: 'b', name: 'Nyx', kind: 'agent', active: true, runtime: '', vitals: {} },
+          { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'claude', vitals: {}, lastSeenMs: 0 },
+          { id: 'b', name: 'Nyx', kind: 'agent', active: true, runtime: '', vitals: {}, lastSeenMs: 0 },
         ],
       }),
       false,
@@ -97,7 +97,7 @@ describe('renderChat (ANSI)', () => {
         isEmpty: false,
         memberCount: 1,
         activeCount: 1,
-        members: [{ id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'claude', vitals: {} }],
+        members: [{ id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'claude', vitals: {}, lastSeenMs: 0 }],
         messages: [
           {
             id: 'm1',

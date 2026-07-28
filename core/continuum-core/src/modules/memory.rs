@@ -7,11 +7,17 @@
 //! This module no longer dispatches them through `handle_command` (the legacy arm is
 //! retired; the executor routes the typed objects first).
 //!
-//! All memory operations are pure compute on in-memory corpus data.
-//! Data comes from the ORM via IPC. Zero SQL access.
+//! Recall/context compute is pure in-memory corpus work. DURABILITY is the data
+//! layer's: `memory/append-memory` writes through to the persona's `longterm.db`
+//! via `data/create` (the late-bound executor below), and the corpus HYDRATES from
+//! that store on first touch after boot — the DB is the truth, the corpus is the
+//! derived cache. Same late-bound-executor shape as `ChatModule` (task #224).
 
 use crate::memory::PersonaMemoryManager;
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{
+    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
+    ServiceModule,
+};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -21,11 +27,31 @@ use std::sync::Arc;
 pub struct MemoryState {
     /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
     pub memory_manager: Arc<PersonaMemoryManager>,
+    /// Substrate-wide command executor, installed by `start_server` via
+    /// [`ServiceModule::install_executor`]. The `memory/*` commands use it to
+    /// write memories through to the persona's durable `longterm.db` (via
+    /// `data/create`) and to hydrate a missing corpus from it (via `data/list`)
+    /// — the cross-module dual-write pattern `ChatModule` established.
+    pub executor_slot: Arc<LateBound<CommandExecutor>>,
 }
 
 impl MemoryState {
     pub fn new(memory_manager: Arc<PersonaMemoryManager>) -> Self {
-        Self { memory_manager }
+        Self {
+            memory_manager,
+            executor_slot: Arc::new(LateBound::new("memory::executor")),
+        }
+    }
+
+    /// Resolve the executor, or a loud error naming the boot-ordering contract.
+    /// Per [[fallbacks-are-illegal-fail-loud]]: a memory write that cannot reach
+    /// the durable store must refuse, never silently degrade to cache-only.
+    pub fn executor(&self) -> Result<Arc<CommandExecutor>, String> {
+        self.executor_slot.cloned().ok_or_else(|| {
+            "MemoryState: CommandExecutor not installed — start_server must call \
+             install_executor_on_all before any memory command can persist"
+                .to_string()
+        })
     }
 }
 
@@ -75,6 +101,12 @@ impl ServiceModule for MemoryModule {
     /// their names straight here. See [`crate::commands::memory`].
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::memory::command_objects(self.state.clone())
+    }
+
+    fn install_executor(&self, executor: Arc<CommandExecutor>) {
+        // `LateBound::install` no-ops when already filled, so a test-injected
+        // executor is never clobbered — same contract as ChatModule.
+        self.state.executor_slot.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

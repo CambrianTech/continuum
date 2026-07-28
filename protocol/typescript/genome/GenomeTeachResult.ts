@@ -3,6 +3,16 @@ import type { GenomeTeachTaskOutcome } from "./GenomeTeachTaskOutcome";
 
 export type GenomeTeachResult = { 
 /**
+ * True = this is a fire-and-stream JOB HANDLE (#86), NOT a completed run: teach was
+ * spawned detached and its real result is in the run ledger (poll `genome/teach-status
+ * --run_id`), not in the fields below (which are defaulted on the ack).
+ */
+detached: boolean, 
+/**
+ * The run handle — present on a detached ack AND on the ledger row.
+ */
+runId?: string, 
+/**
  * The dataset name written.
  */
 dataset: string, 

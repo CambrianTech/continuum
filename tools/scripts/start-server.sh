@@ -52,7 +52,7 @@ fi
 
 # ── Single-owner build target ────────────────────────────────────────
 # This script is the ONE start path ([[validate-via-pure-rust-not-npm-jtag]]).
-# It must therefore own CARGO_TARGET_DIR so every `cu start` — no matter which
+# It must therefore own CARGO_TARGET_DIR so every `continuum start` — no matter which
 # shell or background task invokes it — builds into and runs from the SAME
 # binary. Without this, a shell that lacks the export builds a 396MB ghost into
 # the repo's ./target while another shell ran from ~/.continuum/cache, leaving
@@ -67,6 +67,37 @@ if [ -z "$ORT_DYLIB_PATH" ]; then
     export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"
   elif [ -f "/opt/homebrew/lib/libonnxruntime.dylib" ]; then
     export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
+  fi
+fi
+
+# Launcher runtime PATH — manifest-driven. The install manifest
+# (tools/scripts/install-manifest.toml) declares, per module, the directories the RUNNING
+# binary needs on PATH to load its runtime DLLs/.so's (e.g. CUDA's cudart64_*.dll /
+# cublas64_*.dll). Without this the native server on Windows is killed BEFORE main() with
+# 0xC0000135 (STATUS_DLL_NOT_FOUND) — a silent zero-output exit. ONE declaration in the
+# manifest is consumed by BOTH the installer (accept-check) and here (launch), so a fresh
+# install is runnable by construction. We source the bash projection (the PS manifest is the
+# installer's; both derive from the toml) and glob-expand each version-agnostic path.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) _mf_os=windows ;;
+  Darwin)               _mf_os=macos ;;
+  *)                    _mf_os=linux ;;
+esac
+_mf_runtime="$SCRIPT_DIR/generated/manifest.${_mf_os}.sh"
+if [ -f "$_mf_runtime" ]; then
+  # shellcheck source=/dev/null
+  source "$_mf_runtime"
+  if declare -p MOD_RUNTIME_PATH >/dev/null 2>&1; then
+    for _mid in "${!MOD_RUNTIME_PATH[@]}"; do
+      IFS=':' read -ra _rp_dirs <<<"${MOD_RUNTIME_PATH[$_mid]}"
+      for _rp in "${_rp_dirs[@]}"; do
+        # eval expands ~ and the version glob (cuda-*); prepend each existing match once.
+        for _rp_hit in $(eval echo "$_rp"); do
+          [ -d "$_rp_hit" ] || continue
+          case ":$PATH:" in *":$_rp_hit:"*) ;; *) export PATH="$_rp_hit:$PATH" ;; esac
+        done
+      done
+    done
   fi
 fi
 
@@ -112,12 +143,22 @@ esac
 # installer FAILs LOUD at the cause [[fallbacks-are-illegal-fail-loud]].
 OWNED_BIN="${CONTINUUM_HOME:-$HOME/.continuum}/bin/llama-server"
 if [ -n "${LLAMA_SERVER_BIN:-}" ] && [ -x "${LLAMA_SERVER_BIN}" ]; then
+  # Explicit operator override — use verbatim, no sync (they own it).
   export PATH="$(dirname "${LLAMA_SERVER_BIN}"):$PATH"
-elif [ -x "$OWNED_BIN" ]; then
-  export PATH="$(dirname "$OWNED_BIN"):$PATH"
-elif ! command -v llama-server >/dev/null 2>&1; then
-  echo "→ llama-server not installed; building it from our vendored llama.cpp …" >&2
-  if "$SCRIPT_DIR/install-llama-server.sh" >&2 && [ -x "$OWNED_BIN" ]; then
+else
+  # Run the STAMP-GATED builder unconditionally — NOT only when the binary is missing.
+  # install-llama-server.sh stamps the binary with the vendored-fork commit + backend and
+  # skips instantly when it matches, but REBUILDS when the submodule moved. The old
+  # `elif [ -x "$OWNED_BIN" ]` short-circuit used an EXISTING binary without checking the
+  # stamp, so after a fork sync the serving binary silently drifted a month behind the
+  # vendored lib — the daemon served with OLD llama-server (missing our cold-expert-ot /
+  # get_tensor / upload_expert / MXFP4 patches) while continuum-core linked the NEW lib.
+  # Always calling it is the llama-server twin of the #194 stale-check start-server already
+  # does for continuum-core-server: one artifact, one fork, kept in lockstep by construction.
+  if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
+    echo "⚠ install-llama-server.sh failed; falling back to any existing owned/PATH binary" >&2
+  fi
+  if [ -x "$OWNED_BIN" ]; then
     export PATH="$(dirname "$OWNED_BIN"):$PATH"
   fi
 fi
@@ -242,13 +283,43 @@ echo "▶ building continuum-mcp (Rust MCP server bin)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ continuum-mcp build failed — MCP server unavailable (core still launches)" >&2
 
-# ── Build the cu CLI client ──────────────────────────────────────────
-# `cu` is the pure-Rust CLI client (replaces the Node `./jtag`): `cu ping`,
-# `cu <command> [json]` over the core IPC socket via the uniform Connection.
+# ── Build the continuum CLI client ──────────────────────────────────────────
+# `continuum` is the pure-Rust CLI client (replaces the Node `./jtag`): `continuum ping`,
+# `continuum <command> [json]` over the core IPC socket via the uniform Connection.
 # Built here so the headless start produces the client on disk too.
-echo "▶ building cu (Rust CLI client)"
-cargo build --manifest-path "$CORE_MANIFEST" --bin cu $PROFILE_FLAG $CONTINUUM_FEATURES \
-  || echo "⚠ cu build failed — CLI client unavailable (core still launches)" >&2
+echo "▶ building continuum (Rust CLI client)"
+cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
+  || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
+
+# Put `continuum` on PATH so it works like any installed CLI — self-provisioning, the
+# managed-product principle ([[managed-product-everything-self-provisions-no-operator-steps]]).
+# Symlink the just-built binary into ~/.local/bin (user-writable, conventionally on PATH).
+# NEVER named `cu` — that is /usr/bin/cu, the Unix UUCP tool, which shadows it. Idempotent;
+# refreshes each deploy so PATH always points at the current build.
+CONTINUUM_CLI_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum"
+if [ -x "$CONTINUUM_CLI_BIN" ]; then
+  CONTINUUM_LINK_DIR="$HOME/.local/bin"
+  mkdir -p "$CONTINUUM_LINK_DIR"
+  ln -sf "$CONTINUUM_CLI_BIN" "$CONTINUUM_LINK_DIR/continuum"
+  case ":$PATH:" in
+    *":$CONTINUUM_LINK_DIR:"*) : ;;
+    *) echo "  ⚠ $CONTINUUM_LINK_DIR is not on PATH — add it so \`continuum\` resolves directly" >&2 ;;
+  esac
+fi
+
+# ── Build the forge-custodian sidecar ────────────────────────────────
+# Like continuum-mcp, this bin is SPAWNED by the core (not launched by us): the
+# genome loop's `forge/export` self-provisions it on demand via
+# `forge::custodian_supervisor::ensure_local_custodian`, which resolves the binary
+# as a SIBLING of the core exe. So it must exist on disk after the build, or the
+# self-improvement loop fails loud at "custodian binary not found" the first time a
+# trained gene needs converting to a pageable gguf-lora. Same manifest/features/
+# profile as the core → a fast incremental once the core is built. Non-fatal: a
+# missing custodian only blocks gene conversion, not core boot; the supervisor
+# already surfaces an actionable error. ([[managed-product-everything-self-provisions-no-operator-steps]], #52/#25)
+echo "▶ building forge-custodian (Rust gguf-lora export sidecar)"
+cargo build --manifest-path "$CORE_MANIFEST" --bin forge-custodian $PROFILE_FLAG $CONTINUUM_FEATURES \
+  || echo "⚠ forge-custodian build failed — genome gene-conversion unavailable (core still launches)" >&2
 
 # Build the server binary BEFORE stopping the old core, so the running core keeps
 # serving through the (cached, fast) compile and downtime is ~0.

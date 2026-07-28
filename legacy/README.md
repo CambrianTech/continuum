@@ -22,5 +22,5 @@ nothing to do with the substrate.
 **Replacement:** `tools/scripts/start-server.sh` — the pure-Rust headless start
 (`cargo run` the `continuum-core-server` directly, per-platform GPU features, no
 Node). Both root and `src/` `package.json` `start` now point at it. Talk to the
-running core with the Rust **`cu`** client (`cu ping`, …) — the replacement for
+running core with the Rust **`continuum`** client (`continuum ping`, …) — the replacement for
 the Node `./jtag`.

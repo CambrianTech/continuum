@@ -733,6 +733,17 @@ async fn run_export_gguf_lora(
             .to_string()
     })?;
 
+    // Self-provision the LOCAL custodian if it isn't up (managed-product: the
+    // organism brings its own converter — no operator step). This single seam
+    // covers BOTH the L3 sentinel's automatic export dispatch AND a manual
+    // `forge/export`, so the genome loop closes without a hand-started sidecar
+    // ([[managed-product-everything-self-provisions-no-operator-steps]], glass-boxed
+    // 2026-07-20: the sentinel fired but died at "custodian unreachable"). A grid
+    // custodian is never spawned here; the local-http path is the only caller.
+    crate::forge::custodian_supervisor::ensure_local_custodian(custodian)
+        .await
+        .map_err(|e| format!("forge/export: {e}"))?;
+
     // Catch contract drift at the handshake, not as a malformed body deep in a
     // conversion (Contract C, R1/R2).
     custodian.ensure_contract().await.map_err(|e| e.to_string())?;

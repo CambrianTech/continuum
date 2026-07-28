@@ -53,11 +53,14 @@ use uuid::Uuid;
 /// three the nav surfaces route today; a new target kind adds a variant here
 /// (a compile-error at every `match`, never a silent `Other` —
 /// [[fallbacks-are-illegal-fail-loud]]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
 #[ts(export, export_to = "../../../protocol/typescript/positron/NavTargetKind.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum NavTargetKind {
-    /// A room's conversation (the common case — a chat tab).
+    /// A room's conversation (the common case — a chat tab). The `Default` so a
+    /// kind-less `nav/select` (an older client) reads as the pre-persona-tab
+    /// behavior — a room switch, never a misrouted profile.
+    #[default]
     Room,
     /// A piece of content (a document, a wall post, a file view).
     Content,
@@ -82,6 +85,14 @@ pub struct NavTab {
     /// Unread count since `last_read` for this tab's room (0 for non-room
     /// tabs, or a fully-read room). Derived at projection, not stored twice.
     pub unread: u32,
+    /// The activity **purpose** of what this tab opens (`"chat"`, `"foundry"`,
+    /// …) — the recipe-defined nature resolved through the room-purpose seam
+    /// ([[room-purpose-is-per-recipe-not-an-enum]]). A renderer draws it as the
+    /// tab/room's description line and MAY facet on it. Empty = unresolved —
+    /// an honest unknown, never a fabricated purpose. `#[serde(default)]` so a
+    /// tab serialized before this field folds as empty, never dropped.
+    #[serde(default)]
+    pub purpose: String,
 }
 
 /// A pinned quick-nav target — the citizen's bookmarks (rooms, content,
@@ -184,6 +195,7 @@ mod tests {
             title: "General".into(),
             kind: NavTargetKind::Room,
             unread: 3,
+            purpose: "chat".into(),
         });
         nav.last_read.insert("room-a".into(), 1_700_000_000_000);
         nav.current_tab = Some("room-a".into());

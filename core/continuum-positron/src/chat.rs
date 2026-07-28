@@ -353,6 +353,26 @@ pub struct RosterSlotView {
     #[serde(default)]
     #[ts(optional)]
     pub loadout: Option<Loadout>,
+    /// URL of this member's avatar IMAGE, when the producing node has one
+    /// stored (`~/.continuum/avatars/<peer-id>.png`, served under
+    /// `/avatars/…` by the client's static tier). Neutral like every other
+    /// slot field: positron transports the URL, never the pixels, and never
+    /// interprets it. `None` = no stored avatar — the renderer draws its
+    /// glyph fallback, never a broken image or a fabricated face
+    /// ([[fallbacks-are-illegal-fail-loud]]). `#[serde(default)]` so a slot
+    /// serialized before this field folds as absent, never dropped.
+    #[serde(default)]
+    #[ts(optional)]
+    pub avatar_url: Option<String>,
+    /// NAMES of the member's loaded skill overlays (a continuum persona's
+    /// paged-in LoRA genes), in load order — the label half of a `genome`
+    /// vital that carries only a normalized count. Transported, NOT
+    /// interpreted (same neutral discipline as `vitals`): the app decides how
+    /// to render them (segment tooltips). Empty = none loaded/reported —
+    /// honest-absent, never fabricated labels. `#[serde(default)]` so a slot
+    /// serialized before this field folds as empty, never dropped.
+    #[serde(default)]
+    pub genes: Vec<String>,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills
@@ -589,6 +609,8 @@ mod tests {
             last_seen_ms: 1_700_000_000_000,
             vitals: BTreeMap::new(),
             loadout: None,
+            avatar_url: None,
+            genes: Vec::new(),
         };
         let back: RosterSlotView =
             serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
@@ -649,6 +671,8 @@ mod tests {
                 last_seen_ms: 1_700_000_000_000,
                 vitals: BTreeMap::new(),
                 loadout: None,
+                avatar_url: None,
+            genes: Vec::new(),
             }],
         };
         let json = serde_json::to_string(&state).unwrap();

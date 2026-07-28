@@ -323,6 +323,7 @@ mod tests {
             pass: 2,
             current_task: "lru_cache".to_string(),
             last_ok: true,
+            output_tokens: 210,
             updated_at_ms: 1_000,
             vram_free_gb: Some(36),
             run_id: Some("r2".to_string()),
@@ -383,7 +384,7 @@ mod tests {
     fn pass_finished_flips_when_all_tasks_graded() {
         let progress = Some(EvalPassProgress {
             done: 3, total: 3, pass: 0, current_task: "rle_roundtrip".to_string(),
-            last_ok: false, updated_at_ms: 1, vram_free_gb: None, run_id: None,
+            last_ok: false, output_tokens: 0, updated_at_ms: 1, vram_free_gb: None, run_id: None,
         });
         let out = BenchmarkObserveResult::assemble(progress, None, None, None, 10);
         assert!(out.scoreboard.pass_finished);

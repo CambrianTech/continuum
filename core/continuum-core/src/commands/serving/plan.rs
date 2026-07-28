@@ -91,6 +91,7 @@ mod tests {
             base_model_id: "qwen3-coder".into(),
             served_context_window: 32_768,
             lanes: 2,
+            grid_overflow_lanes: 0,
             resident_models: 1,
             fits_on_gpu: true,
             rationale: "fits one lane on the budget".into(),

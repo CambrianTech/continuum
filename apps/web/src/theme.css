@@ -60,6 +60,12 @@
   --status-busy: #ff4444;
   --status-offline: #666666;
 
+  /* Widget shorthand aliases — canonical names widgets already lean on.
+   * Aliased (not new colors) so every theme retints them via the base tokens;
+   * they were previously UNDEFINED and silently resolved to nothing. */
+  --text-dim: var(--content-secondary);
+  --panel-border: var(--border-subtle);
+
   /* Input */
   --input-background: rgba(40, 45, 55, 0.8);
   --input-border: rgba(255, 255, 255, 0.15);
@@ -82,6 +88,47 @@
   /* Typography */
   --font-primary: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+
+  /* Type scale — the HUD's fine-print steps. Instrument captions/labels sit on
+   * these named steps, never ad-hoc pixel sprinkles. */
+  --font-size-2xs: 7px;
+  --font-size-xs: 8px;
+  --font-size-sm: 10px;
+  --font-size-md: 12px;
+
+  /* Motion — ONE easing/duration vocabulary for every transition/animation. */
+  --motion-fast: 0.15s;
+  --motion-base: 0.4s;
+  --motion-slow: 0.7s;
+  --motion-ease: ease;
+
+  /* HUD instrument family — the persona tile's green-mono instrument look
+   * (identity chips, meter labels, GENOME panel) from the legacy persona-tile. */
+  --hud-accent: rgba(0, 255, 200, 0.8);
+  --hud-accent-dim: rgba(0, 255, 200, 0.6);
+  --hud-accent-border: rgba(0, 255, 200, 0.4);
+  --hud-accent-glow: rgba(0, 255, 200, 0.3);
+  --hud-panel-background: rgba(10, 25, 35, 0.9);
+  --hud-track-background: rgba(20, 30, 45, 0.6);
+  --hud-track-border: rgba(60, 80, 100, 0.4);
+  --hud-slot-background: rgba(60, 80, 100, 0.5);
+  --hud-slot-border: rgba(80, 100, 120, 0.6);
+
+  /* Vital-meter fills — one named hue per radiated vital (ACT/QUE/SPD/PAR). */
+  --meter-act: #00d4ff;
+  --meter-que: #00ff88;
+  --meter-spd: #a78bfa;
+  --meter-par: #ffb020;
+
+  /* Cognition-compass faculty hues (Focus N / Reason E / Recall S / Act W). */
+  --faculty-focus: #00d4ff;
+  --faculty-reason: #ffb020;
+  --faculty-recall: #3fb950;
+  --faculty-act: #ff6a3d;
+
+  /* Live turn-state ring — the avatar halo per cognitive state. */
+  --ring-speaking: #3b82f6;
+  --ring-thinking: #9333ea;
 }
 
 /* The document shell adopts the primary surface so the app fills the viewport

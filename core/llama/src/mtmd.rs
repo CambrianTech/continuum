@@ -166,14 +166,18 @@ impl MtmdContext {
         // Step 1: load bitmap from raw bytes — the helper auto-detects
         // image vs audio from magic bytes (per mtmd-helper.h: stb_image
         // formats for images, miniaudio formats wav/mp3/flac for audio).
-        let bitmap = unsafe {
+        // Upstream 2026-07: gained `placeholder` (false = real media bytes) and returns a
+        // wrapper { bitmap, video_ctx }. video_ctx is only populated for VIDEO inputs —
+        // unsupported here (images/audio only), where it is null; the bitmap is ours to free.
+        let wrapper = unsafe {
             sys::mtmd_helper_bitmap_init_from_buf(
                 self.ptr.as_ptr(),
                 media_bytes.as_ptr(),
                 media_bytes.len(),
+                false,
             )
         };
-        let bitmap = NonNull::new(bitmap).ok_or_else(|| {
+        let bitmap = NonNull::new(wrapper.bitmap).ok_or_else(|| {
             format!(
                 "mtmd_helper_bitmap_init_from_buf failed — bytes not a valid {} format",
                 match kind {
@@ -209,6 +213,8 @@ impl MtmdContext {
         let c_text = CString::new(text).map_err(|e| format!("invalid text (NUL byte?): {e}"))?;
         let input_text = sys::mtmd_input_text {
             text: c_text.as_ptr(),
+            // Upstream 2026-07: explicit byte length alongside the pointer (excl. NUL).
+            text_len: c_text.as_bytes().len(),
             add_special: true,
             parse_special: true,
         };

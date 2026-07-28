@@ -22,6 +22,7 @@
 
 import type { ChatState } from './ChatState';
 import type { ChatMessageView, RosterSlotView, SenderKind } from '@continuum/sdk-typescript';
+import { messageDigest, type MessageDigestVM } from './messageDigest';
 
 /** The neutral author/member kind discriminant (`'human' | 'agent' | 'system'`). */
 export type MemberKind = SenderKind['kind'];
@@ -55,6 +56,19 @@ export interface RosterMemberVM {
    *  a remote peer, or a persona whose binding hasn't resolved — the card draws
    *  no LOADOUT strip, never a fabricated model. */
   readonly loadout?: LoadoutVM;
+  /** WHEN this member was last active — raw epoch ms (`last_seen_ms` from
+   *  presence). `0` = unreported; the card draws no recency stamp then, never a
+   *  fabricated one. The renderer formats the idiom (`"55m ago"`). */
+  readonly lastSeenMs: number;
+  /** URL of this member's stored avatar image (`/avatars/<peer-id>.png`),
+   *  when the producing node has one. Absent = the card draws its kind
+   *  glyph — honest fallback, never a broken image. */
+  readonly avatarUrl?: string;
+  /** NAMES of the member's loaded skill overlays (paged-in LoRA genes), in
+   *  load order — the label half of `vitals.genome` (which is only a
+   *  normalized count), so the genome segments carry real adapter names.
+   *  Absent = none loaded/reported — never fabricated labels. */
+  readonly genes?: readonly string[];
 }
 
 /** One conversation row — "what was said". */
@@ -67,6 +81,22 @@ export interface MessageRowVM {
   /** Wall-clock time-of-day (UTC `HH:MM`) — deterministic across machines. */
   readonly time: string;
   readonly runtime: string;
+  /** The digest tier for an over-threshold body ([[perception-resolution-contract]]):
+   *  head + mechanical tail summary (+ repetition histogram). Absent = the full
+   *  tier — render `content` verbatim. `content` always carries the untouched
+   *  original either way; the digest never destroys fidelity, only defers it. */
+  readonly digest?: MessageDigestVM;
+  /** Renderer-owned overlay: the reader expanded this collapsed row (render the
+   *  full body, offer "collapse"). NEVER set by the projection — the widget's
+   *  expand state stamps it on, the same overlay pattern as live typing rows. */
+  readonly expanded?: boolean;
+  /** The sender's avatar image, joined from the roster at projection time so a
+   *  message row draws the same face as the sender's tile. Absent = glyph. */
+  readonly senderAvatarUrl?: string;
+  /** True when this row continues the previous row's sender within the group
+   *  window — the renderer draws a compact continuation (no avatar/head), the
+   *  classic chat grouping that kills the bubble-per-line sprawl. */
+  readonly continues?: boolean;
 }
 
 /** The full render-ready projection of a chat snapshot. */
@@ -128,10 +158,24 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     // Additive field (#186 loadout): absent for a human / unresolved agent — the
     // card draws no LOADOUT strip, never a fabricated model.
     ...(loadout ? { loadout } : {}),
+    // Recency (card 2661a1b1): the raw presence signal, formatted by the renderer.
+    // An older core omitting the field reads as 0 = unreported (no stamp drawn).
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    lastSeenMs: slot.last_seen_ms ?? 0,
+    // Additive field: the node's stored avatar image URL — absent = glyph fallback.
+    ...(slot.avatar_url ? { avatarUrl: slot.avatar_url } : {}),
+    // Additive field (QUE/genes revival): gene NAMES, only when the radiator
+    // reported any — an older core omits the field entirely.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    ...(slot.genes && slot.genes.length > 0 ? { genes: slot.genes } : {}),
   };
 }
 
 function messageVM(msg: ChatMessageView): MessageRowVM {
+  // Digest tier ([[perception-resolution-contract]]): classify here, in the ONE
+  // place that computes "how a message row reads", so every renderer (web, tui,
+  // RAG grounding) inherits flood-proofing without re-deriving it.
+  const digest = messageDigest(msg.content);
   return {
     id: msg.id,
     senderId: msg.sender_id,
@@ -140,12 +184,37 @@ function messageVM(msg: ChatMessageView): MessageRowVM {
     content: msg.content,
     time: formatTimeOfDay(msg.timestamp),
     runtime: msg.provenance.runtime,
+    ...(digest ? { digest } : {}),
   };
 }
+
+/** Consecutive-sender window: a message within this span of the previous row
+ *  by the SAME sender renders as a continuation (no avatar/head) — the classic
+ *  grouping that turns bubble-per-line sprawl into readable runs. */
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
 /** Project a `ChatState` snapshot into the flat view model the panels render. */
 export function chatViewModel(state: ChatState): ChatViewModel {
   const members = state.roster.map(memberVM);
+  // Join each message to its sender's tile face + fold consecutive-sender
+  // grouping — both here, in the ONE projection, so web/tui/RAG all inherit.
+  const avatarBySender = new Map(
+    state.roster.flatMap((m) => (m.avatar_url ? [[m.member_id, m.avatar_url] as const] : [])),
+  );
+  const messages = state.messages.map((msg, i): MessageRowVM => {
+    const vm = messageVM(msg);
+    const prev = state.messages[i - 1];
+    const continues =
+      prev !== undefined &&
+      prev.sender_id === msg.sender_id &&
+      msg.timestamp - prev.timestamp < GROUP_WINDOW_MS;
+    const avatar = avatarBySender.get(msg.sender_id);
+    return {
+      ...vm,
+      ...(avatar ? { senderAvatarUrl: avatar } : {}),
+      ...(continues ? { continues: true } : {}),
+    };
+  });
   return {
     roomName: state.room_name,
     roomId: state.room_id,
@@ -157,7 +226,7 @@ export function chatViewModel(state: ChatState): ChatViewModel {
     memberCount: members.length,
     activeCount: members.filter((m) => m.active).length,
     members,
-    messages: state.messages.map(messageVM),
+    messages,
     isEmpty: state.messages.length === 0,
     revision: state.revision,
   };

@@ -232,6 +232,23 @@ pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, S
 async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(), String> {
     let src = dir.join("sol.rs");
     let bin = dir.join("sol");
+    // GUARD the false-pass (proven 2026-07-21): the task's `test` is spliced into a
+    // GENERATED `fn main() { <test> }`, so it MUST be bare assertion statements. If it
+    // instead defines a `#[test]` function or its own `fn main`, that becomes a DEAD
+    // nested item main never calls — the assertions never run, the process exits 0, and
+    // WRONG CODE FALSE-PASSES. A benchmark that green-lights broken code is worse than no
+    // benchmark. Fail LOUD with the fix, never a silent green. [[fallbacks-are-illegal-fail-loud]]
+    if let Some(bad) = ["#[test]", "#[cfg(test)]", "fn main"]
+        .into_iter()
+        .find(|m| test.contains(m))
+    {
+        return Err(format!(
+            "gym test format error: `test` contains `{bad}`, which the harness splices into a \
+             generated `fn main()` where it is NEVER CALLED — the assertions would not run and \
+             wrong code would FALSE-PASS. Author `test` as bare assert!/assert_eq! statements; the \
+             harness drives them from main."
+        ));
+    }
     // The candidate defines the item(s); the task's `test` drives them from main and
     // panics (assert!/assert_eq!) on failure, so a non-zero exit == fail. Strip any
     // `fn main` the candidate wrote to self-verify — the grader's test-driven main is
@@ -324,6 +341,35 @@ impl crate::cognition::resolution::Verifier for CodeVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (regression, 2026-07-21 forensics): a `test` authored as a
+    // `#[test]` function is spliced into the generated `fn main()` as a DEAD nested fn
+    // that never runs, so WRONG code exits 0 and FALSE-PASSES. The guard must reject that
+    // format LOUD, never green-light broken code. Both the bare-assert path (grades) and
+    // the #[test] path (rejected) are pinned so the two can never be confused again.
+    #[tokio::test]
+    async fn hashtest_wrapped_test_is_rejected_not_false_passed() {
+        // WRONG sum_evens + a #[test]-wrapped test: must FAIL loud (format error), never pass.
+        let (ok, msg) = test_grade(
+            "```rust\nfn sum_evens(nums: &[i32]) -> i32 { 0 }\n```",
+            "rust",
+            "#[test]\nfn t() { assert_eq!(sum_evens(&[2,4]), 6); }",
+        )
+        .await;
+        assert!(!ok, "a #[test]-wrapped test must NOT pass — that is the false-pass bug");
+        assert!(
+            msg.contains("format error") && msg.contains("#[test]"),
+            "must fail LOUD naming the bad format, got: {msg}"
+        );
+        // Sanity: the same WRONG code with a bare-assert test correctly FAILS on the panic.
+        let (ok2, _) = test_grade(
+            "```rust\nfn sum_evens(nums: &[i32]) -> i32 { 0 }\n```",
+            "rust",
+            "assert_eq!(sum_evens(&[2,4]), 6);",
+        )
+        .await;
+        assert!(!ok2, "wrong code with a bare-assert test must fail on the assertion");
+    }
 
     // what this catches (#168): CodeVerifier bridges the REAL rustc grader to the
     // resolution spine's Verdict — a correct draft verifies PASS, a wrong draft

@@ -105,6 +105,51 @@ pub fn decide_lane(
     }
 }
 
+/// The ONE production entry to [`decide_lane`] (#108 step 2, contract stamped
+/// 2026-07-24): assemble the LIVE inputs — the governed VRAM board and the grid
+/// gossip ledger — and decide the lane for one persona render. The pure brain
+/// above stays sim-provable; this fn owns the impure gathering.
+///
+/// Missing inputs resolve to HONEST local decisions, never guesses:
+/// - no resource daemon / ungoverned VRAM → free = MAX → LocalFits (no
+///   scarcity signal = pre-grid single-machine behavior, unchanged);
+/// - unpublished plan spike (0) → the fit rule floors at "fits" → LocalFits;
+/// - empty gossip ledger → no peers → Local (NoPeerFits only after a real
+///   local-exhausted reading).
+///
+/// `own_peer` is nil until identity threads through (BigMama's step-1 gossip
+/// lane owns peer identity); nil only weakens self-exclusion from the heard
+/// set, and we do not currently hear our own offers.
+pub fn decide_render_lane(leasability: Leasability) -> LaneDecision {
+    let spike = crate::cognition::prefill_throttle::published_spike_bytes();
+    let free = crate::resources::ResourceDaemon::global()
+        .and_then(|d| {
+            d.board()
+                .kinds
+                .iter()
+                .find(|k| k.kind == crate::resources::ResourceKind::Vram)
+                .map(|k| k.available_bytes)
+        })
+        .unwrap_or(u64::MAX);
+    let local = DeviceCapacity {
+        gpu_total_bytes: 0,
+        gpu_free_bytes_live: free,
+        system_ram_free_bytes: 0,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let snapshot = super::gossip::global_ledger().snapshot(uuid::Uuid::nil(), local, now_ms);
+    let req = LeaseRequest {
+        consumer: "persona-render".into(),
+        want_concurrency: 1,
+        spike_bytes: spike,
+    };
+    // One spike of headroom — the SAME margin the prefill throttle fits with.
+    decide_lane(&snapshot, &req, leasability, spike)
+}
+
 /// Does this device's live free GPU fit at least ONE spike of the request after the margin?
 /// One spike is the unit of "can serve at all" — the same never-below-1 floor the fit policy
 /// uses (a resident model must be able to run one prefill).

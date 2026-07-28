@@ -1383,10 +1383,25 @@ impl WorkspaceCycle {
     /// take a `model_registry` dependency to hand a display fact to the projector.
     /// Reading both in one `load()` avoids a torn `(model, window)` across a
     /// concurrent [`rebind_model`](Self::rebind_model).
+    ///
+    /// The model id reported is the **EFFECTIVE** one: the binding's explicit id
+    /// when set, else the adapter's own `default_model()` — which is exactly the
+    /// id the next generation asks for (`ModelBinding.model` doc: `None` → the
+    /// adapter's default). This resolution matters live: the boot upstart binds
+    /// `model: None` (the shared served adapter already carries the active model
+    /// as its default), and the re-home reconciler (`ipc/mod.rs`) adopts the
+    /// FIRST served model as baseline *without* a rebind — so on a stable host
+    /// the explicit id stays `None` forever. Reporting the raw field left every
+    /// live roster LOADOUT as "ctx only, no model name" (the tile regression this
+    /// fixes). An adapter with an empty default resolves to honest-absent.
     pub fn model_loadout(&self) -> Option<(Option<String>, u32)> {
         self.model_binding.as_ref().map(|handle| {
             let b = handle.load();
-            (b.model.clone(), b.context_window)
+            let model = b.model.clone().or_else(|| {
+                let default = b.adapter.default_model();
+                (!default.is_empty()).then(|| default.to_string())
+            });
+            (model, b.context_window)
         })
     }
 
@@ -1966,6 +1981,48 @@ mod tests {
             model: Some("whatever".to_string()),
             context_window: 2048,
         });
+    }
+
+    // what this catches: the "20k ctx, no model name" live-tile regression. On a
+    // normal boot the upstart binds `model: None` (the shared served adapter
+    // carries the active model as its DEFAULT), and the re-home reconciler adopts
+    // the first served model as baseline WITHOUT a rebind — so the binding's
+    // explicit id stays `None` forever on a stable host. `model_loadout` must
+    // surface the EFFECTIVE model (explicit id, else the adapter's default — the
+    // id the next generation actually requests) or every live roster LOADOUT
+    // renders ctx-only with no model name. An explicit rebind still wins.
+    #[test]
+    fn model_loadout_surfaces_the_adapters_default_when_binding_model_is_none() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        use crate::cognition::llm_deliberation_faculty::{model_binding, ModelBinding};
+
+        let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        let default_id = adapter.default_model().to_string();
+        assert!(!default_id.is_empty(), "fixture adapter must carry a default model");
+
+        // Boot shape: binding with NO explicit model (the live upstart path).
+        let handle = model_binding(Arc::clone(&adapter), None, 20_224);
+        let c = cycle(vec![], 4).with_model_binding(handle);
+        let (model, ctx) = c.model_loadout().expect("a bound cycle reports a loadout");
+        assert_eq!(
+            model.as_deref(),
+            Some(default_id.as_str()),
+            "a None binding id resolves to the adapter's default — the served model"
+        );
+        assert_eq!(ctx, 20_224);
+
+        // An explicit re-home id wins over the adapter default.
+        c.rebind_model(ModelBinding {
+            adapter,
+            model: Some("qwen-coder-14b".to_string()),
+            context_window: 8_192,
+        });
+        let (model, _) = c.model_loadout().expect("still bound");
+        assert_eq!(model.as_deref(), Some("qwen-coder-14b"));
+
+        // No binding at all (no deliberation faculty) → no loadout, honest-absent.
+        assert!(cycle(vec![], 4).model_loadout().is_none());
     }
 
     // what this catches: every finding is stamped with the cycle it was computed

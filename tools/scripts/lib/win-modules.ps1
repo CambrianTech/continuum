@@ -225,6 +225,21 @@ function Mod-VSBuildTools {
         -TestCmd { Test-VCTools }
 }
 
+function Set-CMakeEnv {
+    # Make our per-user cmake findable by EVERY future build shell, not just the
+    # install session. The cmake-rs crate (llama's build.rs) honors the `CMAKE`
+    # env var for the binary path -- exactly as bindgen honors LIBCLANG_PATH -- so
+    # persisting CMAKE means a plain `cargo build` from a fresh terminal works, not
+    # only `npm start` (which re-runs install and re-adds cmake to the session PATH
+    # each time). PATH-safe: we set a named var, not mutate persistent PATH. Mirrors
+    # Mod-LLVM's LIBCLANG_PATH persistence so the toolchain env is automatic.
+    param([Parameter(Mandatory)][string]$Bin)
+    $exe = Join-Path $Bin 'cmake.exe'
+    $env:CMAKE = $exe
+    [Environment]::SetEnvironmentVariable('CMAKE', $exe, 'User')   # persist for future sessions
+    if ($env:PATH -notlike "*$Bin*") { $env:PATH = "$Bin;$env:PATH" }  # also on PATH for direct CLI this session
+}
+
 function Mod-CMake {
     # Standalone Kitware CMake (knows every VS generator string, unlike the
     # VS-bundled one). Downloaded + extracted per-user -- NO admin.
@@ -232,7 +247,7 @@ function Mod-CMake {
     $dir = Join-Path $env:USERPROFILE '.continuum\tools\cmake'
     $bin = Join-Path $dir 'bin'
     if (Test-Path (Join-Path $bin 'cmake.exe')) {
-        if ($env:PATH -notlike "*$bin*") { $env:PATH = "$bin;$env:PATH" }
+        Set-CMakeEnv $bin
         Module-Skip 'CMake' "present at $dir"; return
     }
     Module-Start 'CMake' 'downloading Kitware CMake (no admin)'
@@ -248,7 +263,7 @@ function Mod-CMake {
     New-Item -ItemType Directory -Force $dir | Out-Null
     Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $dir -Recurse -Force
     Remove-Item -Recurse -Force $tmp, $zip -ErrorAction SilentlyContinue
-    if (Test-Path (Join-Path $bin 'cmake.exe')) { $env:PATH = "$bin;$env:PATH"; Module-Done 'CMake' }
+    if (Test-Path (Join-Path $bin 'cmake.exe')) { Set-CMakeEnv $bin; Module-Done 'CMake' }
     else { Module-Fail 'CMake' "cmake.exe not found after extract to $dir" }
 }
 
@@ -454,11 +469,13 @@ function Mod-BuildCore {
     Push-Location $core
     try {
         # Runs as the invoking user (NOT via gsudo) so the cache stays user-owned.
-        # Build BOTH the serving binary AND `cu` (the CLI the user + agents drive
-        # the core with -- `cu ping`, `cu memory/*`, etc.). An install that ships
-        # the server but not its CLI is only half a product.
+        # Build BOTH the serving binary AND `continuum` (the CLI the user + agents
+        # drive the core with -- `continuum ping`, `continuum memory/*`, etc.). An
+        # install that ships the server but not its CLI is only half a product.
+        # (The CLI bin was `cu`; renamed to `continuum` in #2010 to kill the Unix
+        # UUCP `cu` collision -- keep this arg in lockstep with the [[bin]] name.)
         $buildArgs = @('build', '-p', 'continuum-core',
-            '--bin', 'continuum-core-server', '--bin', 'cu',
+            '--bin', 'continuum-core-server', '--bin', 'continuum',
             '--release', '--features', $features)
         & cargo @buildArgs
         $code = $LASTEXITCODE

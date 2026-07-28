@@ -1185,9 +1185,87 @@ impl AIProviderAdapter for LlamaCppAdapter {
             });
         }
         let start = Instant::now();
+
+        // ── Governed GPU admission (mirrors cognition/eval.rs::acquire_eval_lane_slot) ──
+        // The embedding forward pass allocates a bounded Metal context (a 2048-token
+        // embedding context: ~1.2 GiB compute buffer — quadratic in n_ubatch=2048 —
+        // plus ~224 MiB KV). UNGOVERNED, it grabbed that context behind the governor's
+        // back and competed with the serving lane for VRAM; under pressure the Metal
+        // command buffer OOM'd and the decode returned an ALL-ZERO vector — the
+        // "degenerate embedding" that silently broke semantic recall. Lease the VRAM
+        // from the ResourceGovernor FIRST: granted ⇒ the bytes are reserved for the
+        // life of the guard and the decode has room to succeed; refused ⇒ fail LOUD
+        // here instead of allocating a doomed context that emits garbage. Embeddings
+        // are GPU-only ([[gpu-is-non-negotiable-every-component-no-cpu-fallback]]), so
+        // unlike the eval lane there is NO CPU spill — the honest degrade is a named
+        // refusal the caller ([`NeuralEmbeddingProvider::embed`]) already surfaces as
+        // "no signal", never a zero vector.
+        //
+        // Const, not env-tunable — substrate policy lives in code (concurrency guide).
+        // Only the per-call CONTEXT is leased here; registering the embed model's
+        // resident WEIGHTS (~600 MiB) as a ResourceConsumer (mirroring ServingConsumer)
+        // is the residency-accounting follow-up, not this admission-control slice.
+        const EMBED_LANE_CONSUMER_ID: &str = "embed";
+        const EMBED_LANE_VRAM_BYTES: u64 = 1792 * 1024 * 1024; // ~1.75 GiB (ctx + headroom)
+        const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000; // SIGKILL backstop; the RAII guard frees on drop
+        let _vram_lease = {
+            use crate::resources::{
+                LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
+            };
+            match ResourceDaemon::global() {
+                Some(daemon) => {
+                    let req = LeaseRequest {
+                        consumer_id: EMBED_LANE_CONSUMER_ID.to_string(),
+                        kind: ResourceKind::Vram,
+                        bytes: EMBED_LANE_VRAM_BYTES,
+                        // A bounded, sub-second forward pass is not yanked mid-embed;
+                        // the guard returns the bytes the instant it finishes.
+                        ttl_ms: EMBED_LANE_LEASE_TTL_MS,
+                        reclaim_policy: ReclaimPolicy::Pinned,
+                    };
+                    match daemon.acquire_guarded(&req) {
+                        Ok(guard) => {
+                            crate::probe!(
+                                class = "embed.vram.leased",
+                                consumer = EMBED_LANE_CONSUMER_ID,
+                                bytes = EMBED_LANE_VRAM_BYTES,
+                                texts = texts.len(),
+                                "embedding lane acquired a governed VRAM lease"
+                            );
+                            Some(guard)
+                        }
+                        Err(LeaseError::InsufficientCapacity { available, .. }) => {
+                            crate::probe!(
+                                class = "embed.vram.refused",
+                                requested = EMBED_LANE_VRAM_BYTES,
+                                available = available,
+                                "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
+                            );
+                            return Err(format!(
+                                "embed: VRAM lease refused — {} MiB requested, {} MiB governed-available. \
+                                 Refusing to allocate an OOM-doomed embedding context (it would decode to \
+                                 degenerate zeros). Free VRAM (tier down serving) and retry.",
+                                EMBED_LANE_VRAM_BYTES / (1024 * 1024),
+                                available / (1024 * 1024),
+                            ));
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "embed: VRAM lease error ({e:?}) — refusing to embed ungoverned"
+                            ));
+                        }
+                    }
+                }
+                // Ungoverned node (no ResourceDaemon::global()): behavior unchanged —
+                // the backend's own new_context allocation is the only gate, as before.
+                None => None,
+            }
+        };
+
         let embeddings = tokio::task::spawn_blocking(move || backend.embed(&texts))
             .await
             .map_err(|e| format!("embedding task join failed: {e}"))??;
+        // `_vram_lease` drops here → the VRAM is returned to the governor's board.
         Ok(EmbeddingResponse {
             embeddings,
             model: model_id,

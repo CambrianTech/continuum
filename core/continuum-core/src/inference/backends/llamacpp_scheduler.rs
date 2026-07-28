@@ -225,6 +225,9 @@ fn driver_loop(
         type_v: config.type_v,
         embeddings: false,
         pooling_type: llama::PoolingType::None,
+        // MoE expert-selection observer — None for now; the K3 serving path sets a
+        // LiveExpertObserver here to feed the residency PGO tally.
+        expert_observer: None,
     }) {
         Ok(c) => c,
         Err(e) => {

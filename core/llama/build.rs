@@ -25,6 +25,11 @@ fn main() {
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
+        // Upstream 2026-07 added the unified `llama` app (LLAMA_BUILD_APP, default ON
+        // standalone) which links llama-server-impl — a lib that never builds when
+        // LLAMA_BUILD_SERVER=OFF, so the install target dies at link. We consume the
+        // LIBRARIES only; never build the app. (No-op on older trees: unknown -D is ignored.)
+        .define("LLAMA_BUILD_APP", "OFF")
         // We want libmtmd (multimodal projector + image/audio encoder) so
         // the in-process LlamaCppAdapter can route ContentPart::Image to
         // the model natively instead of dropping it. mtmd lives under
@@ -180,31 +185,90 @@ fn main() {
     // cmake ACTUALLY produced (Debug/Release/...), rather than trusting Cargo's
     // PROFILE which can diverge when a build.rs pins a cmake config (per M5's
     // review). No-op on single-config Unix (no such subdir exists).
-    let link_search = |rel: &str| {
-        let base = dst.join(rel);
-        println!("cargo:rustc-link-search=native={}", base.display());
-        for cfg_dir in ["Debug", "Release", "RelWithDebInfo", "MinSizeRel"] {
-            let sub = base.join(cfg_dir);
-            if sub.is_dir() {
-                println!("cargo:rustc-link-search=native={}", sub.display());
+    // Collect every native link-search dir (base + whichever cmake config
+    // subdir actually exists) — emitted to cargo AND retained for the presence
+    // contract below. Single-config Unix drops libs directly in the base dir;
+    // multi-config (MSVC / Visual Studio) nests them under Debug/Release/etc.,
+    // so we probe the filesystem rather than trust Cargo's PROFILE (which can
+    // diverge when a build.rs pins a cmake config, per M5's review).
+    let mut search_dirs: Vec<std::path::PathBuf> = Vec::new();
+    {
+        let mut add_search = |rel: &str| {
+            let base = dst.join(rel);
+            println!("cargo:rustc-link-search=native={}", base.display());
+            search_dirs.push(base.clone());
+            for cfg_dir in ["Debug", "Release", "RelWithDebInfo", "MinSizeRel"] {
+                let sub = base.join(cfg_dir);
+                if sub.is_dir() {
+                    println!("cargo:rustc-link-search=native={}", sub.display());
+                    search_dirs.push(sub);
+                }
             }
+        };
+        add_search("lib");
+        add_search("build/ggml/src");
+        add_search("build/src");
+        add_search("build/tools/mtmd");
+        add_search("build/common");
+    }
+
+    // NON-FRAGILE LINK CONTRACT. Before emitting a link directive for one of
+    // OUR cmake-built static libs, assert the archive actually exists in a
+    // search dir. Why this exists: link names are hardcoded target names that
+    // upstream can rename or restructure out from under us (the 2026 sync
+    // renamed `common` → `llama-common` + split off `llama-common-base`). A
+    // stale name otherwise surfaces ONLY as a cryptic `ld: library 'X' not
+    // found` at LINK time — which `cargo check` never reaches (it typechecks
+    // but does not link), so the break sails through local validation and
+    // dies in CI. A build.rs panic fires during `cargo check` too, converting
+    // a downstream link mystery into an upstream, named, actionable failure
+    // the instant the fork drifts. System libs (c++/stdc++/gomp) resolve from
+    // system paths and are NOT routed through here — only libs WE build.
+    let link_static = |name: &str, whole_archive: bool| {
+        let (prefix, ext) = if target_env == "msvc" {
+            ("", "lib")
+        } else {
+            ("lib", "a")
+        };
+        let filename = format!("{prefix}{name}.{ext}");
+        let present = search_dirs.iter().any(|d| d.join(&filename).exists());
+        assert!(
+            present,
+            "llama build.rs: expected static library `{name}` ({filename}) was not \
+             produced by the cmake build.\nSearched:\n{}\n\
+             The vendored llama.cpp most likely renamed or restructured this cmake \
+             target (the 2026 upstream sync renamed `common` → `llama-common`). \
+             Update the link names in core/llama/build.rs to match the new targets.",
+            search_dirs
+                .iter()
+                .map(|d| format!("  {}", d.display()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        if whole_archive {
+            println!("cargo:rustc-link-lib=static:+whole-archive={name}");
+        } else {
+            println!("cargo:rustc-link-lib=static={name}");
         }
     };
-    link_search("lib");
-    link_search("build/ggml/src");
-    link_search("build/src");
-    link_search("build/tools/mtmd");
-    link_search("build/common");
-    println!("cargo:rustc-link-lib=static=llama");
-    println!("cargo:rustc-link-lib=static=ggml");
-    println!("cargo:rustc-link-lib=static=ggml-base");
-    println!("cargo:rustc-link-lib=static=ggml-cpu");
+
+    link_static("llama", false);
+    link_static("ggml", false);
+    link_static("ggml-base", false);
+    link_static("ggml-cpu", false);
     // libmtmd: multimodal projector + image/audio encoder. Loaded via
     // mtmd_init_from_file(mmproj_path, model, params); produces image
     // tokens that get evaluated alongside text via mtmd_helper_eval_chunks.
-    // Depends on libcommon (string utils, base64 decoder).
-    println!("cargo:rustc-link-lib=static=mtmd");
-    println!("cargo:rustc-link-lib=static=common");
+    // Depends on llama-common (string utils, base64 decoder).
+    link_static("mtmd", false);
+    // Upstream (2026 sync) renamed the common utils lib `common` →
+    // `llama-common` and split off `llama-common-base` (build-info.cpp) to
+    // stop `libcommon.a` colliding with other packages' common libs.
+    // llama-common's arg/chat/sampling code calls build-info symbols in
+    // llama-common-base, so the dependent must precede the dependency for GNU
+    // ld's single-pass resolver.
+    link_static("llama-common", false);
+    link_static("llama-common-base", false);
     // GGML backends register via C++ static initializers inside the backend's
     // static archive. Without +whole-archive, ld --as-needed / dead_strip
     // drops the archive because nothing from the main llama archive directly
@@ -222,16 +286,16 @@ fn main() {
     //   Undefined symbols for architecture arm64:
     //     "_ggml_backend_blas_reg" in ggml-backend-reg.cpp.o
     if target_os == "macos" {
-        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-blas");
+        link_static("ggml-blas", true);
     }
     if cfg!(feature = "metal") && target_os == "macos" {
-        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-metal");
+        link_static("ggml-metal", true);
     }
     if cfg!(feature = "cuda") && target_os == "linux" {
-        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-cuda");
+        link_static("ggml-cuda", true);
     }
     if cfg!(feature = "vulkan") && target_os == "linux" {
-        println!("cargo:rustc-link-lib=static:+whole-archive=ggml-vulkan");
+        link_static("ggml-vulkan", true);
     }
 
     // C++ stdlib + OpenMP (llama.cpp CPU backend uses GOMP_parallel on Linux).

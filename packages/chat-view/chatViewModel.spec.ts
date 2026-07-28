@@ -24,6 +24,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   active: true,
   last_seen_ms: 0,
   vitals: {},
+  genes: [],
   ...over,
 });
 
@@ -114,6 +115,25 @@ describe('chatViewModel', () => {
     expect(vm.members[1]?.loadout).toBeUndefined();
     // all-empty fields collapse to no loadout — honest absent, not an empty strip.
     expect(vm.members[2]?.loadout).toBeUndefined();
+  });
+
+  // what this catches: gene NAMES (the label half of the numeric `genome`
+  // vital) project onto the VM only when the radiator reported any — an empty
+  // list (base model) and an older core omitting the field both read as
+  // absent, so the tile never draws fabricated gene labels.
+  it('projects gene names, omitting when empty or unreported', () => {
+    const vm = chatViewModel(
+      state({
+        roster: [
+          member({ member_id: 'a', genes: ['rust-hands', 'tool-fluency'] }),
+          member({ member_id: 'b', genes: [] }),
+          member({ member_id: 'c' }),
+        ],
+      }),
+    );
+    expect(vm.members[0]?.genes).toEqual(['rust-hands', 'tool-fluency']);
+    expect(vm.members[1]?.genes).toBeUndefined();
+    expect(vm.members[2]?.genes).toBeUndefined();
   });
 
   // what this catches: activeCount counts only present members — it drives the

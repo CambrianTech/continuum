@@ -198,6 +198,7 @@ mod tests {
             base_model_id: "x".into(),
             served_context_window: 8192,
             lanes: 1,
+            grid_overflow_lanes: 0,
             resident_models: 1,
             fits_on_gpu: fits,
             rationale: "test".into(),

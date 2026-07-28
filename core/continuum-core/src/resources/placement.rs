@@ -73,6 +73,17 @@ pub struct LaneDemand {
     pub kv_per_token: u64,
     pub compute_buffer: u64,
     pub tier: DemandTier,
+    /// ISOLATION POLICY. A hard, disruption-intolerant task (a benchmark exam, an academy
+    /// round) demands its OWN dedicated lane — never a co-tenant slot on a lane other
+    /// consumers are hammering. A shared slot STARVES it behind their turns (glass-boxed
+    /// 2026-07-21: a benchmark forked onto the live persona lane starved behind the woken
+    /// personas → empty/timeout, which looked like the model "spinning" but was the lane
+    /// being taken away mid-thought). When `true` and a fresh copy fits, [`plan_placement`]
+    /// spawns a DEDICATED lane even if the base is already resident; it falls back to sharing
+    /// only under real memory pressure (graceful on smaller hardware, never an OOM). Default
+    /// `false` → co-tenant/share as before (personas WANT to batch together — never forgotten).
+    /// This is the one-boolean policy the exam/academy flip; refine into a richer lease later.
+    pub isolate: bool,
 }
 
 impl LaneDemand {
@@ -128,6 +139,21 @@ pub enum Placement {
 pub fn plan_placement(capacity: u64, resident: &[ResidentLane], demand: &LaneDemand) -> Placement {
     let used: u64 = resident.iter().map(ResidentLane::footprint).sum();
     let free = capacity.saturating_sub(used);
+
+    // Rule 0 — ISOLATION POLICY. A hard task (exam/academy) that cannot tolerate disruption
+    // wants its OWN lane, never a co-tenant slot on a lane other consumers are hammering
+    // (which starves it). When a fresh copy fits, spawn a DEDICATED lane even though the base
+    // is already resident — the isolation IS the point, not weight-efficiency. If a fresh copy
+    // won't fit, fall through to Rule 1: share the resident base under memory pressure (never
+    // OOM), so this degrades gracefully. Non-isolated demands skip this entirely and share as
+    // before. See `LaneDemand::isolate`.
+    if demand.isolate {
+        if let Ok(reclaim) = plan_to_fit(free, demand.footprint(), resident, demand.tier) {
+            return Placement::SpawnLane { reclaim };
+        }
+        // A dedicated copy won't fit even after tiering down preemptible lanes → fall through:
+        // share the resident base if present, else the fresh-copy branch reports the CpuSpill.
+    }
 
     // Rule 1 — the base is ALREADY resident: share it. The only new physical cost is the
     // added slots' KV; the weights are not duplicated. Preferred whenever possible: it is
@@ -340,6 +366,7 @@ mod tests {
             kv_per_token: KV_PER_TOKEN,
             compute_buffer: COMPUTE,
             tier,
+            isolate: false,
         }
     }
 
@@ -412,6 +439,43 @@ mod tests {
         match plan_placement(capacity, &resident, &d) {
             Placement::CpuSpill { .. } => {}
             other => panic!("eval must not preempt Live — expected CpuSpill, got {other:?}"),
+        }
+    }
+
+    // what this catches: the ISOLATION POLICY — an `isolate` demand (an exam / academy round)
+    // gets its OWN dedicated lane even though the base is ALREADY resident, instead of a
+    // co-tenant slot that would starve it behind the resident lane's other consumers. This is
+    // the autonomic fix for the 2026-07-21 "benchmark forked onto the live lane and starved"
+    // incident — no `base_model_id` hand-holding needed. Non-isolated same-base demands still
+    // SHARE (proven by same_base_eval_shares_the_live_lane above).
+    #[test]
+    fn isolated_demand_spawns_dedicated_lane_even_when_base_resident() {
+        let capacity = 40 * GIB; // live ~17.5 GiB + a fresh exam copy ~16.25 GiB both fit
+        let resident = vec![lane("live", "devstral", 2, 8192, DemandTier::Live, true)];
+        let mut d = demand("devstral", 1, 8192, DemandTier::Eval);
+        d.isolate = true;
+        match plan_placement(capacity, &resident, &d) {
+            Placement::SpawnLane { reclaim } => {
+                assert!(reclaim.is_empty(), "plenty of room — no preemption to isolate");
+            }
+            other => panic!("isolated exam must get its OWN lane, got {other:?}"),
+        }
+    }
+
+    // what this catches: the isolation policy degrades GRACEFULLY — when a dedicated second copy
+    // won't fit, the isolate demand falls back to a co-tenant SHARE of the resident base rather
+    // than OOMing or spilling. Isolation is a preference, not a hard requirement; on smaller
+    // hardware the exam still runs (shared), it just isn't insulated from contention.
+    #[test]
+    fn isolated_demand_falls_back_to_share_under_memory_pressure() {
+        let capacity = 28 * GIB; // live ~17.5 GiB leaves ~10.5 free: a fresh ~16.25 copy won't
+                                 // fit, but the ~1.25 GiB share KV does.
+        let resident = vec![lane("live", "devstral", 2, 8192, DemandTier::Live, true)];
+        let mut d = demand("devstral", 1, 8192, DemandTier::Eval);
+        d.isolate = true;
+        match plan_placement(capacity, &resident, &d) {
+            Placement::ShareLane { lane_id, .. } => assert_eq!(lane_id, "live"),
+            other => panic!("under pressure the isolate demand must fall back to SHARE, got {other:?}"),
         }
     }
 

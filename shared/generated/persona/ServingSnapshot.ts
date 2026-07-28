@@ -52,4 +52,14 @@ served_context_window: number,
  * snapshot always carries the real lane count. `serde(default)` keeps older
  * persisted snapshots (lane-less) readable.
  */
-lanes: number, };
+lanes: number, 
+/**
+ * WHY nothing is serving, when the last reconcile ended Degraded — the
+ * spawn/probe failure reason, verbatim (e.g. a missing llama-server binary
+ * names its path here). `None` on healthy and never-attempted snapshots.
+ * Live repro 2026-07-24 (BigMama/Windows): the daemon planned correctly,
+ * spawn failed every tick, and `serving/status` showed only
+ * `active_model=null ready=false` — the reason was dropped on the floor,
+ * an operator-facing silent failure ([[fallbacks-are-illegal-fail-loud]]).
+ */
+degraded_reason?: string, };

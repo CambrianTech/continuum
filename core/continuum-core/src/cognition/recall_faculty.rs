@@ -713,6 +713,16 @@ fn provenance_prefix(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
         }
         EngramOrigin::Tool(_) => "you did",
         EngramOrigin::SelfReflection { .. } => "you reflected",
+        // An agent-authored lesson (agent-memory bridge): "you learned" for this
+        // agent's own memory, "learned" for a lesson another agent shared into the
+        // corpus. Not speech, so render_memory_line never quote-wraps it.
+        EngramOrigin::Agent(r) => {
+            if r.agent_peer_id == persona_id {
+                "you learned"
+            } else {
+                "learned"
+            }
+        }
     };
     format!("({who}, {age}) ")
 }
