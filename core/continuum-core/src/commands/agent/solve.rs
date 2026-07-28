@@ -209,8 +209,16 @@ impl AgentSolve {
     /// registry), so it runs inline OR spawned detached with the same code path.
     async fn solve_body(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
         let run_id = p.run_id.clone();
-        let persona_uuid = Uuid::parse_str(p.persona_id.trim())
-            .map_err(|_| CommandError::Invalid(format!("persona_id '{}' is not a UUID", p.persona_id)))?;
+        // Short-form persona ids resolve too (#164): rosters/benchmark harnesses DISPLAY
+        // 8-char short ids, so accept the id a caller was shown — a clean UUID passes
+        // straight through, a short/mistyped form expands against the live persona registry
+        // (the ONE shared id_resolve primitive), instead of failing "is not a UUID".
+        let persona_uuid = crate::id_resolve::resolve(
+            p.persona_id.trim(),
+            &crate::persona::card::ids(),
+            "persona",
+        )
+        .map_err(CommandError::Invalid)?;
         let workspace = p.workspace.trim().to_string();
         if !std::path::Path::new(&workspace).is_dir() {
             return Err(CommandError::Invalid(format!(
