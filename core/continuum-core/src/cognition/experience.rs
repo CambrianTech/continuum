@@ -642,7 +642,8 @@ mod tests {
             last_accessed_at: None,
             layer: None,
             relevance_score: None,
-        }
+            origin_node: None,
+            origin_seq: None,        }
     }
 
     // What this catches: THE THIRD AXIS. A lesson another agent hands over (BigMama's
