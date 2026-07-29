@@ -67,6 +67,43 @@ run here). Fix this first — it has blocked every build/test all session.
 4. Expose `upload_expert`/slot API; drive residency from our ServingExpertPager.
 5. Measure hot-set hit-rate + tok/s on K3 IQ2_XXS; iterate to par ([[K3-PAGING-DIAGNOSIS]]).
 
+## Measurement — latency + values, measured never guessed (Joel 2026-07-29)
+
+The pager's admit/evict and the "best measured use of any resource" negotiation
+([[resource_vector]]) only work on REAL numbers — the 271GB OOM was a guess. So the
+mechanism is instrumented at every seam via `probe!` / `time_async!`
+([[RTOS-DEBUGGER-PROBES]]) + CUDA events, written through a `CaptureSink` (Noop
+default = zero hot-path cost, [[OBSERVABILITY-AS-SUBSTRATE]]), and fed back into
+policy. Nothing here is a constant.
+
+**Latency (per the fetch/compute seams):**
+- `expert_fetch_us` — `cudaEventElapsed` around each host→VRAM `cudaMemcpyAsync`.
+  With the expert byte size this YIELDS `pcie_h2d_bps` — the measured
+  [[resource_vector]] axis, not a hardcoded 25 GB/s. Closes that loop.
+- `expert_compute_us` — CUDA-event time of the `mul_mat_id` on the VRAM copies.
+- `miss_stall_us` — time a token blocked on a cold fetch NOT hidden by overlap
+  (the number the cross-layer prefetch must drive to zero).
+- `first_token_ms` / `token_latency_ms` — end-to-end prefill + per-decode-token.
+- `load_ms` — model load (the mechanical-D: vs NVMe gap we measured today).
+
+**Values (drive residency + the negotiation):**
+- `hot_set_hit_rate` — fraction of a token's activated experts already VRAM-resident.
+  **THE par metric**: 100% ⇒ full GPU speed ([[K3-PAGING-DIAGNOSIS]]). Measured from
+  the `ffn_moe_topk` observer vs slot-cache state.
+- `expert_value` — per-expert activation count + recency = `ExpertActivationProfile.hits`
+  (exists). Drives LRU AND sentinel-PGO residency.
+- `working_set_size` — distinct experts hit over a task window (proves the
+  working-set-fits-fast-tier thesis per task).
+- `co_activation` — experts firing together per token → clustering for co-placement.
+- `residency_value = expert_value / expert_fetch_us` — the value-per-cost the
+  negotiation prices each expert on (an `Ask` in [[resource_vector]]'s `grant_all`).
+
+**The loop:** measured `hot_set_hit_rate` + `tok/s` are the iterate signal
+([[benchmark-learning-flywheel]]); measured `expert_fetch_us`→`pcie_h2d_bps` and
+`expert_value` feed the negotiation so expert placement is priced on real cost, not
+a guess. Report every number; a silent cap (slot count, dropped prefetch) gets
+`log()`'d, never hidden.
+
 ## Then: better sharding + tailored quants (Joel's "go from there")
 Once GPU expert paging serves K3 on one box: our cross-node expert sharding
 (`node_content`→`ArtifactResidency`, experts split across grid nodes) and our
