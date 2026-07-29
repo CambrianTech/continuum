@@ -157,6 +157,46 @@ improves it"): prune the cold expert tail (rare experts fall back to shared/dens
 quant (hot IQ2/Q4, cold IQ1), per-domain adapter. The proof metric is tok/s on the WARM working set of
 a FOCUSED task — never cold-start random prompts. Never quote model size as the ceiling again.
 
+## The Windows load-wedge is a FORK-FIXABLE loader bug, not a wall (Joel 2026-07-29: "all upstream deps are forks")
+
+Glass-boxed on BigMama (5090, Win11): loading K3/GLM (>RAM MoE) wedges — ~15GB
+read, then **0 disk-read + 0 kernel-CPU + working-set collapse** = a hard kernel
+deadlock, NOT slow disk. Linux loads the same file (better working-set trim +
+`MAP_POPULATE`/`madvise`); Windows wedges.
+
+**Attack surface (ONE file, ours):** `core/vendor/llama.cpp/src/llama-mmap.cpp:533-598`,
+the `_WIN32` `llama_mmap::impl`:
+```cpp
+addr = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);   // ONE view over the ENTIRE file (570GB)
+pPrefetchVirtualMemory(GetCurrentProcess(), 1, &range, 0); // force-populate a huge range
+```
+It asks the Windows VM to demand-page a file larger than physical RAM through a
+single giant view; the working-set trim deadlocks. `--no-mmap` isn't the escape
+(it needs 570GB RAM to hold the experts) — demand-paging is exactly the mechanism
+that lets a >RAM model run, so the fix must PRESERVE demand-paging while dropping
+the whole-file view.
+
+**The fix IS the expert pager (convergence, not a detour):** stop leaning on OS
+mmap to page the 570GB expert blob; page experts OURSELVES via explicit chunked
+`ReadFile` (the `read_raw` 64MB-chunk path already at `llama-mmap.cpp:129-144`)
+under our own residency policy (`capacity/expert_*`). Windowed/segmented mmap for
+the dense layers, explicit read-based residency for experts. We must own explicit
+per-expert reads for the grid L4 tier ([[k3-pager-slice1-built]]) regardless — so
+fixing the Windows loader builds the moat.
+
+**Fork discipline (both directions):** track upstream K3 work (pwilkin PR #26185,
+already cherry-picked onto `k3-adopt`) + carry this Windows >RAM-MoE loader patch
+on top + PR the general-purpose half back to llama.cpp (they want Windows >RAM MoE
+loading too — we've upstreamed to candle/llama.cpp before). NOT a dead-end hack.
+
+**Scope note:** windowed mmap breaks the loader's single-contiguous-`addr()`
+contract used across `llama-model-loader.cpp` (tensor addresses = base + offset).
+That's real, focused surgery + a full engine rebuild — a dedicated effort, not a
+bottom-of-context patch. Lanes: BigMama owns this fork loader patch + the
+`node_content`→`ArtifactResidency` L4 map; M5 is the immediate K3 proof node
+(macOS mmap survives the giant view — loads K3 TODAY while the Windows fix lands)
++ the governor/fetch-from-peer loop.
+
 ## NO PRUNING — all experts stay available; it's cache levels + dynamic hosting (Joel 2026-07-29)
 
 CORRECTION to any "prune the cold tail" language above: we do NOT prune. Pruning removes experts =
