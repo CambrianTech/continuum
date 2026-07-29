@@ -92,6 +92,31 @@ discipline (#1584) is the law. A learning loop on a lying instrument optimizes t
 4. **Dream-forge consumes eval-fails** (sentinel slice 4 + gap 3) — the loop closes; idle GPU learns.
 5. **Held-out discipline + AttnRes stochastic-drop training** (gap 3) — generalization, not memorization.
 
+## The catalog IS the curriculum (in-repo, accumulating, per-persona LoRA)
+(Joel, 2026-07-28: "we will accumulate this as a catalog we support in repo, so we can run and learn
+from them — continuous LoRA persona.")
+
+The benchmark catalog (`known_benchmarks()` + the `docs/genome/*.jsonl` eval sets) is not a test
+directory — it is a **versioned curriculum that ships in the repo**. Each runnable collection is
+simultaneously:
+- a **proving instrument** (run it → a chart number, held-out), and
+- a **training corpus** (its graded failures → per-persona LoRA gradient).
+
+Because it lives in-repo, the curriculum is reproducible, diffable, and grows monotonically: every new
+runnable bench (like `livecodebench-rs` today) permanently widens both what we can prove AND what the
+personas can learn from. The loop, per persona:
+```
+persona attempts catalog bench → grader → PASS proves / FAIL → eval-fail datum
+    → dream-forge trains a per-persona LoRA on the failure cluster (idle GPU)
+    → validate on the SAME bench held-out shard → keep adapter if it improves, roll back if not
+    → the being is measurably better at that bench next run — permanently, on its own genome
+```
+This is where the flywheel meets the genome: the LoRA the being trains from the catalog is paged like
+any other skill ([[continuum-substrate-already-built]] genome tiers), replicated by persona-RAID
+([[restarts-are-commonplace]]), and shareable to peers ([[being-axis-shareable-learning]]). One
+persona's hard-won adapter on `swe-bench-lite` becomes a paged skill any peer can borrow. The catalog
+accumulates in the repo; the *learning from it* accumulates in the genome.
+
 ## Why this is the whole thing
 It unifies every session thread: the grid (distribution), the benchmark suite (signal), sentinel
 plasticity (the update), AttnRes (generalization), persona-RAID (the being that persists across the
