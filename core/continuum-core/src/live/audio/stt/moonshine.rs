@@ -94,7 +94,7 @@ impl MoonshineStt {
 
     /// Search directories for model files
     fn model_search_dirs() -> Vec<PathBuf> {
-        let mut dirs = vec![PathBuf::from("models/moonshine")];
+        let mut dirs = vec![crate::live::audio::model_root::voice_model_path("moonshine")];
         if let Some(data_dir) = dirs::data_dir() {
             dirs.push(data_dir.join("moonshine"));
         }
@@ -150,7 +150,7 @@ impl MoonshineStt {
         clog_warn!("Moonshine: No model files found. Download from:");
         clog_warn!("  https://huggingface.co/UsefulSensors/moonshine");
         clog_warn!("  Place onnx/tiny/ contents in: models/moonshine/tiny/");
-        PathBuf::from("models/moonshine/tiny")
+        crate::live::audio::model_root::voice_model_path("moonshine/tiny")
     }
 
     fn dir_has_all_files(dir: &Path) -> bool {

@@ -114,7 +114,7 @@ impl OrpheusTts {
 
     /// Search directories for model files
     fn model_search_dirs() -> Vec<PathBuf> {
-        let mut dirs = vec![PathBuf::from("models/orpheus")];
+        let mut dirs = vec![crate::live::audio::model_root::voice_model_path("orpheus")];
         if let Some(data_dir) = dirs::data_dir() {
             dirs.push(data_dir.join("orpheus"));
         }
@@ -153,7 +153,7 @@ impl OrpheusTts {
         clog_warn!("  Model: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft");
         clog_warn!("  SNAC:  https://huggingface.co/hubertsiuzdak/snac_24khz");
         clog_warn!("  Place files in: models/orpheus/");
-        PathBuf::from("models/orpheus")
+        crate::live::audio::model_root::voice_model_path("orpheus")
     }
 
     fn dir_has_required_files(dir: &Path) -> bool {
