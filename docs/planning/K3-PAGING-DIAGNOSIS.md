@@ -156,3 +156,24 @@ resident, cold evict. The pager just makes it deterministic + prefetched.
 improves it"): prune the cold expert tail (rare experts fall back to shared/dense path), asymmetric
 quant (hot IQ2/Q4, cold IQ1), per-domain adapter. The proof metric is tok/s on the WARM working set of
 a FOCUSED task — never cold-start random prompts. Never quote model size as the ceiling again.
+
+## NO PRUNING — all experts stay available; it's cache levels + dynamic hosting (Joel 2026-07-29)
+
+CORRECTION to any "prune the cold tail" language above: we do NOT prune. Pruning removes experts =
+diminished MODEL (lost capability). Instead, ALL 896 experts stay AVAILABLE — the whole game is WHICH
+CACHE LEVEL each expert sits at, set dynamically by demand:
+
+```
+cache levels (fastest -> slowest, ALL experts reachable at one of them):
+  VRAM (hot working set)  ->  RAM (warm)  ->  FLASH (cold-ready)  ->  PEER RAM over grid (dynamic host)  ->  mechanical archival
+```
+
+- **Full quality always.** A rare expert fires SLOWER (deeper cache level), never MISSING. K3 stays
+  complete. Speed = cache-hit-rate on the hot working set; capability = full, unconditionally.
+- **Dynamic hosting** = the grid distributes experts across nodes and the router finds each at its
+  current cache level; residency shifts with demand (sentinel-PGO) and with which peers are up.
+- **Adding a peer does NOT unlock capability (it's already full) — it moves more experts into a FAST
+  tier** (a peer's RAM as a cache level). So the model is always whole; the grid makes it faster.
+  "Works now at full quality, noticeably faster as you plug in nodes" — that is the adoption driver.
+- Therefore the compensation-LoRA/prune framing above is DEMOTED to an optional speed mode, NOT the
+  path. The path is all-experts-available, cached by level, dynamically hosted.
