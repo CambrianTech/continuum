@@ -15,6 +15,29 @@ The ONLY way paging diverges from full-in-memory is a bug that *skips* an expert
 approximates on a cold miss). We do not do that. **So "closer to par" is 100% a SPEED question, never
 an accuracy one.** Every lever below is a latency lever.
 
+
+## CORRECTED tiering (Joel 2026-07-29): mechanical disk is NEVER a live fault source
+
+The hot path must never fault mechanical-HDD -> VRAM. The correct hierarchy:
+
+```
+VRAM (hot, GPU) <- RAM (warm) <- FLASH/NVMe (cold-READY cache) <- mechanical HDD (archival, staged-FROM)
+```
+
+- **FLASH/NVMe is THE cold cache layer** — experts live here "ready to go." A cold fault
+  reads from flash (fast), not spinning disk.
+- **Mechanical HDD is bulk archival only.** Experts get PREFETCHED mechanical->flash in the
+  BACKGROUND (the cross-layer predictor's job) so they are resident in flash before the router
+  needs them. A live hot-path read that reaches spinning disk = the prefetch FAILED, not normal.
+- **Hardware implication:** flash is ARCHITECTURAL, not optional, for any model that exceeds
+  VRAM+RAM. With only a mechanical drive, the model MUST fit VRAM+RAM entirely (no live faulting)
+  or it is unusable regardless of pager quality. (This box: C: NVMe full, D: mechanical -> K3 has
+  no ready-cache tier here; needs a flash drive, OR grid-sharding pools peers' RAM as the warm
+  tier over LAN which for SPARSE MoE beats mechanical disk, OR compaction to fit VRAM+RAM.)
+- The `expert_residency` cold tier + `disk-manager` (multi-drive offload) must therefore target
+  FLASH for the ready-cache and treat mechanical as stage-from archival, with a background
+  mechanical->flash promotion path, never a mechanical->VRAM fault path.
+
 ## The speed regimes (where the tok/s actually goes)
 
 Per token K3 activates ~8 of 896 experts (~1.8%), ≈27–32 GB of expert reads/token @4bit if every one
@@ -24,7 +47,8 @@ is a cold disk miss. Placement decides which regime each activated expert lands 
 |---|---|---|---|
 | **hot** | GPU-resident | 0 (never faults) | full GPU speed = PAR |
 | **warm** | RAM → GPU stream/token | PCIe ~25 GB/s → ~24 ms/600MB expert | ~5 tok/s if all 8 warm |
-| **cold** | disk → RAM/miss | SSD 1–5 GB/s → 120–600 ms | 0.3–0.5 tok/s (unusable) |
+| **cold** | FLASH/NVMe → RAM (ready-cache) | NVMe 3–7 GB/s → ~90–200 ms | usable; the real cold tier |
+| **archival** | mechanical HDD | NEVER in hot path — staged->flash in background | prefetch-failed if hit live |
 | **relaunch churn** (slice-1) | full model reload on set change | seconds, one-shot | stalls the stream |
 
 **The whole game: get as many of each token's 8 activated experts into the `hot` regime as possible,
