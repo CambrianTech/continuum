@@ -22,6 +22,7 @@ import {
   Continuum,
   WebSocketTransport,
   StateConnection,
+  IndexedDbStateStorage,
   buildCommandUri,
   type StateEnvelope,
 } from '@continuum/sdk-typescript';
@@ -137,11 +138,24 @@ async function main(): Promise<void> {
   setStatus(`connecting to ${config.wsUrl} …`);
 
   // READ socket: subscribe to chat state, merge each envelope into the widget.
+  // Durability + reconnection are POSITRON-inherent (StateConnection owns them,
+  // adapter-driven): cached state paints instantly on boot, live envelopes
+  // write through to IndexedDB, and a core reboot shows a visible
+  // "reconnecting" status over last-known state — the app holds ZERO resilience
+  // logic ([[one-logical-decision-one-place]]).
   let gotState = false;
-  const state = new StateConnection(scopedWsUrl);
+  const state = new StateConnection(scopedWsUrl, undefined, {
+    storage: new IndexedDbStateStorage(),
+  });
+  state.onStatus((status, detail) => {
+    if (status === 'live') {
+      banner.remove();
+      gotState = true;
+      return;
+    }
+    setStatus(`state feed ${status}${detail ? ` — ${detail}` : ''}`, status === 'reconnecting');
+  });
   state.on(CHAT_KIND, (envelope: StateEnvelope) => {
-    gotState = true;
-    banner.remove();
     latest = chatStateFromEnvelope(envelope);
     widget.state = latest;
   });
@@ -165,19 +179,11 @@ async function main(): Promise<void> {
   state.onStreamDelta((delta) => {
     widget.applyStreamDelta(delta);
   });
-  state.onClose((reason) => {
-    // Never silently freeze: a dropped state feed is a stale-UI signal.
-    console.error(`chat state feed closed: ${reason}`);
-    setStatus(`state feed CLOSED: ${reason}`, true);
-  });
-  try {
-    await state.connect();
-    setStatus(`socket open to ${config.wsUrl} — awaiting first room snapshot…`);
-  } catch (err) {
-    setStatus(`socket connect FAILED: ${err instanceof Error ? err.message : String(err)}`, true);
-    throw err;
-  }
-  // Opened but no snapshot ⇒ a subscribe/snapshot problem, not a connect one.
+  // Connect: never throws with reconnect enabled — a dead core means cached
+  // state + a loud `reconnecting` chip, and the SDK self-heals when it returns.
+  await state.connect();
+  // Opened but no snapshot ⇒ a subscribe/snapshot problem, not a connect one
+  // (the status chip would misleadingly read `connecting` forever without this).
   setTimeout(() => {
     if (!gotState) {
       setStatus(`connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`, true);
