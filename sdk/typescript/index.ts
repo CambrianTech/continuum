@@ -39,9 +39,14 @@ export type {
   StateSink,
   StateSubscription,
   StateConnectOptions,
+  StateConnectionOptions,
+  StateFeedStatus,
+  StateFeedStatusSink,
   StreamDelta,
   StreamDeltaSink,
 } from './StateConnection';
+export { MemoryStateStorage, IndexedDbStateStorage } from './StateStorage';
+export type { StateStorageAdapter, PersistedEnvelope } from './StateStorage';
 export type {
   StateLayer,
   KindRevision,
