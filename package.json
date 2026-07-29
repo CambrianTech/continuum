@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "start": "bash tools/scripts/start-server.sh",
+    "ui": "bash tools/scripts/open-ui.sh",
     "dev:web": "npm run dev -w @continuum/web",
     "dev:desktop": "npm run dev -w @continuum/desktop",
     "build:clients": "npm run build -w @continuum/sdk-typescript && npm run build -w @continuum/web",
