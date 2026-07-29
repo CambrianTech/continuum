@@ -375,6 +375,51 @@ if core_bin_is_stale; then
   echo "✓ #194: forced a fresh continuum-core-server rebuild — binary now reflects source"
 fi
 
+# ── LiveKit avatar rail (voice/video calls) ──────────────────────────
+# The persona's talking avatar is Bevy-rendered and published to a LiveKit room via
+# the livekit-bridge sidecar; the browser's "Go live" subscribes to that room. Neither
+# the SFU nor the bridge was started with the core, so "Go live" produced no avatar —
+# glass-boxed 2026-07-28: LiveKit :7880 down → get_or_create_agent fails → no video pump,
+# and only a native test-pattern reached clients. Bring the rail up here, idempotently
+# and NON-FATALLY: a missing rail leaves the core fully functional (chat/cognition/
+# serving); only live A/V is unavailable. Sidecar because it links webrtc-sys, which we
+# keep OUT of the core process ([[gpu-is-non-negotiable...]] resource isolation).
+start_livekit_rail() {
+  case "$(uname -s)" in Darwin|Linux) ;; *) return 0 ;; esac  # bridge speaks a unix-socket
+  local LK_LOG_DIR="$HOME/.continuum/logs"; mkdir -p "$LK_LOG_DIR"
+  local SOCK="$HOME/.continuum/sockets/livekit-bridge.sock"; mkdir -p "$(dirname "$SOCK")"
+  local LK_URL="${LIVEKIT_URL:-ws://localhost:7880}"
+  # 1) SFU. Dev creds (devkey/secret) match the bridge's defaults. Missing binary = warn+skip.
+  if command -v livekit-server >/dev/null 2>&1; then
+    if ! nc -z 127.0.0.1 7880 2>/dev/null; then
+      echo "▶ livekit-server (avatar SFU) starting on :7880"
+      nohup livekit-server --dev --bind 127.0.0.1 >"$LK_LOG_DIR/livekit-server.log" 2>&1 &
+      for _ in $(seq 1 20); do nc -z 127.0.0.1 7880 2>/dev/null && break; sleep 0.3; done
+    fi
+  else
+    echo "⚠ livekit-server not installed — live avatar/voice unavailable (tools/scripts/install-livekit.sh)"
+    return 0
+  fi
+  # 2) livekit-bridge sidecar — ALWAYS release (a stable, rarely-changing sidecar that
+  #    benefits from optimization and only builds once, independent of the core's debug/
+  #    release profile). Started BEFORE the core so the socket its bridge_client dials
+  #    exists at boot.
+  local BRIDGE_BIN="$CARGO_TARGET_DIR/release/livekit-bridge"
+  if [ ! -x "$BRIDGE_BIN" ]; then
+    echo "▶ building livekit-bridge sidecar (release — links webrtc-sys, first build is slow)…"
+    cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release \
+      || { echo "⚠ livekit-bridge build failed — live avatar/voice unavailable"; return 0; }
+  fi
+  if ! pgrep -f "livekit-bridge .*${SOCK}" >/dev/null 2>&1; then
+    echo "▶ livekit-bridge sidecar starting ($SOCK → $LK_URL)"
+    rm -f "$SOCK"
+    LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}" LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET:-secret}" \
+      nohup "$BRIDGE_BIN" "$SOCK" --livekit-url "$LK_URL" >"$LK_LOG_DIR/livekit-bridge.log" 2>&1 &
+    for _ in $(seq 1 20); do [ -S "$SOCK" ] && break; sleep 0.3; done
+  fi
+}
+start_livekit_rail
+
 # Now the new binary is ready: stop the old core (if any) and take the socket.
 stop_existing_core
 
