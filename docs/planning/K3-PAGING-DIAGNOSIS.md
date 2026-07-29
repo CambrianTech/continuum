@@ -134,3 +134,25 @@ llama.cpp native `-ncmoe N` / `-ot` places the first N MoE layers' experts on CP
 NO relaunch churn — the KTransformers steady-state. For a first serving K3: put as many expert layers
 on GPU as the budget fits, the rest CPU-RAM. Stable, predictable, and the honest baseline the dynamic
 pager must BEAT to justify its complexity.
+
+## THE reframe that kills the defeatism (Joel 2026-07-29): working set, not model size
+
+The wall is NOT "350GB model > 63GB RAM." That treats all 896 experts as equally likely — WRONG.
+Expert activation is a POWER LAW; only ~8-16/896 fire per token, and a FOCUSED task reuses a NARROW
+subset. What must live in fast memory is the **working set** (distinct experts a task actually hits),
+not the model. Math on this box (~32GB VRAM + ~60GB usable RAM = ~92GB fast tier, K3 IQ2 ~0.4GB/expert):
+
+| Task working set | Experts | Size | Fits ~92GB fast tier? |
+|---|---|---|---|
+| 15% of 896 | 134 | 54GB | **YES** |
+| 25% of 896 | 224 | 90GB | **YES** |
+| 35% of 896 | 313 | 125GB | no (spill / prune) |
+
+**So a focused task whose working set is ≤~230 experts runs ENTIRELY from RAM/VRAM = tens of tok/s,
+on ONE box, TODAY.** The OS page cache does this for free with `-ncmoe`+mmap: hot experts stay
+resident, cold evict. The pager just makes it deterministic + prefetched.
+
+**Diminished forms that shrink the working set to guarantee the fit** (all "works + adding peers
+improves it"): prune the cold expert tail (rare experts fall back to shared/dense path), asymmetric
+quant (hot IQ2/Q4, cold IQ1), per-domain adapter. The proof metric is tok/s on the WARM working set of
+a FOCUSED task — never cold-start random prompts. Never quote model size as the ceiling again.
