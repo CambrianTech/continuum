@@ -344,6 +344,11 @@ pub struct CallManager {
     audio_router: AudioRouter,
     /// Model capability registry for looking up what models can do
     capability_registry: Arc<ModelCapabilityRegistry>,
+    /// Stable per-(call,persona) mixer handle for the native-plane voice tee (#193
+    /// audio convergence). A persona is not a native WS participant — she publishes
+    /// to LiveKit — so `push_persona_audio` registers her as a virtual AI sender in
+    /// the call's mixer under this handle. Keyed `"{call_id}\0{user_id}"`.
+    persona_audio_handles: RwLock<HashMap<String, Handle>>,
 }
 
 impl CallManager {
@@ -355,6 +360,7 @@ impl CallManager {
             video_source_shutdowns: RwLock::new(HashMap::new()),
             audio_router: AudioRouter::new(),
             capability_registry: Arc::new(ModelCapabilityRegistry::new()),
+            persona_audio_handles: RwLock::new(HashMap::new()),
         }
     }
 
@@ -860,6 +866,54 @@ impl CallManager {
         };
         // No receivers is fine (call open by nobody) — same contract as push_video.
         let _ = video_tx.send((source_handle, user_id.to_string(), frame.to_bytes()));
+    }
+
+    /// Tee a persona's synthesized voice into a call's native audio plane (#193 audio
+    /// convergence — the sibling of [`push_avatar_frame`]).
+    ///
+    /// A persona speaks via LiveKit (`speak_in_call` → bridge), but native clients
+    /// (positron web "Go live", the glass-box harness) read the native mixer — which,
+    /// with only a lone listener, plays HOLD MUSIC. This registers the persona as a
+    /// virtual AI sender in the call's mixer and dumps her TTS PCM into its AI ring
+    /// buffer; the audio loop then pulls it frame-by-frame and broadcasts it, and her
+    /// presence makes the call no longer "alone" so the hold-music fill stops. Render
+    /// once, two sinks: the SAME synthesized samples go to LiveKit and here.
+    ///
+    /// Self-healing: the per-(call,persona) handle is stable across utterances, and if
+    /// the call was torn down + recreated (mixer no longer knows the handle) the
+    /// persona is re-registered. No-op when no native Call exists yet.
+    pub async fn push_persona_audio(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        display_name: &str,
+        samples: Vec<i16>,
+    ) {
+        let call = {
+            let calls = self.calls.read().await;
+            match calls.get(call_id) {
+                Some(c) => c.clone(),
+                None => return, // no native Call — nobody has this call open
+            }
+        };
+        let key = format!("{call_id}\0{user_id}");
+        let handle = {
+            let mut handles = self.persona_audio_handles.write().await;
+            *handles.entry(key).or_insert_with(Handle::new)
+        };
+        let mut call = call.write().await;
+        // Ensure the persona is a live AI participant in THIS mixer (self-heal across
+        // call recreation). AI participants carry a ring buffer sized for whole
+        // utterances dumped at once — exactly this path.
+        if call.mixer.find_user_id_by_handle(&handle).is_none() {
+            call.mixer.add_participant(crate::live::audio::mixer::ParticipantStream::new_ai(
+                handle,
+                user_id.to_string(),
+                display_name.to_string(),
+            ));
+        }
+        // Dump the whole utterance; the audio loop drains it frame-by-frame at cadence.
+        let _ = call.push_audio(&handle, samples);
     }
 
     /// Broadcast a CallMessage to all participants in a call (avatar updates, etc.)
