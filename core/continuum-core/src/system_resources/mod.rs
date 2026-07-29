@@ -12,6 +12,7 @@
 //! Uses the `sysinfo` crate for cross-platform (macOS/Linux/Windows) monitoring.
 
 pub mod concurrency;
+pub mod cold_offload;
 pub mod disk_eviction;
 pub mod disk_pressure;
 pub mod disk_reporters;
