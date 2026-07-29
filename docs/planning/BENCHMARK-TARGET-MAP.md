@@ -10,6 +10,12 @@ K3's local numbers are comparable to the published charts. Companion to
 - **CATALOGUED** — named in `known_benchmarks()` with `eval_set: None`. A placeholder that reserves
   the name + description; needs a runner + dataset to become runnable. ~18 today.
 
+## Target: ALL 14 chart benches (Joel: "we will want to target all of these")
+Coding (6): DeepSWE · Terminal Bench 2.1 · FrontierSWE · Program Bench · Kimi Code Bench 2.0 · SWE Marathon.
+General Agents (6): GDPval-AA v2 Elo · JobBench · AA-Briefcase Elo · SpreadsheetBench 2 · Automation Bench · BrowseComp.
+Visual Agents (2): CharXiv (RQ) w/ tool · Zerobench w/ tool (Pass@5).
+Each row below is one target; "RUNNER TYPE" names the harness class it needs (several benches share one harness → build the harness once, unlock many).
+
 ## The map (chart bench → our proxy → runnable target)
 
 | K3 chart bench | What it measures | Our RUNNABLE proxy today | Runnable TARGET to build (catalogued now) |
@@ -21,10 +27,27 @@ K3's local numbers are comparable to the published charts. Companion to
 | **Automation Bench**, **BrowseComp**, JobBench | agent driving real apps/web | — (none) | `webarena`, `appworld` |
 | SpreadsheetBench 2 | spreadsheet manipulation | — (none) | (no catalog entry — add `spreadsheet-bench`) |
 | **CharXiv**, Zerobench (visual) | chart/figure reasoning w/ vision | `webdev-rs` (perception grader, UI-adjacent) | `design2code` (screenshot→HTML) |
-| GDPval, AA-Briefcase (general Elo) | broad agentic knowledge work | — (none) | (Elo-style; needs opponent-pool harness) |
+| GDPval-AA, AA-Briefcase (general Elo) | broad agentic knowledge work | — (none) | (Elo-style; needs opponent-pool harness) |
+| **JobBench** | applying for / doing job tasks | — (none) | agentic-app harness (shares webarena runner) |
+| Kimi Code Bench 2.0 | mixed practical coding (internal) | `coder-eval`, `humaneval-rs`, `livecodebench-rs` | — (proxied; no public dataset) |
 
 **Bold** = benches where Kimi K3 tops or near-tops the chart — our highest-value targets, because
 that's where reproducing the number locally is the strongest proof.
+
+## Runner-type consolidation (build the harness once → unlock many)
+The 14 chart benches need only **5 harness classes** — this is the actual build backlog:
+1. **Rust-graded single-file** (LIVE): Program Bench, Kimi Code Bench, partial FrontierSWE-tier →
+   `livecodebench-rs` ✓ (built today), `frontier-rs`, `hard-rs`. **Extend by authoring more tasks.**
+2. **Repo-patch / SWE harness** (M5 spine #1945, one seam open): DeepSWE, FrontierSWE, SWE Marathon,
+   SWE-Lancer → `swe-bench-lite/verified`. **Highest leverage: 3 chart benches from one runner.**
+3. **Real-shell harness**: Terminal Bench 2.1 → `terminal-bench`. The persona's tool-executor already
+   runs shell; the runner is the task-loader + pass/fail on final state.
+4. **Agentic-app harness** (heaviest): Automation Bench, BrowseComp, JobBench, AppWorld, GDPval,
+   AA-Briefcase → `webarena`, `appworld`. Needs real app servers + the doer-toolset (beta plan).
+   Elo variants (GDPval/Briefcase) add an opponent-pool scorer on top.
+5. **Vision-tool harness**: CharXiv, Zerobench, SpreadsheetBench 2, Design2Code → the eye-node
+   (`perception/observe`) already grades `webdev-rs`; extend to chart/figure QA + spreadsheet ops.
+   K3 is vision-native (the fork's K3 processor strips vision today; re-enabling it is a later lane).
 
 ## Priority to make runnable (highest proof-value first)
 1. **`swe-bench-lite`** — the SWE-family anchors THREE chart benches (DeepSWE/FrontierSWE/SWE-Marathon)
