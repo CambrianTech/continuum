@@ -371,15 +371,24 @@ impl CallManager {
             self.start_audio_loop(call_id.to_string(), call.clone())
                 .await;
 
-            // Auto-start test video source (proves video plumbing works)
-            // TODO: Remove when real video sources (webcam, bgfx-rs, avatar API) are connected
-            let shutdown_tx = Self::start_test_video_source_for(&call, call_id);
+            // Real video sources are now connected (#193/#172): the avatar pump tees
+            // each persona's Bevy frame into this call's video plane via
+            // `push_avatar_frame`. The SMPTE test pattern is retired to an opt-in
+            // debug affordance — it used to auto-start and mask the real avatar with
+            // 160x120 color bars for every native client. Set CONTINUUM_CALL_TEST_PATTERN=1
+            // to bring it back for plumbing checks on a call with no real source.
+            if crate::config_env::read("CONTINUUM_CALL_TEST_PATTERN")
+                .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
             {
-                let mut shutdowns = self.video_source_shutdowns.write().await;
-                shutdowns
-                    .entry(call_id.to_string())
-                    .or_default()
-                    .push(shutdown_tx);
+                let shutdown_tx = Self::start_test_video_source_for(&call, call_id);
+                {
+                    let mut shutdowns = self.video_source_shutdowns.write().await;
+                    shutdowns
+                        .entry(call_id.to_string())
+                        .or_default()
+                        .push(shutdown_tx);
+                }
             }
 
             call
@@ -801,6 +810,56 @@ impl CallManager {
                 }
             }
         }
+    }
+
+    /// Tee a pre-rendered avatar RGBA frame into a call's native video plane (#193/#172).
+    ///
+    /// A persona is not a native WS participant — she publishes to LiveKit via the
+    /// bridge. But the SAME Bevy-rendered frame the avatar pump sends to LiveKit is
+    /// tee'd here so native clients (positron web "Go live", the glass-box harness)
+    /// see her real face instead of the placeholder test pattern. Render once, two
+    /// sinks — no second Bevy slot, no parallel renderer.
+    ///
+    /// The caller (the pump) owns a stable `source_handle` (created once per pump)
+    /// so mix-minus filtering is consistent across frames, and a monotonic
+    /// `sequence` + `timestamp_ms` for the frame header. `user_id` is the persona's
+    /// uuid — the label native clients key their tile on. No-op when no native Call
+    /// exists yet (no WS client has the call open) or nobody is subscribed.
+    pub async fn push_avatar_frame(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        source_handle: Handle,
+        sequence: u32,
+        timestamp_ms: u32,
+        rgba: &[u8],
+        width: u16,
+        height: u16,
+    ) {
+        let call = {
+            let calls = self.calls.read().await;
+            match calls.get(call_id) {
+                Some(c) => c.clone(),
+                None => return, // no native Call — nobody has this call open
+            }
+        };
+        let video_tx = {
+            let call = call.read().await;
+            call.video_tx.clone()
+        };
+        let header = crate::live::types::VideoFrameHeader {
+            width,
+            height,
+            pixel_format: crate::live::types::VideoPixelFormat::RGBA8,
+            timestamp_ms,
+            sequence,
+        };
+        let frame = crate::live::types::VideoFrame {
+            header,
+            data: rgba.to_vec(),
+        };
+        // No receivers is fine (call open by nobody) — same contract as push_video.
+        let _ = video_tx.send((source_handle, user_id.to_string(), frame.to_bytes()));
     }
 
     /// Broadcast a CallMessage to all participants in a call (avatar updates, etc.)

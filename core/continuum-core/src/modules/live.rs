@@ -37,6 +37,10 @@ const VOICE_RESPONSE_FIELD_RESPONDER_IDS: &str = "responder_ids";
 pub struct VoiceState {
     pub voice_service: Arc<VoiceService>,
     pub livekit_manager: Arc<LiveKitAgentManager>,
+    /// Native call plane (call_server WS 8790). The avatar pump tees each Bevy
+    /// frame here so native clients see the real face (#193/#172) — not just
+    /// LiveKit subscribers.
+    pub call_manager: Arc<crate::live::transport::call_server::CallManager>,
     pub audio_pool: Arc<AudioBufferPool>,
     pub resource_lifecycle: Arc<AudioResourceLifecycle>,
     /// Track active session IDs to make register-session idempotent.
@@ -52,12 +56,14 @@ impl VoiceState {
     pub fn new(
         voice_service: Arc<VoiceService>,
         livekit_manager: Arc<LiveKitAgentManager>,
+        call_manager: Arc<crate::live::transport::call_server::CallManager>,
         audio_pool: Arc<AudioBufferPool>,
     ) -> Self {
         let resource_lifecycle = Arc::new(AudioResourceLifecycle::new());
         Self {
             voice_service,
             livekit_manager,
+            call_manager,
             audio_pool,
             resource_lifecycle,
             active_sessions: std::sync::Mutex::new(HashSet::new()),
@@ -294,6 +300,7 @@ impl ServiceModule for VoiceModule {
                     crate::live::avatar::allocate_dynamic_batch(&batch);
 
                     let agent_manager = self.state.livekit_manager.clone();
+                    let native_call_manager = self.state.call_manager.clone();
                     let agent_call_id = session_id.to_string();
                     tokio::spawn(async move {
                         // Wait for STT listener + ambient to finish connecting
@@ -323,12 +330,14 @@ impl ServiceModule for VoiceModule {
                                     // guard → recycle slot) when the agent is removed at
                                     // session end. See `spawn_avatar_video_pump`.
                                     let pump_manager = agent_manager.clone();
+                                    let pump_call_manager = native_call_manager.clone();
                                     let pump_call_id = agent_call_id.clone();
                                     let pump_user_id = user_id.clone();
                                     let pump_display = display_name.clone();
                                     tokio::spawn(async move {
                                         if let Err(e) = crate::live::avatar::spawn_avatar_video_pump(
                                             pump_manager,
+                                            pump_call_manager,
                                             pump_call_id,
                                             pump_user_id,
                                             pump_display.clone(),

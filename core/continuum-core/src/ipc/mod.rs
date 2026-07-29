@@ -1510,6 +1510,7 @@ pub fn start_server(
     let voice_state = Arc::new(VoiceState::new(
         voice_service.clone(),
         livekit_manager.clone(),
+        call_manager.clone(),
         audio_pool.clone(),
     ));
     // Voice joins the resource authority as a peer consumer (#56): under VRAM
