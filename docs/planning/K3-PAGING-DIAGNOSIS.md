@@ -75,6 +75,36 @@ stalling. (llama.cpp CUDA streams.)
 Each step is a number, not a guess — the honest instrument ([[benchmark-learning-flywheel]]) applied to
 the pager itself.
 
+## THE adapter path — the smarter road to par (Joel: "Adapters")
+
+Paging 594 GB of full experts is the brute-force framing. The substrate's own plasticity gives a
+cheaper one, on two fronts:
+
+### A. Adapters as the paging UNIT (cheap to move)
+A full MXFP4 expert is ~600 MB; a LoRA adapter for a skill is ~1–50 MB. The genome already **pages
+adapters** ([[continuum-substrate-already-built]] genome tiers). So the hot capability isn't only "the
+hot expert subset resident" — it's "the base model + the paged-in adapter for THIS task domain." Paging
+an adapter is 10–100× cheaper than paging an expert, and it's a warm-fault the substrate already does
+well. Frontend-code, chat, and vision each ride their own adapter, no 600 MB expert churn.
+
+### B. Compensation-LoRA — turn the 894-expert tail into a small adapter (the par lever)
+This is the [[sentinel-in-substrate]] §4.1.3.4 move applied to K3: **prune K3 to the hot expert subset
+that FITS VRAM, then train a small compensation LoRA on a held-out corpus that recovers the accuracy
+the pruned experts provided.** The result serves entirely in VRAM — NO paging churn, NO warm/cold
+faults, full GPU speed — and the compensation LoRA closes most of the accuracy gap to the full model.
+This converts "594 GB paging problem" into "a fits-in-VRAM subset + a ~tens-of-MB adapter." It is the
+same algorithm we ALREADY proved offline in `tools/scripts/compaction` (the Plasticity Compaction that
+produced the 19B) — the product is porting it to a DYNAMIC, per-domain compensation adapter K3 pages
+by task ([[moe-expert-paging-feasibility]]).
+
+**The synthesis:** paging (fault the real expert when needed, at-par output) and compensation-LoRA
+(prune + adapt, near-par at full speed) are the two ends of a dial. Cold-start / rare-domain → page the
+real expert (correctness). Hot domain → serve the pruned subset + compensation adapter (speed). The
+pager and the foundry are the same genome machinery; the adapter is the cheap currency between them.
+This is also where the benchmark flywheel closes: the compensation LoRA is TRAINED from the catalog's
+graded failures ([[benchmark-learning-flywheel]]) — the being learns the adapter that makes its pruned
+K3 match the full K3 on the exact tasks it's measured on.
+
 ## Startup default (fastest path to a serving K3 while we iterate)
 llama.cpp native `-ncmoe N` / `-ot` places the first N MoE layers' experts on CPU RAM, computed there,
 NO relaunch churn — the KTransformers steady-state. For a first serving K3: put as many expert layers
