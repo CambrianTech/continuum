@@ -34,6 +34,7 @@ pub mod grid_overflow;
 pub mod lease;
 pub mod model_residency;
 pub mod moe_serving;
+pub mod node_content;
 pub mod placement;
 pub mod recursion_depth;
 pub mod residency_detect;

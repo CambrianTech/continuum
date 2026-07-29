@@ -148,17 +148,55 @@ async fn airc_on_path() -> bool {
         .unwrap_or(false)
 }
 
+/// Probe attempts before declaring the substrate unresponsive. A single 5s shot
+/// is a coin flip on a loaded box: Windows process spawn alone can transiently
+/// eat seconds when the machine is compiling/converting/downloading (observed
+/// 2026-07-28 BigMama — the updated airc answered instantly when idle, yet the
+/// one-shot probe timed out mid-build and the core refused full-citizen boot).
+/// Retries stay BOUNDED (3 × deadline ≈ 15s worst case) — resilient to transient
+/// load, still fail-loud when airc is genuinely dead.
+const DISCOVERY_PROBE_ATTEMPTS: u32 = 3;
+
+/// How an `airc <subcommand>` probe failed — timeout (every attempt) vs spawn error.
+enum ProbeError {
+    TimedOut,
+    Io(String),
+}
+
+/// Run `airc <arg>` with the discovery deadline and bounded retries (see
+/// [`DISCOVERY_PROBE_ATTEMPTS`]). ONE probe implementation for every discovery
+/// subcommand — the retry-on-transient-stall policy lives here, not copy-pasted
+/// per call site.
+async fn probe_airc(arg: &str) -> Result<std::process::Output, ProbeError> {
+    for attempt in 1..=DISCOVERY_PROBE_ATTEMPTS {
+        let call = TokioCommand::new("airc").arg(arg).output();
+        match timeout(DISCOVERY_SUBPROCESS_DEADLINE, call).await {
+            Ok(res) => return res.map_err(|e| ProbeError::Io(e.to_string())),
+            Err(_) if attempt < DISCOVERY_PROBE_ATTEMPTS => {
+                warn!(
+                    attempt,
+                    "`airc {arg}` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+                     — retrying (transient spawn stall under load)"
+                );
+            }
+            Err(_) => {}
+        }
+    }
+    Err(ProbeError::TimedOut)
+}
+
+fn probe_timeout_msg(arg: &str) -> String {
+    format!(
+        "`airc {arg}` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
+         × {DISCOVERY_PROBE_ATTEMPTS} attempts — substrate is unresponsive, refusing to wait",
+    )
+}
+
 async fn query_airc_endpoint() -> Result<PathBuf, DiscoveryError> {
-    let call = TokioCommand::new("airc").arg("ipc-endpoint").output();
-    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
-        .await
-        .map_err(|_| {
-            DiscoveryError::EndpointCommandFailed(format!(
-                "`airc ipc-endpoint` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
-                 — substrate is unresponsive, refusing to wait",
-            ))
-        })?
-        .map_err(|e| DiscoveryError::EndpointCommandFailed(e.to_string()))?;
+    let out = probe_airc("ipc-endpoint").await.map_err(|e| match e {
+        ProbeError::TimedOut => DiscoveryError::EndpointCommandFailed(probe_timeout_msg("ipc-endpoint")),
+        ProbeError::Io(msg) => DiscoveryError::EndpointCommandFailed(msg),
+    })?;
     if !out.status.success() {
         return Err(DiscoveryError::EndpointCommandFailed(format!(
             "exit {}: {}",
@@ -200,16 +238,10 @@ pub async fn discover_default_channel() -> Result<uuid::Uuid, DiscoveryError> {
             ))
         });
     }
-    let call = TokioCommand::new("airc").arg("room").output();
-    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
-        .await
-        .map_err(|_| {
-            DiscoveryError::RoomCommandFailed(format!(
-                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
-                 — substrate is unresponsive, refusing to wait",
-            ))
-        })?
-        .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+    let out = probe_airc("room").await.map_err(|e| match e {
+        ProbeError::TimedOut => DiscoveryError::RoomCommandFailed(probe_timeout_msg("room")),
+        ProbeError::Io(msg) => DiscoveryError::RoomCommandFailed(msg),
+    })?;
     if !out.status.success() {
         return Err(DiscoveryError::RoomCommandFailed(format!(
             "exit {}: {}",
@@ -241,16 +273,10 @@ pub async fn discover_default_room_name() -> Result<String, DiscoveryError> {
             return Ok(raw);
         }
     }
-    let call = TokioCommand::new("airc").arg("room").output();
-    let out = timeout(DISCOVERY_SUBPROCESS_DEADLINE, call)
-        .await
-        .map_err(|_| {
-            DiscoveryError::RoomCommandFailed(format!(
-                "`airc room` did not exit within {DISCOVERY_SUBPROCESS_DEADLINE:?} \
-                 — substrate is unresponsive, refusing to wait",
-            ))
-        })?
-        .map_err(|e| DiscoveryError::RoomCommandFailed(e.to_string()))?;
+    let out = probe_airc("room").await.map_err(|e| match e {
+        ProbeError::TimedOut => DiscoveryError::RoomCommandFailed(probe_timeout_msg("room")),
+        ProbeError::Io(msg) => DiscoveryError::RoomCommandFailed(msg),
+    })?;
     if !out.status.success() {
         return Err(DiscoveryError::RoomCommandFailed(format!(
             "exit {}: {}",

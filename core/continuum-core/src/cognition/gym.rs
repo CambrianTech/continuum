@@ -85,6 +85,15 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         include_str!("../../../../docs/genome/frontier-rs.jsonl"),
     ),
     (
+        // livecodebench-rs: OUR Rust-graded Program-Bench proxy (10 competitive-
+        // programming tasks — KMP, union-find, Dijkstra, DP, two-pointer). Named
+        // -rs to stay honest: it is NOT the real LiveCodeBench dataset (that stays a
+        // catalogued stub for a future stdio runner), it is the runnable Rust proxy
+        // mapped to Program Bench in BENCHMARK-TARGET-MAP.md. Every test hand-verified.
+        "livecodebench-rs.jsonl",
+        include_str!("../../../../docs/genome/livecodebench-rs.jsonl"),
+    ),
+    (
         // games-rs: OUR games benchmark — the tier public benchmarks lack (they grade
         // an agent PLAYING, not BUILDING). Auto-verifiable game LOGIC: a Conway step,
         // a tic-tac-toe/connect-4 win-checker, a 2048 merge, knight moves, minesweeper

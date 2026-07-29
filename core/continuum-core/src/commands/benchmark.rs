@@ -79,6 +79,20 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "livecodebench-rs",
+            description: "LiveCodeBench-rs — OUR runnable Rust-graded proxy for Program Bench / \
+                          LiveCodeBench: 10 competitive-programming tasks (KMP substring, union-find \
+                          components, heap Dijkstra, longest-palindrome, max-product subarray, rotated \
+                          binary search, trapping rain water, meeting rooms, house robber, k-th largest), \
+                          rustc compile+run graded, every test hand-verified. Distinct from the \
+                          `livecodebench` stub (the real dataset, pending a stdio runner) — see \
+                          BENCHMARK-TARGET-MAP.md.",
+            grader: Grader::Rust,
+            tasks: 10,
+            eval_set: Some("livecodebench-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "games-rs",
             description: "Games-Rust — OUR games benchmark, the tier public benchmarks lack (they \
                           grade an agent PLAYING a game, not BUILDING one). Auto-verifiable game LOGIC: \
