@@ -80,8 +80,14 @@ async fn main() -> Result<(), String> {
 
     // 2) Start the real production video pump — allocates a Bevy slot for this
     //    identity and streams its frames into the LiveKit video track.
+    // Standalone native call plane for the tee. In the example no native WS client
+    // joins it, so `push_avatar_frame` is a harmless no-op — the example only
+    // demonstrates the LiveKit publish path.
+    let call_manager =
+        std::sync::Arc::new(continuum_core::live::transport::call_server::CallManager::new());
     let pump = spawn_avatar_video_pump(
         manager.clone(),
+        call_manager,
         room.clone(),
         identity.clone(),
         identity.clone(),
