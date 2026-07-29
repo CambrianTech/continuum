@@ -37,6 +37,7 @@ pub mod multi_layer_recall;
 pub mod import;
 pub mod recall_hook;
 pub mod remember;
+pub mod replicate_batch;
 pub mod share;
 
 use append_event::MemoryAppendEvent;
@@ -48,6 +49,7 @@ use multi_layer_recall::MemoryMultiLayerRecall;
 use import::MemoryImport;
 use recall_hook::MemoryRecallHook;
 use remember::MemoryRemember;
+use replicate_batch::MemoryReplicateBatch;
 use share::MemoryShare;
 
 /// Result of an incremental append (`memory/append-memory`, `memory/append-event`).
@@ -71,6 +73,7 @@ pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(MemoryRemember { state: state.clone() }),
         Arc::new(MemoryConsolidate { state: state.clone() }),
         Arc::new(MemoryShare { state: state.clone() }),
+        Arc::new(MemoryReplicateBatch { state: state.clone() }),
         Arc::new(MemoryConsciousnessContext { state: state.clone() }),
         Arc::new(MemoryAppendMemory { state: state.clone() }),
         Arc::new(MemoryAppendEvent { state }),
@@ -134,7 +137,7 @@ pub(crate) async fn persist_memory(
     if let Some(embedding) = &memory.embedding {
         data[EMBEDDING_KEY] = serde_json::json!(embedding);
     }
-    executor
+    let result = executor
         .execute_json(
             "data/create",
             serde_json::json!({
@@ -144,7 +147,15 @@ pub(crate) async fn persist_memory(
                 "data": data,
             }),
         )
-        .await
+        .await;
+    if result.is_ok() {
+        // Persona-RAID slice 1: tee the ADMITTED record into the write-behind
+        // journal (docs/architecture/PERSONA-RAID-WRITE-BEHIND.md). This is the
+        // ONE durable-admit funnel, so this is the one tee. Best-effort-loud —
+        // never fails the admit.
+        state.replication.journal_admit(persona_id, "memory", &data);
+    }
+    result
         .map_err(|e| {
             CommandError::Internal(format!(
                 "memory/append-memory: durable write to {} failed: {e}",

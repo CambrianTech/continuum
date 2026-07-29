@@ -33,6 +33,9 @@ pub struct MemoryState {
     /// `data/create`) and to hydrate a missing corpus from it (via `data/list`)
     /// — the cross-module dual-write pattern `ChatModule` established.
     pub executor_slot: Arc<LateBound<CommandExecutor>>,
+    /// Persona-RAID ledger — the ONE owner of this node's write-behind
+    /// journals + replica high-waters (no statics; see memory/replication.rs).
+    pub replication: Arc<crate::memory::replication::ReplicationLedger>,
 }
 
 impl MemoryState {
@@ -40,6 +43,7 @@ impl MemoryState {
         Self {
             memory_manager,
             executor_slot: Arc::new(LateBound::new("memory::executor")),
+            replication: Arc::new(crate::memory::replication::ReplicationLedger::from_env()),
         }
     }
 

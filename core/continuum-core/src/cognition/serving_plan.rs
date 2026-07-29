@@ -260,6 +260,29 @@ impl ModelFootprint {
         self.resident_bytes(served_window, lanes)
             .saturating_add(self.prefill_compute_reserve(served_window, lanes))
     }
+
+    /// The capacity-fabric [`LeaseRequest`](crate::capacity::LeaseRequest) for serving
+    /// this model at `served_window` with `demand_lanes` concurrent minds — the bridge
+    /// from the serving plan's MODEL-RESIDENCY view (weights + per-lane KV) to the grid's
+    /// CONCURRENCY-SPIKE view, so [`GridPlacementPolicy`](crate::capacity::grid) can place
+    /// overflow lanes onto peers (#180 grid spill / [[frontier-is-a-scaling-question-over-misfits-not-a-capability-question]]).
+    /// `want_concurrency` = the minds that want a lane; `spike_bytes` = ONE lane's transient
+    /// prefill compute buffer at this window (the term the 2026-07-14 OOM turned on), so a
+    /// peer is only offered a spill lane it can actually hold. NOTE: this sizes the
+    /// CONCURRENCY spike only; a peer must ALSO already hold this model resident — that
+    /// residency gate is the gossip-side half of the routing (owned with the grid snapshot),
+    /// NOT this pure mapping.
+    pub fn grid_lease_request(
+        &self,
+        served_window: u32,
+        demand_lanes: u32,
+    ) -> crate::capacity::LeaseRequest {
+        crate::capacity::LeaseRequest {
+            consumer: self.model_id.clone(),
+            want_concurrency: demand_lanes.max(1),
+            spike_bytes: self.prefill_compute_reserve(served_window, 1),
+        }
+    }
 }
 
 /// The serving decision for this host.
@@ -310,12 +333,25 @@ pub struct ServingPlan {
 /// rendered, and the room degenerated into a greeting loop. 2 slots would
 /// have doubled every mind's window with zero lost concurrency.
 ///
+/// `demand_ceil` is the LIVE demand ceiling for the served window — the ELASTIC,
+/// per-task upper bound. `window_for` sizes the window UP to what the budget
+/// allows; this caps it DOWN to what the task actually needs. A hard coding task
+/// passes a high ceiling and the window GROWS (up to the budget/model bound); a
+/// simple turn passes a low one so more lanes fit. It is NEVER a launch-baked
+/// constant — callers thread live per-persona/per-task demand (measured p95 +
+/// headroom, or a task's explicit request). [`plan_serving`] supplies
+/// [`BOOTSTRAP_WORKING_SET`] only as the cold-start prior until that telemetry
+/// exists (#234). OOM-safe: `window_for` already bounds the window to the budget,
+/// so a higher ceiling only raises the cap toward that bound, never past it.
+/// [[serving-resources-are-elastic-per-task-leases-context-and-model-grow-for-hard-problems]]
+///
 /// The decision is pure classification on memory arithmetic — no model is
 /// loaded, no inference is run.
-pub fn plan_serving(
+pub fn plan_serving_with_demand(
     host: HostBudget,
     candidates: &[ModelFootprint],
     demand_lanes: u32,
+    demand_ceil: u32,
 ) -> Option<ServingPlan> {
     if candidates.is_empty() {
         return None;
@@ -441,7 +477,7 @@ pub fn plan_serving(
     // never forces UP past what the model supports; `.max(MIN_SERVE_CTX)` keeps it
     // runnable. On a small host where window_for < BOOTSTRAP the cap is a no-op.
     let served_context_window = window_for(lanes as u64)
-        .min(BOOTSTRAP_WORKING_SET)
+        .min(demand_ceil.max(MIN_SERVE_CTX))
         .max(MIN_SERVE_CTX);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
@@ -501,6 +537,20 @@ pub fn plan_serving(
     })
 }
 
+/// Cold-start / no-live-demand convenience: [`plan_serving_with_demand`] with the
+/// [`BOOTSTRAP_WORKING_SET`] prior as the demand ceiling. Callers that do not YET
+/// thread live per-task demand use this; the elastic path (a hard task requesting
+/// more context, or the #234 p95 telemetry) calls `plan_serving_with_demand` with
+/// the measured/requested ceiling so the window ebbs and flows with real demand
+/// rather than a baked constant.
+pub fn plan_serving(
+    host: HostBudget,
+    candidates: &[ModelFootprint],
+    demand_lanes: u32,
+) -> Option<ServingPlan> {
+    plan_serving_with_demand(host, candidates, demand_lanes, BOOTSTRAP_WORKING_SET)
+}
+
 /// Hysteresis wrapper around [`plan_serving`]: stops model THRASH from live-
 /// budget jitter. Keeps the `incumbent` model as long as it still fits the
 /// budget — switching DOWN only when the incumbent no longer fits (forced
@@ -514,13 +564,14 @@ pub fn plan_serving_stable(
     candidates: &[ModelFootprint],
     incumbent: Option<&str>,
     demand_lanes: u32,
+    demand_ceil: u32,
 ) -> Option<ServingPlan> {
     // NB: do NOT `?`-bail here. A deep transient dip can leave `plan_serving`
     // with nothing fitting the depressed budget (`fresh` = None) while a model
     // is STILL resident and serving fine — its memory is its own. Tearing that
     // down to "nothing" is the exact harm we're guarding against, so `fresh` is
     // an Option we fall back to only when the incumbent genuinely can't hold.
-    let fresh = plan_serving(host, candidates, demand_lanes);
+    let fresh = plan_serving_with_demand(host, candidates, demand_lanes, demand_ceil);
     let Some(inc_id) = incumbent else {
         return fresh;
     };
@@ -572,7 +623,7 @@ pub fn plan_serving_stable(
     if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
         m.capability_rank = u8::MAX;
     }
-    plan_serving(at_rest, &promoted, demand_lanes)
+    plan_serving_with_demand(at_rest, &promoted, demand_lanes, demand_ceil)
 }
 
 fn bytes_gb(bytes: u64) -> f64 {
@@ -762,6 +813,70 @@ mod tests {
             plan_tiny.served_context_window <= 4_096,
             "demand cap must not inflate a 4k-ceiling model past its ceiling; got {}",
             plan_tiny.served_context_window
+        );
+    }
+
+    // what this catches: the ELASTIC demand ceiling (Joel 2026-07-27: "context window sizes
+    // should ebb and flow depending on demands of the task and available resources — if it
+    // needs it larger for a moment, don't limit it"). The ceiling is threaded LIVE, not a
+    // launch-baked constant: a hard task passing a HIGH demand_ceil grows the served window
+    // PAST the BOOTSTRAP prior (up to the budget/model bound); a LOW ceiling shrinks it so
+    // more lanes fit. OOM-safe — window_for still bounds it, so a higher ceiling only raises
+    // the cap toward the budget bound, never past it. This is the "stop setting it in stone
+    // at launch" fix that opens the elastic-lease path.
+    // what this catches: the serving→grid bridge (#180 spill) — a model footprint maps to a
+    // capacity-fabric LeaseRequest whose want_concurrency is the demanded lanes and whose
+    // spike_bytes is ONE lane's transient prefill compute reserve at the served window (the
+    // 2026-07-14 OOM term), so GridPlacementPolicy offers a peer only a spill lane it can hold.
+    #[test]
+    fn grid_lease_request_maps_demand_and_the_prefill_spike() {
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        let window = 16_384;
+        let lease = devstral.grid_lease_request(window, 3);
+        assert_eq!(lease.consumer, "devstral-24b");
+        assert_eq!(lease.want_concurrency, 3, "want_concurrency = demanded lanes");
+        assert_eq!(
+            lease.spike_bytes,
+            devstral.prefill_compute_reserve(window, 1),
+            "spike_bytes = ONE lane's prefill compute reserve at the served window"
+        );
+        // Zero demand floors at one lane — never a degenerate 0-concurrency lease.
+        assert_eq!(devstral.grid_lease_request(window, 0).want_concurrency, 1);
+    }
+
+    #[test]
+    fn demand_ceiling_is_elastic_grows_for_a_hard_task_shrinks_for_a_simple_one() {
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        // Roomy host + high trained ceiling → window_for(1) far exceeds any of these ceilings,
+        // so the DEMAND ceiling (not the budget or the model) decides the served window.
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+
+        // Cold prior: default plan_serving caps at BOOTSTRAP_WORKING_SET.
+        let cold = plan_serving(host, std::slice::from_ref(&devstral), 1).unwrap();
+        assert_eq!(cold.served_context_window, BOOTSTRAP_WORKING_SET);
+
+        // Hard task demands more context → the window GROWS past the prior.
+        let big_ceil = 64_000;
+        let hot =
+            plan_serving_with_demand(host, std::slice::from_ref(&devstral), 1, big_ceil).unwrap();
+        assert!(
+            hot.served_context_window > cold.served_context_window,
+            "a higher demand ceiling must GROW the window: hot {} ≤ cold {}",
+            hot.served_context_window,
+            cold.served_context_window
+        );
+        assert!(
+            hot.served_context_window <= big_ceil,
+            "growth stays bounded by the demand ceiling (and the budget), never past it: got {}",
+            hot.served_context_window
+        );
+
+        // Simple turn demands little → the window SHRINKS below the prior, freeing memory.
+        let lean =
+            plan_serving_with_demand(host, std::slice::from_ref(&devstral), 1, 8_192).unwrap();
+        assert_eq!(
+            lean.served_context_window, 8_192,
+            "a low demand ceiling shrinks the served window to it"
         );
     }
 
@@ -991,7 +1106,7 @@ mod tests {
     fn stable_with_no_incumbent_equals_plain() {
         let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
         assert_eq!(
-            plan_serving_stable(host, &pair(), None, MAX_LANES),
+            plan_serving_stable(host, &pair(), None, MAX_LANES, BOOTSTRAP_WORKING_SET),
             plan_serving(host, &pair(), MAX_LANES)
         );
     }
@@ -1004,7 +1119,7 @@ mod tests {
         // 10GB: big (9.7GB) fits a lane but exceeds the 0.9*10=9GB headroom bar.
         let host = HostBudget { usable_bytes: 10 * GB, perf_cores: 6 };
         assert_eq!(plan_serving(host, &pair(), MAX_LANES).unwrap().base_model_id, "big", "fresh would pick big");
-        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "small", "hysteresis keeps incumbent — no flap");
         assert!(stable.lanes >= 1, "lanes still re-tracked for the kept model");
     }
@@ -1014,7 +1129,7 @@ mod tests {
     #[test]
     fn stable_upgrades_when_better_model_fits_with_headroom() {
         let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 }; // big 9.7 << 0.9*20=18
-        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "big", "more capable + ample headroom → upgrade");
     }
 
@@ -1029,7 +1144,7 @@ mod tests {
     fn stable_forced_down_when_incumbent_gone_from_disk() {
         let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
         let only_small = vec![fp("small", 1, 4_000, 32_768, 1)]; // "big" no longer on disk
-        let stable = plan_serving_stable(host, &only_small, Some("big"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(host, &only_small, Some("big"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "small", "incumbent gone from disk → serve what's present");
     }
 
@@ -1053,7 +1168,7 @@ mod tests {
             "depressed-budget plain plan would flap to the smaller model"
         );
         // With the incumbent credited its own weights back, the resident big stays.
-        let stable = plan_serving_stable(dipped, &pair(), Some("big"), MAX_LANES).unwrap();
+        let stable = plan_serving_stable(dipped, &pair(), Some("big"), MAX_LANES, BOOTSTRAP_WORKING_SET).unwrap();
         assert_eq!(stable.base_model_id, "big", "incumbent survives its OWN load dip — no flap");
         assert!(stable.lanes >= 1, "kept model still gets ≥1 lane");
     }

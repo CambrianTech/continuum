@@ -821,6 +821,32 @@ pub fn models() -> Vec<Model> {
             // gguf_local_path DERIVED from the id under genome/models (see coder-14b above).
             ..ModelSpec::default()
         }),
+        // QWEN3-CODER-30B-A3B compacted to 19B (256k ctx) — BigMama's forged coder,
+        // the first CHAT candidate the 5090 serving node can host locally. Qwen3 MoE
+        // (a3b active) pruned+quantized via the plasticity-compaction pipeline; Q4_K_M
+        // GGUF ~11 GB, fits the 5090 with room for KV. Registered under "llama-server"
+        // so the serving daemon's static-CUDA engine hosts it on a lane; gguf resolves
+        // from its dir under genome/models (id-token subset match).
+        model(ModelSpec {
+            id: "continuum-ai/qwen3-coder-30b-a3b-compacted-19b-256k",
+            name: "Qwen3-Coder-30B-A3B compacted 19B (256k)",
+            provider: "llama-server",
+            arch: Arch::Qwen3,
+            context_window: 262_144,
+            max_output_tokens: 8192,
+            tokens_per_second: 30.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/continuum-ai/qwen3-coder-30b-a3b-compacted-19b-256k"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
     ]
 }
 

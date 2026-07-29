@@ -23,8 +23,30 @@
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingPlan, MIN_SERVE_CTX,
+    plan_serving, plan_serving_stable, plan_serving_with_demand, HostBudget, ModelFootprint,
+    ServingPlan, BOOTSTRAP_WORKING_SET, MIN_SERVE_CTX,
 };
+use crate::cognition::working_set_demand::WorkingSetDemand;
+
+/// Process-wide sink for per-turn working-set observations — the serving daemon
+/// installs its own `WorkingSetDemand` here at [`ServingDaemonModule::initialize`],
+/// so the cognition turn path feeds each turn's assembled-prompt size WITHOUT a
+/// daemon handle (the same process-wide-readable-seam shape as `install_serving_state`).
+/// Unset until a daemon boots → [`observe_serving_working_set`] is a no-op and the
+/// served window simply holds its cold prior. (#234)
+static SERVING_WORKING_SET: OnceLock<Arc<std::sync::Mutex<WorkingSetDemand>>> = OnceLock::new();
+
+/// Feed one completed turn's assembled-prompt token count into the live serving
+/// demand. Called from the persona turn path; the next plan tick sizes the served
+/// window to the p95 of recent turns. No-op before a serving daemon has booted, so
+/// the caller never needs to know whether serving is up. (#234)
+pub fn observe_serving_working_set(prompt_tokens: u32) {
+    if let Some(ws) = SERVING_WORKING_SET.get() {
+        if let Ok(mut w) = ws.lock() {
+            w.observe(prompt_tokens);
+        }
+    }
+}
 use crate::gpu::GpuMemoryManager;
 use crate::inference::llama_server::{
     ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
@@ -239,6 +261,12 @@ pub struct ServingDaemonModule {
     /// that fit at pin time; budget can still shift under it, and then the plan
     /// degrades honestly (`fits_on_gpu = false`) rather than over-committing.
     pinned: watch::Sender<Option<String>>,
+    /// Live per-host working-set demand — the p95 of recent turns' assembled-prompt
+    /// sizes, threaded into the serving plan as the elastic `demand_ceil` so the
+    /// served window ebbs and flows with real demand instead of the baked prior
+    /// (#234). A Mutex (not atomic) for the rolling window; read only on the plan
+    /// tick, never a hot path. `observe_working_set` feeds it from the cognition turn.
+    working_set: Arc<std::sync::Mutex<WorkingSetDemand>>,
 }
 
 impl ServingDaemonModule {
@@ -273,6 +301,10 @@ impl ServingDaemonModule {
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
         let (suppressed, _urx) = watch::channel(Arc::new(HashSet::new()));
         let (pinned, _prx) = watch::channel(None);
+        // Rolling window (recent turns) over which the served window's demand ceiling
+        // tracks the p95 assembled-prompt size. Long enough to hold a coding session's
+        // shape, short enough that demand ebbs back within a session (#234).
+        const WORKING_SET_WINDOW: usize = 64;
         Self {
             gpu,
             system,
@@ -296,6 +328,11 @@ impl ServingDaemonModule {
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            working_set: Arc::new(std::sync::Mutex::new(WorkingSetDemand::new(
+                WORKING_SET_WINDOW,
+                BOOTSTRAP_WORKING_SET,
+                MIN_SERVE_CTX, // one generation of headroom above the assembled prompt
+            ))),
             moe_serving: std::sync::Mutex::new(None),
             // Read ONCE here (single config entry point, no per-tick I/O). Off by default.
             measure_force_expert_budget_bytes: crate::config_env::read(
@@ -311,6 +348,27 @@ impl ServingDaemonModule {
     pub fn set_lane_demand(&self, demand: u32) {
         self.lane_demand
             .store(demand.max(1), Ordering::Relaxed);
+    }
+
+    /// Feed one completed turn's assembled-prompt token count into the live
+    /// working-set demand (#234). Called from the cognition turn path; the next
+    /// plan tick sizes the served window to the p95 of recent turns. Cheap — a
+    /// brief lock on a bounded ring, off the serving hot path.
+    pub fn observe_working_set(&self, prompt_tokens: u32) {
+        if let Ok(mut w) = self.working_set.lock() {
+            w.observe(prompt_tokens);
+        }
+    }
+
+    /// The live demand ceiling for the served window — the p95 baseline of recent
+    /// turns (floored at the cold prior). Read on the plan tick and threaded into
+    /// `plan_serving_with_demand` so the window grows for heavy work and ebbs back
+    /// when turns get lean. A poisoned lock degrades to the cold prior, never panics.
+    fn demand_ceil(&self) -> u32 {
+        self.working_set
+            .lock()
+            .map(|w| w.demand_ceil())
+            .unwrap_or(BOOTSTRAP_WORKING_SET)
     }
 
     /// The current lane demand (≥ 1).
@@ -502,7 +560,7 @@ impl ServingDaemonModule {
     /// one candidate, so the reconcile serves that model or (if it has dropped off
     /// disk) nothing. Suppress subtracts; pin intersects; the planner still owns
     /// the choice among whatever remains.
-    fn live_candidates(&self) -> Vec<ModelFootprint> {
+    pub(crate) fn live_candidates(&self) -> Vec<ModelFootprint> {
         let suppressed = self.suppressed.borrow();
         let pinned = self.pinned.borrow();
         servable_candidates(&self.catalog.snapshot(), &**suppressed, &pinned)
@@ -559,10 +617,11 @@ impl ServingDaemonModule {
     /// to drive the spawner before the tick loop starts — single source of
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
-        plan_serving(
+        plan_serving_with_demand(
             self.host_budget(),
             &self.live_candidates(),
             self.lane_demand(),
+            self.demand_ceil(),
         )
     }
 
@@ -1004,7 +1063,7 @@ impl ServingDaemonModule {
             .borrow()
             .as_ref()
             .map(|p| p.base_model_id.clone());
-        match plan_serving_stable(budget, candidates, incumbent.as_deref(), self.lane_demand()) {
+        match plan_serving_stable(budget, candidates, incumbent.as_deref(), self.lane_demand(), self.demand_ceil()) {
             Some(plan) => {
                 crate::probe!(
                     class = "serving.plan",
@@ -1290,12 +1349,38 @@ fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
     let weights_bytes = std::fs::metadata(&path).ok()?.len();
-    footprint_from_parts(
+    let mut fp = footprint_from_parts(
         &model.id,
         weights_bytes,
         model.context_window,
         model.has(Capability::ToolUse),
-    )
+    )?;
+    // KV CACHE QUANTIZATION (#232): a lane running quantized KV holds proportionally
+    // fewer bytes/token, so the plan can size a BIGGER window into the same budget —
+    // this is what turns the launcher's opt-in q8_0 flag into an actual window GROWTH.
+    // Divide the f16 rate by the quant factor; default (f16 / unset) → 1 → byte-identical.
+    // Keep the config key in sync with the launcher arg in inference/llama_server.rs —
+    // one SERVING_KV_CACHE_TYPE key, two consumers (launcher flag + this fit-math rate).
+    fp.kv_per_token = (fp.kv_per_token / kv_cache_quant_divisor()).max(1);
+    Some(fp)
+}
+
+/// The resident-KV divisor implied by `SERVING_KV_CACHE_TYPE`, so the plan sizes the
+/// served window against the KV the lane WILL actually hold, not the f16 default. (#232)
+fn kv_cache_quant_divisor() -> u64 {
+    kv_divisor_for(crate::config_env::read("SERVING_KV_CACHE_TYPE").as_deref())
+}
+
+/// Pure KV-rate divisor for a cache-type string (testable without env). CONSERVATIVE by
+/// design: q8_0 ≈ half of f16 → 2; q4_0/q4_1 ≈ a third → 3 (under the ideal ~3.5×, so the
+/// plan never over-grows the window past the real KV and OOMs). Anything else / f16 → 1
+/// (no change). Over-reserve is a smaller window (safe); under-reserve is an OOM (fatal).
+fn kv_divisor_for(cache_type: Option<&str>) -> u64 {
+    match cache_type.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("q8_0") => 2,
+        Some("q4_0") | Some("q4_1") => 3,
+        _ => 1,
+    }
 }
 
 /// Pure footprint estimate from the fields that drive it — split out from the
@@ -1518,6 +1603,10 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
+        // Install this daemon's working-set demand as the process-wide sink so the
+        // cognition turn path feeds per-turn prompt sizes without a daemon handle, and
+        // the served window ebbs and flows with real demand (#234).
+        let _ = SERVING_WORKING_SET.set(self.working_set.clone());
         // Register serving as a MEASURED ResourceConsumer with the one per-machine
         // authority (#79). See `register_as_consumer` — this is monitor-not-reserve:
         // no lease acquired, `available` math untouched, the authority simply stops
@@ -1735,6 +1824,19 @@ mod tests {
     // what this catches: footprint estimate is honest about weights (passed
     // through), tool capability bumps the rank, KV is non-zero, and zero
     // weights → no footprint (we only offer what we can actually serve).
+    #[test]
+    fn kv_divisor_reflects_cache_type_conservatively() {
+        // what this catches: the #232 KV-quant fit-math coupling — the served window grows
+        // only when the lane actually runs quantized KV, and CONSERVATIVELY so the plan
+        // never over-grows past the real KV and OOMs. f16/unset/unknown must never scale.
+        assert_eq!(kv_divisor_for(None), 1, "unset never scales the window");
+        assert_eq!(kv_divisor_for(Some("f16")), 1, "explicit f16 is the no-op default");
+        assert_eq!(kv_divisor_for(Some("q8_0")), 2, "q8_0 ~ half of f16");
+        assert_eq!(kv_divisor_for(Some("  Q8_0 ")), 2, "trimmed + case-insensitive");
+        assert_eq!(kv_divisor_for(Some("q4_0")), 3, "q4_0 conservative, under the ideal ~3.5x");
+        assert_eq!(kv_divisor_for(Some("garbage")), 1, "unknown type → no grow, never a bogus OOM");
+    }
+
     #[test]
     fn footprint_from_parts_is_footprint_aware() {
         let fp = footprint_from_parts("present", 3 * GB, 8192, true).unwrap();

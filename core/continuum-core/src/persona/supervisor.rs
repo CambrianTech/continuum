@@ -499,6 +499,14 @@ pub async fn materialize_adapters(
         uuid::Uuid,
     )
         -> Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
+    // The grid-overflow EFFECTOR (governor consumer slice 4b). Given a persona's
+    // profile + slot, returns `Some(remote adapter)` when the governor routed her
+    // off-box — her node is over local capacity and a reachable peer holds her model
+    // (`capacity::grid_overflow::route_grid_overflow`) — so her brain runs on that
+    // peer via `AircRemoteInferenceAdapter`. `None` → build the local adapter from the
+    // factory (the common case; demand fit locally). Closure DI keeps the supervisor
+    // decoupled from the capacity fabric + airc handle, same shape as the lookups above.
+    overflow_adapter_for: impl Fn(&PersonaInferenceProfile, usize) -> Option<Arc<dyn AIProviderAdapter>>,
 ) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
@@ -525,16 +533,22 @@ pub async fn materialize_adapters(
                 continue;
             }
         };
-        let adapter = match factory.build_adapter(&profile).await {
-            Ok(a) => a,
-            Err(message) => {
-                out.push(Err(SupervisorError::AdapterFactory {
-                    slot_index,
-                    role: plan.role,
-                    message,
-                }));
-                continue;
-            }
+        // Grid-overflow effector: if the governor routed this persona off-box, her
+        // adapter is the airc-remote one (her brain runs on the peer that holds her
+        // model). Else build the local adapter from the factory — the common case.
+        let adapter = match overflow_adapter_for(&profile, slot_index) {
+            Some(remote) => remote,
+            None => match factory.build_adapter(&profile).await {
+                Ok(a) => a,
+                Err(message) => {
+                    out.push(Err(SupervisorError::AdapterFactory {
+                        slot_index,
+                        role: plan.role,
+                        message,
+                    }));
+                    continue;
+                }
+            },
         };
         // Warm the adapter's KV-cache / kernels BEFORE the persona
         // enters her service loop. Per [[init-once-handle-then-lease-zero-copy-refs]]
@@ -1106,7 +1120,7 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None, |_, _| None).await;
 
         assert_eq!(hosted.len(), 2);
         assert_eq!(factory.build_count(), 2);
@@ -1153,7 +1167,7 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None, |_, _| None).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory called exactly once — for the Ok row only.
@@ -1188,7 +1202,7 @@ mod tests {
         let factory =
             ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None, |_, _| None).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -1211,7 +1225,7 @@ mod tests {
     #[tokio::test]
     async fn empty_plans_yields_empty_hosted() {
         let factory = ScriptedPersonaAdapterFactory::heuristic();
-        let hosted = materialize_adapters(vec![], &factory, |_| None, |_| None).await;
+        let hosted = materialize_adapters(vec![], &factory, |_| None, |_| None, |_, _| None).await;
         assert!(hosted.is_empty());
         assert_eq!(factory.build_count(), 0);
     }
@@ -1240,7 +1254,7 @@ mod tests {
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         // `|_| None` here is the substrate-bug shape we're locking in:
         // the registry exists but doesn't contain this persona_id.
-        let hosted = materialize_adapters(plans, &factory, |_| None, |_| None).await;
+        let hosted = materialize_adapters(plans, &factory, |_| None, |_| None, |_, _| None).await;
 
         assert_eq!(hosted.len(), 1);
         // Factory MUST NOT be called when the runtime lookup fails —
@@ -1300,7 +1314,7 @@ mod tests {
                     as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
             }
         };
-        let hosted = materialize_adapters(plans, &factory, lookup, |_| None).await;
+        let hosted = materialize_adapters(plans, &factory, lookup, |_| None, |_, _| None).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory ran exactly once — for Paige, not Pax.
@@ -1345,7 +1359,7 @@ mod tests {
 
         let (factory, counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None, |_, _| None).await;
 
         // Both slots materialize cleanly.
         assert_eq!(hosted.len(), 2);
@@ -1356,6 +1370,56 @@ mod tests {
             counts.warmups(),
             2,
             "warmup() must be called once per successfully-materialized adapter"
+        );
+    }
+
+    // what this catches: the grid-overflow EFFECTOR seam — when the governor routes a
+    // persona off-box, `overflow_adapter_for` supplies her adapter (the airc-remote one,
+    // her brain on a peer) and the LOCAL factory is NOT called for that slot. Here slot 0
+    // is overflow-routed (override returns a stand-in remote), slot 1 is local. Both host;
+    // the factory builds ONLY slot 1 (build_count == 1); both adapters still warm. This is
+    // the composition point where route_grid_overflow's decision becomes a real remote brain.
+    #[tokio::test]
+    async fn overflow_effector_supplies_remote_adapter_and_bypasses_the_local_factory() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        let plans = vec![
+            MaterializedPersonaPlan {
+                role: RoleId::Helper,
+                instance: fake_instance("Paige"),
+                profile: Ok(fake_profile("Paige", "model-a")), // slot 0 → overflow-routed
+            },
+            MaterializedPersonaPlan {
+                role: RoleId::Coder,
+                instance: fake_instance("Pax"),
+                profile: Ok(fake_profile("Pax", "model-b")), // slot 1 → local
+            },
+        ];
+
+        let (factory, _counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
+        let hosted = materialize_adapters(
+            plans,
+            &factory,
+            StubAircCitizen::fresh_lookup(),
+            |_| None,
+            // Overflow effector: slot 0 is routed off-box → supply a stand-in "remote"
+            // adapter; every other slot stays local (None).
+            |_profile, slot| {
+                if slot == 0 {
+                    Some(Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>)
+                } else {
+                    None
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(hosted.len(), 2);
+        assert!(hosted.iter().all(|r| r.is_ok()), "both personas host (one remote, one local)");
+        assert_eq!(
+            factory.build_count(),
+            1,
+            "the local factory builds ONLY the non-overflow slot — the overflow slot's \
+             adapter came from the effector, her brain runs on the peer"
         );
     }
 
@@ -1375,7 +1439,7 @@ mod tests {
             "simulated warmup failure",
         );
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None, |_, _| None).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -1411,7 +1475,7 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
         let hosted_ok =
-            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup(), |_| None)
+            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup(), |_| None, |_, _| None)
                 .await;
         assert!(hosted_ok[0].is_ok(), "ok-warmup adapter materializes");
         assert_eq!(ok_counts.warmups(), 1);
@@ -1429,6 +1493,7 @@ mod tests {
             &factory_fail,
             StubAircCitizen::fresh_lookup(),
             |_| None,
+            |_, _| None,
         )
         .await;
         assert!(

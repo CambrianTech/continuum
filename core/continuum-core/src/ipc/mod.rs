@@ -1701,7 +1701,16 @@ pub fn start_server(
     if let Some((interceptor_daemon_socket, _room)) = interceptor_airc_deps {
         let cell = airc_interceptor_cell.clone();
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
-        tokio::spawn(async move {
+        // MUST be `rt_handle.spawn`, NOT bare `tokio::spawn`: this runs during
+        // start_server on the IPC thread, and the `rt_handle.enter()` guard (above) is
+        // scoped and has already dropped by here — so there is NO ambient runtime and
+        // `tokio::spawn` panics "there is no reactor running". That panic kills the
+        // attach task, the OnceCell never fills, and EVERYTHING that reads it silently
+        // no-ops: the AircInterceptor's aircPeer routing AND the grid-overflow effector
+        // (build_overflow_effector reads this same cell). rt_handle.spawn targets the
+        // runtime by handle without needing ambient context. (BigMama diagnosed the
+        // panic 2026-07-27; this is the one-line fix.)
+        rt_handle.spawn(async move {
             match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
                 .await
             {
@@ -1780,6 +1789,14 @@ pub fn start_server(
         // Rides the DISCOVERED default room, same dep the citizens attach to.
         runtime.register(Arc::new(crate::modules::grid_capacity::GridCapacityModule::new(
             resource_daemon.clone(),
+            default_room,
+        )));
+        // Grid residency beacon (grid-overflow eligibility, slice 3): advertise which models
+        // this node holds resident on a slower cadence, folded by inbound_attach into
+        // capacity::model_residency::global_residency_ledger. Reads the SAME serving plan the
+        // daemon computes (watch snapshot, no parallel probe); orthogonal sibling of capacity.
+        runtime.register(Arc::new(crate::modules::grid_residency::GridResidencyModule::new(
+            serving_daemon.subscribe(),
             default_room,
         )));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
@@ -2100,6 +2117,15 @@ pub fn start_server(
         // below). Subscribe BEFORE the spawn so no plan edge is missed while
         // the task waits on the executor-ready oneshot.
         let mut serving_plan_rx = serving_daemon.subscribe();
+        // A DEDICATED clone of the interceptor's airc-handle cell for the grid-overflow
+        // effector (slice 4b): the boot-spawn `async move` below captures by move, and the
+        // interceptor still needs the original `airc_interceptor_cell` further down — so the
+        // effector rides its own Arc clone of the SAME shared cell (both see the handle once
+        // attach_as fills it).
+        let overflow_airc_cell = airc_interceptor_cell.clone();
+        // Same reason for the serving daemon: the reconcile task below still needs the
+        // original `serving_daemon` handle, so the effector rides its own clone.
+        let overflow_serving = serving_daemon.clone();
         rt_handle.spawn(async move {
             // Wait for the IPC thread to deliver the WIRED executor (this both
             // gates ordering AND hands us the executor the personas' hands ride).
@@ -2187,7 +2213,22 @@ pub fn start_server(
                     } else {
                         attempt += 1;
                         let summary = supervisor
-                            .spawn_all(&mut provider, Some(tool_executor.clone()))
+                            .spawn_all(
+                                &mut provider,
+                                Some(tool_executor.clone()),
+                                // Grid-overflow effector (slice 4b): the LIVE closure. Reads
+                                // the serving plan's grid_overflow_lanes, filters residency-
+                                // eligible reachable peers (from the beacon ledger), runs
+                                // route_grid_overflow, and re-homes the persona's adapter to an
+                                // AircRemoteInferenceAdapter over the interceptor's airc handle.
+                                // DEFENSIVE: None on any uncertainty → local adapter (no
+                                // regression); can only be a safe no-op or a correct off-box
+                                // route (self excluded via airc.peer_id()).
+                                crate::persona::grid_overflow_effector::build_overflow_effector(
+                                    overflow_airc_cell.clone(),
+                                    overflow_serving.clone(),
+                                ),
+                            )
                             .await;
                         if summary.hosted > 0 {
                             tracing::info!(

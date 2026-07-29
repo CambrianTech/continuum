@@ -82,9 +82,17 @@ else
     MINGW*|MSYS*|CYGWIN*)
       EXE=".exe"
       if command -v nvcc >/dev/null 2>&1 || [ -x "$CONTINUUM_HOME/cuda-toolkit/bin/nvcc.exe" ]; then
-        BACKEND="cuda"; WIN_CUDA=1
+        BACKEND="cuda-static"; WIN_CUDA=1
         # arch=native → build for THIS machine's GPU (portable; NOT a hardcoded sm_120).
-        BACKEND_DEFS=(-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native)
+        # BUILD_SHARED_LIBS=OFF is LOAD-BEARING (2026-07-28, BigMama): the shared build's
+        # ggml-cuda.dll fails CUDA init at runtime ("no usable GPU found") while passing
+        # --version — so a GPU-blind engine got stamped verified-good and every generation
+        # 500'd (the serving daemon's decode-ready probe then never admits personas). The
+        # static build (ggml linked into the exe) initializes CUDA correctly on the same
+        # box. Backend renamed cuda→cuda-static so existing broken installs fail the stamp
+        # check and rebuild on next run. CUDA RUNTIME (cudart/cublas dlls) stays dynamic
+        # via the manifest runtime_path — only ggml/llama are static.
+        BACKEND_DEFS=(-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native -DBUILD_SHARED_LIBS=OFF)
       fi
       # non-NVIDIA Windows falls through to the CPU build (llama.cpp CPU works on Win).
       ;;
@@ -224,6 +232,20 @@ if [ "$verify_ok" -ne 1 ]; then
   rm -f "$INSTALL_BIN"
   echo "✗ FATAL: built llama-server does not run (--version failed after retry)." >&2
   exit 1
+fi
+
+# On Windows+CUDA, --version is NOT enough: the GPU-blind shared build passed it while
+# unable to init CUDA (the 2026-07-28 regression). Require the engine to actually SEE a
+# CUDA device before stamping — this is the difference between "binary runs" and "binary
+# can serve". A build that can't see the GPU is removed, not blessed.
+if [ "$WIN_CUDA" -eq 1 ]; then
+  if ! "$INSTALL_BIN" --list-devices 2>&1 | grep -q "CUDA0"; then
+    rm -f "$INSTALL_BIN"
+    echo "✗ FATAL: built llama-server cannot see a CUDA device (--list-devices has no CUDA0)." >&2
+    echo "  A GPU-blind engine must never be stamped — it serves decode-dead lanes." >&2
+    exit 1
+  fi
+  echo "✓ CUDA verify: engine sees CUDA0" >&2
 fi
 echo "$STAMP_WANT" > "$STAMP_FILE"   # stamp LAST — only a verified-good binary is blessed
 
