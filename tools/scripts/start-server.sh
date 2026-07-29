@@ -428,6 +428,14 @@ echo "  profile:  $PROFILE_LABEL"
 echo "  features: $CONTINUUM_FEATURES"
 echo "  socket:   $CONTINUUM_SOCKET"
 echo "  airc:     room=${AIRC_DEFAULT_ROOM_NAME:-?} channel=${AIRC_DEFAULT_CHANNEL:-?}"
+
+# Voice/model artifacts (TTS/STT ONNX, VAD, phonemizer data) live under the
+# gitignored download root `tools/models/`. Inject it ABSOLUTELY so the audio
+# adapters resolve models regardless of the core's CWD — killing the process-CWD
+# dependency they used to have (#195). The core's `voice_model_root()` honors this
+# env; config.env can still override it per operator.
+export CONTINUUM_MODELS_DIR="${CONTINUUM_MODELS_DIR:-$REPO_ROOT/tools/models}"
+echo "  models:   $CONTINUUM_MODELS_DIR"
 echo ""
 
 # Run the EXACT binary the freshness guard (#194) just verified — NOT `cargo run`,
