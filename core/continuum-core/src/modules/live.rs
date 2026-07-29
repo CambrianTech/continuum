@@ -476,7 +476,7 @@ impl ServiceModule for VoiceModule {
                 // TODO: Use for Rust-side TTS output scheduling (ordering + stale detection).
                 let _timeline_seq = p.u64_opt("timeline_seq");
 
-                let (num_samples, duration_ms, sample_rate) = self
+                let (samples, duration_ms, sample_rate) = self
                     .state
                     .livekit_manager
                     .speak_in_call(call_id, user_id, text, voice, adapter, display_name)
@@ -490,6 +490,16 @@ impl ServiceModule for VoiceModule {
                         );
                         format!("Speak-in-call failed: {}", e)
                     })?;
+                let num_samples = samples.len();
+
+                // #193 audio convergence: tee the SAME synthesized voice into the
+                // native call plane so native clients (positron web, glass-box harness)
+                // HEAR her instead of the hold-music the lonely-listener mixer plays.
+                // Sibling of the avatar-video tee. No-op if no native client is on the call.
+                self.state
+                    .call_manager
+                    .push_persona_audio(call_id, user_id, display_name.unwrap_or(user_id), samples)
+                    .await;
 
                 log_info!(
                     "module",

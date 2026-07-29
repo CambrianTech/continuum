@@ -277,7 +277,7 @@ impl LiveKitAgentManager {
         voice: Option<&str>,
         adapter: Option<&str>,
         display_name: Option<&str>,
-    ) -> Result<(usize, u64, u32), String> {
+    ) -> Result<(Vec<i16>, u64, u32), String> {
         use crate::live::audio::tts_service;
         use crate::live::avatar::gender::gender_from_identity;
         use crate::live::avatar::types::AvatarGender;
@@ -352,7 +352,9 @@ impl LiveKitAgentManager {
             Some(&pcm_bytes),
         )?;
 
-        Ok((num_samples, duration_ms, sample_rate))
+        // Return the synthesized PCM so the caller can tee it into the native call
+        // plane (#193 audio convergence) — the same samples that just went to LiveKit.
+        Ok((synthesis.samples, duration_ms, sample_rate))
     }
 
     pub async fn inject_audio(
