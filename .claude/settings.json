@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "continuum-local-tools": {
+      "source": {
+        "source": "local",
+        "path": "tools/plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "memory-bridge@continuum-local-tools": true
+  }
+}

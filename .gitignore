@@ -134,6 +134,9 @@ persona-verify-*.json
 **/.continuum/*.log
 **/examples/**/.continuum/
 .claude/
+# …but the team settings file IS repo-owned: it durably enables the
+# memory-bridge plugin (and future shared agent config) for every clone.
+!.claude/settings.json
 .claude-pool/
 .claude-messages/
 .continuum-comm/
