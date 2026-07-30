@@ -39,13 +39,87 @@ pub fn plan_expert_residency_budgeted(
     expert_bytes: u64,
     margin_bytes: u64,
 ) -> ExpertResidencyPlan {
+    plan_expert_residency_with_resident(
+        profile,
+        activation,
+        expert_bytes,
+        margin_bytes,
+        0,
+        0,
+        0,
+    )
+}
+
+/// [`plan_expert_residency_budgeted`] with SELF-OCCUPANCY ADD-BACK (#269, the
+/// 2026-07-30 audit finding): the capacities handed to the planner are LIVE
+/// free-byte readings, which EXCLUDE the bytes already-promoted experts
+/// legitimately hold — so every re-plan under-counted each tier by its own
+/// resident set and progressively demoted the tail (slow thrash-to-cold under
+/// UNCHANGED demand). Adding the resident bytes back makes an unchanged
+/// demand profile a FIXED POINT of the plan. Count resident bytes from the
+/// pager's own ledger, never the OS (page-cache accounting lies both ways).
+///
+/// Also carries the WASTE Gate-5 cliff as a LOUD probe: when the total fast
+/// budget (VRAM + RAM) is at or below ONE TOKEN'S working set, cross-token
+/// reuse is structurally ZERO — the plan still returns (residency placement
+/// is still better than nothing for latency), but the probe names the cliff
+/// so nobody debugs a "cache bug" that is arithmetic (two nodes, three days).
+/// `activated_per_token` comes from the model's ARCH PROFILE (#231 — routed
+/// experts × active MoE layers), never inferred from a partial hits ledger;
+/// `0` = unknown ⇒ the cliff probe is skipped (no guessed arithmetic).
+pub fn plan_expert_residency_with_resident(
+    profile: &SystemProfile,
+    activation: &ExpertActivationProfile,
+    expert_bytes: u64,
+    margin_bytes: u64,
+    resident_vram_bytes: u64,
+    resident_ram_bytes: u64,
+    activated_per_token: u32,
+) -> ExpertResidencyPlan {
     // Substitute the BUDGETED VRAM for raw live-free: the pager plans within the same
     // serving headroom as everything else, so hot experts + the serving lane + the OS
     // share one budget. RAM tier keeps its real free (uncontended warm tier).
+    // Both tiers get their own resident experts' bytes ADDED BACK — a live
+    // reading minus what we ourselves hold is not capacity, it's a countdown.
     let budgeted = DeviceCapacity {
-        gpu_free_bytes_live: profile.serving_budget_bytes(),
+        gpu_free_bytes_live: profile
+            .serving_budget_bytes()
+            .saturating_add(resident_vram_bytes),
+        system_ram_free_bytes: profile
+            .capacity
+            .system_ram_free_bytes
+            .saturating_add(resident_ram_bytes),
         ..profile.capacity
     };
+
+    // Cliff visibility (never a gate here — the ecache's EcacheBudget::derive
+    // is the refusing seam; the PLANNER stays total so placement still helps
+    // first-token latency even below the reuse cliff).
+    if expert_bytes > 0 {
+        let _ = activation; // profile drives the plan below; cliff uses arch facts
+        if activated_per_token > 0 {
+            let one_token_ws =
+                crate::capacity::expert_ecache::EcacheBudget::one_token_working_set(
+                    activated_per_token,
+                    expert_bytes,
+                );
+            let fast_total = budgeted
+                .gpu_free_bytes_live
+                .saturating_add(budgeted.system_ram_free_bytes);
+            if fast_total <= one_token_ws {
+                crate::probe!(
+                    class = "expert_pager.below_cliff",
+                    fast_total_bytes = fast_total,
+                    one_token_ws_bytes = one_token_ws,
+                    activated_per_token = activated,
+                    "fast tiers hold less than one token's working set — cross-token \
+                     reuse will be structurally ZERO (WASTE Gate 5); shrink records \
+                     (#268 container) before debugging cache logic"
+                );
+            }
+        }
+    }
+
     plan_expert_residency(activation, &budgeted, expert_bytes, margin_bytes)
 }
 
@@ -134,5 +208,56 @@ mod tests {
         assert!(plan.hot.is_empty());
         assert_eq!(plan.warm.len(), 5, "all experts warm on cold-start");
         assert!(plan.cold.is_empty());
+    }
+
+    // what this catches: SELF-OCCUPANCY ADD-BACK (#269, the 2026-07-30 audit).
+    // Capacities fed to the planner are LIVE free-byte readings that EXCLUDE
+    // bytes already-promoted experts hold, so re-planning under unchanged
+    // demand under-counted each tier by its own resident set and slowly
+    // demoted the tail to cold. With add-back, an unchanged demand profile is
+    // a FIXED POINT: plan → apply (free drops by resident bytes) → re-plan
+    // with resident add-back ⇒ the identical plan. Without add-back the
+    // second plan visibly shrinks — the thrash this test pins dead.
+    #[test]
+    fn unchanged_demand_is_a_fixed_point_with_resident_add_back() {
+        let profile = bigmama();
+        let activation = profile_with_hot_experts(8);
+        let expert_bytes = 4 * GB;
+
+        let first = plan_expert_residency_budgeted(&profile, &activation, expert_bytes, 0);
+        assert!(!first.hot.is_empty(), "test needs a non-empty hot set");
+        let hot_bytes = first.hot.len() as u64 * expert_bytes;
+        let warm_bytes = first.warm.len() as u64 * expert_bytes;
+
+        // Simulate APPLYING the plan: live-free drops by exactly what we
+        // promoted. (Budget derives from live-free, so both tiers shrink.)
+        let mut applied = profile.clone();
+        applied.capacity.gpu_free_bytes_live =
+            applied.capacity.gpu_free_bytes_live.saturating_sub(hot_bytes);
+        applied.capacity.system_ram_free_bytes = applied
+            .capacity
+            .system_ram_free_bytes
+            .saturating_sub(warm_bytes);
+
+        // Without add-back: the re-plan shrinks (the audited thrash).
+        let naive = plan_expert_residency_budgeted(&applied, &activation, expert_bytes, 0);
+        assert!(
+            naive.hot.len() < first.hot.len(),
+            "sanity: the bug is real — live-free-only re-plan shrinks the hot set"
+        );
+
+        // With add-back: byte-identical plan — the fixed point.
+        let second = plan_expert_residency_with_resident(
+            &applied,
+            &activation,
+            expert_bytes,
+            0,
+            hot_bytes,
+            warm_bytes,
+            0,
+        );
+        assert_eq!(second.hot, first.hot, "hot set is a fixed point");
+        assert_eq!(second.warm, first.warm, "warm set is a fixed point");
+        assert_eq!(second.cold, first.cold, "nothing demoted under unchanged demand");
     }
 }
