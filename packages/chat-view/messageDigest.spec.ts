@@ -105,6 +105,37 @@ describe('messageDigest', () => {
     // repeats in the remainder — 45/46 dominates, quoted elided at 24 chars.
     expect(digest?.histogram).toBe(`mostly 45× '${unit.slice(0, 24)}…'`);
   });
+
+  // what this catches: the digest cutting a message MID-FENCE — the head ended
+  // with a dangling ``` that rendered as literal backtick noise instead of a
+  // code card (live 2026-07-30: Claude's wordstats reply in cambriantech).
+  it('never splits a fenced code block: code-heavy messages render full', () => {
+    const fence = `\`\`\`rust\n${Array(30).fill('let x = 1;').join('\n')}\n\`\`\``;
+    const msg = `Here is the code:\n\n${fence}\n\nThe key change is the entry ownership.`;
+    // 35+ raw lines, but the projection counts the fence as ONE line — under
+    // both bounds, so no digest at all; the code card handles its own size.
+    expect(messageDigest(msg)).toBeUndefined();
+  });
+
+  // what this catches: prose floods still digest, but the head cut treats a
+  // fence as atomic — the whole block survives into the head, never a partial.
+  it('keeps a whole fence in the digest head when prose around it floods', () => {
+    const fence = '```rust\nlet x = 1;\nlet y = 2;\n```';
+    const prose = Array(40).fill('a line of prose that keeps going').join('\n');
+    const digest = messageDigest(`intro\n${fence}\n${prose}`);
+    expect(digest).toBeDefined();
+    expect(digest?.head).toContain(fence);
+    // Non-negotiable: no unterminated fence in the head.
+    expect((digest?.head.match(/```/g) ?? []).length % 2).toBe(0);
+  });
+
+  // what this catches: an unterminated fence (streaming / author forgot to
+  // close) swallowing the head cut — it must extend to end-of-message, not
+  // leave a dangling opener.
+  it('treats an unterminated fence as running to end of message', () => {
+    const msg = `look:\n\`\`\`bash\n${Array(40).fill('echo hi').join('\n')}`;
+    expect(messageDigest(msg)).toBeUndefined();
+  });
 });
 
 describe('chatViewModel digest projection', () => {

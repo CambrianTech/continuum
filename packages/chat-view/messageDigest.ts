@@ -90,17 +90,78 @@ function repetitionHistogram(remainder: string): string | undefined {
   return byToken ? `mostly ${byToken.count}× '${sample(byToken.unit)}'` : undefined;
 }
 
+/** A fenced code block — closed, or unterminated (a cut/streaming fence) running
+ *  to end of message. Mirrors the renderer's fence grammar. */
+const FENCE = /```[\w+#.-]*[ \t]*\n?[\s\S]*?```|```[\w+#.-]*[ \t]*\n?[\s\S]*$/g;
+
+interface FenceSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+function fenceSpans(content: string): FenceSpan[] {
+  const spans: FenceSpan[] = [];
+  for (const m of content.matchAll(FENCE)) {
+    const start = m.index ?? 0;
+    spans.push({ start, end: start + m[0].length });
+  }
+  return spans;
+}
+
+/** Where the digest head ends: walk the real content spending the head budgets,
+ *  treating each fence as an ATOMIC one-line unit — the cut can never land
+ *  inside a fence (a mid-fence cut renders the ``` markers as literal noise —
+ *  live bug 2026-07-30). Prose keeps the old per-char cap: a single giant line
+ *  still slices at DIGEST_HEAD_CHARS. */
+function headCut(content: string, spans: readonly FenceSpan[]): number {
+  let lineBudget = DIGEST_HEAD_LINES;
+  let charBudget = DIGEST_HEAD_CHARS;
+  let pos = 0;
+  while (pos < content.length && lineBudget > 0) {
+    const fence = spans.find((s) => s.start === pos);
+    if (fence) {
+      pos = fence.end;
+      lineBudget -= 1;
+      continue;
+    }
+    const nextNl = content.indexOf('\n', pos);
+    const nextFence = spans.find((s) => s.start > pos)?.start ?? content.length;
+    const lineEnd = Math.min(nextNl === -1 ? content.length : nextNl, nextFence);
+    const len = lineEnd - pos;
+    if (len >= charBudget) return pos + charBudget;
+    charBudget -= len;
+    lineBudget -= 1;
+    pos = lineEnd === nextFence ? lineEnd : lineEnd + 1;
+  }
+  return pos;
+}
+
 /**
  * Classify a message body's display tier. Under both bounds → `undefined` (the
  * full tier: render verbatim). Over either → the digest projection. Pure and
  * deterministic; the renderer owns only the expand/collapse state.
+ *
+ * FENCE-AWARE: flood bounds are computed over a projection where each fenced
+ * code block is ONE placeholder line — the renderer's code card self-truncates
+ * (open head + "+K more lines"), so code never floods pixels, and a message
+ * that is "long" only because of its code renders full. The head cut treats
+ * fences as atomic, so a digest can never split one.
  */
 export function messageDigest(content: string): MessageDigestVM | undefined {
-  const lines = content.split('\n');
-  if (content.length <= DIGEST_OVER_CHARS && lines.length <= DIGEST_OVER_LINES) return undefined;
+  const spans = fenceSpans(content);
+  let projection = '';
+  let last = 0;
+  for (const s of spans) {
+    projection += `${content.slice(last, s.start)}⟨code⟩`;
+    last = s.end;
+  }
+  projection += content.slice(last);
+  const lines = projection.split('\n');
+  if (projection.length <= DIGEST_OVER_CHARS && lines.length <= DIGEST_OVER_LINES) return undefined;
 
-  let head = lines.slice(0, DIGEST_HEAD_LINES).join('\n');
-  if (head.length > DIGEST_HEAD_CHARS) head = head.slice(0, DIGEST_HEAD_CHARS);
+  const cut = headCut(content, spans);
+  let head = content.slice(0, cut);
+  if (head.endsWith('\n')) head = head.slice(0, -1);
 
   // The remainder is everything the digest hides (minus the joining newline, so
   // the counts describe exactly the collapsed text, not the seam).
