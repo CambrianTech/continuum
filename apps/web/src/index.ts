@@ -89,9 +89,11 @@ async function main(): Promise<void> {
     });
     // A kernel-level failure already rejected in the transport (this line never
     // runs). Belt-and-suspenders for any handler that instead reports failure
-    // in-band: an explicit `success === false` must throw so the widget shows it
-    // and keeps the draft — never a silently-dropped message.
-    if (!result.success) {
+    // in-band: ONLY an explicit `success === false` throws. A success payload
+    // may carry NO success field at all ({eventId, messageId} — glass-boxed
+    // live 2026-07-30: `!result.success` showed "Send failed" on every send
+    // that actually LANDED, the exact bug shape the history handler had).
+    if ((result as { success?: boolean }).success === false) {
       throw new Error(`chat/send rejected: ${result.error ?? 'unknown error'}`);
     }
     // A `warning` on a success means stored-locally-but-broadcast-failed. Surface
