@@ -235,6 +235,13 @@ pub async fn publish_transcript_event(
                     event_id = %event.event_id.as_uuid(),
                     "plain airc message projected to chat:posted for positron"
                 );
+                // #264: room-speech ring — recorded ONCE here (the single
+                // seam every room message crosses), so restatement knowledge
+                // never depends on any persona's workspace budget.
+                crate::cognition::deliberation_budget::record_room_speech(
+                    event.room_id.as_uuid(),
+                    payload["content"].as_str().unwrap_or_default(),
+                );
                 bus.publish_async_only(name, payload);
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
@@ -290,6 +297,11 @@ pub async fn publish_transcript_event(
             room_id = %event.room_id.as_uuid(),
             event_id = %event.event_id.as_uuid(),
             "chat_transcript envelope projected to chat:posted for positron"
+        );
+        // #264: room-speech ring — same single-seam record as the plain arm.
+        crate::cognition::deliberation_budget::record_room_speech(
+            event.room_id.as_uuid(),
+            payload["content"].as_str().unwrap_or_default(),
         );
         bus.publish_async_only(name, payload);
     }

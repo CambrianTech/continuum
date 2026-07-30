@@ -24,7 +24,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::deliberation_budget::{own_repetition_fact, peer_echo_fact};
+use super::deliberation_budget::{inbound_restates_fact, own_repetition_fact, peer_echo_fact};
 use super::working_memory::{WmKind, WorkingMemory};
 use super::workspace::BurstTurn;
 
@@ -38,6 +38,10 @@ pub struct FactContext<'a> {
     /// The persona's own-speech ring (say-seam recorded; primary self-history
     /// source so self-knowledge never depends on the room's context budget).
     pub own_speech: &'a [String],
+    /// The room's recent-message ring (attach-seam recorded, once per
+    /// message; #264) — room-history knowledge that never depends on the
+    /// workspace's context budget, exactly as own_speech is for self.
+    pub room_speech: &'a [String],
     /// Typed working memory when the persona has one (live spawns); eval
     /// forks and replays may run without it — ledger-class facts skip.
     pub working_memory: Option<&'a Arc<WorkingMemory>>,
@@ -95,6 +99,22 @@ impl PerceptionFact for PeerEcho {
 
     fn render(&self, cx: &FactContext) -> Option<String> {
         peer_echo_fact(cx.turns, cx.own_speech.last().map(String::as_str))
+    }
+}
+
+/// The newest INBOUND message restating settled room content (#264) — the
+/// predictive member of the repetition family: fires BEFORE she replies, at
+/// the moment the echo would be born, where the retroactive pair above fire
+/// one turn too late to prevent the chorus.
+struct InboundRestates;
+
+impl PerceptionFact for InboundRestates {
+    fn id(&self) -> &'static str {
+        "inbound_restates"
+    }
+
+    fn render(&self, cx: &FactContext) -> Option<String> {
+        inbound_restates_fact(cx.turns, cx.own_speech, cx.room_speech)
     }
 }
 
@@ -178,6 +198,7 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
     vec![
         Box::new(OwnRepetition),
         Box::new(PeerEcho),
+        Box::new(InboundRestates),
         Box::new(ContextBounds),
         Box::new(StepsLedger),
     ]
@@ -237,6 +258,7 @@ mod tests {
         let cx = FactContext {
             turns: &turns,
             own_speech: &own,
+            room_speech: &[],
             working_memory: None,
         };
         let facts = render_facts(&cx, &FactPolicy::default());
@@ -254,6 +276,7 @@ mod tests {
         let cx = FactContext {
             turns: &turns,
             own_speech: &own,
+            room_speech: &[],
             working_memory: None,
         };
         let mut policy = FactPolicy::default();
@@ -277,6 +300,7 @@ mod tests {
         let cx = FactContext {
             turns: &turns,
             own_speech: &own,
+            room_speech: &[],
             working_memory: Some(&wm),
         };
         let ledger = |facts: &[String]| {
