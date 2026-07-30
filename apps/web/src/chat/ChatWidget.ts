@@ -3677,10 +3677,17 @@ export class ChatWidget extends LitElement {
         for (const msg of arrived) {
           const streamed = next.get(msg.senderId);
           if (streamed === undefined) continue;
-          // Beacon-only entry (no text yet): an arrival can't be its settle —
-          // the stream hasn't produced anything. Leave it; `done` retires it.
-          if (streamed.length === 0) continue;
-          if (msg.content.includes(streamed.slice(-80))) next.delete(msg.senderId);
+          // Beacon-only entry (no rail tokens yet): retire on ANY arrival from
+          // its sender — some settles never stream rail tokens, and a stuck
+          // "(X) is responding…" after the answer landed is worse than the
+          // rare mid-turn retire (the next token flush recreates the entry
+          // instantly, losing nothing). Live 2026-07-30 ~02:50: the line
+          // showed, Benchy answered, the line never cleared.
+          // Text-bearing entries still retire only on their OWN settle
+          // (content match) so delayed old messages can't kill live streams.
+          if (streamed.length === 0 || msg.content.includes(streamed.slice(-80))) {
+            next.delete(msg.senderId);
+          }
         }
         if (next.size !== this._typing.size) this._typing = next;
       }
