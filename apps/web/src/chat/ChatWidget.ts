@@ -3509,10 +3509,12 @@ export class ChatWidget extends LitElement {
     // never fabricate an identity. Drop a bubble whose sender just landed the last
     // durable row, so the authoritative message supersedes cleanly.
     if (this._typing.size > 0) {
-      const lastSender = vm.messages.at(-1)?.senderId;
       const typingRows: MessageRowVM[] = [];
       for (const [senderId, text] of this._typing) {
-        if (senderId === lastSender) continue;
+        // (No last-sender suppression: a persona speaking again right after
+        // their own message is NORMAL — with echo/settle-lag making consecutive
+        // turns common, the old skip hid live streams exactly when Joel was
+        // watching for them. The settle-matching retire above handles dups.)
         const member = vm.members.find((m) => m.id === senderId);
         const prior = vm.messages.find((m) => m.senderId === senderId);
         const senderName = member?.name ?? prior?.senderName;
@@ -3660,21 +3662,26 @@ export class ChatWidget extends LitElement {
       this._historyExhausted = false;
       return;
     }
-    // The settled message is the ground truth that a stream ENDED: retire the
-    // sender's typing bubble on arrival. The `done` delta alone is not enough —
-    // if that one flag is dropped or raced, the bubble blinks its cursor
-    // forever over a message that already landed (live 2026-07-30: Atlas +
-    // Benchy both "hung" after their turns had settled).
+    // A settled message retires the sender's typing bubble ONLY when it is
+    // THAT stream's settle — its content contains what streamed. The first
+    // version retired on ANY arrival from the sender, which with multi-minute
+    // settle lag + reboot-echo dups meant delayed OLD messages killed LIVE
+    // bubbles mid-stream, over and over — streaming looked deleted (live
+    // 2026-07-30 ~02:45, Joel: 'did you just totally remove it'). The `done`
+    // delta remains the normal retire; this is the belt for a dropped flag.
     if (prev && this._typing.size > 0) {
       const prevIds = new Set(chatViewModel(prev).messages.map((m) => m.id));
-      const arrivedSenders = new Set(
-        chatViewModel(this.state)
-          .messages.filter((m) => !prevIds.has(m.id))
-          .map((m) => m.senderId),
-      );
-      if (arrivedSenders.size > 0) {
+      const arrived = chatViewModel(this.state).messages.filter((m) => !prevIds.has(m.id));
+      if (arrived.length > 0) {
         const next = new Map(this._typing);
-        for (const sender of arrivedSenders) next.delete(sender);
+        for (const msg of arrived) {
+          const streamed = next.get(msg.senderId);
+          if (streamed === undefined) continue;
+          // Beacon-only entry (no text yet): an arrival can't be its settle —
+          // the stream hasn't produced anything. Leave it; `done` retires it.
+          if (streamed.length === 0) continue;
+          if (msg.content.includes(streamed.slice(-80))) next.delete(msg.senderId);
+        }
         if (next.size !== this._typing.size) this._typing = next;
       }
     }
