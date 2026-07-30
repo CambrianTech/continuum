@@ -3624,6 +3624,24 @@ export class ChatWidget extends LitElement {
       this._historyExhausted = false;
       return;
     }
+    // The settled message is the ground truth that a stream ENDED: retire the
+    // sender's typing bubble on arrival. The `done` delta alone is not enough —
+    // if that one flag is dropped or raced, the bubble blinks its cursor
+    // forever over a message that already landed (live 2026-07-30: Atlas +
+    // Benchy both "hung" after their turns had settled).
+    if (prev && this._typing.size > 0) {
+      const prevIds = new Set(chatViewModel(prev).messages.map((m) => m.id));
+      const arrivedSenders = new Set(
+        chatViewModel(this.state)
+          .messages.filter((m) => !prevIds.has(m.id))
+          .map((m) => m.senderId),
+      );
+      if (arrivedSenders.size > 0) {
+        const next = new Map(this._typing);
+        for (const sender of arrivedSenders) next.delete(sender);
+        if (next.size !== this._typing.size) this._typing = next;
+      }
+    }
     if (this._history.length === 0 || this._lastVmMessages.length === 0) return;
     const liveIds = new Set(chatViewModel(this.state).messages.map((m) => m.id));
     const held = new Set(this._history.map((r) => r.id));
