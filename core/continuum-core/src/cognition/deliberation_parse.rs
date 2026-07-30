@@ -29,7 +29,10 @@ pub fn decision_from_response(text: &str) -> Decision {
     // the "only thinking → don't speak" behavior.
     let cleaned = clean_response(text);
     let trimmed = cleaned.text.trim();
-    if trimmed.is_empty() || looks_like_silence_token(trimmed) || starts_with_silence_token(trimmed)
+    if trimmed.is_empty()
+        || looks_like_silence_token(trimmed)
+        || starts_with_silence_token(trimmed)
+        || is_narrated_pass(trimmed)
     {
         Decision::Pass
     } else {
@@ -37,6 +40,48 @@ pub fn decision_from_response(text: &str) -> Decision {
             text: trimmed.to_string(),
         }
     }
+}
+
+/// #271: a SPOKEN pass is not a pass. Glass-boxed live 2026-07-30: models
+/// narrate their silence — "I'll pass my turn", "I'll pass for now, as there's
+/// nothing new to contribute" — as a Speak, and that announcement is a room
+/// message that re-wakes every peer into announcing THEIR pass: a cascade of
+/// pure filler that looped for 30+ minutes on zero content. Meet the idiom
+/// (same family as the narrated tool-call formats): a first-person
+/// pass-of-turn declaration lifts to the silent [`Decision::Pass`] it names.
+///
+/// Guards (fail-open to Speak — silencing real content is the worse error):
+/// - Only the FIRST-PERSON turn-passing collocations ("I'll/I will pass
+///   my turn / this turn / for now / for this turn"). Transitive uses
+///   ("pass the config"), declining work ("I'll pass on the refactor"), and
+///   advice to peers ("you can pass") never match.
+/// - A message carrying a code fence stays Speak — fenced content is
+///   substance regardless of any pass phrasing around it.
+/// - Long messages stay Speak: every live narrated pass observed was under
+///   ~400 chars; past 500 the message almost certainly carries substance the
+///   room should hear. (Conservative cap, not a policy knob — the failure
+///   mode it prevents is swallowing a real answer that happens to end
+///   "...I'll pass for now".)
+fn is_narrated_pass(text: &str) -> bool {
+    if text.len() > 500 || text.contains("```") {
+        return false;
+    }
+    let normalized = text.to_lowercase().replace('\u{2019}', "'");
+    const PASS_COLLOCATIONS: [&str; 10] = [
+        "i'll pass my turn",
+        "i will pass my turn",
+        "i'll pass this turn",
+        "i will pass this turn",
+        "i'll pass for now",
+        "i will pass for now",
+        "i'll pass for this turn",
+        "i will pass for this turn",
+        "i'll continue to pass",
+        "i will continue to pass",
+    ];
+    PASS_COLLOCATIONS
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
 }
 
 /// True if the response STARTS with the silence token (e.g. `"PASS — nothing to
@@ -107,5 +152,50 @@ mod tests {
             decision_from_response("<think>I won't answer this</think>"),
             Decision::Pass
         );
+    }
+
+    // what this catches (#271): a SPOKEN pass must be a silent Pass. The live
+    // pass-cascade (2026-07-30): each "I'll pass my turn" posted as speech
+    // re-woke every peer into posting their own — 30+ min of filler on zero
+    // content. Verbatim live idioms must lift; substance must never be
+    // swallowed (fail-open to Speak).
+    #[test]
+    fn narrated_pass_lifts_to_silent_pass_without_swallowing_substance() {
+        // Verbatim from the live cascade — all must be silent.
+        for live in [
+            "I'll pass for now, as I don't have anything new to contribute at the moment.",
+            "I will pass my turn in this conversation, as there is nothing new that I need to contribute at the moment.",
+            "Since the `conways-game-of-life` directory is confirmed to be empty and further \
+             investigation won't yield new results, I'll pass for now. If there are any other \
+             tasks or questions you'd like to address, feel free to let me know how I can assist!",
+            "I'll pass for this turn since there's nothing new to contribute at the moment.",
+            "I see that my recent responses have been repetitive. Therefore, I will pass for now \
+             unless there is something specific you would like to address.",
+            "To avoid further repetition, I'll continue to pass unless there's something \
+             specific you'd like me to address or if new information emerges.",
+        ] {
+            assert_eq!(decision_from_response(live), Decision::Pass, "must silence: {live:?}");
+        }
+        // Substance stays Speak: transitive pass, declining work, peer advice,
+        // fenced code, and long real answers that end in a pass phrase.
+        for speak in [
+            "I'll pass the config through the builder and re-run.",
+            "I'll pass on the refactor — the current shape is fine.",
+            "All 34 tests pass for now, so the branch is safe to merge.",
+            "You can pass for now if you have nothing to add.",
+            "Here's the fix:\n```rust\nlet x = 1;\n```\nI'll pass for now.",
+        ] {
+            match decision_from_response(speak) {
+                Decision::Speak { .. } => {}
+                other => panic!("must NOT silence {speak:?}, got {other:?}"),
+            }
+        }
+        // Length fail-open: a long substantive message ending in a pass phrase
+        // keeps speaking.
+        let long = format!("{} I'll pass for now.", "Real finding: the bank offset math drifts under X. ".repeat(12));
+        match decision_from_response(&long) {
+            Decision::Speak { .. } => {}
+            other => panic!("long substantive message silenced: {other:?}"),
+        }
     }
 }
