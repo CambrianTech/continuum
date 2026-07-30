@@ -9,10 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use airc_core::{RoomId, TranscriptKind};
-use airc_ipc::{
-    codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcCursor, Response,
-    RoomTipRequest,
-};
+use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcCursor, Response};
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
@@ -142,26 +139,17 @@ pub async fn run_daemon_attach(
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
 
-    // Advance the watermark to the room's current durable tip: this attach
-    // delivers everything between our cursor and the tip on THIS stream, so
-    // the next attach resumes from the tip. Deliberate trade-off, documented:
-    // a hard crash mid-gap loses that slice of LIVE perception (the durable
-    // transcript still holds every event — chat/poll + scroll-back serve it),
-    // which is the right failure shape versus replaying the whole log into
-    // every persona's mind on each reboot. Long-lived sessions widen the
-    // unpersisted window; the daemon's AttachCursorAdvanced frames (persisted
-    // below) and each healthy re-attach re-tighten it.
-    match DaemonClient::new(socket_path)
-        .room_tip(RoomTipRequest { channel })
-        .await
-    {
-        Ok(tip) => {
-            if let Some(cursor) = tip.tip {
-                persist_cursor(&channel, &cursor);
-            }
-        }
-        Err(error) => warn!("airc room-tip probe failed (watermark not advanced): {error}"),
-    }
+    // WATERMARK DISCIPLINE (#261, both PR #2057 review findings): the attach
+    // NEVER pre-persists the room tip. The old tip-probe persisted a cursor
+    // for events not yet processed — a daemon Error frame or transport read
+    // error mid-backlog then resumed PAST the tip, permanently SKIPPING the
+    // unprocessed remainder from live perception (the one failure worse than
+    // redelivery). The daemon's cursor HEARTBEAT (airc 9390c32e8) is now the
+    // sole advance source: an `AttachCursorAdvanced` frame rides live
+    // streaming at most once per second, always pointing at an ALREADY
+    // DELIVERED event — so the persisted watermark can only ever resume
+    // at-or-before what this consumer actually processed. No skip, and the
+    // redelivery window shrinks from the whole session to ≤1s of events.
 
     loop {
         let response = read_frame::<_, Response>(&mut stream)
