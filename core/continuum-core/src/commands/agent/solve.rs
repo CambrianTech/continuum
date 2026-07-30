@@ -30,7 +30,7 @@ const DEFAULT_MAX_ACTS: u32 = 12;
 const FORK_WAIT_TRIES: u32 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/agent/AgentSolveParams.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/agent/AgentSolveParams.ts")]
 pub struct AgentSolveParams {
     /// The persona (UUID, spawned) whose FULL cognition works the task.
     pub persona_id: String,
@@ -93,7 +93,7 @@ pub struct AgentSolveParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/agent/AgentSolveResult.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/agent/AgentSolveResult.ts")]
 pub struct AgentSolveResult {
     pub persona_id: String,
     pub model: String,

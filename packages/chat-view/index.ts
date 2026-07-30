@@ -20,6 +20,7 @@ export { KANBAN_KIND, kanbanStateFromEnvelope } from './KanbanState';
 export type { ChatState } from './ChatState';
 
 export { chatViewModel, formatTimeOfDay } from './chatViewModel';
+export { historyRowsFromPoll } from './historyProjections';
 export type {
   ChatViewModel,
   MemberKind,
