@@ -53,6 +53,53 @@ the intelligence mix that maximizes served experiences under the live resource v
   benchmark flywheel. Measured, never guessed — a self-assessment on stale/guessed
   numbers reassigns wrong.
 
+## The experience score is criticality-GATED, activity/goal-contextual, and temporal (Joel 2026-07-29)
+
+An activity's experience score is NOT an average of sub-scores — it is gated by its
+CRITICAL components, shaped by context, and evaluated over a window:
+
+- **Sub-scores + criticality gate.** Each activity has sub-scores (latency, fps, TTS,
+  STT, response quality, ...). They combine NON-linearly: a critical component degraded
+  collapses the WHOLE score even if everything else is green. Losing TTS or STT in a
+  live video chat totally compromises it — the experience score goes low regardless of
+  fps. This extends the QualityModel's critical-faculty gate ([[continuum-substrate-already-built]]
+  capacity/consumer.rs) from "a crash zeroes experience" to "any CRITICAL-component
+  degradation zeroes experience." The map must know which sub-components are load-bearing
+  per activity.
+- **Activity + goal context.** The score's shape depends on the activity AND the goal:
+  video chat with 14 personas vs 3 vs 1 has a different resource profile and different
+  critical set; the goal weights the sub-scores. Same node, different bearing per context.
+- **Degrade by criticality, not uniformly.** When latency/fps lags, cut the LEAST-critical
+  sub-component first (a background persona's avatar fps, a non-speaker's video) to PROTECT
+  the critical ones (never drop the active speaker's TTS/STT). Shed to preserve the
+  experience, targeted — not a uniform throttle that clips everything including the
+  load-bearing parts.
+
+## Temporal concentration — optimize experience over a WINDOW, not each instant
+
+The governor must maximize experience over a TIME WINDOW, not instantaneous fairness. It
+is correct to briefly PAGE OUT other personas so a hard task gets the smart MoE (e.g. K3)
+for a few minutes — the combined windowed experience is HIGHER because the hard problem
+gets solved, even though the instantaneous "everyone served equally" metric dipped. A
+governor "too worried about satisfying all personas" every instant never lets anyone do
+deep work — the exact failure Joel flagged: it refused to even temporarily admit K3 for a
+hard coding problem. Add a bounded, reversible CONCENTRATION term to the negotiation
+([[resource_vector]] grant_all): a high-value hard task may temporarily concentrate
+resources (page out low-priority lanes), on a deadline, then restore. Reversible +
+time-boxed = [[restarts-are-commonplace]] applied to attention.
+
+## Difficulty/failure-driven ESCALATION — scale UP on hard, not only DOWN on scarce
+
+Intelligence scales UP on detected DIFFICULTY, the dual of the ~5-tok/s reassign-DOWN on
+scarcity. Detect thrashing / repeated failure / low quality — a coder that can't solve the
+hard problem, an agent looping on a task (**like Claude thrashing on the hf download this
+very session** — repeating a failing move, not escalating) — and ESCALATE to a smarter
+model for that hard stretch (19B→K3; Opus→Fable), then DE-escalate when it's easy again.
+The failure/thrash IS the signal ([[benchmark-learning-flywheel]]): graded failure →
+escalate. This makes intelligence assignment two-sided: reassign DOWN when the tier can't
+sustain the experience (scarcity), reassign UP when the tier can't SOLVE the task
+(difficulty). Both detected from measured experience, both temporary, both reversible.
+
 ## Floors (initial, per Joel — calibrate from real experience later)
 - Interactive coder / agent: target ≥10 tok/s ([[task #30]]); reassign down below ~5.
 - Chat: comfortable well above 10; degrade gracefully.
