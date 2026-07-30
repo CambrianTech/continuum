@@ -81,10 +81,20 @@ pub fn plan_expert_residency_with_resident(
     // share one budget. RAM tier keeps its real free (uncontended warm tier).
     // Both tiers get their own resident experts' bytes ADDED BACK — a live
     // reading minus what we ourselves hold is not capacity, it's a countdown.
+    // ORDER MATTERS: the add-back goes on the RAW live reading BEFORE the
+    // serving fraction — budget = frac × (free + resident), never
+    // frac × free + resident (the latter over-credits by (1−frac) × resident;
+    // caught by the fixed-point test growing the hot set by one).
+    let adjusted = {
+        let mut p = profile.clone();
+        p.capacity.gpu_free_bytes_live = p
+            .capacity
+            .gpu_free_bytes_live
+            .saturating_add(resident_vram_bytes);
+        p
+    };
     let budgeted = DeviceCapacity {
-        gpu_free_bytes_live: profile
-            .serving_budget_bytes()
-            .saturating_add(resident_vram_bytes),
+        gpu_free_bytes_live: adjusted.serving_budget_bytes(),
         system_ram_free_bytes: profile
             .capacity
             .system_ram_free_bytes
@@ -111,7 +121,7 @@ pub fn plan_expert_residency_with_resident(
                     class = "expert_pager.below_cliff",
                     fast_total_bytes = fast_total,
                     one_token_ws_bytes = one_token_ws,
-                    activated_per_token = activated,
+                    activated_per_token = activated_per_token,
                     "fast tiers hold less than one token's working set — cross-token \
                      reuse will be structurally ZERO (WASTE Gate 5); shrink records \
                      (#268 container) before debugging cache logic"
