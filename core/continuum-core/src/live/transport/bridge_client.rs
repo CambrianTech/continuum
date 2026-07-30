@@ -212,10 +212,25 @@ impl LiveKitAgentManager {
         let Some(tx) = tx_guard.as_ref() else {
             return Err("Not connected".to_string());
         };
+        let frame_bytes = frame.len();
         match tx.try_send(MediaFrame { frame, kind }) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                crate::probe!(
+                    class = "media.pump.enqueue",
+                    module = "livekit-bridge",
+                    kind = kind,
+                    bytes = frame_bytes
+                );
+                Ok(())
+            }
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 let n = self.media_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                crate::probe!(
+                    class = "media.pump.drop",
+                    module = "livekit-bridge",
+                    kind = kind,
+                    dropped_total = n
+                );
                 if n == 1 || n % 32 == 0 {
                     clog_warn!(
                         "🌉 media pump full — {} frames dropped so far (latest: {})",
@@ -663,6 +678,7 @@ fn media_pump_loop(
     writer: Arc<Mutex<Option<UnixStream>>>,
 ) {
     while let Ok(item) = rx.recv() {
+        let start = std::time::Instant::now();
         let mut guard = writer.lock().unwrap();
         match guard.as_mut() {
             Some(stream) => {
@@ -671,6 +687,18 @@ fn media_pump_loop(
                     *guard = None;
                     return;
                 }
+                drop(guard);
+                // Timing per write: lock wait + kernel copy together. Steady
+                // state is tens of µs; a growing write_us trend means the
+                // bridge socket buffer is backing up — the drop counter's
+                // leading indicator.
+                crate::probe!(
+                    class = "media.pump.write",
+                    module = "livekit-bridge",
+                    kind = item.kind,
+                    bytes = item.frame.len(),
+                    write_us = start.elapsed().as_micros() as u64
+                );
             }
             None => {
                 // Connection died under us — this pump's generation is over.
