@@ -419,6 +419,49 @@ mod tests {
     }
 
     #[test]
+    fn ecache_over_container_skips_disk_on_a_recurring_working_set() {
+        // what this catches: the #268/#269 seam composing wrong — with a
+        // budget above the cliff, the SECOND pass over the same working set
+        // must hit cache and issue ZERO container reads. This is the whole
+        // point of the lane: reuse > 0, measured, not assumed.
+        use super::super::expert_ecache::{EcacheBudget, EvictionPolicy, ExpertEcache};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_container(dir.path(), 2, 8);
+        let mut container = ExpertContainer::open(dir.path()).expect("open");
+
+        let budget = EcacheBudget::derive(
+            32 * RECORD_ALIGN, // 32 records available >> 2-per-token cliff
+            manifest.activated_per_token,
+            manifest.record_bytes,
+        )
+        .expect("above the cliff");
+        let mut cache = ExpertEcache::new(budget, EvictionPolicy::Lfru);
+
+        let working_set: Vec<ExpertKey> = (0..2u16)
+            .flat_map(|layer| (0..8u16).map(move |expert| ExpertKey { layer, expert }))
+            .collect();
+        let mut buf = vec![0u8; manifest.record_bytes as usize];
+        let mut disk_reads = 0usize;
+        for pass in 0..2 {
+            for &key in &working_set {
+                if !cache.touch(key) {
+                    container.fetch(key, &mut buf).expect("fetch");
+                    disk_reads += 1;
+                }
+            }
+            if pass == 0 {
+                assert_eq!(disk_reads, working_set.len(), "cold pass reads each once");
+            }
+        }
+        assert_eq!(
+            disk_reads,
+            working_set.len(),
+            "warm pass must be served entirely from cache — zero new disk reads"
+        );
+    }
+
+    #[test]
     fn unknown_manifest_version_is_refused() {
         // what this catches: a v2 foundry container silently misread by a v1
         // reader — version gates the whole open.
