@@ -80,6 +80,10 @@ pub struct AircRagSource {
     buffer: Arc<DigestBuffer>,
     grounding: usize,
     fetch_limit: usize,
+    /// #249: durable-transcript top-up for a shallow live window (post-reboot the
+    /// persona's airc runtime log holds only events since ITS boot). `Some` in
+    /// production (default); tests without a store see a loud-skip, not a panic.
+    history: Option<Arc<dyn crate::persona::durable_history::DurableRoomHistory>>,
 }
 
 impl AircRagSource {
@@ -93,6 +97,49 @@ impl AircRagSource {
             buffer: global_channel_digest_buffer(),
             grounding: DEFAULT_GROUNDING,
             fetch_limit: FETCH_LIMIT,
+            history: Some(Arc::new(
+                crate::persona::durable_history::ChatStoreHistory,
+            )),
+        }
+    }
+
+    /// Override (or disable) the durable-history top-up — tests inject a stub;
+    /// `None` turns hydration off entirely.
+    pub fn with_history(
+        mut self,
+        history: Option<Arc<dyn crate::persona::durable_history::DurableRoomHistory>>,
+    ) -> Self {
+        self.history = history;
+        self
+    }
+
+    /// Synthesize a grounding-only `TranscriptEvent` from a durable transcript
+    /// line. Lamport 0 puts it strictly BEFORE any live event after the split
+    /// sort (which is stable, so hydrated lines keep their chronological input
+    /// order among themselves) — hydrated history can therefore only ever land
+    /// on the grounding side of the bookmark, never as unread. That is the #242
+    /// contract: history is context, never fresh perception.
+    fn hydrated_event(
+        room_id: uuid::Uuid,
+        sender: uuid::Uuid,
+        text: &str,
+    ) -> TranscriptEvent {
+        use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind};
+        let room = RoomId::from_uuid(room_id);
+        TranscriptEvent {
+            event_id: EventId::new(),
+            room_id: room,
+            peer_id: PeerId::from_uuid(sender),
+            client_id: ClientId::new(),
+            kind: TranscriptKind::Message,
+            occurred_at_ms: 0,
+            lamport: 0,
+            target: MentionTarget::Room(room),
+            headers: Headers::default(),
+            body: Some(Body::text(text)),
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
         }
     }
 
@@ -238,11 +285,75 @@ impl RagSource for AircRagSource {
             return Self::empty(ResolutionPreference::Placeholder);
         };
 
+        // #249: when the LIVE window is shallower than the grounding target (the
+        // post-reboot shape — the persona's airc runtime log restarted while the
+        // room's real history lives in the durable store), top up from the durable
+        // transcript. Hydrated lines enter at lamport 0 (grounding-only, see
+        // `hydrated_event`) and are deduped against live events by body text +
+        // sender (the durable row id is the airc event id for persona lines, but
+        // live events re-mint EventIds across runtimes — content identity is the
+        // honest join). Fetch failure degrades to the shallow window, loudly.
+        let mut events = events;
+        let live_in_room = events
+            .iter()
+            .filter(|e| e.room_id.as_uuid() == room_id)
+            .count();
+        if live_in_room < self.grounding {
+            if let Some(history) = &self.history {
+                match history.room_tail(room_id, self.grounding * 2).await {
+                    Ok(lines) => {
+                        // Text via the ONE room-turn decoder (both wire shapes),
+                        // same as ChannelElement — content identity is the dedup
+                        // key because event ids re-mint across runtime restarts.
+                        let live_bodies: std::collections::HashSet<String> = events
+                            .iter()
+                            .filter(|e| e.room_id.as_uuid() == room_id)
+                            .filter_map(|e| {
+                                crate::airc::realtime_wire::room_turn_from_event(e)
+                                    .ok()
+                                    .map(|(_, text)| text)
+                            })
+                            .collect();
+                        let mut hydrated = 0usize;
+                        // Chronological input order; stable sort keeps it among
+                        // the lamport-0 cohort. Prepend via extend + later sort.
+                        for line in &lines {
+                            if live_bodies.contains(&line.text) {
+                                continue;
+                            }
+                            let Ok(sender) = uuid::Uuid::parse_str(&line.sender_id) else {
+                                continue;
+                            };
+                            events.push(Self::hydrated_event(room_id, sender, &line.text));
+                            hydrated += 1;
+                        }
+                        crate::probe!(
+                            class = "airc_rag.hydrated",
+                            persona = self.persona_id.to_string().as_str(),
+                            live = live_in_room,
+                            hydrated = hydrated
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            persona_id = %self.persona_id,
+                            live = live_in_room,
+                            "airc rag: durable top-up unavailable — serving the shallow live window (#249)"
+                        );
+                    }
+                }
+            }
+        }
+
         // Pre-staged by the region (if it staged this room), else built once now from
-        // the events we already paged — identical shape (lazy compute-once).
+        // the events we already paged — identical shape (lazy compute-once). NOTE:
+        // the pre-staged path is skipped when we hydrated (the staged digest was
+        // built from the same shallow log); the built-once path below carries the
+        // topped-up window. Region-side hydration is the follow-up slice.
         let digest = match self.buffer.peek(&(self.persona_id, room_id)) {
-            Some(d) => d,
-            None => Arc::new(self.builder.build_from_events(
+            Some(d) if live_in_room >= self.grounding => d,
+            _ => Arc::new(self.builder.build_from_events(
                 self.persona_id,
                 room_id,
                 events,
@@ -356,6 +467,9 @@ mod tests {
             buffer: buffer.clone(),
             grounding: 0,
             fetch_limit: FETCH_LIMIT,
+            // Isolated tests exercise the live window; hydration has its own test
+            // (a stub DurableRoomHistory) and stays off here.
+            history: None,
         };
         (source, bookmarks, buffer)
     }
@@ -530,5 +644,92 @@ mod tests {
         let delivery = source.deliver(&ctx_in(room), 4, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 2, "two newest fit budget 4");
         assert!(delivery.continuation.is_none(), "digest model has no continuation cursor");
+    }
+
+    struct StubHistory {
+        lines: Vec<crate::persona::durable_history::HydratedLine>,
+    }
+    #[async_trait]
+    impl crate::persona::durable_history::DurableRoomHistory for StubHistory {
+        async fn room_tail(
+            &self,
+            _room: Uuid,
+            _limit: usize,
+        ) -> Result<Vec<crate::persona::durable_history::HydratedLine>, String> {
+            Ok(self.lines.clone())
+        }
+    }
+
+    // what this catches: the #249 greeting-chorus mechanism. Post-reboot the
+    // persona's airc runtime log holds ~1 live event while the room's real
+    // history lives in the durable store — every mind saw ONE message and
+    // mirrored it (glass-boxed live 2026-07-30). A shallow live window must be
+    // topped up from the durable tail as GROUNDING (lamport 0 — never unread,
+    // the #242 no-replay contract), deduped by content against live events.
+    #[tokio::test]
+    async fn shallow_live_window_tops_up_from_durable_history_as_grounding() {
+        let room = RoomId::new();
+        let sender = Uuid::new_v4();
+        // ONE live event — the post-reboot shape.
+        let live = event_in(room, Some("Hello everyone! I'm Benchy."), 5);
+        let reader = Arc::new(StubReader::new(vec![live]));
+        let (source, _bookmarks, _buffer) = isolated_source(reader);
+        let mut source = source;
+        source.grounding = 4; // want 4 lines of context; live has 1
+        source.history = Some(Arc::new(StubHistory {
+            lines: vec![
+                crate::persona::durable_history::HydratedLine {
+                    message_id: "m1".into(),
+                    sender_id: sender.to_string(),
+                    text: "the wordstats tests are next".into(),
+                },
+                crate::persona::durable_history::HydratedLine {
+                    message_id: "m2".into(),
+                    sender_id: sender.to_string(),
+                    // Duplicate of the live event — must be deduped, not doubled.
+                    text: "Hello everyone! I'm Benchy.".into(),
+                },
+                crate::persona::durable_history::HydratedLine {
+                    message_id: "m3".into(),
+                    sender_id: sender.to_string(),
+                    text: "Atlas claimed card 7cedd4cf".into(),
+                },
+            ],
+        }));
+
+        let delivery = source
+            .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
+            .await;
+        let texts: Vec<&str> = delivery
+            .items
+            .iter()
+            .map(|i| i.content.as_str())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("wordstats tests")),
+            "durable history must appear in the window; got: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("card 7cedd4cf")),
+            "all non-duplicate durable lines hydrate; got: {texts:?}"
+        );
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| t.contains("I'm Benchy"))
+                .count(),
+            1,
+            "the live event and its durable copy dedup to ONE line"
+        );
+        // Chronology: hydrated grounding (lamport 0) precedes the live event.
+        let benchy_pos = texts.iter().position(|t| t.contains("I'm Benchy")).unwrap();
+        let hist_pos = texts
+            .iter()
+            .position(|t| t.contains("wordstats tests"))
+            .unwrap();
+        assert!(
+            hist_pos < benchy_pos,
+            "hydrated history is PRIOR context, before the live tail"
+        );
     }
 }
