@@ -39,6 +39,16 @@ pub struct ChatPollParams {
     #[ts(optional, type = "string")]
     pub after_message_id: Option<Uuid>,
 
+    /// Anchor message for BACKWARD pagination — the scroll-back cursor.
+    /// When set, return the `limit` messages strictly BEFORE this
+    /// message's timestamp (still delivered in chronological order).
+    /// The endless-scroll loop: render the live tail, then keep passing
+    /// the OLDEST id on screen to page history out of durable storage.
+    /// Mutually exclusive with `after_message_id`.
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub before_message_id: Option<Uuid>,
+
     /// Max number of messages to return. Defaults to 50 if the caller
     /// omits it.
     #[serde(default)]
@@ -74,6 +84,13 @@ pub struct ChatPollResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub after_message_id: Option<Uuid>,
+
+    /// Echo of the `before_message_id` the caller passed in — the next
+    /// scroll-back page passes the OLDEST id it now holds. An empty
+    /// `messages` with this set means history is exhausted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub before_message_id: Option<Uuid>,
 }
 
 // ── chat/send ────────────────────────────────────────────────────────
@@ -226,11 +243,17 @@ mod tests {
             messages: vec![],
             count: 0,
             after_message_id: None,
+            before_message_id: None,
         };
         let val = serde_json::to_value(&r).unwrap();
         assert!(
             !val.as_object().unwrap().contains_key("afterMessageId"),
             "missing after_message_id should round-trip as absent, not null"
+        );
+        // The backward cursor echoes the same way: absent, never null.
+        assert!(
+            !val.as_object().unwrap().contains_key("beforeMessageId"),
+            "missing before_message_id should round-trip as absent, not null"
         );
     }
 
@@ -241,6 +264,7 @@ mod tests {
             messages: vec![],
             count: 0,
             after_message_id: Some(id),
+            before_message_id: None,
         };
         let val = serde_json::to_value(&r).unwrap();
         assert_eq!(val["afterMessageId"], json!(id.to_string()));

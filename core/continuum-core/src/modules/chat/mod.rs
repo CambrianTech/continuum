@@ -135,18 +135,44 @@ impl ChatModule {
         )
     }
 
+    /// Resolve a pagination anchor to its stored `timestamp` (the field
+    /// both cursor directions filter on) via `data/query` (limit 1,
+    /// filter on id). Fails loud when the anchor doesn't exist — silently
+    /// returning unfiltered history would hand the caller the wrong page.
+    async fn anchor_timestamp(&self, anchor_id: Uuid) -> Result<String, String> {
+        let anchor_query = json!({
+            "dbPath": "main",
+            "collection": CHAT_MESSAGES_COLLECTION,
+            "filter": { "id": { "$eq": anchor_id.to_string() } },
+            "limit": 1,
+        });
+
+        let anchor_result = self
+            .executor()
+            .execute_json("data/query", anchor_query)
+            .await
+            .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;
+
+        extract_first_record_field(&anchor_result, "timestamp").ok_or_else(|| {
+            // Matches the TS impl's "Message not found" path.
+            format!("chat/poll: anchor message not found: {anchor_id}")
+        })
+    }
+
     /// `chat/poll` — return recent messages, optionally filtered by
-    /// room or anchored after a specific message id.
+    /// room and anchored to a pagination cursor in EITHER direction.
     ///
     /// Implementation strategy (mirrors the TS `ChatPollServerCommand`
     /// behavior):
     ///
     /// 1. If `after_message_id` is set: look up that message's
     ///    timestamp via `data/query` (limit 1, filter on id), use it as
-    ///    a `$gt` filter on the main query.
+    ///    a `$gt` filter on the main query. If `before_message_id` is
+    ///    set (the scroll-back cursor): same lookup, used as a `$lt`
+    ///    filter — the `limit` messages immediately preceding the anchor.
     /// 2. Apply optional `room_id` filter.
     /// 3. Sort `asc` when polling after an anchor (chronological), else
-    ///    `desc` (latest-N).
+    ///    `desc` (latest-N / the page just before the anchor).
     /// 4. Query via `data/query` against the `chat_messages` collection.
     /// 5. Normalize back to chronological order for display regardless
     ///    of query direction.
@@ -154,38 +180,25 @@ impl ChatModule {
         let executor = self.executor();
         let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT);
 
-        // ── Phase 1: resolve the anchor timestamp if the caller
-        //   pinned `after_message_id`. The data module returns the
-        //   message record; we extract its `timestamp` field for the
-        //   downstream `$gt` filter.
-        let after_timestamp = if let Some(anchor_id) = params.after_message_id {
-            let anchor_query = json!({
-                "dbPath": "main",
-                "collection": CHAT_MESSAGES_COLLECTION,
-                "filter": { "id": { "$eq": anchor_id.to_string() } },
-                "limit": 1,
-            });
+        // The two anchors are opposite scroll directions — both at once
+        // has no coherent ordering. Fail loud, never guess.
+        if params.after_message_id.is_some() && params.before_message_id.is_some() {
+            return Err(
+                "chat/poll: afterMessageId and beforeMessageId are mutually exclusive — \
+                 page one direction at a time"
+                    .to_string(),
+            );
+        }
 
-            let anchor_result = executor
-                .execute_json("data/query", anchor_query)
-                .await
-                .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;
-
-            let timestamp = extract_first_record_field(&anchor_result, "timestamp");
-            match timestamp {
-                Some(ts) => Some(ts),
-                None => {
-                    // Anchor not found — surface a typed error rather
-                    // than silently returning all messages. Matches
-                    // the TS impl's "Message not found" path.
-                    return Err(format!(
-                        "chat/poll: anchor message not found: {}",
-                        anchor_id
-                    ));
-                }
-            }
-        } else {
-            None
+        // ── Phase 1: resolve the anchor timestamp if the caller pinned
+        //   a cursor (either direction) — the `$gt`/`$lt` bound below.
+        let after_timestamp = match params.after_message_id {
+            Some(anchor_id) => Some(self.anchor_timestamp(anchor_id).await?),
+            None => None,
+        };
+        let before_timestamp = match params.before_message_id {
+            Some(anchor_id) => Some(self.anchor_timestamp(anchor_id).await?),
+            None => None,
         };
 
         // ── Phase 2: build the main query. Filter on room +/- anchor
@@ -199,6 +212,9 @@ impl ChatModule {
         }
         if let Some(ts) = after_timestamp.clone() {
             filter.insert("timestamp".to_string(), json!({ "$gt": ts }));
+        }
+        if let Some(ts) = before_timestamp.clone() {
+            filter.insert("timestamp".to_string(), json!({ "$lt": ts }));
         }
 
         let sort_direction = if params.after_message_id.is_some() {
@@ -241,6 +257,7 @@ impl ChatModule {
             count: sorted.len(),
             messages: sorted,
             after_message_id: params.after_message_id,
+            before_message_id: params.before_message_id,
         })
     }
 
@@ -1095,6 +1112,77 @@ mod tests {
             .expect("anchor poll must succeed when the anchor exists");
         assert_eq!(result.count, 1);
         assert_eq!(result.after_message_id, Some(anchor_id));
+    }
+
+    // ── chat/poll: before_message_id path (the scroll-back cursor) ────
+
+    // what this catches: the endless-scroll page — `beforeMessageId` must
+    // resolve the anchor's timestamp, filter `$lt` (strictly OLDER), and
+    // query DESC (the page immediately preceding the anchor, not the
+    // oldest N in history). A regression here turns scroll-back into
+    // either a forward page or a jump to the beginning of time.
+    #[tokio::test]
+    async fn poll_with_before_anchor_filters_lt_and_queries_desc() {
+        let anchor_id = Uuid::new_v4();
+        let anchor_str = anchor_id.to_string();
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |params| {
+            let filter = &params["filter"];
+
+            // Anchor lookup: filter on `id`, limit 1.
+            if let Some(id_filter) = filter.get("id") {
+                assert_eq!(id_filter["$eq"], anchor_str);
+                return json!({
+                    "success": true,
+                    "data": [{
+                        "id": anchor_str,
+                        "data": { "id": anchor_str, "timestamp": "2026-05-30T12:00:00Z" }
+                    }]
+                });
+            }
+
+            // Main query: `$lt` bound from the anchor's timestamp, DESC.
+            assert_eq!(filter["timestamp"]["$lt"], "2026-05-30T12:00:00Z");
+            assert_eq!(params["sort"][0]["direction"], "desc");
+            json!({
+                "success": true,
+                "data": [
+                    { "id": "old-2", "data": { "id": "old-2", "timestamp": "2026-05-30T11:59:00Z" } },
+                    { "id": "old-1", "data": { "id": "old-1", "timestamp": "2026-05-30T11:58:00Z" } }
+                ]
+            })
+        }))]);
+
+        let result = chat
+            .poll(ChatPollParams {
+                before_message_id: Some(anchor_id),
+                ..Default::default()
+            })
+            .await
+            .expect("before-anchor poll must succeed when the anchor exists");
+        assert_eq!(result.count, 2);
+        assert_eq!(result.before_message_id, Some(anchor_id));
+        // Chronological normalization holds for the backward page too.
+        assert_eq!(result.messages[0]["id"], "old-1");
+        assert_eq!(result.messages[1]["id"], "old-2");
+    }
+
+    // what this catches: the two cursors are opposite scroll directions —
+    // accepting both would silently produce an incoherent page. Must
+    // fail loud, and must fail BEFORE any storage round-trip.
+    #[tokio::test]
+    async fn poll_rejects_both_cursor_directions_at_once() {
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|_| {
+            panic!("mutually-exclusive cursors must be rejected before any data/query");
+        }))]);
+        let err = chat
+            .poll(ChatPollParams {
+                after_message_id: Some(Uuid::new_v4()),
+                before_message_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            })
+            .await
+            .expect_err("both cursors at once must be rejected");
+        assert!(err.contains("mutually exclusive"), "got: {err}");
     }
 
     // ── chat/poll: missing anchor fails loud ──────────────────────────

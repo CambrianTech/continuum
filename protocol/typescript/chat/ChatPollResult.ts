@@ -26,4 +26,10 @@ count: number,
  * pagination/loop ergonomics — the next poll round just keeps
  * passing the most-recently-seen id.
  */
-afterMessageId?: string, };
+afterMessageId?: string, 
+/**
+ * Echo of the `before_message_id` the caller passed in — the next
+ * scroll-back page passes the OLDEST id it now holds. An empty
+ * `messages` with this set means history is exhausted.
+ */
+beforeMessageId?: string, };
