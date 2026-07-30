@@ -329,6 +329,17 @@ export interface ContentRegistry<Out> {
   render(view: ContentView): Out;
 }
 
+/** Target-native fragments the HOST composes into the workspace shell. The
+ *  compose bar (and its error strips) is host-owned — it needs the input state
+ *  and send handler the pure projection can't hold — but it BELONGS inside the
+ *  center column (the Discord geometry: full-height rails, center-scoped
+ *  header/transcript/composer). This slot lets the host hand that fragment to
+ *  the target, which places it; a target with no such slot ignores it. */
+export interface WorkspaceChrome<Out> {
+  /** Bottom of the center column — the compose bar + transient error strips. */
+  readonly centerFooter?: Out;
+}
+
 /** A consumer that renders the patterns to its own output type `Out` — web
  *  (a Lit `TemplateResult`), terminal (a `string` of cells), mobile (a native node),
  *  RAG (a grounding block `string`). One contract, every surface. The `content`
@@ -342,7 +353,7 @@ export interface RenderTarget<Out> {
    *  `WidgetRegistry` — the panel-stack analogue of `content` dispatching by purpose.
    *  Adding a rail widget is registering a renderer, never a new target method. */
   widget(view: PanelWidget): Out;
-  workspace(view: WorkspaceView): Out;
+  workspace(view: WorkspaceView, chrome?: WorkspaceChrome<Out>): Out;
 }
 
 // ── WidgetRegistry — the left-rail dispatch table (mirrors ContentRegistry) ───

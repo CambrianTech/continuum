@@ -24,6 +24,12 @@
  * (which carries `?me=<citizen>`).
  */
 
+// The IndexedDB adapter references DOM lib types (IDBDatabase et al.). The SDK
+// is consumed by non-browser surfaces too (tui, node hosts) whose tsconfigs
+// don't load `lib: dom` — this reference scopes the DOM ambient types to THIS
+// file so every consumer typechecks, without forcing dom onto their configs.
+/// <reference lib="dom" />
+
 import type { StateEnvelope } from './generated/positron/StateEnvelope';
 
 /** A cached envelope row: the envelope plus when it was persisted (staleness display). */
