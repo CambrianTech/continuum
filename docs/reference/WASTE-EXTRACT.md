@@ -52,6 +52,31 @@ Records for the same layer are contiguous and sorted by expert id.
 - K3 record = 12,406,784 B = exactly 3029 pages. One pread per expert.
 - Container = directory: manifest.json, trunk.bin, experts-L{n}.bin per layer (THE grid shard unit), codebooks.bin, usage.waste (runtime routing hotlist = sentinel-PGO analog).
 
+## codebooks.bin — byte-exact (CONFIRMED against upstream tools/convert.py,
+## 2026-07-30 — the layout the foundry's RVQ encoder is gated on)
+
+Fixed-size records, sequential by codebook id (file offset = cid × 4112).
+Per-codebook record = 16-byte LE header + FP16 data:
+
+| Offset | Size | Type | Field    | Value                                  |
+|--------|------|------|----------|----------------------------------------|
+| 0      | 4    | u32  | magic    | 0x4B424357 (`WCBK`, LE bytes b"WCBK")  |
+| 4      | 2    | u16  | cid      | codebook id (matches ExpertRec ref)    |
+| 6      | 1    | u8   | fmt      | 4 = VQ3R (5 = VQ2R)                    |
+| 7      | 1    | u8   | vec_dim  | 8                                      |
+| 8      | 4    | u32  | entries  | 256                                    |
+| 12     | 4    | u32  | reserved | 0                                      |
+| 16     | 4096 | f16  | data     | [entries × vec_dim] row-major LE FP16  |
+
+Record total = 4112 bytes. **cid assignment: `cid = cb_base + ki*stages + si`**
+— ki ∈ {gate=0, up=1, down=2}, si = stage index (0..stages), cb_base = the
+layer's base (layers sequential). VQ3R ⇒ 9 codebooks/layer (3 kinds × 3
+stages). Codebooks are k-means-fitted per layer on ~12 sampled experts —
+**the PACKER produces this file** (it is a quantization artifact, not a
+reader-side one). Per-channel corrections inside the ExpertRec: FP16, one
+per output channel per matrix, appended after the index blocks in kind
+order (gate, up, down); scale = `W.abs().amax(-1).clamp(min=1e-8)`.
+
 ## Cache semantics (ecache.h, port these as-is)
 ```c
     int32_t  key;        /* layer<<16 | expert, or -1 when empty            */
