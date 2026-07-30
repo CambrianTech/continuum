@@ -54,7 +54,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use airc_core::{EventId, PeerId, RoomId};
-use airc_lib::{Airc, AircError, HeartbeatTask, DEFAULT_HEARTBEAT_INTERVAL};
+use airc_lib::{Airc, AircError, DEFAULT_HEARTBEAT_INTERVAL};
+
+/// Abort-on-drop guard for the continuum-owned heartbeat pump (#260): keeps
+/// the airc `HeartbeatTask` teardown contract — dropping the runtime aborts
+/// the pump so a torn-down persona ages out of the roster within the
+/// presence window (honest "no longer here"), never beats past her death.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -171,7 +183,7 @@ pub struct PersonaAircRuntime {
     /// here" signal. `None` only on `from_attached` paths (tests/demo) that opt
     /// out of presence. Without it, co-resident personas never see each other in
     /// `[Present in this room]` — the roster-grounding-goes-dark bug.
-    heartbeat: Option<HeartbeatTask>,
+    heartbeat: Option<AbortOnDrop>,
     /// Where this citizen's identity came from — resumed from disk
     /// vs freshly minted. Carried for the lifetime of the runtime so
     /// telemetry surfaces (list/get IPC, future status panels) can
@@ -438,30 +450,77 @@ impl PersonaAircRuntime {
         // with publish_identity: a persona that can't heartbeat is
         // live-but-roster-invisible — degraded, not dead — never a silent
         // fallback ([[fallbacks-are-illegal-fail-loud]]: the cause is named).
-        let heartbeat = match airc_arc
-            .start_agent_heartbeat("persona", None, DEFAULT_HEARTBEAT_INTERVAL)
-            .await
-        {
-            Ok(task) => {
-                info!(
-                    persona_id = %persona_id,
-                    agent_name = %agent_name,
-                    interval_s = DEFAULT_HEARTBEAT_INTERVAL.as_secs(),
-                    "PersonaAircRuntime bootstrap: Alive heartbeat pump started — persona \
-                     is a present citizen in room rosters"
-                );
-                Some(task)
-            }
-            Err(source) => {
-                warn!(
-                    persona_id = %persona_id,
-                    agent_name = %agent_name,
-                    error = %source,
-                    "PersonaAircRuntime bootstrap: start_agent_heartbeat failed — persona is \
-                     live but will NOT appear present in other citizens' room rosters"
-                );
-                None
-            }
+        // #260 honest presence: the beat carries LIVE availability derived
+        // per tick from real serving state, not a spawn-time snapshot —
+        // `away` while her lane is still loading (warming), `ready` once
+        // /health answers. The interface must never show a green dot for a
+        // mind that cannot yet answer (Joel: "online = able to respond").
+        // Continuum owns this pump (airc's `start_agent_heartbeat` freezes
+        // availability at spawn); the first beat fires immediately so she is
+        // visible-as-warming from second one, and a beat is emitted on every
+        // tick thereafter (same DEFAULT_HEARTBEAT_INTERVAL cadence).
+        let heartbeat = {
+            let hb_airc = airc_arc.clone();
+            let hb_persona = persona_id;
+            let hb_name = agent_name.clone();
+            let handle = tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
+                let mut last: Option<airc_lib::AgentAvailabilityState> = None;
+                loop {
+                    ticker.tick().await;
+                    let serving = crate::inference::llama_server::current_serving();
+                    let availability = if serving.ready {
+                        airc_lib::AgentAvailabilityState::Ready
+                    } else {
+                        // Lane not up (cold boot, relaunch, squeeze): she can
+                        // hear but cannot yet think — warming, not online.
+                        airc_lib::AgentAvailabilityState::Away
+                    };
+                    if last != Some(availability) {
+                        crate::probe!(
+                            class = "persona.presence.availability",
+                            persona_id = %hb_persona,
+                            agent_name = %hb_name,
+                            state = ?availability,
+                            serving_ready = serving.ready,
+                            "presence availability transitioned (derived from live serving state)"
+                        );
+                        last = Some(availability);
+                    }
+                    let coordination = airc_lib::CoordinationSignal {
+                        availability: Some(availability),
+                        ..Default::default()
+                    };
+                    if let Err(error) = hb_airc
+                        .emit_agent_heartbeat_with_coordination(
+                            airc_lib::HeartbeatKind::Alive,
+                            "persona".to_string(),
+                            None,
+                            None,
+                            None,
+                            coordination,
+                        )
+                        .await
+                    {
+                        // WARN-and-continue: a persona that can't heartbeat is
+                        // live-but-roster-invisible — degraded, not dead.
+                        warn!(
+                            persona_id = %hb_persona,
+                            agent_name = %hb_name,
+                            error = %error,
+                            "persona heartbeat emit failed — presence degraded this tick"
+                        );
+                    }
+                }
+            });
+            info!(
+                persona_id = %persona_id,
+                agent_name = %agent_name,
+                interval_s = DEFAULT_HEARTBEAT_INTERVAL.as_secs(),
+                "PersonaAircRuntime bootstrap: dynamic-availability heartbeat pump started — \
+                 presence tracks live serving state (away=warming, ready=able to respond)"
+            );
+            Some(AbortOnDrop(handle))
         };
 
         // Resume-visibility contract (Joel 2026-07-13: post-reboot the team
