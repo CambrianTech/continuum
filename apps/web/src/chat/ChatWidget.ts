@@ -3567,6 +3567,10 @@ export class ChatWidget extends LitElement {
   private async loadOlderHistory(): Promise<void> {
     if (this._historyLoading || this._historyExhausted) return;
     if (!this.historyHandler || !this.state) return;
+    // Scroll-back is a TRANSCRIPT affordance. A persona home or live face
+    // also lives in `.what` (and a persona home OPENS at scrollTop 0, which
+    // trips the near-top trigger) — never page chat history under those.
+    if (focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace) return;
     const vm = chatViewModel(this.state);
     const anchor = this._history[0]?.id ?? vm.messages[0]?.id;
     if (anchor === undefined) return;

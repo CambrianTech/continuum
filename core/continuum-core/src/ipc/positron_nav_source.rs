@@ -138,8 +138,20 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
 /// persona), and the reader needs the kind to surface the focused activity as
 /// the right tab (a persona focus must NOT read as a room switch).
 #[derive(Default)]
+struct CitizenNav {
+    /// The current tab (the last `nav/select`).
+    current: Option<(String, NavTargetKind)>,
+    /// The citizen's OPEN non-room activities, in open order. Selecting a
+    /// persona OPENS a tab (activity == room == tab — a durable member of
+    /// the set, not a transient content overlay); selecting another persona
+    /// adds a SECOND tab, never replaces the first. Rooms don't live here —
+    /// the room-set fold carries them. A `nav/close` verb removes entries.
+    open: Vec<(String, NavTargetKind)>,
+}
+
+#[derive(Default)]
 pub struct NavFocus {
-    inner: Mutex<std::collections::HashMap<Uuid, (String, NavTargetKind)>>,
+    inner: Mutex<std::collections::HashMap<Uuid, CitizenNav>>,
 }
 
 impl NavFocus {
@@ -149,22 +161,49 @@ impl NavFocus {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&user)
-            .cloned()
+            .and_then(|n| n.current.clone())
+    }
+
+    /// The citizen's open non-room activities (persona homes today), in the
+    /// order they were opened. Every entry renders as its own tab.
+    pub fn open_activities(&self, user: Uuid) -> Vec<(String, NavTargetKind)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&user)
+            .map(|n| n.open.clone())
+            .unwrap_or_default()
     }
 
     /// Set the citizen's current tab (+ its activity kind), returning the
     /// PREVIOUS focus (the activity being left — when it's a room, the
-    /// `markRead` sibling advances its cursor).
+    /// `markRead` sibling advances its cursor). A non-room select also OPENS
+    /// the activity: it joins the citizen's tab set if not already there.
     pub fn focus(
         &self,
         user: Uuid,
         target: String,
         kind: NavTargetKind,
     ) -> Option<(String, NavTargetKind)> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(user, (target, kind))
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let nav = inner.entry(user).or_default();
+        if kind != NavTargetKind::Room && !nav.open.iter().any(|(t, _)| *t == target) {
+            nav.open.push((target.clone(), kind.clone()));
+        }
+        nav.current.replace((target, kind))
+    }
+
+    /// Close one open activity tab (the `nav/close` verb's storage half). A
+    /// close of the CURRENT tab also clears focus — the reader's first-room
+    /// stand-in takes over, exactly like the pre-select state.
+    pub fn close(&self, user: Uuid, target: &str) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(nav) = inner.get_mut(&user) {
+            nav.open.retain(|(t, _)| t != target);
+            if nav.current.as_ref().is_some_and(|(t, _)| t == target) {
+                nav.current = None;
+            }
+        }
     }
 }
 
@@ -400,24 +439,28 @@ impl NavReader for ChannelBookmarksNavReader {
         // the fold hasn't observed that room yet). Before any select, the
         // first room stands in — the honest pre-focus view for a fresh
         // citizen, unchanged from the pre-nav/select behavior.
-        let focus = global_nav_focus().current(user);
-        // A persona-kind focus surfaces as its OWN open tab (the persona home
-        // — same nav semantics as any activity, `activity == room == tab`).
-        // Title resolves through the live member-name fold (the same presence
-        // display_name the chat roster carries); an unnamed member gets the
-        // honest short-id label, exactly like an unnamed room. The persona
-        // home's room-ification (a real airc room per citizen) is the
-        // follow-up; this tab IS the nav truth today, not a parallel router.
-        if let Some((target, NavTargetKind::Persona)) = &focus {
-            let title = Uuid::parse_str(target)
+        let focus_store = global_nav_focus();
+        let focus = focus_store.current(user);
+        // EVERY open non-room activity surfaces as its OWN tab (`activity ==
+        // room == tab`): selecting a persona OPENED a durable tab, and opening
+        // a second persona adds a SECOND tab — never a swap (glass-boxed live
+        // 2026-07-30: deriving the persona tab from the single `current` focus
+        // meant one shape-shifting tab). Titles resolve through the live
+        // member-name fold (the same presence display_name the chat roster
+        // carries); an unnamed member gets the honest short-id label, exactly
+        // like an unnamed room. The persona home's room-ification (a real airc
+        // room per citizen) is the follow-up; these tabs ARE the nav truth
+        // today, not a parallel router.
+        for (target, kind) in focus_store.open_activities(user) {
+            let title = Uuid::parse_str(&target)
                 .ok()
                 .and_then(|id| self.members.borrow().get(&id).cloned())
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| target.chars().take(8).collect());
             activities.push(NavActivity {
-                id: target.clone(),
+                id: target,
                 title,
-                kind: NavTargetKind::Persona,
+                kind,
                 unread: 0,
                 purpose: "persona".to_string(),
                 last_read: None,
