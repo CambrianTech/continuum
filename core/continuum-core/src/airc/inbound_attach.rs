@@ -9,10 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use airc_core::{RoomId, TranscriptKind};
-use airc_ipc::{
-    codec::read_frame, AttachRequest, AttachStart, DaemonClient, IpcCursor, Response,
-    RoomTipRequest,
-};
+use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, Response};
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
@@ -74,49 +71,12 @@ pub fn spawn_daemon_attach(
     });
 }
 
-/// Where the per-channel attach watermark persists — the CONSUMER CURSOR
-/// (task #242). One tiny JSON file per channel under the user's continuum
-/// state dir: the [`IpcCursor`] this process has caught up to, threaded back
-/// as [`AttachStart::After`] on the next attach so a core reboot resumes at
-/// the gap instead of replaying the room's entire history into the UI and
-/// every persona's perception (glass-boxed three times on 2026-07-30 — each
-/// reboot re-fed days of transcript as fresh inbox to every mind).
-fn cursor_path(channel: &RoomId) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".continuum/state")
-        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid()))
-}
-
-fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
-    let raw = std::fs::read_to_string(cursor_path(channel)).ok()?;
-    // A corrupt watermark degrades to first-attach semantics (one full seed) —
-    // annoying, never wrong. It is presentation-adjacent state, not truth: the
-    // durable transcript is the storage of record either way.
-    serde_json::from_str(&raw).ok()
-}
-
-fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
-    let path = cursor_path(channel);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    match serde_json::to_string(cursor) {
-        Ok(json) => {
-            if let Err(error) = std::fs::write(&path, json) {
-                warn!("failed to persist airc attach cursor to {}: {error}", path.display());
-            }
-        }
-        Err(error) => warn!("failed to serialize airc attach cursor: {error}"),
-    }
-}
-
 pub async fn run_daemon_attach(
     socket_path: PathBuf,
     channel: RoomId,
     bus: Arc<MessageBus>,
 ) -> Result<(), String> {
-    let client = DaemonClient::new(socket_path.clone());
+    let client = DaemonClient::new(socket_path);
     // Owner-core model (airc-daemon/src/server.rs:274): the router
     // subscribes per channel — no global fan-out table. AttachRequest
     // MUST carry `channel: Some(_)` or the daemon responds
@@ -126,42 +86,15 @@ pub async fn run_daemon_attach(
     // Multi-room scopes will spawn one daemon_attach task per channel
     // they care about — single-attach today, per-room fan-out as a
     // follow-up when continuum rooms become first-class.
-    //
-    // CONSUMER CURSOR (#242): consumers resume from durable cursors over
-    // durable storage, never from zero. A persisted watermark resumes
-    // strictly after it (gap replay only, no duplicates at the seam —
-    // the AttachStart::After contract). Only the FIRST-EVER attach (no
-    // watermark on disk) seeds from transcript start, once per state
-    // dir — never once per reboot.
-    let start = match load_cursor(&channel) {
-        Some(cursor) => AttachStart::After(cursor),
-        None => AttachStart::FromTranscriptStart,
-    };
+    // airc#1222 bump: AttachRequest dropped Default for explicit
+    // builders. The prior `..default()` was `from_now: false` —
+    // FromTranscriptStart per airc-ipc's own "legacy meaning" doc — so
+    // preserve full-backlog semantics rather than silently switching to
+    // live-only (which would skip events on attach).
     let mut stream = client
-        .attach(AttachRequest::new(channel, start))
+        .attach(AttachRequest::new(channel, AttachStart::FromTranscriptStart))
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
-
-    // Advance the watermark to the room's current durable tip: this attach
-    // delivers everything between our cursor and the tip on THIS stream, so
-    // the next attach resumes from the tip. Deliberate trade-off, documented:
-    // a hard crash mid-gap loses that slice of LIVE perception (the durable
-    // transcript still holds every event — chat/poll + scroll-back serve it),
-    // which is the right failure shape versus replaying the whole log into
-    // every persona's mind on each reboot. Long-lived sessions widen the
-    // unpersisted window; the daemon's AttachCursorAdvanced frames (persisted
-    // below) and each healthy re-attach re-tighten it.
-    match DaemonClient::new(socket_path)
-        .room_tip(RoomTipRequest { channel })
-        .await
-    {
-        Ok(tip) => {
-            if let Some(cursor) = tip.tip {
-                persist_cursor(&channel, &cursor);
-            }
-        }
-        Err(error) => warn!("airc room-tip probe failed (watermark not advanced): {error}"),
-    }
 
     loop {
         let response = read_frame::<_, Response>(&mut stream)
@@ -170,11 +103,6 @@ pub async fn run_daemon_attach(
         let Some(response) = response else {
             return Ok(());
         };
-        // The daemon's own cursor-advance frames are the authoritative
-        // watermark when it coalesced backlog — persist before delegating.
-        if let Response::AttachCursorAdvanced { advanced_to, .. } = &response {
-            persist_cursor(&channel, advanced_to);
-        }
         handle_attach_response(response, &bus).await?;
     }
 }
