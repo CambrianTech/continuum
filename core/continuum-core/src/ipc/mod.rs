@@ -2815,6 +2815,12 @@ pub fn start_server(
                     &state.rt_handle,
                     projection_bus.clone(),
                     ws_substrate.clone(),
+                    // Durable hydration seed: the bootstrap room's stored tail
+                    // fills the projection BEFORE live events fold, so a core
+                    // reboot never presents an empty room to any client.
+                    node_presence_deps
+                        .clone()
+                        .map(|(_socket, room)| (Arc::clone(&ws_executor), room.as_uuid())),
                 );
 
                 // Per-citizen substrates for per-user views (nav): each connecting
