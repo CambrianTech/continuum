@@ -76,6 +76,30 @@ Tuning parameters (constructor, per-platform defaults):
 - Same `expert_key` hashing code on both platforms (shared header) — the identity
   must never fork.
 
+## The container format IS the fetch lever (WASTE convergence, 2026-07-30)
+
+Independent validation from WASTE (a working single-machine K3 expert-streamer:
+17 GB/token at 9.9 GB/s, 0.32–0.36 tok/s on a laptop): the ~50× fetch gap between
+it and a raw-GGUF reader on comparable NVMe is **storage layout, not IO tuning**.
+Raw GGUF stores expert weights 32-byte-aligned and scattered (gate/up/down apart)
+→ misaligned random reads + bounce buffers → ~200 MB/s ceiling. WASTE stores each
+expert as a **4 KiB-aligned record with gate/up/down adjacent** → one aligned,
+contiguous, near-sequential `pread` per expert → drive-rated throughput.
+
+**Contract additions:**
+- An `expert_fetch` implementation SHOULD read from an aligned streaming container
+  (4 KiB record alignment, one expert = one contiguous record incl. all three
+  projections), not raw GGUF. Producing that container is a FOUNDRY output — the
+  foundry doesn't just shrink models, it lays them out for streaming.
+- Eviction: LFRU over plain LRU (WASTE's measured choice; small win).
+- Convergent architecture (independently reached on both lanes AND by WASTE):
+  trunk-resident, cache-bypass reads (`FILE_FLAG_NO_BUFFERING` / direct IO),
+  bounded expert cache keyed `(layer, expert)` — which is this contract's
+  `expert_key`. Our sliding-window batched prefetch is AHEAD of WASTE (they have
+  none) — keep it.
+- Expected cross-token reuse at K3 sparsity (16/896): ~13% at a good budget. A
+  hit-rate of exactly 0 is ALWAYS a bug, never physics.
+
 ## Relationship to continuum
 
 The `#231` arch-profile carries these tuning parameters as DATA per model family;
