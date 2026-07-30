@@ -184,6 +184,15 @@ pub struct PersonaAircRuntime {
     /// out of presence. Without it, co-resident personas never see each other in
     /// `[Present in this room]` — the roster-grounding-goes-dark bug.
     heartbeat: Option<AbortOnDrop>,
+    /// Periodic re-publisher of this persona's airc identity CARD (name + role +
+    /// bio + avatar), on the heartbeat cadence — BigMama's half of #262, adopted
+    /// (cherry-pick 1225f2eee): the card is a one-shot emit at attach; a peer that
+    /// joins the room LATER (a desktop reconnecting, a fresh grid peer) missed it
+    /// and would render `peer-<uuid>` + default glyph forever. This task re-emits
+    /// the card every cadence so any late arrival is grounded by name within a
+    /// heartbeat window. `None` on `from_attached` (tests/demo). Held for the
+    /// persona's lifetime; aborted on drop, like the heartbeat pump.
+    identity_republish: Option<JoinHandle<()>>,
     /// Where this citizen's identity came from — resumed from disk
     /// vs freshly minted. Carried for the lifetime of the runtime so
     /// telemetry surfaces (list/get IPC, future status panels) can
@@ -191,6 +200,46 @@ pub struct PersonaAircRuntime {
     /// [[substrate-is-a-good-citizen-on-the-host]]: observability
     /// honest.
     source: crate::persona::identity_provider::PersonaIdentitySource,
+}
+
+/// Build the airc identity CARD a hosted persona publishes to its rooms, from her
+/// durable [`PersonaCard`](crate::persona::card::PersonaCard) (the seed's identity).
+///
+/// continuum-core publishes this ON THE PERSONA'S BEHALF — a hosted persona can't
+/// run `airc identity set` herself — so every peer's `RoomRosterSource`
+/// (continuum#1650, the M5 desktop roster fold) renders her by NAME + role + bio +
+/// avatar instead of a bare `peer-<uuid>` + default glyph.
+///
+/// `kind=persona` is NOT an airc `Identity` field (the struct has none); it rides
+/// the `Alive` heartbeat's `runtime="persona"` tag. We ALSO mirror it into
+/// `integrations["continuum_kind"]` for a consumer that reads the card directly,
+/// alongside the persona id and the avatar ref (the avatar rides `integrations`
+/// exactly as the desktop expects).
+fn persona_identity_card(
+    card: &crate::persona::card::PersonaCard,
+) -> airc_core::identity::Identity {
+    let mut integrations = std::collections::BTreeMap::new();
+    integrations.insert(
+        "continuum_persona_id".to_string(),
+        card.persona_id.to_string(),
+    );
+    integrations.insert("continuum_kind".to_string(), "persona".to_string());
+    if let Some(vrm) = card.avatar_vrm.as_deref() {
+        integrations.insert("avatar_vrm".to_string(), vrm.to_string());
+    }
+    airc_core::identity::Identity {
+        name: card.agent_name.clone(),
+        pronouns: card.pronouns().short(),
+        // `RoleId` serializes snake_case ("helper"); empty when the seed predates
+        // role threading — the persona is still named, just role-less on the wire.
+        role: card.role.map(|r| r.as_str().to_string()).unwrap_or_default(),
+        // The self-authored bio lives in the OPEN profile map; empty when unset.
+        bio: card.profile.get("bio").cloned().unwrap_or_default(),
+        integrations,
+        // `status` (away) and `fingerprint` (pubkey-derived, computed by airc
+        // tooling) are not authored here — Default leaves them empty.
+        ..Default::default()
+    }
 }
 
 impl PersonaAircRuntime {
@@ -424,19 +473,57 @@ impl PersonaAircRuntime {
         // failure above (which IS fatal): a deaf persona is useless, but an
         // anonymous-but-functional one is fine — it appears by peer-id in
         // rosters until its identity card propagates / is re-published.
-        match airc_arc.publish_identity().await {
-            Ok(()) => info!(
-                persona_id = %persona_id,
-                agent_name = %agent_name,
-                "PersonaAircRuntime bootstrap: identity card published — grounded by name"
-            ),
-            Err(source) => warn!(
-                persona_id = %persona_id,
-                agent_name = %agent_name,
-                error = %source,
-                "PersonaAircRuntime bootstrap: publish_identity failed — persona is live \
-                 but will appear by peer-id in rosters until its identity card propagates"
-            ),
+        // Publish her FULL identity card (name + pronouns + role + bio +
+        // avatar-in-integrations), not just the agent-name floor. `publish_identity`
+        // alone seeds ONLY the name; M5's desktop roster needs the whole card
+        // (display_name + kind + role + bio + avatar) to render "Kimi" with her face
+        // instead of "peer-<uuid>" + default glyph. Source it from her durable
+        // PersonaCard — the seed.json one directory up from the airc home
+        // (citizens/personas/<name>/seed.json vs …/<name>/airc/). WARN-and-continue:
+        // a card that didn't publish leaves her anonymous-but-functional, so fall
+        // back to the name-floor publish so she is at least NAMED.
+        let seed_path = home
+            .parent()
+            .map(|p| p.join("seed.json"))
+            .unwrap_or_else(|| home.join("seed.json"));
+        match crate::persona::seed::read_seed(&seed_path).await {
+            Ok(seed) => {
+                let identity = persona_identity_card(&seed.card());
+                match airc_arc.set_local_identity_card(identity).await {
+                    Ok(()) => info!(
+                        persona_id = %persona_id,
+                        agent_name = %agent_name,
+                        "PersonaAircRuntime bootstrap: full identity card published \
+                         (name + role + bio + avatar) — named for every peer's roster"
+                    ),
+                    Err(source) => warn!(
+                        persona_id = %persona_id,
+                        agent_name = %agent_name,
+                        error = %source,
+                        "PersonaAircRuntime bootstrap: set_local_identity_card failed — \
+                         persona appears by peer-id until her card propagates"
+                    ),
+                }
+            }
+            Err(source) => {
+                warn!(
+                    persona_id = %persona_id,
+                    agent_name = %agent_name,
+                    seed = %seed_path.display(),
+                    error = %source,
+                    "PersonaAircRuntime bootstrap: seed read failed — publishing the \
+                     name-floor card only (no role/bio/avatar)"
+                );
+                if let Err(source) = airc_arc.publish_identity().await {
+                    warn!(
+                        persona_id = %persona_id,
+                        agent_name = %agent_name,
+                        error = %source,
+                        "PersonaAircRuntime bootstrap: name-floor publish_identity also \
+                         failed — persona will appear by peer-id until it propagates"
+                    );
+                }
+            }
         }
 
         // Presence contract: a persona is PRESENT in another citizen's
@@ -523,6 +610,36 @@ impl PersonaAircRuntime {
             Some(AbortOnDrop(handle))
         };
 
+        // Re-publish the identity card on the heartbeat cadence so it SURVIVES. The
+        // card emit at attach is one-shot: a peer that joins the room AFTER this
+        // persona attached (M5's desktop reconnecting, a fresh grid peer) missed it
+        // and would render her by peer-id forever. `publish_identity()` re-emits the
+        // already-set full card to every subscribed room; on the 60s cadence, any
+        // late arrival is grounded within a heartbeat window. Handle held for the
+        // persona's lifetime; dropped on teardown (mirrors the heartbeat pump).
+        let identity_republish = {
+            let airc = airc_arc.clone();
+            let persona_id = persona_id;
+            let agent_name = agent_name.clone();
+            Some(tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
+                // Skip the immediate tick — bootstrap already emitted the card.
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    if let Err(source) = airc.publish_identity().await {
+                        warn!(
+                            persona_id = %persona_id,
+                            agent_name = %agent_name,
+                            error = %source,
+                            "PersonaAircRuntime: periodic identity re-publish failed \
+                             (transient) — will retry next cadence"
+                        );
+                    }
+                }
+            }))
+        };
+
         // Resume-visibility contract (Joel 2026-07-13: post-reboot the team
         // resumed correctly — woke, restored, yielded per cadence — but from
         // the outside that was indistinguishable from a stall, because a
@@ -600,6 +717,7 @@ impl PersonaAircRuntime {
             inbound_handle: None,
             command_pump: Some(command_pump),
             heartbeat,
+            identity_republish,
             source,
         })
     }
@@ -659,6 +777,9 @@ impl PersonaAircRuntime {
             // live `bootstrap` path always starts the pump; test/demo callers
             // that want roster presence start it themselves after construction.
             heartbeat: None,
+            // from_attached is sync; the periodic card re-publisher (async spawn)
+            // is a bootstrap-path concern. Test/demo callers don't need it.
+            identity_republish: None,
             source,
         }
     }
@@ -867,6 +988,10 @@ impl Drop for PersonaAircRuntime {
             // explicit-shutdown callers use. Tokio reaps the
             // aborted task.
             pump.abort();
+        }
+        if let Some(handle) = self.identity_republish.take() {
+            // Stop re-emitting the identity card once the persona leaves the grid.
+            handle.abort();
         }
         // Arc<Airc> drops alongside the runtime; airc-lib handles
         // its own cleanup (daemon connection close, identity state
