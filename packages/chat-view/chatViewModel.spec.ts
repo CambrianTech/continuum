@@ -8,6 +8,11 @@
  * covering the view model covers the presentation logic.
  */
 
+// formatTimeOfDay is VIEWER-LOCAL by design (Joel: chat times in the reader's
+// zone) — so this spec pins the process TZ to make its assertions deterministic
+// on any runner (PR #2057 review: 4 specs asserted UTC and failed on CST).
+process.env.TZ = 'UTC';
+
 import { describe, it, expect } from 'vitest';
 import { chatViewModel, formatTimeOfDay } from './chatViewModel';
 import type { ChatState } from './ChatState';
