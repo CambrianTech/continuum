@@ -491,6 +491,82 @@ impl ChatModule {
         }
         Ok(())
     }
+
+    /// #265: seed the repetition-perception speech rings from the durable
+    /// transcript at boot. The rings (`record_room_speech` /
+    /// `record_own_speech`) are in-process statics, so a reboot wipes them at
+    /// the exact moment they're most needed — the post-boot wake round, where
+    /// every persona re-emits its greeting 2+ times with the repetition and
+    /// [settled] facts blind (observed live 2026-07-30, twice). The durable
+    /// store (#140) already holds the history; this replays the latest
+    /// `RING_HYDRATION_SCAN` lines (chronological, all rooms — each ring keeps
+    /// only its own bounded tail) so the facts have priors from the first tick.
+    ///
+    /// Waits boundedly for the executor slot — this runs from the persist
+    /// listener spawned in `initialize`, which can race
+    /// `install_executor_on_all` (the #201 ordering); a missing executor here
+    /// is a not-yet, not a bug, so we poll the slot instead of panicking.
+    pub async fn hydrate_speech_rings(&self) -> Result<(), String> {
+        const RING_HYDRATION_SCAN: usize = 200;
+        const EXECUTOR_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+        const EXECUTOR_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+        let deadline = std::time::Instant::now() + EXECUTOR_WAIT;
+        while self.executor_slot.cloned().is_none() {
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    "executor not installed within boot window — rings start cold".to_string()
+                );
+            }
+            tokio::time::sleep(EXECUTOR_POLL).await;
+        }
+
+        let result = self
+            .poll(ChatPollParams {
+                room_id: None,
+                after_message_id: None,
+                before_message_id: None,
+                limit: Some(RING_HYDRATION_SCAN),
+            })
+            .await?;
+
+        let mut seeded = 0usize;
+        for msg in &result.messages {
+            // Stored ChatMessageEntity shape (see `persist_posted`): roomId,
+            // senderId, content.text. Malformed rows are skipped, not fatal —
+            // hydration is best-effort priors, never a boot gate.
+            let room = msg
+                .get("roomId")
+                .and_then(Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok());
+            let text = msg
+                .get("content")
+                .and_then(|c| c.get("text"))
+                .and_then(Value::as_str);
+            let (Some(room), Some(text)) = (room, text) else {
+                continue;
+            };
+            crate::cognition::deliberation_budget::record_room_speech(room, text);
+            if let Some(sender) = msg
+                .get("senderId")
+                .and_then(Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+            {
+                crate::cognition::deliberation_budget::record_own_speech(
+                    crate::identity::PeerId::from_uuid(sender),
+                    text,
+                );
+            }
+            seeded += 1;
+        }
+        crate::probe!(
+            class = "speech.rings.hydrated",
+            seeded = seeded,
+            scanned = result.count,
+            "repetition-fact rings seeded from durable transcript (#265)"
+        );
+        Ok(())
+    }
 }
 
 impl Default for ChatModule {
@@ -518,6 +594,17 @@ pub fn spawn_persist_listener(
 ) {
     let mut rx = bus.receiver();
     handle.spawn(async move {
+        // #265: seed the repetition-fact speech rings from the durable
+        // transcript BEFORE consuming live events — a reboot wipes the
+        // in-process rings exactly when the wake-greeting round needs them.
+        // The subscription above is already live, so no line is missed while
+        // we hydrate; a hydration failure degrades to cold rings, loudly.
+        if let Err(error) = module.hydrate_speech_rings().await {
+            tracing::warn!(
+                error,
+                "speech-ring hydration failed — repetition facts start cold this boot (#265)"
+            );
+        }
         loop {
             let event = match rx.recv().await {
                 Ok(e) => e,
@@ -2110,4 +2197,61 @@ mod tests {
         }
     }
     } // end mod stress
+
+    // ── #265: ring hydration from the durable transcript ─────────────
+
+    #[tokio::test]
+    async fn hydrate_speech_rings_seeds_room_and_own_rings_from_durable_store() {
+        // what this catches: reboot wipes the in-process speech rings, so the
+        // repetition/[settled] facts are blind exactly during the post-boot
+        // wake-greeting round (observed live 2026-07-30 — every persona
+        // re-greeted 2+ times, facts silent). Hydration must replay the
+        // durable transcript into BOTH the per-room and per-sender rings.
+        // Fresh UUIDs per run: the rings are process-global, so unique keys
+        // keep this isolated under full-suite parallelism (the #7 lesson).
+        let room = Uuid::new_v4();
+        let persona = Uuid::new_v4();
+        let room_s = room.to_string();
+        let persona_s = persona.to_string();
+
+        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(move |_p| {
+            // Store returns DESC (latest-first); poll normalizes chronological.
+            json!({
+                "success": true,
+                "data": [
+                    { "id": "m2", "data": { "id": "m2", "roomId": room_s, "senderId": persona_s,
+                        "timestamp": "2026-07-30T12:00:01Z",
+                        "content": { "text": "Hello everyone! I'm Benchy, back on the grid." } } },
+                    { "id": "m1", "data": { "id": "m1", "roomId": room_s, "senderId": persona_s,
+                        "timestamp": "2026-07-30T12:00:00Z",
+                        "content": { "text": "the wordstats tests are green, posting output" } } }
+                ]
+            })
+        }))]);
+
+        chat.hydrate_speech_rings()
+            .await
+            .expect("hydration over a healthy store must succeed");
+
+        let room_ring = crate::cognition::deliberation_budget::recent_room_speech(room);
+        assert_eq!(
+            room_ring.len(),
+            2,
+            "both durable lines must land in the room ring"
+        );
+        assert!(
+            room_ring[1].contains("back on the grid"),
+            "chronological order: the newest line is last (ring tail)"
+        );
+
+        let own_ring = crate::cognition::deliberation_budget::recent_own_speech(
+            crate::identity::PeerId::from_uuid(persona),
+        );
+        assert_eq!(
+            own_ring.len(),
+            2,
+            "the sender's own-speech ring must carry her durable lines — this is \
+             what lets own_repetition/inbound_restates fire on a post-boot re-greeting"
+        );
+    }
 }

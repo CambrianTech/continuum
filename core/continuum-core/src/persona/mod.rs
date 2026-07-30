@@ -32,6 +32,7 @@ pub mod scripted_adapter_factory;
 pub mod scripted_conversation;
 pub mod airc_runtime_registry;
 pub mod airc_source;
+pub mod durable_history;
 pub mod allocator;
 pub mod card;
 pub mod channel_items;

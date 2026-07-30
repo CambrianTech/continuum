@@ -2602,6 +2602,9 @@ pub fn start_server(
     // (LocalPersona → Trusted). Late-bound because the service loop has no
     // executor in scope; this is the one install site.
     crate::persona::training_producer::install_executor(Arc::clone(&executor));
+    // #249: the durable-transcript reader behind persona wake hydration shares
+    // the same substrate executor (one dispatch chain, no parallel query stack).
+    crate::persona::durable_history::install_executor(Arc::clone(&executor));
 
     // Round-2 verifier fix on PR #1568: now that the executor is
     // installed on every module, release the persona-supervisor task
