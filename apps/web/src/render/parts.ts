@@ -329,10 +329,12 @@ export function cognitionDiamond(
   </svg>`;
 }
 
-/** Fixed genome slot count — the legacy tile's four equipment slots (RPG loadout).
- *  Personas with more genes keep the top-4 slots lit; the panel tooltip names the
- *  overflow count. */
-const GENOME_SLOTS = 4;
+/** Genome slot count — TWO rows of four (the legacy tile's four equipment slots,
+ *  doubled). The loadout is heading past four as skills go per-domain and expert
+ *  granularity (#226) lands; eight visible slots read the growth honestly while
+ *  staying a fixed HUD footprint. Personas with more genes keep the top-8 lit;
+ *  the panel tooltip names the overflow count. */
+const GENOME_SLOTS = 8;
 
 /** How many genome slots are lit. Gene NAMES (when the radiator reported them) are
  *  the count truth; an older core radiating only the numeric `genome` percent maps

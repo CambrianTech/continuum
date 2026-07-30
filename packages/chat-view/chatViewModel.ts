@@ -116,12 +116,15 @@ export interface ChatViewModel {
   readonly revision?: number;
 }
 
-/** UTC `HH:MM` from unix-ms. Deterministic (no locale/timezone) so the view
- *  model is testable; a localizing formatter is a later presentation choice. */
+/** `HH:MM` from unix-ms in the VIEWER's timezone — a transcript timestamp is
+ *  presentation for the person reading it (glass-boxed live 2026-07-30: hard
+ *  UTC read "4:36" at 11:36 PM local — wrong for every human off-meridian).
+ *  Tests stay deterministic by pinning `TZ=UTC` in the test scripts, not by
+ *  hardcoding UTC into the product. */
 export function formatTimeOfDay(unixMs: number): string {
   const d = new Date(unixMs);
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
 
