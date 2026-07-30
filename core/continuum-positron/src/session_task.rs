@@ -106,14 +106,25 @@ fn frame_kinds(msg: &ClientMessage) -> Vec<String> {
     }
 }
 
+/// A subscribed renderer's frame budget. NOT `Unlimited`: state kinds are
+/// latest-wins snapshots riding a `watch` channel, so intermediate revisions
+/// are legally skippable — and a boot-replay/burst that folds thousands of
+/// messages must NOT become thousands of socket frames (the 2026-07-30 "load
+/// storm": every replayed message pushed individually, raining into the tab).
+/// The forwarder sends the FIRST change instantly and only spaces subsequent
+/// frames, so a lone chat message has zero added latency; only bursts
+/// coalesce, at worst 100ms behind. Token streams ride the separate stream
+/// rail, untouched by this.
+const RENDERER_HZ: u32 = 10;
+
 /// Compute the desired forward rate per kind from the connection's
-/// current subscription + observers. Subscription → `Unlimited`;
+/// current subscription + observers. Subscription → `RENDERER_HZ`;
 /// observers → the highest positive `budget_hz` naming the kind;
-/// subscription always wins over an observer for the same kind.
+/// the highest rate wins for the same kind.
 fn desired_rates(conn: &Connection) -> HashMap<String, ForwardRate> {
     let mut rates: HashMap<String, ForwardRate> = HashMap::new();
     for kind in &conn.subscription.kinds {
-        rates.insert(kind.clone(), ForwardRate::Unlimited);
+        rates.insert(kind.clone(), ForwardRate::Hz(RENDERER_HZ));
     }
     for obs in conn.observers.values() {
         if obs.budget_hz == 0 {

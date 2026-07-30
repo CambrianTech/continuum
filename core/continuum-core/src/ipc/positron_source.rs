@@ -118,7 +118,7 @@ pub(crate) const CHAT_FOCUSED: &str = "chat:focused";
 /// `chat/poll` default (`ChatPollParams.limit` defaults to 50) — the
 /// renderer shows a recent window; deeper history is a `chat/history`
 /// pull, not a fatter snapshot (see `ChatViewState.messages` doc).
-const MAX_MESSAGES_PER_SNAPSHOT: usize = 50;
+const MAX_MESSAGES_PER_SNAPSHOT: usize = 100;
 
 /// A provisional display label for a sender whose identity card has not
 /// yet folded in through presence — the first 8 chars of the peer id,
@@ -824,7 +824,7 @@ async fn fetch_seed_messages(
             "collection": "chat_messages",
             "filter": { "roomId": { "$eq": room.to_string() } },
             "sort": [{ "field": "timestamp", "direction": "desc" }],
-            "limit": 50,
+            "limit": MAX_MESSAGES_PER_SNAPSHOT,
         });
         match executor.execute_json("data/query", query).await {
             Ok(result) => {
