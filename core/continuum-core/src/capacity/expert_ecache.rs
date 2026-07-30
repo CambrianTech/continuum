@@ -209,6 +209,34 @@ impl ExpertEcache {
     pub fn resident(&self) -> usize {
         self.slots.len()
     }
+
+    /// Snapshot of the routing hotlist — (key, hits) sorted hottest-first.
+    /// WASTE's `usage.waste` analog: the caller persists this across restarts;
+    /// the cache itself never does IO.
+    pub fn usage(&self) -> Vec<(ExpertKey, u64)> {
+        let mut u: Vec<_> = self.slots.iter().map(|s| (s.key, s.hits)).collect();
+        u.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        u
+    }
+
+    /// Warm-start from a persisted [`Self::usage`] snapshot: pre-admit the
+    /// hottest keys so the first tokens after a restart hit instead of
+    /// re-ramping from zero (the cold ramp is the ONLY thing this fixes —
+    /// steady-state behavior is untouched). Warm entries carry their prior
+    /// frequency but `last = 0`, so on recency tiebreaks every live-proven
+    /// resident beats a warm guess. Only fills empty slots; never evicts.
+    pub fn warm(&mut self, usage: impl IntoIterator<Item = (ExpertKey, u64)>) {
+        for (key, hits) in usage {
+            if self.slots.len() >= self.max_slots {
+                break;
+            }
+            if self.index.contains_key(&key) {
+                continue;
+            }
+            self.index.insert(key, self.slots.len());
+            self.slots.push(Slot { key, hits: hits.max(1), last: 0 });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,5 +343,41 @@ mod tests {
         assert!(!c.touch(key(3, 417)), "first touch is a miss");
         assert!(c.touch(key(3, 417)), "same logical expert is a hit");
         assert_eq!(c.resident(), 1, "one logical expert = one entry");
+    }
+
+    // what this catches: the cold ramp after a restart — a cache warmed from
+    // the previous run's usage snapshot must serve its FIRST pass over the
+    // hot set from residency, not re-miss its way back up (WASTE's
+    // usage.waste warm-start; the reboot sibling of the fixed-point re-plan).
+    #[test]
+    fn warm_start_from_persisted_usage_kills_the_cold_ramp() {
+        let budget = EcacheBudget::derive(200, 2, 10).expect("20 slots");
+        let hot: Vec<ExpertKey> = (0..8).map(|e| key(0, e)).collect();
+
+        // Run 1: establish the hotlist, then "persist" it.
+        let mut before = ExpertEcache::new(budget, EvictionPolicy::Lfru);
+        for _ in 0..5 {
+            for &k in &hot {
+                before.touch(k);
+            }
+        }
+        let snapshot = before.usage();
+        assert_eq!(snapshot[0].1, 5, "hotlist carries real frequencies");
+
+        // Run 2 (post-restart): warm, then the first pass is all hits.
+        let mut after = ExpertEcache::new(budget, EvictionPolicy::Lfru);
+        after.warm(snapshot);
+        for &k in &hot {
+            assert!(after.touch(k), "warm-started key {k:?} must hit on first touch");
+        }
+        assert_eq!(after.misses, 0, "zero cold misses after warm-start");
+
+        // Warm never overfills: a hotlist longer than the budget truncates.
+        let mut tiny = ExpertEcache::new(
+            EcacheBudget::derive(30, 2, 10).expect("3 slots"),
+            EvictionPolicy::Lfru,
+        );
+        tiny.warm((0..100).map(|e| (key(1, e), 2)));
+        assert_eq!(tiny.resident(), 3, "warm fills at most the budget");
     }
 }
