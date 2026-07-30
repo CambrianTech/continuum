@@ -14,6 +14,31 @@ Stock llama.cpp has **no** "keep experts in host storage, stream the router-sele
 ones to VRAM per token, compute on GPU" mode. That mode is the thing we must add — it
 IS our ServingExpertPager (#20/#22) realized inside the engine.
 
+## KEY FINDING (2026-07-29 build agent): the copy mechanism ALREADY EXISTS in ggml
+`ggml/src/ggml-backend.cpp:1576-1660` op-offload already reads the top-k router ids and
+copies ONLY the used experts host→VRAM (async, grouped), then `mul_mat_id` runs on CUDA —
+exactly the design's mechanism. It is **gated to prefill** (`op_offload_min_batch_size`,
+default 32); decode (batch=1) falls back to CPU. **Flip it for decode at runtime:**
+`GGML_OP_OFFLOAD_MIN_BATCH=1` + `--n-cpu-moe 999 -ngl 99` (experts host-side, decode MoE
+matmuls forced onto GPU). So we do NOT rewrite `build_moe_ffn`/add a from-scratch CUDA slot
+allocator — we flip the decode gate and layer OUR measured residency + hit-rate + persistent
+VRAM slot-cache (rung 2) on top. THAT integration is the moat, not the copy op.
+
+**Verified fork build recipe (~1 min incremental):** from a `vcvars64.bat` (VS2022) shell:
+`set CUDA_ROOT=%USERPROFILE%\.continuum\cuda-13.2\Library` ; PATH += `.continuum\tools\cmake\bin`,
+`.continuum\tools\ninja`, `%CUDA_ROOT%\bin` ; then
+`cmake -S core/vendor/llama.cpp -B build-k3-cuda -G Ninja -DGGML_CUDA=ON
+-DCMAKE_CUDA_ARCHITECTURES=native -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_SERVER=ON
+-DLLAMA_CURL=OFF -DCUDAToolkit_ROOT="%CUDA_ROOT%" -DCMAKE_CUDA_COMPILER="%CUDA_ROOT%\bin\nvcc.exe"`
+then `cmake --build build-k3-cuda --target llama-server --config Release` → copy
+`build-k3-cuda/bin/llama-server.exe` to `~/.continuum/bin/llama-server-k3.exe`. Runtime needs
+`cuda-13.2/Library/bin` on PATH. (Ninja sidesteps the VS18-2026 cmake generator drift.)
+
+**The one wall to a measured token:** K3 IQ2_XXS = 663GB on a 250MB/s mechanical D:,
+63GB RAM → 44-min load floor + per-token expert faults hit disk. Needs NVMe (free C: via
+VSS, [[windows-vss-invisible-disk-hog]]) OR prove the mechanism first on a RAM-fitting MoE
+(48B-A3B @IQ2 ≈15-25GB). Code + build + on-GPU mechanism are READY; storage is the blocker.
+
 ## The modification surface (located)
 - **`src/llama-graph.cpp:1810` `llm_graph_context::build_moe_ffn`** — the ONE shared
   MoE FFN (every MoE arch + `models/kimi-k3.cpp` route through it). Experts enter as
