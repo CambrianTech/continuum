@@ -1127,6 +1127,14 @@ export class ChatWidget extends LitElement {
     .member .info {
       grid-area: info;
     }
+    /* Dormant mind: vitals wired, every cognition pulse dark, no live stream —
+       the row recedes slightly; any pulse/afterglow/stream restores full
+       brightness (transition makes waking visible). Opacity only: compositor-
+       cheap, theme-neutral (the universe layer can restyle later, #260). */
+    .member.dormant {
+      opacity: 0.62;
+      transition: opacity 0.9s ease;
+    }
     .member.idle {
       opacity: 0.6;
     }

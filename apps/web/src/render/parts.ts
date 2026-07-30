@@ -504,10 +504,22 @@ function avatarImage(url: string | undefined): TemplateResult | typeof nothing {
 
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
  *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
+/** A mind with vitals wired but every cognition pulse dark AND no live stream:
+ *  resting/not-currently-able-to-engage. The row DIMS slightly (Joel 2026-07-30:
+ *  'dim the entire row slightly in the user list') — the afterglow (~17s decay)
+ *  keeps recently-active minds bright, so brightness reads as recency of thought.
+ *  Members without vitals (plain agents/humans) never dim on this signal. */
+function isDormant(v: Readonly<Record<string, number>>): boolean {
+  if (Object.keys(v).length === 0) return false;
+  const pulse =
+    (v.focus ?? 0) + (v.reason ?? 0) + (v.recall ?? 0) + (v.act ?? 0) + (v.speaking ?? 0);
+  return pulse === 0;
+}
+
 export function memberCard(m: RosterMemberVM): TemplateResult {
   const hasVitals = Object.keys(m.vitals).length > 0;
   return html`
-    <li class="member clickable ${m.active ? 'online' : 'idle'}" data-kind=${m.kind} tabindex="0"
+    <li class="member clickable ${m.active ? 'online' : 'idle'} ${isDormant(m.vitals) ? 'dormant' : ''}" data-kind=${m.kind} tabindex="0"
         title="Open ${m.name}">
       ${agoStamp(m.lastSeenMs)}
       <span class="avatar" data-state=${avatarState(m.vitals, m.active)}>
@@ -571,7 +583,7 @@ export function memberCardFromCell(cell: ListingCell, listingId?: string): Templ
           fireListingSelect(e, listingId, cell.id, cell.group, element);
         };
   return html`
-    <li class="member clickable ${active ? 'online' : 'idle'}" data-kind=${kind} tabindex="0"
+    <li class="member clickable ${active ? 'online' : 'idle'} ${isDormant(cell.meters ?? {}) ? 'dormant' : ''}" data-kind=${kind} tabindex="0"
         title="Open ${cell.title}" @click=${select ?? nothing} @keydown=${keySelect ?? nothing}>
       ${agoStamp(cell.lastActiveMs)}
       <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
