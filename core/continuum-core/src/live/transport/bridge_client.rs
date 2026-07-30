@@ -826,7 +826,12 @@ fn calculate_rms_weights(samples: &[i16], sample_rate: u32, window_ms: u32) -> V
         .map(|chunk| {
             let sum_sq: f64 = chunk.iter().map(|&s| (s as f64) * (s as f64)).sum();
             let rms = (sum_sq / chunk.len() as f64).sqrt();
-            (rms / 8000.0).min(1.0) as f32
+            // Mouth-open weight from windowed RMS. Divisor is the sensitivity: at
+            // /8000 the mouth barely cracked open on normal speech (peak ~0.3), so
+            // lip-sync read as near-static. /4000 (2x gain) opens the mouth clearly
+            // on loud vowels (→1.0, capped) while quiet syllables stay small — a
+            // natural, visible range instead of a subtle flutter.
+            (rms / 4000.0).min(1.0) as f32
         })
         .collect()
 }

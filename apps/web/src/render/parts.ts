@@ -724,6 +724,28 @@ export function fireLiveFaceToggle(e: Event, open: boolean): void {
   );
 }
 
+/** The composed event a tab's × fires — close that open activity. Bubbles to
+ *  `<chat-widget>`, which dispatches the injected `nav/close` handler; the tab
+ *  disappears when the re-projected nav envelope streams back — substrate
+ *  truth only, no optimistic local removal (the LISTING_SELECT discipline). */
+export const NAV_TAB_CLOSE = 'nav-tab-close';
+
+/** Detail payload of a `NAV_TAB_CLOSE` event. */
+export interface NavTabCloseDetail {
+  /** The tab's target ref (the open activity being closed). */
+  readonly target: string;
+}
+
+export function fireNavTabClose(e: Event, target: string): void {
+  (e.currentTarget as HTMLElement).dispatchEvent(
+    new CustomEvent<NavTabCloseDetail>(NAV_TAB_CLOSE, {
+      detail: { target },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+}
+
 /** The composed toggle event the call bar's CC button fires — flips the live
  *  caption strip (a REAL control: the strip is the streaming transcript line). */
 export const LIVE_CAPTIONS_TOGGLE = 'live-captions-toggle';
