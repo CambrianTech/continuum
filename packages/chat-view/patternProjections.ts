@@ -64,6 +64,11 @@ function rosterCell(m: RosterMemberVM): ListingCell {
   if (m.lastSeenMs > 0) cell = { ...cell, lastActiveMs: m.lastSeenMs };
   if (m.avatarUrl) cell = { ...cell, image: m.avatarUrl };
   if (m.genes && m.genes.length > 0) cell = { ...cell, genes: m.genes };
+  // Identity card (#262): pronouns · role as the one-line subtitle, bio as
+  // the prose detail — each only when the member actually published a card.
+  const idLine = [m.pronouns, m.roleLabel].filter(Boolean).join(' · ');
+  if (idLine) cell = { ...cell, subtitle: idLine };
+  if (m.bio) cell = { ...cell, detail: m.bio };
   return cell;
 }
 

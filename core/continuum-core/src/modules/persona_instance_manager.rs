@@ -297,7 +297,70 @@ impl PersonaBirth {
         // (`register_persona_gender` survives only for REMOTE live participants — a peer
         // in a call, resolved from their display name, for whom no local card exists.)
         match crate::persona::seed::read_seed(&seed_path).await {
-            Ok(seed) => crate::persona::card::register(seed.card()),
+            Ok(seed) => {
+                let card = seed.card();
+                // ── Publish her airc IDENTITY CARD (#262, continuum side) ──
+                // The card system existed end-to-end for months (airc's
+                // `set_local_identity_card` persists + broadcasts to every
+                // subscribed room; `whois` renders it; role_template even
+                // carries authored bio_templates) — but NO continuum path
+                // ever called publish. Every persona attached as a bare name
+                // and the whole grid rendered info-less citizens (Joel
+                // 2026-07-30: "devoid of all info persona. What the fuck").
+                // Compose from the SAME durable card the avatar/voice seams
+                // key on, so wire identity coheres with presentation
+                // identity by construction. Self-authored `profile` facets
+                // win over the role template (her card is hers to edit).
+                let bio = card
+                    .profile
+                    .get("bio")
+                    .cloned()
+                    .or_else(|| {
+                        card.role.map(|r| {
+                            role_bio_template(r).replace("{name}", &card.agent_name)
+                        })
+                    })
+                    // A card minted before role threading (#199 later slice)
+                    // carries no role — an honest generic line beats an empty
+                    // bio (the "devoid of all info" citizen this slice kills).
+                    .unwrap_or_else(|| {
+                        format!(
+                            "I'm {}, a continuum persona living on this grid. My role card \
+                             hasn't been threaded yet — talk to me and find out what I do.",
+                            card.agent_name
+                        )
+                    });
+                let mut identity = airc_core::identity::Identity::new(card.agent_name.clone());
+                identity.pronouns = card
+                    .profile
+                    .get("pronouns")
+                    .cloned()
+                    .unwrap_or_else(|| card.pronouns().subject.to_string());
+                identity.role = card
+                    .role
+                    .map(|r| format!("continuum-persona-{}", r.as_str()))
+                    .unwrap_or_else(|| "continuum-persona".to_string());
+                identity.bio = bio;
+                identity.integrations.insert(
+                    "continuum_persona_id".to_string(),
+                    card.persona_id.to_string(),
+                );
+                match runtime.airc().set_local_identity_card(identity).await {
+                    Ok(()) => crate::probe!(
+                        class = "persona.identity.published",
+                        persona_id = %card.persona_id,
+                        agent_name = %card.agent_name,
+                        "airc identity card published — peers' whois/roster now carry name+pronouns+role+bio"
+                    ),
+                    Err(err) => tracing::warn!(
+                        error = %err,
+                        persona_id = %card.persona_id,
+                        agent_name = %card.agent_name,
+                        "airc identity card publish failed — peers see a bare name until the next boot republishes"
+                    ),
+                }
+                crate::persona::card::register(card);
+            }
             Err(e) => tracing::warn!(
                 error = %e,
                 persona_id = %runtime.persona_id(),
@@ -558,6 +621,33 @@ pub fn resolve_continuum_root() -> PathBuf {
     }
     let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT");
     home.join(".continuum")
+}
+
+/// The authored bio for a role — the role_template `bio_template` verbatim
+/// (`{name}` substituted by the caller). One source: the same templates the
+/// spawner plans from, so the published airc bio and the role's self-concept
+/// never drift. `Custom` has no authored template → a neutral one-liner (the
+/// persona edits her own card from there; profile facets override upstream).
+fn role_bio_template(role: crate::persona::role_template::RoleId) -> String {
+    use crate::persona::role_template::{
+        coder_template, designer_template, helper_template, RoleId,
+    };
+    match role {
+        RoleId::Helper => helper_template().identity.bio_template,
+        RoleId::Coder => coder_template().identity.bio_template,
+        RoleId::Designer => designer_template().identity.bio_template,
+        // No authored template yet (higher-tier role, no template fn in tree)
+        // — an honest one-liner rather than a fabricated voice.
+        RoleId::Sentinel => {
+            "I'm {name}. I watch the substrate — training coverage, gaps, drift — and raise \
+             what needs attention."
+                .to_string()
+        }
+        RoleId::Custom => {
+            "I'm {name}, a continuum persona. My role is user-defined — ask me what I do."
+                .to_string()
+        }
+    }
 }
 
 #[cfg(test)]

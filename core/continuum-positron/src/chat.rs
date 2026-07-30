@@ -373,6 +373,24 @@ pub struct RosterSlotView {
     /// serialized before this field folds as empty, never dropped.
     #[serde(default)]
     pub genes: Vec<String>,
+    /// Pronouns from the member's published airc identity card (e.g. "she",
+    /// "they"). Transported verbatim, never derived by positron. `None` =
+    /// no card published — honest-absent (#262).
+    #[serde(default)]
+    #[ts(optional)]
+    pub pronouns: Option<String>,
+    /// One-tag role from the identity card (e.g. "continuum-persona-helper",
+    /// "continuum-substrate-eng", "human"). Free-form, transported verbatim —
+    /// distinct from the coarse styling `kind`. `None` = no card.
+    #[serde(default)]
+    #[ts(optional)]
+    pub role_label: Option<String>,
+    /// One-sentence bio from the identity card — the "who is this citizen"
+    /// line a roster hover / citizen page renders. Transported verbatim.
+    /// `None` = no card published; never a fabricated blurb.
+    #[serde(default)]
+    #[ts(optional)]
+    pub bio: Option<String>,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills
@@ -597,6 +615,9 @@ mod tests {
         // message to the wrong origin.
         assert_eq!(Provenance::unresolved().runtime, "");
         let slot = RosterSlotView {
+            pronouns: None,
+            role_label: None,
+            bio: None,
             member_id: Uuid::from_u128(0xd),
             display_name: "Helper".into(),
             kind: SenderKind::Agent,
@@ -659,6 +680,9 @@ mod tests {
                 timestamp: 1_700_000_000_000,
             }],
             roster: vec![RosterSlotView {
+            pronouns: None,
+            role_label: None,
+            bio: None,
                 member_id: Uuid::from_u128(0xd),
                 display_name: "Helper".into(),
                 kind: SenderKind::Agent,

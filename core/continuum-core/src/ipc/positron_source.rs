@@ -297,6 +297,12 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
             .map(availability_label)
             .map(str::to_owned),
         last_seen_ms: member.last_seen_ms,
+        // The thin `room_roster` path carries no identity card — these fill
+        // only on the cards path ([`roster_slot_from_card`], #262). Honest
+        // absent, never fabricated.
+        pronouns: None,
+        role_label: None,
+        bio: None,
         // airc's `RoomMember` carries no vitals — a continuum persona's live
         // `PersonaState` (energy/attention/compute) arrives on its OWN
         // `persona:vitals` event and is folded into the slot by id at `store`
@@ -316,6 +322,52 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // Gene names arrive on the persona's OWN `persona:vitals` radiate and
         // are folded in at `store` time, same as vitals/loadout — never
         // through this presence path. Empty = none reported.
+        genes: Vec::new(),
+    }
+}
+
+/// The CARDS-flavored sibling of [`roster_slot_from_member`] (#262): projects
+/// an airc [`airc_lib::RoomMemberCard`] — presence + the FULL published
+/// identity card — into the same neutral slot. This is what makes a citizen's
+/// pronouns / role / bio / integrations reach every rendered roster instead
+/// of dying in the daemon's identity store. `identity: None` (present but
+/// uncarded) degrades to exactly the member-path projection: provisional
+/// name, honest-absent card fields.
+pub(crate) fn roster_slot_from_card(member: &airc_lib::RoomMemberCard) -> RosterSlotView {
+    let kind = SenderKind::from_runtime(&member.runtime);
+    let identity = member.identity.as_ref();
+    let non_empty = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    let display_name = identity
+        .and_then(|i| non_empty(&i.name))
+        .unwrap_or_else(|| provisional_sender_name(member.peer_id.as_uuid()));
+    RosterSlotView {
+        member_id: member.peer_id.as_uuid(),
+        display_name,
+        kind,
+        // The card path is where cross-system badges finally flow (the
+        // member path's "no badge map" comment stops being true here).
+        integrations: identity.map(|i| i.integrations.clone()).unwrap_or_default(),
+        provenance: Provenance {
+            runtime: member.runtime.clone(),
+        },
+        active: true,
+        availability: member
+            .availability
+            .map(availability_label)
+            .map(str::to_owned),
+        last_seen_ms: member.last_seen_ms,
+        pronouns: identity.and_then(|i| non_empty(&i.pronouns)),
+        role_label: identity.and_then(|i| non_empty(&i.role)),
+        bio: identity.and_then(|i| non_empty(&i.bio)),
+        // Vitals / loadout / avatar / genes fold in by id downstream, same
+        // as the member path — see the field notes on
+        // [`roster_slot_from_member`].
+        vitals: BTreeMap::new(),
+        loadout: None,
+        avatar_url: None,
         genes: Vec::new(),
     }
 }
@@ -342,6 +394,9 @@ pub(crate) fn test_presence_payload(room: Uuid, roster: Vec<RosterSlotView>) -> 
 #[cfg(test)]
 pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> RosterSlotView {
     RosterSlotView {
+        pronouns: None,
+        role_label: None,
+        bio: None,
         member_id: member,
         display_name: name.to_string(),
         kind,

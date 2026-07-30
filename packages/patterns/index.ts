@@ -88,6 +88,12 @@ export interface ListingCell {
   readonly count?: number;
   /** Optional grouping/category key (the "bookmarked menus + categories" axis). */
   readonly group?: string;
+  /** Optional longer description of the item — a citizen's published BIO, a
+   *  model's card description, a room's charter line. The prose sibling of
+   *  `subtitle` (one line vs a sentence); a target surfaces it as hover text
+   *  or a detail pane. Absent = none published — honest-absent, never a
+   *  fabricated blurb (#262). */
+  readonly detail?: string;
   /** Optional named gauges (0–100), drawn as bars/meters by a target — a member's
    *  genome-energy vitals, a model's download %, a room's activity. Keeps the neutral
    *  cell LOSSLESS so rich rows (the roster's ACT meters) survive the projection instead

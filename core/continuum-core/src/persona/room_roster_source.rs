@@ -110,6 +110,31 @@ pub trait AircRosterReader: Send + Sync {
         within: Duration,
         window: usize,
     ) -> Result<Vec<RoomMember>, AircError>;
+
+    /// The CARDS-flavored roster (#262): presence + each peer's FULL
+    /// published identity card (name/pronouns/role/bio/integrations).
+    /// Default adapts the thin [`room_roster`](Self::room_roster) with
+    /// `identity: None` — a reader that can't reach the identity store
+    /// still yields an honest presence-only roster; `airc_lib::Airc`
+    /// overrides with the real card join.
+    async fn room_roster_cards(
+        &self,
+        within: Duration,
+        window: usize,
+    ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
+        Ok(self
+            .room_roster(within, window)
+            .await?
+            .into_iter()
+            .map(|m| airc_lib::RoomMemberCard {
+                peer_id: m.peer_id,
+                runtime: m.runtime,
+                availability: m.availability,
+                last_seen_ms: m.last_seen_ms,
+                identity: None,
+            })
+            .collect())
+    }
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule
@@ -126,6 +151,14 @@ impl AircRosterReader for airc_lib::Airc {
         window: usize,
     ) -> Result<Vec<RoomMember>, AircError> {
         airc_lib::Airc::room_roster(self, within, window).await
+    }
+
+    async fn room_roster_cards(
+        &self,
+        within: Duration,
+        window: usize,
+    ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
+        airc_lib::Airc::room_roster_cards(self, within, window).await
     }
 }
 

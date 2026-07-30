@@ -173,6 +173,55 @@ pub fn recent_own_speech(peer: crate::identity::PeerId) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// How many recent ROOM messages the per-room ring retains. Sized to hold a
+/// full chorus cascade (the 2026-07-30 specimen cycled ~3 personas × ~4
+/// restatements): restatement evidence must outlive the workspace's rendered
+/// window, which live runs squeeze to 2–6 turns (#259).
+const ROOM_SPEECH_RING: usize = 16;
+
+/// Process-global per-ROOM ring of recent message content — the room-side
+/// sibling of [`own_speech_rings`], and the same starvation fix as #148:
+/// knowledge of what the ROOM already said must never depend on the
+/// workspace's context budget (live 2026-07-30: with a 3-turn window, the
+/// older copy of every restatement had already scrolled out, so the
+/// predictive `inbound_restates` fact was structurally blind — 0 fires
+/// across an entire live chorus). Written ONCE per message at the airc
+/// inbound-attach seam (the single point every room message crosses), read
+/// by the deliberation faculty per tick.
+fn room_speech_rings(
+) -> &'static std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>> {
+    static RINGS: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>,
+        >,
+    > = std::sync::OnceLock::new();
+    RINGS.get_or_init(Default::default)
+}
+
+/// Record one room message (call at the inbound-attach projection seam —
+/// once per message, never per receiving persona).
+pub fn record_room_speech(room: uuid::Uuid, content: &str) {
+    if content.trim().is_empty() {
+        return;
+    }
+    let mut rings = room_speech_rings().lock().unwrap();
+    let ring = rings.entry(room).or_default();
+    ring.push_back(content.to_string());
+    while ring.len() > ROOM_SPEECH_RING {
+        ring.pop_front();
+    }
+}
+
+/// The room's recent messages, oldest-first (empty for an unseen room).
+pub fn recent_room_speech(room: uuid::Uuid) -> Vec<String> {
+    room_speech_rings()
+        .lock()
+        .unwrap()
+        .get(&room)
+        .map(|r| r.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// Lowercased word-token set for Jaccard similarity.
 fn token_set(s: &str) -> std::collections::HashSet<String> {
     s.to_lowercase()
@@ -272,6 +321,66 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
 /// short acks never collapse.
 pub(crate) fn near_identical_substantial(a: &str, b: &str) -> bool {
     token_set(a).len() >= 12 && token_set(b).len() >= 12 && jaccard(a, b) >= NEAR_DUP_JACCARD
+}
+
+/// The PREDICTIVE restatement fact: the NEWEST inbound peer message restates
+/// something already said in the room (an older visible turn or her own-speech
+/// ring). The forward-looking sibling of [`peer_echo_fact`] — that one fires
+/// the turn AFTER she echoes (retroactive scolding); this one rides the wake
+/// the inbound triggers, BEFORE she replies, at the exact moment the echo
+/// would be born. Same geometry ([`near_identical_substantial`]): one
+/// definition of "nearly identical" across every repetition axis.
+///
+/// Why (task #264, glass-boxed 2026-07-30): the conway room spent 40+ minutes
+/// in a full-room chorus AFTER its task completed — one sentence emitted
+/// verbatim by all three personas in sequence. Captures showed the echo brick
+/// firing only retroactively (fe4dac17 echoed with zero facts in-prompt; the
+/// fact arrived one turn too late), and closure statements re-triggering
+/// peers because a closure is still a new message. The room had no rest
+/// state. Naming the restatement ON THE INBOUND gives every mind the chance
+/// to let a settled topic rest — the fork (add something genuinely new, or
+/// go silent) stays hers.
+pub(super) fn inbound_restates_fact(
+    turns: &[BurstTurn],
+    own_speech: &[String],
+    room_speech: &[String],
+) -> Option<String> {
+    // Only rides an inbound wake: the newest visible turn must be a peer's.
+    // If she spoke last, there is nothing pending to reply to and the
+    // retroactive facts already cover her own loop axes.
+    let newest = turns.last()?;
+    if newest.is_self || newest.author.trim().is_empty() {
+        return None;
+    }
+    // The room ring is recorded at the attach seam BEFORE this tick runs, so
+    // it contains the newest message itself — drop exactly ONE byte-exact
+    // copy (scanning newest-first) so a message never matches its own record,
+    // while a genuine byte-identical re-send (two ring copies) still fires.
+    let mut own_record_skipped = false;
+    let prior_room: Vec<&str> = room_speech
+        .iter()
+        .rev()
+        .filter(|r| {
+            if !own_record_skipped && r.as_str() == newest.content {
+                own_record_skipped = true;
+                return false;
+            }
+            true
+        })
+        .map(String::as_str)
+        .collect();
+    let prior_turns = turns[..turns.len() - 1].iter().map(|t| t.content.as_str());
+    let prior_own = own_speech.iter().map(String::as_str);
+    prior_turns
+        .chain(prior_own)
+        .chain(prior_room)
+        .any(|p| near_identical_substantial(&newest.content, p))
+        .then(|| {
+            format!(
+                "[settled] {}'s newest message restates what has already been said here — nothing new has been raised. Replying to a restatement usually re-raises it; silence (PASS) is a normal response to a settled topic.",
+                newest.author
+            )
+        })
 }
 
 /// The persona's PEER-ECHO fact for this tick: her last utterance is nearly
@@ -584,6 +693,73 @@ mod tests {
 
         // Nothing spoken yet → nothing to compare.
         assert_eq!(peer_echo_fact(&turns, None), None);
+    }
+
+    // what this catches: #264 — the PREDICTIVE restatement fact must fire on
+    // the INBOUND wake, before she replies. Live specimen: the 2026-07-30
+    // conway chorus — one sentence emitted verbatim by all three room
+    // personas after the task completed, each echoing the newest inbound
+    // because no fact warned that it restated settled content (the
+    // retroactive pair fire one turn too late). Fires on: newest peer turn
+    // near-identical to an older visible turn OR to her own-speech ring.
+    // Stays inert on: novel inbound, self-newest, short acks (token floor).
+    #[test]
+    fn inbound_restates_fires_before_reply_on_restated_settled_content() {
+        let settled = "I see that we've been discussing two separate projects: one for counting \
+                       word frequencies and another simulating Conway's Game of Life today.";
+        // Peer restates an OLDER peer turn → fact fires naming the restater.
+        let turns = vec![
+            BurstTurn::attributed(false, SPEAKER_REVIEWER, settled, None),
+            BurstTurn::attributed(false, SPEAKER_LEAD, settled, None),
+        ];
+        let fact = inbound_restates_fact(&turns, &[], &[]).expect("a restated inbound is a fact");
+        assert!(fact.contains(SPEAKER_LEAD), "names the restating peer: {fact}");
+        assert!(fact.starts_with("[settled]"));
+
+        // Peer restates what SHE already said (own-speech ring) → fires too.
+        let own = vec![settled.to_string()];
+        let turns_vs_own = vec![BurstTurn::attributed(false, SPEAKER_LEAD, settled, None)];
+        assert!(inbound_restates_fact(&turns_vs_own, &own, &[]).is_some());
+
+        // The load-bearing live case (glass-boxed 2026-07-30, 0 fires all
+        // morning): the older copy has scrolled OUT of the workspace window
+        // and lives only in the room ring. The ring also contains the newest
+        // message's own record (attach writes before the tick) — one byte-
+        // exact copy must be excluded, or nothing ever fires without a match.
+        let ring_only = vec![BurstTurn::attributed(false, SPEAKER_LEAD, settled, None)];
+        let ring = vec![settled.to_string(), settled.to_string()]; // older copy + own record
+        assert!(inbound_restates_fact(&ring_only, &[], &ring).is_some());
+        // Ring holding ONLY the newest's own record → inert (a message must
+        // never match itself).
+        let just_self = vec![settled.to_string()];
+        assert_eq!(inbound_restates_fact(&ring_only, &[], &just_self), None);
+
+        // Novel inbound → inert.
+        let novel = vec![
+            BurstTurn::attributed(false, SPEAKER_REVIEWER, settled, None),
+            BurstTurn::attributed(
+                false,
+                SPEAKER_LEAD,
+                "new idea entirely: let us profile the renderer allocation path under load next",
+                None,
+            ),
+        ];
+        assert_eq!(inbound_restates_fact(&novel, &[], &[]), None);
+
+        // She spoke last → nothing pending to reply to; retroactive facts own
+        // her loop axes.
+        let self_last = vec![
+            BurstTurn::attributed(false, SPEAKER_REVIEWER, settled, None),
+            BurstTurn::attributed(true, SPEAKER_TESTER, settled, None),
+        ];
+        assert_eq!(inbound_restates_fact(&self_last, &[], &[]), None);
+
+        // Short ack restating a short ack is conversation (token floor).
+        let acks = vec![
+            BurstTurn::attributed(false, SPEAKER_REVIEWER, "thanks, all good!", None),
+            BurstTurn::attributed(false, SPEAKER_LEAD, "thanks, all good!", None),
+        ];
+        assert_eq!(inbound_restates_fact(&acks, &[], &[]), None);
     }
 
     // what this catches: #150 — the turn-boundary stop derivation. Peers in

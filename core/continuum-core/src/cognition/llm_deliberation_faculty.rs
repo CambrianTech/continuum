@@ -878,9 +878,11 @@ impl LlmDeliberationFaculty {
         let spoken = super::deliberation_budget::recent_own_speech(
             crate::identity::PeerId::from_uuid(self.persona_id),
         );
+        let room_speech = super::deliberation_budget::recent_room_speech(ws.room_id);
         let fact_cx = super::perception_facts::FactContext {
             turns: &ws.turns,
             own_speech: &spoken,
+            room_speech: &room_speech,
             working_memory: self.working_memory.as_ref(),
         };
         let facts = super::perception_facts::render_facts(
