@@ -100,6 +100,31 @@ escalate. This makes intelligence assignment two-sided: reassign DOWN when the t
 sustain the experience (scarcity), reassign UP when the tier can't SOLVE the task
 (difficulty). Both detected from measured experience, both temporary, both reversible.
 
+## Multi-user + contention: the human's foreground work is the TOP-priority activity (Joel 2026-07-29)
+
+Eventual goal: run **system-wide (all users)**, a background service serving whoever's on
+the box — deferred for now (complexity/safety concerns), but a good eventual test and how
+Joel sets up his machines (e.g. his wife's account runs Steam games). The load-bearing
+requirement:
+
+- **Recognize the user + what they're doing.** Detect a foreground GPU-heavy app (a game —
+  via Steam running / foreground process / a GPU-util spike from a process we don't own) as
+  a FIRST-CLASS contention signal, not just a number.
+- **The human's foreground GPU work is the HIGHEST-priority "activity"; continuum defers to
+  it, always.** "Not be a problem during outside GPU usage, or at least not interfere,
+  deprioritize." When the user games, continuum YIELDS: sheds VRAM, deprioritizes/pauses its
+  lanes, pages experts out, scales intelligence down, or moves work to the grid — so the game
+  gets the GPU. The human's experience is a load-bearing sub-score; **degrade continuum,
+  never the human's game.**
+- **This is what `capacity/mod.rs` was built for.** `gpu_free_bytes_live` = "free after
+  external (unowned) load — a game/browser"; the FitPolicy derives grants from live free, so
+  a game opening (shrink) and closing (grow) already fall out. Joel's scenario adds the two
+  concrete pieces on top: the SENSOR (foreground GPU app / Steam detection) as an explicit
+  high-priority unowned-pressure source, and the POLICY (aggressive yield to foreground user
+  work). Makes continuum a good citizen on a shared/gaming machine — the precondition for the
+  all-users service. Ties to [[resource_vector]] (measured live free, external subtracted)
+  and the always-on background-service end state.
+
 ## Floors (initial, per Joel — calibrate from real experience later)
 - Interactive coder / agent: target ≥10 tok/s ([[task #30]]); reassign down below ~5.
 - Chat: comfortable well above 10; degrade gracefully.
