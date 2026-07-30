@@ -69,7 +69,7 @@ export type SelectRoomHandler = (target: string, kind: 'room' | 'persona') => Pr
  *  page means history is exhausted. The widget projects and prepends. */
 export type HistoryHandler = (
   roomId: string,
-  beforeMessageId: string,
+  beforeMessageId: string | undefined,
 ) => Promise<readonly unknown[]>;
 
 /** The tab-close action the host injects (`nav/close`). The tab disappears
@@ -3603,8 +3603,11 @@ export class ChatWidget extends LitElement {
     // trips the near-top trigger) — never page chat history under those.
     if (focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace) return;
     const vm = chatViewModel(this.state);
+    // No anchor = the live window is EMPTY (post-cursor reboot: only events
+    // after the consumer watermark fold — the durable transcript still holds
+    // everything). An anchor-less fetch pages the LATEST stored window, so a
+    // freshly-rebooted room hydrates instead of sitting on "No messages yet".
     const anchor = this._history[0]?.id ?? vm.messages[0]?.id;
-    if (anchor === undefined) return;
     this._historyLoading = true;
     const what = this.renderRoot.querySelector('.what');
     const prevHeight = what?.scrollHeight ?? 0;
@@ -3654,6 +3657,19 @@ export class ChatWidget extends LitElement {
       this._scrollHost = what;
     }
     if (changed.has('state') && !persona && this._wasNearBottom) this.scrollToLatest();
+    // Hydrate a sparse window from durable storage: after a cursor-armed core
+    // reboot the live projection starts (near-)empty — page the latest stored
+    // window in once so the room reads continuous, never "blown away". The
+    // loading/exhausted latches stop this repeating.
+    if (
+      changed.has('state') &&
+      !persona &&
+      this.state !== undefined &&
+      this._history.length === 0 &&
+      chatViewModel(this.state).messages.length < 10
+    ) {
+      void this.loadOlderHistory();
+    }
     if (changed.has('nav')) {
       const wasPersona = focusedPersonaTab(changed.get('nav') as NavViewState | undefined);
       if (persona && persona.id !== wasPersona?.id) {

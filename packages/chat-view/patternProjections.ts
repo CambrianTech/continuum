@@ -85,7 +85,7 @@ export function rosterListing(vm: ChatViewModel): ListingView {
 export function roomsListing(vm: ChatViewModel): ListingView {
   return {
     id: 'rooms',
-    title: 'Rooms',
+    title: 'Activities',
     cells: [{ id: vm.roomId, title: vm.roomName, status: 'active', group: vm.purpose }],
   };
 }
@@ -100,7 +100,7 @@ export function roomsListing(vm: ChatViewModel): ListingView {
 export function roomsListingFromNav(nav: NavViewState, focusedRoomId: string): ListingView {
   return {
     id: 'rooms',
-    title: 'Rooms',
+    title: 'Activities',
     cells: nav.open_tabs.map((tab): ListingCell => {
       const cell: ListingCell = {
         id: tab.id,
