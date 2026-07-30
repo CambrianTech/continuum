@@ -33,17 +33,38 @@ Do NOT reinvent — we've built most of this. Survey first:
 - **unet stuff** — [Joel-named; SURVEY: likely a U-Net-style compression/architecture piece —
   locate what it is and whether it applies to expert compaction. Flag when found.]
 
-## The recipe (K3 -> tailored fits-in-VRAM model)
-1. sentinel-PGO from real activation over OUR activities -> the hot expert subset that
-   covers our working set (the §4.1.3.4 falsifiable prune).
-2. Prune K3 to that subset (all-experts-available demoted to a fits-VRAM core; rare experts
-   still reachable via the cache/grid for correctness).
-3. Variable/regional quant the core to fit VRAM+RAM directly.
+## THE CORRECTION (Joel 2026-07-30): reduce PRECISION, never STRIP knowledge
+"We also stripped our experts, but that was old us. Now we page them in. Why ever lose
+knowledge?" — Stripping/pruning experts is the OLD move: it permanently DELETES capability
+= a diminished model. We now PAGE experts (the cache work), so ALL experts stay available
+at some cache level, always. Therefore the reduction MUST NOT remove anything. It shrinks by
+lowering PRECISION where importance is low — targeted variable quantization — while every
+expert remains reachable (hot ones resident, cold ones paged). Full knowledge, smaller
+footprint. Never lose knowledge.
+
+## The mechanism reuse (the key): head-targeting -> quant-targeting
+The experiential-plasticity paper's culling/growing-of-HEADS mechanism measures per-unit
+IMPORTANCE from real experience (sentinel-ai / PGO drives it). **The SAME importance
+mechanism we used to target heads, we repurpose to target QUANTIZATION**: high-importance
+experts/tensors kept high-bit, low-importance driven low-bit. One learned importance signal,
+two uses (was: cull/grow heads; now: set per-unit bit-width). The **legacy widget is the
+CONTROL SURFACE** for this — it shows the knobs (cull/grow, bit-width targeting); survey it
+to see the controls, then drive them from sentinel-ai's importance profile.
+
+## The recipe (K3 -> tailored fits-in-VRAM model, NO knowledge lost)
+1. sentinel-PGO + the plasticity importance mechanism over OUR activities -> a per-expert /
+   per-tensor IMPORTANCE profile (the same signal that culled/grew heads).
+2. TARGETED VARIABLE QUANTIZATION driven by that profile: high-importance -> high-bit,
+   low-importance -> low-bit. This shrinks the RESIDENT footprint to fit VRAM+RAM. NOTHING
+   is removed — every expert still exists, just at demand-matched precision.
+3. Keep ALL experts available: hot (high-importance) resident in VRAM/RAM, cold paged via
+   the cache/grid. Full knowledge, always reachable.
 4. Train the compensation-LoRA from graded failures on our benchmark activities so the
-   pruned+quantized core matches full K3 on the tasks we measure.
+   variably-quantized model matches full K3 on the tasks we measure.
 5. Emit as a forge-alloy artifact (attested, reproducible) via the recipe-as-entity foundry.
-Result: a tailored K3 that serves ENTIRELY in VRAM at full GPU speed for our activities —
-the misfit-design win without the paging tax.
+Result: a tailored K3 whose HOT working set serves ENTIRELY in fast memory at full GPU speed
+for our activities, cold knowledge paged on demand — the misfit win, no paging tax on the
+hot path, and ZERO knowledge lost.
 
 ## Sequencing (Joel)
 "Once we've tried the cache stuff you're doing (which we need anyway)." Cache FIRST (it's
