@@ -33,6 +33,7 @@ const RENDER_BUDGET_CHARS: usize = 12_000;
 /// values show up in `commands/help`, so the persona sees the menu of filters.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "../../../protocol/typescript/tool/OutputFilter.ts")]
 pub enum OutputFilter {
     /// Everything that looks like a hard failure — the default "what broke?" filter.
     Errors,
