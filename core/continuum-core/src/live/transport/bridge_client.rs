@@ -62,6 +62,19 @@ pub struct LiveKitAgentManager {
     reader_started: Mutex<bool>,
 }
 
+/// i16 PCM → little-endian wire bytes in ONE allocation. The former per-site
+/// `flat_map(to_le_bytes).collect()` has no useful size hint, so `collect`
+/// re-allocates its way up the buffer on the per-turn audio hot path — the
+/// "needless copies" class of the data-plane doctrine. This reserves exactly
+/// `len * 2` up front; on little-endian targets LLVM lowers the loop to a memcpy.
+fn pcm_le_bytes(samples: &[i16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(samples.len() * 2);
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
 impl LiveKitAgentManager {
     pub fn new() -> Self {
         let socket_dir = std::env::var("CONTINUUM_SOCKET_DIR").unwrap_or_else(|_| {
@@ -337,11 +350,7 @@ impl LiveKitAgentManager {
         self.trigger_speech_animation(user_id, text, &synthesis.samples, sample_rate, duration_ms);
 
         // Send PCM audio to bridge for LiveKit publishing
-        let pcm_bytes: Vec<u8> = synthesis
-            .samples
-            .iter()
-            .flat_map(|s| s.to_le_bytes())
-            .collect();
+        let pcm_bytes = pcm_le_bytes(&synthesis.samples);
 
         self.send_command(
             BridgeCommand::Speak {
@@ -363,7 +372,7 @@ impl LiveKitAgentManager {
         user_id: &str,
         samples: Vec<i16>,
     ) -> Result<(), String> {
-        let pcm_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let pcm_bytes = pcm_le_bytes(&samples);
         let resp = self.send_command(
             BridgeCommand::InjectAudio {
                 call_id: call_id.to_string(),
@@ -442,7 +451,7 @@ impl LiveKitAgentManager {
         handle: &str,
         samples: Vec<i16>,
     ) -> Result<(), String> {
-        let pcm_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let pcm_bytes = pcm_le_bytes(&samples);
         let resp = self.send_command(
             BridgeCommand::InjectAmbient {
                 call_id: call_id.to_string(),
