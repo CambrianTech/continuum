@@ -18,6 +18,29 @@ ExpertRec {
 ```
 
 One `pread` of `record_4k_blocks * 4096` bytes yields the whole expert.
+
+### Byte-exact header (CONFIRMED against upstream docs/FORMAT.md, 2026-07-30 — the
+### authority BigMama's GgufRvqSource is gated on; all fields LITTLE-ENDIAN)
+
+| Offset | Size | Type | Field            | Notes                                   |
+|--------|------|------|------------------|-----------------------------------------|
+| 0      | 4    | u32  | magic            | ASCII `WEXP` (LE bytes `b"WEXP"`)       |
+| 4      | 2    | u16  | layer            |                                         |
+| 6      | 2    | u16  | expert_id        |                                         |
+| 8      | 1    | u8   | fmt              | **VQ3R = 4, VQ2R = 5** (not 0/1!)       |
+| 9      | 1    | u8   | flags            | no bits defined yet — write 0           |
+| 10     | 2    | u16  | codebook_id      | index into codebooks.bin                |
+| 12     | 4    | u32  | gate_off         | relative to RECORD START                |
+| 16     | 4    | u32  | up_off           | relative to record start                |
+| 20     | 4    | u32  | down_off         | relative to record start                |
+| 24     | 4    | u32  | correction_off   | relative to record start                |
+| 28     | 4    | u32  | record_4k_blocks | record total = this × 4096              |
+
+Header = 32 bytes. Payload order: gate indices | up indices | down indices |
+per-channel corrections; zero-pad the tail to `record_4k_blocks * 4096`. No CRC
+in the header — validation = magic + identity + offsets sanity at read time.
+VQ3R = 3 bits/weight (3 stages × 256 entries, dim 8); VQ2R = 2 bits/weight
+(2 stages × 256 entries, dim 8).
 On K3 that record is **12 406 784 bytes, exactly 3029 pages** — which is
 what makes O_DIRECT possible, and why `bank_open` checks the alignment
 rather than assuming it: a record that is not a page multiple makes every
