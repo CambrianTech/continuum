@@ -28,9 +28,12 @@ import { listingCell } from './parts';
 export type RoomsFacet = 'all' | 'rooms' | 'dms';
 
 /** Pure facet rule over the neutral `group` key — unit-testable without a DOM.
- *  `rooms` = room-shaped groups (a nav tab's `room` kind, or a purpose-grouped
- *  focused-room cell); `dms` = cells explicitly grouped `dm` (none yet — honest
- *  empty, never a guess from titles). */
+ *  `rooms` = room-shaped groups ONLY (a nav tab's `room` kind, or a
+ *  purpose-grouped focused-room cell) — open persona/content tabs are real
+ *  activities but reached via their own controls (roster tiles, the tab
+ *  strip), so the rail's default view keeps them out of the room list;
+ *  `dms` = cells explicitly grouped `dm` (none yet — honest empty, never a
+ *  guess from titles). */
 export function facetCells(
   cells: readonly ListingCell[],
   facet: RoomsFacet,
@@ -39,7 +42,9 @@ export function facetCells(
     case 'all':
       return cells;
     case 'rooms':
-      return cells.filter((c) => c.group !== 'dm');
+      return cells.filter(
+        (c) => c.group !== 'dm' && c.group !== 'persona' && c.group !== 'content',
+      );
     case 'dms':
       return cells.filter((c) => c.group === 'dm');
   }
@@ -65,7 +70,10 @@ export class RoomsPanel extends LitElement {
   /** Section heading (the PanelWidget title, e.g. "Rooms"). */
   heading = 'Rooms';
 
-  private _facet: RoomsFacet = 'all';
+  /** Default facet is ROOMS (Joel 2026-07-30): persona/content activities are
+   *  reachable via their own controls — the rail shows rooms unless the reader
+   *  explicitly widens to All. */
+  private _facet: RoomsFacet = 'rooms';
 
   /** Render into the light DOM — inherit `<chat-widget>`'s shadow stylesheet
    *  and let `LISTING_SELECT` bubble through the one existing seam. */
