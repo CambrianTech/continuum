@@ -976,6 +976,23 @@ impl LlmDeliberationFaculty {
                     &last.content_text(),
                     budget_tokens.saturating_sub(PER_MESSAGE_TEMPLATE_TOKENS),
                 );
+                // FAIL LOUD, never a blank mind: with the budget squeezed to ~0
+                // this arm used to emit ONE EMPTY user message — the model
+                // deliberated on nothing and every persona greeting-looped
+                // (2026-07-30 outage: spawn-pinned 7936 window minus reserve +
+                // tool schemas + framing left msg_budget=0, silently). An empty
+                // conversation from a NON-empty room is a substrate arithmetic
+                // bug; refuse it visibly instead of feeding it to the model.
+                if body.trim().is_empty() {
+                    tracing::error!(
+                        budget_tokens,
+                        dropped_turns = messages.len(),
+                        probe_class = "delib.prompt.empty",
+                        "window arithmetic left NO room for conversation — refusing to \
+                         emit a blank turn (fail loud, never a blank mind)"
+                    );
+                    return Vec::new();
+                }
                 return vec![ChatMessage::text(last.role.clone(), body)];
             }
         }
@@ -1104,6 +1121,24 @@ impl Faculty for LlmDeliberationFaculty {
             }
         };
         let view = self.prompt_view_within(ws, binding.context_window);
+        // FAIL LOUD, never a blank mind (companion to the `delib.prompt.empty`
+        // probe in the fitter): a view with NO conversation from a room that HAS
+        // turns means the budget arithmetic starved the prompt. Skipping the turn
+        // is safe (the room's messages stay queued; next tick re-perceives) —
+        // deliberating on a blank prompt is not: that is exactly how every persona
+        // greeting-looped for an hour on 2026-07-30 while looking "alive".
+        if view.messages.iter().all(|m| m.content_text().trim().is_empty()) && !ws.turns.is_empty()
+        {
+            tracing::error!(
+                persona = %self.persona_name,
+                window = binding.context_window,
+                room_turns = ws.turns.len(),
+                probe_class = "delib.prompt.starved",
+                "prompt fit produced an EMPTY conversation from a non-empty room — \
+                 skipping this turn rather than deliberating blind"
+            );
+            return None;
+        }
         // Introspection seam: emit EXACTLY what the model sees this tick. The RAG
         // is the load-bearing input — never opaque. Enable the `cognition` log
         // category for the persona to capture this per-turn (the existing
@@ -2256,9 +2291,14 @@ mod tests {
             resp.reasoning = Some("I should check deploy.md to answer.".to_string());
             let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
 
+            // Real window: at the ctor default the framing alone starves msg_budget
+            // to 0 — the exact state the delib.prompt.starved guard now refuses
+            // (these two tests silently exercised the blank-prompt bug path for
+            // months; the scripted adapter masked it).
             let faculty =
                 LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
-                    .with_tools(vec![read_tool()]);
+                    .with_tools(vec![read_tool()])
+                    .with_context_window(32_768);
 
             let ws = Workspace::new("teammate asks: did the deploy fix land?");
             let c = faculty.contribute(&ws).await.expect("verdict");
@@ -2345,8 +2385,11 @@ mod tests {
                     definitions: None,
                 },
             };
+            // Real window (see tool_use_response_becomes_an_act_verdict — same
+            // starved-default story).
             let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
-                .with_tools(vec![ping_spec]);
+                .with_tools(vec![ping_spec])
+                .with_context_window(32_768);
 
             let c = faculty
                 .contribute(&Workspace::new("is the core alive?"))
