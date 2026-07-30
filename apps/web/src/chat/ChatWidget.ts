@@ -401,9 +401,9 @@ export class ChatWidget extends LitElement {
      * hardcoded colors, so a theme swap is a :root override and the same token
      * names port to other surfaces. */
     :host {
-      /* Flex column (not a fixed grid-row count): the surface's row set varies —
-         header, optional TAB BAR, panels, optional error strips, compose — and
-         flex lets each optional row slot in while .panels keeps the remainder. */
+      /* The shell is ONE full-height grid (.panels) — Discord geometry: the
+         rails run window-top to window-bottom; tabs, header, transcript, and
+         compose all live inside the CENTER column. */
       display: flex;
       flex-direction: column;
       height: 100%;
@@ -457,7 +457,8 @@ export class ChatWidget extends LitElement {
       display: grid;
       /* Column widths are the per-user WorkspaceLayout intent (host CSS vars,
          set by the widget's drag handling + persisted) over target defaults;
-         the slim tracks between are the drag handles. */
+         the slim tracks between are the drag handles. Columns run FULL HEIGHT
+         (Discord/VS Code): no chrome bar spans the whole window. */
       grid-template-columns: var(--who-w, 280px) 6px 1fr;
       min-height: 0;
       flex: 1;
@@ -466,6 +467,19 @@ export class ChatWidget extends LitElement {
        rail (participants summary, room info; the factory reference's right panel). */
     .panels[data-context] {
       grid-template-columns: var(--who-w, 280px) 6px 1fr 6px var(--ctx-w, 220px);
+    }
+    /* The CENTER column — tabs on top (VS Code-central), then the room header,
+       then the transcript taking the remainder, then the host-supplied compose
+       footer. All center-scoped; the rails never share a row with any of it. */
+    .center {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+    .center > .what {
+      flex: 1;
+      min-height: 0;
     }
     /* Column drag handle — invisible until hover/drag, a full-height slim hit
        target (6px track, wider invisible hit area via padding-box trick is
@@ -2962,7 +2976,7 @@ export class ChatWidget extends LitElement {
         grid-template-rows: 1fr;
       }
       .panels:has(.live-room) .who,
-      .panels:has(.live-room) ~ .tabbar,
+      .panels:has(.live-room) .tab-bar,
       :host([data-live-mobile]) .tabs {
         display: none;
       }
@@ -3401,6 +3415,31 @@ export class ChatWidget extends LitElement {
     // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit
     // update abort that leaves a silent stuck "Connecting…". Fail loud where it's
     // seen ([[fallbacks-are-illegal-fail-loud]]).
+    // The center column's footer — compose bar + transient error strips. Host-
+    // owned (input state + send handler) but SHELL-placed via the chrome slot,
+    // so the rails run full height and the composer stays center-scoped
+    // (Discord geometry). Hidden on persona/live faces exactly as before.
+    const composerHidden =
+      focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace || vm.purpose === LIVE_PURPOSE;
+    const centerFooter = html`
+      ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}
+      ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
+      ${composerHidden
+        ? nothing
+        : html`<form class="compose" @submit=${this.onSubmit}>
+            <input
+              type="text"
+              placeholder="Message ${vm.roomName}…"
+              .value=${this._draft}
+              @input=${this.onInput}
+              ?disabled=${this._sending}
+              aria-label="message"
+            />
+            <button type="submit" ?disabled=${this._sending || this._draft.trim().length === 0}>
+              ${this._sending ? 'Sending…' : 'Send'}
+            </button>
+          </form>`}
+    `;
     let surface: TemplateResult;
     try {
       surface = renderChat(vm, {
@@ -3427,7 +3466,7 @@ export class ChatWidget extends LitElement {
           micOn: this._micOn,
           videoSenders: Array.from(this._videoFrames.keys()),
         },
-      });
+      }, { centerFooter });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;
@@ -3440,23 +3479,6 @@ export class ChatWidget extends LitElement {
           ></cosmos-backdrop>`
         : nothing}
       ${surface}
-      ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}
-      ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
-      ${focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace || vm.purpose === LIVE_PURPOSE
-        ? nothing
-        : html`<form class="compose" @submit=${this.onSubmit}>
-            <input
-              type="text"
-              placeholder="Message ${vm.roomName}…"
-              .value=${this._draft}
-              @input=${this.onInput}
-              ?disabled=${this._sending}
-              aria-label="message"
-            />
-            <button type="submit" ?disabled=${this._sending || this._draft.trim().length === 0}>
-              ${this._sending ? 'Sending…' : 'Send'}
-            </button>
-          </form>`}
     `;
   }
 

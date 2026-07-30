@@ -21,6 +21,7 @@ import {
   type ContentView,
   type ContextPanelView,
   type PanelWidget,
+  type WorkspaceChrome,
 } from '@continuum/patterns';
 import { fireListingSelect, fireLiveFaceToggle, renderListing, resizeHandle } from './parts';
 import { webContentRegistry } from '../content/registry';
@@ -134,8 +135,13 @@ export const webTarget: RenderTarget<TemplateResult> = {
 
   /** The three-panel who/what/where — reproduced from the WorkspaceView alone. The left
    *  rail is now a GLOBAL WIDGET STACK: each `PanelWidget` draws as a titled rail section
-   *  (Metrics · Rooms · Users & Agents · …), dispatched by kind. */
-  workspace(ws: WorkspaceView): TemplateResult {
+   *  (Metrics · Rooms · Users & Agents · …), dispatched by kind.
+   *
+   *  Shell geometry is the Discord reference: the rails run FULL HEIGHT; the tab
+   *  strip, room header, transcript, and the host-supplied composer
+   *  (`chrome.centerFooter`) are all scoped to the CENTER column — no chrome bar
+   *  spans the whole window. */
+  workspace(ws: WorkspaceView, chrome?: WorkspaceChrome<TemplateResult>): TemplateResult {
     // The focused room is the ACTIVE nav cell — with the live room set the
     // listing carries every room, so cells[0] is arbitrary order, not focus.
     const room = ws.nav.cells.find((c) => c.status === 'active') ?? ws.nav.cells[0];
@@ -144,47 +150,50 @@ export const webTarget: RenderTarget<TemplateResult> = {
     const activeCount = roster?.cells.filter((c) => c.status === 'active').length ?? 0;
     const version = versionOf(ws);
     return html`
-      <header class="room">
-        <div class="room-name">${room?.title ?? ''}</div>
-        <div class="room-meta">
-          <span class="count" title="active / total">${activeCount}/${memberCount} here</span>
-          <span class="live" title="live · ${room?.id ?? ''}"><span class="live-dot"></span>live</span>
-          ${version
-            ? html`<span class="continuon-version header-version" title="client build">${version}</span>`
-            : nothing}
-          <span class="header-controls">
-            <button
-              class="hdr-btn hdr-live"
-              data-active=${ws.content.purpose === LIVE_PURPOSE ? '' : nothing}
-              @click=${(e: Event): void => {
-                fireLiveFaceToggle(e, ws.content.purpose !== LIVE_PURPOSE);
-              }}
-              title=${ws.content.purpose === LIVE_PURPOSE
-                ? 'in the live room — click to return to chat'
-                : "open this room's live face — the call grid"}
-            >
-              📹 ${ws.content.purpose === LIVE_PURPOSE ? 'Live' : 'Go live'}
-            </button>
-            <button class="hdr-btn" @click=${cycleUniverse} title="cycle universe skin (?universe=)">
-              Theme
-            </button>
-            <button class="hdr-btn" disabled title="coming soon">Settings</button>
-            <button class="hdr-btn" disabled title="coming soon">Browser</button>
-            <button class="hdr-btn" disabled title="coming soon">Help</button>
-          </span>
-        </div>
-      </header>
-      ${ws.nav.cells.length > 0
-        ? html`<div class="tab-bar" role="tablist" aria-label="open activities">
-            ${ws.nav.cells.map(navTab)}
-          </div>`
-        : nothing}
       <div class="panels" data-context=${ws.context.listings.length > 0 ? '' : nothing}>
         <aside class="who" aria-label="global widgets">
           ${ws.left.length > 0 ? ws.left.map((w) => this.widget(w)) : nothing}
         </aside>
         ${resizeHandle('who')}
-        <section class="what" aria-label="conversation">${this.content(ws.content)}</section>
+        <section class="center" aria-label="focused activity">
+          ${ws.nav.cells.length > 0
+            ? html`<div class="tab-bar" role="tablist" aria-label="open activities">
+                ${ws.nav.cells.map(navTab)}
+              </div>`
+            : nothing}
+          <header class="room">
+            <div class="room-name">${room?.title ?? ''}</div>
+            <div class="room-meta">
+              <span class="count" title="active / total">${activeCount}/${memberCount} here</span>
+              <span class="live" title="live · ${room?.id ?? ''}"><span class="live-dot"></span>live</span>
+              ${version
+                ? html`<span class="continuon-version header-version" title="client build">${version}</span>`
+                : nothing}
+              <span class="header-controls">
+                <button
+                  class="hdr-btn hdr-live"
+                  data-active=${ws.content.purpose === LIVE_PURPOSE ? '' : nothing}
+                  @click=${(e: Event): void => {
+                    fireLiveFaceToggle(e, ws.content.purpose !== LIVE_PURPOSE);
+                  }}
+                  title=${ws.content.purpose === LIVE_PURPOSE
+                    ? 'in the live room — click to return to chat'
+                    : "open this room's live face — the call grid"}
+                >
+                  📹 ${ws.content.purpose === LIVE_PURPOSE ? 'Live' : 'Go live'}
+                </button>
+                <button class="hdr-btn" @click=${cycleUniverse} title="cycle universe skin (?universe=)">
+                  Theme
+                </button>
+                <button class="hdr-btn" disabled title="coming soon">Settings</button>
+                <button class="hdr-btn" disabled title="coming soon">Browser</button>
+                <button class="hdr-btn" disabled title="coming soon">Help</button>
+              </span>
+            </div>
+          </header>
+          <section class="what" aria-label="conversation">${this.content(ws.content)}</section>
+          ${chrome?.centerFooter ?? nothing}
+        </section>
         ${ws.context.listings.length > 0
           ? html`${resizeHandle('context')}<aside class="context" aria-label="activity context">
               ${ws.context.listings.map(
