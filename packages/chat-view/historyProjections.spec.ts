@@ -2,6 +2,10 @@
  * historyRowsFromPoll spec — the storage-page → transcript-row mapping.
  */
 
+// Time-of-day rendering is VIEWER-LOCAL by design; pin TZ so the fixed
+// HH:MM assertions below are deterministic on any runner (PR #2057 review).
+process.env.TZ = 'UTC';
+
 import { describe, it, expect } from 'vitest';
 import { historyRowsFromPoll } from './historyProjections';
 import type { RosterMemberVM } from './chatViewModel';

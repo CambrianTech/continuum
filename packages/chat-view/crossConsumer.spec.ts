@@ -26,6 +26,10 @@
  * the MODEL those two renderers both receive is one canonical value.
  */
 
+// Time-of-day rendering is VIEWER-LOCAL by design; pin TZ so the fixed
+// HH:MM assertions below are deterministic on any runner (PR #2057 review).
+process.env.TZ = 'UTC';
+
 import { describe, it, expect } from 'vitest';
 import { CHAT_KIND, chatStateFromEnvelope } from './ChatState';
 import { chatViewModel } from './chatViewModel';

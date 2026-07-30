@@ -15,6 +15,10 @@
  * faithfully carries what the seam produced, without a browser.
  */
 
+// Time-of-day rendering is VIEWER-LOCAL by design; pin TZ so the fixed
+// HH:MM assertions below are deterministic on any runner (PR #2057 review).
+process.env.TZ = 'UTC';
+
 import { describe, it, expect } from 'vitest';
 import { chatStateFromEnvelope, chatViewModel, roomsListingFromNav, CHAT_KIND } from '@continuum/chat-view';
 import { RoomsPanel } from '../render/RoomsPanel';
