@@ -26,7 +26,7 @@ use crate::routing::grid_trust_policy::caller_trust;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandError, Ctx};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/help/CommandsHelpParams.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/help/CommandsHelpParams.ts")]
 pub struct CommandsHelpParams {
     /// The command to explain, e.g. `code/read`. OMIT it to get an INDEX of every
     /// command you can call (name + one-line description) — your starting point when
@@ -64,7 +64,7 @@ pub(crate) fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a s
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../protocol/typescript/help/CommandsHelpResult.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/help/CommandsHelpResult.ts")]
 pub struct CommandsHelpResult {
     pub name: String,
     pub description: String,

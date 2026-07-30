@@ -21,7 +21,7 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// How a benchmark's solutions are scored.
 #[derive(Debug, Clone, Copy, Serialize, TS)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/Grader.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/Grader.ts")]
 pub enum Grader {
     /// Compile + run each solution (rustc). Live today via cognition/eval's `test_grade`.
     Rust,
@@ -293,11 +293,11 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
 // ---- benchmark/list ------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkListParams.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkListParams.ts")]
 pub struct BenchmarkListParams {}
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkRow.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRow.ts")]
 pub struct BenchmarkRow {
     pub name: String,
     pub description: String,
@@ -309,7 +309,7 @@ pub struct BenchmarkRow {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkListResult.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkListResult.ts")]
 pub struct BenchmarkListResult {
     pub benchmarks: Vec<BenchmarkRow>,
 }
@@ -348,7 +348,7 @@ crate::register_stateless_command!(BenchmarkList);
 // ---- benchmark/run -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkRunParams.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunParams.ts")]
 pub struct BenchmarkRunParams {
     /// The persona (UUID) to put through the benchmark — her real cognition competes.
     pub persona_id: String,
@@ -381,7 +381,7 @@ pub struct BenchmarkRunParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkRunResult.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunResult.ts")]
 pub struct BenchmarkRunResult {
     pub benchmark: String,
     /// The run handle. Present on a DETACHED run (the eval spawned; its real result
@@ -609,7 +609,7 @@ fn benchmark_ledger_path() -> std::path::PathBuf {
 /// One comparative result — a cell contribution in the models × harness matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkRecordParams.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRecordParams.ts")]
 pub struct BenchmarkRecordParams {
     /// Model identity for the row — the served id (e.g. `unsloth/Devstral-Small-2507-GGUF`),
     /// with any gene noted in `gene`, never folded into this string.
@@ -649,7 +649,7 @@ pub struct BenchmarkRecordParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkRecordResult.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRecordResult.ts")]
 pub struct BenchmarkRecordResult {
     /// Ledger rows now on file (this row included).
     #[ts(type = "number")]
@@ -714,7 +714,7 @@ crate::register_stateless_command!(BenchmarkRecord);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkMatrixParams.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkMatrixParams.ts")]
 pub struct BenchmarkMatrixParams {
     /// Only render rows for this benchmark. Omit for all benchmarks (one table each).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -723,7 +723,7 @@ pub struct BenchmarkMatrixParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkMatrixResult.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkMatrixResult.ts")]
 pub struct BenchmarkMatrixResult {
     /// The rendered comparison — GitHub-flavored markdown, ready to paste anywhere.
     pub markdown: String,
@@ -777,7 +777,7 @@ crate::register_stateless_command!(BenchmarkMatrix);
 // ── benchmark/competition — the product-vs-product scoreboard ────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkCompetitionParams.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkCompetitionParams.ts")]
 pub struct BenchmarkCompetitionParams {
     /// Benchmark name (see `benchmark/list`). Its tasks are posed IDENTICALLY to every arm.
     pub name: String,
@@ -819,7 +819,7 @@ pub struct BenchmarkCompetitionParams {
 
 /// One arm's cell on the competition scoreboard.
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/CompetitionCell.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/CompetitionCell.ts")]
 pub struct CompetitionCell {
     pub arm: String,
     /// `agent` (a full being — Continuum, Hermes) or `floor` (bare weights, no self). A
@@ -847,7 +847,7 @@ pub struct CompetitionCell {
 
 /// The scoreboard: every arm, same benchmark tasks, same grader, on one model.
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkCompetitionResult.ts")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkCompetitionResult.ts")]
 pub struct BenchmarkCompetitionResult {
     pub benchmark: String,
     pub model: String,

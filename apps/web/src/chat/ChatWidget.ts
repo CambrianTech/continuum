@@ -22,6 +22,7 @@ import {
   chatViewModel,
   focusedLiveTab,
   focusedPersonaTab,
+  historyRowsFromPoll,
   type MessageRowVM,
 } from '@continuum/chat-view';
 import type {
@@ -60,6 +61,15 @@ export type SendHandler = (text: string) => Promise<void>;
  *  envelopes stream back — substrate truth only, no optimistic local state. */
 export type SelectRoomHandler = (target: string, kind: 'room' | 'persona') => Promise<void>;
 
+/** The scroll-back fetch the host injects (`chat/poll { beforeMessageId }` —
+ *  the Twitter endless-scroll's storage read). Resolves to one page of RAW
+ *  stored entities strictly OLDER than the anchor, chronological; an empty
+ *  page means history is exhausted. The widget projects and prepends. */
+export type HistoryHandler = (
+  roomId: string,
+  beforeMessageId: string,
+) => Promise<readonly unknown[]>;
+
 export class ChatWidget extends LitElement {
   static override properties = {
     state: { attribute: false },
@@ -81,6 +91,7 @@ export class ChatWidget extends LitElement {
     _typing: { state: true },
     _expanded: { state: true },
     _captionsOn: { state: true },
+    _history: { state: true },
   };
 
   /** The current chat snapshot; assignment triggers a re-render. `undefined`
@@ -116,6 +127,32 @@ export class ChatWidget extends LitElement {
 
   /** Injected by the host — how a rooms-rail pick reaches the core (`nav/select`). */
   selectRoomHandler?: SelectRoomHandler;
+
+  /** Injected by the host — how scroll-back reaches durable storage
+   *  (`chat/poll { beforeMessageId }`). Absent = the transcript honestly shows
+   *  only the live window (no dead scroll affordance). */
+  historyHandler?: HistoryHandler;
+
+  /** Scrolled-back rows older than the live window, oldest→newest — the
+   *  endless-scroll buffer. Widget-owned presentation state: pages prepend
+   *  here, and rows that slide OUT of the live 50-row window retire onto its
+   *  tail so no gap ever opens between buffer and window. Cleared on room
+   *  switch. Reassigned (not mutated) so Lit re-renders. */
+  private _history: MessageRowVM[] = [];
+  /** An empty page came back — the room's history is fully on screen. */
+  private _historyExhausted = false;
+  /** One in-flight page at a time (the scroll handler fires per frame). */
+  private _historyLoading = false;
+  /** The `.what` element the scroll listener is attached to (re-attached if
+   *  Lit ever swaps the element identity). */
+  private _scrollHost?: Element;
+  /** The previous render's projected rows — what the window-retirement diff
+   *  in `willUpdate` compares against ([[MessageRowVM]] shape, typing rows
+   *  excluded at retirement time). */
+  private _lastVmMessages: readonly MessageRowVM[] = [];
+  /** Whether the reader was at (near) the live edge before this render —
+   *  pin-to-bottom only then; a scrolled-back reader stays where they are. */
+  private _wasNearBottom = true;
 
   /** The room's LIVE face is open (the call grid instead of the transcript).
    *  Renderer state, toggled by the header's Go-live affordance / the call
@@ -3411,6 +3448,16 @@ export class ChatWidget extends LitElement {
         ),
       };
     }
+    // Record the live projected rows for willUpdate's window-retirement diff
+    // (BEFORE the history prepend — retired rows come from the live window).
+    this._lastVmMessages = vm.messages;
+    // The endless-scroll buffer: scrolled-back pages render ABOVE the live
+    // window as ordinary transcript rows — one transcript, live or paged.
+    if (this._history.length > 0) {
+      const liveIds = new Set(vm.messages.map((m) => m.id));
+      const older = this._history.filter((r) => !liveIds.has(r.id));
+      if (older.length > 0) vm = { ...vm, messages: [...older, ...vm.messages] };
+    }
     // Error boundary: a render throw (e.g. the Content registry hitting an
     // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit
     // update abort that leaves a silent stuck "Connecting…". Fail loud where it's
@@ -3482,13 +3529,93 @@ export class ChatWidget extends LitElement {
     `;
   }
 
+  /** Derive history-buffer state BEFORE render (the Lit hook for exactly
+   *  this): a room switch clears the buffer; while the buffer is open, live
+   *  rows that slid out of the 50-row window RETIRE onto the buffer's tail —
+   *  otherwise a new message would open a silent gap between scrolled-back
+   *  history and the live window. */
+  protected override willUpdate(changed: PropertyValues): void {
+    // Measured BEFORE render mutates scrollHeight: was the reader pinned to
+    // the live edge? A reader deep in scroll-back must NOT be yanked to the
+    // bottom by every new message ([[updated]] consults this).
+    const host = this._scrollHost;
+    this._wasNearBottom =
+      !host || host.scrollTop + host.clientHeight >= host.scrollHeight - 150;
+    if (!changed.has('state') || !this.state) return;
+    const prev = changed.get('state') as ChatState | undefined;
+    if (prev && prev.room_id !== this.state.room_id) {
+      this._history = [];
+      this._historyExhausted = false;
+      return;
+    }
+    if (this._history.length === 0 || this._lastVmMessages.length === 0) return;
+    const liveIds = new Set(chatViewModel(this.state).messages.map((m) => m.id));
+    const held = new Set(this._history.map((r) => r.id));
+    const retired = this._lastVmMessages.filter(
+      (r) => !liveIds.has(r.id) && !held.has(r.id) && !r.id.startsWith('typing:'),
+    );
+    if (retired.length > 0) this._history = [...this._history, ...retired];
+  }
+
+  /** Scroll-back: nearing the top of the transcript pages one older window
+   *  out of durable storage (`chat/poll { beforeMessageId }`) and prepends,
+   *  preserving the reader's viewport (scrollTop compensated by the height
+   *  the prepend added). One page in flight; an empty page latches exhausted. */
+  private async loadOlderHistory(): Promise<void> {
+    if (this._historyLoading || this._historyExhausted) return;
+    if (!this.historyHandler || !this.state) return;
+    const vm = chatViewModel(this.state);
+    const anchor = this._history[0]?.id ?? vm.messages[0]?.id;
+    if (anchor === undefined) return;
+    this._historyLoading = true;
+    const what = this.renderRoot.querySelector('.what');
+    const prevHeight = what?.scrollHeight ?? 0;
+    const prevTop = what?.scrollTop ?? 0;
+    try {
+      const page = await this.historyHandler(this.state.room_id, anchor);
+      const onScreen = new Set([...this._history.map((r) => r.id), ...vm.messages.map((m) => m.id)]);
+      const rows = historyRowsFromPoll(page, vm.members, onScreen);
+      if (rows.length === 0) {
+        this._historyExhausted = true;
+        return;
+      }
+      this._history = [...rows, ...this._history];
+      await this.updateComplete;
+      // Keep the row the reader was looking at stationary: the prepend grew
+      // the scrollable height above the viewport by exactly the delta.
+      if (what) what.scrollTop = prevTop + (what.scrollHeight - prevHeight);
+    } catch (err) {
+      // Surface in the same strip as send failures — never a silently-dead scroll.
+      this._selectError = `History load failed: ${err instanceof Error ? err.message : String(err)}`;
+    } finally {
+      this._historyLoading = false;
+    }
+  }
+
+  /** The transcript's scroll listener — the WEB trigger idiom for the shared
+   *  paging mechanics (IntersectionObserver's job, done with the simpler
+   *  threshold check since Lit re-renders replace sentinel nodes). */
+  private onWhatScroll = (e: Event): void => {
+    const el = e.currentTarget as Element;
+    if (el.scrollTop < 120) void this.loadOlderHistory();
+  };
+
   /** Keep the compose input from scrolling on every state push. The persona
    *  home reads top-down (a profile, not a transcript) — never auto-scrolled,
    *  and OPENING one resets the pane to the top (the transcript underneath was
    *  pinned to its bottom; a profile that opens mid-scroll reads broken). */
   protected override updated(changed: PropertyValues): void {
     const persona = focusedPersonaTab(this.nav);
-    if (changed.has('state') && !persona) this.scrollToLatest();
+    // Scroll-back trigger: keep the transcript's scroll listener attached to
+    // the CURRENT `.what` (Lit keeps the element stable across renders; the
+    // identity check re-attaches if a face swap ever replaces it).
+    const what = this.renderRoot.querySelector('.what');
+    if (what && what !== this._scrollHost) {
+      this._scrollHost?.removeEventListener('scroll', this.onWhatScroll);
+      what.addEventListener('scroll', this.onWhatScroll, { passive: true });
+      this._scrollHost = what;
+    }
+    if (changed.has('state') && !persona && this._wasNearBottom) this.scrollToLatest();
     if (changed.has('nav')) {
       const wasPersona = focusedPersonaTab(changed.get('nav') as NavViewState | undefined);
       if (persona && persona.id !== wasPersona?.id) {

@@ -27,7 +27,12 @@ import {
   type StateEnvelope,
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
-import { ChatWidget, type SelectRoomHandler, type SendHandler } from './chat/ChatWidget';
+import {
+  ChatWidget,
+  type HistoryHandler,
+  type SelectRoomHandler,
+  type SendHandler,
+} from './chat/ChatWidget';
 import {
   CHAT_KIND,
   KANBAN_KIND,
@@ -122,6 +127,30 @@ async function main(): Promise<void> {
     );
   };
   widget.selectRoomHandler = selectRoomHandler;
+
+  // Scroll-back: one older page out of the durable transcript per call —
+  // `chat/poll { beforeMessageId }` is the storage cursor (the Twitter
+  // endless-scroll's read half); the widget owns the trigger + the buffer.
+  // Same raw-wire seam as `nav/select` above: the generated CommandMap
+  // predates `beforeMessageId` and its re-emit is blocked by the same
+  // unexported-wire-types drift — when that regenerates, this becomes
+  // `continuum.commands.execute('chat/poll', …)`.
+  const historyHandler: HistoryHandler = async (roomId, beforeMessageId) => {
+    const raw = await transport.execute(
+      buildCommandUri('chat/poll'),
+      JSON.stringify({ roomId, beforeMessageId, limit: 50 }),
+    );
+    const result = JSON.parse(raw) as {
+      success: boolean;
+      error?: string;
+      messages?: readonly unknown[];
+    };
+    if (!result.success) {
+      throw new Error(`chat/poll rejected: ${result.error ?? 'unknown error'}`);
+    }
+    return result.messages ?? [];
+  };
+  widget.historyHandler = historyHandler;
 
   // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
   // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells
