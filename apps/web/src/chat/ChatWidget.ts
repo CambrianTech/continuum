@@ -1446,7 +1446,10 @@ export class ChatWidget extends LitElement {
       align-self: center;
     }
     .genome-slots {
-      display: flex;
+      /* Two rows of four (8 slots) — the loadout grid, row-major so genes
+         fill left-to-right, top-to-bottom as they page in. */
+      display: grid;
+      grid-template-columns: repeat(4, auto);
       gap: 2px;
       justify-content: center;
     }
