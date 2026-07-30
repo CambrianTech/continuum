@@ -74,7 +74,13 @@ impl ExpertActivationProfile {
     /// beats predicted — the PGO principle); gate magnitude breaks ties and
     /// seeds cold-start. Normalized so the two signals compose regardless of
     /// scale: hits are the integer rank, magnitude the fractional tiebreak.
-    fn priority(&self, e: &ExpertId) -> f64 {
+    ///
+    /// `pub` because it is the SINGLE importance source (compression principle):
+    /// the residency planner ranks experts by it for hot/warm/cold tiering, and
+    /// the plasticity `plan_expert_compression` reuses the SAME scalar to drive
+    /// per-expert quantization bit-width — one learned importance signal, two
+    /// uses (residency AND precision), never reimplemented on either side.
+    pub fn priority(&self, e: &ExpertId) -> f64 {
         let hits = *self.hits.get(e).unwrap_or(&0) as f64;
         let predicted = *self.predicted.get(e).unwrap_or(&0.0) as f64;
         let mag = *self.gate_magnitude.get(e).unwrap_or(&0.0) as f64;
@@ -88,8 +94,10 @@ impl ExpertActivationProfile {
         hits + predicted.clamp(0.0, 1.0) * 0.9 + mag.tanh() * 0.09
     }
 
-    /// Every expert the profile knows about (union of both signals).
-    fn known_experts(&self) -> Vec<ExpertId> {
+    /// Every expert the profile knows about (union of all signals). `pub` so the
+    /// plasticity compaction planner can enumerate the expert pool to assign each
+    /// one a demand-matched precision.
+    pub fn known_experts(&self) -> Vec<ExpertId> {
         let mut set: std::collections::BTreeSet<ExpertId> =
             self.hits.keys().copied().collect();
         set.extend(self.gate_magnitude.keys().copied());
