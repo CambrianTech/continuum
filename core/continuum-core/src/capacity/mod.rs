@@ -23,6 +23,7 @@
 //! IS a real regression test.
 
 pub mod consumer;
+pub mod expert_ecache;
 pub mod expert_observer;
 pub mod expert_pager;
 pub mod expert_predictor;
