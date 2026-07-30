@@ -39,11 +39,13 @@ import {
   LIVE_CAPTIONS_TOGGLE,
   LIVE_FACE_TOGGLE,
   MESSAGE_EXPAND_TOGGLE,
+  NAV_TAB_CLOSE,
   PANEL_RESIZE_START,
   navSelectTarget,
   type ListingSelectDetail,
   type LiveFaceToggleDetail,
   type MessageExpandToggleDetail,
+  type NavTabCloseDetail,
   type PanelResizeStartDetail,
 } from '../render/parts';
 import { LIVE_PURPOSE, type WorkspaceLayout } from '@continuum/patterns';
@@ -69,6 +71,11 @@ export type HistoryHandler = (
   roomId: string,
   beforeMessageId: string,
 ) => Promise<readonly unknown[]>;
+
+/** The tab-close action the host injects (`nav/close`). The tab disappears
+ *  when the re-projected nav envelope streams back — never an optimistic
+ *  local removal. */
+export type CloseTabHandler = (target: string) => Promise<void>;
 
 export class ChatWidget extends LitElement {
   static override properties = {
@@ -132,6 +139,21 @@ export class ChatWidget extends LitElement {
    *  (`chat/poll { beforeMessageId }`). Absent = the transcript honestly shows
    *  only the live window (no dead scroll affordance). */
   historyHandler?: HistoryHandler;
+
+  /** Injected by the host — how a tab's × reaches the core (`nav/close`). */
+  closeTabHandler?: CloseTabHandler;
+
+  /** A tab's × bubbled up — dispatch the close; failure surfaces in the same
+   *  strip as nav failures ([[fallbacks-are-illegal-fail-loud]]). */
+  private onNavTabClose = (e: Event): void => {
+    const { target } = (e as CustomEvent<NavTabCloseDetail>).detail;
+    if (!this.closeTabHandler) {
+      throw new Error('<chat-widget>: tab close with no closeTabHandler wired — the host must set it.');
+    }
+    void this.closeTabHandler(target).catch((err: unknown) => {
+      this._selectError = `Tab close failed: ${err instanceof Error ? err.message : String(err)}`;
+    });
+  };
 
   /** Scrolled-back rows older than the live window, oldest→newest — the
    *  endless-scroll buffer. Widget-owned presentation state: pages prepend
@@ -419,6 +441,8 @@ export class ChatWidget extends LitElement {
     this.loadLayout();
     // Rooms-rail picks: the cell's composed LISTING_SELECT bubbles up here.
     this.addEventListener(LISTING_SELECT, this.onListingSelect);
+    // Tab close: the ×'s composed NAV_TAB_CLOSE bubbles up the same way.
+    this.addEventListener(NAV_TAB_CLOSE, this.onNavTabClose);
     // The live face: Go-live/hang-up + the CC toggle bubble up the same way.
     this.addEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
     this.addEventListener(LIVE_MIC_TOGGLE, this.onLiveMicToggle);
@@ -428,6 +452,7 @@ export class ChatWidget extends LitElement {
   override disconnectedCallback(): void {
     this.removeEventListener(MESSAGE_EXPAND_TOGGLE, this.onExpandToggle);
     this.removeEventListener(LISTING_SELECT, this.onListingSelect);
+    this.removeEventListener(NAV_TAB_CLOSE, this.onNavTabClose);
     this.removeEventListener(LIVE_FACE_TOGGLE, this.onLiveFaceToggle);
     this.removeEventListener(LIVE_CAPTIONS_TOGGLE, this.onLiveCaptionsToggle);
     super.disconnectedCallback();
@@ -586,13 +611,19 @@ export class ChatWidget extends LitElement {
       border: none;
       background: transparent;
       color: var(--content-secondary);
-      font-size: 12px;
+      font-size: 14px;
       line-height: 1;
-      padding: 0 1px;
+      cursor: pointer;
+      /* A REAL hit target (Joel: "super small hitbox") — ~22px square via
+         padding + negative margin so the visual glyph stays compact while the
+         clickable area meets the finger/pointer minimum. */
+      padding: 6px 7px;
+      margin: -6px -5px -6px -3px;
+      border-radius: var(--radius-sm);
     }
-    .tab-close[disabled] {
-      opacity: 0.4;
-      cursor: default;
+    .tab-close:hover {
+      color: var(--content-primary);
+      background: var(--button-secondary-background);
     }
     /* Top-right header controls: version badge + Theme (real universe cycle) +
        the not-yet-wired chrome rendered honestly disabled. */

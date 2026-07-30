@@ -29,6 +29,7 @@ import {
 import { resolveConfig } from './config';
 import {
   ChatWidget,
+  type CloseTabHandler,
   type HistoryHandler,
   type SelectRoomHandler,
   type SendHandler,
@@ -156,6 +157,15 @@ async function main(): Promise<void> {
     return result.messages ?? [];
   };
   widget.historyHandler = historyHandler;
+
+  // Tab close: the ×'s `nav/close` — same raw-wire seam as nav/select.
+  const closeTabHandler: CloseTabHandler = async (target) => {
+    await transport.execute(
+      buildCommandUri('nav/close'),
+      JSON.stringify({ userId: config.senderId, target }),
+    );
+  };
+  widget.closeTabHandler = closeTabHandler;
 
   // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
   // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells

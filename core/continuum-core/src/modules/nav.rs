@@ -126,6 +126,9 @@ impl ServiceModule for NavModule {
             Arc::new(Select {
                 shared: self.shared.clone(),
             }),
+            Arc::new(Close {
+                shared: self.shared.clone(),
+            }),
         ]
     }
 
@@ -319,8 +322,60 @@ impl ActionCommand for Select {
 // NAVIGATION-ACROSS-MODALITIES.md §3). Dep-holding (they carry NavShared), so
 // runtime construction stays in `NavModule::commands()`; this registers only
 // the static descriptor.
+/// Params for `nav/close` — close one of the calling citizen's open activity
+/// tabs (a persona home today; content tabs when they land). Rooms don't
+/// close — the room set is membership, not tab state.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/nav/NavCloseParams.ts")]
+pub struct NavCloseParams {
+    /// The open activity to close (the tab's target ref).
+    #[ts(type = "string")]
+    pub target: Uuid,
+}
+
+/// Result of `nav/close` — the closed target, echoed.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/nav/NavCloseResult.ts")]
+pub struct NavCloseResult {
+    /// The tab that was closed.
+    pub closed: String,
+}
+
+/// `nav/close` — remove one open activity from the citizen's tab set (the ×
+/// on a persona tab). Closing the CURRENT tab clears focus, so the reader's
+/// first-room stand-in takes over — the same honest pre-select state a fresh
+/// citizen sees. Command in → `nav:changed` out; the projector re-projects and
+/// the tab disappears on every surface at once.
+struct Close {
+    shared: Arc<NavShared>,
+}
+
+#[async_trait]
+impl ActionCommand for Close {
+    const NAME: &'static str = "nav/close";
+    const DESCRIPTION: &'static str =
+        "Close one of the calling citizen's open activity tabs (persona home / content). The \
+         citizen's nav projection re-projects without it; closing the current tab falls back \
+         to the room on screen.";
+    type Params = NavCloseParams;
+    type Output = NavCloseResult;
+
+    async fn run(&self, ctx: &Ctx, params: NavCloseParams) -> Result<NavCloseResult, CommandError> {
+        let user = ctx.user_id.ok_or_else(|| {
+            CommandError::Invalid("nav/close requires an authenticated caller (user_id)".to_string())
+        })?;
+        let target = params.target.to_string();
+        global_nav_focus().close(user, &target);
+        self.shared.publish_nav_changed(user);
+        Ok(NavCloseResult { closed: target })
+    }
+}
+
 crate::register_command!(MarkRead);
 crate::register_command!(Select);
+crate::register_command!(Close);
 
 #[cfg(test)]
 mod tests {

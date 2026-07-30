@@ -23,7 +23,13 @@ import {
   type PanelWidget,
   type WorkspaceChrome,
 } from '@continuum/patterns';
-import { fireListingSelect, fireLiveFaceToggle, renderListing, resizeHandle } from './parts';
+import {
+  fireListingSelect,
+  fireLiveFaceToggle,
+  fireNavTabClose,
+  renderListing,
+  resizeHandle,
+} from './parts';
 import { webContentRegistry } from '../content/registry';
 import { webWidgetRegistry } from './widgets';
 
@@ -63,10 +69,11 @@ function tabIcon(group: string | undefined): string {
   }
 }
 
-/** One nav tab — icon + title + unread pill + a (not-yet-wired) close affordance.
+/** One nav tab — icon + title + unread pill + a LIVE close affordance.
  *  Clicking the tab fires the SAME composed LISTING_SELECT the rooms rail uses
- *  (listingId 'rooms'), so a tab pick IS a real nav/select round-trip. Close is
- *  rendered honestly disabled until a nav/close verb exists. */
+ *  (listingId 'rooms'), so a tab pick IS a real nav/select round-trip. The ×
+ *  fires NAV_TAB_CLOSE (→ `nav/close`) on NON-ROOM tabs; a room tab draws no ×
+ *  — the room set is membership, not tab state. */
 function navTab(cell: ListingCell): TemplateResult {
   // The cell's group carries the tab's target KIND — riding the detail so the
   // routing rule (`navSelectTarget`) picks room vs persona select.
@@ -78,6 +85,11 @@ function navTab(cell: ListingCell): TemplateResult {
       e.preventDefault();
       select(e);
     }
+  };
+  const close = (e: Event): void => {
+    // Never also fire the tab's select — closing is not focusing.
+    e.stopPropagation();
+    fireNavTabClose(e, cell.id);
   };
   return html`<span
     class="tab"
@@ -91,7 +103,9 @@ function navTab(cell: ListingCell): TemplateResult {
     <span class="tab-icon">${tabIcon(cell.group)}</span>
     <span class="tab-title">${cell.title}</span>
     ${cell.count ? html`<span class="cell-count" title="unread">${cell.count}</span>` : nothing}
-    <button class="tab-close" disabled title="coming soon — tab close isn't wired yet">×</button>
+    ${cell.group !== undefined && cell.group !== 'chat' && cell.group !== 'room'
+      ? html`<button class="tab-close" title="Close tab" aria-label="Close ${cell.title}" @click=${close}>×</button>`
+      : nothing}
   </span>`;
 }
 
