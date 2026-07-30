@@ -3576,7 +3576,12 @@ export class ChatWidget extends LitElement {
     // lane — the third dead-looking-room scare of 2026-07-30 was four busy
     // minds with zero pixels; this line is the cure.
     const responders: string[] = [];
-    for (const senderId of this._typing.keys()) {
+    for (const [senderId, text] of this._typing) {
+      // The line covers the PROMISE phase only — inference dispatched, no
+      // visible words yet. Once tokens stream into their bubble, the persona
+      // is visibly responding and their name drops from the line (Joel: "it's
+      // when we are sure they're gonna respond — then you can show it").
+      if (text.length > 0) continue;
       const name =
         vm.members.find((m) => m.id === senderId)?.name ??
         vm.messages.find((m) => m.senderId === senderId)?.senderName;
