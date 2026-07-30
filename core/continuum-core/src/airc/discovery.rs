@@ -267,10 +267,15 @@ pub async fn discover_default_room_name() -> Result<String, DiscoveryError> {
 fn parse_room_name_from_room_output(stdout: &str) -> Result<String, DiscoveryError> {
     for line in stdout.lines() {
         let trimmed = line.trim();
+        // `current:` is the airc #270 membership-visibility rename of the
+        // current-room line (bare `airc room` now lists ALL subscriptions,
+        // so the head line names the CURRENT one explicitly). Accept both
+        // labels so either binary generation parses.
         let Some(rest) = trimmed
             .strip_prefix("room:")
             .or_else(|| trimmed.strip_prefix("Room:"))
             .or_else(|| trimmed.strip_prefix("ROOM:"))
+            .or_else(|| trimmed.strip_prefix("current:"))
         else {
             continue;
         };
