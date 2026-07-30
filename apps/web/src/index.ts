@@ -209,7 +209,13 @@ async function main(): Promise<void> {
   // session's ?me= scoped substrate. Upgrades the rooms rail from the single
   // focused room to the live room set as soon as the projector delivers.
   state.on(NAV_KIND, (envelope: StateEnvelope) => {
-    widget.nav = navStateFromEnvelope(envelope);
+    const nav = navStateFromEnvelope(envelope);
+    widget.nav = nav;
+    // The tab/window title mirrors the CURRENT activity — "continuum — cambriantech"
+    // (Joel 2026-07-30; the #252 router's short-title rule, brand always lowercase).
+    // App-level concern: index.ts owns the document, widgets never touch it.
+    const current = nav.open_tabs?.find((t) => t.id === nav.current_tab);
+    document.title = current?.title ? `continuum — ${current.title}` : 'continuum';
   });
   // The node's resource window (CPU/MEM) — the SYS gauge's core-carried series.
   state.on(SYSTEM_METRICS_KIND, (envelope: StateEnvelope) => {
