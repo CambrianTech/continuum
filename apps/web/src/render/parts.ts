@@ -609,22 +609,57 @@ export function formatContent(text: string): TemplateResult {
     if (m.index > last) parts.push(inlineCode(text.slice(last, m.index)));
     const lang = (m[1] ?? '').toLowerCase();
     const code = (m[2] ?? '').replace(/\n+$/, '');
-    const n = code.length === 0 ? 0 : code.split('\n').length;
-    // Syntax-highlight (fence language, else auto-detect); hljs escapes the code, so the
-    // resulting HTML is inert for unsafeHTML. Expandable: short blocks open, long ones
-    // collapse behind a summary so a big command/output never buries the conversation.
-    const highlighted =
-      lang && hljs.getLanguage(lang)
-        ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
-        : hljs.highlightAuto(code).value;
-    parts.push(html`<details class="code-collapsible" ?open=${n <= 3}>
-      <summary>${lang || 'code'}<span class="code-count">${n} ${n === 1 ? 'line' : 'lines'}</span></summary>
-      <pre><code class="hljs">${unsafeHTML(highlighted)}</code></pre>
-    </details>`);
+    parts.push(codeBlock(lang, code));
     last = fence.lastIndex;
   }
   if (last < text.length) parts.push(inlineCode(text.slice(last)));
   return html`${parts}`;
+}
+
+/** Code is SHOWN, not hidden: blocks up to this many lines render fully open
+ *  (the old n<=3 collapse hid a 4-line snippet behind a "▸ RUST" bar — backwards). */
+const CODE_OPEN_ALL_LINES = 40;
+/** Above the open-all threshold: this many head lines stay visible, the rest sits
+ *  behind a "+K more lines" expander — same show-the-start policy every consumer
+ *  (human px, persona/Claude tokens) applies at its own budget. */
+const CODE_HEAD_LINES = 25;
+
+/** One highlighted, line-numbered run of code. `startLine` lets the expanded
+ *  remainder continue the gutter where the head stopped. NOTE: the template is
+ *  deliberately whitespace-TIGHT — `.content` is `white-space: pre-wrap`, so any
+ *  pretty-printed newline between tags renders as a phantom blank line (the
+ *  giant-empty-padding bug, glass-boxed 2026-07-30). */
+function codeChunk(code: string, language: string | null, startLine: number): TemplateResult {
+  // hljs escapes the code, so the resulting HTML is inert for unsafeHTML.
+  const value =
+    language && hljs.getLanguage(language)
+      ? hljs.highlight(code, { language, ignoreIllegals: true }).value
+      : hljs.highlightAuto(code).value;
+  const n = code.length === 0 ? 0 : code.split('\n').length;
+  const gutter = Array.from({ length: n }, (_, i) => String(startLine + i)).join('\n');
+  return html`<div class="code-body"><div class="code-gutter" aria-hidden="true">${gutter}</div><pre><code class="hljs">${unsafeHTML(value)}</code></pre></div>`;
+}
+
+/** A fenced block as a code card: header (language + line count), line-numbered
+ *  body. Small blocks render whole; big ones show the head with a "+K more lines"
+ *  expander. Language for highlighting: the fence tag when hljs knows it, else
+ *  ONE auto-detection over the full text reused for both chunks (so head and
+ *  remainder never highlight as different languages). */
+function codeBlock(fenceLang: string, code: string): TemplateResult {
+  const n = code.length === 0 ? 0 : code.split('\n').length;
+  const language =
+    fenceLang && hljs.getLanguage(fenceLang)
+      ? fenceLang
+      : (hljs.highlightAuto(code).language ?? null);
+  const label = fenceLang || language || 'code';
+  const header = html`<summary>${label}<span class="code-count">${n} ${n === 1 ? 'line' : 'lines'}</span></summary>`;
+  if (n <= CODE_OPEN_ALL_LINES) {
+    return html`<details class="code-collapsible" open>${header}${codeChunk(code, language, 1)}</details>`;
+  }
+  const lines = code.split('\n');
+  const head = lines.slice(0, CODE_HEAD_LINES).join('\n');
+  const rest = lines.slice(CODE_HEAD_LINES).join('\n');
+  return html`<details class="code-collapsible" open>${header}${codeChunk(head, language, 1)}<details class="code-more"><summary>+${n - CODE_HEAD_LINES} more lines</summary>${codeChunk(rest, language, CODE_HEAD_LINES + 1)}</details></details>`;
 }
 
 /** Inline `code` spans → styled <code>; everything else passes through as text. */

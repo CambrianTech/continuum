@@ -1710,9 +1710,30 @@ export class ChatWidget extends LitElement {
       text-transform: none;
       letter-spacing: 0;
     }
+    /* Line-numbered body: gutter + code side by side, one shared line-height so
+       numbers stay glued to their lines; only the code pane scrolls horizontally. */
+    .code-body {
+      display: flex;
+      align-items: flex-start;
+    }
+    .code-gutter {
+      flex: none;
+      padding: 2px 0 8px 11px;
+      text-align: right;
+      min-width: 2.5ch;
+      user-select: none;
+      white-space: pre;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--content-secondary);
+      opacity: 0.5;
+    }
     .code-collapsible pre {
+      flex: 1;
+      min-width: 0;
       margin: 0;
-      padding: 2px 11px 10px;
+      padding: 2px 11px 8px 10px;
       overflow-x: auto;
       font-family: var(--font-mono);
       font-size: 12.5px;
@@ -1721,6 +1742,27 @@ export class ChatWidget extends LitElement {
     }
     .code-collapsible pre code {
       white-space: pre;
+    }
+    /* "+K more lines" expander for big blocks — the head stays visible, the rest
+       is one click away; expanded, the gutter numbering continues seamlessly. */
+    .code-more summary {
+      cursor: pointer;
+      padding: 4px 11px 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--content-secondary);
+      list-style: none;
+      user-select: none;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .code-more summary:hover {
+      color: var(--content-accent);
+    }
+    .code-more summary::-webkit-details-marker {
+      display: none;
+    }
+    .code-more[open] summary {
+      display: none;
     }
     /* highlight.js dark palette (github-dark), scoped into the shadow root. */
     .hljs {
