@@ -158,9 +158,20 @@ pub async fn run_daemon_attach(
         let Some(response) = response else {
             return Ok(());
         };
-        // The daemon's own cursor-advance frames are the authoritative
-        // watermark when it coalesced backlog — persist before delegating.
+        // The daemon's cursor-advance frames (seam summary + the 1/s live
+        // HEARTBEAT, airc 9390c32e8) are the authoritative watermark. The
+        // probe makes every advance VISIBLE — 2026-07-30's verification found
+        // a silently-stale watermark with no way to tell whether frames never
+        // arrived or the persist failed quietly ([[glass-box]]: success needs
+        // receipts too, not only failures).
         if let Response::AttachCursorAdvanced { advanced_to, .. } = &response {
+            tracing::info!(
+                room = %channel,
+                epoch = advanced_to.epoch,
+                counter = advanced_to.counter,
+                probe_class = "airc.cursor.advanced",
+                "attach watermark advanced (daemon heartbeat) — persisting"
+            );
             persist_cursor(&channel, advanced_to);
         }
         handle_attach_response(response, &bus).await?;
