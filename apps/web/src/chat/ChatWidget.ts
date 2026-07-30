@@ -3657,6 +3657,14 @@ export class ChatWidget extends LitElement {
       );
       if (section) {
         section.scrollIntoView({ block: 'start' });
+        // Layout above the section (avatar image decode, meters) settles AFTER
+        // this first scroll and pushes the card down (~400px observed live) —
+        // re-land on the next two frames so the anchor actually sticks at the
+        // pane top instead of drifting mid-pane.
+        requestAnimationFrame(() => {
+          section.scrollIntoView({ block: 'start' });
+          requestAnimationFrame(() => section.scrollIntoView({ block: 'start' }));
+        });
         this._pendingAnchor = null;
       }
     }
