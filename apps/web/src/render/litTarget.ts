@@ -174,7 +174,7 @@ export const webTarget: RenderTarget<TemplateResult> = {
           </span>
         </div>
       </header>
-      ${ws.nav.cells.length > 1
+      ${ws.nav.cells.length > 0
         ? html`<div class="tab-bar" role="tablist" aria-label="open activities">
             ${ws.nav.cells.map(navTab)}
           </div>`

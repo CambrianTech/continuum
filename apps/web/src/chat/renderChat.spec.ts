@@ -257,6 +257,24 @@ describe('renderChat (Lit)', () => {
     expect(text).not.toMatch(/error/i);
   });
 
+  // what this catches: the TAB STRIP must render whenever the citizen's nav
+  // has ANY open activity — the focused room IS an open tab. The old `> 1`
+  // gate hid the whole bar on a one-room node (glass-boxed live 2026-07-29:
+  // nav delivered exactly [cambriantech] and the surface showed no tabs at
+  // all), which reads as "tabs don't exist", not "one tab is open".
+  it('renders the tab strip even when nav carries a single open room', () => {
+    const vm = project({ room_id: 'room-1', room_name: 'general', purpose: 'chat', roster: [], messages: [] });
+    const nav: NavViewState = {
+      user_id: 'me',
+      current_tab: 'room-1',
+      open_tabs: [{ id: 'room-1', title: 'general', kind: 'room', unread: 0, purpose: 'chat' }],
+      last_read: {},
+      bookmarks: [],
+    };
+    const text = flatten(renderChat(vm, { nav })).join('');
+    expect(text).toContain('tab-bar');
+  });
+
   // what this catches: brick 1's remainder — the rooms-rail cells must be
   // SELECTABLE: each cell carries a click handler that fires the composed
   // LISTING_SELECT event with the ROOMS listing id + that cell's room id (the
