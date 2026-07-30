@@ -63,10 +63,21 @@ pub struct ContainerManifest {
     pub n_layers: u16,
     /// Routed experts per layer (records per bank).
     pub experts_per_layer: u16,
-    /// Experts activated per token (arch fact, e.g. 8 for K3's top-k). This
-    /// is the input to the cliff arithmetic in
-    /// [`super::expert_ecache::EcacheBudget::one_token_working_set`].
+    /// TOTAL expert records activated per decoded token ACROSS ALL MoE
+    /// layers (`top_k_per_layer × n_moe_layers` for a uniform arch — K3:
+    /// 8 × 61 ≈ 488, NOT 8). This is the input to the cliff arithmetic in
+    /// [`super::expert_ecache::EcacheBudget::one_token_working_set`]:
+    /// a cache below `activated_per_token × record_bytes` has structurally
+    /// ZERO hit rate. Pinned v1 semantics (2026-07-30 seam sync with the
+    /// foundry): total, never per-layer — a per-layer value here would
+    /// under-state the cliff ~60× and re-open the reuse=0 trap.
     pub activated_per_token: u32,
+    /// Per-layer router top-k (arch fact, e.g. 8 for K3). Self-documenting
+    /// companion to `activated_per_token` so the total is auditable
+    /// (`top_k_per_layer × MoE layer count == activated_per_token`).
+    /// Optional in v1: absent in containers packed before the field existed.
+    #[serde(default)]
+    pub top_k_per_layer: Option<u32>,
 }
 
 /// Everything that can go wrong opening or reading a container. Every
@@ -329,6 +340,7 @@ mod tests {
             n_layers,
             experts_per_layer: experts,
             activated_per_token: 2,
+            top_k_per_layer: Some(1),
         };
         std::fs::write(
             root.join("manifest.json"),
