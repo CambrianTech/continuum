@@ -45,11 +45,28 @@ struct PendingRequest {
 }
 
 /// Bridge client — proxies LiveKit operations to livekit-bridge process.
+///
+/// Two planes over one socket (the data-plane doctrine, Joel 2026-07-30):
+/// - **Control plane** — [`Self::send_command`]: request/response, registers a
+///   pending entry and blocks for the ack. Session lifecycle verbs (join, agent
+///   create/remove, ambient add/remove) live here. On the grid this is where a
+///   remote caller acquires the media HANDLE — grid calls are commands.
+/// - **Media plane** — [`Self::send_media`]: fire-and-forget through a bounded
+///   queue drained by a dedicated pump thread. PCM and video frames live here.
+///   A stalled bridge drops frames (loud, counted) instead of stalling the
+///   caller behind a 30s control timeout — media must never starve, and stale
+///   media is garbage anyway.
 pub struct LiveKitAgentManager {
-    /// Shared write access to the bridge socket.
-    writer: Mutex<Option<UnixStream>>,
+    /// Shared write access to the bridge socket (control writes + media pump).
+    writer: Arc<Mutex<Option<UnixStream>>>,
     /// Pending command responses keyed by request_id.
     pending: Arc<Mutex<HashMap<u64, Arc<PendingRequest>>>>,
+    /// Media-plane queue head. Replaced on every reconnect; the old pump thread
+    /// exits when its receiver disconnects.
+    media_tx: Mutex<Option<std::sync::mpsc::SyncSender<MediaFrame>>>,
+    /// Frames dropped because the media queue was full (bridge stalled). Loud
+    /// via rate-limited warn in [`Self::send_media`]; MUST stay 0 steady-state.
+    media_dropped: Arc<AtomicU64>,
     /// Bridge socket path.
     bridge_socket_path: String,
     /// LiveKit URL (for logging only — bridge has the actual connection).
@@ -61,6 +78,19 @@ pub struct LiveKitAgentManager {
     /// Whether the reader thread is running.
     reader_started: Mutex<bool>,
 }
+
+/// One queued media-plane frame: fully wire-encoded (envelope + payload), ready
+/// for a single `write_all`. Encoding happens on the caller's thread so the
+/// pump does nothing but move bytes to the kernel.
+struct MediaFrame {
+    frame: Vec<u8>,
+    kind: &'static str,
+}
+
+/// Media queue depth. Sized for burst absorption (~a second of mixed PCM chunks
+/// and video frames), small enough that a stalled bridge surfaces as drops
+/// within one breath rather than buffering minutes of stale media.
+const MEDIA_QUEUE_DEPTH: usize = 32;
 
 /// i16 PCM → little-endian wire bytes in ONE allocation. The former per-site
 /// `flat_map(to_le_bytes).collect()` has no useful size hint, so `collect`
@@ -87,8 +117,10 @@ impl LiveKitAgentManager {
             std::env::var("LIVEKIT_URL").unwrap_or_else(|_| "ws://localhost:7880".to_string());
 
         Self {
-            writer: Mutex::new(None),
+            writer: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            media_tx: Mutex::new(None),
+            media_dropped: Arc::new(AtomicU64::new(0)),
             bridge_socket_path,
             livekit_url,
             next_request_id: AtomicU64::new(1),
@@ -132,8 +164,71 @@ impl LiveKitAgentManager {
                 reader_loop(reader_stream, pending);
             });
         }
+        drop(started);
+
+        // (Re)start the media pump for this connection. Replacing the sender
+        // disconnects the previous pump's receiver, so the old thread exits on
+        // its own — one live pump per connection, no generation bookkeeping.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<MediaFrame>(MEDIA_QUEUE_DEPTH);
+        *self.media_tx.lock().unwrap() = Some(tx);
+        let pump_writer = Arc::clone(&self.writer);
+        std::thread::spawn(move || {
+            media_pump_loop(rx, pump_writer);
+        });
 
         Ok(())
+    }
+
+    /// Fire-and-forget media-plane send: enqueue a wire-encoded frame for the
+    /// pump thread and return immediately. Never blocks the caller on the
+    /// socket, never waits for an ack (the bridge's response, if any, falls
+    /// through `reader_loop`'s unclaimed-id path). A full queue DROPS the frame
+    /// and counts it — the doctrine: media never starves the producer, and a
+    /// drop is loud, never silent.
+    ///
+    /// Grid contract: this is the LOCAL media plane. A remote node never speaks
+    /// this socket — it acquires a media handle via a command (grid calls are
+    /// commands) and its bytes arrive through that handle's plane.
+    fn send_media(
+        &self,
+        command: BridgeCommand,
+        binary: &[u8],
+        kind: &'static str,
+    ) -> Result<(), String> {
+        self.ensure_connected()?;
+
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let mut envelope =
+            serde_json::to_value(&command).map_err(|e| format!("Serialize error: {}", e))?;
+        envelope
+            .as_object_mut()
+            .unwrap()
+            .insert("request_id".to_string(), request_id.into());
+        let json_bytes =
+            serde_json::to_vec(&envelope).map_err(|e| format!("Serialize error: {}", e))?;
+        let frame = continuum_bridge_protocol::encode_frame(&json_bytes, Some(binary));
+
+        let tx_guard = self.media_tx.lock().unwrap();
+        let Some(tx) = tx_guard.as_ref() else {
+            return Err("Not connected".to_string());
+        };
+        match tx.try_send(MediaFrame { frame, kind }) {
+            Ok(()) => Ok(()),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                let n = self.media_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n % 32 == 0 {
+                    clog_warn!(
+                        "🌉 media pump full — {} frames dropped so far (latest: {})",
+                        n,
+                        kind
+                    );
+                }
+                Ok(())
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err("Media pump not running".to_string())
+            }
+        }
     }
 
     /// Send command and wait for response (up to 30s).
@@ -349,16 +444,18 @@ impl LiveKitAgentManager {
         // Bevy animation (stays in core)
         self.trigger_speech_animation(user_id, text, &synthesis.samples, sample_rate, duration_ms);
 
-        // Send PCM audio to bridge for LiveKit publishing
+        // Send PCM audio to bridge for LiveKit publishing — media plane,
+        // fire-and-forget: the speak turn must never block behind the bridge.
         let pcm_bytes = pcm_le_bytes(&synthesis.samples);
 
-        self.send_command(
+        self.send_media(
             BridgeCommand::Speak {
                 call_id: call_id.to_string(),
                 user_id: user_id.to_string(),
                 sample_count: num_samples as u32,
             },
-            Some(&pcm_bytes),
+            &pcm_bytes,
+            "speak-pcm",
         )?;
 
         // Return the synthesized PCM so the caller can tee it into the native call
@@ -373,19 +470,15 @@ impl LiveKitAgentManager {
         samples: Vec<i16>,
     ) -> Result<(), String> {
         let pcm_bytes = pcm_le_bytes(&samples);
-        let resp = self.send_command(
+        self.send_media(
             BridgeCommand::InjectAudio {
                 call_id: call_id.to_string(),
                 user_id: user_id.to_string(),
                 sample_count: samples.len() as u32,
             },
-            Some(&pcm_bytes),
-        )?;
-        if resp.success {
-            Ok(())
-        } else {
-            Err(resp.error.unwrap_or_default())
-        }
+            &pcm_bytes,
+            "inject-audio",
+        )
     }
 
     /// Publish an RGBA avatar frame through a persona's LiveKit video track.
@@ -404,20 +497,16 @@ impl LiveKitAgentManager {
         width: u32,
         height: u32,
     ) -> Result<(), String> {
-        let resp = self.send_command(
+        self.send_media(
             BridgeCommand::PublishVideoFrame {
                 call_id: call_id.to_string(),
                 user_id: user_id.to_string(),
                 width,
                 height,
             },
-            Some(rgba),
-        )?;
-        if resp.success {
-            Ok(())
-        } else {
-            Err(resp.error.unwrap_or_default())
-        }
+            rgba,
+            "video-frame",
+        )
     }
 
     pub async fn add_ambient_source(
@@ -452,19 +541,15 @@ impl LiveKitAgentManager {
         samples: Vec<i16>,
     ) -> Result<(), String> {
         let pcm_bytes = pcm_le_bytes(&samples);
-        let resp = self.send_command(
+        self.send_media(
             BridgeCommand::InjectAmbient {
                 call_id: call_id.to_string(),
                 handle: handle.to_string(),
                 sample_count: samples.len() as u32,
             },
-            Some(&pcm_bytes),
-        )?;
-        if resp.success {
-            Ok(())
-        } else {
-            Err(resp.error.unwrap_or_default())
-        }
+            &pcm_bytes,
+            "inject-ambient",
+        )
     }
 
     pub async fn remove_ambient_source(&self, call_id: &str, handle: &str) -> Result<(), String> {
@@ -564,6 +649,36 @@ pub struct AgentHandle {
 // =============================================================================
 // Reader thread — receives responses + pushed events from bridge
 // =============================================================================
+
+/// Media-plane pump: drain the bounded queue onto the shared socket writer.
+/// Runs on its own thread so a slow/stalled bridge back-pressures into DROPPED
+/// frames (counted at enqueue) instead of blocking speak turns or the Bevy
+/// render loop. Writes serialize through the SAME writer mutex as control
+/// commands, so wire framing stays intact; each write is a short memcpy to the
+/// kernel, never a wait-for-ack. Exits when the sender is replaced (reconnect)
+/// or dropped (shutdown); a write error clears the shared writer so the next
+/// caller's `ensure_connected` reconnects and spawns a fresh pump.
+fn media_pump_loop(
+    rx: std::sync::mpsc::Receiver<MediaFrame>,
+    writer: Arc<Mutex<Option<UnixStream>>>,
+) {
+    while let Ok(item) = rx.recv() {
+        let mut guard = writer.lock().unwrap();
+        match guard.as_mut() {
+            Some(stream) => {
+                if let Err(e) = stream.write_all(&item.frame) {
+                    clog_warn!("🌉 media pump write failed ({}): {}", item.kind, e);
+                    *guard = None;
+                    return;
+                }
+            }
+            None => {
+                // Connection died under us — this pump's generation is over.
+                return;
+            }
+        }
+    }
+}
 
 fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<PendingRequest>>>>) {
     let mut buf = vec![0u8; 4 * 1024 * 1024];
