@@ -1211,6 +1211,17 @@ impl ServingDaemonModule {
     /// Already serving the desired model & ready → no-op. A reconcile already
     /// in flight → skip (the gate). Otherwise spawn the reconcile.
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
+        // External serving pin (misfit / grid design): when the operator pinned an
+        // EXTERNAL OpenAI-compatible endpoint via `LLAMA_SERVER_BASE_URL`, this node
+        // does NOT own a local GPU serving lane — persona hosting adopts the pinned
+        // endpoint directly (`await_ready_serving` → `probe_external_serving`). So
+        // spawn / reclaim NOTHING here: `serving_root()` resolves to the pinned
+        // address, and trying to bind/serve our own model there would fight the
+        // endpoint (e.g. a co-located K3 llama-server) for its port. There is no
+        // local lane to reconcile.
+        if crate::inference::llama_server::external_serving_pin().is_some() {
+            return None;
+        }
         // Pull the desired model id, the host-fit PER-LANE served window, AND
         // the lane count out of the plan in one borrow — both are the planner's
         // single source of truth (task #50). We carry them on the ServingTarget
