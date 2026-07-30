@@ -1213,14 +1213,34 @@ impl ServingDaemonModule {
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
         // External serving pin (misfit / grid design): when the operator pinned an
         // EXTERNAL OpenAI-compatible endpoint via `LLAMA_SERVER_BASE_URL`, this node
-        // does NOT own a local GPU serving lane — persona hosting adopts the pinned
-        // endpoint directly (`await_ready_serving` → `probe_external_serving`). So
-        // spawn / reclaim NOTHING here: `serving_root()` resolves to the pinned
-        // address, and trying to bind/serve our own model there would fight the
-        // endpoint (e.g. a co-located K3 llama-server) for its port. There is no
-        // local lane to reconcile.
+        // does NOT own a local GPU serving lane — it ADOPTS the pinned endpoint. We
+        // spawn / reclaim NOTHING (that would fight a co-located engine, e.g. a K3
+        // llama-server, for its port), but we MUST publish the endpoint's ready
+        // ServingSnapshot to `SERVING_STATE` so every consumer sees a ready lane:
+        //   - `await_ready_serving` (persona-host gate + adapter factory),
+        //   - the adapter's pre-generate model-guard via `current_serving()` — which
+        //     refuses to generate unless the request's model == the resident model,
+        //     read straight from the published snapshot (an empty snapshot → every
+        //     turn "model is not the active served model", the bug this fixes).
+        // Trust once-ready (a genuine wedge surfaces LOUD on a real turn); re-probe
+        // only while not-yet-ready. The reachability probe is control-plane-fast, so
+        // this publishes within a tick and never overlaps.
         if crate::inference::llama_server::external_serving_pin().is_some() {
-            return None;
+            if self.serving_tx.borrow().ready {
+                return None;
+            }
+            let serving_tx = self.serving_tx.clone();
+            let bus = self.bus.get().cloned();
+            return Some(tokio::spawn(async move {
+                if let Some(snap) = crate::inference::llama_server::probe_external_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
+                .await
+                {
+                    Self::emit_serving(bus.as_ref(), &snap);
+                    let _ = serving_tx.send_replace(snap);
+                }
+            }));
         }
         // Pull the desired model id, the host-fit PER-LANE served window, AND
         // the lane count out of the plan in one borrow — both are the planner's
