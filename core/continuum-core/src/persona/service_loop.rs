@@ -1941,6 +1941,13 @@ fn spawn_token_forwarder(
                 });
             }
         };
+        // START BEACON (#254 slice 1): one empty-token frame the moment the turn's
+        // generation is dispatched — BEFORE prefill, which on a cold lane can run
+        // minutes. The client renders an entry with no text yet as "X is
+        // responding…" under the last message (Joel 2026-07-30: the interface
+        // looked DEAD while four minds were mid-turn). The `done` flush at turn
+        // close retires the beacon even if the turn settles without speech.
+        tee(seq, String::new(), false);
         while let Some(chunk) = rx.recv().await {
             if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
                 if t.is_empty() {

@@ -3511,7 +3511,10 @@ export class ChatWidget extends LitElement {
           senderId,
           senderName,
           kind,
-          content: `${text}▋`,
+          // Start beacon (#254): a stream with NO text yet is a turn in
+          // prefill/queue — say so ("responding…"), never a bare cursor that
+          // reads as a hang. Text flowing → the live tail + cursor as before.
+          content: text.length === 0 ? 'responding…' : `${text}▋`,
           time: '',
           runtime: member?.runtime ?? prior?.runtime ?? '',
         });
