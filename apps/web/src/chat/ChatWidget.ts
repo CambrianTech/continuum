@@ -172,9 +172,15 @@ export class ChatWidget extends LitElement {
    *  in `willUpdate` compares against ([[MessageRowVM]] shape, typing rows
    *  excluded at retirement time). */
   private _lastVmMessages: readonly MessageRowVM[] = [];
-  /** Whether the reader was at (near) the live edge before this render —
-   *  pin-to-bottom only then; a scrolled-back reader stays where they are. */
-  private _wasNearBottom = true;
+  /** READER INTENT, not position (the position heuristic broke: a tall
+   *  incoming message grows the bottom-distance past any threshold and
+   *  auto-scroll silently dies). True only when the USER deliberately
+   *  scrolled up; cleared the moment they return to the bottom. Programmatic
+   *  scrolls never set it (`_autoScrolling` guards them out). */
+  private _userScrolledUp = false;
+  /** Set around programmatic scrolls so their scroll events don't read as
+   *  user intent. */
+  private _autoScrolling = false;
 
   /** The room's LIVE face is open (the call grid instead of the transcript).
    *  Renderer state, toggled by the header's Go-live affordance / the call
@@ -3569,12 +3575,6 @@ export class ChatWidget extends LitElement {
    *  otherwise a new message would open a silent gap between scrolled-back
    *  history and the live window. */
   protected override willUpdate(changed: PropertyValues): void {
-    // Measured BEFORE render mutates scrollHeight: was the reader pinned to
-    // the live edge? A reader deep in scroll-back must NOT be yanked to the
-    // bottom by every new message ([[updated]] consults this).
-    const host = this._scrollHost;
-    this._wasNearBottom =
-      !host || host.scrollTop + host.clientHeight >= host.scrollHeight - 150;
     if (!changed.has('state') || !this.state) return;
     const prev = changed.get('state') as ChatState | undefined;
     if (prev && prev.room_id !== this.state.room_id) {
@@ -3633,12 +3633,15 @@ export class ChatWidget extends LitElement {
     }
   }
 
-  /** The transcript's scroll listener — the WEB trigger idiom for the shared
-   *  paging mechanics (IntersectionObserver's job, done with the simpler
-   *  threshold check since Lit re-renders replace sentinel nodes). */
+  /** The transcript's scroll listener: (1) near the top → page older history;
+   *  (2) reader-intent tracking — a USER scroll away from the bottom parks
+   *  auto-scroll, returning to the bottom re-arms it. Programmatic scrolls
+   *  are guarded out so pin-to-bottom never reads as intent. */
   private onWhatScroll = (e: Event): void => {
     const el = e.currentTarget as Element;
     if (el.scrollTop < 120) void this.loadOlderHistory();
+    if (this._autoScrolling) return;
+    this._userScrolledUp = el.scrollTop + el.clientHeight < el.scrollHeight - 40;
   };
 
   /** Keep the compose input from scrolling on every state push. The persona
@@ -3656,7 +3659,17 @@ export class ChatWidget extends LitElement {
       what.addEventListener('scroll', this.onWhatScroll, { passive: true });
       this._scrollHost = what;
     }
-    if (changed.has('state') && !persona && this._wasNearBottom) this.scrollToLatest();
+    // Pin to the live edge on new content (messages AND stream deltas)
+    // unless the READER deliberately scrolled up — intent, not position.
+    if ((changed.has('state') || changed.has('_typing')) && !persona && !this._userScrolledUp) {
+      this._autoScrolling = true;
+      this.scrollToLatest();
+      // Release after the scroll's events flush (scroll events are sync-ish
+      // but smooth-behavior can trail; a frame is enough for instant jumps).
+      requestAnimationFrame(() => {
+        this._autoScrolling = false;
+      });
+    }
     // Hydrate a sparse window from durable storage: after a cursor-armed core
     // reboot the live projection starts (near-)empty — page the latest stored
     // window in once so the room reads continuous, never "blown away". The
