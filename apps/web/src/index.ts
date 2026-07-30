@@ -140,12 +140,17 @@ async function main(): Promise<void> {
       buildCommandUri('chat/poll'),
       JSON.stringify({ roomId, beforeMessageId, limit: 50 }),
     );
+    // Bare-wire contract (same as nav/select above): a FAILURE is a rejected
+    // promise; a success payload is the command output and need not carry a
+    // `success` field — only an EXPLICIT false is an in-band rejection.
+    // (`!result.success` here read every successful page as a failure —
+    // glass-boxed live as "History load failed … unknown error".)
     const result = JSON.parse(raw) as {
-      success: boolean;
+      success?: boolean;
       error?: string;
       messages?: readonly unknown[];
     };
-    if (!result.success) {
+    if (result.success === false) {
       throw new Error(`chat/poll rejected: ${result.error ?? 'unknown error'}`);
     }
     return result.messages ?? [];

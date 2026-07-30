@@ -10,6 +10,7 @@
 import { html, svg, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
+import { ROSTER_LISTING_ID } from '@continuum/patterns';
 import type { GaugeView, ListingCell, ListingView, MetricsView } from '@continuum/patterns';
 import type { LoadoutVM, MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
 
@@ -766,6 +767,20 @@ export function messageRow(msg: MessageRowVM): TemplateResult {
       </li>
     `;
   }
+  // The sender's NAME is a live link to their profile — same composed
+  // LISTING_SELECT the roster tiles fire (listing 'roster' → the routing rule's
+  // persona select), so a name click opens that citizen's home tab through the
+  // one nav verb, never a parallel route.
+  const openProfile = (e: Event): void => {
+    e.stopPropagation();
+    fireListingSelect(e, ROSTER_LISTING_ID, msg.senderId);
+  };
+  const keyProfile = (e: KeyboardEvent): void => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openProfile(e);
+    }
+  };
   return html`
     <li class="msg" data-kind=${msg.kind} data-sender=${msg.senderId}>
       <span class="msg-glyph">
@@ -775,7 +790,15 @@ export function messageRow(msg: MessageRowVM): TemplateResult {
       </span>
       <div class="msg-body">
         <div class="msg-head">
-          <span class="sender">${msg.senderName}</span>
+          <span
+            class="sender element-link"
+            role="button"
+            tabindex="0"
+            title="Open ${msg.senderName}'s profile"
+            @click=${openProfile}
+            @keydown=${keyProfile}
+            >${msg.senderName}</span
+          >
           ${runtimeBadge(msg.runtime)}
           <span class="time">${msg.time}</span>
         </div>
