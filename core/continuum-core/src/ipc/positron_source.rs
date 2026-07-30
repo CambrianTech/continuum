@@ -791,7 +791,77 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> 
 /// Subscribes synchronously (before spawning) so no publish can race
 /// ahead of the receiver — the same ordering discipline
 /// `airc_bridge_directive::spawn_consumer` uses.
-pub fn spawn(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>, substrate: Substrate) {
+/// One stored `chat_messages` entity → the `chat:posted` wire payload shape
+/// `classify` consumes. `None` for records missing the core facts (a malformed
+/// row must not poison the seed). Stored timestamps are ISO strings; the wire
+/// carries unix ms.
+fn entity_to_posted(entity: &serde_json::Value) -> Option<serde_json::Value> {
+    let text = entity.get("content")?.get("text")?.as_str()?.to_string();
+    let ts_ms = chrono::DateTime::parse_from_rfc3339(entity.get("timestamp")?.as_str()?)
+        .ok()?
+        .timestamp_millis();
+    Some(serde_json::json!({
+        "messageId": entity.get("id")?,
+        "roomId": entity.get("roomId")?,
+        "senderId": entity.get("senderId")?,
+        "content": text,
+        "timestamp": ts_ms,
+    }))
+}
+
+/// Fetch the seed room's stored tail (the same `chat_messages` query
+/// `chat/poll` serves — latest 50, returned chronological). The data module
+/// may still be initializing at projection spawn, so retry briefly; a seed
+/// that never comes degrades to the wire-fed-only projection (the pre-seed
+/// behavior) — logged loud, never a crash.
+async fn fetch_seed_messages(
+    executor: &crate::runtime::CommandExecutor,
+    room: Uuid,
+) -> Vec<serde_json::Value> {
+    for attempt in 0..5u32 {
+        let query = serde_json::json!({
+            "dbPath": "main",
+            "collection": "chat_messages",
+            "filter": { "roomId": { "$eq": room.to_string() } },
+            "sort": [{ "field": "timestamp", "direction": "desc" }],
+            "limit": 50,
+        });
+        match executor.execute_json("data/query", query).await {
+            Ok(result) => {
+                let mut entities: Vec<serde_json::Value> = result
+                    .get("data")
+                    .and_then(|d| d.as_array())
+                    .map(|records| records.iter().filter_map(|r| r.get("data").cloned()).collect())
+                    .unwrap_or_default();
+                entities.reverse(); // desc query → chronological apply order
+                return entities.iter().filter_map(entity_to_posted).collect();
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "chat projection seed attempt {attempt} failed (data module warming?): {error}"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+    tracing::warn!("chat projection seed unavailable — projection starts wire-fed only");
+    Vec::new()
+}
+
+/// `seed` is the durable-hydration source (invalid-positron fix, 2026-07-30):
+/// the chat projection is THE positron read surface, and it must never present
+/// an empty room while the durable transcript holds history — no client may
+/// need its own hydration logic ([[positron-durable-state-is-sdk-inherent]]).
+/// Before folding live events, the projector hydrates its accumulator with the
+/// seed room's stored tail, pushed through the SAME `classify` path as wire
+/// events — one message semantics, two sources. `None` (tests, headless
+/// fixtures, no bootstrap room) = wire-fed only, the prior behavior.
+pub fn spawn(
+    rt: &tokio::runtime::Handle,
+    bus: Arc<MessageBus>,
+    substrate: Substrate,
+    seed: Option<(Arc<crate::runtime::CommandExecutor>, Uuid)>,
+) {
     let mut rx = bus.receiver();
     // Demand the current roster now (#118): the presence emitter dedups and
     // may have already fired for a stable roster before this projection
@@ -801,6 +871,13 @@ pub fn spawn(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>, substrate: Subst
     crate::ipc::positron_presence::request_presence_resync(&bus);
     rt.spawn(async move {
         let mut projection = ChatProjection::new(substrate);
+        if let Some((executor, room)) = seed {
+            for payload in fetch_seed_messages(&executor, room).await {
+                if let Some(ProjectionInput::Message(m)) = classify(CHAT_POSTED, &payload) {
+                    projection.apply_message(m);
+                }
+            }
+        }
         loop {
             match rx.recv().await {
                 Ok(event) => {
