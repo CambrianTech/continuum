@@ -69,6 +69,14 @@ export interface RosterMemberVM {
    *  normalized count), so the genome segments carry real adapter names.
    *  Absent = none loaded/reported — never fabricated labels. */
   readonly genes?: readonly string[];
+  /** Pronouns from the member's published airc identity card (#262).
+   *  Absent = no card published — the row shows nothing, never a guess. */
+  readonly pronouns?: string;
+  /** One-tag role from the identity card (free-form, verbatim). */
+  readonly roleLabel?: string;
+  /** One-sentence bio from the identity card — surfaced as the row's
+   *  hover tooltip (and later the citizen page). Absent = no card. */
+  readonly bio?: string;
 }
 
 /** One conversation row — "what was said". */
@@ -171,6 +179,11 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     // reported any — an older core omits the field entirely.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     ...(slot.genes && slot.genes.length > 0 ? { genes: slot.genes } : {}),
+    // Additive fields (#262 identity cards): pronouns / role / bio from the
+    // member's published airc card — absent when no card, never fabricated.
+    ...(slot.pronouns ? { pronouns: slot.pronouns } : {}),
+    ...(slot.role_label ? { roleLabel: slot.role_label } : {}),
+    ...(slot.bio ? { bio: slot.bio } : {}),
   };
 }
 

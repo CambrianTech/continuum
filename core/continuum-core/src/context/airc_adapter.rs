@@ -58,6 +58,19 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
     ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
         self.inner.room_roster(within, window).await
     }
+
+    // #262: forward the CARDS read to the real airc identity join. Without
+    // this override the adapter silently inherits the trait's identity-less
+    // default and every roster name regresses to the provisional peer label
+    // (glass-boxed live 2026-07-30 — the whole room went `peer-xxxx` for one
+    // deploy cycle).
+    async fn room_roster_cards(
+        &self,
+        within: std::time::Duration,
+        window: usize,
+    ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
+        self.inner.room_roster_cards(within, window).await
+    }
 }
 
 #[async_trait]

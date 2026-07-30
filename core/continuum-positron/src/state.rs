@@ -202,6 +202,9 @@ mod tests {
             purpose: "chat".into(),
             messages: Vec::new(),
             roster: vec![RosterSlotView {
+            pronouns: None,
+            role_label: None,
+            bio: None,
                 member_id: Uuid::from_u128(1),
                 display_name: "Helper".into(),
                 kind: SenderKind::Agent,

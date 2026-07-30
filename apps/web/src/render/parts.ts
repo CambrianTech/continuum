@@ -516,11 +516,30 @@ function isDormant(v: Readonly<Record<string, number>>): boolean {
   return pulse === 0;
 }
 
+/** Hover text for a roster row: the citizen's identity card when one is
+ *  published (name · pronouns · role, then the bio line), else the plain
+ *  open-affordance label. Native `title` keeps this zero-cost until the
+ *  richer hover-card component lands (#245). */
+export function memberTooltip(m: RosterMemberVM): string {
+  if (!m.bio && !m.pronouns && !m.roleLabel) return `Open ${m.name}`;
+  const head = [m.name, m.pronouns, m.roleLabel].filter(Boolean).join(' · ');
+  return m.bio ? `${head}\n${m.bio}` : head;
+}
+
+/** Cell-flavored sibling of [`memberTooltip`] — the same identity-card hover
+ *  built from the neutral `ListingCell` (subtitle = pronouns · role, detail =
+ *  bio), for the rail that renders cells rather than the rich view-model. */
+export function cellTooltip(cell: ListingCell): string {
+  if (!cell.detail && !cell.subtitle) return `Open ${cell.title}`;
+  const head = cell.subtitle ? `${cell.title} · ${cell.subtitle}` : cell.title;
+  return cell.detail ? `${head}\n${cell.detail}` : head;
+}
+
 export function memberCard(m: RosterMemberVM): TemplateResult {
   const hasVitals = Object.keys(m.vitals).length > 0;
   return html`
     <li class="member clickable ${m.active ? 'online' : 'idle'} ${isDormant(m.vitals) ? 'dormant' : ''}" data-kind=${m.kind} tabindex="0"
-        title="Open ${m.name}">
+        title=${memberTooltip(m)}>
       ${agoStamp(m.lastSeenMs)}
       <span class="avatar" data-state=${avatarState(m.vitals, m.active)}>
         <span class="glyph">${kindGlyph(m.kind)}</span>
@@ -584,7 +603,7 @@ export function memberCardFromCell(cell: ListingCell, listingId?: string): Templ
         };
   return html`
     <li class="member clickable ${active ? 'online' : 'idle'} ${isDormant(cell.meters ?? {}) ? 'dormant' : ''}" data-kind=${kind} tabindex="0"
-        title="Open ${cell.title}" @click=${select ?? nothing} @keydown=${keySelect ?? nothing}>
+        title=${cellTooltip(cell)} @click=${select ?? nothing} @keydown=${keySelect ?? nothing}>
       ${agoStamp(cell.lastActiveMs)}
       <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
         <span class="glyph">${cell.glyph ?? ''}</span>

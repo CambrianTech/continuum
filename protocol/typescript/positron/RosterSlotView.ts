@@ -106,4 +106,22 @@ avatar_url?: string,
  * honest-absent, never fabricated labels. `#[serde(default)]` so a slot
  * serialized before this field folds as empty, never dropped.
  */
-genes: Array<string>, };
+genes: Array<string>, 
+/**
+ * Pronouns from the member's published airc identity card (e.g. "she",
+ * "they"). Transported verbatim, never derived by positron. `None` =
+ * no card published — honest-absent (#262).
+ */
+pronouns?: string, 
+/**
+ * One-tag role from the identity card (e.g. "continuum-persona-helper",
+ * "continuum-substrate-eng", "human"). Free-form, transported verbatim —
+ * distinct from the coarse styling `kind`. `None` = no card.
+ */
+role_label?: string, 
+/**
+ * One-sentence bio from the identity card — the "who is this citizen"
+ * line a roster hover / citizen page renders. Transported verbatim.
+ * `None` = no card published; never a fabricated blurb.
+ */
+bio?: string, };

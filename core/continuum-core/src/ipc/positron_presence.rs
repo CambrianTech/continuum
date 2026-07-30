@@ -292,7 +292,7 @@ fn scan_avatar_store(dir: &Path) -> HashMap<Uuid, String> {
 }
 
 pub(crate) fn project_presence(
-    members: Vec<RoomMember>,
+    members: Vec<airc_lib::RoomMemberCard>,
     room_id: Uuid,
     room_name: String,
     avatars: &HashMap<Uuid, String>,
@@ -310,7 +310,9 @@ pub(crate) fn project_presence(
     let roster = members
         .iter()
         .map(|m| {
-            let mut slot = roster_slot_from_member(m);
+            // #262: the CARDS projection — pronouns/role/bio/integrations
+            // from each peer's published identity card ride into every slot.
+            let mut slot = crate::ipc::positron_source::roster_slot_from_card(m);
             // Enrich with the node's stored avatar image, when one exists for
             // this peer — the URL only; absent stays honestly absent.
             slot.avatar_url = avatars.get(&slot.member_id).cloned();
@@ -370,7 +372,7 @@ async fn run_presence_loop(
     })
     .await
     .unwrap_or_default();
-    match reader.room_roster(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN).await {
+    match reader.room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN).await {
         Ok(members) => {
             let seeded = project_presence(members, room_id, room_name.clone(), &HashMap::new());
             if fold_into_directory(&mut directory, &seeded.roster) {
@@ -485,7 +487,7 @@ async fn emit_once(
     directory: &mut HashMap<Uuid, RosterSlotView>,
     force: bool,
 ) -> bool {
-    let members = match reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+    let members = match reader.room_roster_cards(PRESENCE_WINDOW, ROSTER_SCAN).await {
         Ok(m) => m,
         Err(err) => {
             tracing::warn!(
@@ -619,7 +621,7 @@ mod tests {
     /// A roster reader that returns a fixed member list — enough to drive
     /// [`emit_once`]'s read → project → publish path without a daemon.
     struct StubRosterReader {
-        members: Vec<RoomMember>,
+        members: Vec<airc_lib::RoomMemberCard>,
     }
 
     #[async_trait]
@@ -633,6 +635,24 @@ mod tests {
             _within: Duration,
             _window: usize,
         ) -> Result<Vec<RoomMember>, AircError> {
+            Ok(self
+                .members
+                .iter()
+                .map(|c| RoomMember {
+                    peer_id: c.peer_id,
+                    display_name: c.identity.as_ref().map(|i| i.name.clone()),
+                    runtime: c.runtime.clone(),
+                    availability: c.availability,
+                    last_seen_ms: c.last_seen_ms,
+                })
+                .collect())
+        }
+
+        async fn room_roster_cards(
+            &self,
+            _within: Duration,
+            _window: usize,
+        ) -> Result<Vec<airc_lib::RoomMemberCard>, AircError> {
             Ok(self.members.clone())
         }
     }
@@ -641,13 +661,13 @@ mod tests {
     /// an identity card; `None` mirrors present-but-unnamed. Mirrors the
     /// `room_roster_source` test builder so both sides describe the same
     /// airc shape.
-    fn member(peer: PeerId, runtime: &str, name: Option<&str>) -> RoomMember {
-        RoomMember {
+    fn member(peer: PeerId, runtime: &str, name: Option<&str>) -> airc_lib::RoomMemberCard {
+        airc_lib::RoomMemberCard {
             peer_id: peer,
-            display_name: name.map(|s| s.to_string()),
             runtime: runtime.to_string(),
             availability: None,
             last_seen_ms: 1_000_000,
+            identity: name.map(|s| airc_core::identity::Identity::new(s.to_string())),
         }
     }
 
@@ -719,12 +739,12 @@ mod tests {
         let kimi = PeerId::new();
         let local = PeerId::new();
         // Sighting 1: Kimi live, named (her card crossed once).
-        let named = roster_slot_from_member(&member(kimi, "persona", Some("Kimi")));
+        let named = crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", Some("Kimi")));
         let mut dir = HashMap::new();
         assert!(fold_into_directory(&mut dir, std::slice::from_ref(&named)));
 
         // Her node drops off: live read has only the local member.
-        let live = vec![roster_slot_from_member(&member(local, "interactive", Some("Joel")))];
+        let live = vec![crate::ipc::positron_source::roster_slot_from_card(&member(local, "interactive", Some("Joel")))];
         let published = union_with_directory(live.clone(), &dir);
         let ghost = published
             .iter()
@@ -737,13 +757,13 @@ mod tests {
         assert!(published[0].active, "active members sort before ghosts");
 
         // Later sighting WITHOUT a card (provisional label) must not erase her name.
-        let unnamed = roster_slot_from_member(&member(kimi, "persona", None));
+        let unnamed = crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", None));
         fold_into_directory(&mut dir, std::slice::from_ref(&unnamed));
         assert_eq!(dir[&kimi.as_uuid()].display_name, "Kimi",
             "a card-less sighting never regresses an adopted name");
 
         // She reappears live: the ghost is replaced by the live slot.
-        let back = vec![roster_slot_from_member(&member(kimi, "persona", Some("Kimi")))];
+        let back = vec![crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", Some("Kimi")))];
         let published = union_with_directory(back, &dir);
         assert_eq!(published.iter().filter(|s| s.member_id == kimi.as_uuid()).count(), 1);
         assert!(published.iter().find(|s| s.member_id == kimi.as_uuid()).unwrap().active);
