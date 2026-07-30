@@ -1872,6 +1872,18 @@ export class ChatWidget extends LitElement {
       opacity: 0.5;
       cursor: default;
     }
+    /* "(xyz, abc) is responding…" — ONE grey line pinned between the last
+       message and the compose box; the name list updates as turns start/settle.
+       Never wraps, never grows: overflow elides. */
+    .responding-line {
+      padding: 3px 14px 4px;
+      font-size: 11.5px;
+      color: var(--content-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0.85;
+    }
     .send-error {
       color: var(--content-error);
       font-size: 12px;
@@ -3506,15 +3518,17 @@ export class ChatWidget extends LitElement {
         const senderName = member?.name ?? prior?.senderName;
         const kind = member?.kind ?? prior?.kind;
         if (senderName === undefined || kind === undefined) continue;
+        // A stream with NO text yet (the #254 start beacon: turn dispatched,
+        // prefill running) gets NO bubble — it reports through the grey
+        // "X is responding…" line above the compose box instead. Only streams
+        // with actual tokens render as live bubbles.
+        if (text.length === 0) continue;
         typingRows.push({
           id: `typing:${senderId}`,
           senderId,
           senderName,
           kind,
-          // Start beacon (#254): a stream with NO text yet is a turn in
-          // prefill/queue — say so ("responding…"), never a bare cursor that
-          // reads as a hang. Text flowing → the live tail + cursor as before.
-          content: text.length === 0 ? 'responding…' : `${text}▋`,
+          content: `${text}▋`,
           time: '',
           runtime: member?.runtime ?? prior?.runtime ?? '',
         });
@@ -3553,7 +3567,26 @@ export class ChatWidget extends LitElement {
     // (Discord geometry). Hidden on persona/live faces exactly as before.
     const composerHidden =
       focusedPersonaTab(this.nav) || focusedLiveTab(this.nav) || this.liveFace || vm.purpose === LIVE_PURPOSE;
+    // "X is responding…" — the grey status line BETWEEN the last message and
+    // the compose box (Joel's spec, the Discord/Slack typing-line convention).
+    // Driven by the stream map: the #254 start beacon adds a persona here the
+    // moment their turn dispatches, minutes before the first token on a cold
+    // lane — the third dead-looking-room scare of 2026-07-30 was four busy
+    // minds with zero pixels; this line is the cure.
+    const responders: string[] = [];
+    for (const senderId of this._typing.keys()) {
+      const name =
+        vm.members.find((m) => m.id === senderId)?.name ??
+        vm.messages.find((m) => m.senderId === senderId)?.senderName;
+      if (name !== undefined) responders.push(name);
+    }
+    // ONE line, dynamic name list, Joel's exact format: "(xyz, abc) is responding".
+    const respondingLine =
+      responders.length === 0 || composerHidden
+        ? nothing
+        : html`<div class="responding-line">(${responders.join(', ')}) is responding…</div>`;
     const centerFooter = html`
+      ${respondingLine}
       ${this._selectError ? html`<div class="send-error">${this._selectError}</div>` : nothing}
       ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
       ${composerHidden
