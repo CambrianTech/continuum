@@ -207,11 +207,27 @@ fi
 if [ -z "$AIRC_DEFAULT_CHANNEL" ] || [ -z "$AIRC_DEFAULT_ROOM_NAME" ]; then
   if airc status >/dev/null 2>&1; then
     ROOM_OUT="$(airc room 2>/dev/null || true)"
+    # Never export an EMPTY value: a parse miss (daemon mid-start, output
+    # format drift) exported "" here, and the core then failed the env var
+    # as an invalid UUID instead of running its own discovery — a silent
+    # empty masquerading as configuration (2026-07-30 boot refusal).
+    # Leave unset on miss and say so; the core's own airc discovery is the
+    # fallback authority.
     if [ -z "$AIRC_DEFAULT_ROOM_NAME" ]; then
-      export AIRC_DEFAULT_ROOM_NAME="$(awk '/^room:/{print $2}' <<<"$ROOM_OUT")"
+      DERIVED_ROOM="$(awk '/^room:/{print $2}' <<<"$ROOM_OUT")"
+      if [ -n "$DERIVED_ROOM" ]; then
+        export AIRC_DEFAULT_ROOM_NAME="$DERIVED_ROOM"
+      else
+        echo "⚠  could not derive room name from 'airc room' output; leaving AIRC_DEFAULT_ROOM_NAME unset" >&2
+      fi
     fi
     if [ -z "$AIRC_DEFAULT_CHANNEL" ]; then
-      export AIRC_DEFAULT_CHANNEL="$(awk '/^channel:/{print $2}' <<<"$ROOM_OUT")"
+      DERIVED_CHANNEL="$(awk '/^channel:/{print $2}' <<<"$ROOM_OUT")"
+      if [ -n "$DERIVED_CHANNEL" ]; then
+        export AIRC_DEFAULT_CHANNEL="$DERIVED_CHANNEL"
+      else
+        echo "⚠  could not derive channel from 'airc room' output; leaving AIRC_DEFAULT_CHANNEL unset" >&2
+      fi
     fi
   else
     echo "⚠  airc daemon not running. Start it with: airc daemon" >&2

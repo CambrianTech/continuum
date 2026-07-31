@@ -103,6 +103,25 @@ impl AircRagSource {
         }
     }
 
+    /// Floor of tokens any packed turn can occupy (sender prefix + separators
+    /// alone — a physical minimum, not a policy). Used ONLY to size the
+    /// candidate window handed to the token packer: `budget / floor`
+    /// candidates can never under-supply it, so the TOKEN budget — never a
+    /// message count — is the binding constraint on what the persona sees.
+    /// The 2026-07-30 glass box: a 5-message grounding pre-trim starved
+    /// pack_digest into a 3–5-message world view while the L1 budget could
+    /// hold dozens — the persona then confabulated generic-assistant filler
+    /// because the actual conversation was invisible (#259).
+    const MIN_TOKENS_PER_TURN: u32 = 8;
+
+    /// Turns-that-fit grounding: derive the digest's before-bookmark window
+    /// from the delivery budget. `recipe_floor` (the recipe-defined N, default
+    /// [`DEFAULT_GROUNDING`]) is the floor; the ceiling bounds the durable
+    /// top-up fetch, not what the packer may keep.
+    fn grounding_for_budget(budget: u32, recipe_floor: usize) -> usize {
+        ((budget / Self::MIN_TOKENS_PER_TURN) as usize).clamp(recipe_floor, 256)
+    }
+
     /// Override (or disable) the durable-history top-up — tests inject a stub;
     /// `None` turns hydration off entirely.
     pub fn with_history(
@@ -293,14 +312,18 @@ impl RagSource for AircRagSource {
         // sender (the durable row id is the airc event id for persona lines, but
         // live events re-mint EventIds across runtimes — content identity is the
         // honest join). Fetch failure degrades to the shallow window, loudly.
+        // Turns-that-fit: the budget sizes the candidate window; the packer's
+        // token walk decides what survives. self.grounding stays only as the
+        // recipe floor (#259 — kills the 5-message world-view starvation).
+        let grounding = Self::grounding_for_budget(budget, self.grounding);
         let mut events = events;
         let live_in_room = events
             .iter()
             .filter(|e| e.room_id.as_uuid() == room_id)
             .count();
-        if live_in_room < self.grounding {
+        if live_in_room < grounding {
             if let Some(history) = &self.history {
-                match history.room_tail(room_id, self.grounding * 2).await {
+                match history.room_tail(room_id, grounding * 2).await {
                     Ok(lines) => {
                         // Text via the ONE room-turn decoder (both wire shapes),
                         // same as ChannelElement — content identity is the dedup
@@ -352,12 +375,14 @@ impl RagSource for AircRagSource {
         // built from the same shallow log); the built-once path below carries the
         // topped-up window. Region-side hydration is the follow-up slice.
         let digest = match self.buffer.peek(&(self.persona_id, room_id)) {
-            Some(d) if live_in_room >= self.grounding => d,
+            // The region pre-stages with the recipe floor; only reuse it when
+            // it already covers the budget-derived window — else rebuild wide.
+            Some(d) if live_in_room >= grounding && d.elements.len() >= grounding => d,
             _ => Arc::new(self.builder.build_from_events(
                 self.persona_id,
                 room_id,
                 events,
-                self.grounding,
+                grounding,
             )),
         };
 
@@ -515,6 +540,37 @@ mod tests {
         assert_eq!(delivery.items[1].metadata.get("unread").and_then(|v| v.as_bool()), Some(true));
     }
 
+    // what this catches: the 5-message world view (#259, glass-boxed
+    // 2026-07-30: Asha's captures showed "[context] you can currently see the
+    // last 3 messages" while her L1 budget could hold dozens — she then looped
+    // generic-assistant filler because the real conversation was invisible).
+    // Grounding must derive from the TOKEN budget (turns-that-fit), never a
+    // fixed message count: with every message already read (bookmark at tip),
+    // a generous budget must still deliver far more than DEFAULT_GROUNDING.
+    #[tokio::test]
+    async fn caught_up_persona_sees_budget_worth_of_history_not_five_messages() {
+        let room = RoomId::new();
+        let events: Vec<TranscriptEvent> = (1..=20)
+            .map(|l| event_in(room, Some(&format!("turn number {l}")), l))
+            .collect();
+        let reader = Arc::new(StubReader::new(events));
+        let (source, bookmarks, _) = isolated_source(reader);
+        bookmarks.advance(persona(), room.as_uuid(), 20); // fully caught up
+
+        let delivery = source.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+        assert!(
+            delivery.items.len() > DEFAULT_GROUNDING,
+            "a 4k-token budget must widen the window past the {DEFAULT_GROUNDING}-message \
+             recipe floor, got {}",
+            delivery.items.len()
+        );
+        assert_eq!(
+            delivery.items.len(),
+            20,
+            "all 20 short turns fit the budget — the packer, not a count, decides"
+        );
+    }
+
     // what this catches: BREADTH OVER VERBATIM DEPTH (#128/#146, measured
     // 2026-07-13: live persona prompts held THREE messages total in a busy
     // room — the whole perceivable world — so any low-frequency speaker was
@@ -583,6 +639,9 @@ mod tests {
     // what this catches: a pre-staged digest in the buffer is served WITHOUT
     // rebuilding (the hot path peeks the region's snapshot). We seed the buffer with
     // a digest the reader could not have produced, and confirm it's what's served.
+    // NOTE (#259): reuse now requires the staged digest to COVER the budget-derived
+    // window — the tiny budget here keeps that window at 1 so the staged snapshot
+    // qualifies; an under-grounded stage must be rebuilt wide instead (previous test).
     #[tokio::test]
     async fn serves_prestaged_digest_without_rebuild() {
         let room = RoomId::new();
@@ -599,7 +658,7 @@ mod tests {
             .unwrap();
         buffer.publish((persona(), room.as_uuid()), Arc::new(staged));
 
-        let delivery = source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source.deliver(&ctx_in(room), 8, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 1);
         assert_eq!(delivery.items[0].content, "staged", "served the pre-staged digest, not a rebuild");
     }

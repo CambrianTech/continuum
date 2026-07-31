@@ -111,8 +111,9 @@ pub struct ExpertResidencyPlan {
 }
 
 /// Experts known to the profile, highest residency-priority first (stable tiebreak). The one
-/// place the ranking lives — both the 3-tier convenience and the N-tier engine consult it.
-fn ranked_experts(profile: &ExpertActivationProfile) -> Vec<ExpertId> {
+/// place the ranking lives — the 3-tier convenience, the N-tier engine, AND the tier policy
+/// (`expert_tier_policy`, #273) all consult it. pub(crate) so no consumer re-derives a rank.
+pub(crate) fn ranked_experts(profile: &ExpertActivationProfile) -> Vec<ExpertId> {
     let mut experts = profile.known_experts();
     experts.sort_by(|a, b| {
         profile

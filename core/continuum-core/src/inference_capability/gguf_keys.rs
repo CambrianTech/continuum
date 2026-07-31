@@ -99,6 +99,30 @@ pub fn expert_used_count(ct: &Content, arch: &str) -> Option<u32> {
         .and_then(|v| v.to_u32().ok())
 }
 
+/// `{arch}.leading_dense_block_count` — the number of LEADING transformer
+/// blocks that are dense (no routed experts) in an otherwise-MoE model.
+/// DeepSeek-family models run their first few layers dense; Qwen3-MoE runs
+/// every layer routed and simply omits the key. `None` therefore means "the
+/// artifact declares no dense lead" — the arch's own self-description, not
+/// a guessed default. MoE layer count = `block_count − leading_dense`.
+pub fn leading_dense_block_count(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.leading_dense_block_count"))
+        .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.expert_shared_count` — always-active shared experts per MoE
+/// layer (DeepSeek/GLM style). Shared experts are RESIDENT weights: they
+/// run for every token, so they belong with the trunk, never in the routed
+/// expert cache or its working-set arithmetic. Absent (Qwen3-MoE, K3-class
+/// routed-only layouts) means zero shared experts by the artifact's own
+/// declaration.
+pub fn expert_shared_count(ct: &Content, arch: &str) -> Option<u32> {
+    ct.metadata
+        .get(&format!("{arch}.expert_shared_count"))
+        .and_then(|v| v.to_u32().ok())
+}
+
 /// `general.parameter_count` — the model's own declared total parameter
 /// count. A `u64` in the spec (a 7B model already overflows `u32`). Absent
 /// for exporters that omit it; a caller that needs a number either takes a

@@ -314,6 +314,114 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     })
 }
 
+/// One rendered line's structural class — the unit of the template skeleton.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum LineShape {
+    Heading,
+    Numbered,
+    Bullet,
+    Prose,
+}
+
+/// A message's template skeleton: its sequence of line shapes plus the token
+/// set of its opening frame (first ~25 tokens). `None` when the message isn't
+/// templated at all (< 4 structural lines) — plain conversation never
+/// qualifies, so this detector can't fire on ordinary prose exchanges (that's
+/// [`own_repetition_fact`]'s turf, full-body geometry).
+fn message_skeleton(text: &str) -> Option<(Vec<LineShape>, std::collections::HashSet<String>)> {
+    let shapes: Vec<LineShape> = text
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim_start();
+            if t.is_empty() {
+                None
+            } else if t.starts_with('#') {
+                Some(LineShape::Heading)
+            } else if t.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && t.split_once(['.', ')'])
+                    .is_some_and(|(n, _)| n.chars().all(|c| c.is_ascii_digit()))
+            {
+                Some(LineShape::Numbered)
+            } else if t.starts_with("- ") || t.starts_with("* ") {
+                Some(LineShape::Bullet)
+            } else {
+                Some(LineShape::Prose)
+            }
+        })
+        .collect();
+    let structural = shapes.iter().filter(|s| **s != LineShape::Prose).count();
+    if structural < 4 {
+        return None;
+    }
+    let opener: String = text
+        .split_whitespace()
+        .take(25)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((shapes, token_set(&opener)))
+}
+
+/// The persona's TEMPLATE-LOOP fact: her recent messages reuse one structural
+/// scaffold with the topic swapped. The structure-similarity member of the
+/// repetition family — [`own_repetition_fact`] compares full-body token sets,
+/// which a topic rotation defeats: swap "security" for "documentation" inside
+/// the same skeleton and body Jaccard drops below [`NEAR_DUP_JACCARD`] while
+/// the loop continues unperceived. Two messages share a template when their
+/// line-shape sequences are equal OR their opening frames are near-identical;
+/// cluster-counted like the sibling (period-agnostic).
+///
+/// Why (task #264, glass-boxed 2026-07-31 live): personas spent hours cycling
+/// "I see that I've been repeating… ### New Exploration Area: <topic>" with
+/// the topic rotating (security → docs → UI/UX → maintenance…). Each turn
+/// ACKNOWLEDGED repetition — the body detector had fired — then treated the
+/// topic swap as "genuinely new," which no fact contradicted. Pure fact, no
+/// output gate: it names what happened and the PASS affordance she already
+/// has; the fork stays hers.
+pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[String]) -> Option<String> {
+    // Same self-history sourcing as own_repetition_fact (#148): ring primary,
+    // burst is_self fallback, never both (double-counting fabricates evidence).
+    let from_ring: Vec<&str> = spoken
+        .iter()
+        .map(String::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    let own: Vec<&str> = if from_ring.is_empty() {
+        turns
+            .iter()
+            .filter(|t| t.is_self && !t.content.trim().is_empty())
+            .map(|t| t.content.as_str())
+            .collect()
+    } else {
+        from_ring
+    };
+    let skeletons: Vec<_> = own.iter().filter_map(|m| message_skeleton(m)).collect();
+    let mut best = 1usize;
+    for (i, (shape_a, opener_a)) in skeletons.iter().enumerate() {
+        let dups = skeletons
+            .iter()
+            .enumerate()
+            .filter(|(j, (shape_b, opener_b))| {
+                *j != i
+                    && (shape_a == shape_b || {
+                        let union = opener_a.union(opener_b).count();
+                        union > 0
+                            && opener_a.intersection(opener_b).count() as f64 / union as f64
+                                >= NEAR_DUP_JACCARD
+                    })
+            })
+            .count();
+        best = best.max(dups + 1);
+    }
+    (best >= 3).then(|| {
+        format!(
+            "[template-loop] {best} of your recent messages reuse the same template with \
+             the topic swapped — a new subject inside the same scaffold is still circling, \
+             not new content. Nobody here asked for these; if nothing genuinely new has \
+             been raised, silence (PASS) is the honest response."
+        )
+    })
+}
+
 /// Shared "near-identical AND substantial" predicate for the RAG-side collapse
 /// (Joel 2026-07-12: "repetition almost always bad RAG" — fix what she READS
 /// first). Same geometry as the perception facts — one definition of "nearly
@@ -658,6 +766,74 @@ mod tests {
             own_repetition_fact(&healthy, &[]),
             None,
             "varied conversation renders nothing"
+        );
+    }
+
+    // what this catches: #264's template-loop axis — the live 2026-07-31 cascade
+    // where personas cycled "I see that I've been repeating… ### New Exploration
+    // Area: <topic>" for hours with the TOPIC rotating (security → docs → UI/UX),
+    // so full-body Jaccard stayed under threshold and own_repetition never fired;
+    // each turn even acknowledged repetition, then treated the topic swap as new.
+    // Same scaffold + swapped topic must fire; genuinely different structured
+    // messages and unstructured prose must stay inert (prose is own_repetition's
+    // turf — this detector only sees templated messages).
+    #[test]
+    fn template_loop_fires_on_topic_swapped_scaffold_and_stays_inert_otherwise() {
+        let variant = |topic: &str, a: &str, b: &str, c: &str| {
+            format!(
+                "I see that I've been repeating similar suggestions without adding new value \
+                 to our discussion. Let's try a completely different approach by exploring an \
+                 area of the Continuum system that hasn't been covered extensively yet.\n\
+                 ### New Exploration Area: {topic}\n\
+                 1. **{a}**:\n- Investigate the current state within the Continuum system.\n\
+                 - Explore how these are integrated into daily workflows.\n\
+                 2. **{b}**:\n- Discuss strategies and best practices.\n\
+                 - Consider how to improve based on common standards.\n\
+                 3. **{c}**:\n- Review real-world case studies in similar domains.",
+            )
+        };
+        let looping = vec![
+            variant("System Security and Privacy", "Security Protocols", "Privacy Considerations", "Vulnerability Management"),
+            variant("Project Documentation", "Documentation Overview", "Best Practices", "Templates and Examples"),
+            variant("User Interface and Experience Design", "UI/UX Principles", "Feedback and Iteration", "Accessibility Considerations"),
+        ];
+        let fact = template_loop_fact(&[], &looping)
+            .expect("three topic-swapped copies of one scaffold are a structural fact");
+        assert!(fact.contains("[template-loop]"), "labeled fact: {fact}");
+
+        // Only two templated messages (plus unrelated prose) → below the cluster
+        // floor, silent: two similar structured posts are a style, not a loop.
+        let pair = vec![
+            looping[0].clone(),
+            looping[1].clone(),
+            "sounds good, I'll start on the benchmark now".to_string(),
+        ];
+        assert_eq!(template_loop_fact(&[], &pair), None, "two is not a loop");
+
+        // Unstructured prose — even repetitive-ish — is invisible to this
+        // detector by construction (< 4 structural lines ⇒ no skeleton).
+        let prose = vec![
+            "I'll wait for the results before proceeding with the next step.".to_string(),
+            "Waiting on those results before I proceed to the next step.".to_string(),
+            "Still waiting for results before proceeding to our next step.".to_string(),
+        ];
+        assert_eq!(
+            template_loop_fact(&[], &prose),
+            None,
+            "plain prose is own_repetition's turf"
+        );
+
+        // Structured but genuinely DIFFERENT messages (different shapes, different
+        // openers) — healthy use of markdown must never read as a loop.
+        let varied = vec![
+            "Benchmark results:\n1. hard-rs: 62%\n2. humaneval: 81%\n3. repo-nav: 55%\n4. gym: 70%".to_string(),
+            "Plan for today:\n- fix the parser\n- rerun the suite\n### Notes\nThe lane wedge is back.\n- watch it".to_string(),
+            looping[2].clone(),
+        ];
+        assert_eq!(
+            template_loop_fact(&[], &varied),
+            None,
+            "distinct structured messages are not a template loop"
         );
     }
 

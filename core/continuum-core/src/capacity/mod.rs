@@ -23,14 +23,18 @@
 //! IS a real regression test.
 
 pub mod consumer;
+pub mod expert_container;
+pub mod expert_ecache;
 pub mod expert_observer;
 pub mod expert_pager;
 pub mod expert_predictor;
 pub mod expert_reconcile;
 pub mod expert_residency;
+pub mod expert_tier_policy;
 pub mod gossip;
 pub mod grid;
 pub mod lease;
+pub mod moe_arch_profile;
 pub mod moe_serving;
 pub mod placement;
 pub mod recursion_depth;
@@ -39,6 +43,7 @@ pub mod score;
 pub mod serving_pager;
 pub mod sim;
 pub mod system_profile;
+pub mod vq_decode;
 
 pub use system_profile::{DriveInfo, DriveRole, SystemProfile};
 
