@@ -21,20 +21,34 @@
 
 use std::collections::HashMap;
 
-/// Identity of one logical expert: the bundled gate/up/down record of one
-/// routed expert in one layer. This is the ONLY cache key — never a tensor
-/// pointer (graph nodes re-mint per decode step), never a per-projection
-/// split (3× key-space, and cross-projection index drift gives exactly-0).
+/// Identity of one physical expert record: the bundled gate/up/down record
+/// of one routed expert in one layer AT ONE PRECISION TIER. This is the ONLY
+/// cache key — never a tensor pointer (graph nodes re-mint per decode step),
+/// never a per-projection split (3× key-space, and cross-projection index
+/// drift gives exactly-0). Tier is part of identity (manifest v2, locked
+/// 2026-07-31): a sharp and a cruft copy of the same expert are DIFFERENT
+/// bytes from different banks; on promotion the sharp copy admits and the
+/// cruft copy ages out naturally — never aliased.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExpertKey {
     pub layer: u16,
     pub expert: u16,
+    /// Precision tier (0 = sharpest). Single-tier v1 containers use 0
+    /// everywhere, which reproduces the pre-tier key space exactly.
+    pub tier: u16,
 }
 
 impl ExpertKey {
-    /// WASTE-compatible packed form (`layer<<16 | expert`).
-    pub fn packed(self) -> u32 {
-        ((self.layer as u32) << 16) | self.expert as u32
+    /// Tier-0 (sharpest / v1) key — the pre-tier call shape.
+    pub fn sharp(layer: u16, expert: u16) -> Self {
+        Self { layer, expert, tier: 0 }
+    }
+
+    /// Packed form (`layer<<32 | expert<<16 | tier`). Widened from WASTE's
+    /// u32 when tier joined identity; tier-0 keys keep their low 32 bits
+    /// shifted, preserving relative order.
+    pub fn packed(self) -> u64 {
+        ((self.layer as u64) << 32) | ((self.expert as u64) << 16) | self.tier as u64
     }
 }
 
@@ -65,7 +79,15 @@ impl std::fmt::Display for BelowCliff {
 #[derive(Debug, Clone, Copy)]
 pub struct EcacheBudget {
     pub slots: usize,
+    /// SHARPEST-tier record size — the cliff and slot derivation use the
+    /// worst case so a budget can never be over-committed by tier mix.
     pub record_bytes: u64,
+    /// Byte allowance for tier-mixed residency (== the governor grant the
+    /// budget was derived from). Admission accounts real per-record bytes
+    /// against this, so cruft-tier records pack denser than the slot count
+    /// alone would allow — capacity follows the allocator's tier mix
+    /// automatically instead of assuming every resident is sharp.
+    pub max_bytes: u64,
 }
 
 impl EcacheBudget {
@@ -96,6 +118,7 @@ impl EcacheBudget {
         Ok(Self {
             slots: (available_bytes / record_bytes) as usize,
             record_bytes,
+            max_bytes: available_bytes,
         })
     }
 
@@ -116,6 +139,8 @@ struct Slot {
     key: ExpertKey,
     hits: u64,
     last: u64,
+    /// Real bytes of this record (per-tier sizes differ, manifest v2).
+    bytes: u64,
 }
 
 /// Eviction policy. LFRU is the default and the reasoned choice; LRU exists
@@ -135,6 +160,14 @@ pub struct ExpertEcache {
     slots: Vec<Slot>,
     index: HashMap<ExpertKey, usize>,
     max_slots: usize,
+    /// Byte allowance + live account (manifest v2 tier mix): admission
+    /// checks BYTES, not just slot count, so cruft records pack denser and
+    /// a sharp admit can require multiple cruft evictions.
+    max_bytes: u64,
+    resident_bytes: u64,
+    /// Uniform record size for the tier-less [`Self::touch`] path (the
+    /// sharpest tier / v1 case).
+    default_record_bytes: u64,
     clock: u64,
     rng: u64,
     policy: EvictionPolicy,
@@ -154,6 +187,9 @@ impl ExpertEcache {
             slots: Vec::new(),
             index: HashMap::new(),
             max_slots: budget.slots.max(1),
+            max_bytes: budget.max_bytes.max(budget.record_bytes),
+            resident_bytes: 0,
+            default_record_bytes: budget.record_bytes,
             clock: 0,
             rng: 0x9E37_79B9_7F4A_7C15,
             policy,
@@ -174,10 +210,19 @@ impl ExpertEcache {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    /// Touch the key: hit bookkeeping if resident, miss + admit (evicting a
-    /// sampled victim when full) if not. Returns whether it was a hit. The
-    /// caller performs the actual fetch on a miss — bytes are its concern.
+    /// Touch the key at the budget's default (sharpest-tier) record size —
+    /// the v1 call shape. See [`Self::touch_sized`].
     pub fn touch(&mut self, key: ExpertKey) -> bool {
+        let bytes = self.default_record_bytes;
+        self.touch_sized(key, bytes)
+    }
+
+    /// Touch the key with its REAL record size (per-tier, manifest v2): hit
+    /// bookkeeping if resident; miss + byte-accounted admit if not, evicting
+    /// sampled victims until the record fits (a sharp admit may displace
+    /// several cruft residents). Returns whether it was a hit. The caller
+    /// performs the actual fetch on a miss — bytes live in its pool.
+    pub fn touch_sized(&mut self, key: ExpertKey, record_bytes: u64) -> bool {
         self.clock += 1;
         if let Some(&i) = self.index.get(&key) {
             self.hits += 1;
@@ -186,12 +231,36 @@ impl ExpertEcache {
             return true;
         }
         self.misses += 1;
-        if self.slots.len() < self.max_slots {
-            self.index.insert(key, self.slots.len());
-            self.slots.push(Slot { key, hits: 1, last: self.clock });
-            return false;
+        // Evict until the incoming record fits BOTH accounts (bytes + slot
+        // count). Loops because tier sizes differ; bounded by slot count.
+        while !self.slots.is_empty()
+            && (self.resident_bytes + record_bytes > self.max_bytes
+                || self.slots.len() >= self.max_slots)
+        {
+            let victim = self.pick_victim();
+            self.evictions += 1;
+            self.resident_bytes -= self.slots[victim].bytes;
+            let last = self.slots.len() - 1;
+            self.index.remove(&self.slots[victim].key);
+            self.slots.swap(victim, last);
+            if victim != last {
+                self.index.insert(self.slots[victim].key, victim);
+            }
+            self.slots.pop();
         }
-        // Evict: best victim among a small random sample.
+        self.index.insert(key, self.slots.len());
+        self.slots.push(Slot {
+            key,
+            hits: 1,
+            last: self.clock,
+            bytes: record_bytes,
+        });
+        self.resident_bytes += record_bytes;
+        false
+    }
+
+    /// Best victim among a small random sample (WASTE's approximation).
+    fn pick_victim(&mut self) -> usize {
         let mut victim = (self.next_rand() as usize) % self.slots.len();
         for _ in 1..VICTIM_SAMPLE.min(self.slots.len()) {
             let cand = (self.next_rand() as usize) % self.slots.len();
@@ -205,11 +274,13 @@ impl ExpertEcache {
                 victim = cand;
             }
         }
-        self.evictions += 1;
-        self.index.remove(&self.slots[victim].key);
-        self.index.insert(key, victim);
-        self.slots[victim] = Slot { key, hits: 1, last: self.clock };
-        false
+        victim
+    }
+
+    /// Bytes currently accounted resident — the number the footprint
+    /// reporter and the governor lease reconcile against.
+    pub fn resident_bytes(&self) -> u64 {
+        self.resident_bytes
     }
 
     pub fn hit_rate(&self) -> f64 {
@@ -237,15 +308,25 @@ impl ExpertEcache {
     /// frequency but `last = 0`, so on recency tiebreaks every live-proven
     /// resident beats a warm guess. Only fills empty slots; never evicts.
     pub fn warm(&mut self, usage: impl IntoIterator<Item = (ExpertKey, u64)>) {
+        // Warm entries are accounted at the default (sharpest-tier) size —
+        // conservative: a warm guess never over-fills the byte budget.
+        let bytes = self.default_record_bytes;
         for (key, hits) in usage {
-            if self.slots.len() >= self.max_slots {
+            if self.slots.len() >= self.max_slots || self.resident_bytes + bytes > self.max_bytes
+            {
                 break;
             }
             if self.index.contains_key(&key) {
                 continue;
             }
             self.index.insert(key, self.slots.len());
-            self.slots.push(Slot { key, hits: hits.max(1), last: 0 });
+            self.slots.push(Slot {
+                key,
+                hits: hits.max(1),
+                last: 0,
+                bytes,
+            });
+            self.resident_bytes += bytes;
         }
     }
 }
@@ -255,7 +336,7 @@ mod tests {
     use super::*;
 
     fn key(layer: u16, expert: u16) -> ExpertKey {
-        ExpertKey { layer, expert }
+        ExpertKey::sharp(layer, expert)
     }
 
     /// A skewed per-token workload: `hot` experts recur every token (the
@@ -345,9 +426,15 @@ mod tests {
     // no pointer identity anywhere in the type).
     #[test]
     fn packed_key_is_stable_and_unique() {
-        assert_eq!(key(3, 417).packed(), (3u32 << 16) | 417);
+        assert_eq!(key(3, 417).packed(), (3u64 << 32) | (417u64 << 16));
         assert_ne!(key(3, 417).packed(), key(4, 417).packed());
         assert_ne!(key(3, 417).packed(), key(3, 418).packed());
+        // Tier is identity: the same (layer, expert) at another tier is a
+        // DIFFERENT record — sharp and cruft copies must never alias.
+        assert_ne!(
+            key(3, 417).packed(),
+            ExpertKey { layer: 3, expert: 417, tier: 1 }.packed()
+        );
 
         let budget = EcacheBudget::derive(100, 2, 10).expect("10 slots");
         let mut c = ExpertEcache::new(budget, EvictionPolicy::Lfru);
@@ -360,6 +447,55 @@ mod tests {
     // the previous run's usage snapshot must serve its FIRST pass over the
     // hot set from residency, not re-miss its way back up (WASTE's
     // usage.waste warm-start; the reboot sibling of the fixed-point re-plan).
+    // what this catches: byte-accounted tier-mix admission (manifest v2) —
+    // cruft records must pack DENSER than the sharp slot count implies, and
+    // a sharp admit into a cruft-full cache must evict as many cruft
+    // residents as its bytes require (not exactly one). The account must
+    // balance exactly against the byte budget throughout.
+    #[test]
+    fn tier_mix_packs_by_bytes_and_sharp_admit_evicts_enough_cruft() {
+        // Budget: 8 sharp records of 4096B (32768B). Slots derive from the
+        // sharp size; bytes are the real constraint.
+        let budget = EcacheBudget::derive(8 * 4096, 2, 4096).expect("above cliff");
+        let mut c = ExpertEcache::new(budget, EvictionPolicy::Lru);
+
+        // Fill with cruft (tier 1, half-size): byte budget holds 16 of them,
+        // but slot count (8) caps first — both accounts are enforced.
+        for e in 0..8u16 {
+            assert!(!c.touch_sized(ExpertKey { layer: 0, expert: e, tier: 1 }, 2048));
+        }
+        assert_eq!(c.resident(), 8);
+        assert_eq!(c.resident_bytes(), 8 * 2048);
+
+        // One sharp admit (4096B) fits the byte budget with room to spare —
+        // slot cap forces exactly one eviction, account stays balanced.
+        assert!(!c.touch_sized(ExpertKey::sharp(0, 100), 4096));
+        assert_eq!(c.resident(), 8);
+        assert_eq!(c.resident_bytes(), 7 * 2048 + 4096);
+
+        // Now BYTE pressure: fill 3 of 4 slots at the default size (12288 of
+        // 16384B), then admit an OVERSIZED record (3×4096). Bytes bind before
+        // slots — the admit must evict TWO residents (one leaves 20480 > 16384;
+        // two leaves 16384 ≤ 16384), never just one.
+        let budget = EcacheBudget::derive(4 * 4096, 2, 4096).expect("above cliff");
+        let mut c = ExpertEcache::new(budget, EvictionPolicy::Lru);
+        for e in 0..3u16 {
+            c.touch_sized(ExpertKey::sharp(1, e), 4096);
+        }
+        assert_eq!(c.resident_bytes(), 3 * 4096);
+        assert!(!c.touch_sized(ExpertKey { layer: 1, expert: 200, tier: 0 }, 3 * 4096));
+        assert_eq!(c.evictions, 2, "oversized admit must free enough BYTES");
+        assert!(
+            c.resident_bytes() <= 4 * 4096,
+            "account stays within the byte budget: {}",
+            c.resident_bytes()
+        );
+        assert!(
+            c.touch_sized(ExpertKey { layer: 1, expert: 200, tier: 0 }, 3 * 4096),
+            "and it is resident"
+        );
+    }
+
     #[test]
     fn warm_start_from_persisted_usage_kills_the_cold_ramp() {
         let budget = EcacheBudget::derive(200, 2, 10).expect("20 slots");

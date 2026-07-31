@@ -191,6 +191,23 @@ pub enum ContainerError {
     },
 }
 
+/// The fetch seam, adapterized (OpenCV-style): ONE interface the cache and
+/// pager talk to, many sources behind it. Outlier A is the local NVMe
+/// container below; outlier B (a remote peer's shard over the grid — same
+/// key, same identity check, bytes arrive over a stream instead of a pread)
+/// slots in when the layer-split lands, WITHOUT the pager learning a second
+/// call shape. The blended local/remote fetcher for a split serving plan is
+/// itself just another impl that routes by layer range.
+pub trait ExpertFetcher {
+    /// Fetch the record identified by `key` (layer + expert + tier) into
+    /// `buf`, sized to the key's tier. Identity-verified; errors are loud.
+    fn fetch(&mut self, key: ExpertKey, buf: &mut [u8]) -> Result<(), ContainerError>;
+
+    /// Record size for a tier — what the caller must size `buf` (and the
+    /// cache must account) with. `None` when the tier doesn't exist.
+    fn record_bytes(&self, tier: u16) -> Option<u64>;
+}
+
 /// One opened `experts-L{n}.bin`: a verified run of fixed-size records
 /// sorted by expert id. Offset arithmetic is the WHOLE index — contiguity +
 /// sort order means `expert_id × record_bytes`, no side table to drift.
@@ -390,22 +407,13 @@ impl ExpertContainer {
         }
     }
 
-    /// Fetch one expert's record at the SHARPEST tier (tier 0) — the v1 call
-    /// shape, kept so single-tier callers never mention tiers.
+    /// Fetch one expert's record into `buf` (must be exactly the KEY's
+    /// tier's `record_bytes` long). The tier rides IN the key — one identity
+    /// end-to-end from the pager's policy seam through the cache to the bank
+    /// (a v1/sharp caller uses [`ExpertKey::sharp`] and never mentions
+    /// tiers). Opens the (layer, tier) bank on first touch; pure mechanism —
+    /// the policy seam (all-star sharp / cruft decayed) chose the tier.
     pub fn fetch(&mut self, key: ExpertKey, buf: &mut [u8]) -> Result<(), ContainerError> {
-        self.fetch_tier(key, 0, buf)
-    }
-
-    /// Fetch one expert's record at `tier` into `buf` (must be exactly that
-    /// tier's `record_bytes` long). Opens the (layer, tier) bank on first
-    /// touch. The PAGER's policy seam decides which tier to ask for
-    /// (all-star sharp / cruft decayed); this is pure mechanism.
-    pub fn fetch_tier(
-        &mut self,
-        key: ExpertKey,
-        tier: u16,
-        buf: &mut [u8],
-    ) -> Result<(), ContainerError> {
         if key.layer >= self.manifest.n_layers {
             return Err(ContainerError::LayerOutOfRange {
                 layer: key.layer,
@@ -413,6 +421,7 @@ impl ExpertContainer {
             });
         }
         let n_tiers = self.tiers.len() as u16;
+        let tier = key.tier;
         if tier >= n_tiers {
             return Err(ContainerError::TierOutOfRange { tier, n_tiers });
         }
@@ -428,6 +437,16 @@ impl ExpertContainer {
             )?);
         }
         slot.as_ref().expect("just opened").fetch(key.expert, buf)
+    }
+}
+
+impl ExpertFetcher for ExpertContainer {
+    fn fetch(&mut self, key: ExpertKey, buf: &mut [u8]) -> Result<(), ContainerError> {
+        ExpertContainer::fetch(self, key, buf)
+    }
+
+    fn record_bytes(&self, tier: u16) -> Option<u64> {
+        self.tiers.get(tier as usize).map(|t| t.record_bytes)
     }
 }
 
@@ -480,7 +499,7 @@ mod tests {
         let mut buf = vec![0u8; c.manifest().record_bytes as usize];
         for layer in 0..3u16 {
             for expert in 0..4u16 {
-                c.fetch(ExpertKey { layer, expert }, &mut buf).expect("fetch");
+                c.fetch(ExpertKey::sharp(layer, expert), &mut buf).expect("fetch");
                 assert_eq!(buf[HEADER_IDENT_BYTES], (layer as u8) ^ 0xA0);
                 assert_eq!(buf[HEADER_IDENT_BYTES + 1], expert as u8);
             }
@@ -501,7 +520,7 @@ mod tests {
         let mut c = ExpertContainer::open(dir.path()).expect("manifest still fine");
         let mut buf = vec![0u8; RECORD_ALIGN as usize];
         let err = c
-            .fetch(ExpertKey { layer: 0, expert: 0 }, &mut buf)
+            .fetch(ExpertKey::sharp(0, 0), &mut buf)
             .expect_err("truncated bank must refuse");
         assert!(matches!(err, ContainerError::BankGeometry { .. }), "{err}");
 
@@ -532,7 +551,7 @@ mod tests {
         let mut c = ExpertContainer::open(dir.path()).expect("open");
         let mut buf = vec![0u8; RECORD_ALIGN as usize];
         let err = c
-            .fetch(ExpertKey { layer: 0, expert: 1 }, &mut buf)
+            .fetch(ExpertKey::sharp(0, 1), &mut buf)
             .expect_err("identity mismatch must refuse");
         assert!(matches!(err, ContainerError::RecordIdentity { .. }), "{err}");
     }
@@ -558,7 +577,7 @@ mod tests {
         let mut cache = ExpertEcache::new(budget, EvictionPolicy::Lfru);
 
         let working_set: Vec<ExpertKey> = (0..2u16)
-            .flat_map(|layer| (0..8u16).map(move |expert| ExpertKey { layer, expert }))
+            .flat_map(|layer| (0..8u16).map(move |expert| ExpertKey::sharp(layer, expert)))
             .collect();
         let mut buf = vec![0u8; manifest.record_bytes as usize];
         let mut disk_reads = 0usize;
@@ -647,8 +666,8 @@ mod tests {
             let mut buf = vec![0u8; record_bytes as usize];
             for layer in 0..2u16 {
                 for expert in 0..3u16 {
-                    c.fetch_tier(ExpertKey { layer, expert }, tier, &mut buf)
-                        .expect("fetch_tier");
+                    c.fetch(ExpertKey { layer, expert, tier }, &mut buf)
+                        .expect("tiered fetch");
                     assert_eq!(buf[HEADER_IDENT_BYTES], tier as u8 ^ 0x5A);
                     assert_eq!(buf[HEADER_IDENT_BYTES + 1], expert as u8);
                 }
@@ -680,7 +699,7 @@ mod tests {
         assert_eq!(c.tiers().len(), 1, "v1 = one synthesized tier");
         assert_eq!(c.tiers()[0].record_bytes, RECORD_ALIGN);
         let mut buf = vec![0u8; RECORD_ALIGN as usize];
-        c.fetch(ExpertKey { layer: 0, expert: 1 }, &mut buf)
+        c.fetch(ExpertKey::sharp(0, 1), &mut buf)
             .expect("legacy fetch path");
         assert_eq!(buf[HEADER_IDENT_BYTES + 1], 1);
     }
@@ -695,7 +714,7 @@ mod tests {
         let mut c = ExpertContainer::open(dir.path()).expect("open");
         let mut buf = vec![0u8; RECORD_ALIGN as usize];
         let err = c
-            .fetch_tier(ExpertKey { layer: 0, expert: 0 }, 2, &mut buf)
+            .fetch(ExpertKey { layer: 0, expert: 0, tier: 2 }, &mut buf)
             .expect_err("tier 2 of 2 must refuse");
         assert!(matches!(err, ContainerError::TierOutOfRange { .. }), "{err}");
 
