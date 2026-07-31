@@ -99,6 +99,16 @@ is subsumed: "cold" is `b_e = 0` bits resident (fault full-precision on demand);
 "warm" is a low-bit copy always in RAM; "hot" is high-bit in VRAM. This unifies
 regional dynamic quantization and working-set residency into one allocation.
 
+Crucially the actuator does **not re-quantize at runtime** (too expensive; violates
+no-compute-at-serving). Instead the foundry **precomputes each expert at several
+precisions** (with per-tier compensation-LoRA) and stores them all, tier-keyed, in
+the aligned container; the runtime is a pure **selector** — "fetch tier `T` of
+expert `e`" — so promotion/demotion of an expert as its importance shifts is just a
+different cheap read from a tier already on disk. Static regional quantization is
+the degenerate case where the selector never changes its choice; *dynamic* is the
+general case where the resident precision tracks live usage. Disk cost is a few GB
+per tier — the trade that buys the entire precision axis.
+
 ### 2.4 Prefetch and compensate
 
 Prefetch the predicted set ahead of the dead time (§2.1). Where sensitivity is
@@ -129,7 +139,18 @@ The consequence is the moat. Single-machine paging engines (§Related Work) are
 capped by one box's memory budget. The grid **compounds** the budget: pooling RAM
 across misfit nodes enlarges the actuator, so aggregate hit-rate and achievable
 precision exceed any single node — under the *same* control law we already run
-per-machine. The governor that decides which node serves a request is not a
+per-machine.
+
+There is a second, emergent consequence: **diversity**. Because each node runs the
+tier-selector (§2.3) over *its* workload under *its* budget, nodes converge to
+different per-expert precision/residency assignments — different resident
+*phenotypes*, shaped by what each node has served (the trace is that memory). One
+node keeps the code experts sharp, another the biology experts; the rest fall to
+low tiers or evict. The fractal controller then routes each query to the node
+whose phenotype already holds the relevant experts at high precision. This is not a
+uniform cache replicated N times — it is a **population of specialized nodes** whose
+pooled, diverse coverage is the grid's value. Specialization emerges from local
+optimization; the grid harvests it. The governor that decides which node serves a request is not a
 different mechanism from the pager that decides which expert is resident; it is
 the same controller with peers as its memory tiers. (In the codebase this is the
 `decide_lane` / `FitPolicy` governor seam: expert placement is "the same shape one

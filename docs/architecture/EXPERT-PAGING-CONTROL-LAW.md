@@ -130,6 +130,42 @@ Binary residency saturates instantly against the budget. Make the actuator
    Same instrumentation discipline as the trace. Trace × sensitivity = the
    importance field the allocator optimizes over.
 
+## The actuator is a SELECTOR over precomputed tiers, not a runtime quantizer
+
+The precision axis of §2.3 must not re-quantize at runtime — that is expensive and
+violates no-compute-at-runtime. Instead:
+
+- **The foundry precomputes each expert at several precisions** (e.g. IQ4 / IQ2 /
+  IQ1, each with its own compensation-LoRA) and stores them ALL in the aligned
+  container, **tier-keyed** (the manifest/packer gains a tier dimension per
+  expert; `llama-moe-pack` extends to emit tiers). Disk is cheap (16 TB D:);
+  carrying 2–3 tiers costs a few GB and buys the whole precision axis.
+- **The runtime actuator is a pure SELECTOR.** For each expert it chooses *which
+  precomputed tier to fetch/keep resident* — no compute, just "fetch tier T of
+  expert E." Rate-distortion allocation (§2.3) picks T per expert from the
+  importance field. Promotion (a warming expert → higher tier) and demotion (a
+  cooling one → lower tier, or evict) are just different cheap reads from tiers
+  already sitting on disk.
+- **Dynamic, not static.** Static regional quant bakes one precision per expert
+  offline. Here the *resident* precision tracks live usage: the selector re-picks
+  tiers as the workload shifts, because every tier is pre-staged. Static quant is
+  the special case where the selector never changes its choice.
+
+### Diversity forms (the grid's strength, not a side effect)
+
+Because each node selects tiers dynamically from *its* workload under *its* budget,
+nodes converge to **different per-expert tier assignments** — different resident
+*phenotypes*. A node that has served a lot of Rust keeps the Rust-relevant experts
+at high tiers and lets the rest fall to IQ1/evicted; a node steeped in biology
+keeps a different set sharp. The residency+precision profile is shaped by
+experience (the trace is the memory of what the node has done — ties to the
+being-axis / experiential plasticity), so it is a learned specialization, not a
+static config. Across the grid this yields a **diverse population of specialized
+nodes** — which is exactly the misfit-design moat and the source of grid value:
+the fractal controller (§3) routes each query to the node whose phenotype already
+holds the relevant experts sharp, and pooled diversity beats any single uniform
+node. Diversity is the point.
+
 ## Controller stages
 
 1. **Predict** the next working set — recency window (v1, no training, already
