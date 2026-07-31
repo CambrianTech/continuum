@@ -239,15 +239,48 @@ struct ChatPostedRoom {
 /// airc's registry stays the truth; this cell is the node's honest "rooms I
 /// have seen" cache, exactly like the chat accumulator ([[compression]]: one
 /// fold, every citizen's nav reader borrows the same receiver).
+///
+/// #241: when `registry_socket` is given, the owner task's FIRST act is to
+/// ask the airc daemon for the DURABLE subscribed-room registry
+/// (`DaemonClient::list_rooms`, airc #1303) and fold every membership row in
+/// — so a member's rooms exist in the nav before their first event, and a
+/// rebooted interface never collapses to just the rooms that happened to
+/// speak (the one-visible-room symptom, live-found 2026-07-31). The fetch
+/// runs inside the spawned task: boot never blocks on the daemon, and an
+/// unreachable daemon degrades to the traffic-observed behavior with a loud
+/// probe, never a wedge.
 pub fn spawn_room_set_fold(
     rt: &tokio::runtime::Handle,
     bus: Arc<MessageBus>,
     seed: Vec<(Uuid, String)>,
+    registry_socket: Option<std::path::PathBuf>,
 ) -> watch::Receiver<RoomSet> {
     let initial: RoomSet = seed.into_iter().collect();
     let (tx, rx) = watch::channel(initial);
     let mut events = bus.receiver();
     rt.spawn(async move {
+        if let Some(socket) = registry_socket {
+            match airc_ipc::DaemonClient::new(socket).list_rooms().await {
+                Ok(response) => {
+                    tx.send_if_modified(|set| {
+                        let mut changed = false;
+                        for room in response.rooms {
+                            changed |=
+                                fold_observed_room(set, room.room_id.as_uuid(), Some(room.name));
+                        }
+                        changed
+                    });
+                }
+                Err(error) => {
+                    crate::probe!(
+                        class = "nav.room_registry_seed_failed",
+                        error = format!("{error}"),
+                        "durable room-registry seed unavailable — nav degrades to \
+                         traffic-observed rooms until the daemon answers (#241)"
+                    );
+                }
+            }
+        }
         loop {
             match events.recv().await {
                 Ok(event) => {
