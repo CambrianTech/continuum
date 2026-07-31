@@ -194,6 +194,33 @@ the fractal controller (§3) routes each query to the node whose phenotype alrea
 holds the relevant experts sharp, and pooled diversity beats any single uniform
 node. Diversity is the point.
 
+## The policy function is a SEAM (v1 heuristic → v2 trained ML)
+
+Per Joel + M5: design to the control system from the start, then *simulate and train
+ML to run it well*. So the policy is a pluggable pure function, not baked logic:
+
+```
+policy(
+    importance_field,       // per-expert: recency(e) × sensitivity(e)
+    recency_prediction,     // the predicted next-token working set
+    quant_sensitivity,      // per-expert distortion cost (sensor 2)
+    budgets                 // RAM / VRAM / disk-bandwidth ceilings
+) -> decision {
+    per_expert_tier,        // which precomputed precision to hold (all-star … cruft)
+    residency,              // VRAM / RAM / cold
+    prefetch                // what to pull ahead of the dead time
+}
+```
+
+- **v1** = the heuristic in this doc (recency window + rate-distortion tiering +
+  LTP/LTD promote/demote). No training; already 3–4× LFU.
+- **v2** = an ML policy **trained from the simulation** — the trace-replay harness
+  *is* the training environment (offline, reproducible, held-out-scored). Same
+  signature; swap the body.
+- The pager (continuum-core `ServingExpertPager`) owns the seam and the mechanism;
+  the trained model drops into the seam without touching the C++ fetch/cache. This
+  is what keeps "design it as control, then learn the controller" honest.
+
 ## Controller stages
 
 1. **Predict** the next working set — recency window (v1, no training, already
