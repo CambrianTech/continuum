@@ -30,6 +30,7 @@ pub mod expert_pager;
 pub mod expert_predictor;
 pub mod expert_reconcile;
 pub mod expert_residency;
+pub mod expert_tier_policy;
 pub mod gossip;
 pub mod grid;
 pub mod lease;
