@@ -279,6 +279,22 @@ pub struct PagerCaptureEvent {
 The pager is the emitter (continuum-core `ServingExpertPager`); the schema lives
 once in Rust and generates the TS binding, so the widgets can't drift from it.
 
+**Unify with the existing facilities — do NOT hand-roll a parallel path** (we've
+done this elsewhere):
+- **Routing observation → `ExpertObserver` / `LiveExpertObserver`**
+  (`capacity/expert_observer.rs`, #230). Its `observe(layer, experts, n_used)`
+  already tallies per-expert counts + cross-layer cooccurrence + snapshot-predicts
+  — i.e. the frequency/co-activation signal the predictor consumes. The pager's
+  per-token capture flows through this seam; the `PagerCaptureEvent` is the derived
+  performance/decision projection, not a second observation path.
+- **The JSONL drain → `JsonlProbeFileSink`** (`routing/probe_file_sink.rs`,
+  `CONTINUUM_PROBE_DIR`) under the `[[auto-clean-is-structural-not-operational]]`
+  doctrine: any substrate writer that grows incrementally MUST auto-clean
+  structurally. So the capture stream is bounded/rolling by facility, not by a
+  bespoke cap. The fork's C++ emitter (`GGML_MOE_CAPTURE_FILE`, size-rotated per
+  the same doctrine) is only the RAW feed for direct Positron tailing during a
+  single serve; the durable capture is the Rust sink reusing these two facilities.
+
 ## Division of labor
 
 - **BigMama** — footprint-under-RAM fix (give the actuator authority: find + cut
