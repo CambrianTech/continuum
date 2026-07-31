@@ -98,6 +98,17 @@ impl EcacheBudget {
             record_bytes,
         })
     }
+
+    /// Derive from a [`MoeArchProfile`] + container manifest facts — the
+    /// #231 adapter-law entry point. The cliff input flows GGUF →
+    /// profile → here; no caller ever types an activation count.
+    pub fn derive_from_profile(
+        available_bytes: u64,
+        profile: &crate::capacity::moe_arch_profile::MoeArchProfile,
+        record_bytes: u64,
+    ) -> Result<Self, BelowCliff> {
+        Self::derive(available_bytes, profile.activated_per_token(), record_bytes)
+    }
 }
 
 #[derive(Debug, Clone)]
