@@ -42,6 +42,23 @@ pub const RECORD_MAGIC: u32 = u32::from_le_bytes(*b"WEXP");
 /// to the decode stage, not the fetch seam.
 const HEADER_IDENT_BYTES: usize = 8;
 
+/// One precision tier in a v2 container (all-star/cruft allocation,
+/// 2026-07-31 seam sync with the foundry): descending fidelity, `id` equal
+/// to its index in `tiers`. Each tier has its own record size (and therefore
+/// its own bank files) — the PAGER chooses which tier to fetch per expert;
+/// the container just ships them all. The manifest stays policy-free.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TierSpec {
+    /// Tier id == index in `tiers`, 0 = sharpest.
+    pub id: u16,
+    /// Quant label for this tier (e.g. "VQ3R", "IQ2", "IQ1"). Decode-stage
+    /// concern; the fetch seam carries it through.
+    pub quant: String,
+    /// Fixed record size at this tier. MUST be a multiple of
+    /// [`RECORD_ALIGN`] — the alignment law holds per tier independently.
+    pub record_bytes: u64,
+}
+
 /// `manifest.json` at the container root — the seam contract with the
 /// foundry (#268). The foundry WRITES this; nothing on the serving side ever
 /// hand-authors one. Versioned so the format can grow without silent
@@ -78,6 +95,29 @@ pub struct ContainerManifest {
     /// Optional in v1: absent in containers packed before the field existed.
     #[serde(default)]
     pub top_k_per_layer: Option<u32>,
+    /// Precision tiers, descending fidelity (v2). Empty/absent = the v1
+    /// degenerate case: exactly one tier whose `record_bytes` is the
+    /// top-level field and whose banks use the v1 `experts-L{n}.bin` names.
+    /// v2 containers (version ≥ 2) name banks `experts-L{n}-T{t}.bin`.
+    #[serde(default)]
+    pub tiers: Vec<TierSpec>,
+}
+
+impl ContainerManifest {
+    /// The effective tier table: declared tiers for v2, or the synthesized
+    /// single-tier view of a v1 manifest — ONE code path downstream, the v1
+    /// case is just the degenerate table (seam sync 2026-07-31).
+    pub fn effective_tiers(&self) -> Vec<TierSpec> {
+        if self.tiers.is_empty() {
+            vec![TierSpec {
+                id: 0,
+                quant: self.fmt.clone(),
+                record_bytes: self.record_bytes,
+            }]
+        } else {
+            self.tiers.clone()
+        }
+    }
 }
 
 /// Everything that can go wrong opening or reading a container. Every
@@ -125,6 +165,13 @@ pub enum ContainerError {
     },
     #[error("layer {layer} out of range: container has {n_layers} layers")]
     LayerOutOfRange { layer: u16, n_layers: u16 },
+    #[error("tier {tier} out of range: container has {n_tiers} tiers")]
+    TierOutOfRange { tier: u16, n_tiers: u16 },
+    #[error(
+        "container manifest {path}: tier {index} has id {id} — tier ids must equal \
+         their index (descending-fidelity order is the contract)"
+    )]
+    TierIdMismatch { path: PathBuf, index: u16, id: u16 },
     #[error("expert {expert} out of range: {experts_per_layer} experts per layer")]
     ExpertOutOfRange { expert: u16, experts_per_layer: u16 },
     #[error(
@@ -248,12 +295,18 @@ impl ExpertBank {
 pub struct ExpertContainer {
     root: PathBuf,
     manifest: ContainerManifest,
+    /// Effective tier table (synthesized single tier for v1) — validated at
+    /// open so fetch-time indexing is pure arithmetic.
+    tiers: Vec<TierSpec>,
+    /// Lazily-opened banks, indexed `layer × n_tiers + tier`.
     banks: Vec<Option<ExpertBank>>,
 }
 
 impl ExpertContainer {
-    /// Highest manifest version this reader understands.
-    pub const KNOWN_VERSION: u32 = 1;
+    /// Highest manifest version this reader understands. v2 adds `tiers[]`
+    /// + per-(layer,tier) bank naming (`moec_pack_dir_tiered` writer side,
+    /// locked 2026-07-31).
+    pub const KNOWN_VERSION: u32 = 2;
 
     /// Open a container directory: parse + verify the manifest. No bank IO
     /// happens here.
@@ -285,39 +338,92 @@ impl ExpertContainer {
                 align: RECORD_ALIGN,
             });
         }
-        let banks = (0..manifest.n_layers).map(|_| None).collect();
+        // Tier table: ids must equal their index (the descending-fidelity
+        // order IS the id space), and the alignment law holds per tier.
+        let tiers = manifest.effective_tiers();
+        for (index, tier) in tiers.iter().enumerate() {
+            if tier.id as usize != index {
+                return Err(ContainerError::TierIdMismatch {
+                    path: manifest_path,
+                    index: index as u16,
+                    id: tier.id,
+                });
+            }
+            if tier.record_bytes == 0 || tier.record_bytes % RECORD_ALIGN != 0 {
+                return Err(ContainerError::RecordMisaligned {
+                    path: manifest_path,
+                    record_bytes: tier.record_bytes,
+                    align: RECORD_ALIGN,
+                });
+            }
+        }
+        let banks = (0..manifest.n_layers as usize * tiers.len())
+            .map(|_| None)
+            .collect();
         Ok(Self {
             root: root.to_path_buf(),
             manifest,
+            tiers,
             banks,
         })
+    }
+
+    /// The validated tier table (single synthesized tier for v1 containers).
+    pub fn tiers(&self) -> &[TierSpec] {
+        &self.tiers
     }
 
     pub fn manifest(&self) -> &ContainerManifest {
         &self.manifest
     }
 
-    /// Path of one layer's bank — the grid shard unit, exposed so placement
-    /// can advertise/transfer shards without going through fetch.
-    pub fn bank_path(&self, layer: u16) -> PathBuf {
-        self.root.join(format!("experts-L{layer}.bin"))
+    /// Path of one (layer, tier) bank — the grid shard unit, exposed so
+    /// placement can advertise/transfer shards without going through fetch.
+    /// v1 containers keep the legacy `experts-L{n}.bin` name (their only
+    /// tier); v2 containers name every bank `experts-L{n}-T{t}.bin`, single
+    /// tier included — the version picks the naming, never a heuristic.
+    pub fn bank_path(&self, layer: u16, tier: u16) -> PathBuf {
+        if self.manifest.version < 2 {
+            self.root.join(format!("experts-L{layer}.bin"))
+        } else {
+            self.root.join(format!("experts-L{layer}-T{tier}.bin"))
+        }
     }
 
-    /// Fetch one expert's record into `buf` (must be exactly
-    /// `manifest.record_bytes` long). Opens the layer's bank on first touch.
+    /// Fetch one expert's record at the SHARPEST tier (tier 0) — the v1 call
+    /// shape, kept so single-tier callers never mention tiers.
     pub fn fetch(&mut self, key: ExpertKey, buf: &mut [u8]) -> Result<(), ContainerError> {
+        self.fetch_tier(key, 0, buf)
+    }
+
+    /// Fetch one expert's record at `tier` into `buf` (must be exactly that
+    /// tier's `record_bytes` long). Opens the (layer, tier) bank on first
+    /// touch. The PAGER's policy seam decides which tier to ask for
+    /// (all-star sharp / cruft decayed); this is pure mechanism.
+    pub fn fetch_tier(
+        &mut self,
+        key: ExpertKey,
+        tier: u16,
+        buf: &mut [u8],
+    ) -> Result<(), ContainerError> {
         if key.layer >= self.manifest.n_layers {
             return Err(ContainerError::LayerOutOfRange {
                 layer: key.layer,
                 n_layers: self.manifest.n_layers,
             });
         }
-        let slot = &mut self.banks[key.layer as usize];
+        let n_tiers = self.tiers.len() as u16;
+        if tier >= n_tiers {
+            return Err(ContainerError::TierOutOfRange { tier, n_tiers });
+        }
+        let record_bytes = self.tiers[tier as usize].record_bytes;
+        let path = self.bank_path(key.layer, tier);
+        let slot = &mut self.banks[key.layer as usize * n_tiers as usize + tier as usize];
         if slot.is_none() {
             *slot = Some(ExpertBank::open(
-                &self.root.join(format!("experts-L{}.bin", key.layer)),
+                &path,
                 key.layer,
-                self.manifest.record_bytes,
+                record_bytes,
                 self.manifest.experts_per_layer,
             )?);
         }
@@ -341,6 +447,7 @@ mod tests {
             experts_per_layer: experts,
             activated_per_token: 2,
             top_k_per_layer: Some(1),
+            tiers: vec![],
         };
         std::fs::write(
             root.join("manifest.json"),
@@ -471,6 +578,135 @@ mod tests {
             working_set.len(),
             "warm pass must be served entirely from cache — zero new disk reads"
         );
+    }
+
+    /// Foundry stand-in for the TIERED format (`moec_pack_dir_tiered`,
+    /// locked 2026-07-31): manifest v2 with descending-fidelity tiers +
+    /// per-(layer,tier) banks `experts-L{n}-T{t}.bin`.
+    fn write_tiered_container(root: &Path, n_layers: u16, experts: u16) -> ContainerManifest {
+        let tiers = vec![
+            TierSpec {
+                id: 0,
+                quant: "IQ2".into(),
+                record_bytes: 2 * RECORD_ALIGN,
+            },
+            TierSpec {
+                id: 1,
+                quant: "IQ1".into(),
+                record_bytes: RECORD_ALIGN,
+            },
+        ];
+        let manifest = ContainerManifest {
+            version: 2,
+            model: "test-moe".into(),
+            fmt: "IQ2".into(),
+            record_bytes: 2 * RECORD_ALIGN,
+            n_layers,
+            experts_per_layer: experts,
+            activated_per_token: 2,
+            top_k_per_layer: Some(1),
+            tiers: tiers.clone(),
+        };
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).expect("serialize"),
+        )
+        .expect("write manifest");
+        for layer in 0..n_layers {
+            for tier in &tiers {
+                let mut f = File::create(root.join(format!("experts-L{layer}-T{}.bin", tier.id)))
+                    .expect("bank");
+                for expert in 0..experts {
+                    let mut rec = vec![0u8; tier.record_bytes as usize];
+                    rec[0..4].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
+                    rec[4..6].copy_from_slice(&layer.to_le_bytes());
+                    rec[6..8].copy_from_slice(&expert.to_le_bytes());
+                    // Payload distinguishable by TIER too — a tier-0 read
+                    // must never come back with tier-1 bytes.
+                    rec[HEADER_IDENT_BYTES] = tier.id as u8 ^ 0x5A;
+                    rec[HEADER_IDENT_BYTES + 1] = expert as u8;
+                    f.write_all(&rec).expect("record");
+                }
+            }
+        }
+        manifest
+    }
+
+    // what this catches: the v2 tiered contract end-to-end — the reader mirror
+    // of the packer's own 82-test round-trip. Every (layer, expert, tier) must
+    // come back from ITS tier's bank at ITS tier's record size with ITS OWN
+    // header + tier-distinguishable payload; offset = expert × tier.record_bytes.
+    #[test]
+    fn tiered_fetch_round_trips_every_expert_at_every_tier() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_tiered_container(dir.path(), 2, 3);
+        let mut c = ExpertContainer::open(dir.path()).expect("open v2");
+        assert_eq!(c.tiers().len(), 2);
+        for tier in 0..2u16 {
+            let record_bytes = c.tiers()[tier as usize].record_bytes;
+            let mut buf = vec![0u8; record_bytes as usize];
+            for layer in 0..2u16 {
+                for expert in 0..3u16 {
+                    c.fetch_tier(ExpertKey { layer, expert }, tier, &mut buf)
+                        .expect("fetch_tier");
+                    assert_eq!(buf[HEADER_IDENT_BYTES], tier as u8 ^ 0x5A);
+                    assert_eq!(buf[HEADER_IDENT_BYTES + 1], expert as u8);
+                }
+            }
+        }
+    }
+
+    // what this catches: v1 stays the degenerate single-tier case — a raw v1
+    // manifest JSON WITHOUT any `tiers` field parses, synthesizes one tier
+    // from the top-level record_bytes, and the tier-less fetch() keeps
+    // reading legacy `experts-L{n}.bin` banks. Back-compat is the contract,
+    // not an accident.
+    #[test]
+    fn v1_manifest_without_tiers_field_reads_as_single_tier() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_container(dir.path(), 1, 2);
+        // Strip the serialized `tiers` field entirely — a pre-v2 foundry
+        // never wrote one.
+        let raw = std::fs::read_to_string(dir.path().join("manifest.json")).expect("read");
+        let mut v: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        v.as_object_mut().expect("obj").remove("tiers");
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            serde_json::to_string(&v).expect("serialize"),
+        )
+        .expect("rewrite");
+
+        let mut c = ExpertContainer::open(dir.path()).expect("open v1");
+        assert_eq!(c.tiers().len(), 1, "v1 = one synthesized tier");
+        assert_eq!(c.tiers()[0].record_bytes, RECORD_ALIGN);
+        let mut buf = vec![0u8; RECORD_ALIGN as usize];
+        c.fetch(ExpertKey { layer: 0, expert: 1 }, &mut buf)
+            .expect("legacy fetch path");
+        assert_eq!(buf[HEADER_IDENT_BYTES + 1], 1);
+    }
+
+    // what this catches: tier indexing refusals — an out-of-range tier and a
+    // tier table whose ids don't equal their index (order drift between
+    // writer and reader) must both refuse loudly, never mis-read a bank.
+    #[test]
+    fn tier_range_and_id_order_violations_refuse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut manifest = write_tiered_container(dir.path(), 1, 1);
+        let mut c = ExpertContainer::open(dir.path()).expect("open");
+        let mut buf = vec![0u8; RECORD_ALIGN as usize];
+        let err = c
+            .fetch_tier(ExpertKey { layer: 0, expert: 0 }, 2, &mut buf)
+            .expect_err("tier 2 of 2 must refuse");
+        assert!(matches!(err, ContainerError::TierOutOfRange { .. }), "{err}");
+
+        manifest.tiers.swap(0, 1); // ids no longer equal their index
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            serde_json::to_string(&manifest).expect("serialize"),
+        )
+        .expect("rewrite");
+        let err = ExpertContainer::open(dir.path()).expect_err("id/index drift must refuse");
+        assert!(matches!(err, ContainerError::TierIdMismatch { .. }), "{err}");
     }
 
     #[test]

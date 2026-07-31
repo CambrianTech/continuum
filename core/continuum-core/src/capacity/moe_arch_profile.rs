@@ -157,6 +157,10 @@ impl MoeArchProfile {
             experts_per_layer: self.experts_per_layer as u16,
             activated_per_token: self.activated_per_token(),
             top_k_per_layer: Some(self.top_k),
+            // Single-tier v1 projection: the tier TABLE is the quantizer's
+            // decision (which tiers to emit), not an arch fact — the foundry
+            // grows this into a v2 manifest when it packs multiple tiers.
+            tiers: vec![],
         }
     }
 }
