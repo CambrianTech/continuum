@@ -58,7 +58,13 @@ pub const DEFAULT_WORKING_MEMORY_CAPACITY: usize = 3;
 /// legitimate, not a spin. Shared here (not inlined at the two call sites) so the
 /// writer (`record_settlement`) and the reader (`act_observe`'s repeat-perception
 /// scope) can never drift. See [[persona-tool-loop-act-then-report]].
-pub const WM_SETTLEMENT_PREFIX: &str = "[settled]";
+///
+/// Was "[settled]" — renamed (glass-boxed 2026-07-31, #264): the inbound-restates
+/// perception fact uses "[settled]" to mean "this TOPIC is settled; PASS is
+/// normal", so a WM receipt rendering "[settled] I answered: <her template>" read
+/// as "it is settled that this is how I answer here" — the same reserved token
+/// carrying two opposite meanings in one prompt. One token, one meaning.
+pub const WM_SETTLEMENT_PREFIX: &str = "[answered]";
 
 /// The faculty's bid salience. Same tier as retrieved grounding
 /// (`RETRIEVED_SALIENCE` = 0.5): useful context that informs the decision but must
@@ -610,7 +616,7 @@ impl WorkingMemory {
             text: if a.is_empty() {
                 WM_SETTLEMENT_PREFIX.to_string()
             } else {
-                format!("{WM_SETTLEMENT_PREFIX} I answered: {a}")
+                format!("{WM_SETTLEMENT_PREFIX} {a}")
             },
         });
         while e.len() > self.capacity {
@@ -651,6 +657,39 @@ impl WorkingMemory {
     pub fn is_empty(&self) -> bool {
         self.entries.lock().is_empty()
     }
+}
+
+/// Render the rolling trail, collapsing near-duplicate ANSWERED receipts
+/// (glass-boxed 2026-07-31, #264): a looping persona's trail rendered N full
+/// verbatim copies of her own repeated answer at the prompt TAIL — the
+/// maximum-recency position — an N-shot demonstration of the exact behavior
+/// the repetition facts (which render EARLIER in the prompt) told her to stop.
+/// Recency won; she complied with the demonstration, not the fact. Each
+/// receipt is compared against EARLIER receipts only, so a line's rendering
+/// never changes after it first appears (append-only KV property preserved);
+/// same near-identical geometry as the detectors — one definition of "repeat".
+fn render_trail(recent: &[String]) -> String {
+    let mut prior_answers: Vec<&str> = Vec::new();
+    recent
+        .iter()
+        .map(|r| {
+            if let Some(ans) = r.strip_prefix(WM_SETTLEMENT_PREFIX) {
+                let ans = ans.trim();
+                if prior_answers
+                    .iter()
+                    .any(|p| super::deliberation_budget::near_identical_substantial(p, ans))
+                {
+                    return format!(
+                        "- {WM_SETTLEMENT_PREFIX} (a near-identical repeat of your answer \
+                         above — not re-shown)"
+                    );
+                }
+                prior_answers.push(ans);
+            }
+            format!("- {r}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Perception-tier faculty that bids the persona's recent reasoning into the
@@ -706,13 +745,9 @@ impl Faculty for WorkingMemoryFaculty {
         // The append-only reasoning/action trail (may be empty if the only live content
         // is dispatched background work).
         if !recent.is_empty() {
-            let body = recent
-                .iter()
-                .map(|r| format!("- {r}"))
-                .collect::<Vec<_>>()
-                .join("\n");
             sections.push(format!(
-                "Your recent thoughts and actions (working memory):\n{body}"
+                "Your recent thoughts and actions (working memory):\n{}",
+                render_trail(&recent)
             ));
         }
         // The FULL result of the most recent act, AFTER the append-only trail: the stable
@@ -777,6 +812,47 @@ impl Faculty for WorkingMemoryFaculty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the WM loop re-teacher (#264, glass-boxed 2026-07-31 —
+    // Anwen's prompt TAIL carried two full verbatim copies of her looped
+    // template as receipts, out-shouting the repetition facts rendered earlier).
+    // A near-dup ANSWERED receipt renders as a stub, never full text; the FIRST
+    // copy stays full (append-only — its rendering must not change when the dup
+    // lands later); distinct answers and non-receipt traces render untouched.
+    #[test]
+    fn render_trail_collapses_near_dup_answered_receipts() {
+        let template = "It seems like we've been exploring various areas without making \
+                        much progress. Let's try a different approach by focusing on a \
+                        specific aspect of the Continuum system that could benefit from \
+                        our attention. Maintenance Protocols: investigate how maintenance \
+                        tasks are performed within the Continuum system.";
+        let trail = vec![
+            format!("{WM_SETTLEMENT_PREFIX} {template}"),
+            "[action #4] I ran code/read(...) Result: ok".to_string(),
+            format!("{WM_SETTLEMENT_PREFIX} {template}"),
+        ];
+        let out = render_trail(&trail);
+        assert_eq!(
+            out.matches("exploring various areas").count(),
+            1,
+            "the repeat must not re-show the full answer:\n{out}"
+        );
+        assert!(out.contains("not re-shown"), "stub names the collapse:\n{out}");
+        assert!(
+            out.contains("[action #4]"),
+            "non-receipt traces are untouched:\n{out}"
+        );
+        // Distinct answers both render in full — collapse is repetition-only.
+        let varied = vec![
+            format!("{WM_SETTLEMENT_PREFIX} the sha256 digest of the sample file is \
+                     abc123, computed with the standard tool over the exact bytes"),
+            format!("{WM_SETTLEMENT_PREFIX} the benchmark run finished green with twelve \
+                     passing cases and no failures across the entire suite tonight"),
+        ];
+        let out = render_trail(&varied);
+        assert!(out.contains("sha256") && out.contains("benchmark run finished green"));
+        assert!(!out.contains("not re-shown"));
+    }
 
     // what this catches: loop-awareness — `note_action_fingerprint` counts repeats of the
     // IDENTICAL call so the act→observe step can surface "you've issued this N times." A
