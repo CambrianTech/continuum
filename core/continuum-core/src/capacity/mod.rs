@@ -42,6 +42,7 @@ pub mod score;
 pub mod serving_pager;
 pub mod sim;
 pub mod system_profile;
+pub mod vq_decode;
 
 pub use system_profile::{DriveInfo, DriveRole, SystemProfile};
 
