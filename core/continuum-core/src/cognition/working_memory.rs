@@ -746,7 +746,15 @@ impl Faculty for WorkingMemoryFaculty {
         // is dispatched background work).
         if !recent.is_empty() {
             sections.push(format!(
-                "Your recent thoughts and actions (working memory):\n{}",
+                // First person, explicitly not-a-message (glass-boxed 2026-07-31,
+                // #264 third finding): this block rides a `user`-role turn, and the
+                // old second-person header — "Your recent thoughts and actions" —
+                // parsed as a PEER addressing her. Asha opened turn after turn with
+                // "Thank you for the summary of recent actions and thoughts",
+                // politely replying to her own interoception. Self-knowledge must
+                // never be phrased in another's voice.
+                "My own recent thoughts and actions (working memory — this is my \
+                 interior state, not a message from anyone):\n{}",
                 render_trail(&recent)
             ));
         }
