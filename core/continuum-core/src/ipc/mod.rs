@@ -2847,6 +2847,9 @@ pub fn start_server(
                     &state.rt_handle,
                     projection_bus.clone(),
                     nav_seed,
+                    // #241: the durable membership registry — every subscribed
+                    // room lands in nav at boot, not on first traffic.
+                    node_presence_deps.clone().map(|(socket, _room)| socket),
                 );
                 // Member-name fold (the room fold's identity sibling): resolves a
                 // persona-kind tab's title from the same presence stream.
