@@ -234,6 +234,51 @@ policy(
 4. **Compensate** the quantization error with a small LoRA where sensitivity is
    high.
 
+## Observability: the CaptureEvent schema (Positron binding)
+
+The loop is a firehose of exactly what makes a control system legible, and Positron
+renders it. Per OBSERVABILITY-AS-SUBSTRATE the pager emits one event per decode
+token through a `CaptureSink` (Noop default = zero hot-path cost; a Positron sink
+forwards to the widgets). The schema is the STABLE contract both ends bind to —
+Rust struct is the source of truth, ts-rs generates the TS type (per the ts-rs
+rules); M5's widgets consume the generated type.
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/pager/PagerCaptureEvent.ts")]
+pub struct PagerCaptureEvent {
+    #[ts(type = "number")] pub token: u64,   // monotonic decode-token index
+    // --- performance / reward (GRAPH-CONTROL time-series) ---
+    pub hit_rate:        f32,   // realized residency hit-rate this token [0..1]
+    pub fault_wait_ms:   f32,   // synchronous NVMe stall this token (the -reward: GPU idle)
+    pub tok_per_s:       f32,   // realized token rate (EMA)
+    pub bytes_fetched_mb:f32,   // host->VRAM this token
+    pub fetch_mb_s:      f32,   // effective fetch bandwidth this token
+    pub quality:         f32,   // 1 - distortion [0..1] (perplexity/KL-derived when live)
+    pub reward:          f32,   // the composite w*tok/s_norm + (1-w)*quality the loop maximizes
+    // --- policy / decision ("WHICH" widgets, right column) ---
+    pub chosen_decay:    f32,        // active bandit arm (recency<->frequency dial)
+    pub per_arm_reward:  Vec<f32>,   // each candidate arm's EMA reward (the bandit's belief state)
+    #[ts(type = "number")] pub resident_experts: u32,
+    pub tier_counts:     Vec<u32>,   // experts resident per precision tier [all-star .. cruft]
+    #[ts(type = "number")] pub promotions: u32,   // LTP this token (warming -> higher tier)
+    #[ts(type = "number")] pub demotions:  u32,   // LTD this token (cooling -> lower tier / evict)
+    pub preference_w:    f32,        // current speed<->quality preference weight
+}
+```
+
+**Widget bindings:**
+- **Graph control** (time-series over tokens): `hit_rate`, `fault_wait_ms`, `tok_per_s`,
+  `quality`, `fetch_mb_s`, `reward` — the control loop's live performance (plant /
+  sensor / dead-time / actuator made visible; the reward curve is the loop learning).
+- **"Which" widgets** (current decision state): `chosen_decay` + `per_arm_reward`
+  (which policy-arm is winning), `tier_counts` (all-star vs cruft distribution),
+  `promotions`/`demotions` (plasticity activity), `resident_experts` — the decision
+  the controller is making right now.
+
+The pager is the emitter (continuum-core `ServingExpertPager`); the schema lives
+once in Rust and generates the TS binding, so the widgets can't drift from it.
+
 ## Division of labor
 
 - **BigMama** — footprint-under-RAM fix (give the actuator authority: find + cut
