@@ -24,7 +24,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::deliberation_budget::{inbound_restates_fact, own_repetition_fact, peer_echo_fact};
+use super::deliberation_budget::{
+    inbound_restates_fact, own_repetition_fact, peer_echo_fact, template_loop_fact,
+};
 use super::working_memory::{WmKind, WorkingMemory};
 use super::workspace::BurstTurn;
 
@@ -99,6 +101,21 @@ impl PerceptionFact for PeerEcho {
 
     fn render(&self, cx: &FactContext) -> Option<String> {
         peer_echo_fact(cx.turns, cx.own_speech.last().map(String::as_str))
+    }
+}
+
+/// Her recent messages reusing ONE structural scaffold with the topic swapped
+/// (#264) — the structure axis the full-body detector above cannot see: a
+/// topic rotation drops body Jaccard below threshold while the loop continues.
+struct TemplateLoop;
+
+impl PerceptionFact for TemplateLoop {
+    fn id(&self) -> &'static str {
+        "template_loop"
+    }
+
+    fn render(&self, cx: &FactContext) -> Option<String> {
+        template_loop_fact(cx.turns, cx.own_speech)
     }
 }
 
@@ -197,6 +214,7 @@ impl PerceptionFact for StepsLedger {
 fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
     vec![
         Box::new(OwnRepetition),
+        Box::new(TemplateLoop),
         Box::new(PeerEcho),
         Box::new(InboundRestates),
         Box::new(ContextBounds),
