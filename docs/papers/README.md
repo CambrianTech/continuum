@@ -26,6 +26,15 @@ Gate gradients captured during LoRA training → per-head utilization scoring �
 
 ---
 
+#### [SERVING-MOE-ON-MISFIT-HARDWARE.md](./SERVING-MOE-ON-MISFIT-HARDWARE.md)
+**Serving Frontier Mixture-of-Experts on Misfit Hardware: A Predictive‑Quantization Control Law and its Fractal Extension to Grid Negotiation**
+
+The online, residency-time companion to PLASTICITY-COMPACTION. Frames MoE expert paging as a control system — routing is the plant, an activation trace is the sensor, storage-fetch latency is dead time, and per-expert residency × quantization precision is the actuator. Recency prediction + rate-distortion bit allocation + Smith-predictor prefetch + compensation-LoRA. The same control law is fractal: one level up it is the p2p grid negotiation protocol (peers are memory tiers, LAN is the dead time), so pooling misfit nodes compounds capacity under one controller.
+
+**Status**: Method + first live measurements on Kimi‑K3 (2.8T MoE, IQ2, 663 GB) on a single RTX 5090 / 63 GB box. Key measured lessons: disk is not the wall (3–3.8 GB/s); over-commit thrash is (85% GPU-idle); recency beats frequency (last-2-tokens 19 GB → 51% next-token resident); reuse compounds with generation length.
+
+---
+
 #### [ACADEMY-COLLABORATIVE-TRAINING.md](./ACADEMY-COLLABORATIVE-TRAINING.md)
 **Collaborative Multi-Agent Training with Role-Based Specialization and Phenotype Validation**
 
