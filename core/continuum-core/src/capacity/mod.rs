@@ -33,6 +33,7 @@ pub mod expert_residency;
 pub mod gossip;
 pub mod grid;
 pub mod lease;
+pub mod moe_arch_profile;
 pub mod moe_serving;
 pub mod placement;
 pub mod recursion_depth;
