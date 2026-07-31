@@ -151,6 +151,34 @@ violates no-compute-at-runtime. Instead:
   tiers as the workload shifts, because every tier is pre-staged. Static quant is
   the special case where the selector never changes its choice.
 
+### Promotion / demotion = synaptic plasticity ("all-stars sharp, decaying quant at the cruft")
+
+The design in five words (Joel): **high-fidelity all-star experts, decaying quant
+at the cruft.** Precision follows *earned* importance — the all-stars (high recency
+× sensitivity, the experts actually carrying the workload) stay sharp (IQ4+,
+pinned/VRAM); the cruft (cold, decaying tail) blurs to IQ1 or evicts. All-star
+status is *earned by use* and *lost by disuse*, so an expert rises from cruft to
+all-star when a new topic opens and falls back when it closes — per node, from its
+own workload, which is where diversity comes from. Potentiated synapses vs pruned
+ones. The tier tracks a recency-derived value estimate with **asymmetric gain** —
+the biological shape (LTP fast, LTD slow):
+
+- **Brand-new active expert → promote FAST** to a good tier. Reuse compounds
+  (§4/L4): an expert that just fired is likely to fire again, so a new activation
+  is probably the hot set *growing*. Optimism-under-uncertainty is low-regret here.
+- **Decaying expert → demote SLOWLY** to a cheap tier (not hard-evict — keep an
+  IQ1 hedge so a return is a cheap warm hit, not a full cold fault). Falling
+  activation rate = falling future value = the safe place to reclaim bits.
+- So the **small quants go to the DECAYING tail, not the newcomers.** Hysteresis
+  (slow demote) stops tiers from thrashing on a briefly-cold expert.
+- The newcomer optimism is **bounded by sensitivity**: `new_tier ≈ optimistic_prior
+  × sensitivity(e)` — don't spend bits on a new expert the sensitivity sensor says
+  is low-impact.
+
+This is use-it-or-lose-it with pruning at the tail — the pager as a plastic memory.
+"Which is better" is empirically decidable: the trace replay simulates optimistic-
+vs-cautious newcomer priors and fast-vs-slow decay, scored on distortion-vs-budget.
+
 ### Diversity forms (the grid's strength, not a side effect)
 
 Because each node selects tiers dynamically from *its* workload under *its* budget,
