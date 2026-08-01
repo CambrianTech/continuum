@@ -28,6 +28,7 @@ import {
 import type {
   KanbanViewState,
   NavViewState,
+  ServingViewState,
   StreamDelta,
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
@@ -82,6 +83,7 @@ export class ChatWidget extends LitElement {
     state: { attribute: false },
     nav: { attribute: false },
     sys: { attribute: false },
+    serving: { attribute: false },
     board: { attribute: false },
     arena: { attribute: false },
     version: { attribute: false },
@@ -113,6 +115,10 @@ export class ChatWidget extends LitElement {
   /** The node's live `kind="system-metrics"` view (CPU/MEM window), when the
    *  host's subscription has delivered. `undefined` = no SYS gauge, honest. */
   sys?: SystemMetricsViewState;
+
+  /** The node's live `kind="serving"` view (the serving glass box, #141),
+   *  when the host's subscription has delivered. `undefined` = no widget. */
+  serving?: ServingViewState;
 
   /** The node's live `kind="kanban"` work board, when the host's subscription
    *  has delivered — feeds the persona home's claims. `undefined` = the claims
@@ -3625,6 +3631,7 @@ export class ChatWidget extends LitElement {
       surface = renderChat(vm, {
         nav: this.nav,
         sys: this.sys,
+        serving: this.serving,
         board: this.board,
         arena: this.arena,
         version: this.version,

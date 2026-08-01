@@ -12,7 +12,7 @@
  * satisfies `RenderTarget<string>` (no per-call flag).
  */
 
-import { createContentRegistry, type RenderTarget, type WorkspaceView, type ListingView, type ListingCell, type ContentView, type ContextPanelView, type PanelWidget, type GaugeView, type ContinuonView, type SystemPanelView } from '@continuum/patterns';
+import { createContentRegistry, type RenderTarget, type WorkspaceView, type ListingView, type ListingCell, type ContentView, type ContextPanelView, type PanelWidget, type GaugeView, type ContinuonView, type ServingPanelView, type SystemPanelView } from '@continuum/patterns';
 import type { ChatContentBody, MessageRowVM, MemberKind } from '@continuum/chat-view';
 
 /** Unicode block ramp for terminal sparklines — the gauge's ANSI face. */
@@ -118,6 +118,31 @@ export function createAnsiTarget(useColor = true): RenderTarget<string> {
           );
         }
         return lines.join('\n');
+      }
+      if (view.kind === 'serving') {
+        const s = view.body as ServingPanelView;
+        const lines: string[] = [];
+        if (s.header) {
+          const h = s.header;
+          lines.push(
+            h.degradedReason
+              ? `  ${paint('bold', '⚠')} ${paint('gray', h.degradedReason)}`
+              : h.model
+                ? `  ${paint('bold', h.model)} ${paint('gray', `${h.ready ? 'ready' : 'warming'} · ${h.lanes}×${h.contextWindow}`)}`
+                : paint('dim', '  no model serving'),
+          );
+        }
+        if (s.gauge) {
+          for (const series of s.gauge.series) {
+            lines.push(
+              `  ${paint('cyan', series.label.padEnd(6))}${blockSpark(series.points)} ${paint('bold', series.current)}`,
+            );
+          }
+        }
+        for (const e of [...s.events].slice(-3)) {
+          lines.push(`  ${paint('gray', `t${e.atToken}`)} ${paint('dim', e.detail)}`);
+        }
+        return lines.length > 0 ? lines.join('\n') : paint('dim', '  awaiting serving feed…');
       }
       if (view.kind === 'continuon') {
         const c = view.body as ContinuonView;
