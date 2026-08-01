@@ -11,4 +11,12 @@ ok: boolean,
 /**
  * Substrate-measured handling time in milliseconds.
  */
-roundTripMs: number, };
+roundTripMs: number, 
+/**
+ * Git commit this RUNNING process was compiled from (deploy provenance, #194).
+ * Self-reported by the live process image — unlike re-exec'ing the on-disk
+ * binary at the process's path, this cannot be fooled by a rebuild that
+ * swapped the file under a still-running old core. `"unknown"` only when the
+ * server was built outside a git tree.
+ */
+buildSha: string, };
