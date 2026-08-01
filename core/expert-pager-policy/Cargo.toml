@@ -1,0 +1,24 @@
+[package]
+name = "expert-pager-policy"
+version = "0.1.0"
+edition = "2021"
+description = """
+The MoE expert-pager POLICY as a leaf crate: learned-decay scoring, the
+online decay bandit, trace segmentation, and the GGML_MOE_PLAN_FILE
+actuator writer (#276). Split out of continuum-core so the RUN-2 driver
+builds on windows-msvc next to BigMama's CUDA serve — continuum-core's
+unix-socket surface cannot compile there, and the policy needs none of
+it. continuum-core depends on this crate and re-exports; one source of
+truth, two consumers (compression principle).
+
+HARD CONSTRAINT: keep this crate free of unix-only deps (no sockets, no
+tokio-net, no platform cfg). std + serde only. The moe-pager-driver bin
+must always `cargo run` on x86_64-pc-windows-msvc.
+"""
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -38,13 +38,11 @@ use std::collections::HashMap;
 
 use super::{lanes_that_fit, DeviceCapacity};
 
-/// One expert, addressed by (layer, index) — matches the GGUF tensor naming and
-/// the router's per-layer expert space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ExpertId {
-    pub layer: u32,
-    pub expert: u32,
-}
+/// One expert, addressed by (layer, index). The definition moved to the
+/// `expert-pager-policy` leaf crate (windows-msvc driver requirement);
+/// re-exported here so every existing `expert_residency::ExpertId` path
+/// keeps working — one canonical type.
+pub use expert_pager_policy::ExpertId;
 
 /// The per-(persona, TaskKind) residency signal. `gate_magnitude` is the static
 /// seed (from the GGUF); `hits` is the live PGO tally accumulated in the serving
@@ -90,8 +88,7 @@ impl ExpertActivationProfile {
 
     /// Every expert the profile knows about (union of both signals).
     fn known_experts(&self) -> Vec<ExpertId> {
-        let mut set: std::collections::BTreeSet<ExpertId> =
-            self.hits.keys().copied().collect();
+        let mut set: std::collections::BTreeSet<ExpertId> = self.hits.keys().copied().collect();
         set.extend(self.gate_magnitude.keys().copied());
         set.extend(self.predicted.keys().copied());
         set.into_iter().collect()
@@ -390,7 +387,7 @@ mod tests {
         let mut p = ExpertActivationProfile::default();
         p.hits.insert(e(0, 0), 5); // proven hot
         p.predicted.insert(e(0, 1), 0.9); // predictor: about to fire (hits=0)
-        // e(0,2), e(0,3): pure cold — no hits, no prediction.
+                                          // e(0,2), e(0,3): pure cold — no hits, no prediction.
         p.gate_magnitude.insert(e(0, 2), 0.01);
         p.gate_magnitude.insert(e(0, 3), 0.01);
         // VRAM fits exactly 2 experts (6GB free, 2GB each, 2GB margin).
@@ -400,7 +397,10 @@ mod tests {
             plan.hot.contains(&e(0, 1)),
             "predicted expert is prefetched into residency ahead of cold"
         );
-        assert!(!plan.hot.contains(&e(0, 2)), "pure-cold expert not prefetched");
+        assert!(
+            !plan.hot.contains(&e(0, 2)),
+            "pure-cold expert not prefetched"
+        );
 
         // Proven beats predicted even at max confidence: 1 hit (=1.0) out-ranks
         // predicted 0.99 (=0.891). With a single VRAM slot, the hit wins.
@@ -444,18 +444,40 @@ mod tests {
         }
         // 2GB/expert, 2GB margin. VRAM 6GB→fits 2, RAM 8GB→3, Flash 10GB→4. 10 experts → 1 cold.
         let tiers = [
-            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB },
-            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 8 * GB },
-            ResidencyTier { medium: ResidencyMedium::Flash, free_bytes: 10 * GB },
+            ResidencyTier {
+                medium: ResidencyMedium::Vram,
+                free_bytes: 6 * GB,
+            },
+            ResidencyTier {
+                medium: ResidencyMedium::Ram,
+                free_bytes: 8 * GB,
+            },
+            ResidencyTier {
+                medium: ResidencyMedium::Flash,
+                free_bytes: 10 * GB,
+            },
         ];
         let plan = plan_tiered_residency(&p, &tiers, 2 * GB, 2 * GB);
-        assert_eq!(plan.tiers[0], (ResidencyMedium::Vram, vec![e(0, 0), e(0, 1)]));
-        assert_eq!(plan.tiers[1], (ResidencyMedium::Ram, vec![e(0, 2), e(0, 3), e(0, 4)]));
+        assert_eq!(
+            plan.tiers[0],
+            (ResidencyMedium::Vram, vec![e(0, 0), e(0, 1)])
+        );
+        assert_eq!(
+            plan.tiers[1],
+            (ResidencyMedium::Ram, vec![e(0, 2), e(0, 3), e(0, 4)])
+        );
         assert_eq!(
             plan.tiers[2],
-            (ResidencyMedium::Flash, vec![e(0, 5), e(0, 6), e(0, 7), e(0, 8)])
+            (
+                ResidencyMedium::Flash,
+                vec![e(0, 5), e(0, 6), e(0, 7), e(0, 8)]
+            )
         );
-        assert_eq!(plan.cold, vec![e(0, 9)], "the coldest expert stays on the RAID");
+        assert_eq!(
+            plan.cold,
+            vec![e(0, 9)],
+            "the coldest expert stays on the RAID"
+        );
     }
 
     // what this catches: the tier vector expresses a MULTI-GPU box (Joel's 3×1080ti) with no
@@ -470,13 +492,29 @@ mod tests {
         }
         // Three 1080ti VRAM tiers (each fits 2) + a RAM tier (fits many). 7 experts.
         let tiers = [
-            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB }, // gpu0: fits 2
-            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB }, // gpu1: fits 2
-            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB }, // gpu2: fits 2
-            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 64 * GB },
+            ResidencyTier {
+                medium: ResidencyMedium::Vram,
+                free_bytes: 6 * GB,
+            }, // gpu0: fits 2
+            ResidencyTier {
+                medium: ResidencyMedium::Vram,
+                free_bytes: 6 * GB,
+            }, // gpu1: fits 2
+            ResidencyTier {
+                medium: ResidencyMedium::Vram,
+                free_bytes: 6 * GB,
+            }, // gpu2: fits 2
+            ResidencyTier {
+                medium: ResidencyMedium::Ram,
+                free_bytes: 64 * GB,
+            },
         ];
         let plan = plan_tiered_residency(&p, &tiers, 2 * GB, 2 * GB);
-        assert_eq!(plan.tiers[0].1, vec![e(0, 0), e(0, 1)], "gpu0 gets the two hottest");
+        assert_eq!(
+            plan.tiers[0].1,
+            vec![e(0, 0), e(0, 1)],
+            "gpu0 gets the two hottest"
+        );
         assert_eq!(plan.tiers[1].1, vec![e(0, 2), e(0, 3)], "gpu1 next");
         assert_eq!(plan.tiers[2].1, vec![e(0, 4), e(0, 5)], "gpu2 next");
         assert_eq!(plan.tiers[3].1, vec![e(0, 6)], "the 7th spills to RAM");
@@ -493,24 +531,43 @@ mod tests {
             p.hits.insert(e(0, x), 10);
         }
         let tiers = [
-            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 6 * GB },
-            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 8 * GB },
+            ResidencyTier {
+                medium: ResidencyMedium::Vram,
+                free_bytes: 6 * GB,
+            },
+            ResidencyTier {
+                medium: ResidencyMedium::Ram,
+                free_bytes: 8 * GB,
+            },
         ];
 
         // Unsized → everything on the cold backing store, tiers empty.
         let no_size = plan_tiered_residency(&p, &tiers, 0, 0);
-        assert!(no_size.tiers.iter().all(|(_, v)| v.is_empty()), "promote nothing unsized");
+        assert!(
+            no_size.tiers.iter().all(|(_, v)| v.is_empty()),
+            "promote nothing unsized"
+        );
         assert_eq!(no_size.cold.len(), 3, "all on the RAID");
 
         // VRAM tier too small (3GB free, 2GB margin, 2GB/expert → fits 0) is skipped; RAM
         // (6GB→fits 2) takes over, the 3rd expert spills cold.
         let skip = [
-            ResidencyTier { medium: ResidencyMedium::Vram, free_bytes: 3 * GB },
-            ResidencyTier { medium: ResidencyMedium::Ram, free_bytes: 6 * GB },
+            ResidencyTier {
+                medium: ResidencyMedium::Vram,
+                free_bytes: 3 * GB,
+            },
+            ResidencyTier {
+                medium: ResidencyMedium::Ram,
+                free_bytes: 6 * GB,
+            },
         ];
         let plan = plan_tiered_residency(&p, &skip, 2 * GB, 2 * GB);
         assert!(plan.tiers[0].1.is_empty(), "zero-fit VRAM tier skipped");
-        assert_eq!(plan.tiers[1].1, vec![e(0, 0), e(0, 1)], "RAM tier takes the hot pair");
+        assert_eq!(
+            plan.tiers[1].1,
+            vec![e(0, 0), e(0, 1)],
+            "RAM tier takes the hot pair"
+        );
         assert_eq!(plan.cold, vec![e(0, 2)]);
     }
 
@@ -532,7 +589,11 @@ mod tests {
         // 1 GiB/expert × 4 experts = 4 GiB/layer. Budget 10 GiB, 2 GiB margin → 8 GiB usable
         // → exactly 2 layers fit. The two hottest (2, 5) are placed; layer 8 stays CPU.
         let hot = plan_layer_residency(&p, 4, GB, 10 * GB, 2 * GB);
-        assert_eq!(hot, vec![2, 5], "two hottest layers fit, ascending real blk.N indices");
+        assert_eq!(
+            hot,
+            vec![2, 5],
+            "two hottest layers fit, ascending real blk.N indices"
+        );
         assert!(!hot.contains(&8), "the quiet layer is -ot'd to CPU");
 
         // Unsized experts → place nothing (never a false VRAM claim; all CPU-faulted).
