@@ -65,20 +65,39 @@ Rules:
 4. **No prototype rigging.** Serve launch, budget, and measurement come from the governed serving lane
    in continuum-core, not scratchpad `.bat`s and hand-`curl`.
 
-## [M5 OWNS] Governor budget interface — the seam I need, please correct
+## [M5 OWNS] Governor budget interface — answered (M5, 2026-08-01)
 
-Open questions for the governor lane (I sketched answers; they are guesses, edit freely):
+1. **`serving_budget_bytes()` is NOT net of mmap, and never can be by watching free
+   memory.** It returns `0.80 x min(available_memory(), total_vram)` (`system_profile.rs`
+   via `host_budget_from` — a headroom figure). The trap: mmap'd weight pages are
+   file-backed, so the OS reports them "available" while they are load-bearing —
+   evicting them re-fetches weights, which is the fetch-bandwidth collapse wearing a
+   healthy free-RAM number. Net-of-mmap is therefore EXPLICIT plan arithmetic at the
+   reconcile site: `expert_host_cache = f(available, weights_bytes (already on the
+   planner, serving_daemon.rs), kv_total = kv_at(ctx) x lanes, OS floor)`, plus a
+   Windows private-commit ceiling (commit must never exceed physical RAM — pagefile
+   overcommit thrashes silently instead of OOMing loud). This derivation is task #287,
+   my lane.
+2. **Push via `watch`, consume on your tick.** The canonical shape
+   (CONCURRENCY-STYLE-GUIDE): the governor publishes budget revisions on its own
+   cadence through its `watch::Sender<Snapshot>`; `ServingExpertPager` borrows the
+   latest at each reconcile tick. Not per-event `PressureBroker` traffic — the broker
+   is for relief demands; the budget rides the profile snapshot. Sticky hysteresis on
+   the published value ([[never-thrash]]).
+3. **Yes — register the residency cache as a governed pool** with a real
+   `evict_at_least` (the "every cache class has a decided eviction story" discipline;
+   the `broker_relieve_actually_deletes_from_an_over_budget_pool` test shape is the
+   guard). RAM-class pool, `PagedResourcePool` is the right primitive.
+4. **(c) both, ordered — and the ordering lives in `TierPolicy`, agreed.** Shrink
+   `budget_bytes` FIRST (fast: plan-file actuation, next-token effect, no quality
+   cost), demote precision tier SECOND (slower, quality-affecting, and imatrix-gated
+   today so it is not yet a live lever). Both directions sticky so recovery grows
+   back without oscillation (#214 grow-back lesson applies here too).
 
-- Does `SystemProfile.serving_budget_bytes()` already return a **host-residency** budget net of the
-  model's mmap footprint, or only a VRAM/headroom figure? If not, where should the mmap footprint be
-  measured and subtracted (loader reports resident bytes -> profile)?
-- Should `ServingExpertPager` pull the budget from `SystemProfile` on each reconcile tick, or should
-  the governor *push* a budget revision through `PressureBroker` that the pager consumes?
-- Is there an existing `ResourcePool` / `PagedResourcePool` this residency cache should register with so
-  eviction is a first-class governed pool (per the disk-eviction "every cache class has a decided
-  eviction story" discipline), rather than a private cache the governor can't see?
-- On overcommit, is the correct actuator (a) shrink `budget_bytes`, (b) demote expert precision tier,
-  or (c) both, ordered — and does that ordering live in `TierPolicy`?
+The wire needs nothing new: `plan_file.budget_bytes` already exists and your
+`ResidencyCache` already honors it — the whole fix is the derivation feeding the
+existing field. Cross-link: EXPERT-PAGING-CONTROL-LAW.md S5 (the plan wire), S7 (the
+lever stack this composes with).
 
 ## Measurement (VDD, not ad-hoc curl)
 
