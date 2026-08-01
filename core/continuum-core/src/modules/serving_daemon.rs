@@ -97,6 +97,14 @@ const EXPERT_PLACEMENT_MARGIN_BYTES: u64 = 512 * 1024 * 1024;
 /// RESPAWN. A respawn reloads every weight (seconds), so a 1–2 layer flap must not trigger one;
 /// only a real residency shift (a task change moving > 2 expert layers) does.
 const RELAUNCH_LAYER_CHURN_THRESHOLD: usize = 2;
+/// Sticky-lease hysteresis band for the host-cache budget: 1/8 of the published
+/// value (move only on >12.5% change). Same band shape as the plan hysteresis —
+/// KV-sample flutter must not churn the plan file's mtime under her per-token poll.
+const HOST_CACHE_LEASE_BAND_DIVISOR: u64 = 8;
+/// Recency-window tokens carried on the published plan document. Inert while
+/// `pin_list` is empty (v1 publishes budget-only); matches the golden v1 wire
+/// fixture so the C++ consumer's parse sees the shape it was validated against.
+const MOE_PLAN_WINDOW_K: u32 = 8;
 
 /// Resolves a base-model id (as named in a [`ServingPlan`]) back to its full
 /// [`Model`] struct. Production resolves through the global registry; tests
@@ -200,6 +208,13 @@ pub struct ServingDaemonModule {
     /// held across an await. The pager inside owns the live-hit observer + the gate seed; each
     /// reconcile ticks it to decide the served expert-layer placement.
     moe_serving: std::sync::Mutex<Option<(String, crate::capacity::moe_serving::MoeServingContext)>>,
+    /// Sticky publisher state for the governed host-cache lease (#287 slice 2) — the
+    /// never-thrash layer between the per-tick raw derivation
+    /// ([`host_cache_lease_bytes`](crate::capacity::host_cache_lease::host_cache_lease_bytes))
+    /// and the plan-file write her per-token mtime poll consumes. Sub-band KV jitter
+    /// never republishes; a material shrink publishes NOW; grow-back publishes past
+    /// the band (#214). Same sync-Mutex discipline as `moe_serving` (never across await).
+    host_cache_lease: std::sync::Mutex<crate::capacity::host_cache_lease::StickyLease>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -297,6 +312,9 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             moe_serving: std::sync::Mutex::new(None),
+            host_cache_lease: std::sync::Mutex::new(
+                crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
+            ),
             // Read ONCE here (single config entry point, no per-tick I/O). Off by default.
             measure_force_expert_budget_bytes: crate::config_env::read(
                 "K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES",
@@ -666,6 +684,100 @@ impl ServingDaemonModule {
             ctx.committed_placement = Some(outcome.request);
         }
         ctx.committed_placement.clone()
+    }
+
+    /// #287 slice 2 — the governed host-cache lease, derived LIVE on the tick and
+    /// published to the per-port plan file her `ResidencyCache` mtime-polls. This is
+    /// the loop-closer that retires the `GGML_MOE_HOST_CACHE_GB=40` scratchpad
+    /// constant: the budget is arithmetic over the serve's REAL working set
+    /// ([`host_cache_lease_bytes`](crate::capacity::host_cache_lease::host_cache_lease_bytes)),
+    /// re-derived every tick because KV grows as slots fill, and published through
+    /// the sticky band so sub-band flutter never churns the file. Publishes only for
+    /// a READY MoE serve (the moe context exists for the active model) — a dense
+    /// model or a warming lane writes nothing.
+    fn publish_moe_host_cache_lease(&self) {
+        let live = self.serving_tx.borrow().clone();
+        if !live.ready || live.served_context_window == 0 {
+            return;
+        }
+        let Some(active) = live.active_model.clone() else {
+            return;
+        };
+        let Some(port) = crate::inference::llama_server::port_of_base_url(&live.base_url) else {
+            return;
+        };
+        // Expert-tensor total for the ACTIVE model — present only for a MoE serve.
+        // Read under the same never-across-await sync Mutex as the placement path.
+        let expert_bytes_total = {
+            let Ok(guard) = self.moe_serving.lock() else {
+                return;
+            };
+            match guard.as_ref() {
+                Some((id, ctx)) if *id == active => ctx.expert_bytes_total,
+                _ => return, // dense model (or stale context) — no governed cache to lease
+            }
+        };
+        let Some(model) = (self.model_resolver)(&active) else {
+            return;
+        };
+        let Some(fp) = footprint_for(&model) else {
+            return;
+        };
+        let physical = self.system.memory().total_bytes;
+        if physical == 0 {
+            return;
+        }
+        let Some(inputs) = moe_host_cache_lease_inputs(
+            &active,
+            fp.weights_bytes,
+            expert_bytes_total,
+            model.context_window,
+            live.served_context_window,
+            live.lanes,
+            physical,
+            system_commit_charge_bytes(),
+        ) else {
+            return;
+        };
+        let derived = crate::capacity::host_cache_lease::host_cache_lease_bytes(&inputs);
+        let published = {
+            let Ok(mut sticky) = self.host_cache_lease.lock() else {
+                return;
+            };
+            sticky.observe(derived)
+        };
+        let Some(budget_bytes) = published else {
+            return; // held within the band — no write, no mtime churn
+        };
+        let Some(gb) = crate::inference::llama_server::moe_glass_box_paths(port) else {
+            return;
+        };
+        let doc = crate::capacity::plan_file::PlanFileDocument::new(
+            budget_bytes,
+            MOE_PLAN_WINDOW_K,
+            Vec::new(),
+        );
+        match crate::capacity::plan_file::write_plan_file(&gb.plan, &doc) {
+            Ok(()) => crate::probe!(
+                class = "serving.moe_host_cache_lease",
+                model = active.as_str(),
+                budget_bytes,
+                derived_bytes = derived,
+                weights_host_bytes = inputs.weights_host_bytes,
+                live_kv_bytes = inputs.live_kv_bytes,
+                plan = gb.plan.display().to_string().as_str(),
+                "published governed host-cache lease: {} GiB (raw {} GiB)",
+                budget_bytes / (1024 * 1024 * 1024),
+                derived / (1024 * 1024 * 1024),
+            ),
+            Err(e) => crate::probe!(
+                class = "serving.moe_host_cache_lease",
+                model = active.as_str(),
+                budget_bytes,
+                error = e.to_string().as_str(),
+                "plan-file write FAILED — actuator frozen at last published budget",
+            ),
+        }
     }
 
     /// No plan → publish the empty snapshot (no servable model = nothing live).
@@ -1287,6 +1399,88 @@ fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
     })
 }
 
+/// Conservative host floor for the OS + every process we don't own: an eighth of
+/// physical RAM, floored at 2 GiB. DERIVED from the box (never env-tunable, never a
+/// flat constant that breaks on an 8GB laptop or a 512GB server): on the incident's
+/// 63GB box it reserves ~7.9GB — the conservative side of the ~6GB her measurements
+/// attribute to OS+other, and over-reserving only shrinks the cache (safe), while
+/// under-reserving re-creates the pagefile thrash. Follow-up (named, not silent):
+/// derive from measured non-serving usage once mmap attribution is solved — the
+/// free-memory monitor can't be used here because mmap'd weight pages report
+/// "available" while load-bearing (see host_cache_lease module doc).
+fn host_os_floor_bytes(physical_bytes: u64) -> u64 {
+    (physical_bytes / 8).max(2 * 1024 * 1024 * 1024)
+}
+
+/// Windows only: the system-wide commit charge (`GetPerformanceInfo`), the number
+/// the pagefile-overcommit clamp binds against — a Windows box under load can have
+/// commit far above what a "free RAM" read suggests, and pagefile overcommit
+/// thrashes SILENTLY (the 2026-08-01 incident: 95.9GB commit on a 63GB box, fetch
+/// collapsed 2.5GB/s→205MB/s with no OOM anywhere). `None` on read failure — the
+/// lease then falls back to the headroom bound alone, which is honest but looser.
+#[cfg(windows)]
+fn system_commit_charge_bytes() -> Option<u64> {
+    use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
+    // SAFETY: PERFORMANCE_INFORMATION is a plain C struct; zeroed is a valid
+    // initial state, and GetPerformanceInfo only writes within `cb` bytes.
+    let mut info: PERFORMANCE_INFORMATION = unsafe { std::mem::zeroed() };
+    info.cb = std::mem::size_of::<PERFORMANCE_INFORMATION>() as u32;
+    let ok = unsafe { GetPerformanceInfo(&mut info, info.cb) };
+    (ok != 0).then(|| (info.CommitTotal as u64).saturating_mul(info.PageSize as u64))
+}
+
+/// macOS/Linux: commit is not the binding regime (no silent pagefile ballooning of
+/// this shape) — the lease's headroom arithmetic is the bound. See the law's doc.
+#[cfg(not(windows))]
+fn system_commit_charge_bytes() -> Option<u64> {
+    None
+}
+
+/// Assemble the host-cache lease inputs for a MoE serve from quantities the planner
+/// ALREADY budgets — every term justified, none invented, none read from a
+/// free-memory monitor (the mmap subtlety: file-backed weight pages report
+/// "available" while load-bearing):
+///
+/// - `weights_host_bytes` = GGUF file size MINUS the expert-tensor total. Expert
+///   bytes are exactly what the governed cache holds (funded BY the lease) or sit
+///   hot in VRAM — they are never host working set. Without the split, a 663GB
+///   streaming MoE would "cost" 663GB of host RAM and the lease would derive 0.
+/// - KV and compute-buffer terms come from the planner's OWN laws (`kv_at`,
+///   `prefill_compute_reserve` — one formula, one place), but computed over a
+///   footprint built from the HOST-RESIDENT mass, not the full file: those
+///   heuristics scale with weight bytes as a proxy for layer/graph size, and for
+///   a streaming MoE the dense/attention share is the mass that actually sizes
+///   the KV stack and prefill graph (663GB would yield an absurd 68GB KV
+///   estimate and a 41GB buffer, deriving a permanent zero lease).
+/// - `live_kv_bytes` uses the LIVE served window × LIVE lane count from the
+///   snapshot (llama.cpp allocates one full window per slot) — the term whose
+///   omission thrashed the 63GB box to 95.9GB commit.
+///
+/// `None` when the host share is zero (a degenerate all-expert read — no honest
+/// footprint to derive from; publish nothing rather than a guess).
+fn moe_host_cache_lease_inputs(
+    model_id: &str,
+    file_weights_bytes: u64,
+    expert_bytes_total: u64,
+    model_context_window: u32,
+    served_window: u32,
+    lanes: u32,
+    physical_bytes: u64,
+    commit_charge_bytes: Option<u64>,
+) -> Option<crate::capacity::host_cache_lease::HostCacheLeaseInputs> {
+    let weights_host_bytes = file_weights_bytes.saturating_sub(expert_bytes_total);
+    let fp = footprint_from_parts(model_id, weights_host_bytes, model_context_window, false)?;
+    let lanes = lanes.max(1);
+    Some(crate::capacity::host_cache_lease::HostCacheLeaseInputs {
+        physical_bytes,
+        weights_host_bytes,
+        live_kv_bytes: fp.kv_at(served_window).saturating_mul(lanes as u64),
+        compute_buffer_bytes: fp.prefill_compute_reserve(served_window, lanes),
+        os_floor_bytes: host_os_floor_bytes(physical_bytes),
+        commit_charge_bytes,
+    })
+}
+
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
     let weights_bytes = std::fs::metadata(&path).ok()?.len();
@@ -1566,6 +1760,10 @@ impl ServiceModule for ServingDaemonModule {
             // Probes on CHANGE only, inside the throttle — a steady grant is silence.
             let _granted = crate::cognition::prefill_throttle::reconcile(available);
         }
+        // #287: for a ready MoE serve, re-derive the governed host-cache lease from the
+        // LIVE working set (KV grows as slots fill) and publish it through the sticky
+        // band to the per-port plan file — the actuator her ResidencyCache polls.
+        self.publish_moe_host_cache_lease();
         Ok(())
     }
 
@@ -1607,6 +1805,51 @@ mod tests {
     use super::*;
 
     const GB: u64 = 1_000_000_000;
+
+    // what this catches (#287 slice 2): the governed host-cache lease inputs are
+    // assembled from the HOST-RESIDENT mass — expert bytes (cache-funded, or hot in
+    // VRAM) are subtracted BEFORE any weight-scaled heuristic runs, KV tracks the
+    // LIVE window × lanes, and the OS floor derives from the box. K3-on-63GB
+    // incident shape: full-file mass would derive a permanent ZERO lease (68GB KV
+    // + 41GB buffer estimates off 663GB); the split derives a real budget.
+    #[test]
+    fn moe_lease_inputs_use_host_resident_mass_not_file_mass() {
+        let file = 663 * GB;
+        let experts = 640 * GB;
+        let physical = 63 * GB;
+        let inputs =
+            moe_host_cache_lease_inputs("k3", file, experts, 262_144, 4096, 2, physical, None)
+                .expect("host share is real");
+        assert_eq!(inputs.weights_host_bytes, 23 * GB, "dense/attention share only");
+        assert_eq!(
+            inputs.live_kv_bytes,
+            (23 * GB / 80_000) * 4096 * 2,
+            "KV law over the HOST mass × live window × lanes"
+        );
+        assert_eq!(inputs.os_floor_bytes, physical / 8, "floor derives from the box");
+        let lease = crate::capacity::host_cache_lease::host_cache_lease_bytes(&inputs);
+        assert!(
+            lease > 20 * GB && lease < 30 * GB,
+            "governed lease lands in a sane band on the incident shape, got {lease}"
+        );
+
+        // Blind to the expert split, the working set "costs" the whole file → the
+        // lease saturates to zero and the cache is permanently off. The subtraction
+        // is load-bearing, not cosmetic.
+        let blind =
+            moe_host_cache_lease_inputs("k3", file, 0, 262_144, 4096, 2, physical, None).unwrap();
+        assert_eq!(
+            crate::capacity::host_cache_lease::host_cache_lease_bytes(&blind),
+            0,
+            "full-file mass must starve the lease — proves why the split exists"
+        );
+
+        // Degenerate all-expert read → no honest host footprint → publish nothing.
+        assert!(
+            moe_host_cache_lease_inputs("k3", file, file, 262_144, 4096, 2, physical, None)
+                .is_none()
+        );
+    }
 
     // what this catches: a pin SWAPS — serve() kills the incumbent llama-server
     // child, THEN launches the candidate (never co-resident) — so the fit-check must
