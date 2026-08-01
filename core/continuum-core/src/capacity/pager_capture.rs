@@ -45,26 +45,40 @@ pub struct PagerCaptureEvent {
     pub bytes_fetched_mb: f32,
     /// Effective fetch bandwidth this token.
     pub fetch_mb_s: f32,
-    /// 1 − distortion [0..1] (perplexity/KL-derived when live).
+    /// 1 − distortion [0..1] (perplexity/KL-derived when live). Defaults
+    /// when absent: the RAW C++ emitter feed carries only the perf
+    /// fields — quality/reward/decision state exist once the Rust
+    /// controller runs, so a raw line must still decode (verified
+    /// against BigMama's live emitter 2026-08-01: perf field names
+    /// match exactly; the decision fields are the additive delta).
+    #[serde(default)]
     pub quality: f32,
     /// The composite `w·tok/s_norm + (1−w)·quality` the loop maximizes.
+    #[serde(default)]
     pub reward: f32,
-    // --- policy / decision ("which" widgets) ---
+    // --- policy / decision ("which" widgets) — all default-tolerant
+    // for the same raw-feed reason as `quality` above ---
     /// Active bandit arm (recency↔frequency dial).
+    #[serde(default)]
     pub chosen_decay: f32,
     /// Each candidate arm's EMA reward — the bandit's belief state.
+    #[serde(default)]
     pub per_arm_reward: Vec<f32>,
     #[ts(type = "number")]
     pub resident_experts: u32,
     /// Experts resident per precision tier [all-star .. cruft].
+    #[serde(default)]
     pub tier_counts: Vec<u32>,
     /// LTP this token (warming → higher tier).
     #[ts(type = "number")]
+    #[serde(default)]
     pub promotions: u32,
     /// LTD this token (cooling → lower tier / evict).
     #[ts(type = "number")]
+    #[serde(default)]
     pub demotions: u32,
     /// Current speed↔quality preference weight.
+    #[serde(default)]
     pub preference_w: f32,
 }
 
@@ -151,5 +165,31 @@ mod tests {
         let decoded: PagerCaptureEvent =
             serde_json::from_value(value).expect("decode with unknown field");
         assert_eq!(decoded.resident_experts, 4416);
+    }
+
+    /// what this catches: RAW-feed tolerance — the C++ emitter
+    /// (GGML_MOE_CAPTURE_FILE) carries ONLY the perf fields; the
+    /// decision state exists once the Rust controller runs. A perf-only
+    /// line — exactly the shape BigMama's live fitted-K3 feed emits —
+    /// must decode with zeroed decision fields, or the parity reader
+    /// rejects every real capture slice she sends.
+    #[test]
+    fn raw_perf_only_line_decodes_with_defaulted_decision_state() {
+        let raw = r#"{
+            "token": 4,
+            "hit_rate": 0.62,
+            "fault_wait_ms": 1500.0,
+            "tok_per_s": 0.326,
+            "bytes_fetched_mb": 4096.0,
+            "fetch_mb_s": 2458.0,
+            "resident_experts": 4416
+        }"#;
+        let decoded: PagerCaptureEvent =
+            serde_json::from_str(raw).expect("raw perf-only line decodes");
+        assert_eq!(decoded.resident_experts, 4416);
+        assert_eq!(decoded.fetch_mb_s, 2458.0);
+        assert_eq!(decoded.reward, 0.0, "absent decision state defaults");
+        assert!(decoded.per_arm_reward.is_empty());
+        assert!(decoded.tier_counts.is_empty());
     }
 }
