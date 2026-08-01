@@ -54,3 +54,12 @@ misfit-moat fractal: same code, the governor spends the VRAM budget differently 
 imatrix keystone (async now) → increment 1 (copy-skip, low-risk, measurable alone) → increment 2
 (VRAM hot cache, the "full-GPU trend") → increment 3 (pipeline). Each increment is measured on its own via
 the `k3-bench` harness before stacking. Ref: [[k3-beats-waste-decisively]] (compute/copy-bound at top-8).
+
+## CRITICAL open question (verify before building Increment 1)
+Increment 1 (copy-skip on `input_cpy`) only works if `input_cpy` **persists per (layer,matrix) tensor
+across tokens**. But a per-tensor `input_cpy` = 92×3×~2 GB ≫ VRAM, so the sched almost certainly **reuses
+a shared scratch `input_cpy`** across all MoE splits — meaning its contents churn *within* one token and
+retain nothing tensor-specific for the next. **If shared-scratch (likely), copy-skip is a no-op and
+Increment 2 is the real mechanism:** a SEPARATE persistent VRAM hot-expert region (not the scratch buffer),
+keyed by stable ExpertId, that the matmul reads from on a hit. VERIFY the `input_cpy` allocation lifetime
+(`ggml_backend_sched` reuse) first — it decides whether increment 1 exists or we go straight to increment 2.
