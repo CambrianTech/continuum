@@ -1223,6 +1223,23 @@ export class ChatWidget extends LitElement {
     .srv-awaiting-line {
       font-size: 11px;
     }
+    /* GRID view — the node panel's sections (resources / serving) and the
+     * node name sized as the panel's identity when no model banner leads. */
+    .grid-node-name {
+      font-size: 14px;
+      letter-spacing: 0.1em;
+    }
+    .grid-section {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .grid-section .gauge {
+      padding: 0;
+    }
+    .grid-section .gauge svg {
+      height: 88px;
+    }
     /* NODES strip — the factory sidebar's "1/1 nodes online": pulse dot + host
      * name + role chip per attested node. */
     .nodes-online {

@@ -29,7 +29,7 @@ import type {
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
-import { ARENA_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, type ArenaContentBody as ArenaContentBodyT, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
+import { ARENA_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, type ArenaContentBody as ArenaContentBodyT, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -254,6 +254,29 @@ export function servingContentBody(
   return { nodes, feedLive: serving !== undefined };
 }
 
+/** The GRID content body — every node's full panel for the center-stage
+ *  SCADA view (`purpose === GRID_PURPOSE`; the NODES strip is its portal).
+ *  Today: the local node with its resource window + serving loop; grid
+ *  peers join as attestation/cross-grid feeds land (#257/#283) with zero
+ *  shape change. */
+export function gridContentBody(
+  sys?: SystemMetricsViewState,
+  serving?: ServingViewState,
+): GridContentBody {
+  const any = sys !== undefined || serving !== undefined;
+  const nodes: GridNodeVM[] = any
+    ? [
+        {
+          node: sys?.node ?? 'this node',
+          local: true,
+          ...(sys ? { resources: systemGaugeWidget(sys).body } : {}),
+          ...(serving ? { serving: servingWidget(serving)?.body ?? undefined } : {}),
+        },
+      ]
+    : [];
+  return { nodes, feedLive: any };
+}
+
 /** The NODES strip (the factory sidebar's "1/1 nodes online"): every grid node
  *  this surface can honestly attest, as a `status` widget whose body is the one
  *  `Listing` primitive. Today that is exactly THIS node — attested by its live
@@ -391,12 +414,18 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !personaBody && !liveBody && !arenaBody && vm.purpose === SERVING_PURPOSE
       ? servingContentBody(live?.serving, live?.sys?.node ?? undefined)
       : undefined;
+  // The GRID face: the NODES strip's full activity — every node's panel.
+  const gridBody =
+    !personaBody && !liveBody && !arenaBody && !servingBody && vm.purpose === GRID_PURPOSE
+      ? gridContentBody(live?.sys, live?.serving)
+      : undefined;
   const content:
     | ContentView<ChatContentBody>
     | ContentView<PersonaContentBody>
     | ContentView<LiveContentBody>
     | ContentView<ArenaContentBodyT>
-    | ContentView<ServingContentBody> = personaBody
+    | ContentView<ServingContentBody>
+    | ContentView<GridContentBody> = personaBody
     ? { purpose: PERSONA_PURPOSE, body: personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }
@@ -404,10 +433,12 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
         ? { purpose: ARENA_PURPOSE, body: arenaBody }
         : servingBody
           ? { purpose: SERVING_PURPOSE, body: servingBody }
-          : {
-              purpose: vm.purpose,
-              body: { messages: vm.messages, isEmpty: vm.isEmpty },
-            };
+          : gridBody
+            ? { purpose: GRID_PURPOSE, body: gridBody }
+            : {
+                purpose: vm.purpose,
+                body: { messages: vm.messages, isEmpty: vm.isEmpty },
+              };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const rooms = live?.nav
