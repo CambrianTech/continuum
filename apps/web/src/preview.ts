@@ -21,6 +21,7 @@ import type {
   KanbanViewState,
   NavViewState,
   RosterSlotView,
+  ServingViewState,
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
 

@@ -383,11 +383,13 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // dispatched by kind; the roster stays the participants `Listing`
   // (ROSTER_LISTING_ID) that RAG + mobile ground on.
   const nodes = nodesWidget(live?.sys);
-  const serving = servingWidget(live?.serving);
+  // LEFT = NAVIGATION + one compact performance instrument, nothing more
+  // (Joel's console doctrine 2026-08-01: the left has little to no real
+  // estate — rooms and users must never be pushed down by telemetry; the
+  // graphical lives center-stage and in the right instrument cluster).
   const left = [
     continuonWidget(vm, live?.version),
     systemPanelWidget(vm, live?.sys),
-    ...(serving ? [serving] : []),
     ...(nodes ? [nodes] : []),
     listingWidget(rooms),
     listingWidget(rosterListing(vm)),
