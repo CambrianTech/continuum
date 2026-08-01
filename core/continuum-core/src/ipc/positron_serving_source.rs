@@ -170,6 +170,16 @@ impl PagerFold {
     }
 }
 
+/// The port embedded in a serving base URL (`http://host:port[/...]`), or
+/// `None` when the URL carries no explicit port. Feeds the capture-path
+/// derivation — a config-pinned remote URL still parses, and the derived
+/// LOCAL path simply never exists there (honest absence, not a guess).
+fn port_of(url: &str) -> Option<u16> {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split('/').next()?;
+    authority.rsplit_once(':')?.1.parse().ok()
+}
+
 /// Offset-tailer for the capture JSONL: reads whole new lines, resets on
 /// truncation (a new serve) and reports the reset so the fold can card it.
 struct CaptureTail {
@@ -239,13 +249,35 @@ pub fn spawn_serving_emitter(rt: &tokio::runtime::Handle, substrate: Substrate) 
         let builder = StateBuilder::standalone();
         let mut ticker = tokio::time::interval(SAMPLE_INTERVAL);
         let mut fold = PagerFold::default();
-        // Capture feed location is serve-side config; read once — the env of
-        // a running core doesn't change. Absent = header-only widget.
-        let mut tail = std::env::var(CAPTURE_FILE_ENV)
-            .ok()
-            .map(|p| CaptureTail { path: PathBuf::from(p), offset: 0, last_len: 0 });
+        // Capture feed location: an operator-exported env is a deliberate
+        // campaign override and wins (read once — the env of a running core
+        // doesn't change). Otherwise the path is DERIVED per tick from the
+        // serving snapshot's port via the same pure helper the spawn used to
+        // hand it to the fork (`moe_glass_box_paths`, #278) — one truth, both
+        // sides, so the glass box lights on an unattended serve. A remote or
+        // non-MoE serve derives a path that never exists; the tail's failed
+        // open is the existing honest-absence branch.
+        let env_override = std::env::var(CAPTURE_FILE_ENV).ok().map(PathBuf::from);
+        let mut tail: Option<CaptureTail> = None;
         loop {
             ticker.tick().await;
+
+            let snap = crate::inference::llama_server::current_serving();
+            let desired = env_override.clone().or_else(|| {
+                port_of(&snap.base_url)
+                    .and_then(crate::inference::llama_server::moe_glass_box_paths)
+                    .map(|g| g.capture)
+            });
+            match (&mut tail, desired) {
+                // New or relocated feed → fresh tail (offset 0; the first poll
+                // of a pre-existing file replays it, which is the correct
+                // catch-up for a source that just learned where to look).
+                (t, Some(path)) if t.as_ref().map(|t| &t.path) != Some(&path) => {
+                    *t = Some(CaptureTail { path, offset: 0, last_len: 0 });
+                }
+                (t @ Some(_), None) => *t = None,
+                _ => {}
+            }
 
             if let Some(t) = tail.as_mut() {
                 let (events, reset) = t.poll();
@@ -266,7 +298,6 @@ pub fn spawn_serving_emitter(rt: &tokio::runtime::Handle, substrate: Substrate) 
                 }
             }
 
-            let snap = crate::inference::llama_server::current_serving();
             let header = ServingHeaderView {
                 model: snap.active_model.clone(),
                 ready: snap.ready,
@@ -315,6 +346,19 @@ mod tests {
         let chosen: Vec<bool> = fold.arms.iter().map(|a| a.chosen).collect();
         assert_eq!(chosen.iter().filter(|c| **c).count(), 1, "exactly one chosen arm");
         assert!(fold.arms.iter().any(|a| a.label == "0.30" && a.chosen));
+    }
+
+    // what this catches (#278): the capture-path derivation's port parse — the
+    // snapshot's base_url is the ONLY thing the reader has, and a mis-parse
+    // silently darkens the glass box (tail opens a nonexistent path forever).
+    // Pins scheme'd/bare/pathless/portless shapes.
+    #[test]
+    fn port_of_parses_serving_base_urls() {
+        assert_eq!(port_of("http://127.0.0.1:58057/v1"), Some(58057));
+        assert_eq!(port_of("http://localhost:8080"), Some(8080));
+        assert_eq!(port_of("127.0.0.1:9001/v1"), Some(9001));
+        assert_eq!(port_of("http://remote.example/v1"), None, "no explicit port");
+        assert_eq!(port_of(""), None);
     }
 
     // what this catches: the raw C++ perf-only line (no decision fields)
