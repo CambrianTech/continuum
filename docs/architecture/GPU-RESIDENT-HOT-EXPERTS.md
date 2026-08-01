@@ -63,3 +63,23 @@ retain nothing tensor-specific for the next. **If shared-scratch (likely), copy-
 Increment 2 is the real mechanism:** a SEPARATE persistent VRAM hot-expert region (not the scratch buffer),
 keyed by stable ExpertId, that the matmul reads from on a hit. VERIFY the `input_cpy` allocation lifetime
 (`ggml_backend_sched` reuse) first — it decides whether increment 1 exists or we go straight to increment 2.
+
+## Modular implementation (rework-proof — mechanism built once, policy injected)
+Key: `ResidencyCache` is ALREADY generic over `(ggml_backend_buffer_type_t buft, ExpertFetcher& fetcher)`.
+A VRAM hot-expert cache = the SAME class, instantiated with a DEVICE buft + a host→device fetcher. No new
+cache class, no hardcoded constants — budget/window/pin arrive on the existing plan-file wire.
+
+Three small, parameterized pieces (each measured alone via `k3-bench`):
+1. **`DeviceUploadFetcher : ExpertFetcher`** — the only genuinely new code. `fetch(dst_dev, host_src, n)`
+   does a host→device copy via the split backend's buffer-set API (not memcpy). ~15 lines.
+2. **Instantiate** `k3_device_cache(budget = GGML_MOE_VRAM_CACHE_GB, device_buft = split backend's buft,
+   DeviceUploadFetcher)` — parameter-driven; `0` (unset) ⇒ disabled ⇒ current behavior, zero risk.
+   `get()`'s `memset(pad)` must be guarded for device slots (cudaMemset or skip; padding is CUDA-MMQ NaN
+   guard — handle once).
+3. **Seam hook** (in the copy loop): before the host→VRAM copy, ask `k3_device_cache` for the expert's
+   device slot. **HIT ⇒ device→`input_cpy` VRAM→VRAM copy** (no NVMe, no host round-trip). MISS ⇒ current
+   host-cache path, then upload into the device cache. Same score-hint/generation eviction as the host
+   cache — the plan-file policy drives BOTH tiers with one wire.
+
+When stats land (imatrix, live hit-rates) NOTHING here reworks: the numbers only set `GGML_MOE_VRAM_CACHE_GB`
+and the plan's pin/window — the mechanism is fixed. That is the point of the modular split.
