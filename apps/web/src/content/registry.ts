@@ -14,10 +14,12 @@ import {
   createContentRegistry,
   LIVE_PURPOSE,
   PERSONA_PURPOSE,
+  SERVING_PURPOSE,
   type ArenaContentBody,
   type ContentRegistry,
   type LiveContentBody,
   type PersonaContentBody,
+  type ServingContentBody,
 } from '@continuum/patterns';
 import type { ChatContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
@@ -25,6 +27,7 @@ import { listingCell, messageRow } from '../render/parts';
 import { renderPersona } from '../persona/renderPersona';
 import { renderLive } from '../live/renderLive';
 import { renderArena } from '../arena/renderArena';
+import { renderServing } from '../serving/renderServing';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -64,3 +67,6 @@ webContentRegistry.register<LiveContentBody>(LIVE_PURPOSE, (body) => renderLive(
 // The benchmark ARENA — ranked leaderboards + live-run strip from real eval
 // ledger rows, dispatched when the room recipe's purpose is "arena".
 webContentRegistry.register<ArenaContentBody>(ARENA_PURPOSE, (body) => renderArena(body));
+// The SERVING console — per-node control-loop panels center-stage, dispatched
+// when the room recipe's purpose is "serving" (the machine room, full view).
+webContentRegistry.register<ServingContentBody>(SERVING_PURPOSE, (body) => renderServing(body));
