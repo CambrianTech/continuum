@@ -110,11 +110,42 @@ detached client failing to submit). Measurement is a tested harness:
 - A serve-smoke that asserts decode produces tokens above a floor tok/s, so client flakiness can never
   again read as a code regression. (To build; belongs in the governed serving lane, not a script.)
 
-## Done / next
+## Measured on BigMama (2026-08-01) - inputs for the #287 derivation
 
-- **Done, pushed** (k3-adopt `dd8463b74`): `MoeServingConfig` single config-manager (killed 13
-  scattered `getenv`), injected into `ResidencyCache` (module no longer reads global env),
-  model-agnostic `k3_ -> moe_` rename, `>RAM` mmap prefetch-skip, `test_serving_config_from_env`.
-- **Next, gated on the [M5 OWNS] seam above:** make host-cache budget plan-file-only; wire
-  `ServingExpertPager` budget from the governed `SystemProfile` net of mmap footprint; register the
-  residency cache as a governed pool; build the serve-smoke.
+Ungoverned static budgets were run to characterize the box (they thrash by design; do NOT read them
+as the governed result - a governed budget flexes with KV and never overcommits):
+
+| budget (hardcoded) | private commit | fetch | outcome |
+|---|---|---|---|
+| 40 GiB | 95.9 GB (>63.4 RAM) | 205 MB/s | pagefile thrash, 0.027 tok/s |
+| 8 GiB (during load) | 60.6 GB | **2485 MB/s** | fits RAM, fetch fully recovered |
+| 8 GiB (during decode, KV grew) | 63.9 GB | 165 MB/s | tipped over -> thrash again |
+
+Derived inputs for `expert_host_cache = f(available, weights_bytes, kv_total, OS floor)`:
+- Total RAM 63.4 GB. Non-cache private footprint ~56 GB (base + KV + CUDA staging).
+- K3 top-8 per-token expert working set ~5.5 GB (res_exp 2208).
+- So the governed budget on this box is ~6 GB (62 - 56), which holds ~1 token's set -> ~40% recency
+  retention, misses fetching at the recovered ~2.5 GB/s. That is the regime that should pull tok/s back
+  toward 0.5 - NOT written off. The governor MUST subtract KV growth continuously (decode tipped 8 GiB
+  over) and cap on the Windows private-commit ceiling.
+
+## C++ mechanism - COMPLETE (k3-adopt)
+
+The cache honors the governed lease fully: `dd8463b74` config-manager + naming; `848f409c7` budget is
+plan-file-only in governed mode (env can't overcommit); `b0e877cbd` poll the plan every token so a
+governed budget can turn the cache ON (it starts at 0); `8680cefa9` free pools on budget DECREASE so
+the governor can flex the cache down under pressure. Grow + shrink + enable-from-plan all validated
+(builds green, test 94/0). Partial-evict-keeping-hottest on shrink is the one future refinement.
+
+## Graduated path: `serving/load kimi-k3` (replaces the rigged .bat)
+
+Three pieces, then a JOINT governed measurement (no more hand-`curl`):
+1. **Catalog row for K3** (BigMama lane, `model_registry/catalog.rs`) - servable metadata + the serving
+   profile: `--n-cpu-moe 999`, `--override-kv kimi-k3.expert_used_count=int:8`, `-ngl <fit>`,
+   `GGML_MOE_DIRECT_READ=1`, `GGML_MOE_PLAN_FILE=<governed>`. Gated on 2+3 so it's not a servable row
+   that thrashes.
+2. **Serving-lane MoE launch** (`inference/llama_server.rs`, M5) - set those flags + the plan-file env
+   for a streaming-MoE model; today the launcher wires KV/context budget but not the MoE offload env.
+3. **#287 budget derivation** (M5) - writes `plan_file.budget_bytes` from the profile above, flexing
+   with KV. Register the cache as a governed `PagedResourcePool` with `evict_at_least` (the C++ free
+   path above is its actuator).
