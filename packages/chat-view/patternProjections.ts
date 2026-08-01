@@ -29,7 +29,7 @@ import type {
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
-import { ARENA_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, type ArenaContentBody as ArenaContentBodyT } from '@continuum/patterns';
+import { ARENA_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, type ArenaContentBody as ArenaContentBodyT, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -233,6 +233,27 @@ export function servingWidget(serving?: ServingViewState): PanelWidget<ServingPa
   return { id: 'serving', kind: 'serving', title: 'Serving', body, scope: 'global' };
 }
 
+/** The serving CONSOLE content body — per-node panels for the center-stage
+ *  ops face (`purpose === SERVING_PURPOSE`). Today: the local node (named
+ *  from the metrics feed's host name); grid peers join as the cross-grid
+ *  serving feed lands (#283) with zero shape change. `feedLive` is true only
+ *  when the serving subscription has actually delivered. */
+export function servingContentBody(
+  serving?: ServingViewState,
+  node?: string,
+): ServingContentBody {
+  const nodes: ServingNodeVM[] = serving
+    ? [
+        {
+          node: node ?? 'this node',
+          local: true,
+          view: servingWidget(serving)?.body ?? { arms: [], events: [] },
+        },
+      ]
+    : [];
+  return { nodes, feedLive: serving !== undefined };
+}
+
 /** The NODES strip (the factory sidebar's "1/1 nodes online"): every grid node
  *  this surface can honestly attest, as a `status` widget whose body is the one
  *  `Listing` primitive. Today that is exactly THIS node — attested by its live
@@ -358,20 +379,30 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !personaBody && !liveBody && vm.purpose === ARENA_PURPOSE
       ? arenaContentBody(live?.arena ?? { rows: [] }, live?.arena !== undefined)
       : undefined;
+  // The SERVING console face: a serving-purpose room renders the full
+  // center-stage ops console (console doctrine — the graphical full view
+  // lives HERE, never crammed into rails).
+  const servingBody =
+    !personaBody && !liveBody && !arenaBody && vm.purpose === SERVING_PURPOSE
+      ? servingContentBody(live?.serving, live?.sys?.node ?? undefined)
+      : undefined;
   const content:
     | ContentView<ChatContentBody>
     | ContentView<PersonaContentBody>
     | ContentView<LiveContentBody>
-    | ContentView<ArenaContentBodyT> = personaBody
+    | ContentView<ArenaContentBodyT>
+    | ContentView<ServingContentBody> = personaBody
     ? { purpose: PERSONA_PURPOSE, body: personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }
       : arenaBody
         ? { purpose: ARENA_PURPOSE, body: arenaBody }
-        : {
-            purpose: vm.purpose,
-            body: { messages: vm.messages, isEmpty: vm.isEmpty },
-          };
+        : servingBody
+          ? { purpose: SERVING_PURPOSE, body: servingBody }
+          : {
+              purpose: vm.purpose,
+              body: { messages: vm.messages, isEmpty: vm.isEmpty },
+            };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const rooms = live?.nav

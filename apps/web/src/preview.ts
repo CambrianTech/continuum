@@ -306,6 +306,18 @@ function main(): void {
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
   }
+  // `?fixture=console` — the SERVING CONSOLE center-stage (purpose="serving"):
+  // the machine room as the focused activity, fed the campaign's measured
+  // numbers. The design's reference input for the full-view face.
+  if (name === 'console') {
+    const base = FIXTURES.roster;
+    if (base) {
+      widget.state = { ...base, room_name: 'serving', purpose: 'serving' };
+    }
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.serving = SERVING_FIXTURE;
+  }
   // `?fixture=serving` — the full rail PLUS the serving glass box carrying the
   // beat-WASTE campaign's measured numbers (#141 slice 1's reference input).
   if (name === 'serving') {
