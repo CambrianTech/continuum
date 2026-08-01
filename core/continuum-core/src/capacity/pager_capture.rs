@@ -167,6 +167,36 @@ mod tests {
         assert_eq!(decoded.resident_experts, 4416);
     }
 
+    /// what this catches (#276 CROSS-NODE PARITY, the real thing):
+    /// three VERBATIM lines from BigMama's live fitted-K3 capture feed
+    /// (2026-08-01 warm-decode run — cold token 0 at 20GB fetched, warm
+    /// tokens 4/26 at the 4416 working set) must decode. Pins every
+    /// live-feed quirk at once: integer literals in f32 fields
+    /// (`"fetch_mb_s":2458`), her two extra counters (`experts`,
+    /// `misses` — forward tolerance), and absent decision state
+    /// (defaults). If this breaks, her feed and our reader have
+    /// diverged — fix the CONTRACT, not the fixture.
+    #[test]
+    fn bigmama_live_feed_lines_decode_verbatim() {
+        let live_lines = [
+            r#"{"token":0,"hit_rate":1.0000,"fault_wait_ms":8178.0,"tok_per_s":0.0211,"bytes_fetched_mb":20098.2,"fetch_mb_s":2458,"resident_experts":8037,"experts":8037,"misses":0}"#,
+            r#"{"token":4,"hit_rate":1.0000,"fault_wait_ms":1670.3,"tok_per_s":0.3295,"bytes_fetched_mb":4809.7,"fetch_mb_s":2879,"resident_experts":4416,"experts":4416,"misses":0}"#,
+            r#"{"token":26,"hit_rate":1.0000,"fault_wait_ms":1545.6,"tok_per_s":0.3434,"bytes_fetched_mb":3891.6,"fetch_mb_s":2518,"resident_experts":4416,"experts":4416,"misses":0}"#,
+        ];
+        let decoded: Vec<PagerCaptureEvent> = live_lines
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("live feed line decodes"))
+            .collect();
+        // The measured shape of the run: cold token pulls the whole
+        // resident set; warm tokens settle on the 4416 working set.
+        assert_eq!(decoded[0].token, 0);
+        assert_eq!(decoded[0].resident_experts, 8037);
+        assert_eq!(decoded[1].resident_experts, 4416);
+        assert_eq!(decoded[2].resident_experts, 4416);
+        assert!(decoded[2].tok_per_s > 0.3, "warm decode rate present");
+        assert_eq!(decoded[1].fetch_mb_s, 2879.0, "int literal → f32");
+    }
+
     /// what this catches: RAW-feed tolerance — the C++ emitter
     /// (GGML_MOE_CAPTURE_FILE) carries ONLY the perf fields; the
     /// decision state exists once the Rust controller runs. A perf-only

@@ -29,7 +29,12 @@ bytes_fetched_mb: number,
  */
 fetch_mb_s: number, 
 /**
- * 1 − distortion [0..1] (perplexity/KL-derived when live).
+ * 1 − distortion [0..1] (perplexity/KL-derived when live). Defaults
+ * when absent: the RAW C++ emitter feed carries only the perf
+ * fields — quality/reward/decision state exist once the Rust
+ * controller runs, so a raw line must still decode (verified
+ * against BigMama's live emitter 2026-08-01: perf field names
+ * match exactly; the decision fields are the additive delta).
  */
 quality: number, 
 /**
