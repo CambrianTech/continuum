@@ -2406,6 +2406,75 @@ mod tests {
             }
         }
 
+        // what this catches: #293 starvation at the VERDICT BRANCH — four resident
+        // personas (Asha/Atlas/Anwen/Benchy) on a NativeFunctionCalling lane looped
+        // for HOURS: the model emitted its call as a ```json TEXT fence with
+        // SIBLING args ({"function": "code/list", "path": "."} — args top-level
+        // beside the name, finish=Stop, tool_calls=None) and nothing lifted it, so
+        // every turn fell through to Speak. The verdict branch must lift the text
+        // call into an Act regardless of the lane's declared protocol.
+        #[tokio::test]
+        async fn native_lane_text_fence_with_sibling_args_still_becomes_an_act() {
+            let persona = Uuid::new_v4();
+            let text = "Let me look at the workspace first.\n```json\n{\"function\": \"code/list\", \"path\": \".\"}\n```";
+            let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::Stop,
+                text,
+                None, // NO native tool_calls — the exact starved shape
+            )]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![read_tool()])
+                .with_context_window(32_768);
+
+            let c = faculty
+                .contribute(&Workspace::new("what's in the workspace?"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Act { calls, .. }) => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(calls[0].name, "code/list", "wire dialect keeps the canonical name");
+                    assert_eq!(calls[0].input, json!({ "path": "." }), "siblings became the args");
+                }
+                other => panic!("expected Act from the sibling-args text fence, got {other:?}"),
+            }
+        }
+
+        // what this catches: NATIVE-CALLS-WIN precedence (#293's guard rail) — when a
+        // response carries BOTH structured tool_calls and a textual fence naming a
+        // different tool, the structured calls are the verdict; the text parse is a
+        // belt-and-suspenders fallback consulted only when the response carried none.
+        #[tokio::test]
+        async fn native_structured_calls_win_over_a_text_fence() {
+            let persona = Uuid::new_v4();
+            let native = ToolCall {
+                id: "t1".to_string(),
+                name: "code/read".to_string(),
+                input: json!({ "path": "deploy.md" }),
+            };
+            let text = "```json\n{\"function\": \"code/list\", \"path\": \".\"}\n```";
+            let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::ToolUse,
+                text,
+                Some(vec![native]),
+            )]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![read_tool()])
+                .with_context_window(32_768);
+
+            let c = faculty
+                .contribute(&Workspace::new("did the deploy fix land?"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Act { calls, .. }) => {
+                    assert_eq!(calls.len(), 1, "only the native call rides the verdict");
+                    assert_eq!(calls[0].name, "code/read", "native wins over the text fence");
+                }
+                other => panic!("expected Act carrying the native call, got {other:?}"),
+            }
+        }
+
         // what this catches: the directedness gate on the silence affordance
         // (`Workspace::directed_at_self`). The ambient participation default AND the
         // bare-PASS escape both live in the ONE appended [Conversational Presence] block.
