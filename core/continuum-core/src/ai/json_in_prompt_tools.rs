@@ -34,19 +34,86 @@ struct ToolCallEnvelope {
 
 /// The inner call: which tool + its arguments. `arguments` defaults to `{}` so a
 /// no-arg tool can be called as `{"tool_call": {"name": "ping"}}`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct ToolCallJson {
     /// `name` is canonical; `function`/`tool` are accepted as aliases — observed
     /// live 2026-07-10: Asha, after a day of narrating, finally emitted a
     /// STRUCTURED call — `{"function": "work/claim", "params": {…}}` — and the
     /// parser rejected it on key SPELLING alone ([[pass-must-be-trained-not-told]]:
     /// check the action parser before declaring a model gap; she DID emit it).
-    #[serde(alias = "function", alias = "tool")]
     name: String,
     /// `arguments` is canonical; `parameters`/`params`/`input` are aliases so
-    /// Llama/Mistral/OpenAI-ish bare calls all normalize cleanly.
-    #[serde(default, alias = "parameters", alias = "params", alias = "input")]
+    /// Llama/Mistral/OpenAI-ish bare calls all normalize cleanly. When NO
+    /// args-family key is present, sibling keys beside the name become the
+    /// arguments (see the manual `Deserialize` impl below).
     arguments: Value,
+}
+
+/// The name-key family a model may use for "which tool". First present wins.
+const NAME_KEYS: &[&str] = &["name", "function", "tool"];
+/// The args-key family. First present wins; when ABSENT, the remaining sibling
+/// keys become the arguments object.
+const ARG_KEYS: &[&str] = &["arguments", "parameters", "params", "input"];
+
+/// Manual deserialize replacing the old serde aliases so SIBLING-ARGS emissions
+/// lift too (#293, glass-boxed live 2026-07-31): Asha/Atlas/Anwen/Benchy emit
+/// `{"function": "code/list", "path": "."}` — the args TOP-LEVEL beside the
+/// name, no `arguments`/`params` key at all — and the alias-only shape rejected
+/// it, starving every call for hours. Rules:
+///   - name: first present of `name`/`function`/`tool`; must be a string
+///     (an OpenAI-wire `"function": {…}` object is NOT this shape — refuse so
+///     other formats can try).
+///   - arguments: first present of `arguments`/`parameters`/`params`/`input`
+///     (extra siblings are then ignored, matching the old derive). When none is
+///     present, the remaining siblings ARE the arguments — minus call-frame
+///     metadata that is never a tool argument (`"type": "function"`, and an
+///     `id` in the `call_`/`toolu_`/`jip-` wire shapes).
+impl<'de> Deserialize<'de> for ToolCallJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let mut map = serde_json::Map::deserialize(deserializer)?;
+        let mut name: Option<String> = None;
+        for k in NAME_KEYS {
+            match map.remove(*k) {
+                Some(Value::String(s)) => {
+                    if name.is_none() {
+                        name = Some(s);
+                    }
+                }
+                Some(_) => return Err(D::Error::custom("tool name is not a string")),
+                None => {}
+            }
+        }
+        let name = name.ok_or_else(|| D::Error::custom("missing tool name"))?;
+        let mut arguments: Option<Value> = None;
+        for k in ARG_KEYS {
+            if let Some(v) = map.remove(*k) {
+                if arguments.is_none() {
+                    arguments = Some(v);
+                }
+            }
+        }
+        let arguments = arguments.unwrap_or_else(|| {
+            // Sibling-args path: strip call-frame metadata, keep real keys.
+            if map.get("type").and_then(Value::as_str) == Some("function") {
+                map.remove("type");
+            }
+            if map.get("id").and_then(Value::as_str).is_some_and(|id| {
+                id.starts_with("call_") || id.starts_with("toolu_") || id.starts_with("jip-")
+            }) {
+                map.remove("id");
+            }
+            if map.is_empty() {
+                Value::Null
+            } else {
+                Value::Object(std::mem::take(&mut map))
+            }
+        });
+        Ok(ToolCallJson { name, arguments })
+    }
 }
 
 /// Format adaptation, Rust-idiomatic: the model's emitted shape → our canonical
@@ -85,13 +152,29 @@ impl ToolProtocol {
     }
 
     /// Extract a tool call from the model's TEXT response. `None` for
-    /// `NativeFunctionCalling` (the adapter reads structured `tool_calls`
-    /// instead), `None` for `None` (no tools), and when the model answered
-    /// normally (no call).
+    /// `ToolProtocol::None` (no tools were offered — lifting prose would
+    /// fabricate agency) and when the model answered normally (no call).
+    ///
+    /// BELT-AND-SUSPENDERS (#293, glass-boxed live 2026-07-31): this arm used
+    /// to return `None` for `NativeFunctionCalling` by design ("the adapter
+    /// reads structured `tool_calls` instead") — and four resident personas
+    /// (Asha/Atlas/Anwen/Benchy) looped for HOURS because their lane declared
+    /// native function-calling while the model emitted well-formed ```json
+    /// tool calls as TEXT. Nothing parsed them; every call starved into Speak.
+    /// A model that emits a well-formed textual call must never starve over a
+    /// wrong protocol declaration
+    /// ([[local-first-tool-call-robustness-is-the-differentiator]]), so the
+    /// native arm now runs the same text parse. Native-calls-win precedence is
+    /// preserved at every call site: structured `tool_calls` are consumed
+    /// FIRST, and text is only consulted when the response carried none (the
+    /// adapter's universal fallback and the deliberation verdict branch both
+    /// order it that way).
     pub fn parse_text_call(self, text: &str) -> Option<ToolCall> {
         match self {
-            ToolProtocol::NativeFunctionCalling | ToolProtocol::None => None,
-            ToolProtocol::JsonInPrompt => parse_tool_call(text),
+            ToolProtocol::None => None,
+            ToolProtocol::NativeFunctionCalling | ToolProtocol::JsonInPrompt => {
+                parse_tool_call(text)
+            }
         }
     }
 }
@@ -1152,9 +1235,14 @@ impl ToolCallFormat for TaggedFormat {
 }
 
 /// Bare `{"name": "...", "arguments"|"parameters": {...}}` — Llama / Mistral /
-/// generic. Requires an `arguments`/`parameters` key present so prose containing a
-/// stray `{"name": ...}` isn't mistaken for a call (tried LAST, so our envelope and
-/// tagged models never reach it).
+/// generic. An explicit args-family key present → lift as before. NO args key
+/// but SIBLING keys beside the name (`{"function": "code/list", "path": "."}`,
+/// the #293 live idiom) → lift with the siblings as arguments, gated on a
+/// TOOL-SHAPED name (slash-token, or a wire name the live alias registry
+/// resolves to a slash command — the `lift_sole_paren_call` precedent) so prose
+/// JSON like `{"name": "Asha", "age": 3}` stays inert. A stray `{"name": ...}`
+/// with neither args nor siblings is never a call. (Tried after envelope/tagged,
+/// so our precise formats never reach it.)
 struct BareFormat;
 impl ToolCallFormat for BareFormat {
     fn id(&self) -> &'static str {
@@ -1162,18 +1250,32 @@ impl ToolCallFormat for BareFormat {
     }
     fn parse(&self, text: &str) -> Vec<ToolCall> {
         scan_objects(text, |obj| {
+            let has_name =
+                ["\"name\"", "\"function\"", "\"tool\""].iter().any(|k| obj.contains(k));
+            if !has_name {
+                return None; // not a tool call — avoid false positives
+            }
             let has_args = ["\"arguments\"", "\"parameters\"", "\"params\"", "\"input\""]
                 .iter()
                 .any(|k| obj.contains(k));
-            let has_name =
-                ["\"name\"", "\"function\"", "\"tool\""].iter().any(|k| obj.contains(k));
-            if !has_args || !has_name {
-                return None; // not a tool call — avoid false positives
+            let call = serde_json::from_str::<ToolCallJson>(obj).ok()?;
+            if call.name.trim().is_empty() {
+                return None;
             }
-            serde_json::from_str::<ToolCallJson>(obj)
-                .ok()
-                .filter(|c| !c.name.trim().is_empty())
-                .map(Into::into)
+            if !has_args {
+                // Sibling-args lift (#293): precision-first. The name must be
+                // tool-shaped and at least one real sibling must have survived
+                // (metadata-only objects and bare `{"name": …}` stay speech).
+                let name = call.name.trim();
+                let tool_shaped = name.contains('/')
+                    || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
+                let has_sibling_args =
+                    call.arguments.as_object().is_some_and(|o| !o.is_empty());
+                if !tool_shaped || !has_sibling_args {
+                    return None;
+                }
+            }
+            Some(call.into())
         })
     }
 }
@@ -2021,6 +2123,92 @@ mod tests {
     fn prose_with_a_name_field_is_not_a_tool_call() {
         assert!(parse_tool_calls(r#"I think {"name": "Asha"} is a nice handle."#).is_empty());
         assert!(parse_tool_call("just answering normally, no tools today").is_none());
+    }
+
+    // what this catches: #293 starvation, layer 1 — a lane mis-declared
+    // NativeFunctionCalling and the protocol's text-parse arm returned None BY
+    // DESIGN, so four resident personas' well-formed ```json fences never
+    // executed and they looped for hours. The native arm must run the same text
+    // parse (belt-and-suspenders); native structured calls still win because
+    // every call site consults `tool_calls` FIRST and only reads text when the
+    // response carried none. `ToolProtocol::None` still refuses: no tools were
+    // offered at all.
+    #[test]
+    fn native_protocol_text_parse_lifts_instead_of_starving() {
+        let text = "Let me check.\n```json\n{\"function\": \"code/list\", \"path\": \".\"}\n```";
+        let tc = ToolProtocol::NativeFunctionCalling
+            .parse_text_call(text)
+            .expect("belt-and-suspenders: the textual call must lift under a native lane");
+        assert_eq!(tc.name, "code/list");
+        assert_eq!(tc.input, serde_json::json!({ "path": "." }));
+        assert!(ToolProtocol::None.parse_text_call(text).is_none());
+    }
+
+    // what this catches: #293 starvation, layer 2 — SIBLING-ARGS acceptance.
+    // The live emission puts the args TOP-LEVEL beside the name key
+    // (`{"function": "code/list", "path": "."}`, no arguments/params key); the
+    // alias-only deserialize rejected it. The siblings must become the args
+    // object; an explicit args-family key still wins over extra siblings; and
+    // the precision guard keeps non-tool-shaped names with siblings inert.
+    #[test]
+    fn sibling_args_beside_the_name_key_lift_as_arguments() {
+        let tc = parse_tool_call(r#"{"function": "code/list", "path": "."}"#).expect("lift");
+        assert_eq!(tc.name, "code/list");
+        assert_eq!(tc.input, serde_json::json!({ "path": "." }));
+        // Explicit args key wins; siblings beside it are ignored (old behavior).
+        let tc = parse_tool_call(
+            r#"{"function": "work/claim", "params": {"task": "1"}, "reason": "mine"}"#,
+        )
+        .expect("lift");
+        assert_eq!(tc.name, "work/claim");
+        assert_eq!(tc.input, serde_json::json!({ "task": "1" }));
+        // Non-tool-shaped name + siblings stays speech (precision guard).
+        assert!(parse_tool_call(r#"{"name": "Asha", "age": 3}"#).is_none());
+    }
+
+    // what this catches: #293 layer 3, Joel's CI requirement — the EMISSION-IDIOM
+    // CORPUS. Every REAL live emission shape (fixtures/tool-emission-corpus.jsonl,
+    // each entry with what-this-catches provenance) must lift via the single-call
+    // accessor to its expected (name, args) — or stay inert when `expect` is null.
+    // New live defects APPEND corpus entries; this one test then regresses them all.
+    #[test]
+    fn emission_idiom_corpus_lifts_every_live_shape() {
+        let corpus = include_str!("../../fixtures/tool-emission-corpus.jsonl");
+        let mut checked = 0usize;
+        for (i, line) in corpus.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue; // header comment lines
+            }
+            let entry: Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("corpus line {} is not valid JSON: {e}", i + 1));
+            let provenance = entry["provenance"]
+                .as_str()
+                .unwrap_or_else(|| panic!("corpus line {} missing provenance", i + 1));
+            let text = entry["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("corpus line {} missing text", i + 1));
+            let got = parse_tool_call(text);
+            match entry.get("expect").filter(|e| !e.is_null()) {
+                Some(exp) => {
+                    let call = got.unwrap_or_else(|| {
+                        panic!("[{provenance}] expected a lift, parser returned None")
+                    });
+                    assert_eq!(
+                        call.name,
+                        exp["name"].as_str().expect("expect.name is a string"),
+                        "[{provenance}] wrong tool name"
+                    );
+                    assert_eq!(call.input, exp["args"], "[{provenance}] wrong arguments");
+                }
+                None => assert!(
+                    got.is_none(),
+                    "[{provenance}] must stay inert, but lifted: {got:?}"
+                ),
+            }
+            checked += 1;
+        }
+        assert!(checked >= 18, "corpus unexpectedly small: {checked} entries");
     }
 
     // what this catches: the narrated-script gap (#122, glass-boxed live 2026-07-09).
