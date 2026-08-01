@@ -73,10 +73,10 @@ impl BanditPlanController {
             .into_iter()
             .map(|v| {
                 let e = unpack(v);
-                PlanPin {
-                    layer: e.layer,
-                    expert: e.expert,
-                }
+                // Residency-only hints for now: the bandit ranks WHAT to
+                // keep; precision tiers join when the controller learns a
+                // rate-distortion policy over the container's ladder.
+                PlanPin::residency(e.layer, e.expert)
             })
             .collect();
         // Deterministic order for the wire document (and for her logs).
@@ -158,10 +158,7 @@ mod tests {
         assert_eq!(pins.len(), 8);
         for h in &hot {
             assert!(
-                pins.contains(&PlanPin {
-                    layer: h.layer,
-                    expert: h.expert
-                }),
+                pins.contains(&PlanPin::residency(h.layer, h.expert)),
                 "hot expert {h:?} missing from pins {pins:?}"
             );
         }
@@ -190,18 +187,9 @@ mod tests {
         assert_eq!(doc.window_k, 24);
         assert_eq!(doc.pin_list.len(), 3);
         for pin in [
-            PlanPin {
-                layer: 1,
-                expert: 10,
-            },
-            PlanPin {
-                layer: 1,
-                expert: 11,
-            },
-            PlanPin {
-                layer: 2,
-                expert: 20,
-            },
+            PlanPin::residency(1, 10),
+            PlanPin::residency(1, 11),
+            PlanPin::residency(2, 20),
         ] {
             assert!(doc.pin_list.contains(&pin), "missing {pin:?}");
         }
