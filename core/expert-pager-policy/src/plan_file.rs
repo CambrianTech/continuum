@@ -84,6 +84,17 @@ pub struct PlanFileDocument {
     /// Experts to keep resident ALWAYS (the guaranteed-hit tier — the
     /// 184 shared experts first).
     pub pin_list: Vec<PlanPin>,
+    /// Precision ladder index for every expert NOT in `pin_list` — the
+    /// beat-WASTE knob. Misses are unpinned by definition, so this is
+    /// where the fetch bytes actually are: `default_tier` pointed at a
+    /// small-quant bank shrinks bytes-per-miss for the whole cold tail
+    /// while per-pin `tier` keeps the hot set high-fidelity — the
+    /// rate-distortion split a uniform-quant streamer structurally
+    /// cannot make. `None` = the container's own default bank (the v1
+    /// behavior); serde omits it, so documents without it stay
+    /// byte-identical to the v1 wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tier: Option<u32>,
 }
 
 impl PlanFileDocument {
@@ -93,7 +104,14 @@ impl PlanFileDocument {
             budget_bytes,
             window_k,
             pin_list,
+            default_tier: None,
         }
+    }
+
+    /// Set the ladder index unpinned experts fetch from.
+    pub fn with_default_tier(mut self, tier: u32) -> Self {
+        self.default_tier = Some(tier);
+        self
     }
 }
 
@@ -176,6 +194,33 @@ mod tests {
         let parsed: PlanFileDocument = serde_json::from_str(v1).expect("v1 parse");
         assert_eq!(parsed.pin_list, vec![PlanPin::residency(3, 44)]);
         assert_eq!(parsed.pin_list[0].tier, None);
+        assert_eq!(parsed.default_tier, None);
+    }
+
+    /// what this catches (beat-WASTE knob): `default_tier` — the ladder
+    /// index for the entire UNPINNED cold tail — must appear literally
+    /// on the wire when set and vanish entirely when not, and a
+    /// document carrying it must round-trip. Same no-lockstep contract
+    /// as the per-pin tier: absent = byte-identical v1.
+    #[test]
+    fn default_tier_is_optional_on_the_wire() {
+        let plain = PlanFileDocument::new(500, 4, vec![PlanPin::residency(0, 1)]);
+        let plain_json = serde_json::to_string(&plain).expect("serialize");
+        assert!(
+            !plain_json.contains("default_tier"),
+            "unset default_tier must be omitted: {plain_json}"
+        );
+
+        let tiered =
+            PlanFileDocument::new(500, 4, vec![PlanPin::tiered(0, 1, 0)]).with_default_tier(2);
+        let json = serde_json::to_string(&tiered).expect("serialize");
+        assert!(
+            json.contains("\"default_tier\":2"),
+            "set default_tier must be a literal wire key: {json}"
+        );
+        let back: PlanFileDocument = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, tiered);
+        assert_eq!(back.default_tier, Some(2));
     }
 
     /// what this catches: the atomic publish — the target path always

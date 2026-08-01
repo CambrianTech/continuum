@@ -16,7 +16,13 @@
 //!                    --table <tkey-to-layer-matrix.json> \
 //!                    --plan <GGML_MOE_PLAN_FILE> \
 //!                    --budget-bytes <N> --window-k <N> \
-//!                    [--pin-top 256] [--rewrite-every 8] [--poll-ms 50]
+//!                    [--pin-top 256] [--rewrite-every 8] [--poll-ms 50] \
+//!                    [--pin-tier N] [--default-tier N]
+//!
+//! `--pin-tier` / `--default-tier` enable the rate-distortion split
+//! (the beat-WASTE knobs): hot pins served from ladder bank
+//! `--pin-tier`, the entire unpinned cold tail fetched from
+//! `--default-tier`. Omit both for the plain v1 residency plan.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -33,6 +39,12 @@ struct Args {
     pin_top: usize,
     rewrite_every: u64,
     poll_ms: u64,
+    /// Precision-ladder index the hot pins are served from (the
+    /// high-fidelity bank). None = container default.
+    pin_tier: Option<u32>,
+    /// Precision-ladder index the unpinned cold tail fetches from (the
+    /// small-quant bank — the beat-WASTE knob). None = container default.
+    default_tier: Option<u32>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -44,6 +56,8 @@ fn parse_args() -> Result<Args, String> {
     let mut pin_top = 256usize;
     let mut rewrite_every = 8u64;
     let mut poll_ms = 50u64;
+    let mut pin_tier = None;
+    let mut default_tier = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -64,6 +78,12 @@ fn parse_args() -> Result<Args, String> {
                 rewrite_every = value.parse().map_err(|e| format!("--rewrite-every: {e}"))?
             }
             "--poll-ms" => poll_ms = value.parse().map_err(|e| format!("--poll-ms: {e}"))?,
+            "--pin-tier" => {
+                pin_tier = Some(value.parse().map_err(|e| format!("--pin-tier: {e}"))?)
+            }
+            "--default-tier" => {
+                default_tier = Some(value.parse().map_err(|e| format!("--default-tier: {e}"))?)
+            }
             other => return Err(format!("unknown flag {other}")),
         }
         i += 2;
@@ -77,6 +97,8 @@ fn parse_args() -> Result<Args, String> {
         pin_top,
         rewrite_every,
         poll_ms,
+        pin_tier,
+        default_tier,
     })
 }
 
@@ -182,11 +204,13 @@ fn main() {
                                 segmenter.unknown_tkeys,
                             );
                             if token_idx.is_multiple_of(args.rewrite_every) {
-                                match ctl.write_plan(
+                                match ctl.write_tiered_plan(
                                     &args.plan,
                                     args.budget_bytes,
                                     args.window_k,
                                     args.pin_top,
+                                    args.pin_tier,
+                                    args.default_tier,
                                 ) {
                                     Ok(()) => println!(
                                         "# plan rewritten @tok {token_idx} (top {} pins)",
