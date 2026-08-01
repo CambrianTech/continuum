@@ -43,6 +43,11 @@ export type {
 // — per-node control-loop panels, center-stage full view (console doctrine).
 export { SERVING_PURPOSE } from './servingContent';
 export type { ServingContentBody, ServingNodeVM } from './servingContent';
+
+// The GRID's neutral Content body (`purpose === GRID_PURPOSE`) — the NODES
+// strip's full activity: every node's resources + serving, SCADA-style.
+export { GRID_PURPOSE } from './gridContent';
+export type { GridContentBody, GridNodeVM } from './gridContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,

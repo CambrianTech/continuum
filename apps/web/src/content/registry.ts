@@ -13,10 +13,12 @@ import {
   ARENA_PURPOSE,
   createContentRegistry,
   LIVE_PURPOSE,
+  GRID_PURPOSE,
   PERSONA_PURPOSE,
   SERVING_PURPOSE,
   type ArenaContentBody,
   type ContentRegistry,
+  type GridContentBody,
   type LiveContentBody,
   type PersonaContentBody,
   type ServingContentBody,
@@ -28,6 +30,7 @@ import { renderPersona } from '../persona/renderPersona';
 import { renderLive } from '../live/renderLive';
 import { renderArena } from '../arena/renderArena';
 import { renderServing } from '../serving/renderServing';
+import { renderGrid } from '../grid/renderGrid';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
@@ -70,3 +73,6 @@ webContentRegistry.register<ArenaContentBody>(ARENA_PURPOSE, (body) => renderAre
 // The SERVING console — per-node control-loop panels center-stage, dispatched
 // when the room recipe's purpose is "serving" (the machine room, full view).
 webContentRegistry.register<ServingContentBody>(SERVING_PURPOSE, (body) => renderServing(body));
+// The GRID view — every node's panel (resources + serving), the NODES
+// strip's full activity, dispatched when the room's purpose is "grid".
+webContentRegistry.register<GridContentBody>(GRID_PURPOSE, (body) => renderGrid(body));
