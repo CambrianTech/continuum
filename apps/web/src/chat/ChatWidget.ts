@@ -923,6 +923,109 @@ export class ChatWidget extends LitElement {
       font-weight: 700;
       color: var(--content-primary);
     }
+    /* SERVING glass box (#141 slice 1) — header line, bandit arm chips with
+     * reward bars, and the pager's event cards. Sparklines reuse .gauge. */
+    .serving-line {
+      display: flex;
+      align-items: baseline;
+      gap: var(--spacing-sm);
+      padding: 0 var(--spacing-md) var(--spacing-xs);
+      font-size: 11px;
+      min-width: 0;
+    }
+    .serving-model {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      color: var(--content-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .serving-meta {
+      flex-shrink: 0;
+      font-size: 9.5px;
+      letter-spacing: 0.05em;
+      color: var(--content-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+    .serving-degraded {
+      color: var(--status-warning, #e0a458);
+    }
+    .serving-arms {
+      display: flex;
+      gap: 4px;
+      padding: var(--spacing-xs) var(--spacing-md) 0;
+    }
+    .serving-arm {
+      position: relative;
+      flex: 1;
+      min-width: 0;
+      padding: 2px 0 4px;
+      text-align: center;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .serving-arm[data-chosen] {
+      border-color: var(--accent-primary);
+    }
+    .serving-arm[data-chosen] .arm-label {
+      color: var(--accent-primary);
+      font-weight: 700;
+    }
+    .arm-label {
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      color: var(--content-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+    .arm-bar {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 2px;
+      background: var(--accent-primary);
+      opacity: 0.85;
+      border-radius: 1px;
+    }
+    ul.serving-events {
+      list-style: none;
+      margin: 0;
+      padding: var(--spacing-xs) var(--spacing-md) var(--spacing-sm);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .serving-event {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 9.5px;
+      padding: 2px 6px;
+      border-left: 2px solid var(--border-subtle);
+      background: var(--widget-surface, rgba(255, 255, 255, 0.03));
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      color: var(--content-secondary);
+    }
+    .serving-event[data-kind='decay-switch'] {
+      border-left-color: var(--accent-primary);
+    }
+    .serving-event[data-kind='serve-start'] {
+      border-left-color: var(--status-success, #4caf7d);
+    }
+    .event-token {
+      flex-shrink: 0;
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      color: var(--content-tertiary, var(--content-secondary));
+      font-variant-numeric: tabular-nums;
+    }
+    .event-detail {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     /* NODES strip — the factory sidebar's "1/1 nodes online": pulse dot + host
      * name + role chip per attested node. */
     .nodes-online {
