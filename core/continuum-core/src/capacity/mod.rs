@@ -36,6 +36,7 @@ pub mod grid;
 pub mod lease;
 pub mod moe_arch_profile;
 pub mod moe_serving;
+pub mod pager_capture;
 pub mod placement;
 pub mod recursion_depth;
 pub mod residency_detect;
