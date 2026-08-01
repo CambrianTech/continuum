@@ -129,6 +129,7 @@ pub mod nav;
 pub mod observer;
 pub mod revisions;
 pub mod scoping;
+pub mod serving;
 pub mod session;
 pub mod system_metrics;
 pub mod session_task;

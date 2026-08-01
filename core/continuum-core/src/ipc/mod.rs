@@ -119,6 +119,7 @@ pub mod positron_kanban_source;
 pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
+pub mod positron_serving_source;
 pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
@@ -2871,6 +2872,14 @@ pub fn start_server(
                 positron_metrics_source::spawn_system_metrics_emitter(
                     &state.rt_handle,
                     system_monitor.clone(),
+                    ws_substrate.clone(),
+                );
+
+                // Serving glass box (#141 slice 1): fold the daemon's serving
+                // snapshot + the MoE pager capture feed (when live) into
+                // kind="serving" — the beat-WASTE control loop on screen.
+                positron_serving_source::spawn_serving_emitter(
+                    &state.rt_handle,
                     ws_substrate.clone(),
                 );
 

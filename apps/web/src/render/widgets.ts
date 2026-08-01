@@ -22,11 +22,13 @@ import {
   type GaugeView,
   type ListingView,
   type MetricsView,
+  type ServingPanelView,
   type SystemPanelView,
 } from '@continuum/patterns';
 import { renderGaugeBody, renderListing, renderMetricsRow } from './parts';
 import './RoomsPanel'; // registers <rooms-panel> (the dense rooms rail section)
 import './SysPanel'; // registers <sys-panel> (the two-faced SYS|AI system panel)
+import './ServingPanel'; // registers <serving-panel> (the serving glass box, #141)
 
 /** The web left-rail registry. Import for its side-effectful registrations; `webTarget`
  *  dispatches `widget()` through it. */
@@ -152,4 +154,11 @@ webWidgetRegistry.register('status', (widget) => {
 webWidgetRegistry.register('system', (widget) => {
   const view = widget.body as SystemPanelView;
   return html`<sys-panel .body=${view} .heading=${widget.title}></sys-panel>`;
+});
+
+/** `'serving'` — the serving glass box (#141 slice 1): header + pager
+ *  sparklines + bandit arms + event cards, drawn by `<serving-panel>`. */
+webWidgetRegistry.register('serving', (widget) => {
+  const view = widget.body as ServingPanelView;
+  return html`<serving-panel .body=${view} .heading=${widget.title}></serving-panel>`;
 });

@@ -50,6 +50,11 @@ const VENDORED = [
   // system-metrics closure (kind="system-metrics" — the SYS gauge's series)
   { src: 'positron', dest: 'views', name: 'SystemMetricsViewState' },
   { src: 'positron', dest: 'views', name: 'MetricSeriesView' },
+  // serving closure (kind="serving" — the pager glass box, #141 slice 1)
+  { src: 'positron', dest: 'views', name: 'ServingViewState' },
+  { src: 'positron', dest: 'views', name: 'ServingHeaderView' },
+  { src: 'positron', dest: 'views', name: 'ServingArmView' },
+  { src: 'positron', dest: 'views', name: 'ServingEventCard' },
   // kanban closure (kind="kanban" — the work board; the persona home's claims
   // feed renders cards by assignee). Vendored now that a widget renders it.
   { src: 'positron', dest: 'views', name: 'KanbanViewState' },

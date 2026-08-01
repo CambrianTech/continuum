@@ -21,8 +21,13 @@ import type {
   PanelWidget,
   MetricsView,
 } from '@continuum/patterns';
-import type { GaugeView } from '@continuum/patterns';
-import type { KanbanViewState, NavViewState, SystemMetricsViewState } from '@continuum/sdk-typescript';
+import type { GaugeView, ServingPanelView } from '@continuum/patterns';
+import type {
+  KanbanViewState,
+  NavViewState,
+  ServingViewState,
+  SystemMetricsViewState,
+} from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
 import { ARENA_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, type ArenaContentBody as ArenaContentBodyT } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
@@ -188,6 +193,46 @@ export function systemGaugeWidget(sys: SystemMetricsViewState): PanelWidget<Gaug
   return { id: 'sys-gauge', kind: 'gauge', title: 'System', body: gauge, scope: 'global' };
 }
 
+/** The SERVING glass-box rail widget (#141 slice 1: the beat-WASTE control
+ *  loop on screen) — a pure reshaping of the core-carried `kind="serving"`
+ *  view onto the neutral `ServingPanelView`. The core owns sampling,
+ *  normalization, formatting, and event carding; here we only adapt wire
+ *  shape to widget vocabulary. `undefined` before the feed delivers — the
+ *  widget honestly joins the rail when the core starts publishing. */
+export function servingWidget(serving?: ServingViewState): PanelWidget<ServingPanelView> | undefined {
+  if (!serving) return undefined;
+  const body: ServingPanelView = {
+    ...(serving.header
+      ? {
+          header: {
+            ...(serving.header.model !== undefined ? { model: serving.header.model } : {}),
+            ready: serving.header.ready,
+            lanes: serving.header.lanes,
+            contextWindow: serving.header.context_window,
+            ...(serving.header.degraded_reason !== undefined
+              ? { degradedReason: serving.header.degraded_reason }
+              : {}),
+          },
+        }
+      : {}),
+    ...(serving.series.length > 0
+      ? {
+          gauge: {
+            series: serving.series.map((s) => ({
+              label: s.label.toUpperCase(),
+              points: s.points,
+              current: s.current,
+            })),
+            sampleIntervalMs: serving.sample_interval_ms,
+          },
+        }
+      : {}),
+    arms: serving.arms.map((a) => ({ label: a.label, reward: a.reward, chosen: a.chosen })),
+    events: serving.events.map((e) => ({ atToken: e.at_token, kind: e.kind, detail: e.detail })),
+  };
+  return { id: 'serving', kind: 'serving', title: 'Serving', body, scope: 'global' };
+}
+
 /** The NODES strip (the factory sidebar's "1/1 nodes online"): every grid node
  *  this surface can honestly attest, as a `status` widget whose body is the one
  *  `Listing` primitive. Today that is exactly THIS node — attested by its live
@@ -254,6 +299,9 @@ export interface WorkspaceLive {
   readonly nav?: NavViewState;
   /** The node's `kind="system-metrics"` view — adds the SYS gauge widget. */
   readonly sys?: SystemMetricsViewState;
+  /** The node's `kind="serving"` view — adds the serving glass-box widget
+   *  (#141 slice 1). Honestly absent until the subscription delivers. */
+  readonly serving?: ServingViewState;
   /** The node's `kind="kanban"` work board — feeds the persona home's claims
    *  feed (cards by assignee). Honestly absent until the subscription delivers. */
   readonly board?: KanbanViewState;
@@ -335,9 +383,11 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // dispatched by kind; the roster stays the participants `Listing`
   // (ROSTER_LISTING_ID) that RAG + mobile ground on.
   const nodes = nodesWidget(live?.sys);
+  const serving = servingWidget(live?.serving);
   const left = [
     continuonWidget(vm, live?.version),
     systemPanelWidget(vm, live?.sys),
+    ...(serving ? [serving] : []),
     ...(nodes ? [nodes] : []),
     listingWidget(rooms),
     listingWidget(rosterListing(vm)),

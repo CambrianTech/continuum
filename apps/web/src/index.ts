@@ -38,10 +38,12 @@ import {
   CHAT_KIND,
   KANBAN_KIND,
   NAV_KIND,
+  SERVING_KIND,
   SYSTEM_METRICS_KIND,
   chatStateFromEnvelope,
   kanbanStateFromEnvelope,
   navStateFromEnvelope,
+  servingFromEnvelope,
   systemMetricsFromEnvelope,
   type ChatState,
 } from '@continuum/chat-view';
@@ -220,6 +222,10 @@ async function main(): Promise<void> {
   // The node's resource window (CPU/MEM) — the SYS gauge's core-carried series.
   state.on(SYSTEM_METRICS_KIND, (envelope: StateEnvelope) => {
     widget.sys = systemMetricsFromEnvelope(envelope);
+  });
+  // The serving glass box (#141) — model header + pager control-loop telemetry.
+  state.on(SERVING_KIND, (envelope: StateEnvelope) => {
+    widget.serving = servingFromEnvelope(envelope);
   });
   // The node's work board — the persona home's claims feed (cards by assignee).
   state.on(KANBAN_KIND, (envelope: StateEnvelope) => {
