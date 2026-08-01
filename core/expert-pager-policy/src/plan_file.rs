@@ -12,10 +12,15 @@
 //! contract: her parser binds to them literally, so the tests pin them
 //! literally.
 //!
-//! v1 is deliberately minimal ("the three knobs, nothing more"); per-
-//! expert tier overrides join the document when multi-tier containers
-//! ship. Transport upgrades (IPC instead of file) are v2 — the document
-//! shape survives the transport.
+//! v1 stays minimal, and per-expert precision joined it as an OPTIONAL
+//! field (Joel's WASTE-differentiator steer, #general 2026-08-01): a
+//! pin may carry a `tier` — an index into the CONTAINER's declared
+//! precision ladder — so hot/important experts are served at higher
+//! fidelity while cold ones stream from the small-quant banks. Absent
+//! tier = the v1 single-tier behavior, and serde skips `None`, so
+//! tier-less plans are BYTE-IDENTICAL to the original wire: neither
+//! side needs a lockstep upgrade. Transport upgrades (IPC instead of
+//! file) are v2 — the document shape survives the transport.
 
 use std::io::Write;
 use std::path::Path;
@@ -26,11 +31,46 @@ use serde::{Deserialize, Serialize};
 pub const PLAN_FILE_VERSION: u32 = 1;
 
 /// One pinned expert: (layer, expert) in the router's coordinate space
-/// (matches `ExpertId`; tier implicit 0 in v1 single-tier containers).
+/// (matches `ExpertId`), optionally with a precision hint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanPin {
     pub layer: u32,
     pub expert: u32,
+    /// Precision hint: an INDEX into the container's declared precision
+    /// ladder (manifest order, 0 = highest-fidelity bank). The policy
+    /// layer never names quant formats — the container manifest owns the
+    /// ladder; the plan only points into it. `None` = container-default
+    /// precision (the v1 single-tier behavior); serde omits it entirely
+    /// so tier-less documents stay byte-identical to the v1 wire.
+    ///
+    /// Control-law contract (RUN-1/RUN-2 lesson applies here too): tier
+    /// choices are as PROMPT-DEPENDENT as residency and must roll with
+    /// the pins — a fossil high-fidelity set is the static-pin fallacy
+    /// in bytes/quality form. Residency and tier draw on ONE
+    /// rate-distortion budget: higher fidelity costs more bytes per
+    /// fault against the same fetch bandwidth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<u32>,
+}
+
+impl PlanPin {
+    /// Residency-only pin at container-default precision (the v1 shape).
+    pub fn residency(layer: u32, expert: u32) -> Self {
+        Self {
+            layer,
+            expert,
+            tier: None,
+        }
+    }
+
+    /// Residency pin with a precision hint into the container's ladder.
+    pub fn tiered(layer: u32, expert: u32, tier: u32) -> Self {
+        Self {
+            layer,
+            expert,
+            tier: Some(tier),
+        }
+    }
 }
 
 /// The v1 control document — the three actuator knobs.
@@ -88,16 +128,7 @@ mod tests {
         let doc = PlanFileDocument::new(
             42_949_672_960,
             24,
-            vec![
-                PlanPin {
-                    layer: 0,
-                    expert: 7,
-                },
-                PlanPin {
-                    layer: 25,
-                    expert: 183,
-                },
-            ],
+            vec![PlanPin::residency(0, 7), PlanPin::residency(25, 183)],
         );
         let json = serde_json::to_string(&doc).expect("serialize");
         for key in [
@@ -114,6 +145,39 @@ mod tests {
         assert_eq!(back, doc);
     }
 
+    /// what this catches (precision-hint extension, 2026-08-01): a
+    /// tier-less pin must serialize WITHOUT any `tier` key — byte-
+    /// identical to the v1 wire her deployed consumer parses — while a
+    /// tiered pin carries `"tier":N` literally; and a v1 document with
+    /// no tier fields must still parse (tier = None). Either direction
+    /// breaking means the two sides need a lockstep upgrade, which this
+    /// extension exists to avoid.
+    #[test]
+    fn tier_is_optional_on_the_wire_and_v1_documents_still_parse() {
+        let doc = PlanFileDocument::new(
+            1_000,
+            8,
+            vec![PlanPin::residency(3, 44), PlanPin::tiered(3, 45, 2)],
+        );
+        let json = serde_json::to_string(&doc).expect("serialize");
+        assert!(
+            json.contains("{\"layer\":3,\"expert\":44}"),
+            "tier-less pin must omit the tier key entirely: {json}"
+        );
+        assert!(
+            json.contains("{\"layer\":3,\"expert\":45,\"tier\":2}"),
+            "tiered pin must carry the literal tier key: {json}"
+        );
+        let back: PlanFileDocument = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back, doc);
+
+        // The exact v1 document shape (pre-extension) parses unchanged.
+        let v1 = r#"{"version":1,"budget_bytes":1000,"window_k":8,"pin_list":[{"layer":3,"expert":44}]}"#;
+        let parsed: PlanFileDocument = serde_json::from_str(v1).expect("v1 parse");
+        assert_eq!(parsed.pin_list, vec![PlanPin::residency(3, 44)]);
+        assert_eq!(parsed.pin_list[0].tier, None);
+    }
+
     /// what this catches: the atomic publish — the target path always
     /// holds a COMPLETE, parseable document after every write, the tmp
     /// sibling never lingers, and a rewrite replaces content fully
@@ -124,14 +188,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let path = dir.path().join("moe-plan.json");
 
-        let first = PlanFileDocument::new(
-            1_000,
-            8,
-            vec![PlanPin {
-                layer: 1,
-                expert: 2,
-            }],
-        );
+        let first = PlanFileDocument::new(1_000, 8, vec![PlanPin::residency(1, 2)]);
         write_plan_file(&path, &first).expect("first write");
         let read1: PlanFileDocument =
             serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("parse");
@@ -144,12 +201,7 @@ mod tests {
         let second = PlanFileDocument::new(
             2_000,
             16,
-            (0..184)
-                .map(|e| PlanPin {
-                    layer: 0,
-                    expert: e,
-                })
-                .collect(),
+            (0..184).map(|e| PlanPin::residency(0, e)).collect(),
         );
         write_plan_file(&path, &second).expect("rewrite");
         let read2: PlanFileDocument =
