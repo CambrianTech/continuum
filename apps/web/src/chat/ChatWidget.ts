@@ -1026,6 +1026,32 @@ export class ChatWidget extends LitElement {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    /* HUD cycle/pin toggle — the far-left corner control of the one graph
+     * control: ⟳ while auto-cycling faces, ◉ when pinned. */
+    .hud-toggle {
+      appearance: none;
+      border: 1px solid var(--border-subtle);
+      background: transparent;
+      color: var(--content-secondary);
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      font-size: 9px;
+      line-height: 1;
+      padding: 0;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .hud-toggle[data-cycling] {
+      color: var(--accent-primary);
+      border-color: var(--accent-primary);
+    }
+    .hud-toggle:hover {
+      color: var(--content-primary);
+    }
     /* SERVING CONSOLE (purpose="serving") — the machine room center-stage:
      * per-node panels, headline tok/s numeral, full-width instrument, arm
      * bank, control-loop feed. Console legibility: big numerals, wide
