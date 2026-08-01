@@ -385,6 +385,34 @@ pub fn serving_v1_url() -> String {
     format!("{}/v1", serving_root())
 }
 
+/// The daemon-owned MoE glass-box file locations for the lane on `port` — ONE
+/// pure derivation shared by the spawn (which hands them to the child process
+/// as `GGML_MOE_CAPTURE_FILE` / `GGML_MOE_PLAN_FILE`) and the positron serving
+/// source (which re-derives the capture path from the snapshot's port to tail
+/// it). Deriving both sides from the port is what lights the glass box with NO
+/// operator env and no wire-type change: the system owns the seam (#278).
+/// `None` only when there is no home directory (no stable place to put them).
+pub struct MoeGlassBoxPaths {
+    /// Per-token pager telemetry JSONL the fork appends — bounded by the
+    /// fork's 32 MB default cap (`GGML_MOE_CAPTURE_MB` overrides), so this is
+    /// not a new unbounded cache class.
+    pub capture: PathBuf,
+    /// The v1 policy→mechanism plan document the controller writes atomically
+    /// and the fork's `ResidencyCache` mtime-polls per token
+    /// (docs/architecture/EXPERT-PAGING-CONTROL-LAW.md §5).
+    pub plan: PathBuf,
+}
+
+/// See [`MoeGlassBoxPaths`]. Lives beside the per-port stderr logs
+/// (`~/.continuum/logs/llama-server-{port}.log`) — same dir, same lifecycle.
+pub fn moe_glass_box_paths(port: u16) -> Option<MoeGlassBoxPaths> {
+    let dir = dirs::home_dir()?.join(".continuum").join("logs");
+    Some(MoeGlassBoxPaths {
+        capture: dir.join(format!("moe-capture-{port}.jsonl")),
+        plan: dir.join(format!("moe-plan-{port}.json")),
+    })
+}
+
 /// Path to the `llama-server` binary — the inference engine WE OWN, built from
 /// our vendored llama.cpp submodule by `tools/scripts/install-llama-server.sh`
 /// into `~/.continuum/bin`. Resolution order:
@@ -1570,6 +1598,27 @@ impl LlamaServerControl for LlamaServerProcess {
         // set is honored on the next relaunch (the pager decides when).
         if let Some(ot) = target.expert_ot_value() {
             cmd.arg("--override-tensor").arg(ot);
+        }
+        // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
+        // hands the fork its capture + plan file locations. Previously these envs
+        // existed only when an operator hand-exported them before booting the
+        // core, so every unattended MoE serve ran dark — no pager telemetry for
+        // the serving console, no actuator channel for the policy controller.
+        // The paths are the pure port derivation [`moe_glass_box_paths`]; the
+        // positron serving source re-derives the same capture path from the
+        // snapshot's port, so the two sides share one truth with no wire-type
+        // change. An operator-exported env is an intentional campaign override
+        // and is inherited untouched (config over convention — the child gets
+        // the parent's env by default; we only fill the ABSENT case).
+        if target.expert_placement.is_some() {
+            if let Some(gb) = moe_glass_box_paths(port) {
+                if std::env::var_os("GGML_MOE_CAPTURE_FILE").is_none() {
+                    cmd.env("GGML_MOE_CAPTURE_FILE", &gb.capture);
+                }
+                if std::env::var_os("GGML_MOE_PLAN_FILE").is_none() {
+                    cmd.env("GGML_MOE_PLAN_FILE", &gb.plan);
+                }
+            }
         }
         // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
         // its load banner AND — critically — the underlying ggml/Metal fault behind a
