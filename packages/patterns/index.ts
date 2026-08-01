@@ -38,6 +38,11 @@ export type {
   ArenaBoardVM,
   ArenaLiveRunVM,
 } from './arenaContent';
+
+// The serving-ops CONSOLE's neutral Content body (`purpose === SERVING_PURPOSE`)
+// — per-node control-loop panels, center-stage full view (console doctrine).
+export { SERVING_PURPOSE } from './servingContent';
+export type { ServingContentBody, ServingNodeVM } from './servingContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,
