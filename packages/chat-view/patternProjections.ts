@@ -280,10 +280,15 @@ export function nodesWidget(sys?: SystemMetricsViewState): PanelWidget<ListingVi
 export function systemPanelWidget(
   vm: ChatViewModel,
   sys?: SystemMetricsViewState,
+  serving?: ServingViewState,
 ): PanelWidget<SystemPanelView> {
   const body: SystemPanelView = {
     ...(sys ? { gauge: systemGaugeWidget(sys).body } : {}),
     stats: metricsWidget(vm).body,
+    // The HUD's SRV face — compact summary, portal to the serving console
+    // activity (the FULL view). One graph control on the left, per the
+    // console doctrine; faces cycle or pin in the renderer.
+    ...(serving ? { serving: servingWidget(serving)?.body ?? undefined } : {}),
   };
   return { id: 'system', kind: 'system', title: 'System', body, scope: 'global' };
 }
@@ -414,13 +419,13 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // dispatched by kind; the roster stays the participants `Listing`
   // (ROSTER_LISTING_ID) that RAG + mobile ground on.
   const nodes = nodesWidget(live?.sys);
-  // LEFT = NAVIGATION + one compact performance instrument, nothing more
-  // (Joel's console doctrine 2026-08-01: the left has little to no real
-  // estate — rooms and users must never be pushed down by telemetry; the
-  // graphical lives center-stage and in the right instrument cluster).
+  // LEFT = NAVIGATION + the ONE HUD graph control, nothing more (console
+  // doctrine: little real estate, rooms/users never pushed down; every
+  // graph is a FACE of the one HUD — cycling or pinned — and details take
+  // you to the full center-stage activity).
   const left = [
     continuonWidget(vm, live?.version),
-    systemPanelWidget(vm, live?.sys),
+    systemPanelWidget(vm, live?.sys, live?.serving),
     ...(nodes ? [nodes] : []),
     listingWidget(rooms),
     listingWidget(rosterListing(vm)),

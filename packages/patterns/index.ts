@@ -255,6 +255,10 @@ export interface SystemPanelView {
   readonly gauge?: GaugeView;
   /** The live team-cognition stat row — the AI face. */
   readonly stats: MetricsView;
+  /** The serving summary — the SRV face of the HUD (compact; the FULL view
+   *  is the serving console activity, which this face is the portal to).
+   *  Absent = no serving feed; the face disables, honestly. */
+  readonly serving?: ServingPanelView;
 }
 
 /** One bandit arm of the `serving` widget — the pager's learned-decay dial. */
