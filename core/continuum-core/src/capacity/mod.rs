@@ -22,6 +22,7 @@
 //! timeline played on a virtual clock. Same allocator, swapped world — so a sim scenario
 //! IS a real regression test.
 
+pub mod bandit_plan_controller;
 pub mod consumer;
 pub mod expert_container;
 pub mod expert_decay_policy;
