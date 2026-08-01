@@ -197,3 +197,35 @@ happening on screen.
 5. Right-column instrument clusters (chat first — kill the member-count card).
 6. Avatar/live face upgrades: expression state kind + call instruments (#172).
 7. Neighborhood: the three.js face (the big one — its own design arc).
+
+---
+
+## Design language: Star Trek × Tron (Joel, 2026-08-01)
+
+Two references, one marriage — and the dynamism discipline binds both: **the glow is
+the truth**. Every luminous element maps to real state; motion always means a real
+event.
+
+**From Star Trek (LCARS — the operated console):**
+- Status legible across the room: big numerals, color-coded function zones, panels
+  that read as INSTRUMENTS you operate, not pages you browse.
+- Alert states change the whole room's mood — a degraded node or failing route
+  shifts the face's ambient tone (condition-amber), not just one chip.
+- Calm authority: quiet ambient breathing when healthy; the console earns drama by
+  being silent until something real happens.
+
+**From Tron (the luminous grid — the world as light):**
+- The grid face's nodes sit in glowing geometry; data-in-motion draws LIGHT TRAILS —
+  a model re-homing traces a line from node panel to node panel; an airc delivery is
+  a pulse along a route edge (with delivery-truth timing, so the pulse speed is the
+  real rtt); an adapter paging into a genome slides as light into the rack.
+- The neighborhood sim IS the Tron grid where the programs live — personas as
+  light-lined figures in a dark luminous world; her activity aura is her actual
+  cognition tempo.
+- Palette: our existing dark + neon accent tokens already lean here — commit to it.
+  Edge-glow for live, grey-out for absent (honest absence keeps its rule).
+
+**Application order:** the grid face first (trails + route pulses are the highest
+truth-per-glow), then the learning flywheel (light flowing through the loop stages),
+then the neighborhood (natively Tron). LCARS instrument discipline retrofits the
+serving console's panels and the HUD.
