@@ -14,6 +14,73 @@ import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import type { ServingPanelView } from '@continuum/patterns';
 import { renderGaugeBody } from './parts';
 
+/** The serving body's full inner render — header line + sparklines + arm
+ *  chips + event cards. Shared by `<serving-panel>` (standalone / future
+ *  console) and `<sys-panel>`'s SRV face (the rail's one tabbed telemetry
+ *  control), so the two can never drift. */
+export function renderServingBody(body: ServingPanelView): TemplateResult {
+  return html`${renderServingHeader(body)}
+  ${body.gauge
+    ? renderGaugeBody(body.gauge)
+    : html`<div class="gauge-awaiting" title="no pager capture feed on this serve">
+        no pager telemetry
+      </div>`}
+  ${renderServingArms(body)} ${renderServingEvents(body)}`;
+}
+
+function renderServingHeader(body: ServingPanelView): TemplateResult {
+  const h = body.header;
+  if (!h) {
+    return html`<div class="serving-line" title="the serving daemon has not published yet">
+      awaiting serving feed…
+    </div>`;
+  }
+  if (h.degradedReason) {
+    return html`<div class="serving-line serving-degraded" title=${h.degradedReason}>
+      ⚠ degraded — ${h.degradedReason}
+    </div>`;
+  }
+  if (!h.model) {
+    return html`<div class="serving-line">no model serving</div>`;
+  }
+  return html`<div class="serving-line" data-ready=${h.ready ? 'true' : 'false'}>
+    <span class="serving-model" title=${h.model}>${h.model}</span>
+    <span class="serving-meta"> ${h.ready ? 'ready' : 'warming'} · ${h.lanes}×${h.contextWindow} </span>
+  </div>`;
+}
+
+function renderServingArms(body: ServingPanelView): TemplateResult | typeof nothing {
+  const arms = body.arms;
+  if (arms.length === 0) return nothing;
+  return html`<div class="serving-arms" title="bandit decay arms — reward belief per arm">
+    ${arms.map(
+      (a) => html`<span
+        class="serving-arm"
+        ?data-chosen=${a.chosen}
+        title="decay ${a.label} · reward ${a.reward.toFixed(3)}${a.chosen ? ' · serving' : ''}"
+      >
+        <span class="arm-label">${a.label}</span>
+        <span class="arm-bar" style="width:${Math.round(Math.min(1, Math.max(0, a.reward)) * 100)}%"></span>
+      </span>`,
+    )}
+  </div>`;
+}
+
+function renderServingEvents(body: ServingPanelView): TemplateResult | typeof nothing {
+  const events = body.events;
+  if (events.length === 0) return nothing;
+  // Newest first for the glanceable card stack.
+  const newestFirst = [...events].reverse();
+  return html`<ul class="serving-events">
+    ${newestFirst.map(
+      (e) => html`<li class="serving-event" data-kind=${e.kind}>
+        <span class="event-token">t${e.atToken}</span>
+        <span class="event-detail">${e.detail}</span>
+      </li>`,
+    )}
+  </ul>`;
+}
+
 export class ServingPanel extends LitElement {
   static override properties = {
     body: { attribute: false },
@@ -30,64 +97,6 @@ export class ServingPanel extends LitElement {
     return this;
   }
 
-  private renderHeader(): TemplateResult {
-    const h = this.body?.header;
-    if (!h) {
-      return html`<div class="serving-line" title="the serving daemon has not published yet">
-        awaiting serving feed…
-      </div>`;
-    }
-    if (h.degradedReason) {
-      return html`<div class="serving-line serving-degraded" title=${h.degradedReason}>
-        ⚠ degraded — ${h.degradedReason}
-      </div>`;
-    }
-    if (!h.model) {
-      return html`<div class="serving-line">no model serving</div>`;
-    }
-    return html`<div class="serving-line" data-ready=${h.ready ? 'true' : 'false'}>
-      <span class="serving-model" title=${h.model}>${h.model}</span>
-      <span class="serving-meta">
-        ${h.ready ? 'ready' : 'warming'} · ${h.lanes}×${h.contextWindow}
-      </span>
-    </div>`;
-  }
-
-  private renderArms(): TemplateResult | typeof nothing {
-    const arms = this.body?.arms ?? [];
-    if (arms.length === 0) return nothing;
-    return html`<div class="serving-arms" title="bandit decay arms — reward belief per arm">
-      ${arms.map(
-        (a) => html`<span
-          class="serving-arm"
-          ?data-chosen=${a.chosen}
-          title="decay ${a.label} · reward ${a.reward.toFixed(3)}${a.chosen ? ' · serving' : ''}"
-        >
-          <span class="arm-label">${a.label}</span>
-          <span
-            class="arm-bar"
-            style="width:${Math.round(Math.min(1, Math.max(0, a.reward)) * 100)}%"
-          ></span>
-        </span>`,
-      )}
-    </div>`;
-  }
-
-  private renderEvents(): TemplateResult | typeof nothing {
-    const events = this.body?.events ?? [];
-    if (events.length === 0) return nothing;
-    // Newest first for the glanceable card stack.
-    const newestFirst = [...events].reverse();
-    return html`<ul class="serving-events">
-      ${newestFirst.map(
-        (e) => html`<li class="serving-event" data-kind=${e.kind}>
-          <span class="event-token">t${e.atToken}</span>
-          <span class="event-detail">${e.detail}</span>
-        </li>`,
-      )}
-    </ul>`;
-  }
-
   override render(): TemplateResult {
     const body = this.body;
     if (!body) return html``;
@@ -96,13 +105,7 @@ export class ServingPanel extends LitElement {
         <div class="who-head">
           <span class="who-title">${this.heading}</span>
         </div>
-        ${this.renderHeader()}
-        ${body.gauge
-          ? renderGaugeBody(body.gauge)
-          : html`<div class="gauge-awaiting" title="no pager capture feed on this serve">
-              no pager telemetry
-            </div>`}
-        ${this.renderArms()} ${this.renderEvents()}
+        ${renderServingBody(body)}
       </section>
     `;
   }
