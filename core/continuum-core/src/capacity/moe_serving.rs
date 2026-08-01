@@ -37,6 +37,13 @@ pub struct MoeServingContext {
     /// TOTAL transformer block count — the `-ot` iteration ceiling the launcher needs to
     /// compute the cold (CPU) complement of the hot layers.
     pub n_layers: u32,
+    /// TOTAL bytes of stacked expert tensors across every MoE layer (Σ per-layer expert
+    /// blobs). The host-cache lease derivation (#287) subtracts this from the GGUF file
+    /// size to get the HOST-RESIDENT working-set weights: expert bytes flow through the
+    /// governed host cache (funded BY the lease) or sit hot in VRAM — they are never part
+    /// of the host working set the lease must leave room for. Without this split, a
+    /// 663GB streaming MoE would "cost" 663GB of host RAM and the lease would derive 0.
+    pub expert_bytes_total: u64,
     /// The placement the served process was last (re)launched with — the DEBOUNCED value the
     /// serving target carries. A layer-placement pass only overwrites this when a relaunch is
     /// warranted (churn past the threshold), so the target stays byte-stable across ticks that
@@ -71,6 +78,7 @@ pub fn moe_serving_context(
     // Per-expert bytes: the layer's stacked expert blob divided by its expert count. K3-class
     // geometry is uniform across MoE layers, so the first set sizes them all.
     let expert_bytes = sets[0].total_bytes() / n_experts_per_layer as u64;
+    let expert_bytes_total: u64 = sets.iter().map(|s| s.total_bytes()).sum();
     let n_layers = gguf_keys::block_count(&ct, &arch)?;
 
     // Cold-start seed: the router's baked per-expert preference. Empty is fine (rides live
@@ -86,6 +94,7 @@ pub fn moe_serving_context(
         pager,
         n_experts_per_layer,
         n_layers,
+        expert_bytes_total,
         committed_placement: None,
     })
 }

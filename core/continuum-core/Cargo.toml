@@ -261,6 +261,13 @@ tokio-postgres.workspace = true                           # Postgres async drive
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
 
+# Windows commit-charge sampling (GetPerformanceInfo) for the governed host-cache
+# lease (#287): pagefile overcommit thrashes SILENTLY instead of OOMing loud, so
+# the lease clamps against live commit — the binding term of the 2026-08-01
+# 95.9GB-commit-on-63GB incident. Version pinned to one already in the lockfile.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_ProcessStatus", "Win32_Foundation"] }
+
 # Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
 # Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
 [target.'cfg(target_os = "macos")'.dependencies]

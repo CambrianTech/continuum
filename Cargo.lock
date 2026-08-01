@@ -2922,6 +2922,7 @@ dependencies = [
  "wgpu",
  "wgpu-hal",
  "wide",
+ "windows-sys 0.60.2",
  "zip 0.6.6",
 ]
 

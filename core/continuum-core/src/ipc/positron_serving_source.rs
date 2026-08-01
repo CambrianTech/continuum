@@ -174,10 +174,10 @@ impl PagerFold {
 /// `None` when the URL carries no explicit port. Feeds the capture-path
 /// derivation — a config-pinned remote URL still parses, and the derived
 /// LOCAL path simply never exists there (honest absence, not a guess).
+/// Delegates to the ONE parse beside [`moe_glass_box_paths`] so the tail
+/// reader and the plan-file publisher key the same per-port files.
 fn port_of(url: &str) -> Option<u16> {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let authority = rest.split('/').next()?;
-    authority.rsplit_once(':')?.1.parse().ok()
+    crate::inference::llama_server::port_of_base_url(url)
 }
 
 /// Offset-tailer for the capture JSONL: reads whole new lines, resets on

@@ -413,6 +413,17 @@ pub fn moe_glass_box_paths(port: u16) -> Option<MoeGlassBoxPaths> {
     })
 }
 
+/// Port of a serving `base_url` (`http://127.0.0.1:58057/v1` → `58057`) — THE
+/// derivation every [`moe_glass_box_paths`] consumer uses to key the per-port
+/// glass-box files off a [`ServingSnapshot`]. One place (compression principle):
+/// the positron capture tail and the serving daemon's plan-file publisher must
+/// agree on this parse or they read/write different files than spawn env'd.
+pub fn port_of_base_url(url: &str) -> Option<u16> {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let host_port = after_scheme.split('/').next()?;
+    host_port.rsplit_once(':')?.1.parse().ok()
+}
+
 /// Path to the `llama-server` binary — the inference engine WE OWN, built from
 /// our vendored llama.cpp submodule by `tools/scripts/install-llama-server.sh`
 /// into `~/.continuum/bin`. Resolution order:
