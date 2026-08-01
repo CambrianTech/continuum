@@ -129,6 +129,42 @@ impl TokenSegmenter {
     }
 }
 
+/// Detects the prefill→decode boundary from segment sizes alone
+/// (measured on the RUN-1 fixture: prefill batches 2662/8637/3854
+/// experts, decode tokens ~1472). Prefill routes prompt tokens in
+/// LARGE variable batches; decode settles to the near-constant
+/// per-token working set. The first segment markedly SMALLER than
+/// everything seen so far is the first decode token — the moment the
+/// warm-start window opens (prefill's tail predicts ~47-66% of decode
+/// experts on the fixture; the 8637-batch churns the cache, so acting
+/// AT the boundary is what preserves the signal).
+#[derive(Debug, Default)]
+pub struct PrefillBoundaryDetector {
+    min_seen: Option<usize>,
+    fired: bool,
+}
+
+impl PrefillBoundaryDetector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one completed segment's expert count. Returns `true`
+    /// exactly once: on the first segment classified as decode (size
+    /// < 0.8 × the smallest segment seen before it).
+    pub fn observe(&mut self, size: usize) -> bool {
+        let is_boundary = match self.min_seen {
+            Some(min) if !self.fired && size * 10 < min * 8 => {
+                self.fired = true;
+                true
+            }
+            _ => false,
+        };
+        self.min_seen = Some(self.min_seen.map_or(size, |m| m.min(size)));
+        is_boundary
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +248,27 @@ mod tests {
         let mut seg = TokenSegmenter::new();
         seg.push(rec(999, 1), &table);
         assert_eq!(seg.unknown_tkeys, 1);
+    }
+
+    /// what this catches: the prefill→decode boundary rule against the
+    /// RUN-1 fixture's exact segment sizes — must fire ONCE, at the
+    /// first 1472 (the first decode token), not on prefill batch
+    /// variation (8637 after 2662, 3854 after 8637) and never again on
+    /// decode-size jitter (the trailing 1069 partial).
+    #[test]
+    fn boundary_detector_fires_once_at_first_decode_token() {
+        let fixture_sizes = [2662usize, 8637, 3854, 1472, 1472, 1472, 1069];
+        let mut det = PrefillBoundaryDetector::new();
+        let fired: Vec<bool> = fixture_sizes.iter().map(|&s| det.observe(s)).collect();
+        assert_eq!(
+            fired,
+            [false, false, false, true, false, false, false],
+            "must fire exactly at the first decode-sized segment"
+        );
+
+        // Decode-only serve (no prefill trace): never fires.
+        let mut det2 = PrefillBoundaryDetector::new();
+        assert!((0..10).all(|_| !det2.observe(1472)));
     }
 
     /// what this catches: the table loader against her real JSON shape

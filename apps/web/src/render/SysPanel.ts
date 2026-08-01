@@ -15,6 +15,7 @@
 import { LitElement, html, type TemplateResult } from 'lit';
 import type { GaugeView, SystemPanelView } from '@continuum/patterns';
 import { renderGaugeBody, renderMetricsRow } from './parts';
+import { renderServingBody } from './ServingPanel';
 
 /** The gauge's honest window label, derived from its own data: longest series
  *  length × sample cadence. `undefined` when either is absent/zero — no chip
@@ -30,22 +31,61 @@ export function gaugeWindowLabel(view: GaugeView | undefined): string | undefine
   return `${+(mins / 60).toFixed(1)}h`;
 }
 
-type Face = 'sys' | 'ai';
+type Face = 'sys' | 'ai' | 'srv';
+
+/** The HUD's face cadence when auto-cycling. */
+const CYCLE_MS = 6000;
 
 export class SysPanel extends LitElement {
   static override properties = {
     body: { attribute: false },
     heading: { attribute: false },
     _face: { state: true },
+    _cycle: { state: true },
   };
 
-  /** The projected two-face body ({ gauge?, stats }). */
+  /** The projected HUD body ({ gauge?, stats, serving? }). */
   body?: SystemPanelView;
 
   /** Section heading (the PanelWidget title). */
   heading = 'System';
 
   private _face: Face = 'sys';
+
+  /** HUD auto-cycle (the far-left corner toggle): ON rotates through the
+   *  enabled faces every CYCLE_MS; picking a chip PINS. Renderer state — a
+   *  lens the reader holds, never projection state. */
+  private _cycle = true;
+
+  private _hover = false;
+
+  private _timer: ReturnType<typeof setInterval> | undefined;
+
+  /** Faces with data to show, in rotation order. */
+  private enabledFaces(): Face[] {
+    const faces: Face[] = [];
+    if (this.body?.gauge) faces.push('sys');
+    faces.push('ai');
+    if (this.body?.serving) faces.push('srv');
+    return faces;
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this._timer = setInterval(() => {
+      if (!this._cycle || this._hover) return;
+      const faces = this.enabledFaces();
+      if (faces.length < 2) return;
+      const at = faces.indexOf(this._face);
+      this._face = faces[(at + 1) % faces.length] ?? this._face;
+    }, CYCLE_MS);
+  }
+
+  override disconnectedCallback(): void {
+    if (this._timer !== undefined) clearInterval(this._timer);
+    this._timer = undefined;
+    super.disconnectedCallback();
+  }
 
   protected override createRenderRoot(): HTMLElement {
     return this;
@@ -67,19 +107,43 @@ export class SysPanel extends LitElement {
       aria-selected=${face === id ? 'true' : 'false'}
       ?data-active=${face === id}
       ?disabled=${!enabled}
-      title=${enabled ? label : 'no resource feed yet'}
+      title=${enabled ? `${label} — click to pin` : 'no feed yet'}
       @click=${(): void => {
+        // Picking a face PINS it — cycling resumes via the corner toggle.
         this._face = id;
+        this._cycle = false;
       }}
     >
       ${label}
     </button>`;
     return html`
-      <section class="rail-widget" data-widget="system" data-id="system">
+      <section
+        class="rail-widget"
+        data-widget="system"
+        data-id="system"
+        @pointerenter=${(): void => {
+          this._hover = true;
+        }}
+        @pointerleave=${(): void => {
+          this._hover = false;
+        }}
+      >
         <div class="who-head">
+          <button
+            class="hud-toggle"
+            ?data-cycling=${this._cycle}
+            title=${this._cycle ? 'auto-cycling faces — click to pin' : 'pinned — click to auto-cycle'}
+            aria-label=${this._cycle ? 'pin current face' : 'auto-cycle faces'}
+            @click=${(): void => {
+              this._cycle = !this._cycle;
+            }}
+          >
+            ${this._cycle ? '⟳' : '◉'}
+          </button>
           <span class="who-title">${this.heading}</span>
-          <span class="face-chips" role="tablist" aria-label="system panel face">
+          <span class="face-chips" role="tablist" aria-label="HUD face">
             ${chip('sys', 'SYS', hasGauge)} ${chip('ai', 'AI', true)}
+            ${chip('srv', 'SRV', body.serving !== undefined)}
           </span>
           ${window
             ? html`<span class="gauge-window" title="window span — samples × cadence, from the data"
@@ -93,7 +157,13 @@ export class SysPanel extends LitElement {
             : html`<div class="gauge-awaiting" title="the system-metrics feed has not delivered yet">
                 awaiting system feed…
               </div>`
-          : renderMetricsRow(body.stats)}
+          : face === 'srv'
+            ? body.serving
+              ? renderServingBody(body.serving)
+              : html`<div class="gauge-awaiting" title="no serving feed on this node yet">
+                  awaiting serving feed…
+                </div>`
+            : renderMetricsRow(body.stats)}
       </section>
     `;
   }

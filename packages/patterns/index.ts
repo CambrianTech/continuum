@@ -38,6 +38,16 @@ export type {
   ArenaBoardVM,
   ArenaLiveRunVM,
 } from './arenaContent';
+
+// The serving-ops CONSOLE's neutral Content body (`purpose === SERVING_PURPOSE`)
+// — per-node control-loop panels, center-stage full view (console doctrine).
+export { SERVING_PURPOSE } from './servingContent';
+export type { ServingContentBody, ServingNodeVM } from './servingContent';
+
+// The GRID's neutral Content body (`purpose === GRID_PURPOSE`) — the NODES
+// strip's full activity: every node's resources + serving, SCADA-style.
+export { GRID_PURPOSE } from './gridContent';
+export type { GridContentBody, GridNodeVM } from './gridContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,
@@ -250,6 +260,54 @@ export interface SystemPanelView {
   readonly gauge?: GaugeView;
   /** The live team-cognition stat row — the AI face. */
   readonly stats: MetricsView;
+  /** The serving summary — the SRV face of the HUD (compact; the FULL view
+   *  is the serving console activity, which this face is the portal to).
+   *  Absent = no serving feed; the face disables, honestly. */
+  readonly serving?: ServingPanelView;
+}
+
+/** One bandit arm of the `serving` widget — the pager's learned-decay dial. */
+export interface ServingArm {
+  /** Arm label (the decay constant, "0.99"…"0.00"). */
+  readonly label: string;
+  /** EMA reward 0..=1 — the bandit's belief for this arm. */
+  readonly reward: number;
+  /** True for the arm currently serving predictions. */
+  readonly chosen: boolean;
+}
+
+/** One pager event card of the `serving` widget — a discrete control-loop
+ *  moment (serve start, decay switch, residency shift) rendered as an
+ *  activity card. */
+export interface ServingEvent {
+  /** Decode-token index the event fired at. */
+  readonly atToken: number;
+  /** Event class slug ("serve-start" | "decay-switch" | "residency-shift"). */
+  readonly kind: string;
+  /** Human one-liner, formatted at the source. */
+  readonly detail: string;
+}
+
+/** The `serving` widget body — the node's live inference glass box: what model
+ *  is up, and when the MoE pager streams, the control loop itself (hit rate /
+ *  tok-s / fetch series, bandit arms, event cards). Every section honestly
+ *  absent until its feed delivers — a header-only body is a plain
+ *  serving-health widget, never a fabricated gauge. */
+export interface ServingPanelView {
+  /** Serving header line. Absent = the daemon has not published yet. */
+  readonly header?: {
+    readonly model?: string;
+    readonly ready: boolean;
+    readonly lanes: number;
+    readonly contextWindow: number;
+    readonly degradedReason?: string;
+  };
+  /** Pager time-series (hit %, tok/s, fetch). Absent = no capture feed. */
+  readonly gauge?: GaugeView;
+  /** Bandit arm beliefs; empty until the decision feed carries them. */
+  readonly arms: readonly ServingArm[];
+  /** Recent pager event cards, oldest → newest, bounded upstream. */
+  readonly events: readonly ServingEvent[];
 }
 
 /** The `continuon` widget body — the rail's identity header (the top-left mark of

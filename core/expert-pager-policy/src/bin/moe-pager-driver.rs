@@ -16,12 +16,20 @@
 //!                    --table <tkey-to-layer-matrix.json> \
 //!                    --plan <GGML_MOE_PLAN_FILE> \
 //!                    --budget-bytes <N> --window-k <N> \
-//!                    [--pin-top 256] [--rewrite-every 8] [--poll-ms 50]
+//!                    [--pin-top 256] [--rewrite-every 8] [--poll-ms 50] \
+//!                    [--pin-tier N] [--default-tier N]
+//!
+//! `--pin-tier` / `--default-tier` enable the rate-distortion split
+//! (the beat-WASTE knobs): hot pins served from ladder bank
+//! `--pin-tier`, the entire unpinned cold tail fetched from
+//! `--default-tier`. Omit both for the plain v1 residency plan.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
-use expert_pager_policy::segment::{parse_records, TkeyTable, TokenSegmenter, RECORD_BYTES};
+use expert_pager_policy::segment::{
+    parse_records, PrefillBoundaryDetector, TkeyTable, TokenSegmenter, RECORD_BYTES,
+};
 use expert_pager_policy::BanditPlanController;
 
 struct Args {
@@ -33,6 +41,12 @@ struct Args {
     pin_top: usize,
     rewrite_every: u64,
     poll_ms: u64,
+    /// Precision-ladder index the hot pins are served from (the
+    /// high-fidelity bank). None = container default.
+    pin_tier: Option<u32>,
+    /// Precision-ladder index the unpinned cold tail fetches from (the
+    /// small-quant bank — the beat-WASTE knob). None = container default.
+    default_tier: Option<u32>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -44,6 +58,8 @@ fn parse_args() -> Result<Args, String> {
     let mut pin_top = 256usize;
     let mut rewrite_every = 8u64;
     let mut poll_ms = 50u64;
+    let mut pin_tier = None;
+    let mut default_tier = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
@@ -64,6 +80,12 @@ fn parse_args() -> Result<Args, String> {
                 rewrite_every = value.parse().map_err(|e| format!("--rewrite-every: {e}"))?
             }
             "--poll-ms" => poll_ms = value.parse().map_err(|e| format!("--poll-ms: {e}"))?,
+            "--pin-tier" => {
+                pin_tier = Some(value.parse().map_err(|e| format!("--pin-tier: {e}"))?)
+            }
+            "--default-tier" => {
+                default_tier = Some(value.parse().map_err(|e| format!("--default-tier: {e}"))?)
+            }
             other => return Err(format!("unknown flag {other}")),
         }
         i += 2;
@@ -77,6 +99,8 @@ fn parse_args() -> Result<Args, String> {
         pin_top,
         rewrite_every,
         poll_ms,
+        pin_tier,
+        default_tier,
     })
 }
 
@@ -120,6 +144,7 @@ fn main() {
     // from the first observed token (×1.5, the prototypes' heuristic).
     let mut controller: Option<BanditPlanController> = None;
     let mut segmenter = TokenSegmenter::new();
+    let mut boundary = PrefillBoundaryDetector::new();
     let mut offset: u64 = 0;
     let mut carry: Vec<u8> = Vec::new();
     let mut token_idx: u64 = 0;
@@ -141,6 +166,7 @@ fn main() {
             offset = 0;
             carry.clear();
             segmenter = TokenSegmenter::new();
+            boundary = PrefillBoundaryDetector::new();
             controller = None;
             token_idx = 0;
         }
@@ -159,6 +185,33 @@ fn main() {
                                 continue;
                             }
                             let experts: Vec<_> = token.into_iter().collect();
+                            // Prefill→decode boundary: the bandit is already
+                            // seeded by the prefill batches — publish the
+                            // warm-start plan NOW instead of waiting
+                            // rewrite_every decode tokens (prefill's tail
+                            // predicts ~47-66% of decode experts; the big
+                            // prefill batches churn the cache, so the
+                            // boundary is when the hint matters most).
+                            if boundary.observe(experts.len()) {
+                                if let Some(ctl) = controller.as_ref() {
+                                    match ctl.write_tiered_plan(
+                                        &args.plan,
+                                        args.budget_bytes,
+                                        args.window_k,
+                                        args.pin_top,
+                                        args.pin_tier,
+                                        args.default_tier,
+                                    ) {
+                                        Ok(()) => println!(
+                                            "# prefill->decode boundary — warm-start plan published (top {} prefill-seeded pins)",
+                                            args.pin_top
+                                        ),
+                                        Err(e) => eprintln!(
+                                            "moe-pager-driver: BOUNDARY PLAN WRITE FAILED: {e}"
+                                        ),
+                                    }
+                                }
+                            }
                             let ctl = controller.get_or_insert_with(|| {
                                 let budget = experts.len() * 3 / 2;
                                 println!(
@@ -182,11 +235,13 @@ fn main() {
                                 segmenter.unknown_tkeys,
                             );
                             if token_idx.is_multiple_of(args.rewrite_every) {
-                                match ctl.write_plan(
+                                match ctl.write_tiered_plan(
                                     &args.plan,
                                     args.budget_bytes,
                                     args.window_k,
                                     args.pin_top,
+                                    args.pin_tier,
+                                    args.default_tier,
                                 ) {
                                     Ok(()) => println!(
                                         "# plan rewritten @tok {token_idx} (top {} pins)",

@@ -21,10 +21,15 @@ import type {
   PanelWidget,
   MetricsView,
 } from '@continuum/patterns';
-import type { GaugeView } from '@continuum/patterns';
-import type { KanbanViewState, NavViewState, SystemMetricsViewState } from '@continuum/sdk-typescript';
+import type { GaugeView, ServingPanelView } from '@continuum/patterns';
+import type {
+  KanbanViewState,
+  NavViewState,
+  ServingViewState,
+  SystemMetricsViewState,
+} from '@continuum/sdk-typescript';
 import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
-import { ARENA_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, type ArenaContentBody as ArenaContentBodyT } from '@continuum/patterns';
+import { ARENA_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, type ArenaContentBody as ArenaContentBodyT, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
   focusedPersonaTab,
@@ -188,6 +193,90 @@ export function systemGaugeWidget(sys: SystemMetricsViewState): PanelWidget<Gaug
   return { id: 'sys-gauge', kind: 'gauge', title: 'System', body: gauge, scope: 'global' };
 }
 
+/** The SERVING glass-box rail widget (#141 slice 1: the beat-WASTE control
+ *  loop on screen) — a pure reshaping of the core-carried `kind="serving"`
+ *  view onto the neutral `ServingPanelView`. The core owns sampling,
+ *  normalization, formatting, and event carding; here we only adapt wire
+ *  shape to widget vocabulary. `undefined` before the feed delivers — the
+ *  widget honestly joins the rail when the core starts publishing. */
+export function servingWidget(serving?: ServingViewState): PanelWidget<ServingPanelView> | undefined {
+  if (!serving) return undefined;
+  const body: ServingPanelView = {
+    ...(serving.header
+      ? {
+          header: {
+            ...(serving.header.model !== undefined ? { model: serving.header.model } : {}),
+            ready: serving.header.ready,
+            lanes: serving.header.lanes,
+            contextWindow: serving.header.context_window,
+            ...(serving.header.degraded_reason !== undefined
+              ? { degradedReason: serving.header.degraded_reason }
+              : {}),
+          },
+        }
+      : {}),
+    ...(serving.series.length > 0
+      ? {
+          gauge: {
+            series: serving.series.map((s) => ({
+              label: s.label.toUpperCase(),
+              points: s.points,
+              current: s.current,
+            })),
+            sampleIntervalMs: serving.sample_interval_ms,
+          },
+        }
+      : {}),
+    arms: serving.arms.map((a) => ({ label: a.label, reward: a.reward, chosen: a.chosen })),
+    events: serving.events.map((e) => ({ atToken: e.at_token, kind: e.kind, detail: e.detail })),
+  };
+  return { id: 'serving', kind: 'serving', title: 'Serving', body, scope: 'global' };
+}
+
+/** The serving CONSOLE content body — per-node panels for the center-stage
+ *  ops face (`purpose === SERVING_PURPOSE`). Today: the local node (named
+ *  from the metrics feed's host name); grid peers join as the cross-grid
+ *  serving feed lands (#283) with zero shape change. `feedLive` is true only
+ *  when the serving subscription has actually delivered. */
+export function servingContentBody(
+  serving?: ServingViewState,
+  node?: string,
+): ServingContentBody {
+  const nodes: ServingNodeVM[] = serving
+    ? [
+        {
+          node: node ?? 'this node',
+          local: true,
+          view: servingWidget(serving)?.body ?? { arms: [], events: [] },
+        },
+      ]
+    : [];
+  return { nodes, feedLive: serving !== undefined };
+}
+
+/** The GRID content body — every node's full panel for the center-stage
+ *  SCADA view (`purpose === GRID_PURPOSE`; the NODES strip is its portal).
+ *  Today: the local node with its resource window + serving loop; grid
+ *  peers join as attestation/cross-grid feeds land (#257/#283) with zero
+ *  shape change. */
+export function gridContentBody(
+  sys?: SystemMetricsViewState,
+  serving?: ServingViewState,
+): GridContentBody {
+  const any = sys !== undefined || serving !== undefined;
+  const nodes: GridNodeVM[] = any
+    ? [
+        {
+          node: sys?.node ?? 'this node',
+          local: true,
+          ...(sys ? { resources: systemGaugeWidget(sys).body } : {}),
+          ...(serving ? { serving: servingWidget(serving)?.body ?? undefined } : {}),
+        },
+      ]
+    : [];
+  return { nodes, feedLive: any };
+}
+
 /** The NODES strip (the factory sidebar's "1/1 nodes online"): every grid node
  *  this surface can honestly attest, as a `status` widget whose body is the one
  *  `Listing` primitive. Today that is exactly THIS node — attested by its live
@@ -214,10 +303,15 @@ export function nodesWidget(sys?: SystemMetricsViewState): PanelWidget<ListingVi
 export function systemPanelWidget(
   vm: ChatViewModel,
   sys?: SystemMetricsViewState,
+  serving?: ServingViewState,
 ): PanelWidget<SystemPanelView> {
   const body: SystemPanelView = {
     ...(sys ? { gauge: systemGaugeWidget(sys).body } : {}),
     stats: metricsWidget(vm).body,
+    // The HUD's SRV face — compact summary, portal to the serving console
+    // activity (the FULL view). One graph control on the left, per the
+    // console doctrine; faces cycle or pin in the renderer.
+    ...(serving ? { serving: servingWidget(serving)?.body ?? undefined } : {}),
   };
   return { id: 'system', kind: 'system', title: 'System', body, scope: 'global' };
 }
@@ -254,6 +348,9 @@ export interface WorkspaceLive {
   readonly nav?: NavViewState;
   /** The node's `kind="system-metrics"` view — adds the SYS gauge widget. */
   readonly sys?: SystemMetricsViewState;
+  /** The node's `kind="serving"` view — adds the serving glass-box widget
+   *  (#141 slice 1). Honestly absent until the subscription delivers. */
+  readonly serving?: ServingViewState;
   /** The node's `kind="kanban"` work board — feeds the persona home's claims
    *  feed (cards by assignee). Honestly absent until the subscription delivers. */
   readonly board?: KanbanViewState;
@@ -310,20 +407,38 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     !personaBody && !liveBody && vm.purpose === ARENA_PURPOSE
       ? arenaContentBody(live?.arena ?? { rows: [] }, live?.arena !== undefined)
       : undefined;
+  // The SERVING console face: a serving-purpose room renders the full
+  // center-stage ops console (console doctrine — the graphical full view
+  // lives HERE, never crammed into rails).
+  const servingBody =
+    !personaBody && !liveBody && !arenaBody && vm.purpose === SERVING_PURPOSE
+      ? servingContentBody(live?.serving, live?.sys?.node ?? undefined)
+      : undefined;
+  // The GRID face: the NODES strip's full activity — every node's panel.
+  const gridBody =
+    !personaBody && !liveBody && !arenaBody && !servingBody && vm.purpose === GRID_PURPOSE
+      ? gridContentBody(live?.sys, live?.serving)
+      : undefined;
   const content:
     | ContentView<ChatContentBody>
     | ContentView<PersonaContentBody>
     | ContentView<LiveContentBody>
-    | ContentView<ArenaContentBodyT> = personaBody
+    | ContentView<ArenaContentBodyT>
+    | ContentView<ServingContentBody>
+    | ContentView<GridContentBody> = personaBody
     ? { purpose: PERSONA_PURPOSE, body: personaBody }
     : liveBody
       ? { purpose: LIVE_PURPOSE, body: liveBody }
       : arenaBody
         ? { purpose: ARENA_PURPOSE, body: arenaBody }
-        : {
-            purpose: vm.purpose,
-            body: { messages: vm.messages, isEmpty: vm.isEmpty },
-          };
+        : servingBody
+          ? { purpose: SERVING_PURPOSE, body: servingBody }
+          : gridBody
+            ? { purpose: GRID_PURPOSE, body: gridBody }
+            : {
+                purpose: vm.purpose,
+                body: { messages: vm.messages, isEmpty: vm.isEmpty },
+              };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
   const rooms = live?.nav
@@ -335,9 +450,13 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
   // dispatched by kind; the roster stays the participants `Listing`
   // (ROSTER_LISTING_ID) that RAG + mobile ground on.
   const nodes = nodesWidget(live?.sys);
+  // LEFT = NAVIGATION + the ONE HUD graph control, nothing more (console
+  // doctrine: little real estate, rooms/users never pushed down; every
+  // graph is a FACE of the one HUD — cycling or pinned — and details take
+  // you to the full center-stage activity).
   const left = [
     continuonWidget(vm, live?.version),
-    systemPanelWidget(vm, live?.sys),
+    systemPanelWidget(vm, live?.sys, live?.serving),
     ...(nodes ? [nodes] : []),
     listingWidget(rooms),
     listingWidget(rosterListing(vm)),

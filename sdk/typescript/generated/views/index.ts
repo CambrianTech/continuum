@@ -47,6 +47,12 @@ export type { NavTargetKind } from './NavTargetKind';
 // system-metrics closure (kind="system-metrics" → SystemMetricsViewState) — the
 // node's live CPU/MEM series the SYS gauge draws, core-carried window.
 export type { SystemMetricsViewState } from './SystemMetricsViewState';
+// serving closure (kind="serving" → ServingViewState) — the serving glass box
+// (#141 slice 1: header + pager series + bandit arms + event cards).
+export type { ServingViewState } from './ServingViewState';
+export type { ServingHeaderView } from './ServingHeaderView';
+export type { ServingArmView } from './ServingArmView';
+export type { ServingEventCard } from './ServingEventCard';
 export type { MetricSeriesView } from './MetricSeriesView';
 
 // kanban closure (kind="kanban" → KanbanViewState) — the room's work board;

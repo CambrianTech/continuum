@@ -73,10 +73,10 @@ impl BanditPlanController {
             .into_iter()
             .map(|v| {
                 let e = unpack(v);
-                PlanPin {
-                    layer: e.layer,
-                    expert: e.expert,
-                }
+                // Residency-only hints for now: the bandit ranks WHAT to
+                // keep; precision tiers join when the controller learns a
+                // rate-distortion policy over the container's ladder.
+                PlanPin::residency(e.layer, e.expert)
             })
             .collect();
         // Deterministic order for the wire document (and for her logs).
@@ -103,6 +103,32 @@ impl BanditPlanController {
         top_n: usize,
     ) -> std::io::Result<()> {
         let doc = PlanFileDocument::new(budget_bytes, window_k, self.pin_list(top_n));
+        write_plan_file(path, &doc)
+    }
+
+    /// Publish the plan with the rate-distortion split (the beat-WASTE
+    /// write): the hot top-N pins carry `pin_tier` (high-fidelity bank)
+    /// and the entire unpinned cold tail fetches from `default_tier`
+    /// (small-quant bank). Either may be `None` to leave that side at
+    /// the container default — `(None, None)` degenerates to
+    /// [`Self::write_plan`] exactly.
+    pub fn write_tiered_plan(
+        &self,
+        path: &Path,
+        budget_bytes: u64,
+        window_k: u32,
+        top_n: usize,
+        pin_tier: Option<u32>,
+        default_tier: Option<u32>,
+    ) -> std::io::Result<()> {
+        let mut pins = self.pin_list(top_n);
+        if let Some(t) = pin_tier {
+            for p in &mut pins {
+                p.tier = Some(t);
+            }
+        }
+        let mut doc = PlanFileDocument::new(budget_bytes, window_k, pins);
+        doc.default_tier = default_tier;
         write_plan_file(path, &doc)
     }
 }
@@ -158,10 +184,7 @@ mod tests {
         assert_eq!(pins.len(), 8);
         for h in &hot {
             assert!(
-                pins.contains(&PlanPin {
-                    layer: h.layer,
-                    expert: h.expert
-                }),
+                pins.contains(&PlanPin::residency(h.layer, h.expert)),
                 "hot expert {h:?} missing from pins {pins:?}"
             );
         }
@@ -190,20 +213,48 @@ mod tests {
         assert_eq!(doc.window_k, 24);
         assert_eq!(doc.pin_list.len(), 3);
         for pin in [
-            PlanPin {
-                layer: 1,
-                expert: 10,
-            },
-            PlanPin {
-                layer: 1,
-                expert: 11,
-            },
-            PlanPin {
-                layer: 2,
-                expert: 20,
-            },
+            PlanPin::residency(1, 10),
+            PlanPin::residency(1, 11),
+            PlanPin::residency(2, 20),
         ] {
             assert!(doc.pin_list.contains(&pin), "missing {pin:?}");
         }
+    }
+
+    /// what this catches (the beat-WASTE write): write_tiered_plan must
+    /// stamp EVERY hot pin with `pin_tier` and carry `default_tier` for
+    /// the unpinned cold tail — the on-disk rate-distortion split her
+    /// consumer enacts. And the (None, None) degenerate case must stay
+    /// byte-identical to write_plan (no accidental tier keys).
+    #[test]
+    fn tiered_write_splits_hot_fidelity_from_cold_default() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("moe-plan.json");
+        let mut ctl = BanditPlanController::new(16);
+        for _ in 0..6 {
+            ctl.observe_token(&[e(1, 10), e(2, 20)]);
+        }
+
+        ctl.write_tiered_plan(&path, 1_000, 8, 2, Some(0), Some(2))
+            .expect("tiered write");
+        let doc: PlanFileDocument =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("parse");
+        assert_eq!(doc.default_tier, Some(2), "cold tail must carry default_tier");
+        assert_eq!(doc.pin_list.len(), 2);
+        for p in &doc.pin_list {
+            assert_eq!(p.tier, Some(0), "every hot pin must carry pin_tier: {p:?}");
+        }
+
+        // Degenerate (None, None) == plain write_plan, byte for byte.
+        let tiered_off = dir.path().join("off.json");
+        let plain = dir.path().join("plain.json");
+        ctl.write_tiered_plan(&tiered_off, 1_000, 8, 2, None, None)
+            .expect("write");
+        ctl.write_plan(&plain, 1_000, 8, 2).expect("write");
+        assert_eq!(
+            std::fs::read(&tiered_off).expect("read"),
+            std::fs::read(&plain).expect("read"),
+            "(None, None) must degenerate to the plain v1 document"
+        );
     }
 }

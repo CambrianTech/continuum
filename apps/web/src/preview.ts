@@ -21,6 +21,7 @@ import type {
   KanbanViewState,
   NavViewState,
   RosterSlotView,
+  ServingViewState,
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
 
@@ -237,6 +238,58 @@ const SYS_FIXTURE: SystemMetricsViewState = {
   node: 'bigmama.local',
 };
 
+/** The serving glass-box fixture (`?fixture=serving`) — the beat-WASTE
+ *  campaign's REAL measured numbers (2026-08-01, K3 on the 5090): hit rate
+ *  warming from the prefill boundary toward 62%, tok/s stepping 0.33 → 0.53
+ *  at the top-8 switch, fetch settling as bytes/tok halve, the bandit's six
+ *  decay arms with 0.30 serving, and the control loop's event cards. */
+const SERVING_FIXTURE: ServingViewState = {
+  header: {
+    model: 'kimi-k3-moec-tiered',
+    ready: true,
+    lanes: 1,
+    context_window: 8192,
+  },
+  series: [
+    {
+      label: 'hit',
+      points: Array.from({ length: 90 }, (_, i) =>
+        Math.min(66, 8 + i * 1.1 + 4 * Math.sin(i / 5)),
+      ),
+      current: '62%',
+    },
+    {
+      label: 'tok/s',
+      points: Array.from({ length: 90 }, (_, i) =>
+        i < 55 ? 58 + 4 * Math.sin(i / 4) : Math.min(100, 62 + (i - 55) * 1.3),
+      ),
+      current: '0.53',
+    },
+    {
+      label: 'fetch',
+      points: Array.from({ length: 90 }, (_, i) =>
+        i < 55 ? 92 - 6 * Math.sin(i / 7) : Math.max(30, 90 - (i - 55) * 1.6),
+      ),
+      current: '2458MB/s',
+    },
+  ],
+  arms: [
+    { label: '0.00', reward: 0.41, chosen: false },
+    { label: '0.30', reward: 0.69, chosen: true },
+    { label: '0.60', reward: 0.55, chosen: false },
+    { label: '0.85', reward: 0.48, chosen: false },
+    { label: '0.95', reward: 0.37, chosen: false },
+    { label: '0.99', reward: 0.23, chosen: false },
+  ],
+  events: [
+    { at_token: 0, kind: 'serve-start', detail: 'capture reset — new serve' },
+    { at_token: 4, kind: 'residency-shift', detail: 'resident experts 8037 → 4416' },
+    { at_token: 24, kind: 'decay-switch', detail: 'bandit switched decay 0.99 → 0.30' },
+    { at_token: 61, kind: 'residency-shift', detail: 'resident experts 4416 → 2208' },
+  ],
+  sample_interval_ms: 2000,
+};
+
 function main(): void {
   const name = new URLSearchParams(location.search).get('fixture') ?? 'rooms';
   const state = FIXTURES[name] ?? FIXTURES.roster;
@@ -252,6 +305,37 @@ function main(): void {
     widget.state = FIXTURES.roster;
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
+  }
+  // `?fixture=grid` — the GRID view center-stage (purpose="grid"): every
+  // node's panel (resources + serving), the NODES strip's full activity.
+  if (name === 'grid') {
+    const base = FIXTURES.roster;
+    if (base) {
+      widget.state = { ...base, room_name: 'grid', purpose: 'grid' };
+    }
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.serving = SERVING_FIXTURE;
+  }
+  // `?fixture=console` — the SERVING CONSOLE center-stage (purpose="serving"):
+  // the machine room as the focused activity, fed the campaign's measured
+  // numbers. The design's reference input for the full-view face.
+  if (name === 'console') {
+    const base = FIXTURES.roster;
+    if (base) {
+      widget.state = { ...base, room_name: 'serving', purpose: 'serving' };
+    }
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.serving = SERVING_FIXTURE;
+  }
+  // `?fixture=serving` — the full rail PLUS the serving glass box carrying the
+  // beat-WASTE campaign's measured numbers (#141 slice 1's reference input).
+  if (name === 'serving') {
+    widget.state = FIXTURES.roster;
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.serving = SERVING_FIXTURE;
   }
   // `?fixture=live` — the room's LIVE call face open (the Go-live affordance's
   // state), 7 tiles incl. real avatar files, Asha mid-turn on the token rail:
