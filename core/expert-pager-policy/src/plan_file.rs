@@ -137,6 +137,53 @@ pub fn write_plan_file(path: &Path, doc: &PlanFileDocument) -> std::io::Result<(
 mod tests {
     use super::*;
 
+    /// what this catches (the TDD/VDD seam, 2026-08-01 — the fix for the
+    /// dd8463b74-class break): cross-language WIRE DRIFT. The committed
+    /// `fixtures/plan-{v1,tiered}.json` are the golden bytes the C++
+    /// `ResidencyCache` replay harness parses in its own tests; this pins
+    /// that the Rust writer still emits EXACTLY those bytes. Either side
+    /// changing the wire fails a test first instead of breaking a live
+    /// serve. Regenerate CONSCIOUSLY with `UPDATE_GOLDEN=1 cargo test`
+    /// and update both consumers together.
+    #[test]
+    fn golden_plan_fixtures_match_emitted_wire() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let cases: [(&str, PlanFileDocument); 2] = [
+            (
+                "plan-v1.json",
+                PlanFileDocument::new(
+                    40_000_000_000,
+                    24,
+                    vec![PlanPin::residency(3, 101), PlanPin::residency(7, 202)],
+                ),
+            ),
+            (
+                "plan-tiered.json",
+                PlanFileDocument::new(
+                    1_000_000_000,
+                    8,
+                    vec![PlanPin::tiered(1, 10, 0), PlanPin::tiered(2, 20, 0)],
+                )
+                .with_default_tier(2),
+            ),
+        ];
+        for (name, doc) in cases {
+            let tmp = dir.path().join(name);
+            write_plan_file(&tmp, &doc).expect("write");
+            let emitted = std::fs::read(&tmp).expect("read emitted");
+            let golden_path = fixtures.join(name);
+            if std::env::var_os("UPDATE_GOLDEN").is_some() {
+                std::fs::create_dir_all(&fixtures).expect("mkdir fixtures");
+                std::fs::write(&golden_path, &emitted).expect("write golden");
+            }
+            let golden = std::fs::read(&golden_path).unwrap_or_else(|e| {
+                panic!("golden {name} unreadable ({e}) — regenerate with UPDATE_GOLDEN=1")
+            });
+            assert_eq!(emitted, golden, "{name}: wire drifted from the committed golden");
+        }
+    }
+
     /// what this catches (#276 cross-language contract): the literal
     /// field names her C++ parser (k3-adopt f44ba7848) binds to. A
     /// serde rename would round-trip fine in Rust while silently
