@@ -15,6 +15,7 @@ members = [
     "core/continuum-airc-protocol",
     "core/archive",
     "core/continuum-core",
+    "core/expert-pager-policy",
     "core/continuum-orm-derive",
     "core/continuum-positron",
     "core/inference-grpc",
