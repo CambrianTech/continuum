@@ -264,7 +264,13 @@ impl SceneWalk<'_, '_, '_> {
                     .unwrap_or_default();
                 #[cfg(unix)]
                 {
+                    #[cfg(unix)]
                     let _ = std::os::unix::fs::symlink(vrm_filename, &glb_path);
+                    // Windows symlinks need privilege; a copy serves the same
+                    // purpose (bevy just needs the bytes at the .glb path).
+                    #[cfg(windows)]
+                    let _ = std::os::windows::fs::symlink_file(vrm_filename, &glb_path)
+                        .or_else(|_| std::fs::copy(vrm_filename, &glb_path).map(|_| ()));
                 }
                 #[cfg(not(unix))]
                 {

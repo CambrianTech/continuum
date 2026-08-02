@@ -260,7 +260,10 @@ fn kind_of(v: &Value) -> &'static str {
     }
 }
 
-#[cfg(test)]
+// Unix-only: the echo server binds a unix socket. The windows transport arm
+// (TCP loopback) deserves a TCP-echo sibling — tracked in #304; gating (not
+// porting) keeps windows-msvc `cargo test` BUILDING today.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use serde_json::json;
