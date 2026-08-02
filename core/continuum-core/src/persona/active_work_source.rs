@@ -166,6 +166,24 @@ impl RagSource for ActiveWorkSource {
             tokens_used += item.tokens;
             items.push(item);
         }
+        // Rejected-claim facts (the #159-family sibling of the lost-claim
+        // diff): `work/claim` records rejections into the per-persona ring;
+        // rendering them here keeps "that card is NOT yours" in perception
+        // past the raw receipt's short window — the rejection-amnesia fix
+        // (glass-boxed 2026-08-02: accurate rejection reports for three
+        // turns, then "I've claimed the task" once the receipts scrolled).
+        for line in crate::persona::claim_rejections::recent(self.persona_id) {
+            let tokens = estimate_tokens(&line);
+            if tokens_used.saturating_add(tokens) > budget {
+                break;
+            }
+            tokens_used += tokens;
+            items.push(RagItem {
+                content: line,
+                tokens,
+                metadata: json!({ "fact": "claim_rejected" }),
+            });
+        }
         if claims.is_empty() && items.is_empty() {
             return Self::empty();
         }
@@ -279,6 +297,34 @@ mod tests {
                 results: Mutex::new(results),
             }),
         )
+    }
+
+    // what this catches: the rejection-amnesia fix (the #159-family
+    // sibling of claim_lost) — a rejection recorded by work/claim renders
+    // as a [work] claim_rejected fact even when the persona holds ZERO
+    // cards (exactly the amnesia case: nothing claimed, receipt gone,
+    // belief resurfacing), and ONLY for the persona it belongs to.
+    #[tokio::test]
+    async fn rejected_claim_renders_as_fact_for_its_persona_only() {
+        let persona = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        crate::persona::claim_rejections::record(
+            persona,
+            "44ebaa41",
+            "already claimed by another peer",
+        );
+
+        let src = source(persona, vec![Ok(vec![]), Ok(vec![])]);
+        let delivery = src.deliver(&ctx(persona), 10_000, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items.len(), 1, "rejection fact renders with zero claims");
+        assert!(delivery.items[0].content.contains("44ebaa41"));
+        assert!(delivery.items[0].content.contains("REJECTED"));
+        assert_eq!(delivery.items[0].metadata["fact"], "claim_rejected");
+
+        // Another persona's source never sees it.
+        let src_other = source(other, vec![Ok(vec![])]);
+        let delivery = src_other.deliver(&ctx(other), 10_000, ResolutionPreference::Raw).await;
+        assert!(delivery.items.is_empty());
     }
 
     // what this catches (#156, the Benchy silent-handoff case): a card that

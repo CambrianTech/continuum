@@ -182,7 +182,21 @@ impl ActionCommand for WorkClaim {
                 ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS),
             })
             .await
-            .map_err(|e| CommandError::Internal(e.to_string()))?;
+            .map_err(|e| {
+                // A rejection is WORK-STATE, not a transient tool result: the
+                // raw receipt scrolls out of the persona's short window and the
+                // intent narrative resurfaces as "I've claimed it" (glass-boxed
+                // 2026-08-02, card 44ebaa41). Record it so ActiveWorkSource can
+                // keep the fact in perception past the receipt's lifetime.
+                if let Some(caller) = ctx.caller.as_ref() {
+                    crate::persona::claim_rejections::record(
+                        caller.peer_id.as_uuid(),
+                        &p.card_id,
+                        &e.to_string(),
+                    );
+                }
+                CommandError::Internal(e.to_string())
+            })?;
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
