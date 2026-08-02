@@ -929,6 +929,12 @@ impl ServingDaemonModule {
             // offloadable layer). [[LanePlacement]].
             placement: crate::inference::llama_server::LanePlacement::Gpu,
             expert_placement,
+            // Device-fit resident-override (#29): computed by `compute_resident_override`
+            // from the model's resident (non-expert) footprint vs the governed VRAM
+            // budget via `capacity::device_fit`. `None` until that compute + the
+            // resolve-or-generate artifact resolver (#35) land — resident then serves
+            // as-shipped (Native), unchanged from today. Wiring in progress, not a stub.
+            resident_override: None,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already
