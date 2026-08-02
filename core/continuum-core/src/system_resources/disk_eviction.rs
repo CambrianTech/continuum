@@ -27,8 +27,9 @@
 //!    `cargo build`. `release/` is never touched here (it is small and
 //!    holds the binaries ops copies into `~/.continuum/bin`).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 
@@ -145,6 +146,353 @@ impl ResourcePool for CargoTargetPool {
                 "💾 cargo-target eviction freed {} GB (budget {} GB) — derived artifacts only; next build recreates them",
                 freed / (1024 * 1024 * 1024),
                 self.budget_bytes / (1024 * 1024 * 1024)
+            );
+        }
+        freed
+    }
+
+    fn snapshot(&self) -> Vec<ResourcePoolEntry> {
+        Vec::new()
+    }
+}
+
+/// Governed reserve on the serving-tier volume: the slice of the drive the
+/// serving tier must never claim, so the OS + working set never starve
+/// behind model artifacts. DERIVED from the volume (#287-style), never a
+/// user-tuned knob: 10% of the volume, floored at 32 GiB (a small SSD
+/// still keeps a real working margin; a 4 TB NVMe reserves 400 GB — the
+/// tier is generous exactly where the drive is).
+pub fn serving_tier_reserve_bytes(volume_total_bytes: u64) -> u64 {
+    (volume_total_bytes / 10).max(32 * 1024 * 1024 * 1024)
+}
+
+/// The serving tier's byte budget on its volume: total − governed reserve.
+/// Saturating: a volume smaller than the reserve yields 0 capacity (the
+/// tier is not offered there — resolution degrades, never gates).
+pub fn serving_tier_capacity_bytes(volume_total_bytes: u64) -> u64 {
+    volume_total_bytes.saturating_sub(serving_tier_reserve_bytes(volume_total_bytes))
+}
+
+/// The set of artifact paths serving is ACTIVELY paging per-token (the
+/// resident model's GGUF, its expert container dir, device-fit overrides).
+/// The eviction pool consults this before every migration — the #302
+/// safety invariant is that an actively-paged artifact is NEVER moved out
+/// from under the engine. Serving's reconcile (her half's
+/// `ensure_hot_resident`) registers paths on spawn and releases on lane
+/// teardown; registration is path-prefix aware so marking a model DIR
+/// protects everything inside it.
+#[derive(Default)]
+pub struct ActiveArtifactSet {
+    paths: RwLock<HashSet<PathBuf>>,
+}
+
+impl ActiveArtifactSet {
+    pub fn register(&self, path: PathBuf) {
+        if let Ok(mut set) = self.paths.write() {
+            set.insert(path);
+        }
+    }
+
+    pub fn release(&self, path: &Path) {
+        if let Ok(mut set) = self.paths.write() {
+            set.remove(path);
+        }
+    }
+
+    /// Is `candidate` (an eviction target) protected? True when any
+    /// registered active path IS the candidate, lives UNDER it, or the
+    /// candidate lives under a registered dir — prefix containment both
+    /// directions, so neither "marked the dir, evicting a file inside"
+    /// nor "marked the file, evicting its parent dir" can slip through.
+    pub fn protects(&self, candidate: &Path) -> bool {
+        let Ok(set) = self.paths.read() else {
+            // A poisoned lock means a panic mid-update — fail SAFE:
+            // treat everything as protected rather than migrate blind.
+            return true;
+        };
+        set.iter()
+            .any(|active| active.starts_with(candidate) || candidate.starts_with(active))
+    }
+}
+
+/// Process-wide active-artifact registry, one per process (same singleton
+/// shape as `install_tracked_dirs`). Serving marks residency here; the
+/// broker-registered pool reads it. Lazily created so tests and tools get
+/// a working (empty) set without boot wiring.
+static SERVING_ACTIVE_ARTIFACTS: std::sync::OnceLock<Arc<ActiveArtifactSet>> =
+    std::sync::OnceLock::new();
+
+pub fn serving_active_artifacts() -> Arc<ActiveArtifactSet> {
+    SERVING_ACTIVE_ARTIFACTS
+        .get_or_init(|| Arc::new(ActiveArtifactSet::default()))
+        .clone()
+}
+
+/// NVMe serving-tier eviction owner (#302) — the decided story for the
+/// `genome-models` cache class. The class holds the HOT serving set:
+/// served GGUFs, expert containers, device-fit overrides — the artifacts
+/// the engine pages per-token, which is why this pool MIGRATES to the
+/// COLD/frozen drive instead of deleting (a model is hours of download /
+/// forge work, not a derived artifact like cargo-target), and why it
+/// refuses to touch anything in [`ActiveArtifactSet`].
+///
+/// ## Safety invariants (each pinned by a test)
+///
+/// 1. **Never the actively-paged artifact.** Anything `protects()` says
+///    serving holds is skipped, even if it is the coldest entry.
+/// 2. **Migrate, never blind-delete.** An entry leaves the hot tier only
+///    after a byte-verified copy exists on the cold drive (copy → fsync →
+///    verify → delete). A digest-verified twin already on cold = pure
+///    drop of the hot copy. Verify failure removes the partial COPY,
+///    never the source.
+/// 3. **No cold drive ⇒ free nothing.** With nowhere safe to migrate,
+///    the pool reports 0 and logs loudly — pressure stays visible to the
+///    broker/operator instead of being "relieved" by destroying models.
+///    (Composes with device-fit one tier down: Unfittable routes to the
+///    grid, LOUD — never a silent HDD stream. See
+///    docs/architecture/STORAGE-SERVING-TIER-GOVERNOR.md.)
+pub struct NvmeServingTierPool {
+    tracked: Arc<TrackedDir>,
+    capacity_bytes: u64,
+    cold_root: Option<PathBuf>,
+    active: Arc<ActiveArtifactSet>,
+}
+
+impl NvmeServingTierPool {
+    /// `volume_total_bytes` is the TOTAL size of the volume holding the
+    /// hot tier (capacity derives from it — never a hand-tuned budget).
+    /// `cold_root` is the migration target directory on the COLD drive
+    /// (`None` ⇒ this box has no cold tier; eviction refuses, invariant 3).
+    pub fn new(
+        tracked: Arc<TrackedDir>,
+        volume_total_bytes: u64,
+        cold_root: Option<PathBuf>,
+        active: Arc<ActiveArtifactSet>,
+    ) -> Self {
+        Self {
+            tracked,
+            capacity_bytes: serving_tier_capacity_bytes(volume_total_bytes).max(1),
+            cold_root,
+            active,
+        }
+    }
+
+    /// Eviction candidates: top-level entries of the hot root (a served
+    /// GGUF file or a per-model directory), coldest-first by mtime.
+    /// Artifact granularity is the top-level entry — a model's dir moves
+    /// as a unit, never half its files.
+    fn candidates_coldest_first(root: &Path) -> Vec<(PathBuf, u64)> {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let mut list: Vec<(PathBuf, u64, std::time::SystemTime)> = entries
+            .flatten()
+            .filter_map(|e| {
+                let meta = e.metadata().ok()?;
+                if meta.is_symlink() {
+                    return None;
+                }
+                let path = e.path();
+                let size = if meta.is_dir() {
+                    dir_size_bytes(&path)
+                } else {
+                    meta.len()
+                };
+                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                Some((path, size, mtime))
+            })
+            .collect();
+        list.sort_by_key(|(_, _, mtime)| *mtime);
+        list.into_iter().map(|(p, s, _)| (p, s)).collect()
+    }
+}
+
+/// Byte-level equality of two files, streamed — the "digest-verified"
+/// primitive without a hash dependency (a full byte compare is strictly
+/// as strong as comparing digests of both sides).
+fn files_identical(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    let (Ok(fa), Ok(fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else {
+        return false;
+    };
+    let mut ra = std::io::BufReader::new(fa);
+    let mut rb = std::io::BufReader::new(fb);
+    let mut ba = [0u8; 64 * 1024];
+    let mut bb = [0u8; 64 * 1024];
+    loop {
+        let na = match ra.read(&mut ba) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        let nb = match rb.read(&mut bb) {
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        if na != nb || ba[..na] != bb[..nb] {
+            return false;
+        }
+        if na == 0 {
+            return true;
+        }
+    }
+}
+
+/// Recursive equality: files byte-compare; dirs compare entry sets then
+/// recurse. Any unreadable piece = NOT identical (never "verified" on a
+/// guess).
+fn entries_identical(a: &Path, b: &Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    match (ma.is_dir(), mb.is_dir()) {
+        (false, false) => files_identical(a, b),
+        (true, true) => {
+            let Ok(entries) = std::fs::read_dir(a) else {
+                return false;
+            };
+            let names_a: Vec<std::ffi::OsString> = entries
+                .flatten()
+                .map(|e| e.file_name())
+                .collect();
+            let Ok(entries_b) = std::fs::read_dir(b) else {
+                return false;
+            };
+            let names_b: HashSet<std::ffi::OsString> =
+                entries_b.flatten().map(|e| e.file_name()).collect();
+            names_a.len() == names_b.len()
+                && names_a.iter().all(|n| {
+                    names_b.contains(n) && entries_identical(&a.join(n), &b.join(n))
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Copy `src` (file or tree) to `dst`, fsyncing every file — the durable
+/// half of migrate-then-delete. Cross-device safe (plain read/write copy,
+/// no rename tricks).
+fn copy_entry_durable(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let meta = std::fs::metadata(src)?;
+    if meta.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)?.flatten() {
+            copy_entry_durable(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+    } else {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst)?;
+        std::fs::File::open(dst)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn remove_entry(path: &Path) -> std::io::Result<()> {
+    if std::fs::metadata(path)?.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+impl ResourcePool for NvmeServingTierPool {
+    fn tier_name(&self) -> &str {
+        "disk-serving-tier"
+    }
+
+    fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes
+    }
+
+    fn usage_bytes(&self) -> u64 {
+        self.tracked.bytes()
+    }
+
+    fn evict_at_least(&self, want_bytes: u64) -> u64 {
+        let root = self.tracked.path().to_path_buf();
+        if !root.exists() {
+            return 0;
+        }
+        // Invariant 3: no cold tier ⇒ refuse loudly, never blind-delete.
+        let Some(cold_root) = self.cold_root.as_deref() else {
+            crate::clog_warn!(
+                "💾 serving-tier over budget but this box has NO cold drive — refusing to \
+                 delete model artifacts; resolve by adding a cold tier or dropping models \
+                 explicitly (models are re-fetch-hours, not derived artifacts)"
+            );
+            return 0;
+        };
+
+        let mut freed = 0u64;
+        for (path, size) in Self::candidates_coldest_first(&root) {
+            if freed >= want_bytes.max(1) {
+                break;
+            }
+            // Invariant 1: never the actively-paged artifact.
+            if self.active.protects(&path) {
+                continue;
+            }
+            let Some(name) = path.file_name() else { continue };
+            let dest = cold_root.join(name);
+
+            if dest.exists() {
+                if entries_identical(&path, &dest) {
+                    // Verified twin already frozen on cold: pure drop.
+                    if remove_entry(&path).is_ok() {
+                        freed = freed.saturating_add(size);
+                    }
+                } else {
+                    // Name collision with DIFFERENT content — never
+                    // clobber a cold artifact; skip and say so.
+                    crate::clog_warn!(
+                        "💾 serving-tier migrate skipped {:?}: cold copy exists with \
+                         different content — refusing to overwrite",
+                        name
+                    );
+                }
+                continue;
+            }
+
+            // Invariant 2: copy → fsync → verify → delete source.
+            if std::fs::create_dir_all(cold_root).is_err() {
+                crate::clog_warn!(
+                    "💾 serving-tier migrate failed: cannot create cold root {:?}",
+                    cold_root
+                );
+                break;
+            }
+            match copy_entry_durable(&path, &dest) {
+                Ok(()) if entries_identical(&path, &dest) => {
+                    if remove_entry(&path).is_ok() {
+                        freed = freed.saturating_add(size);
+                    }
+                }
+                _ => {
+                    // Verify failed or copy errored: remove the PARTIAL
+                    // COPY, never the source.
+                    let _ = remove_entry(&dest);
+                    crate::clog_warn!(
+                        "💾 serving-tier migrate of {:?} failed verification — hot copy \
+                         kept, partial cold copy removed",
+                        name
+                    );
+                }
+            }
+        }
+        if freed > 0 {
+            self.tracked.record_freed(freed);
+            crate::clog_warn!(
+                "💾 serving-tier migrated {} GB of frozen artifacts to cold storage \
+                 (hot capacity {} GB) — nothing deleted without a verified cold copy",
+                freed / (1024 * 1024 * 1024),
+                self.capacity_bytes / (1024 * 1024 * 1024)
             );
         }
         freed
@@ -293,9 +641,12 @@ mod tests {
     // compile-adjacent cost instead of at a user's full disk.
     #[test]
     fn every_cache_class_has_a_decided_eviction_story() {
-        let owned = ["cargo-target"];
+        // genome-models graduated from deferred to OWNED (#302): the
+        // NvmeServingTierPool is exactly the "reference-aware, never
+        // blind-delete a served model" owner the deferred entry demanded —
+        // active-set aware, migrate-to-cold, verified-copy-before-delete.
+        let owned = ["cargo-target", "genome-models"];
         let deferred = [
-            ("genome-models", "#155: reference-aware LRU — never blind-delete a model being served"),
             ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
             ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
             ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
@@ -311,6 +662,170 @@ mod tests {
                  add it to the deferred list above with the task that owns it (task #155; \
                  the 2026-07-13 incident was exactly an ownerless class filling the disk)"
             );
+        }
+    }
+
+    mod serving_tier {
+        use super::*;
+
+        /// A hot-tier tree with two frozen model artifacts (one dir-shaped,
+        /// one file-shaped) and one actively-served dir. mtimes are staged so
+        /// `stale-model/` is coldest, then `old.gguf`, then the active dir.
+        fn seeded_hot_tier(hot: &Path) -> Arc<TrackedDir> {
+            std::fs::create_dir_all(hot.join("stale-model")).expect("mkdir");
+            std::fs::write(hot.join("stale-model/model.gguf"), vec![1u8; 4000]).expect("write");
+            std::fs::write(hot.join("old.gguf"), vec![2u8; 3000]).expect("write");
+            std::fs::create_dir_all(hot.join("served-model")).expect("mkdir");
+            std::fs::write(hot.join("served-model/model.gguf"), vec![3u8; 2000]).expect("write");
+            // Stage mtimes: coldest first. filetime not in deps — touch via
+            // set_modified (std, stable since 1.75).
+            let t0 = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+            let t1 = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000);
+            let f = std::fs::File::open(hot.join("stale-model")).expect("open");
+            f.set_modified(t0).expect("mtime");
+            let f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(hot.join("old.gguf"))
+                .expect("open");
+            f.set_modified(t1).expect("mtime");
+            let tracked = TrackedDir::new("genome-models", hot.to_path_buf());
+            tracked.set_bytes(dir_size_bytes(hot));
+            tracked
+        }
+
+        // what this catches: #302 safety invariant 1 — the actively-paged
+        // artifact is NEVER migrated, even when eviction wants unlimited
+        // bytes. Losing the resident model's GGUF mid-serve is the engine
+        // reading from a deleted file.
+        #[test]
+        fn actively_paged_artifact_is_never_migrated() {
+            let hot = tempfile::tempdir().expect("tempdir");
+            let cold = tempfile::tempdir().expect("tempdir");
+            let tracked = seeded_hot_tier(hot.path());
+            let active = Arc::new(ActiveArtifactSet::default());
+            active.register(hot.path().join("served-model"));
+            let pool = NvmeServingTierPool::new(
+                tracked,
+                1_000_000,
+                Some(cold.path().to_path_buf()),
+                active,
+            );
+
+            pool.evict_at_least(u64::MAX);
+            assert!(
+                hot.path().join("served-model/model.gguf").exists(),
+                "the served model must survive unlimited eviction demand"
+            );
+            assert!(!hot.path().join("stale-model").exists(), "frozen artifacts migrate");
+            assert!(!hot.path().join("old.gguf").exists());
+        }
+
+        // what this catches: #302 safety invariant 2 — migration is
+        // copy→verify→delete (the artifact EXISTS on cold before the hot
+        // copy dies), coldest-first, and a verified twin already on cold is
+        // a pure drop (no second copy). The shared TrackedDir decrements so
+        // the broker doesn't re-fire on freed space.
+        #[test]
+        fn migrates_coldest_first_and_pure_drops_verified_twins() {
+            let hot = tempfile::tempdir().expect("tempdir");
+            let cold = tempfile::tempdir().expect("tempdir");
+            let tracked = seeded_hot_tier(hot.path());
+            let usage_before = tracked.bytes();
+            // old.gguf already has a byte-identical frozen twin on cold.
+            std::fs::write(cold.path().join("old.gguf"), vec![2u8; 3000]).expect("write");
+            let pool = NvmeServingTierPool::new(
+                tracked.clone(),
+                1_000_000,
+                Some(cold.path().to_path_buf()),
+                Arc::new(ActiveArtifactSet::default()),
+            );
+
+            // Want only the coldest entry's worth: stale-model (4000 B).
+            let freed = pool.evict_at_least(1000);
+            assert_eq!(freed, 4000, "coldest entry goes first");
+            assert!(
+                cold.path().join("stale-model/model.gguf").exists(),
+                "verified cold copy exists"
+            );
+            assert!(!hot.path().join("stale-model").exists(), "hot copy gone after verify");
+            assert!(hot.path().join("old.gguf").exists(), "later candidate untouched");
+            assert_eq!(tracked.bytes(), usage_before - 4000);
+
+            // Second round: old.gguf's twin is already frozen — pure drop.
+            let freed = pool.evict_at_least(1000);
+            assert_eq!(freed, 3000);
+            assert!(!hot.path().join("old.gguf").exists());
+            assert!(cold.path().join("old.gguf").exists());
+        }
+
+        // what this catches: #302 safety invariant 3 — a box with no cold
+        // drive frees NOTHING (models are hours of re-fetch, not derived
+        // artifacts; pressure must stay visible, never "relieved" by
+        // destroying them). Also: a cold-side name collision with DIFFERENT
+        // content is never clobbered.
+        #[test]
+        fn no_cold_drive_frees_nothing_and_collisions_never_clobber() {
+            let hot = tempfile::tempdir().expect("tempdir");
+            let tracked = seeded_hot_tier(hot.path());
+            let pool = NvmeServingTierPool::new(
+                tracked.clone(),
+                1_000_000,
+                None,
+                Arc::new(ActiveArtifactSet::default()),
+            );
+            assert_eq!(pool.evict_at_least(u64::MAX), 0, "no cold tier ⇒ refuse");
+            assert!(hot.path().join("stale-model/model.gguf").exists());
+
+            // Collision case: cold has a DIFFERENT old.gguf.
+            let cold = tempfile::tempdir().expect("tempdir");
+            std::fs::write(cold.path().join("old.gguf"), vec![9u8; 3000]).expect("write");
+            let pool = NvmeServingTierPool::new(
+                tracked,
+                1_000_000,
+                Some(cold.path().to_path_buf()),
+                Arc::new(ActiveArtifactSet::default()),
+            );
+            pool.evict_at_least(u64::MAX);
+            assert!(
+                hot.path().join("old.gguf").exists(),
+                "collision with different content: hot copy kept"
+            );
+            let cold_bytes = std::fs::read(cold.path().join("old.gguf")).expect("read");
+            assert_eq!(cold_bytes, vec![9u8; 3000], "cold artifact never overwritten");
+        }
+
+        // what this catches: the capacity derivation (#287-style) — 10% of
+        // the volume floored at 32 GiB, saturating to 0 on a volume smaller
+        // than the reserve (the tier degrades, never underflows).
+        #[test]
+        fn capacity_is_volume_minus_derived_reserve() {
+            const GIB: u64 = 1024 * 1024 * 1024;
+            // 4 TB NVMe: reserve = 10% = 400 GB-ish (> 32 GiB floor).
+            assert_eq!(serving_tier_reserve_bytes(4000 * GIB), 400 * GIB);
+            assert_eq!(serving_tier_capacity_bytes(4000 * GIB), 3600 * GIB);
+            // 100 GiB SSD: 10% = 10 GiB < floor ⇒ reserve is 32 GiB.
+            assert_eq!(serving_tier_reserve_bytes(100 * GIB), 32 * GIB);
+            assert_eq!(serving_tier_capacity_bytes(100 * GIB), 68 * GIB);
+            // Tiny volume: capacity saturates to 0, never wraps.
+            assert_eq!(serving_tier_capacity_bytes(GIB), 0);
+        }
+
+        // what this catches: ActiveArtifactSet prefix containment BOTH
+        // directions — marking a model dir protects files inside it, and
+        // marking a file protects its parent dir from wholesale migration.
+        #[test]
+        fn active_set_protects_prefix_both_directions() {
+            let set = ActiveArtifactSet::default();
+            set.register(PathBuf::from("/hot/served-model"));
+            assert!(set.protects(Path::new("/hot/served-model")));
+            assert!(
+                set.protects(Path::new("/hot/served-model/model.gguf")),
+                "candidate under active dir is protected"
+            );
+            assert!(set.protects(Path::new("/hot")), "parent of active is protected");
+            assert!(!set.protects(Path::new("/hot/other-model")));
+            set.release(Path::new("/hot/served-model"));
+            assert!(!set.protects(Path::new("/hot/served-model")));
         }
     }
 }

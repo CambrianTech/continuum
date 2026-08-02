@@ -174,7 +174,7 @@ impl SystemProfile {
 /// other drive is `System`. Matches the `disk_pressure` sysinfo pattern
 /// (`total_space`/`available_space`). Detection only — the roles feed RESOLUTION, so a
 /// box with no qualifying second drive simply has no `Cold` drive (offering degrades).
-fn detect_drives() -> Vec<DriveInfo> {
+pub fn detect_drives() -> Vec<DriveInfo> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
     let mut infos: Vec<DriveInfo> = disks
         .iter()
