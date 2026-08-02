@@ -175,20 +175,24 @@ fn llama_server_row_ready(
     if !snap.ready || snap.active_model.is_none() {
         return Err("serving lane has no ready model".to_string());
     }
-    if snap.active_model.as_deref() != Some(model_id) {
-        return Err(format!(
-            "serving lane is occupied by {:?}, not this vision row — pin/pull it to bring \
-             vision up (`models/pull` + `serving/pin`)",
-            snap.active_model.as_deref().unwrap_or("<none>")
-        ));
-    }
+    // The node's ONE verified vision endpoint (#106): the main lane when the
+    // mind's model itself sees, or the SIDECAR lane beside a text-only mind.
+    // A row is servable iff it IS that endpoint's model — the snapshot's
+    // vision fields are projected from a single verified value, so this check
+    // covers both shapes without caring which lane answers.
     if !snap.vision_ready {
         return Err(
-            "lane serves this model but its multimodal endpoint is NOT verified \
-             (mmproj missing or /props reports no vision modality) — see the serving \
-             daemon's `serving.vision.*` probes for the reason"
+            "no verified vision endpoint on this node (main lane is text-only and no \
+             sidecar came up) — see the serving daemon's `serving.vision.*` probes for \
+             the reason (`models/pull` a *-VL-*-GGUF repo to enable the sidecar)"
                 .to_string(),
         );
+    }
+    if snap.vision_model.as_deref() != Some(model_id) {
+        return Err(format!(
+            "the verified vision endpoint serves {:?}, not this row",
+            snap.vision_model.as_deref().unwrap_or("<none>")
+        ));
     }
     Ok(())
 }
@@ -659,35 +663,41 @@ mod tests {
         assert_eq!(picked.model_id, "local-llava");
     }
 
-    // what this catches (#106): the observe path may route to the local serving lane
-    // ONLY when the lane is ready, serving THIS model, and its multimodal endpoint is
-    // VERIFIED (`vision_ready`). A regression that accepts a ready-but-unverified lane
-    // re-opens the capability lie (images POSTed to a text-only lane, silently
-    // dropped); one that accepts a different active model re-opens the pre-#106 bug
-    // where every observe act died at select() while a good lane sat elsewhere.
+    // what this catches (#106): the observe path may route to the local serving
+    // gateway ONLY when the node has a VERIFIED vision endpoint AND this row IS
+    // that endpoint's model — the main lane when the mind's model itself sees, or
+    // the vision SIDECAR beside a text-only mind. A regression that accepts an
+    // unverified node re-opens the capability lie (images POSTed to a text-only
+    // lane, silently dropped); one that accepts a row the endpoint doesn't serve
+    // aims pixels at the wrong model.
     #[test]
-    fn llama_server_row_is_servable_only_when_active_ready_and_vision_verified() {
+    fn llama_server_row_is_servable_only_when_it_is_the_verified_vision_endpoint() {
         use crate::inference::llama_server::ServingSnapshot;
         let mut snap = ServingSnapshot::empty();
 
         // Nothing serving → not servable.
         assert!(llama_server_row_ready("vl-model", &snap).is_err());
 
-        // Ready but the lane serves a DIFFERENT model → not servable, and the
-        // reason names the occupant (the operator's pin/pull hint).
+        // Ready text-only mind, no sidecar → no verified endpoint anywhere; the
+        // reason teaches the fix (pull a VL repo to enable the sidecar).
         snap.ready = true;
         snap.active_model = Some("coder-14b".into());
         snap.vision_ready = false;
         let err = llama_server_row_ready("vl-model", &snap).unwrap_err();
-        assert!(err.contains("coder-14b"), "{err}");
+        assert!(err.contains("no verified vision endpoint"), "{err}");
+        assert!(err.contains("sidecar"), "teaches the sidecar path: {err}");
 
-        // Serving this model but multimodal endpoint NOT verified → not servable.
-        snap.active_model = Some("vl-model".into());
-        let err = llama_server_row_ready("vl-model", &snap).unwrap_err();
-        assert!(err.contains("NOT verified"), "{err}");
-
-        // All three facts line up → servable.
+        // SIDECAR shape: text mind stays active, the verified endpoint is the
+        // sidecar's model → the VL row is servable, the mind's row is not.
         snap.vision_ready = true;
+        snap.vision_base_url = Some("http://127.0.0.1:58091/v1".into());
+        snap.vision_model = Some("vl-model".into());
+        assert!(llama_server_row_ready("vl-model", &snap).is_ok());
+        let err = llama_server_row_ready("coder-14b", &snap).unwrap_err();
+        assert!(err.contains("vl-model"), "names the endpoint's real model: {err}");
+
+        // MAIN-LANE shape: a VL mind — the endpoint IS the active model.
+        snap.active_model = Some("vl-model".into());
         assert!(llama_server_row_ready("vl-model", &snap).is_ok());
     }
 

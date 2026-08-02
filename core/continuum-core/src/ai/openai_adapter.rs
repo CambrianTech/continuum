@@ -455,6 +455,30 @@ impl OpenAICompatibleAdapter {
         OpenAiBase::new(raw)
     }
 
+    /// The endpoint base for a SPECIFIC requested model. Same as [`Self::endpoints`]
+    /// except for the local serving gateway when the requested model is the
+    /// serving snapshot's VISION model but not its main-lane model: that is the
+    /// #106 vision SIDECAR (a VL lane beside a text-only mind), and the request
+    /// routes to the snapshot's verified `vision_base_url`. Driven entirely by
+    /// the ONE published snapshot (id-equality against the gateway's canonical
+    /// [`PROVIDER_ID`](crate::inference::llama_server::PROVIDER_ID) const — no
+    /// name sniffing), and the address exists only when `/props` confirmed
+    /// sight, so pixels can never be aimed at a text lane.
+    fn endpoints_for_model(&self, model: &str) -> OpenAiBase {
+        if self.config.provider_id == crate::inference::llama_server::PROVIDER_ID {
+            let snap = crate::inference::llama_server::current_serving();
+            if snap.vision_ready
+                && snap.vision_model.as_deref() == Some(model)
+                && snap.active_model.as_deref() != Some(model)
+            {
+                if let Some(url) = snap.vision_base_url.as_deref() {
+                    return OpenAiBase::new(url);
+                }
+            }
+        }
+        self.endpoints()
+    }
+
     /// Fetch the live model list from the provider's /v1/models endpoint.
     /// Used by adapters that have dynamic catalogs (DMR above all — the list
     /// changes every time the user runs `docker model pull`). Populates
@@ -1888,8 +1912,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        // Make request - use runtime base URL if set, otherwise config base URL
-        let url = self.endpoints().chat_completions();
+        // Make request — the endpoint base for THIS request's model. Normally the
+        // runtime/config base; for the local serving gateway, a request for the
+        // snapshot's VISION model (the #106 sidecar lane serving beside a
+        // text-only mind) routes to the snapshot's verified `vision_base_url`.
+        // Snapshot-driven: the daemon publishes the address only after `/props`
+        // confirmed sight, so this can never aim pixels at a text lane.
+        let url = self.endpoints_for_model(&model).chat_completions();
 
         let mut request_builder = self
             .client

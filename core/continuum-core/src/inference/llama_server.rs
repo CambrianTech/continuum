@@ -533,6 +533,21 @@ pub struct ServingSnapshot {
     /// persisted snapshots (pre-#106) readable as not-vision-ready.
     #[serde(default)]
     pub vision_ready: bool,
+    /// The `/v1` base url of the VERIFIED vision endpoint on this node — the
+    /// address the observation path routes image bytes to. When the MAIN lane's
+    /// model itself sees, this is `base_url`; when a vision SIDECAR lane serves
+    /// beside a text-only mind (#106, `vision_sidecar`), it is the sidecar's
+    /// own url. `None` exactly when `vision_ready == false` — an address is
+    /// only ever published for an endpoint whose `/props` confirmed sight.
+    #[serde(default)]
+    #[ts(optional)]
+    pub vision_base_url: Option<String>,
+    /// The model id the verified vision endpoint serves — what the describe
+    /// path selects and stamps on its result. Same `None`-iff-not-ready
+    /// contract as `vision_base_url`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub vision_model: Option<String>,
 }
 
 impl ServingSnapshot {
@@ -553,6 +568,8 @@ impl ServingSnapshot {
             degraded_reason: None,
             // Nothing served → nothing can see.
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         }
     }
 
@@ -1310,6 +1327,20 @@ impl EphemeralServingLane {
     /// the server is up but `/props` is unreadable — never a guessed window.
     pub async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
         self.proc.served_context_window().await
+    }
+
+    /// The running lane's own `/props modalities` verdict — the #106 endpoint
+    /// truth, delegated to the child probe. `Ok(None)` = this llama-server
+    /// build publishes no modalities block (unverifiable ≠ working).
+    pub async fn multimodal_support(&self) -> Result<Option<MultimodalSupport>, LlamaServerError> {
+        LlamaServerControl::multimodal_support(&self.proc).await
+    }
+
+    /// The model id this lane actually serves (its `/v1/models` alias) — for
+    /// incumbent verification against the process's own report, never our spawn
+    /// memory.
+    pub async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
+        LlamaServerControl::active_model(&self.proc).await
     }
 }
 
@@ -2524,6 +2555,8 @@ mod tests {
             lanes: 0,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -2536,6 +2569,8 @@ mod tests {
             lanes: 0,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -2548,6 +2583,8 @@ mod tests {
             lanes: 0,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await
