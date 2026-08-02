@@ -73,6 +73,38 @@ pub fn host_cache_lease_bytes(i: &HostCacheLeaseInputs) -> u64 {
     }
 }
 
+/// One token's EXPERT working set: the bytes of experts the router activates
+/// across every MoE layer for a single decode token. Uniform K3-class geometry
+/// makes the layer count cancel: per-layer expert bytes × top_k × n_moe_layers
+/// == (expert_bytes_total / n_experts_per_layer) × top_k. This is the number
+/// the lease must EXCEED for the cache to retain even one token's set — below
+/// it, every token evicts the previous token's experts before they can be
+/// reused (the resident=0 evict-everything thrash BigMama measured on K3:
+/// ~1472 experts/token vs a 2377-slot cache with zero cross-token reuse).
+pub fn per_token_expert_working_set_bytes(
+    expert_bytes_total: u64,
+    n_experts_per_layer: u32,
+    top_k: u32,
+) -> u64 {
+    if n_experts_per_layer == 0 {
+        return 0;
+    }
+    (expert_bytes_total / n_experts_per_layer as u64).saturating_mul(top_k as u64)
+}
+
+/// How many tokens' expert working sets the lease retains, ×100 (fixed-point so
+/// the probe reads "retention 0.42 tokens" without floats on the wire). The
+/// GO/NO-GO line is 100: below it the cache buys nothing — the honest verdict
+/// the operator (and later the governor's own policy) acts on, instead of a
+/// healthy-looking lease that thrashes silently. Zero working set (dense
+/// model) → 0, never a division wrap.
+pub fn retention_tokens_x100(lease_bytes: u64, per_token_ws_bytes: u64) -> u64 {
+    if per_token_ws_bytes == 0 {
+        return 0;
+    }
+    lease_bytes.saturating_mul(100) / per_token_ws_bytes
+}
+
 /// Sticky publication of the lease — the never-thrash layer. The raw
 /// derivation flutters with every KV sample; the PUBLISHED budget moves
 /// only when the change is material, and shrinks faster than it grows:
@@ -169,6 +201,28 @@ mod tests {
         i.commit_charge_bytes = None;
         i.live_kv_bytes = 200 * GB;
         assert_eq!(host_cache_lease_bytes(&i), 0, "over-full working set saturates to zero");
+    }
+
+    /// what this catches (#287 retention arithmetic): the per-token expert
+    /// working set uses the layer-cancelling identity (total/experts × top_k),
+    /// and the retention verdict is honest fixed-point — a K3-shaped serve
+    /// (16-of-896 routed, big expert total) against a lease SMALLER than one
+    /// token's set reads below 100 (the thrash verdict), and a lease that
+    /// holds two tokens' sets reads 200. Dense models (no experts) never wrap.
+    #[test]
+    fn retention_verdict_reads_tokens_of_working_set() {
+        // K3-ish: 72GB of experts, 896/layer, top-16 → one token ≈ 1.286GB.
+        let ws = per_token_expert_working_set_bytes(72 * GB, 896, 16);
+        assert_eq!(ws, (72 * GB / 896) * 16);
+        // A 16GB lease holds ~12 tokens of THIS shape (the thrash she measured
+        // was slot-count-bound, which the probe pairs with this byte verdict).
+        assert!(retention_tokens_x100(16 * GB, ws) > 100);
+        // A lease below one token's set → verdict under 100 (cache buys nothing).
+        assert!(retention_tokens_x100(ws - 1, ws) < 100);
+        assert_eq!(retention_tokens_x100(2 * ws, ws), 200, "two tokens retained");
+        // Dense model (no experts) → zero working set → zero verdict, no wrap.
+        assert_eq!(per_token_expert_working_set_bytes(0, 0, 16), 0);
+        assert_eq!(retention_tokens_x100(16 * GB, 0), 0);
     }
 
     /// what this catches (never-thrash + #214 grow-back): sub-band

@@ -714,14 +714,18 @@ impl ServingDaemonModule {
         let Some(port) = crate::inference::llama_server::port_of_base_url(&live.base_url) else {
             return;
         };
-        // Expert-tensor total for the ACTIVE model — present only for a MoE serve.
+        // Expert geometry for the ACTIVE model — present only for a MoE serve.
         // Read under the same never-across-await sync Mutex as the placement path.
-        let expert_bytes_total = {
+        // top_k + experts-per-layer feed the retention verdict below: the lease
+        // is only USEFUL when it exceeds one token's expert working set.
+        let (expert_bytes_total, n_experts_per_layer, top_k) = {
             let Ok(guard) = self.moe_serving.lock() else {
                 return;
             };
             match guard.as_ref() {
-                Some((id, ctx)) if *id == active => ctx.expert_bytes_total,
+                Some((id, ctx)) if *id == active => {
+                    (ctx.expert_bytes_total, ctx.n_experts_per_layer, ctx.top_k)
+                }
                 _ => return, // dense model (or stale context) — no governed cache to lease
             }
         };
@@ -765,6 +769,30 @@ impl ServingDaemonModule {
             MOE_PLAN_WINDOW_K,
             Vec::new(),
         );
+        // Retention verdict (#287): does the published lease retain even one
+        // token's expert working set? Below 100 (×100 fixed-point) the cache
+        // buys NOTHING — every token evicts the previous token's experts (the
+        // resident=0 thrash) — and the lease is honest about it instead of
+        // looking healthy while thrashing silently.
+        let per_token_ws = crate::capacity::host_cache_lease::per_token_expert_working_set_bytes(
+            expert_bytes_total,
+            n_experts_per_layer,
+            top_k,
+        );
+        let retention_x100 =
+            crate::capacity::host_cache_lease::retention_tokens_x100(budget_bytes, per_token_ws);
+        if retention_x100 < 100 {
+            crate::probe!(
+                class = "serving.moe_host_cache_retention",
+                model = active.as_str(),
+                budget_bytes,
+                per_token_ws_bytes = per_token_ws,
+                retention_tokens_x100 = retention_x100,
+                "lease retains LESS than one token's expert working set — the \
+                 cache thrashes (zero cross-token reuse); free host RAM or accept \
+                 streaming-only decode",
+            );
+        }
         match crate::capacity::plan_file::write_plan_file(&gb.plan, &doc) {
             Ok(()) => crate::probe!(
                 class = "serving.moe_host_cache_lease",
@@ -773,10 +801,15 @@ impl ServingDaemonModule {
                 derived_bytes = derived,
                 weights_host_bytes = inputs.weights_host_bytes,
                 live_kv_bytes = inputs.live_kv_bytes,
+                per_token_ws_bytes = per_token_ws,
+                retention_tokens_x100 = retention_x100,
                 plan = gb.plan.display().to_string().as_str(),
-                "published governed host-cache lease: {} GiB (raw {} GiB)",
+                "published governed host-cache lease: {} GiB (raw {} GiB, retains \
+                 {}.{:02} tokens' expert set)",
                 budget_bytes / (1024 * 1024 * 1024),
                 derived / (1024 * 1024 * 1024),
+                retention_x100 / 100,
+                retention_x100 % 100,
             ),
             Err(e) => crate::probe!(
                 class = "serving.moe_host_cache_lease",

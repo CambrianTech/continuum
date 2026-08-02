@@ -34,6 +34,11 @@ pub struct MoeServingContext {
     pub pager: ServingExpertPager,
     /// Experts per MoE layer (uniform K3-class geometry) — the `-ot` layer-byte unit.
     pub n_experts_per_layer: u32,
+    /// Router top-k — experts ACTIVATED per token per MoE layer (the artifact's
+    /// `expert_used_count`). With `expert_bytes_total` this yields the per-token
+    /// expert working set the governed host cache must retain to buy any
+    /// cross-token reuse (#287 retention arithmetic).
+    pub top_k: u32,
     /// TOTAL transformer block count — the `-ot` iteration ceiling the launcher needs to
     /// compute the cold (CPU) complement of the hot layers.
     pub n_layers: u32,
@@ -75,6 +80,12 @@ pub fn moe_serving_context(
     if n_experts_per_layer == 0 {
         return None;
     }
+    // Router top-k — experts activated per token per MoE layer. Required geometry
+    // for the retention arithmetic (#287): without it the governed cache cannot
+    // say whether its lease retains even ONE token's expert working set. A MoE
+    // artifact missing the key has unreadable geometry → None (same contract as
+    // the other reads here).
+    let top_k = gguf_keys::expert_used_count(&ct, &arch)?;
     // Per-expert bytes: the layer's stacked expert blob divided by its expert count. K3-class
     // geometry is uniform across MoE layers, so the first set sizes them all.
     let expert_bytes = sets[0].total_bytes() / n_experts_per_layer as u64;
@@ -93,6 +104,7 @@ pub fn moe_serving_context(
     Some(MoeServingContext {
         pager,
         n_experts_per_layer,
+        top_k,
         n_layers,
         expert_bytes_total,
         committed_placement: None,
