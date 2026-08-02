@@ -58,17 +58,40 @@ use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, 
 /// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.
 #[async_trait]
 pub trait AircTranscriptReader: Send + Sync {
-    /// Return up to `limit` most-recent transcript events, newest-first per airc
-    /// convention.
+    /// Return up to `limit` most-recent CONVERSATIONAL transcript events
+    /// (Message + Attachment), newest-first per airc convention.
+    ///
+    /// Kinds are filtered BEFORE the page limit (#297): a raw newest-`limit`
+    /// page counts ephemeral StreamChunk frames (~4/sec per talking persona),
+    /// so active residents' own streaming evicted every durable message from
+    /// their window within a minute — working personas were DEAF to direction
+    /// while the room was busy (glass-boxed live 2026-08-01: a resident asked
+    /// the same question 3× because four direction messages never entered her
+    /// page while the attach cursor advanced normally). The diagnostic
+    /// signature: cross-machine delivery perfect, local perception stale —
+    /// the wire is fine, the WINDOW is flooded. Presence / receipts /
+    /// lifecycle ride their own sources; this page is the room's
+    /// conversation, never its firehose.
     async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError>;
 }
 
-/// `airc_lib::Airc` satisfies the reader contract directly via its existing
-/// `page_recent` method. Orphan rule OK — the trait is ours.
+/// The kinds a perception page means: the room's conversation. ONE place
+/// (compression) — every reader impl funnels through the [`airc_lib::Airc`]
+/// impl below, which applies this filter.
+pub fn perception_page_filter() -> airc_lib::EventFilter {
+    let mut filter = airc_lib::EventFilter::current_room();
+    filter.kinds.insert(airc_core::TranscriptKind::Message);
+    filter.kinds.insert(airc_core::TranscriptKind::Attachment);
+    filter
+}
+
+/// `airc_lib::Airc` satisfies the reader contract via the kinds-filtered
+/// page (daemon-side newest-N-of-kind since airc PR #1314). Orphan rule OK —
+/// the trait is ours.
 #[async_trait]
 impl AircTranscriptReader for airc_lib::Airc {
     async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
-        airc_lib::Airc::page_recent(self, limit).await
+        airc_lib::Airc::page_recent_filtered(self, perception_page_filter(), limit).await
     }
 }
 
