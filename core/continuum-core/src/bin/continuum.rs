@@ -61,7 +61,7 @@ async fn run() -> Result<(), String> {
         "stop" => stop().await,
         // Standalone #194 check: prove the RUNNING core is built from current HEAD,
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
-        "deploy-verify" | "verify" => verify_deployed_build(),
+        "deploy-verify" | "verify" => verify_deployed_build().await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
         // a tool spec. Otherwise dispatch, params adapted procedurally.
@@ -382,7 +382,9 @@ async fn start() -> Result<(), String> {
         return Ok(());
     }
 
-    launch_core(&[]).await
+    let secs = launch_core(&[]).await?;
+    println!("✅ core ready (socket={socket}) after ~{secs}s");
+    Ok(())
 }
 
 /// `continuum reboot` — rebuild + relaunch the core, replacing any running instance.
@@ -433,64 +435,231 @@ async fn reboot(force: bool) -> Result<(), String> {
             old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         );
     }
-    launch_core(&old).await?;
+    let secs = launch_core(&old).await?;
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
     // answer on the same socket and this reboot would report success while running dead code.
-    // Prove the swapped-in binary carries the current HEAD, or fail loud.
-    verify_deployed_build()
+    // NO success line before provenance is proven ("core ready" without provenance is a false
+    // deploy receipt — the 2026-08-01 Windows-node incident): announce liveness neutrally,
+    // then verify, and let "✅ deploy verified" be the ONLY checkmark a reboot prints.
+    println!("core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)");
+    verify_deployed_build().await
 }
 
-/// Prove the running core is built from the current git HEAD — the honest half of "reboot
-/// succeeded". Resolves the ACTUALLY-RUNNING core from its live pid (not a same-dir sibling of
-/// continuum, which can be a stale different-profile leftover — see `running_core_binary`) and asks
-/// THAT binary for its embedded build SHA, comparing it to HEAD. A mismatch means the build did
-/// NOT pick up your latest commit (a cache no-op or a failed compile that left a stale binary) —
-/// exactly the #194 trap that turned a whole session into ghost-hunting. Skips (with a warning)
-/// only when it genuinely can't check (not a git tree, no running core, or an older server binary
-/// without the flag), never silently passing a known mismatch.
-fn verify_deployed_build() -> Result<(), String> {
-    let expected = match git_head_short_sha() {
-        Some(s) => s,
+/// Prove the running core is built from the source this deploy shipped — the honest half of
+/// "reboot succeeded". The RUNNING core self-reports its compiled-in SHA over the socket
+/// (`ping` → `buildSha`): the live process image answers for itself, so this can't be fooled
+/// by re-exec'ing an on-disk file a rebuild already swapped under the still-running old core,
+/// and it needs no path guessing at all (the 2026-08-01 Windows-node incident: a "next to the
+/// CLI exe" guess printed "could not locate continuum-core-server" while a 2-day-old binary
+/// kept serving — and the reboot still said success).
+///
+/// Expected SHA precedence:
+/// 1. git HEAD of the checkout the reboot built from (start-server.sh's freshness guard
+///    already pins artifact == source at build time), when run inside a git tree;
+/// 2. otherwise the deployable artifact resolved by the SAME order install-service.sh uses
+///    (`CONTINUUM_CORE_BIN` env → installed locations → cargo target dir), asked for its
+///    `--build-sha` — the installed-node path, where there is no git tree.
+///
+/// NEVER skips soft: any gap (no core answering, a pre-#194 core without `buildSha`,
+/// `unknown` provenance, no resolvable artifact) is an ERROR — a reboot must not print a
+/// success line it cannot back with provenance ([[fallbacks-are-illegal-fail-loud]]).
+async fn verify_deployed_build() -> Result<(), String> {
+    let socket = socket_path();
+    // The RUNNING core's provenance, from the process itself.
+    let reply = connection()
+        .commands()
+        .execute_value("ping", Value::Object(Default::default()))
+        .await
+        .map_err(|e| format!("deploy-verify: no core answering on {socket}: {e}"))?;
+    let actual = reply
+        .get("buildSha")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    // What the deploy SHOULD have shipped.
+    let (expected, expected_source) = match git_head_short_sha() {
+        Some(head) => (head, "git HEAD of this checkout".to_string()),
         None => {
-            eprintln!("⚠ deploy-verify skipped: not a git checkout (cannot compute HEAD)");
-            return Ok(());
+            let artifact = resolve_core_artifact()?;
+            let sha = binary_build_sha(&artifact)?;
+            (sha, format!("artifact {}", artifact.display()))
         }
     };
-    let server = match running_core_binary() {
-        Some(p) => p,
-        None => {
-            eprintln!("⚠ deploy-verify skipped: no running continuum-core-server found (cannot resolve the live process image to verify)");
-            return Ok(());
+
+    let running_desc = describe_running_core(&socket);
+    match deploy_verdict(actual.as_deref(), &expected, &expected_source, &running_desc) {
+        Ok(line) => {
+            println!("{line}");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The pure compare at the heart of deploy-verify: running core's self-reported SHA vs the
+/// SHA the deploy shipped. Ok(success line) only on a REAL match; every gap is a loud error
+/// naming both SHAs and both identities. Pure (strings in, strings out) so it's unit-testable
+/// without a running core.
+fn deploy_verdict(
+    actual: Option<&str>,
+    expected: &str,
+    expected_source: &str,
+    running_desc: &str,
+) -> Result<String, String> {
+    let actual = match actual {
+        Some(a) if !a.is_empty() => a,
+        _ => {
+            return Err(format!(
+                "DEPLOY MISMATCH (#194): the running core ({running_desc}) does not report a build \
+                 SHA on ping — it is a pre-#194 (or otherwise stale) binary, so the swap did NOT \
+                 happen. Expected build {expected} ({expected_source}). Do not trust any live test: \
+                 stop the old core and reboot again."
+            ))
         }
     };
-    let actual = std::process::Command::new(&server)
+    if actual == "unknown" || expected == "unknown" {
+        return Err(format!(
+            "DEPLOY UNVERIFIABLE (#194): build provenance is 'unknown' (running core \
+             ({running_desc}) reports {actual}; expected {expected} from {expected_source}) — a \
+             binary was built outside a git tree, so freshness cannot be proven. Rebuild inside \
+             the git checkout and reboot again; never trust an unverifiable deploy."
+        ));
+    }
+    if sha_matches(actual, expected) {
+        Ok(format!(
+            "✅ deploy verified: core is running build {actual} (== {expected_source})"
+        ))
+    } else {
+        Err(format!(
+            "DEPLOY MISMATCH (#194): the running core ({running_desc}) is build {actual}, but the \
+             deploy shipped build {expected} ({expected_source}). The swap did NOT take — a \
+             stale binary is still serving while the reboot would have claimed success. Do not \
+             trust any live test until this is fixed: rebuild cleanly (`cargo build -p \
+             continuum-core --bin continuum-core-server`) and reboot again."
+        ))
+    }
+}
+
+/// Two short/long git SHAs refer to the same commit when one prefixes the other (git's
+/// `--short` abbreviation length varies over a repo's life). Both must be real hex SHAs of
+/// credible length — never matches `""` or `"unknown"`.
+fn sha_matches(a: &str, b: &str) -> bool {
+    let credible =
+        |s: &str| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit());
+    credible(a) && credible(b) && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// Best-effort human identity of the running core for error messages: socket + pid(s) +
+/// process image path where resolvable. Diagnostics ONLY — the SHA itself always comes from
+/// the process over the socket, never from re-executing a path guessed here.
+fn describe_running_core(socket: &str) -> String {
+    let pids = running_core_pids();
+    let mut desc = format!("socket={socket}");
+    if !pids.is_empty() {
+        desc.push_str(&format!(
+            ", pid(s) {}",
+            pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+        ));
+    }
+    if let Some(img) = running_core_binary() {
+        desc.push_str(&format!(", image {}", img.display()));
+    }
+    desc
+}
+
+/// Resolve the deployable `continuum-core-server` artifact — the SAME order
+/// `tools/scripts/install-service.sh::resolve_core_bin` uses, centralized so the CLI and the
+/// service installer can never disagree: `CONTINUUM_CORE_BIN` env → installed locations
+/// (`/usr/local/bin`, `~/.continuum/bin`) → cargo target dir (release, then debug; default
+/// target dir `~/.continuum/cache/cargo-target`, matching start-server.sh). NEVER "next to
+/// the CLI exe" — that guess is what printed "could not locate continuum-core-server" on the
+/// 2026-08-01 Windows node while a stale core kept serving.
+fn resolve_core_artifact() -> Result<PathBuf, String> {
+    let env_bin = std::env::var("CONTINUUM_CORE_BIN").ok();
+    if let Some(explicit) = &env_bin {
+        let p = PathBuf::from(explicit);
+        if p.is_file() {
+            return Ok(p);
+        }
+        return Err(format!("CONTINUUM_CORE_BIN={explicit} is not a file"));
+    }
+    let home = home_dir()?;
+    let target = std::env::var("CARGO_TARGET_DIR").ok();
+    let candidates = core_artifact_candidates(&home, target.as_deref());
+    candidates
+        .iter()
+        .find(|p| p.is_file())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "no continuum-core-server artifact found. Searched (install-service.sh order): {}. \
+                 Build one (`continuum reboot` from the repo, or npm start) or set CONTINUUM_CORE_BIN.",
+                candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
+
+/// The ordered candidate list behind [`resolve_core_artifact`] — pure (paths in, paths out)
+/// so the shared resolution ORDER is pinned by a unit test against install-service.sh.
+fn core_artifact_candidates(home: &str, cargo_target_dir: Option<&str>) -> Vec<PathBuf> {
+    let exe = if cfg!(windows) {
+        "continuum-core-server.exe"
+    } else {
+        "continuum-core-server"
+    };
+    let target = cargo_target_dir
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{home}/.continuum/cache/cargo-target"));
+    let mut out = Vec::new();
+    if !cfg!(windows) {
+        out.push(PathBuf::from("/usr/local/bin").join(exe));
+    }
+    out.push(PathBuf::from(home).join(".continuum").join("bin").join(exe));
+    out.push(PathBuf::from(&target).join("release").join(exe));
+    out.push(PathBuf::from(&target).join("debug").join(exe));
+    out
+}
+
+/// The user's home dir — `HOME` (unix) or `USERPROFILE` (Windows). Loud when absent: the
+/// resolution order depends on it, and guessing would defeat the shared contract.
+fn home_dir() -> Result<String, String> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| {
+            "HOME/USERPROFILE unset — cannot resolve installed continuum-core-server locations \
+             (set CONTINUUM_CORE_BIN explicitly)"
+                .to_string()
+        })
+}
+
+/// Ask an on-disk `continuum-core-server` artifact for its embedded build SHA
+/// (`--build-sha`, exits before any socket/side-effect). Loud on any failure — an artifact
+/// that cannot state its provenance cannot anchor a deploy receipt.
+fn binary_build_sha(artifact: &Path) -> Result<String, String> {
+    let out = std::process::Command::new(artifact)
         .arg("--build-sha")
         .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    match actual {
-        Some(a) if a == expected || a == "unknown" => {
-            if a == "unknown" {
-                eprintln!("⚠ deploy-verify: server reports build 'unknown' (built outside a git tree) — cannot confirm freshness");
-            } else {
-                println!("✅ deploy verified: core is running build {a} (== HEAD)");
-            }
-            Ok(())
-        }
-        Some(a) => Err(format!(
-            "DEPLOY MISMATCH (#194): the running core is build {a} but HEAD is {expected}. The \
-             build did NOT pick up your latest source — a stale/cached binary is running while the \
-             reboot claimed success. Do not trust any live test until this is fixed: rebuild \
-             cleanly (`cargo build -p continuum-core --bin continuum-core-server`) and reboot again."
-        )),
-        None => {
-            eprintln!("⚠ deploy-verify skipped: server binary has no --build-sha (pre-#194 build); rebuild once to enable");
-            Ok(())
-        }
+        .map_err(|e| format!("cannot run {} --build-sha: {e}", artifact.display()))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{} --build-sha exited {} — a pre-#194 artifact cannot anchor a deploy receipt; rebuild it",
+            artifact.display(),
+            out.status
+        ));
     }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.is_empty() {
+        return Err(format!(
+            "{} --build-sha printed nothing — rebuild the artifact",
+            artifact.display()
+        ));
+    }
+    Ok(sha)
 }
 
 /// Short git HEAD SHA of the current checkout (matches what `build.rs` embeds), or `None`
@@ -505,17 +674,12 @@ fn git_head_short_sha() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The `continuum-core-server` binary sitting next to this `continuum` in the target dir — the one
-/// start-server.sh builds and launches. `None` if it can't be resolved.
-/// Path to the executable image of the ACTUALLY-RUNNING core, resolved from its live
-/// pid — NOT "the server binary next to continuum". continuum and the core can be different build
-/// profiles: the deploy defaults to `debug` (fast-iterate) while a stale, hand-invoked
-/// `release/continuum` would otherwise verify a stale `release/continuum-core-server` LEFTOVER
-/// that is not the running process at all (observed 2026-07-25 — the guard cried
-/// "mismatch 9e7947b4" about an 11:00 release leftover with zero memory/* symbols while
-/// the running `debug` core was current HEAD). Verifying a binary that isn't running is
-/// the #194 trap inverted: it can false-positive on a fresh deploy, and — worse — pass a
-/// stale one. Resolve the real process image and check THAT.
+/// Path to the executable image of the ACTUALLY-RUNNING core, resolved from its live pid.
+/// DIAGNOSTICS ONLY (error-message context via [`describe_running_core`]): the deploy receipt
+/// itself never re-execs this path — after a rebuild the on-disk file at the running pid's
+/// path is already the NEW binary while the old image keeps serving, so exec'ing it
+/// false-passes a stale deploy (the inverse of the 2026-07-25 release-leftover false alarm).
+/// The running core's SHA always comes from the process itself over the socket (`ping`).
 fn running_core_binary() -> Option<std::path::PathBuf> {
     let pid = running_core_pids().into_iter().next()?;
     #[cfg(target_os = "linux")]
@@ -587,7 +751,11 @@ fn pid_alive(pid: i32) -> bool {
 /// ping. Without it, `continuum reboot` would see the OLD core still answering on the
 /// same socket and falsely report "ready" before the swap happened — a fail-loud
 /// violation that would also hide a failed rebuild. `continuum start` passes `&[]`.
-async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
+///
+/// Returns the seconds waited. Deliberately prints NO success line — the caller owns the
+/// receipt (#194): `start` may celebrate liveness, but `reboot` must verify deploy
+/// provenance first and only then print its one checkmark.
+async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
     let socket = socket_path();
     let script = locate_start_script()?;
     let logfile = start_logfile();
@@ -637,12 +805,11 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
     // first build (cargo) can take minutes; poll generously, then fail loud with
     // the log tail rather than hang forever. The death-check is what makes a
     // reboot's success signal honest: the ping must come from the NEW core.
-    for i in 0..150 {
+    for i in 0..150u64 {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let old_still_alive = wait_for_death.iter().any(|p| pid_alive(*p));
         if !old_still_alive && core_is_up().await {
-            println!("✅ core ready (socket={socket}) after ~{}s", (i + 1) * 2);
-            return Ok(());
+            return Ok((i + 1) * 2);
         }
     }
     Err(format!(
@@ -875,6 +1042,85 @@ mod tests {
         assert!(help.contains("--round-trip-ms"), "camel→kebab flag: {help}");
         assert!(help.contains("<integer>"), "type label: {help}");
     }
+
+    // what this catches (#194, 2026-08-01 Windows-node incident): the deploy receipt must
+    // NEVER pass soft. Every gap — a running core that reports no buildSha (pre-#194 =
+    // stale), an 'unknown' provenance, an outright SHA mismatch — is an ERROR naming both
+    // SHAs and both identities, and the success line only appears on a REAL match. A
+    // regression that turns any of these back into a warning + Ok re-creates "core ready"
+    // as a false deploy receipt.
+    #[test]
+    fn deploy_verdict_never_passes_soft() {
+        let running = "socket=/tmp/x.sock, pid(s) 42, image /t/debug/continuum-core-server";
+
+        // real match (including short-vs-long SHA abbreviation drift) → the ONE success line
+        let ok = deploy_verdict(Some("abc123f"), "abc123f", "git HEAD of this checkout", running)
+            .expect("matching SHAs verify");
+        assert!(ok.contains("✅ deploy verified"), "got {ok}");
+        assert!(ok.contains("abc123f"), "names the build: {ok}");
+        assert!(
+            deploy_verdict(Some("abc123f00d"), "abc123f", "src", running).is_ok(),
+            "prefix-tolerant across git --short abbreviation drift"
+        );
+
+        // mismatch → loud, names BOTH SHAs and BOTH identities, never a success glyph
+        let err = deploy_verdict(Some("dead111"), "beef222", "artifact /usr/local/bin/x", running)
+            .expect_err("mismatch must fail");
+        for needle in ["dead111", "beef222", running, "/usr/local/bin/x", "MISMATCH"] {
+            assert!(err.contains(needle), "error names {needle}: {err}");
+        }
+        assert!(!err.contains('✅'), "no success glyph in a failure: {err}");
+
+        // running core has no buildSha at all (pre-#194 binary still serving) → stale, loud
+        let err = deploy_verdict(None, "beef222", "src", running).expect_err("no sha = stale");
+        assert!(err.contains("MISMATCH") && err.contains("beef222"), "got {err}");
+
+        // 'unknown' on either side is unverifiable — never a pass
+        assert!(deploy_verdict(Some("unknown"), "beef222", "src", running).is_err());
+        assert!(deploy_verdict(Some("dead111"), "unknown", "src", running).is_err());
+
+        // sha_matches never matches junk (empty, non-hex, too short to be credible)
+        assert!(!sha_matches("", ""));
+        assert!(!sha_matches("unknown", "unknown"));
+        assert!(!sha_matches("abc", "abc"));
+    }
+
+    // what this catches (#194): the artifact resolution ORDER is a shared contract with
+    // tools/scripts/install-service.sh::resolve_core_bin — installed locations before the
+    // cargo target dir (release before debug), default target dir under ~/.continuum/cache.
+    // A drift here means the CLI verifies a different binary than the service installer
+    // deploys — and NOTHING may resolve "next to the CLI exe" (the guess that printed
+    // "could not locate continuum-core-server" while a 2-day-old core kept serving).
+    #[test]
+    fn artifact_resolution_order_matches_install_service() {
+        let c = core_artifact_candidates("/home/u", None);
+        let shown: Vec<String> = c.iter().map(|p| p.display().to_string()).collect();
+        #[cfg(not(windows))]
+        assert_eq!(
+            shown,
+            vec![
+                "/usr/local/bin/continuum-core-server",
+                "/home/u/.continuum/bin/continuum-core-server",
+                "/home/u/.continuum/cache/cargo-target/release/continuum-core-server",
+                "/home/u/.continuum/cache/cargo-target/debug/continuum-core-server",
+            ],
+            "order is the install-service.sh contract"
+        );
+        #[cfg(windows)]
+        {
+            assert!(shown.iter().all(|p| p.ends_with("continuum-core-server.exe")));
+            assert!(
+                !shown.iter().any(|p| p.starts_with("/usr/local/bin")),
+                "no unix-only install location on Windows"
+            );
+        }
+        // explicit CARGO_TARGET_DIR overrides the default cache location
+        let c = core_artifact_candidates("/home/u", Some("/tgt"));
+        assert!(
+            c.iter().any(|p| p.starts_with("/tgt/release")) && c.iter().any(|p| p.starts_with("/tgt/debug")),
+            "CARGO_TARGET_DIR is honored: {c:?}"
+        );
+    }
 }
 
 fn usage() -> String {
@@ -882,8 +1128,9 @@ fn usage() -> String {
      \n\
      Lifecycle:\n  \
        continuum start                 build + run the headless Rust core (detached), wait until ready\n  \
-       continuum reboot                rebuild + relaunch, replacing any running core (~0 downtime)\n  \
-       continuum stop                  stop the running core\n\
+       continuum reboot                rebuild + relaunch, replacing any running core (~0 downtime);\n                                       verifies the RUNNING core's build SHA before reporting success\n  \
+       continuum stop                  stop the running core\n  \
+       continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
      \n\
      Commands (dispatch to the running core):\n  \
        continuum ping\n  \

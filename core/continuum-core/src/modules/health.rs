@@ -34,6 +34,12 @@ pub struct PingResult {
     pub ok: bool,
     /// Substrate-measured handling time in milliseconds.
     pub round_trip_ms: u32,
+    /// Git commit this RUNNING process was compiled from (deploy provenance, #194).
+    /// Self-reported by the live process image — unlike re-exec'ing the on-disk
+    /// binary at the process's path, this cannot be fooled by a rebuild that
+    /// swapped the file under a still-running old core. `"unknown"` only when the
+    /// server was built outside a git tree.
+    pub build_sha: String,
 }
 
 /// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
@@ -56,6 +62,7 @@ impl ActionCommand for PingCommand {
         Ok(PingResult {
             ok: true,
             round_trip_ms: 0,
+            build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
         })
     }
 }
@@ -196,6 +203,12 @@ mod tests {
             CommandResult::Json(v) => {
                 assert_eq!(v["ok"], true);
                 assert!(v.get("success").is_none(), "Bare wire — no envelope");
+                // what this catches (#194): ping is the deploy-provenance surface —
+                // the running core self-reports its compiled-in git SHA so
+                // `continuum reboot` can verify the swap actually shipped fresh code.
+                // A regression that drops buildSha turns reboot receipts back into lies.
+                let sha = v["buildSha"].as_str().expect("buildSha is a string");
+                assert!(!sha.is_empty(), "buildSha must never be empty");
             }
             other => panic!("expected Json, got {other:?}"),
         }

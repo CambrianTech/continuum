@@ -139,11 +139,11 @@ describe('1. addressing — name + Target → airc:// URI', () => {
 describe('2. Commands — execute (call) + provide (serve)', () => {
   it('execute: serialize-once out, parse-once back, typed result', async () => {
     const t = new MockTransport();
-    t.willReturn('{"ok":true,"roundTripMs":3}');
+    t.willReturn('{"ok":true,"roundTripMs":3,"buildSha":"abc123f"}');
     const c = Continuum.connect(t);
     const r = await c.commands.execute('ping', { message: 'hi' });
     expect(t.executed[0]).toEqual({ command: 'ping', paramsJson: '{"message":"hi"}' });
-    expect(r).toEqual({ ok: true, roundTripMs: 3 });
+    expect(r).toEqual({ ok: true, roundTripMs: 3, buildSha: 'abc123f' });
   });
 
   it('execute: nested params serialize with full fidelity (no flatten/reorder)', async () => {

@@ -425,7 +425,20 @@ if [ -x "$CONTINUUM_CLI_BIN" ]; then
   rm -f "$CONTINUUM_LINK_DIR/continuum"
   if cp "$CONTINUUM_CLI_BIN" "$CONTINUUM_LINK_DIR/continuum.tmp.$$" \
      && mv -f "$CONTINUUM_LINK_DIR/continuum.tmp.$$" "$CONTINUUM_LINK_DIR/continuum"; then
-    :
+    # `uu` — THE official short alias (Joel, 2026-08-01): the double-U of
+    # contin-UU-m. One name on every platform, so recipes/docs stay portable —
+    # `cu` is /usr/bin/cu (UUCP) on Unix and `co` is RCS checkout wherever rcs
+    # is installed; per-box aliases are how the grid silently forked once
+    # already. Symlink to OUR installed copy (stable across deploys, unlike the
+    # cargo target dir). Squatter guard: refuse loudly if `uu` resolves to a
+    # binary that isn't ours — never shadow, never silently skip.
+    UU_LINK="$CONTINUUM_LINK_DIR/uu"
+    UU_RESOLVED="$(command -v uu 2>/dev/null || true)"
+    if [ -n "$UU_RESOLVED" ] && [ "$UU_RESOLVED" != "$UU_LINK" ]; then
+      echo "  ⚠ 'uu' already resolves to $UU_RESOLVED — NOT installing the alias (rename or remove the squatter)" >&2
+    else
+      ln -sfn "$CONTINUUM_LINK_DIR/continuum" "$UU_LINK"
+    fi
   else
     rm -f "$CONTINUUM_LINK_DIR/continuum.tmp.$$"
     echo "  ⚠ could not install continuum CLI into $CONTINUUM_LINK_DIR" >&2

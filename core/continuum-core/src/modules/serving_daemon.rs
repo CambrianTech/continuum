@@ -994,12 +994,59 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } => 0,
             };
+            // #106 vision readiness: for a ready lane, verify the MULTIMODAL endpoint
+            // actually answers — the row's declared Vision, the resolved mmproj, and
+            // the server's own `/props modalities` must all agree before the snapshot
+            // claims sight. Any gap publishes `vision_ready: false` WITH the reason
+            // logged loud, so the observe path fails honestly instead of POSTing
+            // pixels a text-only lane would silently drop.
+            let vision_ready = match &outcome {
+                EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                    let declares_vision = target
+                        .model
+                        .has(crate::model_registry::Capability::Vision);
+                    let mmproj_resolved =
+                        crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
+                            .is_some();
+                    let props = match server.multimodal_support().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            crate::probe!(
+                                class = "serving.vision.props_unreadable",
+                                desired = desired.as_str(),
+                                error = %e,
+                                "ready lane but /props modalities unreadable — \
+                                 publishing vision_ready=false (unverified ≠ sight)",
+                            );
+                            None
+                        }
+                    };
+                    match crate::inference::llama_server::vision_lane_ready(
+                        declares_vision,
+                        mmproj_resolved,
+                        props,
+                    ) {
+                        Ok(ready) => ready,
+                        Err(why) => {
+                            crate::probe!(
+                                class = "serving.vision.not_ready",
+                                desired = desired.as_str(),
+                                why = why.as_str(),
+                                "vision-capable row is serving without verified sight",
+                            );
+                            false
+                        }
+                    }
+                }
+                EnsureOutcome::Degraded { .. } => false,
+            };
             let snapshot = snapshot_from_outcome(
                 &outcome,
                 &desired,
                 &desired_adapter_paths,
                 served_window,
                 target.lanes,
+                vision_ready,
             );
             crate::probe!(
                 class = "serving.reconcile",
@@ -1652,6 +1699,7 @@ fn snapshot_from_outcome(
     adapters: &[String],
     served_context_window: u32,
     lanes: u32,
+    vision_ready: bool,
 ) -> ServingSnapshot {
     match outcome {
         EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. }
@@ -1672,6 +1720,11 @@ fn snapshot_from_outcome(
                 // KV as `lanes × kv_at(served_context_window)` (#79).
                 lanes,
                 degraded_reason: None,
+                // The reconcile's verified multimodal verdict (#106): declared
+                // Vision + resolved mmproj + `/props modalities.vision` all
+                // agreed. The observe path gates on THIS, never on the row's
+                // declaration alone.
+                vision_ready,
             }
         }
         // Ready outcome but the served window was unreadable (0) → do NOT publish
@@ -2386,6 +2439,7 @@ mod tests {
             &genes,
             11008,
             4,
+            true,
         );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
@@ -2399,13 +2453,22 @@ mod tests {
             up.lanes, 4,
             "ready snapshot carries the --parallel lane count for total-KV accounting"
         );
+        assert!(
+            up.vision_ready,
+            "the reconcile's verified multimodal verdict must survive into the snapshot \
+             — the observe path gates on THIS field (#106)"
+        );
 
         let already =
-            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4);
+            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4, false);
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
         assert_eq!(already.served_context_window, 11008);
         assert_eq!(already.lanes, 4);
+        assert!(
+            !already.vision_ready,
+            "a text lane (verdict false) must never read as sighted"
+        );
 
         // Ready outcome but the served window was unreadable (0) → publish the gap,
         // NOT a ready snapshot with a zero window a persona would budget against.
@@ -2415,6 +2478,7 @@ mod tests {
             &genes,
             0,
             4,
+            false,
         );
         assert_eq!(windowless.active_model, None, "ready-but-no-window → nothing live");
         assert!(!windowless.ready);
@@ -2427,6 +2491,7 @@ mod tests {
             &genes,
             11008,
             4,
+            false,
         );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
@@ -2504,6 +2569,7 @@ mod tests {
             served_context_window: 11008,
             lanes: 4,
             degraded_reason: None,
+            vision_ready: false,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -2523,6 +2589,7 @@ mod tests {
             served_context_window: 11008,
             lanes: 4,
             degraded_reason: None,
+            vision_ready: false,
         }
     }
 
@@ -2674,6 +2741,7 @@ mod tests {
             served_context_window: plan_window / 4,
             lanes: 4,
             degraded_reason: None,
+            vision_ready: false,
         });
         daemon
             .reconcile_to_plan()
@@ -2691,6 +2759,7 @@ mod tests {
             served_context_window: plan_window / 2 + 256,
             lanes: 4,
             degraded_reason: None,
+            vision_ready: false,
         });
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -2716,6 +2785,7 @@ mod tests {
             served_context_window: 11008,
             lanes: 4,
             degraded_reason: None,
+            vision_ready: false,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None

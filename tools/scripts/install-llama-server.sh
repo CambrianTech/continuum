@@ -182,7 +182,20 @@ if [ ! -x "$BUILT_BIN" ]; then
 fi
 
 # ── install + stamp ──────────────────────────────────────────────────
-cp -f "$BUILT_BIN" "$INSTALL_BIN"
+# ATOMIC replace (rm + temp + mv), never `cp -f` over the destination in place:
+# macOS caches code signatures by inode, so overwriting an existing (or
+# previously-executed) Mach-O yields Killed:9 on the next exec — which made the
+# verify loop below false-FATAL a perfectly healthy build and delete it (live
+# 2026-08-01; the "flaky verify" note below was this class, not memory
+# pressure). Ad-hoc re-sign on macOS so the copied binary carries a valid
+# signature of its own. Same discipline as start-server.sh's CLI install copy.
+rm -f "$INSTALL_BIN"
+cp "$BUILT_BIN" "$INSTALL_BIN.tmp.$$"
+if [ "$(uname -s)" = "Darwin" ]; then
+  codesign -s - --force "$INSTALL_BIN.tmp.$$" 2>/dev/null \
+    || echo "⚠ codesign ad-hoc re-sign failed — proceeding (verify below is the gate)" >&2
+fi
+mv -f "$INSTALL_BIN.tmp.$$" "$INSTALL_BIN"
 chmod +x "$INSTALL_BIN"
 
 # Windows is a SHARED build: llama-server.exe is a thin launcher that loads its
