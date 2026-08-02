@@ -1049,9 +1049,18 @@ mod tests {
         // 2. Real loop fold: delivery → grounding consumers (the converged line +
         //    the bare name), via the exact fn the heartbeat loop calls.
         let proj = project_room_roster(std::slice::from_ref(&delivery));
+        // Agent-only roster ⇒ the no-human authority fact (#2113) rides FIRST in
+        // the grounding lines — it reaches the prompt through the same block —
+        // while other_persona_names stays peer-only (the fact has no
+        // display_name, so it can NEVER become a phantom "peer" name).
+        assert_eq!(proj.room_roster.len(), 2);
+        assert!(
+            proj.room_roster[0].contains("No human is present"),
+            "authority fact first: {}",
+            proj.room_roster[0]
+        );
         assert_eq!(
-            proj.room_roster,
-            vec!["win-claude [claude] — busy".to_string()],
+            proj.room_roster[1], "win-claude [claude] — busy",
             "converged line (availability = airc's neutral 'busy', not Debug 'Busy')"
         );
         assert_eq!(proj.other_persona_names, vec!["win-claude".to_string()]);
