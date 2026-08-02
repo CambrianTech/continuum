@@ -386,6 +386,32 @@ if [ "$_mf_os" = windows ] && command -v nvcc >/dev/null 2>&1 && ! command -v cl
   fi
 fi
 
+# ── #296 swept-artifact guard ────────────────────────────────────────
+# Cache eviction is a SUPPORTED event (CLAUDE.md disk doctrine): the shared
+# cargo cache's $PROFILE_LABEL/ dir can be swept while build/ + deps/ survive,
+# and an incremental `cargo build` then prints "Finished" from a warm
+# fingerprint WITHOUT restoring the missing binary (2026-08-01 incident:
+# `continuum reboot` reported success, `exec "$CORE_BIN"` died with "No such
+# file or directory", serving stayed down — fail-loud worked, self-heal
+# didn't). This is the self-heal: if the expected artifact file is missing,
+# say so loudly and re-run the SAME build invocation the script already uses
+# for that bin (a missing output forces cargo to re-link). Returns non-zero
+# if the artifact STILL doesn't exist — the caller decides fatality; no
+# silent fallback [[fallbacks-are-illegal-fail-loud]].
+# Args: 1=expected artifact path, 2=bin name, 3=manifest path,
+#       4+=profile/feature flags (pre-split by the caller, as elsewhere).
+ensure_unswept_bin() {
+  local bin_path="$1" bin_name="$2" manifest="$3"
+  shift 3
+  if [ -f "$bin_path" ]; then
+    return 0
+  fi
+  echo "▶ $bin_name missing from cargo cache (swept?) — rebuilding --bin $bin_name" >&2
+  cargo build --manifest-path "$manifest" --bin "$bin_name" "$@" \
+    || echo "⚠ swept-cache rebuild of $bin_name failed" >&2
+  [ -f "$bin_path" ]
+}
+
 # ── Build the continuum-mcp bin ──────────────────────────────────────
 # The MCP server is a separate stdio bin that MCP clients (unsloth Studio,
 # Claude Code) SPAWN — it isn't launched by us, so it must exist on disk after
@@ -417,6 +443,13 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONT
 # PATH always points at the current build. Copy atomically (temp + mv) so a `continuum`
 # invocation concurrent with a deploy never sees a half-written binary.
 CONTINUUM_CLI_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum"
+# #296: a swept cache can leave the build above "Finished" with no binary on
+# disk — restore it so the copy below has real bytes. Non-fatal (matches the
+# build's own warn): a missing CLI doesn't block core boot, and the installed
+# ~/.local/bin copy from the last deploy keeps working.
+if ! ensure_unswept_bin "$CONTINUUM_CLI_BIN" continuum "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_FEATURES; then
+  echo "⚠ continuum CLI still missing after swept-cache rebuild — CLI install skipped (core still launches)" >&2
+fi
 if [ -x "$CONTINUUM_CLI_BIN" ]; then
   CONTINUUM_LINK_DIR="$HOME/.local/bin"
   mkdir -p "$CONTINUUM_LINK_DIR"
@@ -462,6 +495,12 @@ fi
 echo "▶ building forge-custodian (Rust gguf-lora export sidecar)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin forge-custodian $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ forge-custodian build failed — genome gene-conversion unavailable (core still launches)" >&2
+# #296: the core spawns this bin later as a sibling of its own exe — a swept
+# cache that survives the build above would fail loud only at first gene
+# conversion. Restore it now; non-fatal, matching the build's own warn.
+if ! ensure_unswept_bin "$CARGO_TARGET_DIR/$PROFILE_LABEL/forge-custodian" forge-custodian "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_FEATURES; then
+  echo "⚠ forge-custodian still missing after swept-cache rebuild — genome gene-conversion unavailable (core still launches)" >&2
+fi
 
 # Build the server binary BEFORE stopping the old core, so the running core keeps
 # serving through the (cached, fast) compile and downtime is ~0.
@@ -482,6 +521,15 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFIL
 # launch a lie. [[verify-the-build-actually-deployed]], [[fallbacks-are-illegal-fail-loud]].
 CORE_SRC_DIR="$(dirname "$CORE_MANIFEST")/src"
 CORE_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum-core-server"
+# #296: THE incident bin. A swept debug/ dir let the build above print
+# "Finished" with no binary on disk, and `exec "$CORE_BIN"` died at the very
+# end while the deploy read as green. Restore it HERE — before the #194
+# freshness guard, so #194 asserts against a real file — and if the rebuild
+# STILL can't produce it, fail loud now instead of at exec.
+if ! ensure_unswept_bin "$CORE_BIN" continuum-core-server "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_FEATURES; then
+  echo "✗ FATAL #296: continuum-core-server missing at $CORE_BIN even after a swept-cache rebuild — refusing to exec a nonexistent binary (leaving any running core untouched)" >&2
+  exit 1
+fi
 core_bin_is_stale() { [ -f "$CORE_BIN" ] && [ -n "$(find "$CORE_SRC_DIR" -name '*.rs' -type f -newer "$CORE_BIN" 2>/dev/null | head -1)" ]; }
 if core_bin_is_stale; then
   echo "⚠ #194: continuum-core-server is STALE (a source is newer than the binary) — cargo missed an edit; busting fingerprint + rebuilding" >&2
@@ -529,6 +577,12 @@ start_livekit_rail() {
     echo "▶ building livekit-bridge sidecar (release — links webrtc-sys, first build is slow)…"
     cargo build --manifest-path "$REPO_ROOT/core/livekit-bridge/Cargo.toml" --bin livekit-bridge --release \
       || { echo "⚠ livekit-bridge build failed — live avatar/voice unavailable"; return 0; }
+    # #296: a swept cache can let cargo report success without the binary on
+    # disk — verify before nohup'ing a nonexistent path (rail is non-fatal).
+    if [ ! -x "$BRIDGE_BIN" ]; then
+      echo "⚠ livekit-bridge still missing at $BRIDGE_BIN after rebuild (swept cache?) — live avatar/voice unavailable"
+      return 0
+    fi
   fi
   if ! pgrep -f "livekit-bridge .*${SOCK}" >/dev/null 2>&1; then
     echo "▶ livekit-bridge sidecar starting ($SOCK → $LK_URL)"

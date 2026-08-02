@@ -816,23 +816,35 @@ async fn serve_persona_loop_inner(
         // peer's voice anymore (the identity-bleed/echo root cause).
         // Her NOW rides the burst header (task #125): live turns carry real wall-clock
         // so time is a fact she can perceive; the eval fork passes its own pinned epoch.
+        let mut ws_turns = build_workspace_turns(
+            &composed.deliveries,
+            &ctx.identity.peer_id.to_string(),
+            &ctx.identity.agent_name,
+            // Anchor the message that woke this turn as the final peer turn —
+            // the composed thread's `airc` delivery can lag the wake, and a
+            // directed turn that reasons over a stale thread emits an empty
+            // completion → Pass (see `TriggerTurn`). `msg.peer_id` resolves to
+            // its roster name inside; `now_ms` is the wake time.
+            Some(TriggerTurn {
+                peer_id: &msg.peer_id.to_string(),
+                content: &msg.text,
+                occurred_at_ms: now_ms,
+            }),
+        );
+        // #301 anchor-starvation fix: the in-window escalation counter loses its
+        // older evidence to the context squeeze, so ALSO count the echo run over
+        // the durable rings (live path only — eval/replay stay window-derived).
+        // Ring run at threshold + no anchor already present → the same
+        // work-board anchor the in-window escalation would have pushed.
+        append_ring_anchor_if_starved(
+            &mut ws_turns,
+            &composed.deliveries,
+            ctx.identity.peer_id,
+            turn_room,
+        );
         let workspace_burst = crate::cognition::workspace::Burst::from_turns_at(
             turn_room,
-            build_workspace_turns(
-                &composed.deliveries,
-                &ctx.identity.peer_id.to_string(),
-                &ctx.identity.agent_name,
-                // Anchor the message that woke this turn as the final peer turn —
-                // the composed thread's `airc` delivery can lag the wake, and a
-                // directed turn that reasons over a stale thread emits an empty
-                // completion → Pass (see `TriggerTurn`). `msg.peer_id` resolves to
-                // its roster name inside; `now_ms` is the wake time.
-                Some(TriggerTurn {
-                    peer_id: &msg.peer_id.to_string(),
-                    content: &msg.text,
-                    occurred_at_ms: now_ms,
-                }),
-            ),
+            ws_turns,
             Some(now_ms),
         );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
@@ -1448,6 +1460,102 @@ pub(crate) fn collapse_near_duplicate_turns(
 /// live, replay, and eval contexts.
 const PATTERN_FIRES_BEFORE_ANCHOR: usize = 2;
 
+/// Word-token set for echo containment — ONE tokenization for the in-window
+/// detectors and the ring-based run counter below, so "nearly identical"
+/// cannot drift between them.
+fn echo_words(s: &str) -> std::collections::HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// Ring-based echo run — the escalation counter's starvation fix (#301).
+///
+/// The in-window detectors measure their runs over the RENDERED burst, which
+/// the live context budget squeezes to 2–6 turns (#259) — so during an
+/// hours-long photocopy chain (glass-boxed 2026-08-02: Atlas's wake-intro
+/// reproduced byte-for-byte by Benchy then Asha, identity claim included)
+/// the older echo evidence has always scrolled out and the run reads 1,
+/// one below [`PATTERN_FIRES_BEFORE_ANCHOR`] — the `[anchor]` that provably
+/// breaks these loops never fires. Same starvation the room-speech ring
+/// already cures for the `inbound_restates` fact.
+///
+/// This counts the run over RING snapshots instead: the trailing run of her
+/// own recent messages (newest-first, ≥8 substantive words) each ≥0.8-contained
+/// in the room ring's vocabulary — excluding entries identical to the message
+/// being judged, so her own recorded copy can't vouch for itself. Pure over
+/// its inputs: LIVE callers pass the process rings; eval/replay callers pass
+/// nothing and stay window-derived (the #59 isolation the shared
+/// `build_workspace_turns` signature preserves by not knowing rings exist).
+pub(crate) fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> usize {
+    const MIN_WORDS: usize = 8;
+    const CONTAINMENT: f32 = 0.8;
+    let mut run = 0usize;
+    for own in own_recent.iter().rev() {
+        let cur = echo_words(own);
+        if cur.len() < MIN_WORDS {
+            break;
+        }
+        // Exclude at most ONE identical room entry — her own recorded copy
+        // (the room ring is authorless, so equality is the only handle). The
+        // REMAINING identical copies are exactly the photocopy evidence:
+        // excluding all of them would erase the chain being detected.
+        let mut skipped_own_copy = false;
+        let mut window: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for r in room_recent {
+            if !skipped_own_copy && r.as_str() == own.as_str() {
+                skipped_own_copy = true;
+                continue;
+            }
+            window.extend(echo_words(r));
+        }
+        if window.is_empty() {
+            break;
+        }
+        let covered =
+            cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
+        if covered >= CONTAINMENT {
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    run
+}
+
+/// LIVE-path companion to [`ring_echo_run`]: read the process rings for this
+/// persona + room, and when the ring-counted echo run reaches the escalation
+/// threshold while the window-derived detectors pushed no `[anchor]` (their
+/// evidence scrolled out — the #301 starvation), append the SAME work-board
+/// anchor they would have. One anchor per burst, whichever counter earns it.
+fn append_ring_anchor_if_starved(
+    turns: &mut Vec<crate::cognition::workspace::BurstTurn>,
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    peer: crate::identity::PeerId,
+    room: uuid::Uuid,
+) {
+    if turns.iter().any(|t| t.content.starts_with("[anchor]")) {
+        return;
+    }
+    let own = crate::cognition::deliberation_budget::recent_own_speech(peer);
+    let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
+    let run = ring_echo_run(&own, &room_recent);
+    if run >= PATTERN_FIRES_BEFORE_ANCHOR {
+        crate::probe!(
+            class = "persona.pattern.ring_anchor",
+            peer = %peer,
+            room = %room,
+            ring_run = run,
+            "echo run counted from the durable rings (window evidence scrolled out) — \
+             anchor escalation fired via the #301 starvation fix"
+        );
+        turns.push(crate::cognition::workspace::BurstTurn::opaque(
+            work_board_anchor(deliveries),
+        ));
+    }
+}
+
 /// Build the `[anchor]` escalation line — the perception-side FACT that gives a
 /// repeating mind somewhere concrete to go (work card d6f010c8, live
 /// 2026-07-23: the `[pattern]` description fired and did NOT break the greeting
@@ -2035,18 +2143,28 @@ async fn run_self_cycle(
     // Structured turns (own posts attributed as self → assistant, peers → user),
     // wrapped into a Burst carrying both the turns and their text projection — the
     // SAME shape the message path builds.
+    let mut selftick_turns = build_workspace_turns(
+        &deliveries,
+        &ctx.identity.peer_id.to_string(),
+        &ctx.identity.agent_name,
+        // The self-tick perceives AMBIENT state — no single triggering
+        // message to anchor. It re-derives the thread from the (now caught-up)
+        // delivery, which is exactly why it recovers the message-path's missed
+        // turn ~one tick later; anchoring is the message path's job.
+        None,
+    );
+    // #301: the self-tick is where the live photocopy chains actually run
+    // (idle re-announcements), so it gets the same ring-counted anchor
+    // escalation as the message path — window-derived counters starve here too.
+    append_ring_anchor_if_starved(
+        &mut selftick_turns,
+        &deliveries,
+        ctx.identity.peer_id,
+        ctx.identity.default_room,
+    );
     let burst = crate::cognition::workspace::Burst::from_turns_at(
         ctx.identity.default_room,
-        build_workspace_turns(
-            &deliveries,
-            &ctx.identity.peer_id.to_string(),
-            &ctx.identity.agent_name,
-            // The self-tick perceives AMBIENT state — no single triggering
-            // message to anchor. It re-derives the thread from the (now caught-up)
-            // delivery, which is exactly why it recovers the message-path's missed
-            // turn ~one tick later; anchoring is the message path's job.
-            None,
-        ),
+        selftick_turns,
         Some(now_ms),
     );
     let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
@@ -2609,6 +2727,53 @@ mod tests {
             assert!(
                 burst.contains(&format!("{stranger}: lurking")),
                 "unrostered peer falls back to its id, got:\n{burst}"
+            );
+        }
+
+        // what this catches: the #301 anchor-starvation fix. The in-window escalation
+        // counters lose their older evidence to the live context squeeze (Asha's
+        // hours-long photocopy chain always counted "last 1 message(s)" — one below
+        // the threshold — so the [anchor] that provably breaks these loops never
+        // fired). ring_echo_run counts the SAME containment geometry over ring
+        // snapshots instead: two trailing own-ring photocopies of a peer's message
+        // must count 2 (escalates); a novel own message counts 0; and an own entry
+        // must never vouch for itself (the room ring holds her own post too).
+        // Specimen text is the live Atlas wake-intro reproduced byte-for-byte by
+        // Benchy then Asha (captures 2026-08-02, /tmp/asha-atlas-capture.json).
+        #[test]
+        fn ring_echo_run_counts_photocopies_and_never_self_vouches() {
+            let intro = "I'm Atlas, and I've been exploring some of the available \
+                         commands on the grid. One useful command is perception/observe, \
+                         which allows me to observe a UI or web page as pixels and read \
+                         its structure. This can be helpful for understanding layouts."
+                .to_string();
+            let paraphrase = "I've been exploring some of the available commands on the \
+                              grid, such as perception/observe, which allows me to observe \
+                              a UI or web page and read its structure — helpful for \
+                              understanding layouts or verifying changes."
+                .to_string();
+            let novel = "Wired the per-layer KV accessor into the fit calculator and the \
+                         regression test asserts 31200 bytes per token on the hybrid."
+                .to_string();
+
+            // Two trailing photocopies in her own ring, the source + peers' copies
+            // in the room ring → run 2 (escalation threshold reached).
+            let own = vec![paraphrase.clone(), intro.clone()];
+            let room = vec![intro.clone(), intro.clone(), paraphrase.clone(), intro.clone()];
+            assert_eq!(super::super::ring_echo_run(&own, &room), 2, "photocopy chain must count each copy");
+
+            // A novel newest message breaks the run at 0 even with echoes behind it.
+            let own_novel = vec![intro.clone(), novel];
+            assert_eq!(super::super::ring_echo_run(&own_novel, &room), 0, "novel work must reset the run");
+
+            // Her own recorded copy cannot vouch for itself: identical entries are
+            // excluded from the containment window, so a lone original counts 0.
+            let own_lone = vec![intro.clone()];
+            let room_only_self = vec![intro];
+            assert_eq!(
+                super::super::ring_echo_run(&own_lone, &room_only_self),
+                0,
+                "an original with no independent copies is not an echo"
             );
         }
 

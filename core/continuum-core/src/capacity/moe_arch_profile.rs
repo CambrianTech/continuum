@@ -84,6 +84,16 @@ pub struct MoeArchProfile {
     /// Always-active shared experts per layer — resident trunk weights,
     /// excluded from routed-cache arithmetic by definition.
     pub shared_experts: u32,
+    /// Partial LAYER offload is FORBIDDEN for this artifact: its own
+    /// per-layer `attention.head_count_kv` array contains zeros — recurrent
+    /// (GDN/SSM) layers whose fused ops cannot span CPU/GPU buffers (the
+    /// `node->buffer->buft` assertion crash, BigMama's registered 5090
+    /// issue 3 / #238). Serve all-resident-on-GPU (experts paged INTO VRAM
+    /// is fine — that's the expert axis, not the layer axis) or route to a
+    /// grid peer; a launcher must refuse to emit a partial `-ngl` for this
+    /// model. DATA from the artifact's self-description — never an
+    /// arch-name match (#70).
+    pub uniform_offload_required: bool,
 }
 
 impl MoeArchProfile {
@@ -123,6 +133,10 @@ impl MoeArchProfile {
                 ),
             });
         }
+        let uniform_offload_required =
+            gguf_keys::attention_head_count_kv_per_layer(ct, &arch)
+                .is_some_and(|per_layer| per_layer.contains(&0));
+
         Ok(Self {
             n_moe_layers: n_layers - leading_dense,
             arch,
@@ -130,6 +144,7 @@ impl MoeArchProfile {
             experts_per_layer,
             top_k,
             shared_experts,
+            uniform_offload_required,
         })
     }
 
@@ -200,6 +215,53 @@ mod tests {
         assert_eq!(m.activated_per_token, 384, "manifest field is DERIVED");
         assert_eq!(m.top_k_per_layer, Some(8));
         assert_eq!(m.n_layers, 48);
+    }
+
+    // what this catches: BigMama's registered 5090 issue 3 (#238) — a GDN/SSM
+    // hybrid must declare uniform_offload_required from its OWN metadata: the
+    // per-layer attention.head_count_kv ARRAY containing zeros (recurrent
+    // layers whose fused ops cannot span CPU/GPU buffers — the
+    // node->buffer->buft assertion on partial -ngl). Detection is artifact
+    // DATA, never an arch-name match (#70): the same key as a SCALAR (a
+    // uniform GQA MoE) must NOT set the flag.
+    #[test]
+    fn hybrid_recurrent_arch_requires_uniform_offload() {
+        let hybrid = content_with(vec![
+            ("general.architecture", Value::String("kimi-k3".into())),
+            ("kimi-k3.block_count", Value::U32(8)),
+            ("kimi-k3.expert_count", Value::U32(896)),
+            ("kimi-k3.expert_used_count", Value::U32(16)),
+            (
+                "kimi-k3.attention.head_count_kv",
+                Value::Array(vec![
+                    Value::U32(0),
+                    Value::U32(0),
+                    Value::U32(0),
+                    Value::U32(1),
+                    Value::U32(0),
+                    Value::U32(0),
+                    Value::U32(0),
+                    Value::U32(1),
+                ]),
+            ),
+        ]);
+        assert!(
+            MoeArchProfile::from_gguf(&hybrid).unwrap().uniform_offload_required,
+            "zeros in the per-layer KV-head array declare recurrent layers → \
+             partial layer offload must be refused"
+        );
+
+        let uniform = content_with(vec![
+            ("general.architecture", Value::String("qwen3moe".into())),
+            ("qwen3moe.block_count", Value::U32(4)),
+            ("qwen3moe.expert_count", Value::U32(128)),
+            ("qwen3moe.expert_used_count", Value::U32(8)),
+            ("qwen3moe.attention.head_count_kv", Value::U32(8)),
+        ]);
+        assert!(
+            !MoeArchProfile::from_gguf(&uniform).unwrap().uniform_offload_required,
+            "a scalar head_count_kv (uniform GQA) must not forbid partial offload"
+        );
     }
 
     // what this catches (#231 outlier B): a DeepSeek-shaped artifact — dense

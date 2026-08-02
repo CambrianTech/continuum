@@ -28,7 +28,7 @@
 //! decision that lives with the enum (`model_registry::hydrate::
 //! arch_from_gguf_string`); this module only surfaces the raw string.
 
-use candle_core::quantized::gguf_file::Content;
+use candle_core::quantized::gguf_file::{Content, Value};
 
 /// `general.architecture` — the model's own declared architecture string
 /// (e.g. `"qwen3"`, `"llama"`). Required for correctness by most readers
@@ -72,6 +72,21 @@ pub fn block_count(ct: &Content, arch: &str) -> Option<u32> {
     ct.metadata
         .get(&format!("{arch}.block_count"))
         .and_then(|v| v.to_u32().ok())
+}
+
+/// `{arch}.attention.head_count_kv` in its PER-LAYER array form — the
+/// artifact's own declaration of per-layer KV variance. `Some(vec)` only when
+/// the key is an ARRAY (hybrid recurrent models — kimi-linear, kimi-k3,
+/// jamba — where zeros mark recurrent layers with no per-token KV); `None`
+/// for the scalar form (uniform models) or a missing key. Callers must not
+/// fabricate a uniform vec from the scalar: scalar-vs-array IS the signal.
+/// A zero in this array is also the honest, name-free marker of a GDN/SSM
+/// hybrid whose fused ops cannot span CPU/GPU buffers (5090 issue 3, #238).
+pub fn attention_head_count_kv_per_layer(ct: &Content, arch: &str) -> Option<Vec<u32>> {
+    match ct.metadata.get(&format!("{arch}.attention.head_count_kv"))? {
+        Value::Array(items) => items.iter().map(|v| v.to_u32().ok()).collect(),
+        _ => None,
+    }
 }
 
 /// `{arch}.expert_count` — the total number of routed experts in an MoE

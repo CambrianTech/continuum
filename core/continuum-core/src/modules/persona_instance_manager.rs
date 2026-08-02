@@ -51,7 +51,6 @@ use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use airc_core::RoomId;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -115,8 +114,9 @@ pub struct PersonaInstanceInfo {
     /// Absolute path to the persona's airc home dir.
     #[ts(type = "string")]
     pub home: PathBuf,
-    /// The room the persona joined at bootstrap (currently always
-    /// the continuum-core's discovered default_room).
+    /// The persona's HOME room — her own durable subscription default,
+    /// resolved at bootstrap from HER airc home (fresh minds land in
+    /// `#general`), never the operator's discovered room (#298).
     #[ts(type = "string")]
     pub default_room: Uuid,
     /// Whether this citizen was resumed from disk or freshly
@@ -165,16 +165,15 @@ impl PersonaInstanceInfo {
 ///   [`birth_one`](PersonaBirth::birth_one) directly).
 ///
 /// It owns exactly the deps a birth needs — the live registry, the airc daemon socket,
-/// the default room (+ its name, so `Airc::join(name)` derives the canonical channel),
 /// the continuum root where homes are carved, and the late-bound substrate executor.
+/// (No room dep: a persona's home room comes from HER OWN durable subscription state —
+/// `Airc::current_room()` inside bootstrap — never from the operator's discovery, #298.)
 /// All are cheap-clone handles (`registry` is an `Arc<DashMap>`; `executor` is an
 /// `Arc<LateBound>`), so the copy the module holds and the copy `PersonaBirth` holds
 /// point at the SAME underlying state — one install of the executor reaches both.
 pub struct PersonaBirth {
     registry: PersonaAircRuntimeRegistry,
     daemon_socket: PathBuf,
-    default_room: RoomId,
-    default_room_name: Option<String>,
     continuum_root: PathBuf,
     executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
     /// Late-bound event bus — installed from `ModuleContext` in
@@ -193,8 +192,6 @@ impl PersonaBirth {
     pub fn new(
         registry: PersonaAircRuntimeRegistry,
         daemon_socket: PathBuf,
-        default_room: RoomId,
-        default_room_name: Option<String>,
         continuum_root: PathBuf,
         executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
         bus: Arc<LateBound<crate::runtime::MessageBus>>,
@@ -202,8 +199,6 @@ impl PersonaBirth {
         Self {
             registry,
             daemon_socket,
-            default_room,
-            default_room_name,
             continuum_root,
             executor,
             bus,
@@ -238,8 +233,6 @@ impl PersonaBirth {
             intent.agent_name.clone(),
             &self.continuum_root,
             self.daemon_socket.clone(),
-            self.default_room,
-            self.default_room_name.clone(),
             intent.source,
             executor,
         )
@@ -456,17 +449,17 @@ impl PersonaInstanceManagerModule {
     ///
     /// `registry` is shared (cheap to clone — internal `Arc<DashMap>`)
     /// so callers can hand other modules a view of the same roster.
-    /// `daemon_socket`, `default_room`, and `default_room_name` come
-    /// from [`crate::modules::airc::AircModule`]'s discovery:
-    /// [`daemon_socket`] / [`default_room`] / [`default_room_name`].
+    /// `daemon_socket` comes from
+    /// [`crate::modules::airc::AircModule`]'s discovery.
     /// `continuum_root` is where persona homes get carved out
     /// (typically `~/.continuum/`, env-overridable via
-    /// `CONTINUUM_ROOT`).
+    /// `CONTINUUM_ROOT`). No room dep (#298): each persona's home room
+    /// is her own durable subscription state, resolved inside
+    /// [`PersonaAircRuntime::bootstrap`] — never the operator's
+    /// discovered current room.
     pub fn new(
         registry: PersonaAircRuntimeRegistry,
         daemon_socket: PathBuf,
-        default_room: RoomId,
-        default_room_name: Option<String>,
         continuum_root: PathBuf,
     ) -> Self {
         let executor = Arc::new(LateBound::new("persona-instance-manager::executor"));
@@ -474,8 +467,6 @@ impl PersonaInstanceManagerModule {
         let birth = Arc::new(PersonaBirth::new(
             registry.clone(),
             daemon_socket, // birth-only dep — moved, not stored on the module
-            default_room,
-            default_room_name, // birth-only dep — moved
             continuum_root.clone(),
             executor.clone(),
             bus.clone(),
@@ -660,8 +651,6 @@ mod tests {
         let module = PersonaInstanceManagerModule::new(
             registry,
             PathBuf::from("/nonexistent/socket"),
-            RoomId::from_uuid(Uuid::nil()),
-            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let cfg = module.config();
@@ -686,8 +675,6 @@ mod tests {
         let module = PersonaInstanceManagerModule::new(
             PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
-            RoomId::from_uuid(Uuid::nil()),
-            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         for command in ["persona/instances/list", "persona/instances/get"] {
@@ -709,8 +696,6 @@ mod tests {
         let module = PersonaInstanceManagerModule::new(
             PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
-            RoomId::from_uuid(Uuid::nil()),
-            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
@@ -725,8 +710,6 @@ mod tests {
         let module = PersonaInstanceManagerModule::new(
             registry,
             PathBuf::from("/nonexistent/socket"),
-            RoomId::from_uuid(Uuid::nil()),
-            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let res = module
