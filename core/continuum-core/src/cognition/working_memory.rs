@@ -719,11 +719,32 @@ impl Faculty for WorkingMemoryFaculty {
     // Perception tier (default): reacts to the raw world-state, bidding the recent
     // reasoning into phase 1 so the deliberator conditions on it in phase 2.
     async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
-        let recent = self.memory.recent();
+        let entries = self.memory.recent_entries();
         let dispatched = self.memory.dispatched_snapshot();
-        if recent.is_empty() && dispatched.is_empty() {
+        if entries.is_empty() && dispatched.is_empty() {
             return None;
         }
+        // Render BY KIND (the recent_entries contract; PERCEPTION-FACTS.md).
+        // Substrate Facts ([resumed]/[context]/[repetition]…) are the SYSTEM's
+        // second-person notices posted into her window — NOT her thoughts.
+        // Glass-boxed 2026-08-01 (#264 fourth finding): lumping them into the
+        // "my interior state" block made the model resolve the voice conflict
+        // by converting the notice to first person and SPEAKING it — 2f50b223
+        // posted "My session was interrupted under a minute ago and my memory
+        // restored; nothing was in flight" verbatim into the room, a
+        // scaffold-echo of the [resumed] briefing. Same bug class as the
+        // second-person header this comment block's sibling above fixed
+        // (#264 third finding): provenance framing must match the voice.
+        let recent: Vec<String> = entries
+            .iter()
+            .filter(|e| !matches!(e.kind, WmKind::Fact))
+            .map(|e| e.text.clone())
+            .collect();
+        let notices: Vec<String> = entries
+            .iter()
+            .filter(|e| matches!(e.kind, WmKind::Fact))
+            .map(|e| e.text.clone())
+            .collect();
         // Render oldest-first, newest-LAST: position alone carries recency (the last
         // line is the most recent thought), the universal chat-history convention.
         //
@@ -770,6 +791,23 @@ impl Faculty for WorkingMemoryFaculty {
                     "Full result of your most recent action (#{seq}):\n{clipped}"
                 ));
             }
+        }
+        // Substrate notices AFTER the trail: nearest generation (the [resumed]
+        // fact's must-be-newest recency intent survives the kind split), framed
+        // in the substrate's own voice so they read as status about her
+        // situation, not words of hers to continue. A fact, never an
+        // instruction — she still decides what any notice means.
+        if !notices.is_empty() {
+            sections.push(format!(
+                "Notices my substrate posted into my window (status observations \
+                 about my situation — not a message from anyone, and not my own \
+                 words):\n{}",
+                notices
+                    .iter()
+                    .map(|f| format!("- {f}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
         }
         // Background commands the mind sent away — sentinels, compiles, debuggers —
         // streaming their status back by handle. The mind sees what's outstanding and what
@@ -820,6 +858,47 @@ impl Faculty for WorkingMemoryFaculty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: #264 fourth finding (glass-boxed 2026-08-01) — substrate
+    // Facts ([resumed]…) rendered inside the "My own recent thoughts" block; the
+    // model resolved the voice conflict by SPEAKING the notice — persona 2f50b223
+    // posted "My session was interrupted under a minute ago and my memory
+    // restored; nothing was in flight" verbatim into the room. Facts must render
+    // under the substrate-notices section, never inside the interior-state block.
+    #[tokio::test]
+    async fn facts_render_as_substrate_notices_not_own_thoughts() {
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.record("weighing the next step on the wordstats card");
+        wm.record_fact(
+            "[resumed] your session was interrupted under a minute ago and your \
+             memory restored; nothing was in flight",
+        );
+        let faculty = WorkingMemoryFaculty::new(wm);
+        let ws = Workspace::new("ambient");
+        let c = faculty.contribute(&ws).await.expect("has content");
+        let thoughts = c
+            .content
+            .find("My own recent thoughts")
+            .expect("trail section present");
+        let notices = c
+            .content
+            .find("Notices my substrate posted")
+            .expect("notices section present");
+        let own_block = &c.content[thoughts..notices];
+        assert!(
+            !own_block.contains("[resumed]"),
+            "the substrate's notice must not masquerade as her own thought:\n{own_block}"
+        );
+        assert!(
+            own_block.contains("weighing the next step"),
+            "her real thought stays in the trail:\n{own_block}"
+        );
+        assert!(
+            c.content[notices..].contains("[resumed]"),
+            "the notice renders under the substrate-notices framing:\n{}",
+            &c.content[notices..]
+        );
+    }
 
     // what this catches: the WM loop re-teacher (#264, glass-boxed 2026-07-31 —
     // Anwen's prompt TAIL carried two full verbatim copies of her looped
