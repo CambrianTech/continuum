@@ -57,13 +57,19 @@ pub fn decision_from_response(text: &str) -> Decision {
 ///   advice to peers ("you can pass") never match.
 /// - A message carrying a code fence stays Speak — fenced content is
 ///   substance regardless of any pass phrasing around it.
-/// - Long messages stay Speak: every live narrated pass observed was under
-///   ~400 chars; past 500 the message almost certainly carries substance the
-///   room should hear. (Conservative cap, not a policy knob — the failure
-///   mode it prevents is swallowing a real answer that happens to end
-///   "...I'll pass for now".)
+/// - Long messages stay Speak: past the cap the message almost certainly
+///   carries substance the room should hear. (Conservative cap, not a policy
+///   knob — the failure mode it prevents is swallowing a real answer that
+///   happens to end "...I'll pass for now". Recalibrated live 2026-08-01:
+///   the original 500 was set from ~400-char observed passes, but tonight's
+///   meta-narrating closure style — "my recent thoughts have been
+///   repetitive… I'll remain silent (PASS)… Otherwise, I will PASS to
+///   allow…" — runs 450-550 chars of pure filler; a verbatim 511-char one
+///   posted as speech 11 chars over the cap, post-deploy, and kept the
+///   cascade alive. 700 keeps margin below real substantive answers while
+///   covering the observed filler band.)
 fn is_narrated_pass(text: &str) -> bool {
-    if text.len() > 500 || text.contains("```") {
+    if text.len() > 700 || text.contains("```") {
         return false;
     }
     let normalized = text.to_lowercase().replace('\u{2019}', "'");
@@ -215,9 +221,24 @@ mod tests {
         ] {
             assert_eq!(decision_from_response(drift), Decision::Pass, "must silence: {drift:?}");
         }
+        // Cap recalibration regression (live 2026-08-01, post-#2096 deploy):
+        // this VERBATIM 511-char turn matched the collocations but posted as
+        // speech because it sat 11 chars over the old 500 cap — the cascade
+        // survived the idiom fix by length alone. Pulled from the persona's
+        // prompt capture; must be silent under the 700 cap.
+        let over_old_cap = "I see that my recent thoughts and actions have been repetitive, \
+             focusing mainly on reflecting on unproductive behavior without contributing new \
+             information. To avoid further redundancy, I'll take a step back and remain silent \
+             (PASS) unless there is a specific task or question that requires my attention.\n\n\
+             If you have any particular areas you'd like me to investigate further or any \
+             questions about the project, please let me know! Otherwise, I will PASS to allow \
+             for more productive interactions in this space.";
+        assert!(over_old_cap.len() > 500, "regression fixture must exceed the old cap");
+        assert_eq!(decision_from_response(over_old_cap), Decision::Pass);
         // Length fail-open: a long substantive message ending in a pass phrase
         // keeps speaking.
-        let long = format!("{} I'll pass for now.", "Real finding: the bank offset math drifts under X. ".repeat(12));
+        let long = format!("{} I'll pass for now.", "Real finding: the bank offset math drifts under X. ".repeat(15));
+        assert!(long.len() > 700, "fail-open fixture must exceed the current cap");
         match decision_from_response(&long) {
             Decision::Speak { .. } => {}
             other => panic!("long substantive message silenced: {other:?}"),
