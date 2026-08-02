@@ -157,11 +157,91 @@ fn pick_vision_candidate<'a>(
     candidates.first()
 }
 
+/// Is a `llama-server`-provider vision row actually SERVABLE right now, per the
+/// serving daemon's live snapshot? Pure — the snapshot IO lives in the caller.
+///
+/// The lane serves exactly ONE model, so a vision row is a real candidate only
+/// when it IS the active model, the lane is decode-ready, AND the daemon's
+/// verified multimodal verdict (`vision_ready`: declared Vision + resolved
+/// mmproj + `/props modalities.vision`, #106) came back true. Anything less and
+/// routing an image here would either hard-error at `select()` (model not
+/// served) or be silently dropped by a text-only lane — the capability lie the
+/// observe path must fail HONESTLY on instead
+/// ([[fallbacks-are-illegal-fail-loud]]).
+fn llama_server_row_ready(
+    model_id: &str,
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> Result<(), String> {
+    if !snap.ready || snap.active_model.is_none() {
+        return Err("serving lane has no ready model".to_string());
+    }
+    if snap.active_model.as_deref() != Some(model_id) {
+        return Err(format!(
+            "serving lane is occupied by {:?}, not this vision row — pin/pull it to bring \
+             vision up (`models/pull` + `serving/pin`)",
+            snap.active_model.as_deref().unwrap_or("<none>")
+        ));
+    }
+    if !snap.vision_ready {
+        return Err(
+            "lane serves this model but its multimodal endpoint is NOT verified \
+             (mmproj missing or /props reports no vision modality) — see the serving \
+             daemon's `serving.vision.*` probes for the reason"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Is this vision candidate SERVABLE right now? Registry rows *declare*
+/// capability; this checks the lane behind them actually answers, so the
+/// picker never selects a model whose `ai/generate` would hard-error at
+/// `select()` (the pre-#106 failure: prefer-local picked a VL row with no
+/// artifacts on disk and EVERY observe act died "no adapter", even while a
+/// perfectly good cloud vision lane sat registered).
+fn candidate_servable(m: &crate::model_registry::types::Model) -> Result<(), String> {
+    let registry = model_registry::try_global().ok_or("model registry not initialized")?;
+    let provider = registry
+        .provider(&m.provider)
+        .ok_or_else(|| format!("provider {:?} not in registry", m.provider))?;
+
+    if m.provider == crate::inference::llama_server::PROVIDER_ID {
+        // The local serving lane: gate on the daemon's LIVE snapshot.
+        return llama_server_row_ready(&m.id, &crate::inference::llama_server::current_serving());
+    }
+    if m.provider == crate::inference::LLAMACPP_PROVIDER_ID {
+        // The retiring in-process path is OPT-IN ONLY (CONTINUUM_LOCAL_LLAMA=1,
+        // see AIProviderModule) — without the opt-in no adapter registers for
+        // these rows, so they are never servable candidates.
+        if crate::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() != Some("1") {
+            return Err("in-process llama.cpp is not opted in (CONTINUUM_LOCAL_LLAMA=1)".into());
+        }
+        if crate::model_registry::artifacts::resolve_gguf_for_model(m).is_none() {
+            return Err("no local GGUF resolves for this row".into());
+        }
+        if crate::model_registry::artifacts::resolve_mmproj_for_model(m).is_none() {
+            return Err("no mmproj projector resolves for this row".into());
+        }
+        return Ok(());
+    }
+    // Cloud (and other keyless local gateways): the adapter registers iff the
+    // provider's API key secret is present — mirror that gate here so a keyless
+    // boot never picks a cloud vision model whose `select()` would refuse.
+    match provider.api_key_env.as_deref() {
+        None => Ok(()),
+        Some(env_key) if crate::secrets::get_secret(env_key).is_some() => Ok(()),
+        Some(env_key) => Err(format!("no {env_key} secret — provider not registered")),
+    }
+}
+
 /// Pick the best vision-capable model from the global model registry.
 ///
-/// Returns `(model_id, provider_id)` or `None` if no vision-capable
-/// model is registered. Wraps `pick_vision_candidate` with the registry
-/// IO; the priority logic itself lives in the pure helper for tests.
+/// Returns `(model_id, provider_id)` or `None` if no vision-capable model is
+/// SERVABLE (declared capability alone is not enough — see
+/// [`candidate_servable`]). Wraps `pick_vision_candidate` with the registry +
+/// serving-snapshot IO; the priority logic itself lives in the pure helper for
+/// tests. Skipped candidates are logged with their reason so an all-skipped
+/// outcome (the honest "no eyes available" failure) is diagnosable, not mute.
 fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)> {
     let registry = model_registry::try_global()?;
 
@@ -170,6 +250,13 @@ fn select_vision_model(opts: &VisionDescribeOptions) -> Option<(String, String)>
         .filter(|m| m.has(Capability::Vision))
         .filter_map(|m| {
             let provider = registry.provider(&m.provider)?;
+            if let Err(why) = candidate_servable(m) {
+                runtime::logger("cognition").info(&format!(
+                    "vision-describe: skipping {:?} — {why}",
+                    m.id
+                ));
+                return None;
+            }
             Some(VisionCandidate {
                 model_id: m.id.clone(),
                 provider_id: m.provider.clone(),
@@ -570,6 +657,38 @@ mod tests {
         let picked = pick_vision_candidate(&candidates, &opts).unwrap();
         assert!(picked.is_local);
         assert_eq!(picked.model_id, "local-llava");
+    }
+
+    // what this catches (#106): the observe path may route to the local serving lane
+    // ONLY when the lane is ready, serving THIS model, and its multimodal endpoint is
+    // VERIFIED (`vision_ready`). A regression that accepts a ready-but-unverified lane
+    // re-opens the capability lie (images POSTed to a text-only lane, silently
+    // dropped); one that accepts a different active model re-opens the pre-#106 bug
+    // where every observe act died at select() while a good lane sat elsewhere.
+    #[test]
+    fn llama_server_row_is_servable_only_when_active_ready_and_vision_verified() {
+        use crate::inference::llama_server::ServingSnapshot;
+        let mut snap = ServingSnapshot::empty();
+
+        // Nothing serving → not servable.
+        assert!(llama_server_row_ready("vl-model", &snap).is_err());
+
+        // Ready but the lane serves a DIFFERENT model → not servable, and the
+        // reason names the occupant (the operator's pin/pull hint).
+        snap.ready = true;
+        snap.active_model = Some("coder-14b".into());
+        snap.vision_ready = false;
+        let err = llama_server_row_ready("vl-model", &snap).unwrap_err();
+        assert!(err.contains("coder-14b"), "{err}");
+
+        // Serving this model but multimodal endpoint NOT verified → not servable.
+        snap.active_model = Some("vl-model".into());
+        let err = llama_server_row_ready("vl-model", &snap).unwrap_err();
+        assert!(err.contains("NOT verified"), "{err}");
+
+        // All three facts line up → servable.
+        snap.vision_ready = true;
+        assert!(llama_server_row_ready("vl-model", &snap).is_ok());
     }
 
     #[test]
