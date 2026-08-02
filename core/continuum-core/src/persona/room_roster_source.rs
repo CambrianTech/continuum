@@ -236,6 +236,37 @@ impl RoomRosterSource {
             }),
         }
     }
+
+    /// The room-authority fact for a room with NO human present — the
+    /// flywheel's self-authorization ground (Joel 2026-08-02: personas do real
+    /// work, then park on "Would you like me to proceed?" addressed to a room
+    /// where no one will ever answer). This is a PERCEPTION fact, not an
+    /// output gate ([[no-hardcoded-heuristics-to-steer-cognition]]): it tells
+    /// the persona the true authority structure of the room and lets her own
+    /// deliberation draw the conclusion. Emitted only when the roster carries
+    /// no human; a room WITH a human present says nothing (the roster lines
+    /// already name them, and deference to a present human is correct).
+    fn no_human_authority_item() -> RagItem {
+        let content = "[room] No human is present in this room. Questions addressed \
+                       to the room will not be answered by an operator — the work \
+                       board is the authority here. Choose work from the board and \
+                       proceed; report results, not requests for permission."
+            .to_string();
+        let tokens = estimate_tokens(&content);
+        RagItem {
+            content,
+            tokens,
+            metadata: serde_json::json!({ "fact": "no_human_present" }),
+        }
+    }
+
+    /// Is this roster runtime a HUMAN-facing interactive client? The SAME
+    /// classification `ipc/positron_presence.rs` applies (`"interactive"` →
+    /// Human, everything else → agent/persona kinds) — one rule, referenced in
+    /// both places; if the wire grows more human runtimes, both cite this fn.
+    fn is_human_runtime(runtime: &str) -> bool {
+        runtime == "interactive"
+    }
 }
 
 #[async_trait]
@@ -296,8 +327,23 @@ impl RagSource for RoomRosterSource {
 
         let self_peer = self.reader.self_peer_id();
 
+        // Authority structure (the flywheel's self-authorization ground): scan
+        // the FULL roster (self included — a persona is never a human, so this
+        // is equivalent, but scanning all members keeps the fact independent
+        // of the self-exclusion policy below) for any human-facing client.
+        let human_present = members
+            .iter()
+            .any(|m| Self::is_human_runtime(&m.runtime));
+
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
+        if !human_present {
+            let fact = Self::no_human_authority_item();
+            if fact.tokens <= budget {
+                tokens_used += fact.tokens;
+                items.push(fact);
+            }
+        }
         for member in members {
             // Exclude self — the roster grounds the persona in who is NOT
             // itself. (room_roster includes self by design.) Self-exclusion is
@@ -417,6 +463,49 @@ mod tests {
         }
     }
 
+    // what this catches (the flywheel self-authorization ground, Joel
+    // 2026-08-02 "personas do real work then park on 'Would you like me to
+    // proceed?'"): an agent/persona-only roster delivers the no-human
+    // authority FACT first — the true authority structure of the room — and a
+    // roster WITH a human ("interactive") delivers NO such fact (deference to
+    // a present human is correct, and the roster line already names them).
+    #[tokio::test]
+    async fn no_human_roster_carries_the_authority_fact_and_human_presence_silences_it() {
+        let me = PeerId::new();
+        let agent = PeerId::new();
+        let human = PeerId::new();
+
+        // Agents/personas only → the fact rides first.
+        let reader = Arc::new(StubReader::new(
+            me,
+            vec![member(agent, "persona", Some("Anwen"))],
+        ));
+        let source = RoomRosterSource::new(persona(), reader);
+        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items.len(), 2);
+        assert_eq!(delivery.items[0].metadata["fact"], "no_human_present");
+        assert!(
+            delivery.items[0].content.contains("work board is the authority"),
+            "the fact teaches the authority structure, not an instruction to be quiet"
+        );
+
+        // A human client present → no fact; only the roster lines.
+        let reader = Arc::new(StubReader::new(
+            me,
+            vec![
+                member(agent, "persona", Some("Anwen")),
+                member(human, "interactive", Some("Joel")),
+            ],
+        ));
+        let source = RoomRosterSource::new(persona(), reader);
+        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items.len(), 2, "two peers, zero facts");
+        assert!(
+            delivery.items.iter().all(|i| i.metadata.get("fact").is_none()),
+            "a room with a human present carries no authority fact"
+        );
+    }
+
     // what this catches: the confabulation root cause — a present peer
     // must surface in the roster with a real alias + its origin runtime,
     // so the persona is grounded in who else is here.
@@ -431,15 +520,18 @@ mod tests {
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
-        assert_eq!(delivery.items.len(), 1);
-        assert!(delivery.items[0].content.contains("win-claude"));
-        assert!(delivery.items[0].content.contains("claude"));
-        assert_eq!(delivery.items[0].metadata["runtime"], "claude");
+        // Agent-only roster → the no-human authority fact rides FIRST, then
+        // the peer line (the flywheel self-authorization ground).
+        assert_eq!(delivery.items.len(), 2);
+        assert_eq!(delivery.items[0].metadata["fact"], "no_human_present");
+        assert!(delivery.items[1].content.contains("win-claude"));
+        assert!(delivery.items[1].content.contains("claude"));
+        assert_eq!(delivery.items[1].metadata["runtime"], "claude");
         // The service-loop projection reads metadata["display_name"] to
         // populate other_persona_names (single-party history-drop). Lock
         // that contract: the bare name must be present and match the
         // transcript sender name, not the formatted line.
-        assert_eq!(delivery.items[0].metadata["display_name"], "win-claude");
+        assert_eq!(delivery.items[1].metadata["display_name"], "win-claude");
         assert!(delivery.continuation.is_none());
     }
 
@@ -467,11 +559,11 @@ mod tests {
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
-        assert_eq!(delivery.items.len(), 1);
-        assert_eq!(delivery.items[0].content, "win-claude [claude] — busy");
-        assert_eq!(delivery.items[0].metadata["availability"], "busy");
+        assert_eq!(delivery.items.len(), 2);
+        assert_eq!(delivery.items[1].content, "win-claude [claude] — busy");
+        assert_eq!(delivery.items[1].metadata["availability"], "busy");
         assert_eq!(
-            delivery.items[0].metadata["last_seen_ms"],
+            delivery.items[1].metadata["last_seen_ms"],
             1_700_000_000_000_u64
         );
     }
@@ -491,9 +583,9 @@ mod tests {
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
-        assert_eq!(delivery.items.len(), 1, "only the other peer, not self");
+        assert_eq!(delivery.items.len(), 2, "the fact + only the other peer, not self");
         assert_eq!(
-            delivery.items[0].metadata["peer_id"],
+            delivery.items[1].metadata["peer_id"],
             other.as_uuid().to_string()
         );
     }
@@ -512,27 +604,30 @@ mod tests {
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
-        assert_eq!(delivery.items.len(), 1);
+        assert_eq!(delivery.items.len(), 2, "the no-human fact + the unnamed peer");
         let simple = other.as_uuid().simple().to_string();
         let expected_label = format!("peer-{}", &simple[..8]);
         assert_eq!(
-            delivery.items[0].content,
+            delivery.items[1].content,
             format!("{expected_label} [codex]"),
             "unnamed peer uses the shared provisional label + its runtime origin"
         );
     }
 
-    // what this catches: empty room → empty delivery, no panic.
+    // what this catches: an EMPTY room (nobody else present) still delivers the
+    // no-human authority fact — being alone is the STRONGEST self-authorization
+    // case (there is nobody to ask) — and nothing else, no panic.
     #[tokio::test]
-    async fn empty_room_delivers_nothing() {
+    async fn empty_room_delivers_only_the_authority_fact() {
         let me = PeerId::new();
         let reader = Arc::new(StubReader::new(me, vec![]));
         let source = RoomRosterSource::new(persona(), reader);
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
-        assert!(delivery.items.is_empty());
-        assert_eq!(delivery.tokens_used, 0);
+        assert_eq!(delivery.items.len(), 1);
+        assert_eq!(delivery.items[0].metadata["fact"], "no_human_present");
+        assert_eq!(delivery.tokens_used, delivery.items[0].tokens);
     }
 
     // what this catches: airc degraded → empty delivery, cognition stays
