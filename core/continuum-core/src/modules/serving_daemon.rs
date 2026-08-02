@@ -215,6 +215,12 @@ pub struct ServingDaemonModule {
     /// never republishes; a material shrink publishes NOW; grow-back publishes past
     /// the band (#214). Same sync-Mutex discipline as `moe_serving` (never across await).
     host_cache_lease: std::sync::Mutex<crate::capacity::host_cache_lease::StickyLease>,
+    /// The artifact path currently registered in the process-wide
+    /// [`serving_active_artifacts`](crate::system_resources::serving_active_artifacts)
+    /// set (#302 invariant 1: the NvmeServingTierPool must never migrate the
+    /// resident model out from under the engine). Tracked so a model change
+    /// releases the old registration exactly once.
+    active_artifact: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -319,6 +325,7 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             moe_serving: std::sync::Mutex::new(None),
+            active_artifact: std::sync::Mutex::new(None),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -703,6 +710,30 @@ impl ServingDaemonModule {
     /// the sticky band so sub-band flutter never churns the file. Publishes only for
     /// a READY MoE serve (the moe context exists for the active model) — a dense
     /// model or a warming lane writes nothing.
+    /// Track the resident model's on-disk artifact in the process-wide
+    /// active set (#302 invariant 1). Registered BEFORE spawn (the pool
+    /// must not migrate a GGUF mid-load), swapped on model change (old
+    /// registration released exactly once), cleared when nothing serves.
+    /// Prefix containment in [`ActiveArtifactSet::protects`] means the
+    /// file path protects its per-model dir and vice versa, whichever
+    /// layout the artifact uses.
+    fn set_active_artifact(&self, path: Option<std::path::PathBuf>) {
+        let Ok(mut current) = self.active_artifact.lock() else {
+            return; // poisoned: the set fails SAFE (protects everything)
+        };
+        if *current == path {
+            return;
+        }
+        let set = crate::system_resources::serving_active_artifacts();
+        if let Some(old) = current.take() {
+            set.release(&old);
+        }
+        if let Some(new) = path {
+            set.register(new.clone());
+            *current = Some(new);
+        }
+    }
+
     fn publish_moe_host_cache_lease(&self) {
         let live = self.serving_tx.borrow().clone();
         if !live.ready || live.served_context_window == 0 {
@@ -839,6 +870,7 @@ impl ServingDaemonModule {
             None => {
                 // Nothing servable on disk → publish "nothing live" so readers
                 // (and a grid allocator) see the gap and route elsewhere.
+                self.set_active_artifact(None);
                 if self.serving_tx.borrow().active_model.is_some() {
                     let empty = ServingSnapshot::empty();
                     Self::emit_serving(self.bus.get(), &empty);
@@ -948,6 +980,7 @@ impl ServingDaemonModule {
                 desired = desired.as_str(),
                 "plan named a model the registry can't resolve — publishing empty snapshot",
             );
+            self.set_active_artifact(None);
             if self.serving_tx.borrow().active_model.is_some() {
                 let empty = ServingSnapshot::empty();
                 Self::emit_serving(self.bus.get(), &empty);
@@ -961,6 +994,10 @@ impl ServingDaemonModule {
         // for a dense model (or before the pager has committed a placement) — served exactly
         // as before, no override.
         let expert_placement = self.compute_expert_placement(&model);
+        // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
+        // touches it — the NvmeServingTierPool must never migrate the GGUF the
+        // engine is loading or serving. Model change swaps the registration.
+        self.set_active_artifact(model.gguf_local_path.clone());
         let target = ServingTarget {
             model,
             context_window: served_ctx,
