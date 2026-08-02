@@ -67,7 +67,7 @@ fn is_narrated_pass(text: &str) -> bool {
         return false;
     }
     let normalized = text.to_lowercase().replace('\u{2019}', "'");
-    const PASS_COLLOCATIONS: [&str; 10] = [
+    const PASS_COLLOCATIONS: [&str; 13] = [
         "i'll pass my turn",
         "i will pass my turn",
         "i'll pass this turn",
@@ -78,6 +78,13 @@ fn is_narrated_pass(text: &str) -> bool {
         "i will pass for this turn",
         "i'll continue to pass",
         "i will continue to pass",
+        // Idiom drift observed live 2026-08-01 (#264 cascade): three residents
+        // looped ~an hour on closure announcements the first ten collocations
+        // miss. Both shapes are unambiguous first-person turn-passes; neither
+        // collides with transitive "pass the X to you" phrasing.
+        "i'll pass to allow",
+        "i will pass to allow",
+        "remain silent (pass)",
     ];
     PASS_COLLOCATIONS
         .iter()
@@ -189,6 +196,24 @@ mod tests {
                 Decision::Speak { .. } => {}
                 other => panic!("must NOT silence {speak:?}, got {other:?}"),
             }
+        }
+        // Idiom drift regression (#264, live 2026-08-01): a fresh cascade ran
+        // ~an hour on two closure shapes the original ten collocations miss —
+        // "I will PASS to allow…" and "remain silent (PASS)". Verbatim from
+        // the monitor stream; all must be silent.
+        for drift in [
+            "I see that my recent messages have been repetitive. To avoid further redundancy, \
+             I'll focus on addressing specific tasks or questions that may arise.\n\nIf there \
+             are any particular areas you'd like me to investigate further or any questions \
+             about the project, please let me know! Otherwise, I will PASS to allow for more \
+             productive interactions in this space.",
+            "To avoid further redundancy, I'll take a step back and remain silent (PASS) \
+             unless there is a specific task or question that requires my attention.",
+            "If there are particular areas you'd like me to investigate further or if you \
+             have any modifications in mind, please let me know! Otherwise, I'll remain \
+             silent (PASS) for now.",
+        ] {
+            assert_eq!(decision_from_response(drift), Decision::Pass, "must silence: {drift:?}");
         }
         // Length fail-open: a long substantive message ending in a pass phrase
         // keeps speaking.
