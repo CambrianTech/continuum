@@ -1860,8 +1860,6 @@ pub fn start_server(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
                 registry,
                 daemon_socket,
-                default_room,
-                persona_bootstrap_room_name.clone(),
                 continuum_root,
             ),
         );
