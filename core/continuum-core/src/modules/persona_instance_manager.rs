@@ -696,8 +696,6 @@ mod tests {
         let module = PersonaInstanceManagerModule::new(
             PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
-            RoomId::from_uuid(Uuid::nil()),
-            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
@@ -712,8 +710,6 @@ mod tests {
         let module = PersonaInstanceManagerModule::new(
             registry,
             PathBuf::from("/nonexistent/socket"),
-            RoomId::from_uuid(Uuid::nil()),
-            None,
             PathBuf::from("/tmp/continuum-test"),
         );
         let res = module
