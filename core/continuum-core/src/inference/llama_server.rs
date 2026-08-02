@@ -401,6 +401,12 @@ pub struct MoeGlassBoxPaths {
     /// and the fork's `ResidencyCache` mtime-polls per token
     /// (docs/architecture/EXPERT-PAGING-CONTROL-LAW.md §5).
     pub plan: PathBuf,
+    /// The ordered routed-expert activation trace the fork appends (12-byte
+    /// binary records: tkey u64 + expert u32) — the observation feed the
+    /// daemon's pin actuator tails per tick (#281). Truncated by the fork at
+    /// each fresh serve (opened `"wb"`), so the tail's truncation-reset is
+    /// the rotation story.
+    pub trace: PathBuf,
 }
 
 /// See [`MoeGlassBoxPaths`]. Lives beside the per-port stderr logs
@@ -410,6 +416,7 @@ pub fn moe_glass_box_paths(port: u16) -> Option<MoeGlassBoxPaths> {
     Some(MoeGlassBoxPaths {
         capture: dir.join(format!("moe-capture-{port}.jsonl")),
         plan: dir.join(format!("moe-plan-{port}.json")),
+        trace: dir.join(format!("moe-trace-{port}.bin")),
     })
 }
 
@@ -1775,6 +1782,9 @@ impl LlamaServerControl for LlamaServerProcess {
                 }
                 if std::env::var_os("GGML_MOE_PLAN_FILE").is_none() {
                     cmd.env("GGML_MOE_PLAN_FILE", &gb.plan);
+                }
+                if std::env::var_os("GGML_MOE_TRACE_FILE").is_none() {
+                    cmd.env("GGML_MOE_TRACE_FILE", &gb.trace);
                 }
             }
         }

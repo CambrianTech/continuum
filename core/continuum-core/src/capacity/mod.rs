@@ -40,6 +40,7 @@ pub mod lease;
 pub mod moe_arch_profile;
 pub mod moe_serving;
 pub mod pager_capture;
+pub mod trace_tail;
 pub mod plan_file;
 pub mod placement;
 pub mod recursion_depth;
