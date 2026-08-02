@@ -377,6 +377,31 @@ impl Model {
         n.max(0) as u32
     }
 
+    /// Per-layer KV head count. `0` marks a recurrent (SSM/KDA) layer that
+    /// holds NO per-token KV cache. Hybrid models (kimi-linear, kimi-k3,
+    /// jamba) vary this per layer — sizing KV from the scalar [`n_head_kv`]
+    /// times [`n_layer`] overestimates them by orders of magnitude (kimi-k3:
+    /// 69 of 93 layers carry zero KV; the 24 MLA layers cache ONE compressed
+    /// head). Fork export `llama_model_n_head_kv_il` (continuum #238).
+    pub fn n_head_kv_il(&self, il: u32) -> u32 {
+        let n = unsafe { sys::llama_model_n_head_kv_il(self.ptr.as_ptr(), il as i32) };
+        n.max(0) as u32
+    }
+
+    /// Per-layer K-head width in elements — for MLA models this is the
+    /// COMPRESSED cache width (kimi-k3: 576 = kv_lora 512 + rope 64), which is
+    /// why deriving it as `n_embd / n_head` misprices them.
+    pub fn n_embd_head_k_il(&self, il: u32) -> u32 {
+        let n = unsafe { sys::llama_model_n_embd_head_k_il(self.ptr.as_ptr(), il as i32) };
+        n.max(0) as u32
+    }
+
+    /// Per-layer V-head width in elements (see [`n_embd_head_k_il`]).
+    pub fn n_embd_head_v_il(&self, il: u32) -> u32 {
+        let n = unsafe { sys::llama_model_n_embd_head_v_il(self.ptr.as_ptr(), il as i32) };
+        n.max(0) as u32
+    }
+
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
         let mut ffi = unsafe { sys::llama_context_default_params() };

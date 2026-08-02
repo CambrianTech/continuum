@@ -128,7 +128,7 @@ fn available_memory_bytes() -> u64 {
 /// single source of truth for "what can THIS model actually do," replacing the
 /// per-tier `compat_context_length()` guess that used to live in the profile
 /// builder. See [[no-hardcoded-heuristics-to-steer-cognition]].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ModelCapabilities {
     /// The model's OWN trained context ceiling (GGUF `<arch>.context_length`).
     pub n_ctx_train: u32,
@@ -136,37 +136,92 @@ pub struct ModelCapabilities {
     pub n_layer: u32,
     /// Attention (query) heads — divides `n_embd` to get head dim.
     pub n_head: u32,
-    /// Key/value heads (GQA ≤ `n_head`) — the real KV-memory driver.
+    /// Key/value heads (GQA ≤ `n_head`) — the SCALAR summary. Display/telemetry
+    /// only: hybrid models vary this per layer, so KV memory must come from
+    /// [`Self::kv_layers`], never `n_head_kv * n_layer`.
     pub n_head_kv: u32,
     /// Hidden-state width.
     pub n_embd: u32,
+    /// Per-layer KV geometry — the HONEST KV-memory driver (#238, BigMama's
+    /// registered 5090 issue 2). Ordinary GQA models are uniform here and the
+    /// per-layer sum reproduces the old scalar math byte-for-byte. Hybrids are
+    /// not: kimi-k3 carries 69 recurrent KDA layers with ZERO per-token KV and
+    /// 24 MLA layers caching ONE compressed head of width kv_lora+rope (the
+    /// GGUF's own `attention.head_count_kv = [0,0,0,1,…]` / `key_length = 576`)
+    /// — the scalar formula overestimated its KV ~85× and strangled the
+    /// derived context window accordingly.
+    pub kv_layers: Vec<KvLayer>,
+}
+
+/// One layer's KV cache geometry, in elements (see [`ModelCapabilities::kv_layers`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KvLayer {
+    /// KV heads this layer caches — `0` marks a recurrent (SSM/KDA) layer
+    /// with no per-token KV at all.
+    pub n_head_kv: u32,
+    /// K vector width per head (MLA: the COMPRESSED width, e.g. 576).
+    pub k_width: u32,
+    /// V vector width per head.
+    pub v_width: u32,
 }
 
 impl ModelCapabilities {
     fn from_model(model: &Model) -> Self {
+        let n_layer = model.n_layer();
+        // The fork's per-layer accessors (llama_model_*_il) are the same
+        // hparams the model graph itself computes with — one source of truth.
+        let kv_layers = (0..n_layer)
+            .map(|il| KvLayer {
+                n_head_kv: model.n_head_kv_il(il),
+                k_width: model.n_embd_head_k_il(il),
+                v_width: model.n_embd_head_v_il(il),
+            })
+            .collect();
         Self {
             n_ctx_train: model.n_ctx_train(),
-            n_layer: model.n_layer(),
+            n_layer,
             n_head: model.n_head(),
             n_head_kv: model.n_head_kv(),
             n_embd: model.n_embd().max(0) as u32,
+            kv_layers,
+        }
+    }
+
+    /// Test/uniform constructor: every layer shares the classic GQA geometry
+    /// (`head_dim = n_embd / n_head`, K and V both `head_dim` wide). This IS
+    /// the old scalar formula, expressed per-layer — ordinary models price
+    /// identically through it.
+    pub fn uniform(n_ctx_train: u32, n_layer: u32, n_head: u32, n_head_kv: u32, n_embd: u32) -> Self {
+        let head_dim = if n_head == 0 { 0 } else { n_embd / n_head };
+        Self {
+            n_ctx_train,
+            n_layer,
+            n_head,
+            n_head_kv,
+            n_embd,
+            kv_layers: (0..n_layer)
+                .map(|_| KvLayer { n_head_kv, k_width: head_dim, v_width: head_dim })
+                .collect(),
         }
     }
 
     /// Bytes of KV cache consumed by one token, for the given K/V element
-    /// types. The KV cache stores one K and one V vector per KV head, per
-    /// layer, per token; each vector is `head_dim * n_head_kv` wide where
-    /// `head_dim = n_embd / n_head`. Derived entirely from the model's real
-    /// dimensions — no hardcoded "typical" cost.
+    /// types — the PER-LAYER sum over [`Self::kv_layers`]: each layer costs
+    /// `n_head_kv * (k_width * k_bytes + v_width * v_bytes)`, so recurrent
+    /// layers (0 heads) cost nothing and MLA layers cost their compressed
+    /// width. Derived entirely from the model's real per-layer dimensions —
+    /// no hardcoded "typical" cost, no scalar×n_layer overestimate.
     pub fn kv_bytes_per_token(&self, type_k: KvCacheType, type_v: KvCacheType) -> u64 {
-        if self.n_head == 0 || self.n_layer == 0 {
-            return 0;
-        }
-        let head_dim = (self.n_embd / self.n_head) as u64;
-        let kv_width = head_dim * self.n_head_kv as u64; // per K, and per V
-        let k_centibytes = kv_width * type_k.bytes_per_elem_x100();
-        let v_centibytes = kv_width * type_v.bytes_per_elem_x100();
-        ((k_centibytes + v_centibytes) * self.n_layer as u64) / 100
+        let centibytes: u64 = self
+            .kv_layers
+            .iter()
+            .map(|l| {
+                let heads = l.n_head_kv as u64;
+                heads * l.k_width as u64 * type_k.bytes_per_elem_x100()
+                    + heads * l.v_width as u64 * type_v.bytes_per_elem_x100()
+            })
+            .sum();
+        centibytes / 100
     }
 }
 
@@ -959,13 +1014,7 @@ mod tests {
     // V = 1024B/layer/token; ×36 layers = 36864 B/token.
     #[test]
     fn kv_bytes_per_token_from_real_dims() {
-        let caps = ModelCapabilities {
-            n_ctx_train: 32768,
-            n_layer: 36,
-            n_head: 16,
-            n_head_kv: 2,
-            n_embd: 2048,
-        };
+        let caps = ModelCapabilities::uniform(32768, 36, 16, 2, 2048);
         assert_eq!(
             caps.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16),
             36864
@@ -982,14 +1031,49 @@ mod tests {
         // Degenerate guard: a model that reports zero heads can't be sized;
         // return 0 (caller falls back to the trained ceiling) rather than
         // dividing by zero.
-        let bad = ModelCapabilities {
-            n_ctx_train: 0,
-            n_layer: 0,
-            n_head: 0,
-            n_head_kv: 0,
-            n_embd: 0,
-        };
+        let bad = ModelCapabilities::uniform(0, 0, 0, 0, 0);
         assert_eq!(bad.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16), 0);
+    }
+
+    // what this catches: BigMama's registered 5090 issue 2 (#238) — hybrid
+    // KDA/MLA models must be KV-priced from their PER-LAYER geometry, never
+    // scalar n_head_kv × n_layer. Fixture: the real Kimi-K3 UD-IQ2 GGUF
+    // (scratchpad k3-ud-iq2-tensor-fixture.txt, gist 931517a3): 93 layers,
+    // head_count_kv = [0,0,0,1]×23 + [1] (69 recurrent KDA layers with ZERO
+    // per-token KV; 24 MLA layers caching ONE compressed head), key_length
+    // 576 (kv_lora 512 + rope 64), value_length 74. Honest cost @F16 =
+    // 24 × 1 × (576+74) × 2 = 31,200 B/token. The old scalar formula priced
+    // this either at 0 (layer-0 KDA scalar) or ~2.6 MB/token (uniform-96-head
+    // assumption) — both wrong by orders of magnitude, strangling or OOMing
+    // the derived context window.
+    #[test]
+    fn kv_bytes_per_token_hybrid_kda_mla_per_layer() {
+        let kv_layers: Vec<KvLayer> = (0..93u32)
+            .map(|il| KvLayer {
+                // The fixture's array: every 4th layer (3,7,…,91) plus the
+                // final layer 92 is MLA (1 compressed KV head); rest are KDA.
+                n_head_kv: if il % 4 == 3 || il == 92 { 1 } else { 0 },
+                k_width: 576,
+                v_width: 74,
+            })
+            .collect();
+        assert_eq!(
+            kv_layers.iter().filter(|l| l.n_head_kv > 0).count(),
+            24,
+            "fixture sanity: 24 MLA layers"
+        );
+        let caps = ModelCapabilities {
+            n_ctx_train: 1_048_576,
+            n_layer: 93,
+            n_head: 96,
+            n_head_kv: 0, // scalar summary (layer 0 is KDA) — display only
+            n_embd: 7168,
+            kv_layers,
+        };
+        assert_eq!(
+            caps.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16),
+            31_200
+        );
     }
 
     // what this catches: with NO hand-set context_length, the backend must
