@@ -215,6 +215,18 @@ pub struct ServingDaemonModule {
     /// never republishes; a material shrink publishes NOW; grow-back publishes past
     /// the band (#214). Same sync-Mutex discipline as `moe_serving` (never across await).
     host_cache_lease: std::sync::Mutex<crate::capacity::host_cache_lease::StickyLease>,
+    /// The artifact path currently registered in the process-wide
+    /// [`serving_active_artifacts`](crate::system_resources::serving_active_artifacts)
+    /// set (#302 invariant 1: the NvmeServingTierPool must never migrate the
+    /// resident model out from under the engine). Tracked so a model change
+    /// releases the old registration exactly once.
+    active_artifact: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// The pin actuator's observation state (#281): tails the fork's
+    /// routed-expert trace, owns the bandit, and remembers the last
+    /// published pin list (the write-churn gate). `None` until the first
+    /// MoE lease publish; rebuilt on geometry change. Same sync-Mutex
+    /// discipline as `moe_serving` (never held across await).
+    moe_trace_tail: std::sync::Mutex<Option<crate::capacity::trace_tail::MoeTraceTail>>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -254,6 +266,13 @@ pub struct ServingDaemonModule {
     /// that fit at pin time; budget can still shift under it, and then the plan
     /// degrades honestly (`fits_on_gpu = false`) rather than over-committing.
     pinned: watch::Sender<Option<String>>,
+    /// The long-lived vision SIDECAR lane (#106, `inference::vision_sidecar`):
+    /// a small VL model serving beside a text-only mind so every persona has
+    /// eyes. Owned here so it lives across reconciles and its child dies with
+    /// the daemon (`EphemeralServingLane` Drop-kills). A tokio Mutex because
+    /// [`vision_sidecar::ensure_sidecar`] awaits (spawn + `/props` verify)
+    /// inside the reconcile task while holding the slot.
+    vision_sidecar: Arc<tokio::sync::Mutex<Option<crate::inference::llama_server::EphemeralServingLane>>>,
 }
 
 impl ServingDaemonModule {
@@ -312,6 +331,8 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             moe_serving: std::sync::Mutex::new(None),
+            active_artifact: std::sync::Mutex::new(None),
+            moe_trace_tail: std::sync::Mutex::new(None),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -320,6 +341,7 @@ impl ServingDaemonModule {
                 "K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES",
             )
             .and_then(|s| s.trim().parse::<u64>().ok()),
+            vision_sidecar: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -765,6 +787,30 @@ impl ServingDaemonModule {
     /// the sticky band so sub-band flutter never churns the file. Publishes only for
     /// a READY MoE serve (the moe context exists for the active model) — a dense
     /// model or a warming lane writes nothing.
+    /// Track the resident model's on-disk artifact in the process-wide
+    /// active set (#302 invariant 1). Registered BEFORE spawn (the pool
+    /// must not migrate a GGUF mid-load), swapped on model change (old
+    /// registration released exactly once), cleared when nothing serves.
+    /// Prefix containment in [`ActiveArtifactSet::protects`] means the
+    /// file path protects its per-model dir and vice versa, whichever
+    /// layout the artifact uses.
+    fn set_active_artifact(&self, path: Option<std::path::PathBuf>) {
+        let Ok(mut current) = self.active_artifact.lock() else {
+            return; // poisoned: the set fails SAFE (protects everything)
+        };
+        if *current == path {
+            return;
+        }
+        let set = crate::system_resources::serving_active_artifacts();
+        if let Some(old) = current.take() {
+            set.release(&old);
+        }
+        if let Some(new) = path {
+            set.register(new.clone());
+            *current = Some(new);
+        }
+    }
+
     fn publish_moe_host_cache_lease(&self) {
         let live = self.serving_tx.borrow().clone();
         if !live.ready || live.served_context_window == 0 {
@@ -776,14 +822,21 @@ impl ServingDaemonModule {
         let Some(port) = crate::inference::llama_server::port_of_base_url(&live.base_url) else {
             return;
         };
-        // Expert-tensor total for the ACTIVE model — present only for a MoE serve.
+        // Expert geometry for the ACTIVE model — present only for a MoE serve.
         // Read under the same never-across-await sync Mutex as the placement path.
-        let expert_bytes_total = {
+        // top_k + experts-per-layer feed the retention verdict below: the lease
+        // is only USEFUL when it exceeds one token's expert working set.
+        let (expert_bytes_total, n_experts_per_layer, top_k, n_layers) = {
             let Ok(guard) = self.moe_serving.lock() else {
                 return;
             };
             match guard.as_ref() {
-                Some((id, ctx)) if *id == active => ctx.expert_bytes_total,
+                Some((id, ctx)) if *id == active => (
+                    ctx.expert_bytes_total,
+                    ctx.n_experts_per_layer,
+                    ctx.top_k,
+                    ctx.n_layers,
+                ),
                 _ => return, // dense model (or stale context) — no governed cache to lease
             }
         };
@@ -810,23 +863,99 @@ impl ServingDaemonModule {
             return;
         };
         let derived = crate::capacity::host_cache_lease::host_cache_lease_bytes(&inputs);
-        let published = {
+        // Sticky band on the BUDGET axis only: `budget_moved` says the
+        // published value changed; a held budget reuses the last published
+        // value so the ACTUATOR axis (pins, below) can still trigger a
+        // write. The no-churn property now lives on the write decision —
+        // nothing changed on either axis ⇒ no write, no mtime churn.
+        let (budget_bytes, budget_moved) = {
             let Ok(mut sticky) = self.host_cache_lease.lock() else {
                 return;
             };
-            sticky.observe(derived)
+            match sticky.observe(derived) {
+                Some(published) => (published, true),
+                None => (sticky.published_bytes(), false),
+            }
         };
-        let Some(budget_bytes) = published else {
-            return; // held within the band — no write, no mtime churn
-        };
+        if budget_bytes == 0 {
+            return; // nothing governed yet — never publish a zero lease
+        }
         let Some(gb) = crate::inference::llama_server::moe_glass_box_paths(port) else {
             return;
         };
+        // Pin actuator (#281): drain the fork's routed-expert trace into
+        // the bandit and carry its hot list on the governed plan. The pin
+        // budget is retention-derived — at most half the lease's worth of
+        // experts (the recency window keeps the other half) — so a lease
+        // too small to retain anything publishes budget-only (v1 shape).
+        let (
+            pins,
+            boundary_crossed,
+            tokens_observed,
+            pins_moved,
+            repeat_recall,
+            delta_recall,
+            coverage,
+        ) = {
+            let Ok(mut tail_guard) = self.moe_trace_tail.lock() else {
+                return;
+            };
+            let tail = tail_guard.get_or_insert_with(|| {
+                crate::capacity::trace_tail::MoeTraceTail::new(n_layers)
+            });
+            tail.ensure_geometry(n_layers);
+            tail.drain(&gb.trace);
+            let ceiling = crate::capacity::trace_tail::pin_ceiling(
+                budget_bytes,
+                expert_bytes_total,
+                n_layers,
+                n_experts_per_layer,
+            );
+            let pins = tail.pin_list(ceiling);
+            let moved = tail.pins_changed(&pins);
+            (
+                pins,
+                tail.boundary_crossed,
+                tail.tokens_observed,
+                moved,
+                tail.repeat_recall_x100(),
+                tail.predicted_delta_recall_x100(),
+                tail.schedulable_coverage_x100(),
+            )
+        };
+        if !budget_moved && !pins_moved && !boundary_crossed {
+            return; // neither axis changed — no write, no mtime churn
+        }
+        let pins_count = pins.len();
         let doc = crate::capacity::plan_file::PlanFileDocument::new(
             budget_bytes,
             MOE_PLAN_WINDOW_K,
-            Vec::new(),
+            pins,
         );
+        // Retention verdict (#287): does the published lease retain even one
+        // token's expert working set? Below 100 (×100 fixed-point) the cache
+        // buys NOTHING — every token evicts the previous token's experts (the
+        // resident=0 thrash) — and the lease is honest about it instead of
+        // looking healthy while thrashing silently.
+        let per_token_ws = crate::capacity::host_cache_lease::per_token_expert_working_set_bytes(
+            expert_bytes_total,
+            n_experts_per_layer,
+            top_k,
+        );
+        let retention_x100 =
+            crate::capacity::host_cache_lease::retention_tokens_x100(budget_bytes, per_token_ws);
+        if retention_x100 < 100 {
+            crate::probe!(
+                class = "serving.moe_host_cache_retention",
+                model = active.as_str(),
+                budget_bytes,
+                per_token_ws_bytes = per_token_ws,
+                retention_tokens_x100 = retention_x100,
+                "lease retains LESS than one token's expert working set — the \
+                 cache thrashes (zero cross-token reuse); free host RAM or accept \
+                 streaming-only decode",
+            );
+        }
         match crate::capacity::plan_file::write_plan_file(&gb.plan, &doc) {
             Ok(()) => crate::probe!(
                 class = "serving.moe_host_cache_lease",
@@ -835,10 +964,21 @@ impl ServingDaemonModule {
                 derived_bytes = derived,
                 weights_host_bytes = inputs.weights_host_bytes,
                 live_kv_bytes = inputs.live_kv_bytes,
+                per_token_ws_bytes = per_token_ws,
+                retention_tokens_x100 = retention_x100,
+                pins = pins_count as u64,
+                trace_tokens = tokens_observed,
+                warm_start = boundary_crossed,
+                repeat_recall_x100 = repeat_recall.unwrap_or(0) as u64,
+                predicted_delta_recall_x100 = delta_recall.unwrap_or(0) as u64,
+                schedulable_coverage_x100 = coverage.unwrap_or(0) as u64,
                 plan = gb.plan.display().to_string().as_str(),
-                "published governed host-cache lease: {} GiB (raw {} GiB)",
+                "published governed host-cache lease: {} GiB (raw {} GiB, retains \
+                 {}.{:02} tokens' expert set)",
                 budget_bytes / (1024 * 1024 * 1024),
                 derived / (1024 * 1024 * 1024),
+                retention_x100 / 100,
+                retention_x100 % 100,
             ),
             Err(e) => crate::probe!(
                 class = "serving.moe_host_cache_lease",
@@ -868,6 +1008,7 @@ impl ServingDaemonModule {
             None => {
                 // Nothing servable on disk → publish "nothing live" so readers
                 // (and a grid allocator) see the gap and route elsewhere.
+                self.set_active_artifact(None);
                 if self.serving_tx.borrow().active_model.is_some() {
                     let empty = ServingSnapshot::empty();
                     Self::emit_serving(self.bus.get(), &empty);
@@ -977,6 +1118,7 @@ impl ServingDaemonModule {
                 desired = desired.as_str(),
                 "plan named a model the registry can't resolve — publishing empty snapshot",
             );
+            self.set_active_artifact(None);
             if self.serving_tx.borrow().active_model.is_some() {
                 let empty = ServingSnapshot::empty();
                 Self::emit_serving(self.bus.get(), &empty);
@@ -996,6 +1138,10 @@ impl ServingDaemonModule {
         // launcher sources resident from it via `LLAMA_RESIDENT_OVERRIDE`); `None`
         // when resident fits natively OR no override is cached yet (resolver #35).
         let resident_override = self.compute_resident_override(&model);
+        // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
+        // touches it — the NvmeServingTierPool must never migrate the GGUF the
+        // engine is loading or serving. Model change swaps the registration.
+        self.set_active_artifact(model.gguf_local_path.clone());
         let target = ServingTarget {
             model,
             context_window: served_ctx,
@@ -1023,6 +1169,8 @@ impl ServingDaemonModule {
         let serving_tx = self.serving_tx.clone();
         let reconciling = self.reconciling.clone();
         let bus = self.bus.get().cloned();
+        let sidecar_slot = self.vision_sidecar.clone();
+        let system = self.system.clone();
         // RAII gate-clear (#214): the `reconciling` flag was set `true` at the top of this
         // reconcile and MUST clear even if the relaunch task panics or is cancelled
         // mid-await — otherwise ONE failed relaunch (an OOM spawn under a memory squeeze, a
@@ -1071,13 +1219,15 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } => 0,
             };
-            // #106 vision readiness: for a ready lane, verify the MULTIMODAL endpoint
-            // actually answers — the row's declared Vision, the resolved mmproj, and
-            // the server's own `/props modalities` must all agree before the snapshot
-            // claims sight. Any gap publishes `vision_ready: false` WITH the reason
-            // logged loud, so the observe path fails honestly instead of POSTing
-            // pixels a text-only lane would silently drop.
-            let vision_ready = match &outcome {
+            // #106 vision readiness: for a ready lane, resolve the node's VERIFIED
+            // vision endpoint. First the MAIN lane — the row's declared Vision, the
+            // resolved mmproj, and the server's own `/props modalities` must all
+            // agree. A text-only mind then gets a SIDECAR attempt (a small VL lane
+            // beside it, `inference::vision_sidecar`) so personas are not blind just
+            // because their mind's model doesn't see. Every gap publishes no
+            // endpoint WITH the reason probed loud, so the observe path fails
+            // honestly instead of POSTing pixels a text-only lane would drop.
+            let vision = match &outcome {
                 EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
                     let declares_vision = target
                         .model
@@ -1098,7 +1248,7 @@ impl ServingDaemonModule {
                             None
                         }
                     };
-                    match crate::inference::llama_server::vision_lane_ready(
+                    let main_sees = match crate::inference::llama_server::vision_lane_ready(
                         declares_vision,
                         mmproj_resolved,
                         props,
@@ -1113,9 +1263,88 @@ impl ServingDaemonModule {
                             );
                             false
                         }
+                    };
+                    if main_sees {
+                        // A VL mind: the main lane IS the vision endpoint. Any
+                        // sidecar from a previous plan is redundant — drop it
+                        // (its Drop kills the child, RAM freed).
+                        *sidecar_slot.lock().await = None;
+                        Some(crate::inference::vision_sidecar::SidecarLane {
+                            base_url: serving_v1_url(),
+                            model_id: desired.clone(),
+                        })
+                    } else {
+                        use crate::inference::vision_sidecar as sidecar;
+                        let rows: Vec<crate::model_registry::types::Model> =
+                            crate::model_registry::try_global()
+                                .map(|r| r.models().cloned().collect())
+                                .unwrap_or_default();
+                        let candidate = sidecar::find_candidate(&rows, Some(desired.as_str()));
+                        match &candidate {
+                            Err(skipped) => {
+                                crate::probe!(
+                                    class = "serving.vision.sidecar_no_candidate",
+                                    skipped = skipped.join("; ").as_str(),
+                                    "text-only mind and no on-disk VL row — personas \
+                                     have no local vision endpoint (models/pull a \
+                                     *-VL-*-GGUF repo to give them eyes)",
+                                );
+                                None
+                            }
+                            Ok(cand) => {
+                                // Gate on the LIVE free-memory read, never a cached
+                                // plan figure (the eval-lane second-model SIGKILL
+                                // class).
+                                let free = system.snapshot().memory.available_bytes;
+                                match sidecar::plan_sidecar(false, Ok(cand), free) {
+                                    sidecar::SidecarVerdict::Spawn => {
+                                        let mut slot = sidecar_slot.lock().await;
+                                        match sidecar::ensure_sidecar(&mut slot, cand).await {
+                                            Ok(lane) => {
+                                                crate::probe!(
+                                                    class = "serving.vision.sidecar_up",
+                                                    model = lane.model_id.as_str(),
+                                                    base_url = lane.base_url.as_str(),
+                                                    "vision sidecar verified — personas can see",
+                                                );
+                                                Some(lane)
+                                            }
+                                            Err(why) => {
+                                                crate::probe!(
+                                                    class = "serving.vision.sidecar_failed",
+                                                    model = cand.model.id.as_str(),
+                                                    why = why.as_str(),
+                                                    "vision sidecar could not come up",
+                                                );
+                                                None
+                                            }
+                                        }
+                                    }
+                                    sidecar::SidecarVerdict::NoBudget {
+                                        need_bytes,
+                                        free_bytes,
+                                    } => {
+                                        crate::probe!(
+                                            class = "serving.vision.sidecar_no_budget",
+                                            model = cand.model.id.as_str(),
+                                            need_bytes,
+                                            free_bytes,
+                                            "vision sidecar refused: not enough free host \
+                                             memory beside the live lane",
+                                        );
+                                        None
+                                    }
+                                    // plan_sidecar was called with
+                                    // main_vision_ready=false and Ok(cand), so the
+                                    // remaining variants cannot arise; publish no
+                                    // endpoint rather than assert in the reconcile.
+                                    _ => None,
+                                }
+                            }
+                        }
                     }
                 }
-                EnsureOutcome::Degraded { .. } => false,
+                EnsureOutcome::Degraded { .. } => None,
             };
             let snapshot = snapshot_from_outcome(
                 &outcome,
@@ -1123,7 +1352,7 @@ impl ServingDaemonModule {
                 &desired_adapter_paths,
                 served_window,
                 target.lanes,
-                vision_ready,
+                vision,
             );
             crate::probe!(
                 class = "serving.reconcile",
@@ -1776,7 +2005,12 @@ fn snapshot_from_outcome(
     adapters: &[String],
     served_context_window: u32,
     lanes: u32,
-    vision_ready: bool,
+    // The VERIFIED vision endpoint on this node, if any (#106): the main lane
+    // itself when its model sees, or the sidecar lane. `Some` ⇒ its `/props`
+    // confirmed sight; the snapshot's `vision_ready`/`vision_base_url`/
+    // `vision_model` are all projected from this ONE value, so an address can
+    // never be published without the verified flag (or vice versa).
+    vision: Option<crate::inference::vision_sidecar::SidecarLane>,
 ) -> ServingSnapshot {
     match outcome {
         EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. }
@@ -1797,11 +2031,13 @@ fn snapshot_from_outcome(
                 // KV as `lanes × kv_at(served_context_window)` (#79).
                 lanes,
                 degraded_reason: None,
-                // The reconcile's verified multimodal verdict (#106): declared
-                // Vision + resolved mmproj + `/props modalities.vision` all
-                // agreed. The observe path gates on THIS, never on the row's
-                // declaration alone.
-                vision_ready,
+                // The reconcile's verified multimodal verdict (#106): the ONE
+                // `vision` value projects all three fields, so readiness and
+                // the routing address can never disagree. The observe path
+                // gates on THIS, never on a row's declaration alone.
+                vision_ready: vision.is_some(),
+                vision_base_url: vision.as_ref().map(|v| v.base_url.clone()),
+                vision_model: vision.map(|v| v.model_id),
             }
         }
         // Ready outcome but the served window was unreadable (0) → do NOT publish
@@ -2516,7 +2752,10 @@ mod tests {
             &genes,
             11008,
             4,
-            true,
+            Some(crate::inference::vision_sidecar::SidecarLane {
+                base_url: "http://127.0.0.1:58091/v1".to_string(),
+                model_id: "vl-7b".to_string(),
+            }),
         );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
@@ -2535,16 +2774,27 @@ mod tests {
             "the reconcile's verified multimodal verdict must survive into the snapshot \
              — the observe path gates on THIS field (#106)"
         );
+        assert_eq!(
+            up.vision_base_url.as_deref(),
+            Some("http://127.0.0.1:58091/v1"),
+            "the ONE vision value projects the routing address with the flag — an \
+             address can never publish without verified readiness"
+        );
+        assert_eq!(up.vision_model.as_deref(), Some("vl-7b"));
 
         let already =
-            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4, false);
+            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4, None);
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
         assert_eq!(already.served_context_window, 11008);
         assert_eq!(already.lanes, 4);
         assert!(
             !already.vision_ready,
-            "a text lane (verdict false) must never read as sighted"
+            "a text lane (no verified endpoint) must never read as sighted"
+        );
+        assert!(
+            already.vision_base_url.is_none() && already.vision_model.is_none(),
+            "no verified endpoint → no address, no model (None-iff-not-ready)"
         );
 
         // Ready outcome but the served window was unreadable (0) → publish the gap,
@@ -2555,7 +2805,7 @@ mod tests {
             &genes,
             0,
             4,
-            false,
+            None,
         );
         assert_eq!(windowless.active_model, None, "ready-but-no-window → nothing live");
         assert!(!windowless.ready);
@@ -2568,7 +2818,7 @@ mod tests {
             &genes,
             11008,
             4,
-            false,
+            None,
         );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
@@ -2647,6 +2897,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -2667,6 +2919,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         }
     }
 
@@ -2819,6 +3073,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         daemon
             .reconcile_to_plan()
@@ -2837,6 +3093,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -2863,6 +3121,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None

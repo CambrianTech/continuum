@@ -75,4 +75,19 @@ degraded_reason?: string,
  * ([[fallbacks-are-illegal-fail-loud]]). `serde(default)` keeps older
  * persisted snapshots (pre-#106) readable as not-vision-ready.
  */
-vision_ready: boolean, };
+vision_ready: boolean, 
+/**
+ * The `/v1` base url of the VERIFIED vision endpoint on this node — the
+ * address the observation path routes image bytes to. When the MAIN lane's
+ * model itself sees, this is `base_url`; when a vision SIDECAR lane serves
+ * beside a text-only mind (#106, `vision_sidecar`), it is the sidecar's
+ * own url. `None` exactly when `vision_ready == false` — an address is
+ * only ever published for an endpoint whose `/props` confirmed sight.
+ */
+vision_base_url?: string, 
+/**
+ * The model id the verified vision endpoint serves — what the describe
+ * path selects and stamps on its result. Same `None`-iff-not-ready
+ * contract as `vision_base_url`.
+ */
+vision_model?: string, };

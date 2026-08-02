@@ -109,10 +109,33 @@ async fn resolve_card_id(
         .map_err(CommandError::Invalid)
 }
 
-fn parse_claim_id(s: &str) -> Result<ClaimId, CommandError> {
-    Uuid::parse_str(s)
+/// Resolve a claim id the same way [`resolve_card_id`] resolves cards (#164:
+/// short-form ids must resolve on EVERY id param, not just card_id). The board
+/// projection and the [work] grounding facts render claim ids in short form, so
+/// the lifecycle verbs (release/heartbeat) must accept the handle the persona
+/// was SHOWN. Candidates are the live board's claim ids; the prefix/near-miss
+/// decision is the shared `id_resolve` primitive — one resolution behavior for
+/// every id kind, no second copy of the rules.
+async fn resolve_claim_id(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    s: &str,
+) -> Result<ClaimId, CommandError> {
+    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+        return Ok(ClaimId::from_uuid(id));
+    }
+    let board = airc
+        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .await
+        .map_err(|e| CommandError::Internal(format!("board read for claim resolution: {e}")))?
+        .snapshot();
+    let candidates: Vec<Uuid> = board
+        .cards
+        .iter()
+        .filter_map(|c| c.claim_id.map(|id| id.as_uuid()))
+        .collect();
+    crate::id_resolve::resolve(s, &candidates, "claim")
         .map(ClaimId::from_uuid)
-        .map_err(|e| CommandError::Invalid(format!("invalid claim_id '{s}': {e}")))
+        .map_err(CommandError::Invalid)
 }
 
 fn parse_state(s: &str) -> Result<CardState, CommandError> {
@@ -182,7 +205,21 @@ impl ActionCommand for WorkClaim {
                 ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS),
             })
             .await
-            .map_err(|e| CommandError::Internal(e.to_string()))?;
+            .map_err(|e| {
+                // A rejection is WORK-STATE, not a transient tool result: the
+                // raw receipt scrolls out of the persona's short window and the
+                // intent narrative resurfaces as "I've claimed it" (glass-boxed
+                // 2026-08-02, card 44ebaa41). Record it so ActiveWorkSource can
+                // keep the fact in perception past the receipt's lifetime.
+                if let Some(caller) = ctx.caller.as_ref() {
+                    crate::persona::claim_rejections::record(
+                        caller.peer_id.as_uuid(),
+                        &p.card_id,
+                        &e.to_string(),
+                    );
+                }
+                CommandError::Internal(e.to_string())
+            })?;
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
@@ -271,17 +308,15 @@ impl ActionCommand for WorkRelease {
     const NAME: &'static str = "work/release";
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Release your claim on a work card (pass card_id + the claim_id from work/claim).";
+        "Release your claim on a work card (pass card_id + the claim_id from work/claim; \
+         short 8-char ids from the board are accepted for both).";
     type Params = WorkReleaseParams;
     type Output = WorkReleaseResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkReleaseParams) -> Result<WorkReleaseResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
-        let claim_id = ClaimId::from_uuid(
-            Uuid::parse_str(&p.claim_id)
-                .map_err(|e| CommandError::Invalid(format!("invalid claim_id: {e}")))?,
-        );
+        let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
         airc.release_work_claim(ReleaseWorkClaim {
             card_id,
             claim_id,
@@ -366,14 +401,15 @@ impl ActionCommand for WorkHeartbeat {
     const NAME: &'static str = "work/heartbeat";
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Extend your claim lease on a card so it doesn't go stale during long work (pass card_id + claim_id).";
+        "Extend your claim lease on a card so it doesn't go stale during long work (pass card_id + \
+         claim_id; short 8-char ids from the board are accepted for both).";
     type Params = WorkHeartbeatParams;
     type Output = WorkHeartbeatResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkHeartbeatParams) -> Result<WorkHeartbeatResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
-        let claim_id = parse_claim_id(&p.claim_id)?;
+        let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
         airc.heartbeat_work_claim(HeartbeatWorkClaim {
             card_id,
             claim_id,

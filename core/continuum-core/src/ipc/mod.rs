@@ -1241,6 +1241,49 @@ pub fn start_server(
             );
         }
 
+        // NVMe serving-tier eviction owner (#302): the genome-models class
+        // holds the HOT per-token-paged serving set (served GGUFs, expert
+        // containers, device-fit overrides). Capacity derives from the
+        // volume (total − governed reserve, #287-style); relief MIGRATES
+        // frozen artifacts to the detected COLD drive (verified copy
+        // before delete, never the actively-paged artifact, never a blind
+        // delete). No cold drive ⇒ the pool refuses loudly — models are
+        // re-fetch-hours, not derived artifacts.
+        if let Some(models_dir) = crate::system_resources::tracked_dir("genome-models") {
+            use crate::capacity::system_profile::{detect_drives, DriveRole};
+            let drives = detect_drives();
+            // The volume holding the hot tier: longest mount-point prefix.
+            let volume_total = drives
+                .iter()
+                .filter(|d| models_dir.path().starts_with(&d.mount))
+                .max_by_key(|d| d.mount.as_os_str().len())
+                .map(|d| d.total_bytes);
+            let cold_root = drives
+                .iter()
+                .find(|d| d.role == DriveRole::Cold)
+                .map(|d| d.mount.join("continuum-cold").join("models"));
+            if let Some(volume_total) = volume_total {
+                broker.register(Arc::new(crate::system_resources::NvmeServingTierPool::new(
+                    models_dir,
+                    volume_total,
+                    cold_root.clone(),
+                    crate::system_resources::serving_active_artifacts(),
+                )) as Arc<dyn crate::paging::pool::ResourcePool>);
+                log_info!(
+                    "ipc",
+                    "server",
+                    "NvmeServingTierPool registered with PressureBroker (derived capacity, cold_root={:?})",
+                    cold_root
+                );
+            } else {
+                log_info!(
+                    "ipc",
+                    "server",
+                    "NvmeServingTierPool NOT registered — no volume matched the models dir (class stays report-only)"
+                );
+            }
+        }
+
         // Wire the resource authority's per-kind lease pools onto the broker so
         // cross-resource pressure relief reaches VRAM/RAM/disk leases: when a
         // kind goes over its scanned ceiling (a game grabs VRAM), the broker's

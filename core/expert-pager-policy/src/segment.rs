@@ -56,7 +56,39 @@ pub struct TkeyTable {
     layer_of: HashMap<u64, u32>,
 }
 
+/// FNV-1a over a canonical tensor leaf name — the EXACT hash the fork's
+/// `canonical_name_key` computes (ggml-moe-residency.hpp: offset basis
+/// 1469598103934665603, prime 1099511628211). One implementation per
+/// side of the wire; the cross-check test pins them byte-for-byte
+/// against her real table's keys.
+pub fn fnv1a_name_key(name: &str) -> u64 {
+    let mut h: u64 = 1_469_598_103_934_665_603;
+    for b in name.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+    h
+}
+
 impl TkeyTable {
+    /// Synthesize the table from model geometry — no JSON file, no
+    /// operator step. Every routed-expert tensor follows the universal
+    /// llama.cpp MoE convention `blk.{layer}.ffn_{gate,up,down}_exps.weight`
+    /// (the same names `expert_pin_keys` renders on the C++ side), so
+    /// `n_layers` alone determines the full tkey→layer map. This is what
+    /// lets the serving daemon tail the trace with ZERO configuration:
+    /// the system owns the seam.
+    pub fn for_layers(n_layers: u32) -> Self {
+        let mut layer_of = HashMap::with_capacity(n_layers as usize * 3);
+        for layer in 0..n_layers {
+            for matrix in ["gate", "up", "down"] {
+                let name = format!("blk.{layer}.ffn_{matrix}_exps.weight");
+                layer_of.insert(fnv1a_name_key(&name), layer);
+            }
+        }
+        Self { layer_of }
+    }
+
     pub fn from_json(json: &str) -> Result<Self, String> {
         #[derive(serde::Deserialize)]
         struct Entry {
@@ -269,6 +301,30 @@ mod tests {
         // Decode-only serve (no prefill trace): never fires.
         let mut det2 = PrefillBoundaryDetector::new();
         assert!((0..10).all(|_| !det2.observe(1472)));
+    }
+
+    /// what this catches: the synthesized table's hash matches the C++
+    /// fork's `canonical_name_key` EXACTLY — pinned against a key from
+    /// her REAL tkey-to-layer-matrix.json (blk.5.ffn_up_exps.weight →
+    /// 16542725649459479844, independently recomputed 2026-08-02). A
+    /// drifted FNV constant would silently map every trace record to
+    /// unknown_tkeys and the actuator would pin nothing.
+    #[test]
+    fn synthesized_table_matches_the_forks_canonical_hash() {
+        assert_eq!(
+            fnv1a_name_key("blk.5.ffn_up_exps.weight"),
+            16542725649459479844,
+            "FNV-1a drifted from the fork's canonical_name_key"
+        );
+        let table = TkeyTable::for_layers(6);
+        assert_eq!(table.len(), 18, "3 matrices × 6 layers");
+        assert_eq!(table.layer(16542725649459479844), Some(5));
+        assert_eq!(
+            table.layer(fnv1a_name_key("blk.0.ffn_gate_exps.weight")),
+            Some(0)
+        );
+        // Layer OUTSIDE the geometry is absent, not misattributed.
+        assert_eq!(table.layer(fnv1a_name_key("blk.6.ffn_gate_exps.weight")), None);
     }
 
     /// what this catches: the table loader against her real JSON shape

@@ -54,6 +54,7 @@ pub mod ort_providers;
 pub mod placement_capture;
 pub mod recipe_budget;
 pub mod throughput_expectation;
+pub mod vision_sidecar;
 pub mod vendored;
 
 // Re-export commonly used types
