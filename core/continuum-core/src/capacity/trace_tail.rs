@@ -20,6 +20,7 @@
 //! shorter than the stored offset = a fresh serve (the fork opens
 //! `"wb"`) → full state reset, stale scores never leak across serves.
 
+use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -28,6 +29,9 @@ use expert_pager_policy::plan_file::PlanPin;
 use expert_pager_policy::segment::{
     parse_records, PrefillBoundaryDetector, TkeyTable, TokenSegmenter, RECORD_BYTES,
 };
+use expert_pager_policy::ExpertId;
+
+use super::expert_predictor::CrossLayerExpertPredictor;
 
 /// Per-drain read ceiling. A decode token is ~17 KB of trace (~1472
 /// experts × 12 B), so 4 MiB ≈ 240 tokens of catch-up per tick — far
@@ -66,6 +70,31 @@ pub struct MoeTraceTail {
     /// write exactly when the ACTUATOR state changed and stay silent
     /// (no mtime churn under her per-token poll) when it didn't.
     last_published_pins: Vec<PlanPin>,
+    // ── Predictive-scheduling instrument (Joel 2026-08-02: "use our ml
+    // advantage for predictive scheduling"). The go/no-go for the CUDA
+    // copy-stream work is a MEASURED number, not an assumption: exposed
+    // H2D per token = (1 − schedulable coverage) × the ~11 GB expert
+    // working set. Coverage splits into what RECENCY covers (repeats of
+    // the previous token's set — residency handles those for free) and
+    // what PREDICTION covers (of the non-repeat delta, how many the
+    // cross-token predictor called one token ahead). Both measured live
+    // from the real trace, no mechanism required.
+    /// Cross-token transition model: `observe_transition(prev, next)`
+    /// per decode token; `predict(current)` scores next-token deltas.
+    predictor: CrossLayerExpertPredictor,
+    /// The previous decode token's expert set — the transition's LHS
+    /// and the repeat baseline.
+    prev_token_set: Option<Vec<ExpertId>>,
+    /// The delta prediction made at token N for token N+1 (top-|set|
+    /// candidates), scored against reality when N+1 folds.
+    predicted_delta: Option<HashSet<ExpertId>>,
+    /// Repeats: experts of token N+1 already in token N's set.
+    repeat_hits: u64,
+    /// Denominator for both recalls: total experts across scored tokens.
+    repeat_total: u64,
+    /// Of the NON-repeat experts, how many the predictor called.
+    delta_hits: u64,
+    delta_total: u64,
 }
 
 impl MoeTraceTail {
@@ -81,6 +110,13 @@ impl MoeTraceTail {
             tokens_observed: 0,
             boundary_crossed: false,
             last_published_pins: Vec::new(),
+            predictor: CrossLayerExpertPredictor::new(),
+            prev_token_set: None,
+            predicted_delta: None,
+            repeat_hits: 0,
+            repeat_total: 0,
+            delta_hits: 0,
+            delta_total: 0,
         }
     }
 
@@ -92,6 +128,13 @@ impl MoeTraceTail {
         self.controller = None;
         self.tokens_observed = 0;
         self.last_published_pins.clear();
+        self.predictor = CrossLayerExpertPredictor::new();
+        self.prev_token_set = None;
+        self.predicted_delta = None;
+        self.repeat_hits = 0;
+        self.repeat_total = 0;
+        self.delta_hits = 0;
+        self.delta_total = 0;
     }
 
     /// Did the actuator state move since the last plan write? Compares
@@ -166,6 +209,33 @@ impl MoeTraceTail {
                 if self.boundary.observe(experts.len()) {
                     self.boundary_crossed = true;
                 }
+                // Predictive-scheduling instrument: score last token's
+                // prediction against reality, then learn the transition
+                // and predict the NEXT delta. Skipped for the first token
+                // (no baseline) — honest None, never a fake 100%.
+                if let Some(prev) = self.prev_token_set.take() {
+                    let prev_set: HashSet<ExpertId> = prev.iter().copied().collect();
+                    let repeats =
+                        experts.iter().filter(|e| prev_set.contains(e)).count() as u64;
+                    self.repeat_hits += repeats;
+                    self.repeat_total += experts.len() as u64;
+                    if let Some(pred) = self.predicted_delta.take() {
+                        self.delta_total += experts.len() as u64 - repeats;
+                        self.delta_hits += experts
+                            .iter()
+                            .filter(|e| !prev_set.contains(e) && pred.contains(e))
+                            .count() as u64;
+                    }
+                    self.predictor.observe_transition(&prev, &experts);
+                }
+                let mut scored: Vec<(ExpertId, f32)> =
+                    self.predictor.predict(&experts).into_iter().collect();
+                scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+                self.predicted_delta = Some(
+                    scored.into_iter().take(experts.len()).map(|(e, _)| e).collect(),
+                );
+                self.prev_token_set = Some(experts.clone());
+
                 let ctl = self.controller.get_or_insert_with(|| {
                     BanditPlanController::new(
                         experts.len() * BUDGET_FACTOR_NUM / BUDGET_FACTOR_DEN,
@@ -190,6 +260,41 @@ impl MoeTraceTail {
             (Some(ctl), n) if n > 0 => ctl.pin_list(n),
             _ => Vec::new(),
         }
+    }
+
+    /// Fraction (×100) of each token's experts already present in the
+    /// PREVIOUS token's set — what pure recency residency covers with no
+    /// prediction at all. `None` before two decode tokens (honest void).
+    pub fn repeat_recall_x100(&self) -> Option<u32> {
+        (self.repeat_total > 0).then(|| (self.repeat_hits * 100 / self.repeat_total) as u32)
+    }
+
+    /// Of the NON-repeat experts (the delta recency can't cover), the
+    /// fraction (×100) the cross-token predictor called one token ahead
+    /// — what predictive prefetch adds on top of recency.
+    pub fn predicted_delta_recall_x100(&self) -> Option<u32> {
+        (self.delta_total > 0).then(|| (self.delta_hits * 100 / self.delta_total) as u32)
+    }
+
+    /// Total schedulable coverage (×100): repeats + predicted deltas over
+    /// all experts. THE go/no-go number — exposed H2D per token scales
+    /// with (100 − this) × per-token working-set bytes.
+    pub fn schedulable_coverage_x100(&self) -> Option<u32> {
+        (self.repeat_total > 0)
+            .then(|| ((self.repeat_hits + self.delta_hits) * 100 / self.repeat_total) as u32)
+    }
+
+    /// The current next-token delta prediction, strongest-first — the
+    /// future plan-file `prefetch` list (#273's third axis), published
+    /// once the wire extension is coordinated with the consumer.
+    pub fn predicted_next(&self, top_n: usize) -> Vec<ExpertId> {
+        let Some(prev) = &self.prev_token_set else {
+            return Vec::new();
+        };
+        let mut scored: Vec<(ExpertId, f32)> =
+            self.predictor.predict(prev).into_iter().collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored.into_iter().take(top_n).map(|(e, _)| e).collect()
     }
 }
 
@@ -312,6 +417,58 @@ mod tests {
         assert_eq!(tail.tokens_observed, 7, "same geometry: state kept");
         tail.ensure_geometry(8);
         assert_eq!(tail.tokens_observed, 0, "new geometry: full reset");
+    }
+
+    // what this catches: the predictive-scheduling instrument's two
+    // recalls measure what they claim. A perfectly REPEATING stream is
+    // 100% covered by recency alone (repeat_recall=100, no deltas to
+    // predict); an ALTERNATING stream (disjoint sets A,B,A,B...) is 0%
+    // recency but the cross-token predictor learns A->B/B->A after one
+    // full cycle, so delta recall climbs — prediction covering exactly
+    // what recency cannot. First token scores nothing (honest None).
+    #[test]
+    fn coverage_instrument_separates_recency_from_prediction() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let trace = tmp.path().join("moe-trace.bin");
+        let mut tail = MoeTraceTail::new(2);
+        assert_eq!(tail.repeat_recall_x100(), None, "no tokens yet");
+
+        // Repeating stream: same experts every token. Completed tokens
+        // need cycle wraps, so append the pattern repeatedly.
+        let mut buf = Vec::new();
+        for _ in 0..5 {
+            buf.extend_from_slice(&token_bytes(&[3, 7], &[9]));
+        }
+        std::fs::write(&trace, &buf).expect("write");
+        tail.drain(&trace);
+        assert!(tail.tokens_observed >= 3);
+        assert_eq!(tail.repeat_recall_x100(), Some(100), "identical tokens = pure recency");
+        assert_eq!(
+            tail.schedulable_coverage_x100(),
+            Some(100),
+            "full coverage with no prediction needed"
+        );
+
+        // Alternating stream on a fresh tail: token A = {(0,1),(1,2)},
+        // token B = {(0,5),(1,6)} — fully disjoint.
+        let trace2 = tmp.path().join("moe-trace-2.bin");
+        let mut tail2 = MoeTraceTail::new(2);
+        let mut buf2 = Vec::new();
+        for _ in 0..6 {
+            buf2.extend_from_slice(&token_bytes(&[1], &[2]));
+            buf2.extend_from_slice(&token_bytes(&[5], &[6]));
+        }
+        std::fs::write(&trace2, &buf2).expect("write");
+        tail2.drain(&trace2);
+        assert_eq!(tail2.repeat_recall_x100(), Some(0), "disjoint tokens = zero recency");
+        let delta = tail2
+            .predicted_delta_recall_x100()
+            .expect("delta scored after warmup");
+        assert!(
+            delta >= 50,
+            "predictor must learn the alternation (measured {delta}), covering what recency can't"
+        );
+        assert!(tail2.predicted_next(4).len() > 0, "a live next-delta prediction exists");
     }
 
     // what this catches: the pin ceiling is HALF the lease over real

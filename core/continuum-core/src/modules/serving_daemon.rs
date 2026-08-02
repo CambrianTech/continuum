@@ -818,7 +818,15 @@ impl ServingDaemonModule {
         // budget is retention-derived — at most half the lease's worth of
         // experts (the recency window keeps the other half) — so a lease
         // too small to retain anything publishes budget-only (v1 shape).
-        let (pins, boundary_crossed, tokens_observed, pins_moved) = {
+        let (
+            pins,
+            boundary_crossed,
+            tokens_observed,
+            pins_moved,
+            repeat_recall,
+            delta_recall,
+            coverage,
+        ) = {
             let Ok(mut tail_guard) = self.moe_trace_tail.lock() else {
                 return;
             };
@@ -835,7 +843,15 @@ impl ServingDaemonModule {
             );
             let pins = tail.pin_list(ceiling);
             let moved = tail.pins_changed(&pins);
-            (pins, tail.boundary_crossed, tail.tokens_observed, moved)
+            (
+                pins,
+                tail.boundary_crossed,
+                tail.tokens_observed,
+                moved,
+                tail.repeat_recall_x100(),
+                tail.predicted_delta_recall_x100(),
+                tail.schedulable_coverage_x100(),
+            )
         };
         if !budget_moved && !pins_moved && !boundary_crossed {
             return; // neither axis changed — no write, no mtime churn
@@ -883,6 +899,9 @@ impl ServingDaemonModule {
                 pins = pins_count as u64,
                 trace_tokens = tokens_observed,
                 warm_start = boundary_crossed,
+                repeat_recall_x100 = repeat_recall.unwrap_or(0) as u64,
+                predicted_delta_recall_x100 = delta_recall.unwrap_or(0) as u64,
+                schedulable_coverage_x100 = coverage.unwrap_or(0) as u64,
                 plan = gb.plan.display().to_string().as_str(),
                 "published governed host-cache lease: {} GiB (raw {} GiB, retains \
                  {}.{:02} tokens' expert set)",
