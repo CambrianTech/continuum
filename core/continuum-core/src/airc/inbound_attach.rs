@@ -108,20 +108,28 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
     }
 }
 
+/// One page of recent room history on a first-ever attach (Joel, 2026-08-01:
+/// "When you join a Discord channel do you read the whole history from 10
+/// years back? No — one page"). The daemon streams the newest
+/// `FIRST_ATTACH_PAGE` backlog events at the catch-up seam and coalesces
+/// everything older into the watermark summary (airc PR #1312).
+const FIRST_ATTACH_PAGE: u32 = 32;
+
 /// Build the attach request for this consumer's cursor state (#295).
 ///
 /// A persisted watermark resumes strictly after it, streaming the gap
 /// event-by-event (those events were live while we were down — the
 /// transcript writer and perception both want them). No watermark means
 /// first-ever attach: start from the transcript head for cursor
-/// correctness, but coalesce the entire backlog into one summary frame
-/// so history never floods the bus, the personas, or the CPU.
+/// correctness, coalesce the deep backlog into one summary frame so history
+/// never floods the bus, the personas, or the CPU — but keep one page of
+/// recent tail so the room isn't a void on join.
 fn attach_request_for_cursor(channel: RoomId, cursor: Option<IpcCursor>) -> AttachRequest {
     match cursor {
         Some(cursor) => AttachRequest::new(channel, AttachStart::After(cursor)),
-        None => {
-            AttachRequest::new(channel, AttachStart::FromTranscriptStart).with_coalesced_backlog()
-        }
+        None => AttachRequest::new(channel, AttachStart::FromTranscriptStart)
+            .with_coalesced_backlog()
+            .with_backlog_tail(FIRST_ATTACH_PAGE),
     }
 }
 
@@ -498,6 +506,11 @@ mod tests {
         assert!(
             first.coalesces_backlog(),
             "first-ever attach must not replay full room history into live perception"
+        );
+        assert_eq!(
+            first.backlog_tail(),
+            Some(FIRST_ATTACH_PAGE),
+            "join shows one page back, not a void (airc PR #1312)"
         );
 
         let cursor = IpcCursor {
