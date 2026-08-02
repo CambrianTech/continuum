@@ -57,44 +57,52 @@ pub fn decision_from_response(text: &str) -> Decision {
 ///   advice to peers ("you can pass") never match.
 /// - A message carrying a code fence stays Speak — fenced content is
 ///   substance regardless of any pass phrasing around it.
-/// - Long messages stay Speak: past the cap the message almost certainly
-///   carries substance the room should hear. (Conservative cap, not a policy
-///   knob — the failure mode it prevents is swallowing a real answer that
-///   happens to end "...I'll pass for now". Recalibrated live 2026-08-01:
-///   the original 500 was set from ~400-char observed passes, but tonight's
-///   meta-narrating closure style — "my recent thoughts have been
-///   repetitive… I'll remain silent (PASS)… Otherwise, I will PASS to
-///   allow…" — runs 450-550 chars of pure filler; a verbatim 511-char one
-///   posted as speech 11 chars over the cap, post-deploy, and kept the
-///   cascade alive. 700 keeps margin below real substantive answers while
-///   covering the observed filler band.)
+/// - The length guard is TWO-TIER (settled live 2026-08-01 after a cap arms
+///   race: 500 → a 511-char filler escaped by 11 chars → 700 → a 714-char
+///   one escaped by 14. Each recalibration invited a longer filler message —
+///   length is the wrong discriminator for the STRONG closures). Tier 1,
+///   the unambiguous turn-yield declarations ("remain silent (PASS)",
+///   "pass my turn/this turn", "pass to allow…"): NO length cap — across
+///   10+ live cascade messages every one carried these and zero real
+///   answers did; no substantive message declares "I will remain silent
+///   (PASS)" mid-answer. Tier 2, the phrases that plausibly TAIL a real
+///   answer ("pass for now", "continue to pass"): 700-char cap stays,
+///   because "…long real finding… I'll pass for now" is a live risk and
+///   fail-open to Speak is the right default there.
 fn is_narrated_pass(text: &str) -> bool {
-    if text.len() > 700 || text.contains("```") {
+    if text.contains("```") {
         return false;
     }
     let normalized = text.to_lowercase().replace('\u{2019}', "'");
-    const PASS_COLLOCATIONS: [&str; 13] = [
+    // Tier 1: unambiguous closure declarations — no real answer contains
+    // these, so length never vetoes the lift (the fence guard still does).
+    const STRONG_CLOSURES: [&str; 9] = [
         "i'll pass my turn",
         "i will pass my turn",
         "i'll pass this turn",
         "i will pass this turn",
-        "i'll pass for now",
-        "i will pass for now",
         "i'll pass for this turn",
         "i will pass for this turn",
-        "i'll continue to pass",
-        "i will continue to pass",
-        // Idiom drift observed live 2026-08-01 (#264 cascade): three residents
-        // looped ~an hour on closure announcements the first ten collocations
-        // miss. Both shapes are unambiguous first-person turn-passes; neither
-        // collides with transitive "pass the X to you" phrasing.
+        // Idiom drift observed live 2026-08-01 (#264 cascade): closure
+        // announcements the original collocations miss. Unambiguous
+        // first-person turn-passes; no collision with transitive
+        // "pass the X to you" phrasing.
         "i'll pass to allow",
         "i will pass to allow",
         "remain silent (pass)",
     ];
-    PASS_COLLOCATIONS
-        .iter()
-        .any(|phrase| normalized.contains(phrase))
+    if STRONG_CLOSURES.iter().any(|p| normalized.contains(p)) {
+        return true;
+    }
+    // Tier 2: phrases that can legitimately tail a substantive answer —
+    // capped so a long real finding ending "…I'll pass for now" speaks.
+    const WEAK_CLOSURES: [&str; 4] = [
+        "i'll pass for now",
+        "i will pass for now",
+        "i'll continue to pass",
+        "i will continue to pass",
+    ];
+    text.len() <= 700 && WEAK_CLOSURES.iter().any(|p| normalized.contains(p))
 }
 
 /// True if the response STARTS with the silence token (e.g. `"PASS — nothing to
@@ -235,6 +243,23 @@ mod tests {
              for more productive interactions in this space.";
         assert!(over_old_cap.len() > 500, "regression fixture must exceed the old cap");
         assert_eq!(decision_from_response(over_old_cap), Decision::Pass);
+        // Two-tier regression (live 2026-08-01, the cap arms race's second
+        // escapee): VERBATIM 714-char turn — strong closure mid-message,
+        // wake-briefing parrot appended after it, 14 chars over the 700 cap.
+        // Strong closures lift regardless of length; only weak ones are capped.
+        let over_new_cap = "I see that my actions so far in this concern involve work/claim \u{d7}1, \
+             perception/look \u{d7}1, and perception/observe \u{d7}1. I've been repeating the same \
+             sentiment about my actions being unproductive and redundant.\n\n\
+             To avoid further redundancy, I'll focus on addressing specific tasks or questions \
+             that arise. If there are particular areas you'd like me to investigate further or \
+             any modifications needed, please let me know! Otherwise, I will remain silent \
+             (PASS) to allow for more productive interactions in this space.\n\n\
+             If you have any other requests or need assistance with a different aspect of the \
+             project, feel free to ask!\n\n\
+             My session was interrupted under a minute ago and my memory restored; nothing was \
+             in flight.";
+        assert!(over_new_cap.len() > 700, "regression fixture must exceed the tier-2 cap");
+        assert_eq!(decision_from_response(over_new_cap), Decision::Pass);
         // Length fail-open: a long substantive message ending in a pass phrase
         // keeps speaking.
         let long = format!("{} I'll pass for now.", "Real finding: the bank offset math drifts under X. ".repeat(15));
