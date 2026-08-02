@@ -41,6 +41,7 @@ pub mod ffi;
 pub mod forge;
 pub mod genome;
 pub mod capacity;
+mod platform_io;
 pub mod governor;
 pub mod gpu;
 pub mod http;

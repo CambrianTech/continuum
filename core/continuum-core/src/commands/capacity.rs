@@ -132,7 +132,6 @@ fn probe(
     reads: u32,
 ) -> Result<CapacityIoProbeResult, CommandError> {
     use std::io::Write;
-    use std::os::unix::fs::FileExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
@@ -189,7 +188,7 @@ fn probe(
                         x ^= x >> 7;
                         x ^= x << 17;
                         let rec = x % bank_records;
-                        if f.read_exact_at(&mut buf, rec * record_bytes).is_ok() {
+                        if crate::platform_io::pread_exact(&f, &mut buf, rec * record_bytes).is_ok() {
                             done.fetch_add(record_bytes, Ordering::Relaxed);
                         }
                     }
