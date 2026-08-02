@@ -44,8 +44,16 @@ pub enum DriveRole {
     /// The OS / working drive (where the binary + config live). Kept lean — big cold
     /// artifacts belong elsewhere when a `Cold` drive exists.
     System,
-    /// A large offload drive — the COLD/frozen artifact tier (big GGUFs, MoE expert
-    /// sets paged into VRAM on demand). The Steam-library-style second drive.
+    /// A large offload drive — the COLD/FROZEN artifact tier: big source GGUFs,
+    /// backups, models not currently served. The Steam-library-style second drive.
+    ///
+    /// **NEVER the per-token streaming tier** (#302 correction, measured 2026-08-02:
+    /// streaming an expert bank off a 130 MB/s HDD = 156–544 s/token = unservable —
+    /// the prior doc's "MoE expert sets paged into VRAM on demand" conflated two
+    /// physically different tiers). The hot per-token-paged set (expert containers,
+    /// device-fit overrides) lives on the NVMe serving tier, governed by
+    /// `NvmeServingTierPool`; artifacts here are frozen until MIGRATED up.
+    /// [[docs/architecture/STORAGE-SERVING-TIER-GOVERNOR.md]]
     Cold,
 }
 
