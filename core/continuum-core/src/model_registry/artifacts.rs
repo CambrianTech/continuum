@@ -359,7 +359,7 @@ fn find_ggufs_under_snapshots(model_dir: &Path) -> Option<PathBuf> {
         };
         for file in files.flatten() {
             let p = file.path();
-            if is_gguf(&p) {
+            if is_main_model_gguf(&p) {
                 candidates.push(p);
             }
         }
@@ -375,7 +375,7 @@ fn collect_ggufs_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = entry.path();
         if p.is_dir() {
             collect_ggufs_recursive(&p, out);
-        } else if is_gguf(&p) {
+        } else if is_main_model_gguf(&p) {
             out.push(p);
         }
     }
@@ -385,7 +385,7 @@ fn first_gguf_in_dir(dir: &Path) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     for entry in fs::read_dir(dir).ok()?.flatten() {
         let p = entry.path();
-        if is_gguf(&p) {
+        if is_main_model_gguf(&p) {
             candidates.push(p);
         }
     }
@@ -405,6 +405,23 @@ fn is_gguf(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+}
+
+/// A GGUF eligible to be THE model — excludes multimodal-projector
+/// companions (`*mmproj*.gguf`), which are CLIP-architecture sidecars that
+/// llama-server loads via `--mmproj`, never `-m`. Glass-boxed 2026-08-02
+/// (#106): pulling Qwen2.5-VL wrote the mmproj AFTER the main weights, so
+/// mtime-newest candidate selection picked the projector as the model and
+/// every VL spawn died with "unsupported model architecture: 'clip'".
+/// ONE predicate for every main-model collector; [`find_mmproj_beside`]
+/// remains the mmproj-POSITIVE scan.
+fn is_main_model_gguf(path: &Path) -> bool {
+    if !is_gguf(path) {
+        return false;
+    }
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| !name.to_ascii_lowercase().contains("mmproj"))
 }
 
 fn home_dir_string() -> Option<String> {
@@ -498,6 +515,34 @@ mod tests {
             sampling: crate::model_registry::types::ModelSampling::default(),
             persona_serving_eligible: true,
         }
+    }
+
+    // what this catches: #106 live spawn failure 2026-08-02 — pulling Qwen2.5-VL
+    // wrote the mmproj AFTER the main weights, mtime-newest candidate selection
+    // picked the PROJECTOR as the model, and llama-server died with "unsupported
+    // model architecture: 'clip'" (serving fully down until unpin). A `*mmproj*`
+    // GGUF must never be main-model candidate no matter its mtime; the
+    // mmproj-POSITIVE scan (`find_mmproj_beside`) must still find it.
+    #[test]
+    fn mmproj_companion_never_wins_main_model_resolution() {
+        let snap = tempfile::tempdir().unwrap();
+        let model_dir = snap.path().join("snapshots").join("abc123");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let main = model_dir.join("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf");
+        write_empty_gguf(&main);
+        // Written SECOND → newer mtime, the exact live download ordering.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mmproj = model_dir.join("mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf");
+        write_empty_gguf(&mmproj);
+
+        let picked = find_ggufs_under_snapshots(snap.path()).expect("main model resolves");
+        assert_eq!(picked, main, "projector must not out-mtime the model");
+        let proj = find_mmproj_beside(&model_dir).expect("projector still discoverable");
+        assert_eq!(proj, mmproj);
+        // A directory holding ONLY a projector resolves no main model — blind
+        // beats serving CLIP as a mind.
+        std::fs::remove_file(&main).unwrap();
+        assert!(find_ggufs_under_snapshots(snap.path()).is_none());
     }
 
     // what this catches: tier-1 resolution — an explicitly declared projector resolves
