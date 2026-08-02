@@ -19,6 +19,7 @@
 //! prove the interface, let the strong backend slot in unchanged.
 
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -668,6 +669,69 @@ async fn try_neural_embedder(
     Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
 }
 
+/// Process-global memo of rung 1 — the dedicated in-process embed model.
+///
+/// Glass-boxed live on BigMama's Windows node (2026-08-02): `resolve_recall_embedder`
+/// runs once per persona REGISTRATION, and registration re-runs on every respawn
+/// (node resilience). Before this memo, EVERY call built a fresh `LlamaCppAdapter`,
+/// loaded the ~1.2 GB embed GGUF into a NEW llama context, probed it, and burned
+/// ~16 calibration passes — nine personas meant nine resident embed contexts, and a
+/// respawn-churning node became a context-creation storm (102 llama_context
+/// creations × ~1200 MiB with ZERO IPC deltas) eating memory out from under the
+/// ResourceGovernor. The resolver's own contract ("embedded ONCE and shared across
+/// every persona") requires ONE shared provider; this state enforces it.
+///
+/// Semantics:
+/// - SUCCESS memoizes permanently. The async lock makes resolution single-flight:
+///   N concurrently-spawning personas produce exactly ONE model load; the rest
+///   wait and share the Arc.
+/// - FAILURE is never memoized permanently (the #71 lesson: a one-shot resolution
+///   must not blind a box whose embed model arrives late) — but re-attempts are
+///   rate-limited by [`RUNG1_RETRY_COOLDOWN`], so a box where the load or probe
+///   fails cannot re-enter the load-probe-fail storm.
+#[derive(Default)]
+struct Rung1State {
+    provider: Option<(Arc<dyn EmbeddingProvider>, String)>,
+    last_attempt: Option<Instant>,
+    /// Total real resolve attempts (loads) this process has made — the
+    /// observable invariant the storm regression test pins.
+    attempts: u32,
+}
+
+/// Cooldown between failed rung-1 resolve attempts. One knock per minute keeps
+/// late-arriving embed models recoverable (a boot-race registry, a mid-session
+/// model pull) while capping the worst case at ~1 model-load per minute instead
+/// of one per persona respawn.
+const RUNG1_RETRY_COOLDOWN: Duration = Duration::from_secs(60);
+
+fn rung1_cell() -> &'static tokio::sync::Mutex<Rung1State> {
+    static CELL: OnceLock<tokio::sync::Mutex<Rung1State>> = OnceLock::new();
+    CELL.get_or_init(|| tokio::sync::Mutex::new(Rung1State::default()))
+}
+
+/// The ONE shared in-process embedder (rung 1), or `None` if it isn't available
+/// right now. See [`Rung1State`] for the memo/single-flight/cooldown contract.
+/// Returns the provider and the resolved GGUF id (for the caller's probe line).
+async fn shared_in_process_embedder(model: &str) -> Option<(Arc<dyn EmbeddingProvider>, String)> {
+    // Holding the async lock across the load IS the single-flight: concurrent
+    // resolvers queue here and find `provider` populated when they wake.
+    let mut state = rung1_cell().lock().await;
+    if let Some((provider, gguf_id)) = &state.provider {
+        return Some((provider.clone(), gguf_id.clone()));
+    }
+    if let Some(last) = state.last_attempt {
+        if last.elapsed() < RUNG1_RETRY_COOLDOWN {
+            return None;
+        }
+    }
+    state.last_attempt = Some(Instant::now());
+    state.attempts += 1;
+    let (embed_adapter, gguf_id) = local_embed_adapter()?;
+    let provider = try_neural_embedder(embed_adapter, model).await?;
+    state.provider = Some((provider.clone(), gguf_id.clone()));
+    Some((provider, gguf_id))
+}
+
 /// Resolve the embedder for the live recall path. Tries, in order:
 ///   1. the dedicated **in-process** embed model (GPU, no HTTP hop) — preferred;
 ///   2. the chat `adapter`'s `/v1/embeddings`, for a grid gateway that serves an
@@ -698,19 +762,18 @@ pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc
         .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
 
     // 1. Preferred: the dedicated in-process embed model. Pinned independently of
-    //    the chat model, so changing Asha's brain never disturbs recall.
-    if let Some((embed_adapter, gguf_id)) = local_embed_adapter() {
-        if let Some(provider) = try_neural_embedder(embed_adapter, &model).await {
-            crate::probe!(
-                class = "recall.embedder.resolved",
-                kind = "neural",
-                source = "in-process-llamacpp",
-                model = %model,
-                gguf = %gguf_id,
-                "recall embedder = NEURAL (dedicated in-process Qwen3-Embedding)"
-            );
-            return provider;
-        }
+    //    the chat model, so changing Asha's brain never disturbs recall. ONE
+    //    shared instance process-wide — see [`Rung1State`].
+    if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
+        crate::probe!(
+            class = "recall.embedder.resolved",
+            kind = "neural",
+            source = "in-process-llamacpp",
+            model = %model,
+            gguf = %gguf_id,
+            "recall embedder = NEURAL (dedicated in-process Qwen3-Embedding, shared)"
+        );
+        return provider;
     }
 
     // 2. Fallback: the chat adapter's embeddings endpoint, for a gateway that
@@ -755,18 +818,16 @@ pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
 
-    if let Some((embed_adapter, gguf_id)) = local_embed_adapter() {
-        if let Some(provider) = try_neural_embedder(embed_adapter, &model).await {
-            crate::probe!(
-                class = "recall.embedder.resolved",
-                kind = "neural",
-                source = "in-process-llamacpp-global",
-                model = %model,
-                gguf = %gguf_id,
-                "global recall embedder = NEURAL (dedicated in-process Qwen3-Embedding)"
-            );
-            return provider;
-        }
+    if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
+        crate::probe!(
+            class = "recall.embedder.resolved",
+            kind = "neural",
+            source = "in-process-llamacpp-global",
+            model = %model,
+            gguf = %gguf_id,
+            "global recall embedder = NEURAL (dedicated in-process Qwen3-Embedding, shared)"
+        );
+        return provider;
     }
 
     crate::probe!(
@@ -1263,5 +1324,33 @@ mod tests {
             "semantically similar text must rank above unrelated text: {sim} !> {dif}"
         );
         assert!(sim > 0.5, "similar pair should be clearly related: {sim}");
+    }
+
+    // what this catches: the rung-1 load-probe-fail storm (BigMama's Windows
+    // node, 2026-08-02 — 102 llama_context creations × ~1200 MiB, zero IPC).
+    // A failed shared resolve must consume exactly ONE attempt and every
+    // subsequent resolve inside the cooldown must return fast WITHOUT
+    // re-attempting a model load. Runs with no model registry installed, so
+    // rung 1 fails at `local_embed_adapter` — the cheap flavor of the same
+    // failure path the storm rode.
+    #[tokio::test]
+    async fn failed_rung1_resolve_does_not_reattempt_within_cooldown() {
+        let attempts_before = rung1_cell().lock().await.attempts;
+        let a = shared_in_process_embedder(CANONICAL_EMBED_MODEL).await;
+        let b = shared_in_process_embedder(CANONICAL_EMBED_MODEL).await;
+        let c = shared_in_process_embedder(CANONICAL_EMBED_MODEL).await;
+        let attempts_after = rung1_cell().lock().await.attempts;
+        // In a bare test process there is no registry → all resolves fail…
+        assert!(a.is_none() && b.is_none() && c.is_none());
+        // …and the cooldown means three resolves cost at most ONE attempt.
+        // (≤ rather than == : another test in the parallel suite may have
+        // burned the process-global attempt first — the invariant is "no
+        // storm", not "this test owns the counter".)
+        assert!(
+            attempts_after - attempts_before <= 1,
+            "three back-to-back failed resolves must not attempt more than one load \
+             (got {} new attempts)",
+            attempts_after - attempts_before
+        );
     }
 }
