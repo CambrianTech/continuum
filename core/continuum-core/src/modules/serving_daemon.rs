@@ -254,6 +254,13 @@ pub struct ServingDaemonModule {
     /// that fit at pin time; budget can still shift under it, and then the plan
     /// degrades honestly (`fits_on_gpu = false`) rather than over-committing.
     pinned: watch::Sender<Option<String>>,
+    /// The long-lived vision SIDECAR lane (#106, `inference::vision_sidecar`):
+    /// a small VL model serving beside a text-only mind so every persona has
+    /// eyes. Owned here so it lives across reconciles and its child dies with
+    /// the daemon (`EphemeralServingLane` Drop-kills). A tokio Mutex because
+    /// [`vision_sidecar::ensure_sidecar`] awaits (spawn + `/props` verify)
+    /// inside the reconcile task while holding the slot.
+    vision_sidecar: Arc<tokio::sync::Mutex<Option<crate::inference::llama_server::EphemeralServingLane>>>,
 }
 
 impl ServingDaemonModule {
@@ -320,6 +327,7 @@ impl ServingDaemonModule {
                 "K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES",
             )
             .and_then(|s| s.trim().parse::<u64>().ok()),
+            vision_sidecar: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -946,6 +954,8 @@ impl ServingDaemonModule {
         let serving_tx = self.serving_tx.clone();
         let reconciling = self.reconciling.clone();
         let bus = self.bus.get().cloned();
+        let sidecar_slot = self.vision_sidecar.clone();
+        let system = self.system.clone();
         // RAII gate-clear (#214): the `reconciling` flag was set `true` at the top of this
         // reconcile and MUST clear even if the relaunch task panics or is cancelled
         // mid-await — otherwise ONE failed relaunch (an OOM spawn under a memory squeeze, a
@@ -994,13 +1004,15 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } => 0,
             };
-            // #106 vision readiness: for a ready lane, verify the MULTIMODAL endpoint
-            // actually answers — the row's declared Vision, the resolved mmproj, and
-            // the server's own `/props modalities` must all agree before the snapshot
-            // claims sight. Any gap publishes `vision_ready: false` WITH the reason
-            // logged loud, so the observe path fails honestly instead of POSTing
-            // pixels a text-only lane would silently drop.
-            let vision_ready = match &outcome {
+            // #106 vision readiness: for a ready lane, resolve the node's VERIFIED
+            // vision endpoint. First the MAIN lane — the row's declared Vision, the
+            // resolved mmproj, and the server's own `/props modalities` must all
+            // agree. A text-only mind then gets a SIDECAR attempt (a small VL lane
+            // beside it, `inference::vision_sidecar`) so personas are not blind just
+            // because their mind's model doesn't see. Every gap publishes no
+            // endpoint WITH the reason probed loud, so the observe path fails
+            // honestly instead of POSTing pixels a text-only lane would drop.
+            let vision = match &outcome {
                 EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
                     let declares_vision = target
                         .model
@@ -1021,7 +1033,7 @@ impl ServingDaemonModule {
                             None
                         }
                     };
-                    match crate::inference::llama_server::vision_lane_ready(
+                    let main_sees = match crate::inference::llama_server::vision_lane_ready(
                         declares_vision,
                         mmproj_resolved,
                         props,
@@ -1036,9 +1048,88 @@ impl ServingDaemonModule {
                             );
                             false
                         }
+                    };
+                    if main_sees {
+                        // A VL mind: the main lane IS the vision endpoint. Any
+                        // sidecar from a previous plan is redundant — drop it
+                        // (its Drop kills the child, RAM freed).
+                        *sidecar_slot.lock().await = None;
+                        Some(crate::inference::vision_sidecar::SidecarLane {
+                            base_url: serving_v1_url(),
+                            model_id: desired.clone(),
+                        })
+                    } else {
+                        use crate::inference::vision_sidecar as sidecar;
+                        let rows: Vec<crate::model_registry::types::Model> =
+                            crate::model_registry::try_global()
+                                .map(|r| r.models().cloned().collect())
+                                .unwrap_or_default();
+                        let candidate = sidecar::find_candidate(&rows, Some(desired.as_str()));
+                        match &candidate {
+                            Err(skipped) => {
+                                crate::probe!(
+                                    class = "serving.vision.sidecar_no_candidate",
+                                    skipped = skipped.join("; ").as_str(),
+                                    "text-only mind and no on-disk VL row — personas \
+                                     have no local vision endpoint (models/pull a \
+                                     *-VL-*-GGUF repo to give them eyes)",
+                                );
+                                None
+                            }
+                            Ok(cand) => {
+                                // Gate on the LIVE free-memory read, never a cached
+                                // plan figure (the eval-lane second-model SIGKILL
+                                // class).
+                                let free = system.snapshot().memory.available_bytes;
+                                match sidecar::plan_sidecar(false, Ok(cand), free) {
+                                    sidecar::SidecarVerdict::Spawn => {
+                                        let mut slot = sidecar_slot.lock().await;
+                                        match sidecar::ensure_sidecar(&mut slot, cand).await {
+                                            Ok(lane) => {
+                                                crate::probe!(
+                                                    class = "serving.vision.sidecar_up",
+                                                    model = lane.model_id.as_str(),
+                                                    base_url = lane.base_url.as_str(),
+                                                    "vision sidecar verified — personas can see",
+                                                );
+                                                Some(lane)
+                                            }
+                                            Err(why) => {
+                                                crate::probe!(
+                                                    class = "serving.vision.sidecar_failed",
+                                                    model = cand.model.id.as_str(),
+                                                    why = why.as_str(),
+                                                    "vision sidecar could not come up",
+                                                );
+                                                None
+                                            }
+                                        }
+                                    }
+                                    sidecar::SidecarVerdict::NoBudget {
+                                        need_bytes,
+                                        free_bytes,
+                                    } => {
+                                        crate::probe!(
+                                            class = "serving.vision.sidecar_no_budget",
+                                            model = cand.model.id.as_str(),
+                                            need_bytes,
+                                            free_bytes,
+                                            "vision sidecar refused: not enough free host \
+                                             memory beside the live lane",
+                                        );
+                                        None
+                                    }
+                                    // plan_sidecar was called with
+                                    // main_vision_ready=false and Ok(cand), so the
+                                    // remaining variants cannot arise; publish no
+                                    // endpoint rather than assert in the reconcile.
+                                    _ => None,
+                                }
+                            }
+                        }
                     }
                 }
-                EnsureOutcome::Degraded { .. } => false,
+                EnsureOutcome::Degraded { .. } => None,
             };
             let snapshot = snapshot_from_outcome(
                 &outcome,
@@ -1046,7 +1137,7 @@ impl ServingDaemonModule {
                 &desired_adapter_paths,
                 served_window,
                 target.lanes,
-                vision_ready,
+                vision,
             );
             crate::probe!(
                 class = "serving.reconcile",
@@ -1699,7 +1790,12 @@ fn snapshot_from_outcome(
     adapters: &[String],
     served_context_window: u32,
     lanes: u32,
-    vision_ready: bool,
+    // The VERIFIED vision endpoint on this node, if any (#106): the main lane
+    // itself when its model sees, or the sidecar lane. `Some` ⇒ its `/props`
+    // confirmed sight; the snapshot's `vision_ready`/`vision_base_url`/
+    // `vision_model` are all projected from this ONE value, so an address can
+    // never be published without the verified flag (or vice versa).
+    vision: Option<crate::inference::vision_sidecar::SidecarLane>,
 ) -> ServingSnapshot {
     match outcome {
         EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. }
@@ -1720,11 +1816,13 @@ fn snapshot_from_outcome(
                 // KV as `lanes × kv_at(served_context_window)` (#79).
                 lanes,
                 degraded_reason: None,
-                // The reconcile's verified multimodal verdict (#106): declared
-                // Vision + resolved mmproj + `/props modalities.vision` all
-                // agreed. The observe path gates on THIS, never on the row's
-                // declaration alone.
-                vision_ready,
+                // The reconcile's verified multimodal verdict (#106): the ONE
+                // `vision` value projects all three fields, so readiness and
+                // the routing address can never disagree. The observe path
+                // gates on THIS, never on a row's declaration alone.
+                vision_ready: vision.is_some(),
+                vision_base_url: vision.as_ref().map(|v| v.base_url.clone()),
+                vision_model: vision.map(|v| v.model_id),
             }
         }
         // Ready outcome but the served window was unreadable (0) → do NOT publish
@@ -2439,7 +2537,10 @@ mod tests {
             &genes,
             11008,
             4,
-            true,
+            Some(crate::inference::vision_sidecar::SidecarLane {
+                base_url: "http://127.0.0.1:58091/v1".to_string(),
+                model_id: "vl-7b".to_string(),
+            }),
         );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
@@ -2458,16 +2559,27 @@ mod tests {
             "the reconcile's verified multimodal verdict must survive into the snapshot \
              — the observe path gates on THIS field (#106)"
         );
+        assert_eq!(
+            up.vision_base_url.as_deref(),
+            Some("http://127.0.0.1:58091/v1"),
+            "the ONE vision value projects the routing address with the flag — an \
+             address can never publish without verified readiness"
+        );
+        assert_eq!(up.vision_model.as_deref(), Some("vl-7b"));
 
         let already =
-            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4, false);
+            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4, None);
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
         assert_eq!(already.served_context_window, 11008);
         assert_eq!(already.lanes, 4);
         assert!(
             !already.vision_ready,
-            "a text lane (verdict false) must never read as sighted"
+            "a text lane (no verified endpoint) must never read as sighted"
+        );
+        assert!(
+            already.vision_base_url.is_none() && already.vision_model.is_none(),
+            "no verified endpoint → no address, no model (None-iff-not-ready)"
         );
 
         // Ready outcome but the served window was unreadable (0) → publish the gap,
@@ -2478,7 +2590,7 @@ mod tests {
             &genes,
             0,
             4,
-            false,
+            None,
         );
         assert_eq!(windowless.active_model, None, "ready-but-no-window → nothing live");
         assert!(!windowless.ready);
@@ -2491,7 +2603,7 @@ mod tests {
             &genes,
             11008,
             4,
-            false,
+            None,
         );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
@@ -2570,6 +2682,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -2590,6 +2704,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         }
     }
 
@@ -2742,6 +2858,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         daemon
             .reconcile_to_plan()
@@ -2760,6 +2878,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -2786,6 +2906,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None

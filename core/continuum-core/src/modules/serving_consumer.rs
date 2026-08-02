@@ -348,6 +348,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, _prx) = watch::channel(None);
@@ -433,6 +435,8 @@ mod tests {
             lanes: 3,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let footprint_of: FootprintFn = Arc::new(move |id: &str, window: u32, lanes: u32| {
             *seen_w.lock() = Some((id.to_string(), window, lanes));
@@ -525,6 +529,8 @@ mod tests {
             lanes: 4,
             degraded_reason: None,
             vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
         });
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, pin_rx) = watch::channel(None);
