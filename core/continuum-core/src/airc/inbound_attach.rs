@@ -108,6 +108,23 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
     }
 }
 
+/// Build the attach request for this consumer's cursor state (#295).
+///
+/// A persisted watermark resumes strictly after it, streaming the gap
+/// event-by-event (those events were live while we were down — the
+/// transcript writer and perception both want them). No watermark means
+/// first-ever attach: start from the transcript head for cursor
+/// correctness, but coalesce the entire backlog into one summary frame
+/// so history never floods the bus, the personas, or the CPU.
+fn attach_request_for_cursor(channel: RoomId, cursor: Option<IpcCursor>) -> AttachRequest {
+    match cursor {
+        Some(cursor) => AttachRequest::new(channel, AttachStart::After(cursor)),
+        None => {
+            AttachRequest::new(channel, AttachStart::FromTranscriptStart).with_coalesced_backlog()
+        }
+    }
+}
+
 pub async fn run_daemon_attach(
     socket_path: PathBuf,
     channel: RoomId,
@@ -127,15 +144,23 @@ pub async fn run_daemon_attach(
     // CONSUMER CURSOR (#242): consumers resume from durable cursors over
     // durable storage, never from zero. A persisted watermark resumes
     // strictly after it (gap replay only, no duplicates at the seam —
-    // the AttachStart::After contract). Only the FIRST-EVER attach (no
-    // watermark on disk) seeds from transcript start, once per state
-    // dir — never once per reboot.
-    let start = match load_cursor(&channel) {
-        Some(cursor) => AttachStart::After(cursor),
-        None => AttachStart::FromTranscriptStart,
-    };
+    // the AttachStart::After contract).
+    //
+    // BOUNDED FIRST ATTACH (#295): the FIRST-EVER attach (no watermark on
+    // disk) must NOT stream the room's full history into live perception —
+    // on a long-lived room that is thousands of events decoded, published,
+    // and serviced as if they were happening now (BigMama's Windows node
+    // pegged 24 cores for ~45min on exactly this). AttachStart's own doc
+    // marks FromTranscriptStart "audit/replay tools only". Instead the
+    // first attach coalesces the backlog daemon-side (airc card 7d5b6a65)
+    // into ONE AttachCursorAdvanced summary frame at the live seam; the
+    // handler below persists it, so every later attach resumes After(_).
+    // The room starts at join for a fresh node — personas perceive the
+    // room AS IT IS NOW (#131), and deep history is #249's bounded
+    // durable-transcript hydration, never a perception replay.
+    let request = attach_request_for_cursor(channel, load_cursor(&channel));
     let mut stream = client
-        .attach(AttachRequest::new(channel, start))
+        .attach(request)
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
 
@@ -456,6 +481,37 @@ mod tests {
     use serde_json::json;
     use tokio::time::{timeout, Duration};
     use uuid::Uuid;
+
+    // what this catches: #295 — the first-ever attach (no persisted watermark)
+    // used bare FromTranscriptStart, streaming a long-lived room's ENTIRE
+    // history into live perception (BigMama's fresh Windows node pegged 24
+    // cores ~45min servicing days of backlog as fresh events). First attach
+    // must coalesce backlog into one summary frame; a resumed attach must
+    // stream its gap uncoalesced (those events are owed to the transcript
+    // writer + perception).
+    #[test]
+    fn first_attach_coalesces_backlog_resume_streams_gap() {
+        let channel = RoomId::from_u128(7);
+
+        let first = attach_request_for_cursor(channel, None);
+        assert_eq!(first.start(), AttachStart::FromTranscriptStart);
+        assert!(
+            first.coalesces_backlog(),
+            "first-ever attach must not replay full room history into live perception"
+        );
+
+        let cursor = IpcCursor {
+            epoch: 3,
+            counter: 42,
+            event_id: EventId::from_u128(9),
+        };
+        let resumed = attach_request_for_cursor(channel, Some(cursor));
+        assert_eq!(resumed.start(), AttachStart::After(cursor));
+        assert!(
+            !resumed.coalesces_backlog(),
+            "gap replay after a watermark feeds the transcript writer — never coalesced"
+        );
+    }
 
     fn transcript_event(body: Option<Body>, headers: airc_core::Headers) -> TranscriptEvent {
         TranscriptEvent {
