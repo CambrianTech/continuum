@@ -186,6 +186,11 @@ impl AircEventTransport for DaemonAircEventTransport {
                     .map(Into::into),
                 channel: Some(RoomId::from_uuid(params.room_id)),
                 limit: Some(params.limit.unwrap_or(MAX_ROOM_REPLAY_LIMIT)),
+                // Replay is a cursor-resume of the FULL wire (durable
+                // transcript hydration), not a perception page — no kinds
+                // filter here. Perception's message-only page lives in
+                // persona/airc_source.rs (#297).
+                kinds: None,
             })
             .await?;
 

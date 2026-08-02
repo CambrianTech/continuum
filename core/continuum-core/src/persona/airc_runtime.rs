@@ -887,7 +887,9 @@ impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
         &self,
         limit: usize,
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
-        self.airc.page_recent(limit).await
+        // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
+        // (persona/airc_source.rs, #297) — never the raw inherent page.
+        crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.airc, limit).await
     }
 }
 
