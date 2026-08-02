@@ -221,6 +221,12 @@ pub struct ServingDaemonModule {
     /// resident model out from under the engine). Tracked so a model change
     /// releases the old registration exactly once.
     active_artifact: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// The pin actuator's observation state (#281): tails the fork's
+    /// routed-expert trace, owns the bandit, and remembers the last
+    /// published pin list (the write-churn gate). `None` until the first
+    /// MoE lease publish; rebuilt on geometry change. Same sync-Mutex
+    /// discipline as `moe_serving` (never held across await).
+    moe_trace_tail: std::sync::Mutex<Option<crate::capacity::trace_tail::MoeTraceTail>>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -326,6 +332,7 @@ impl ServingDaemonModule {
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             moe_serving: std::sync::Mutex::new(None),
             active_artifact: std::sync::Mutex::new(None),
+            moe_trace_tail: std::sync::Mutex::new(None),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -749,14 +756,17 @@ impl ServingDaemonModule {
         // Read under the same never-across-await sync Mutex as the placement path.
         // top_k + experts-per-layer feed the retention verdict below: the lease
         // is only USEFUL when it exceeds one token's expert working set.
-        let (expert_bytes_total, n_experts_per_layer, top_k) = {
+        let (expert_bytes_total, n_experts_per_layer, top_k, n_layers) = {
             let Ok(guard) = self.moe_serving.lock() else {
                 return;
             };
             match guard.as_ref() {
-                Some((id, ctx)) if *id == active => {
-                    (ctx.expert_bytes_total, ctx.n_experts_per_layer, ctx.top_k)
-                }
+                Some((id, ctx)) if *id == active => (
+                    ctx.expert_bytes_total,
+                    ctx.n_experts_per_layer,
+                    ctx.top_k,
+                    ctx.n_layers,
+                ),
                 _ => return, // dense model (or stale context) — no governed cache to lease
             }
         };
@@ -783,22 +793,58 @@ impl ServingDaemonModule {
             return;
         };
         let derived = crate::capacity::host_cache_lease::host_cache_lease_bytes(&inputs);
-        let published = {
+        // Sticky band on the BUDGET axis only: `budget_moved` says the
+        // published value changed; a held budget reuses the last published
+        // value so the ACTUATOR axis (pins, below) can still trigger a
+        // write. The no-churn property now lives on the write decision —
+        // nothing changed on either axis ⇒ no write, no mtime churn.
+        let (budget_bytes, budget_moved) = {
             let Ok(mut sticky) = self.host_cache_lease.lock() else {
                 return;
             };
-            sticky.observe(derived)
+            match sticky.observe(derived) {
+                Some(published) => (published, true),
+                None => (sticky.published_bytes(), false),
+            }
         };
-        let Some(budget_bytes) = published else {
-            return; // held within the band — no write, no mtime churn
-        };
+        if budget_bytes == 0 {
+            return; // nothing governed yet — never publish a zero lease
+        }
         let Some(gb) = crate::inference::llama_server::moe_glass_box_paths(port) else {
             return;
         };
+        // Pin actuator (#281): drain the fork's routed-expert trace into
+        // the bandit and carry its hot list on the governed plan. The pin
+        // budget is retention-derived — at most half the lease's worth of
+        // experts (the recency window keeps the other half) — so a lease
+        // too small to retain anything publishes budget-only (v1 shape).
+        let (pins, boundary_crossed, tokens_observed, pins_moved) = {
+            let Ok(mut tail_guard) = self.moe_trace_tail.lock() else {
+                return;
+            };
+            let tail = tail_guard.get_or_insert_with(|| {
+                crate::capacity::trace_tail::MoeTraceTail::new(n_layers)
+            });
+            tail.ensure_geometry(n_layers);
+            tail.drain(&gb.trace);
+            let ceiling = crate::capacity::trace_tail::pin_ceiling(
+                budget_bytes,
+                expert_bytes_total,
+                n_layers,
+                n_experts_per_layer,
+            );
+            let pins = tail.pin_list(ceiling);
+            let moved = tail.pins_changed(&pins);
+            (pins, tail.boundary_crossed, tail.tokens_observed, moved)
+        };
+        if !budget_moved && !pins_moved && !boundary_crossed {
+            return; // neither axis changed — no write, no mtime churn
+        }
+        let pins_count = pins.len();
         let doc = crate::capacity::plan_file::PlanFileDocument::new(
             budget_bytes,
             MOE_PLAN_WINDOW_K,
-            Vec::new(),
+            pins,
         );
         // Retention verdict (#287): does the published lease retain even one
         // token's expert working set? Below 100 (×100 fixed-point) the cache
@@ -834,6 +880,9 @@ impl ServingDaemonModule {
                 live_kv_bytes = inputs.live_kv_bytes,
                 per_token_ws_bytes = per_token_ws,
                 retention_tokens_x100 = retention_x100,
+                pins = pins_count as u64,
+                trace_tokens = tokens_observed,
+                warm_start = boundary_crossed,
                 plan = gb.plan.display().to_string().as_str(),
                 "published governed host-cache lease: {} GiB (raw {} GiB, retains \
                  {}.{:02} tokens' expert set)",
