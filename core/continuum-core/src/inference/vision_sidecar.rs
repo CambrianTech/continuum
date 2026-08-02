@@ -194,6 +194,7 @@ pub async fn ensure_sidecar(
         adapters: Vec::new(),
         placement: LanePlacement::Cpu,
         expert_placement: None,
+        resident_override: None, // vision sidecar serves as-shipped; no device-fit override
     };
     let lane = EphemeralServingLane::spawn(&target, VISION_SIDECAR_BASE_PORT)
         .await

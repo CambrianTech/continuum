@@ -483,4 +483,34 @@ mod tests {
         assert_eq!(pin_ceiling(4000 * mb, 0, 10, 100), 0);
         assert_eq!(pin_ceiling(4000 * mb, 10_000 * mb, 0, 0), 0);
     }
+
+    // MEASUREMENT (go/no-go for the LiveUploadPager predictive pipeline, #23/#34): the REAL K3
+    // routed-access trace's schedulable coverage decides whether predictive prefetch can hide the
+    // per-op H2D — H2D/token = (1 - coverage) × ~11GB. Prints, never asserts a value (the fixture is
+    // a real routing sample, not a synthetic invariant); run with --nocapture to read it.
+    #[test]
+    fn k3_fixture_measured_schedulable_coverage() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/architecture/prototypes/expert-pager/fixtures/k3-routed-access.trace");
+        if !fixture.is_file() {
+            eprintln!("[K3-COVERAGE] fixture absent ({}), skipping", fixture.display());
+            return;
+        }
+        let mut tail = MoeTraceTail::new(92); // K3: 92 MoE layers
+        let mut tokens = 0u64;
+        for _ in 0..100_000 {
+            let n = tail.drain(&fixture);
+            tokens += n;
+            if n == 0 {
+                break;
+            }
+        }
+        eprintln!(
+            "[K3-COVERAGE] tokens={} repeat_recall={:?} predicted_delta={:?} schedulable_coverage={:?} (x100)",
+            tokens,
+            tail.repeat_recall_x100(),
+            tail.predicted_delta_recall_x100(),
+            tail.schedulable_coverage_x100()
+        );
+    }
 }
