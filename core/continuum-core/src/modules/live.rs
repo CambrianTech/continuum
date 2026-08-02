@@ -27,7 +27,7 @@ use crate::{log_error, log_info};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Response field name for voice responder IDs
@@ -43,9 +43,18 @@ pub struct VoiceState {
     pub call_manager: Arc<crate::live::transport::call_server::CallManager>,
     pub audio_pool: Arc<AudioBufferPool>,
     pub resource_lifecycle: Arc<AudioResourceLifecycle>,
-    /// Track active session IDs to make register-session idempotent.
-    /// Prevents duplicate agent spawns on browser refresh / re-navigate.
+    /// Track active CANONICAL call ids (= airc room ids, #193 slice A) to make
+    /// register-session idempotent. Prevents duplicate agent spawns on browser
+    /// refresh / re-navigate.
     active_sessions: std::sync::Mutex<HashSet<String>>,
+    /// #193 slice A legacy aliases: client-minted `session_id` → canonical airc
+    /// `room_id`. The server is now AUTHORITATIVE that a call IS its airc room —
+    /// every call is keyed by room_id. Until the client cutover (slice B) lands,
+    /// clients may still address verbs by their minted session_id; this map lets
+    /// [`VoiceState::canonical_call_id`] resolve those to the room. Entries are
+    /// dropped when their call ends. Empty once slice B ships — that's the
+    /// done-signal.
+    legacy_call_aliases: std::sync::Mutex<HashMap<String, String>>,
     /// Late-bound command executor for the vision describer the perception-ingest
     /// drain builds. Installed post-boot by the runtime (the #224 late-bind slot),
     /// read lazily on the first live-call frame — never present at `initialize`.
@@ -67,8 +76,22 @@ impl VoiceState {
             audio_pool,
             resource_lifecycle,
             active_sessions: std::sync::Mutex::new(HashSet::new()),
+            legacy_call_aliases: std::sync::Mutex::new(HashMap::new()),
             executor: LateBound::new("live::perception_ingest::executor"),
         }
+    }
+
+    /// THE one resolver for call/session ids (#193 slice A — compression: one
+    /// resolver, called at each verb's entry, never per-site logic). A legacy
+    /// client-minted `session_id` resolves to the canonical airc `room_id` it was
+    /// aliased to at register time; any other id (already canonical, or unknown)
+    /// passes through unchanged.
+    fn canonical_call_id(&self, id: &str) -> String {
+        let aliases = self
+            .legacy_call_aliases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        aliases.get(id).cloned().unwrap_or_else(|| id.to_string())
     }
 }
 
@@ -187,41 +210,51 @@ impl ServiceModule for VoiceModule {
                 let room_id = p.str("room_id")?;
                 let participants: Vec<VoiceParticipant> = p.json_or("participants");
 
-                // GLASS-BOX the mirror-room stink (#193): a voice session/call must BE the airc
-                // room. Today the LiveKit call is keyed by a client-minted `session_id`
-                // (`call_id = session_id` below), a room authority PARALLEL to airc. Surface any
-                // divergence LOUD so the collapse — the client passing `session_id == room_id` so
-                // the call IS the airc room — is observable by this warning going SILENT. Zero
-                // behaviour change; a pure diagnostic until the client-coordinated cutover lands
+                // #193 slice A — the server is AUTHORITATIVE that a call IS its airc room.
+                // The airc `room_id` is THE canonical call/session key: the session
+                // registers under it, and it becomes the LiveKit room name (listener,
+                // ambient, agents below). A divergent client-minted `session_id` is a
+                // LEGACY alias, recorded so every other voice/* verb can resolve it via
+                // `canonical_call_id` until the client cutover
                 // ([[all-rooms-are-airc-rooms-no-mirrors]], [[livekit-media-plane-rides-airc-not-parallel]]).
                 if session_id != room_id {
+                    // Record BEFORE the idempotency guard: a browser refresh mints a NEW
+                    // session_id for the same room — the re-register dedupes on the
+                    // canonical id below, but the fresh legacy id must still resolve.
+                    self.state
+                        .legacy_call_aliases
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(session_id.to_string(), room_id.to_string());
                     crate::log_warn!(
                         "module",
                         "voice_register_session",
-                        "MIRROR ROOM (#193): voice session/call id {} != airc room id {} — the LiveKit \
-                         call is keyed by a client-minted session_id, not the airc room_id. Collapse: \
-                         the client must pass session_id == room_id so the call IS the airc room.",
+                        "#193: legacy divergent session_id {} aliased to room_id {} — call keyed by \
+                         the airc room; client cutover pending (#193 slice B, this warn going \
+                         silent is the done-signal).",
                         session_id,
                         room_id
                     );
                 }
+                let call_id = room_id;
 
-                // Idempotency: skip if this session is already registered.
-                // Browser refresh triggers a re-join which calls register-session again.
-                // Without this guard, we spawn duplicate STT listeners and agent batches,
-                // causing the reconnect churn cycle (agents connect → old ones get evicted
-                // by LiveKit → new ones reconnect → repeat).
+                // Idempotency: skip if this call (keyed by the CANONICAL id) is already
+                // registered. Browser refresh triggers a re-join which calls
+                // register-session again — with a fresh client-minted session_id but the
+                // same room. Without this guard, we spawn duplicate STT listeners and
+                // agent batches, causing the reconnect churn cycle (agents connect → old
+                // ones get evicted by LiveKit → new ones reconnect → repeat).
                 {
                     let mut sessions = self.state.active_sessions.lock().unwrap();
-                    if !sessions.insert(session_id.to_string()) {
+                    if !sessions.insert(call_id.to_string()) {
                         log_info!(
                             "module",
                             "voice_register_session",
-                            "Session {} already active — skipping duplicate registration",
-                            &session_id[..8.min(session_id.len())]
+                            "Call {} already active — skipping duplicate registration",
+                            &call_id[..8.min(call_id.len())]
                         );
                         return Ok(CommandResult::Json(
-                            serde_json::json!({ "registered": true, "already_active": true }),
+                            serde_json::json!({ "registered": true, "already_active": true, "call_id": call_id }),
                         ));
                     }
                 }
@@ -247,9 +280,10 @@ impl ServiceModule for VoiceModule {
                     crate::live::avatar::selection::register_persona_gender(user_id, display_name);
                 }
 
+                // Registered UNDER the room id — the session key IS the airc room (#193).
                 self.state
                     .voice_service
-                    .register_session(session_id, room_id, participants)?;
+                    .register_session(call_id, room_id, participants)?;
 
                 // Track session for resource lifecycle (idle timeout unloading)
                 self.state.resource_lifecycle.on_session_start();
@@ -259,18 +293,18 @@ impl ServiceModule for VoiceModule {
                 // (DTLS timeouts, pc_state failures). The STT listener is the most important
                 // participant — without it, no speech → text → no AI responses.
                 let livekit_manager = self.state.livekit_manager.clone();
-                let call_id = session_id.to_string();
+                let listener_call_id = call_id.to_string();
                 let ambient_manager = self.state.livekit_manager.clone();
-                let ambient_call_id = session_id.to_string();
+                let ambient_call_id = call_id.to_string();
 
                 tokio::spawn(async move {
                     // Phase 1: STT listener (highest priority — enables transcription)
-                    if let Err(e) = livekit_manager.join_as_listener(&call_id).await {
+                    if let Err(e) = livekit_manager.join_as_listener(&listener_call_id).await {
                         log_error!(
                             "module",
                             "voice_register_session",
                             "Failed to spawn STT listener for call {}: {}",
-                            &call_id[..8.min(call_id.len())],
+                            &listener_call_id[..8.min(listener_call_id.len())],
                             e
                         );
                     }
@@ -301,7 +335,7 @@ impl ServiceModule for VoiceModule {
 
                     let agent_manager = self.state.livekit_manager.clone();
                     let native_call_manager = self.state.call_manager.clone();
-                    let agent_call_id = session_id.to_string();
+                    let agent_call_id = call_id.to_string();
                     tokio::spawn(async move {
                         // Wait for STT listener + ambient to finish connecting
                         tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
@@ -370,35 +404,45 @@ impl ServiceModule for VoiceModule {
                 }
 
                 Ok(CommandResult::Json(
-                    serde_json::json!({ "registered": true }),
+                    serde_json::json!({ "registered": true, "call_id": call_id }),
                 ))
             }
 
             "voice/end-session" => {
                 let _timer = TimingGuard::new("module", "voice_end_session");
-                let session_id = p.str("session_id")?;
+                let call_id = self.state.canonical_call_id(p.str("session_id")?);
 
-                // Remove from active sessions so a future register-session can proceed.
+                // Remove from active sessions so a future register-session can proceed,
+                // and drop any legacy aliases pointing at the ended call — a rejoin
+                // records fresh ones.
                 {
                     let mut sessions = self.state.active_sessions.lock().unwrap();
-                    sessions.remove(session_id);
+                    sessions.remove(&call_id);
+                }
+                {
+                    let mut aliases = self
+                        .state
+                        .legacy_call_aliases
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    aliases.retain(|_, canonical| canonical != &call_id);
                 }
 
                 log_info!(
                     "module",
                     "voice_end_session",
-                    "Ending session {} — cleaning up agents and listeners",
-                    &session_id[..8.min(session_id.len())]
+                    "Ending call {} — cleaning up agents and listeners",
+                    &call_id[..8.min(call_id.len())]
                 );
 
                 // Remove all LiveKit agents for this call
                 self.state
                     .livekit_manager
-                    .remove_agents_for_call(session_id)
+                    .remove_agents_for_call(&call_id)
                     .await;
 
                 // Remove the STT listener room
-                self.state.livekit_manager.remove_listener(session_id).await;
+                self.state.livekit_manager.remove_listener(&call_id).await;
 
                 // Track session end for resource lifecycle (triggers idle timeout).
                 // Avatar models and audio adapters unload after the idle timeout
@@ -408,13 +452,21 @@ impl ServiceModule for VoiceModule {
                 self.state.resource_lifecycle.on_session_end();
 
                 Ok(CommandResult::Json(
-                    serde_json::json!({ "ended": true, "session_id": session_id }),
+                    serde_json::json!({ "ended": true, "session_id": call_id }),
                 ))
             }
 
             "voice/on-utterance" => {
                 let _timer = TimingGuard::new("module", "voice_on_utterance");
-                let event: UtteranceEvent = p.json("event")?;
+                let mut event: UtteranceEvent = p.json("event")?;
+
+                // Resolve a legacy client-minted session id to the canonical room id
+                // (#193 slice A) — the orchestrator keys sessions by the airc room.
+                event.session_id = self
+                    .state
+                    .canonical_call_id(&event.session_id.to_string())
+                    .parse()
+                    .map_err(|e| format!("canonical call id is not a UUID: {e}"))?;
 
                 let responder_ids = self.state.voice_service.on_utterance(event)?;
                 Ok(CommandResult::Json(serde_json::json!({
@@ -465,7 +517,7 @@ impl ServiceModule for VoiceModule {
 
             "voice/speak-in-call" => {
                 let _timer = TimingGuard::new("module", "voice_speak_in_call");
-                let call_id = p.str("call_id")?;
+                let call_id = self.state.canonical_call_id(p.str("call_id")?);
                 let user_id = p.str("user_id")?;
                 let text = p.str("text")?;
                 let voice = p.str_opt("voice");
@@ -479,7 +531,7 @@ impl ServiceModule for VoiceModule {
                 let (samples, duration_ms, sample_rate) = self
                     .state
                     .livekit_manager
-                    .speak_in_call(call_id, user_id, text, voice, adapter, display_name)
+                    .speak_in_call(&call_id, user_id, text, voice, adapter, display_name)
                     .await
                     .map_err(|e| {
                         log_error!(
@@ -498,7 +550,7 @@ impl ServiceModule for VoiceModule {
                 // Sibling of the avatar-video tee. No-op if no native client is on the call.
                 self.state
                     .call_manager
-                    .push_persona_audio(call_id, user_id, display_name.unwrap_or(user_id), samples)
+                    .push_persona_audio(&call_id, user_id, display_name.unwrap_or(user_id), samples)
                     .await;
 
                 log_info!(
@@ -561,7 +613,7 @@ impl ServiceModule for VoiceModule {
             "voice/play-handle" => {
                 let _timer = TimingGuard::new("module", "voice_play_handle");
                 let handle = p.str("handle")?;
-                let call_id = p.str("call_id")?;
+                let call_id = self.state.canonical_call_id(p.str("call_id")?);
                 let user_id = p.str("user_id")?;
 
                 use crate::runtime::handle::Handle as VoiceHandle;
@@ -582,7 +634,7 @@ impl ServiceModule for VoiceModule {
 
                 self.state
                     .livekit_manager
-                    .inject_audio(call_id, user_id, samples)
+                    .inject_audio(&call_id, user_id, samples)
                     .await
                     .map_err(|e| {
                         log_error!(
@@ -687,13 +739,13 @@ impl ServiceModule for VoiceModule {
 
             "voice/inject-audio" => {
                 let _timer = TimingGuard::new("module", "voice_inject_audio");
-                let call_id = p.str("call_id")?;
+                let call_id = self.state.canonical_call_id(p.str("call_id")?);
                 let user_id = p.str("user_id")?;
                 let samples: Vec<i16> = p.json("samples")?;
 
                 self.state
                     .livekit_manager
-                    .inject_audio(call_id, user_id, samples)
+                    .inject_audio(&call_id, user_id, samples)
                     .await
                     .map_err(|e| {
                         log_error!("module", "voice_inject_audio", "inject-audio failed: {}", e);
@@ -712,13 +764,13 @@ impl ServiceModule for VoiceModule {
 
             "voice/ambient-add" => {
                 let _timer = TimingGuard::new("module", "voice_ambient_add");
-                let call_id = p.str("call_id")?;
+                let call_id = self.state.canonical_call_id(p.str("call_id")?);
                 let source_name = p.str("source_name")?;
 
                 let handle = self
                     .state
                     .livekit_manager
-                    .add_ambient_source(call_id, source_name)
+                    .add_ambient_source(&call_id, source_name)
                     .await
                     .map_err(|e| {
                         log_error!("module", "voice_ambient_add", "ambient-add failed: {}", e);
@@ -740,13 +792,13 @@ impl ServiceModule for VoiceModule {
 
             "voice/ambient-inject" => {
                 let _timer = TimingGuard::new("module", "voice_ambient_inject");
-                let call_id = p.str("call_id")?;
+                let call_id = self.state.canonical_call_id(p.str("call_id")?);
                 let handle_str = p.str("handle")?;
                 let samples: Vec<i16> = p.json("samples")?;
 
                 self.state
                     .livekit_manager
-                    .inject_ambient(call_id, handle_str, samples)
+                    .inject_ambient(&call_id, handle_str, samples)
                     .await
                     .map_err(|e| {
                         log_error!(
@@ -949,12 +1001,14 @@ impl ServiceModule for VoiceModule {
 
             "voice/poll-transcriptions" => {
                 let _timer = TimingGuard::new("module", "voice_poll_transcriptions");
-                let call_id = p.str_opt("call_id");
+                let call_id = p
+                    .str_opt("call_id")
+                    .map(|c| self.state.canonical_call_id(c));
 
                 let entries = self
                     .state
                     .livekit_manager
-                    .poll_transcriptions(call_id)
+                    .poll_transcriptions(call_id.as_deref())
                     .await;
 
                 log_info!(
@@ -963,6 +1017,7 @@ impl ServiceModule for VoiceModule {
                     "Polled {} transcriptions{}",
                     entries.len(),
                     call_id
+                        .as_deref()
                         .map(|c| format!(" for call {}", &c[..8.min(c.len())]))
                         .unwrap_or_default()
                 );
@@ -975,12 +1030,12 @@ impl ServiceModule for VoiceModule {
 
             "voice/ambient-remove" => {
                 let _timer = TimingGuard::new("module", "voice_ambient_remove");
-                let call_id = p.str("call_id")?;
+                let call_id = self.state.canonical_call_id(p.str("call_id")?);
                 let handle_str = p.str("handle")?;
 
                 self.state
                     .livekit_manager
-                    .remove_ambient_source(call_id, handle_str)
+                    .remove_ambient_source(&call_id, handle_str)
                     .await
                     .map_err(|e| {
                         log_error!(
@@ -1231,5 +1286,162 @@ impl ServiceModule for VoiceModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn module() -> VoiceModule {
+        VoiceModule::new(Arc::new(VoiceState::new(
+            Arc::new(VoiceService::new()),
+            Arc::new(LiveKitAgentManager::new()),
+            Arc::new(crate::live::transport::call_server::CallManager::new()),
+            Arc::new(AudioBufferPool::new()),
+        )))
+    }
+
+    /// Register a session with one Persona participant; returns the JSON result.
+    /// The bridge socket doesn't exist under test — the spawned listener/agent
+    /// tasks fail loud into logs without affecting the registration state under test.
+    async fn register(m: &VoiceModule, session_id: &str, room_id: &str, persona: Uuid) -> Value {
+        let result = m
+            .handle_command(
+                "voice/register-session",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "room_id": room_id,
+                    "participants": [{
+                        "user_id": persona,
+                        "display_name": "Test Persona",
+                        "participant_type": "persona",
+                        "expertise": [],
+                    }],
+                }),
+            )
+            .await
+            .expect("register-session");
+        match result {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json result, got {other:?}"),
+        }
+    }
+
+    // what this catches: #193 slice A — with session_id == room_id (the slice-B client
+    // contract) the call registers under the room id with NO legacy alias recorded and
+    // the resolver is the identity. Regresses if the alias map ever grows on the
+    // canonical path.
+    #[tokio::test]
+    async fn call_registers_under_room_id_with_no_alias_when_ids_agree() {
+        let m = module();
+        let room = Uuid::new_v4().to_string();
+        let v = register(&m, &room, &room, Uuid::new_v4()).await;
+
+        assert_eq!(v["registered"], true);
+        assert_eq!(v["call_id"], room);
+        assert!(m.state.active_sessions.lock().unwrap().contains(&room));
+        assert!(
+            m.state
+                .legacy_call_aliases
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "canonical registration must not record an alias"
+        );
+        assert_eq!(m.state.canonical_call_id(&room), room);
+    }
+
+    // what this catches: #193 slice A — a divergent client-minted session_id registers
+    // the call UNDER the airc room id (server authoritative), records a legacy alias,
+    // and a subsequent verb addressed by the LEGACY id (on-utterance, then end-session)
+    // resolves to the SAME session. Regresses if any verb grows per-site id logic
+    // instead of the one `canonical_call_id` resolver.
+    #[tokio::test]
+    async fn divergent_session_id_is_aliased_and_legacy_verbs_resolve_to_the_room() {
+        let m = module();
+        let legacy = Uuid::new_v4().to_string();
+        let room = Uuid::new_v4().to_string();
+        let persona = Uuid::new_v4();
+        let v = register(&m, &legacy, &room, persona).await;
+        assert_eq!(v["call_id"], room);
+
+        // Registered under the ROOM id, never the legacy id.
+        {
+            let sessions = m.state.active_sessions.lock().unwrap();
+            assert!(sessions.contains(&room));
+            assert!(!sessions.contains(&legacy));
+        }
+        assert_eq!(m.state.canonical_call_id(&legacy), room);
+
+        // on-utterance addressed by the LEGACY id reaches the room-keyed session:
+        // the orchestrator returns the registered persona as responder.
+        let result = m
+            .handle_command(
+                "voice/on-utterance",
+                serde_json::json!({
+                    "event": {
+                        "session_id": legacy,
+                        "speaker_id": Uuid::new_v4(),
+                        "speaker_name": "Joel",
+                        "speaker_type": "human",
+                        "transcript": "hello there",
+                        "confidence": 1.0,
+                        "timestamp": 0,
+                    }
+                }),
+            )
+            .await
+            .expect("on-utterance");
+        let CommandResult::Json(v) = result else {
+            panic!("expected Json result");
+        };
+        let responders: Vec<&str> = v["responder_ids"]
+            .as_array()
+            .expect("responder_ids array")
+            .iter()
+            .map(|x| x.as_str().expect("uuid string"))
+            .collect();
+        assert_eq!(responders, vec![persona.to_string().as_str()]);
+
+        // end-session by the LEGACY id tears down the canonical call and drops the alias.
+        m.handle_command(
+            "voice/end-session",
+            serde_json::json!({ "session_id": legacy }),
+        )
+        .await
+        .expect("end-session");
+        assert!(!m.state.active_sessions.lock().unwrap().contains(&room));
+        assert!(m
+            .state
+            .legacy_call_aliases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
+    }
+
+    // what this catches: #193 slice A — the browser-refresh re-join (fresh legacy
+    // session_id, same room) and a canonical re-register both dedupe on the CANONICAL
+    // id: one active call, no duplicate listener/agent spawns, and the fresh legacy id
+    // still resolves. Regresses if the idempotency guard keys on the raw session_id.
+    #[tokio::test]
+    async fn re_register_with_either_id_dedupes_on_the_canonical_id() {
+        let m = module();
+        let room = Uuid::new_v4().to_string();
+        let persona = Uuid::new_v4();
+        register(&m, &room, &room, persona).await;
+
+        // Refresh path: new client-minted id, same room → deduped AND aliased.
+        let legacy = Uuid::new_v4().to_string();
+        let v = register(&m, &legacy, &room, persona).await;
+        assert_eq!(v["already_active"], true);
+        assert_eq!(v["call_id"], room);
+        assert_eq!(m.state.canonical_call_id(&legacy), room);
+
+        // Canonical re-register → deduped.
+        let v = register(&m, &room, &room, persona).await;
+        assert_eq!(v["already_active"], true);
+        assert_eq!(m.state.active_sessions.lock().unwrap().len(), 1);
     }
 }
