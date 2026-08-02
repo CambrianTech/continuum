@@ -109,10 +109,14 @@ pub enum PersonaAircRuntimeError {
         #[source]
         source: AircError,
     },
-    #[error("failed to join room {room_id} as persona {agent_name:?}: {source}")]
-    Join {
+    #[error(
+        "failed to resolve persona {agent_name:?}'s home room from her durable \
+         subscription state: {source} — a persona's rooms come from HER OWN airc \
+         home (fresh scopes land in #general), never from the operator's current \
+         room (#298)"
+    )]
+    HomeRoom {
         agent_name: String,
-        room_id: Uuid,
         #[source]
         source: AircError,
     },
@@ -254,9 +258,11 @@ impl PersonaAircRuntime {
     ///    (generate or load Ed25519 keypair, write `identity.key`,
     ///    record the local_identity row) and attaches a daemon
     ///    client for live publish + subscribe. No shelling out.
-    /// 3. Resolve the room by its UUID via `default_room.as_uuid()`
-    ///    and call `Airc::join(...)`. This makes the persona appear
-    ///    on `airc peers` as an enrolled participant of the room.
+    /// 3. Resolve her HOME room via `Airc::current_room()` — her OWN
+    ///    durable subscription default; a fresh scope lands in
+    ///    `#general` per airc's canonical fresh-scope semantics. This
+    ///    makes the persona appear on `airc peers` as an enrolled
+    ///    participant of HER room — never the operator's (#298).
     /// 4. Install the per-persona command inbound pump
     ///    ([`PersonaCommandInboundPump`](crate::persona::command_inbound_pump))
     ///    so this persona's airc handle starts receiving cross-grid
@@ -280,8 +286,6 @@ impl PersonaAircRuntime {
         agent_name: impl Into<String>,
         continuum_root: &Path,
         daemon_socket: PathBuf,
-        default_room: RoomId,
-        default_room_name: Option<String>,
         source: crate::persona::identity_provider::PersonaIdentitySource,
         executor: Arc<crate::runtime::command_executor::CommandExecutor>,
     ) -> Result<Self, PersonaAircRuntimeError> {
@@ -379,42 +383,29 @@ impl PersonaAircRuntime {
             "PersonaAircRuntime bootstrap: identity ready (persona_id == peer_id post-collapse)"
         );
 
-        // Join the default room. From the daemon's perspective the
-        // persona is now an enrolled participant — `airc peers`
-        // from another scope MUST list this peer_id.
+        // Resolve the persona's HOME room from her OWN durable
+        // subscription state — never from the operator's focus.
         //
-        // CRITICAL: `Airc::join(name)` calls `ChannelName::new(name)`
-        // which DERIVES a channel UUID from the name. If we pass the
-        // UUID-as-string of the operator's channel, that string gets
-        // interpreted as a name and produces a DIFFERENT channel.
-        // The persona then sits in the derived channel while the
-        // operator publishes into the canonical one — they never
-        // see each other. Joining by NAME (e.g. "continuum") lands
-        // both in the same channel. PR #1511 integration test caught
-        // this; demo binary in slice 11 reshaped via `from_attached`
-        // explicitly to work around the same hazard.
-        let join_target = match default_room_name.as_deref() {
-            Some(name) => name.to_string(),
-            None => {
-                tracing::warn!(
-                    persona_id = %persona_id,
-                    agent_name = %agent_name,
-                    room_id = %default_room.as_uuid(),
-                    "PersonaAircRuntime bootstrap: no default_room_name supplied — \
-                     falling back to joining by UUID-as-string, which derives a NEW \
-                     channel. Persona will likely land in the wrong room. Resolve: \
-                     ensure AircModule discovers default_room_name (via `airc room` \
-                     output's `room: <name>` line) and threads it through here.",
-                );
-                default_room.as_uuid().to_string()
-            }
-        };
+        // Task #298 (Joel: "we can't launch with these hacked rooms"):
+        // bootstrap used to join the room the OPERATOR's daemon happened
+        // to have current (`airc room` discovery), so every persona born
+        // on a machine was dumped into whatever coordination room the
+        // human/agent CLI last focused — live-found with the whole
+        // resident population squatting in `k3-serving`, an MoE-serving
+        // coordination room, because the operator scope was parked there.
+        // A persona is her own airc peer with her own home dir;
+        // `current_room()` loads HER durable subscription set (the same
+        // state `Airc::join` writes), returns her established default,
+        // and on a FRESH scope applies airc's canonical landing-room
+        // semantics: subscribe to `#general`, set it default, publish
+        // presence + identity card. Resumed personas keep their real
+        // membership; new minds land in the commons. The operator's
+        // current-room pointer no longer exists on this path.
         let room = airc
-            .join(&join_target)
+            .current_room()
             .await
-            .map_err(|source| PersonaAircRuntimeError::Join {
+            .map_err(|source| PersonaAircRuntimeError::HomeRoom {
                 agent_name: agent_name.clone(),
-                room_id: default_room.as_uuid(),
                 source,
             })?;
 
@@ -713,7 +704,10 @@ impl PersonaAircRuntime {
             agent_name,
             home,
             airc: airc_arc,
-            default_room,
+            // The ACTUALLY-joined home room (from her durable subscription
+            // state above) — before #298 this stored the passed-in operator
+            // room, which could even diverge from the joined channel.
+            default_room: RoomId::from_uuid(room.channel.as_uuid()),
             inbound_handle: None,
             command_pump: Some(command_pump),
             heartbeat,
@@ -1077,8 +1071,6 @@ mod tests {
             "maya",
             root,
             PathBuf::from("/nonexistent/daemon.sock"),
-            RoomId::from_uuid(Uuid::new_v4()),
-            None,
             crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
             dummy_executor,
         )

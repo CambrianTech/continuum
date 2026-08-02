@@ -50,7 +50,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
-use std::sync::Arc;
 
 /// One row in the spawner's resolved plan: a desired persona slot for
 /// the configured hardware tier, with its model already selected.
@@ -599,12 +598,10 @@ mod tests {
 
         // The bootstrapper is never reached because provider exhausts
         // first — its construction can be cheap-and-unreachable.
-        // continuum_root/daemon_socket/default_room never get touched.
+        // continuum_root/daemon_socket never get touched.
         let instance_manager = PersonaInstanceManagerModule::new(
             crate::persona::PersonaAircRuntimeRegistry::default(),
             PathBuf::from("/dev/null/unused"),
-            airc_core::RoomId::from_uuid(uuid::Uuid::nil()),
-            None,
             PathBuf::from("/dev/null/unused"),
         );
 
