@@ -521,6 +521,18 @@ pub struct ServingSnapshot {
     #[serde(default)]
     #[ts(optional)]
     pub degraded_reason: Option<String>,
+    /// True iff the active model declares [`Capability::Vision`] AND the lane
+    /// VERIFIED its multimodal endpoint actually answers: an mmproj projector
+    /// resolved at spawn (`--mmproj` was passed) and the running server's own
+    /// `/props` reports `modalities.vision == true` (#106). This is the gate the
+    /// observation path (`cognition/vision-describe` → the persona's eyes) reads
+    /// before routing image bytes to this lane — a text-only lane, or a vision
+    /// row whose projector failed to load, reads `false` and the observe act
+    /// fails HONESTLY instead of POSTing pixels a server would silently drop
+    /// ([[fallbacks-are-illegal-fail-loud]]). `serde(default)` keeps older
+    /// persisted snapshots (pre-#106) readable as not-vision-ready.
+    #[serde(default)]
+    pub vision_ready: bool,
 }
 
 impl ServingSnapshot {
@@ -539,6 +551,8 @@ impl ServingSnapshot {
             // real `--parallel` count; 0 is the "no lanes" sentinel.
             lanes: 0,
             degraded_reason: None,
+            // Nothing served → nothing can see.
+            vision_ready: false,
         }
     }
 
@@ -551,6 +565,66 @@ impl ServingSnapshot {
             degraded_reason: Some(reason),
             ..Self::empty()
         }
+    }
+}
+
+/// What the running llama-server's own `/props` says it can perceive — the
+/// `modalities` block llama.cpp publishes once an mmproj projector loads. This
+/// is the ENDPOINT truth (#106): the catalog row *declares* Vision, the mmproj
+/// file *exists*, but only the process itself can confirm the projector loaded
+/// and the multimodal tokenize path answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultimodalSupport {
+    /// `/props` `modalities.vision` — the server accepts image content parts.
+    pub vision: bool,
+    /// `/props` `modalities.audio` — the server accepts audio content parts.
+    pub audio: bool,
+}
+
+/// Pure readiness verdict for the VISION side of a lane (#106): given what the
+/// catalog row declares, whether an mmproj projector resolved at spawn, and what
+/// the running server's `/props` reports, decide whether this lane may claim
+/// sight. Split from the daemon IO so every branch is unit-testable.
+///
+/// - `Ok(false)` — a text lane: the row never declared Vision. Not an error.
+/// - `Ok(true)`  — declared Vision, `--mmproj` was passed, AND the server's own
+///   `/props` confirms `modalities.vision`. The lane may claim sight.
+/// - `Err(why)`  — the row declares Vision but the lane CANNOT verifiably see:
+///   no projector resolved, the server reports no vision modality (projector
+///   failed to load / wrong file), or the server build doesn't report
+///   modalities at all (unverifiable ≠ working). The daemon logs the reason
+///   loud and publishes `vision_ready: false` — the capability lie is surfaced,
+///   never served ([[fallbacks-are-illegal-fail-loud]]).
+pub fn vision_lane_ready(
+    declares_vision: bool,
+    mmproj_resolved: bool,
+    props: Option<MultimodalSupport>,
+) -> Result<bool, String> {
+    if !declares_vision {
+        return Ok(false);
+    }
+    if !mmproj_resolved {
+        return Err(
+            "model row declares Vision but no mmproj projector resolved at spawn — \
+             the lane serves TEXT ONLY; pull the model's `*-GGUF` repo (projector ships \
+             alongside) or set `mmproj_local_path` on the row"
+                .to_string(),
+        );
+    }
+    match props {
+        Some(m) if m.vision => Ok(true),
+        Some(_) => Err(
+            "--mmproj was passed but the running server's /props reports \
+             modalities.vision=false — the projector failed to load or is the wrong \
+             modality (an audio-only mmproj?); the lane cannot see"
+                .to_string(),
+        ),
+        None => Err(
+            "--mmproj was passed but the running server's /props carries no `modalities` \
+             block — this llama-server build cannot VERIFY multimodal readiness, and an \
+             unverified claim of sight is a fabrication; upgrade the serving binary"
+                .to_string(),
+        ),
     }
 }
 
@@ -756,6 +830,18 @@ pub trait LlamaServerControl: Send + Sync {
     /// answering (pre-spawn), or a ready server whose `/props` shape is missing
     /// `n_ctx` (a loud invariant violation — never a guessed window).
     async fn served_context_window(&self) -> Result<u32, LlamaServerError>;
+
+    /// The multimodal capabilities the running server ITSELF reports in `/props`
+    /// (`modalities.vision` / `modalities.audio`) — the endpoint-side truth of
+    /// whether the `--mmproj` projector actually loaded (#106). `Ok(None)` means
+    /// the server answered but its `/props` carries no `modalities` block (an
+    /// older llama-server build, or a fake control that doesn't probe) — the
+    /// caller must treat that as UNVERIFIED, never as "vision works". Default
+    /// impl returns `Ok(None)` so fakes/remote controls stay honest by
+    /// construction.
+    async fn multimodal_support(&self) -> Result<Option<MultimodalSupport>, LlamaServerError> {
+        Ok(None)
+    }
 
     /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
     /// llama-server can answer `/health`, `/v1/models` and `/props` with 200
@@ -1306,6 +1392,36 @@ impl LlamaServerControl for LlamaServerProcess {
                         .to_string(),
                 )
             })
+    }
+
+    async fn multimodal_support(&self) -> Result<Option<MultimodalSupport>, LlamaServerError> {
+        // Same root-level `/props` as the served window. llama.cpp publishes a
+        // `modalities: { vision: bool, audio: bool }` block once an mtmd
+        // projector loads (and `vision:false` when launched text-only). An
+        // ABSENT block is `Ok(None)` — "this build can't say", which the pure
+        // verdict (`vision_lane_ready`) refuses to treat as sight.
+        let url = format!("{}/props", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        Ok(body.get("modalities").map(|m| MultimodalSupport {
+            vision: m.get("vision").and_then(|v| v.as_bool()).unwrap_or(false),
+            audio: m.get("audio").and_then(|v| v.as_bool()).unwrap_or(false),
+        }))
     }
 
     async fn decode_smoke_ok(&self) -> bool {
@@ -2407,6 +2523,7 @@ mod tests {
             served_context_window: 0,
             lanes: 0,
             degraded_reason: None,
+            vision_ready: false,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -2418,6 +2535,7 @@ mod tests {
             served_context_window: 0,
             lanes: 0,
             degraded_reason: None,
+            vision_ready: false,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -2429,12 +2547,45 @@ mod tests {
             served_context_window: 0,
             lanes: 0,
             degraded_reason: None,
+            vision_ready: false,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await
             .expect("should not time out")
             .expect("sender live");
         assert_eq!(got.active_model.as_deref(), Some("coder"));
+    }
+
+    // what this catches: the #106 vision-readiness verdict must only claim sight when
+    // ALL THREE facts line up — the row declares Vision, an mmproj resolved at spawn,
+    // AND the running server's own /props confirms modalities.vision. A regression that
+    // returns Ok(true) from a weaker combination publishes `vision_ready: true` for a
+    // lane that silently drops image parts — the exact capability lie the observe path
+    // gates on ([[fallbacks-are-illegal-fail-loud]]).
+    #[test]
+    fn vision_lane_ready_requires_declaration_projector_and_props_confirmation() {
+        let sees = MultimodalSupport {
+            vision: true,
+            audio: false,
+        };
+        let blind = MultimodalSupport {
+            vision: false,
+            audio: true,
+        };
+        // Text lane: never declared Vision → not vision-ready, and NOT an error.
+        assert_eq!(vision_lane_ready(false, false, None), Ok(false));
+        assert_eq!(vision_lane_ready(false, true, Some(sees)), Ok(false));
+        // Declared Vision but no projector resolved → loud error naming the gap.
+        let err = vision_lane_ready(true, false, None).unwrap_err();
+        assert!(err.contains("no mmproj projector resolved"), "{err}");
+        // Projector passed, server confirms vision → the ONLY Ok(true) path.
+        assert_eq!(vision_lane_ready(true, true, Some(sees)), Ok(true));
+        // Projector passed but the server says it can't see (wrong/failed mmproj).
+        let err = vision_lane_ready(true, true, Some(blind)).unwrap_err();
+        assert!(err.contains("modalities.vision=false"), "{err}");
+        // Server build reports no modalities block: UNVERIFIED must not read as sight.
+        let err = vision_lane_ready(true, true, None).unwrap_err();
+        assert!(err.contains("cannot VERIFY"), "{err}");
     }
 
     // what this catches: a WEDGED server (port held open, never answers HTTP — a

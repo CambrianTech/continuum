@@ -964,8 +964,25 @@ impl OpenAICompatibleAdapter {
         })
     }
 
-    /// Convert ChatMessage to OpenAI format
-    fn format_messages(&self, messages: &[ChatMessage], system_prompt: Option<&str>) -> Vec<Value> {
+    /// Convert ChatMessage to OpenAI format.
+    ///
+    /// `vision_native` is the TARGET MODEL's verdict (the row's
+    /// `Capability::Vision` via `sensory::route`, resolved by the caller): when
+    /// true, `ContentPart::Image` becomes a proper OpenAI multimodal
+    /// `image_url` content part (base64 data-URI or URL) so a vision model —
+    /// cloud or the multimodal llama-server lane — receives RAW PIXELS
+    /// natively. When false, image parts are DROPPED here (with a loud log):
+    /// a non-vision model reads the VisionDescriptionService bridge text that
+    /// the sensory layer already put in the message, and POSTing `image_url`
+    /// parts at a text-only endpoint is at best an API error and at worst a
+    /// silent drop the persona would mistake for having seen
+    /// ([[fallbacks-are-illegal-fail-loud]], CLAUDE.md "Sensory Architecture").
+    fn format_messages(
+        &self,
+        messages: &[ChatMessage],
+        system_prompt: Option<&str>,
+        vision_native: bool,
+    ) -> Vec<Value> {
         // Pre-size: one wire message per input message + the optional system
         // prompt. The common text path lands exactly; tool-result turns push a
         // few extra and realloc once. Runs on every inference call — no
@@ -1054,7 +1071,21 @@ impl OpenAICompatibleAdapter {
                                     "text": text
                                 })),
                                 ContentPart::Image { image } => {
-                                    if let Some(url) = &image.url {
+                                    if !vision_native {
+                                        // Target model can't see: the sensory bridge's
+                                        // text description (already a Text part /
+                                        // upstream) is what it reads. Never ship
+                                        // image_url at a text-only endpoint.
+                                        tracing::warn!(
+                                            target: "openai_adapter",
+                                            provider = %self.config.provider_id,
+                                            "dropping image content part for a non-vision \
+                                             model — the description bridge is its sight; \
+                                             if this model CAN see, its catalog row must \
+                                             declare Capability::Vision"
+                                        );
+                                        None
+                                    } else if let Some(url) = &image.url {
                                         Some(json!({
                                             "type": "image_url",
                                             "image_url": { "url": url }
@@ -1582,8 +1613,30 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         };
         let model: &str = &resolved_model;
 
+        // Native vision is a MODEL fact, not a provider fact: gate image content
+        // parts on the TARGET model row's Capability::Vision (the same
+        // `sensory::route` verdict that drives the bridge-vs-native table in
+        // CLAUDE.md "Sensory Architecture"). Row present → its capability set is
+        // the truth (a vision-capable llama-server lane / gpt-4o gets raw
+        // pixels; a text row gets its images dropped and reads the description
+        // bridge). Row absent (dynamic catalogs like DMR resolve ids the
+        // registry never saw) → the provider-level scan ("any row under this
+        // provider declares Vision", already folded into `config.capabilities`)
+        // is the best available truth — same source `capabilities()` advertises.
+        let vision_native = crate::model_registry::try_global()
+            .and_then(|reg| {
+                reg.model(raw_model).map(|row| {
+                    crate::sensory::route(row, crate::sensory::Modality::ImageIn).is_native()
+                })
+            })
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
+
         // Build request body
-        let mut messages = self.format_messages(&request.messages, request.system_prompt.as_deref());
+        let mut messages = self.format_messages(
+            &request.messages,
+            request.system_prompt.as_deref(),
+            vision_native,
+        );
 
         // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
         // `tools` param (unsloth+GGUF), describe the tools IN the prompt and ask
@@ -2507,6 +2560,89 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::ai::types::ImageInput;
+
+    /// Minimal adapter for pure payload-assembly tests — no network, no registry.
+    fn test_adapter() -> OpenAICompatibleAdapter {
+        OpenAICompatibleAdapter::new(OpenAICompatibleConfig {
+            provider_id: "test-gateway".into(),
+            name: "Test Gateway".into(),
+            base_url: "http://127.0.0.1:0".into(),
+            api_key_env: None,
+            default_model: "test-model".into(),
+            capabilities: std::collections::BTreeSet::new(),
+            models: Vec::new(),
+            model_prefixes: Vec::new(),
+            requires_auth: false,
+            tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
+            thinking: ThinkingMode::Default,
+            single_resident_model: false,
+            dynamic_model_catalog: false,
+            llamacpp_sampling_extensions: false,
+        })
+    }
+
+    fn image_message() -> Vec<ChatMessage> {
+        vec![ChatMessage {
+            role: "user".into(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "what do you see?".into(),
+                },
+                ContentPart::Image {
+                    image: ImageInput {
+                        url: None,
+                        base64: Some("QUJD".into()),
+                        mime_type: Some("image/png".into()),
+                    },
+                },
+            ]),
+            name: None,
+        }]
+    }
+
+    // what this catches (#106 native-vision branch): a VISION-capable target model must
+    // receive the RAW image as a proper OpenAI multimodal content part — `image_url`
+    // with a base64 data-URI — in the /v1 chat payload (this is exactly what the
+    // multimodal llama-server lane's mtmd tokenizer consumes). A regression that drops
+    // or re-texts the image blinds every natively-sighted model while all the plumbing
+    // upstream still reports success.
+    #[test]
+    fn vision_capable_model_gets_raw_image_content_parts() {
+        let wire = test_adapter().format_messages(&image_message(), None, true);
+        assert_eq!(wire.len(), 1);
+        let content = wire[0]["content"].as_array().expect("multimodal array");
+        assert_eq!(content.len(), 2, "text part + image part");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"], "data:image/png;base64,QUJD",
+            "raw pixels ride as a base64 data-URI — native sight, not a description"
+        );
+    }
+
+    // what this catches (#106 bridge branch): a NON-vision target model must NOT be
+    // sent `image_url` parts — its sight is the VisionDescriptionService bridge text
+    // (unchanged behavior); shipping pixels at a text-only endpoint is an API error or
+    // a silent drop the persona would mistake for having seen. The text parts (which
+    // carry the bridge's description) must survive untouched.
+    #[test]
+    fn non_vision_model_has_image_parts_dropped_and_keeps_bridge_text() {
+        let wire = test_adapter().format_messages(&image_message(), None, false);
+        assert_eq!(wire.len(), 1);
+        let content = wire[0]["content"].as_array().expect("content array");
+        assert_eq!(
+            content.len(),
+            1,
+            "image part dropped for a model that cannot see; bridge text remains"
+        );
+        assert_eq!(content[0]["type"], "text");
+        assert!(
+            !serde_json::to_string(&wire).unwrap().contains("image_url"),
+            "no image_url may reach a non-vision model's payload"
+        );
+    }
 
     // what this catches (#181): the anti-loop knobs reach the llama.cpp wire body.
     // The reasoning-channel repetition loop (Devstral-24B looped an identical wrong

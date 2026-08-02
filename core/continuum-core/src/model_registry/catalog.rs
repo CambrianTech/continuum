@@ -477,6 +477,47 @@ pub fn models() -> Vec<Model> {
             sampling: ModelSampling::default(),
             ..ModelSpec::default()
         }),
+        // QWEN2.5-VL-7B — the VISION lane's model (#106): personas' eyes for live mode.
+        // The FIRST llama-server-provider row with Capability::Vision, which makes it the
+        // first VL model the serving daemon can actually bring up (`--mmproj` spawn path +
+        // the /props `modalities.vision` readiness gate). Why THIS model:
+        //   - ggml-org repo = maintained by the llama.cpp org itself; ships the GGUF AND its
+        //     `mmproj-*-f16.gguf` projector in ONE repo, so `models/pull` acquires both in a
+        //     single command (its Vision-capability mmproj-sibling logic) and
+        //     `find_mmproj_beside` resolves the projector with zero per-machine path edits.
+        //   - Qwen2.5-VL-7B is the small end of the current VL frontier that still carries
+        //     real tool use — a live-mode citizen must SEE *and* ACT, so the vision lane's
+        //     model keeps ToolUse rather than being a caption-only 2-3B.
+        //   - ~4.7 GB Q4_K_M + ~1.4 GB f16 projector: fits an M-series lane comfortably.
+        // capability_rank (GB + tool bonus) leaves the 14B coder the autonomic pick, so this
+        // row never hijacks the live lane by surprise — the operator brings vision up with
+        // `models/pull` + `serving/pin` (or it wins on hosts where it IS the best fit).
+        model(ModelSpec {
+            id: "ggml-org/Qwen2.5-VL-7B-Instruct-GGUF",
+            name: "Qwen2.5-VL-7B-Instruct (vision — the persona eye lane)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 20.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF"),
+            // Trainable HF base for the genome forge (vision LoRA is future work,
+            // but the row follows the Devstral pattern so it's ready when it lands).
+            hf_source: Some("Qwen/Qwen2.5-VL-7B-Instruct"),
+            // Embedded template + --jinja (same pattern as Devstral/Hermes): the
+            // ggml-org GGUF carries Qwen2.5-VL's own ChatML-with-vision template.
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
         // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
         // and opencode like any other model, so the head-to-head is model-through-harness fair, not

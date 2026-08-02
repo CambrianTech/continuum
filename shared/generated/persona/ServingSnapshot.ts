@@ -62,4 +62,17 @@ lanes: number,
  * `active_model=null ready=false` — the reason was dropped on the floor,
  * an operator-facing silent failure ([[fallbacks-are-illegal-fail-loud]]).
  */
-degraded_reason?: string, };
+degraded_reason?: string, 
+/**
+ * True iff the active model declares [`Capability::Vision`] AND the lane
+ * VERIFIED its multimodal endpoint actually answers: an mmproj projector
+ * resolved at spawn (`--mmproj` was passed) and the running server's own
+ * `/props` reports `modalities.vision == true` (#106). This is the gate the
+ * observation path (`cognition/vision-describe` → the persona's eyes) reads
+ * before routing image bytes to this lane — a text-only lane, or a vision
+ * row whose projector failed to load, reads `false` and the observe act
+ * fails HONESTLY instead of POSTing pixels a server would silently drop
+ * ([[fallbacks-are-illegal-fail-loud]]). `serde(default)` keeps older
+ * persisted snapshots (pre-#106) readable as not-vision-ready.
+ */
+vision_ready: boolean, };
