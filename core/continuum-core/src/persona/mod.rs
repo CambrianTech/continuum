@@ -80,6 +80,7 @@ pub mod rag_replay;
 pub mod recall_metadata;
 pub mod redaction;
 pub mod active_work_source;
+pub mod claim_rejections;
 pub mod recorder;
 pub mod resource_forecast;
 pub mod response;
