@@ -1998,7 +1998,16 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // the wrong thing to consult. Skip the guard for a lane we own.
         if self.config.single_resident_model && !self.dedicated_lane {
             let snap = crate::inference::llama_server::current_serving();
-            if !snap.ready || snap.active_model.as_deref() != Some(model) {
+            // The snapshot guarantees TWO residencies: the main lane's active
+            // model, and (when published) the verified vision endpoint's model —
+            // the #106 sidecar lane beside a text-only mind. A request for the
+            // sidecar's model is exactly as guaranteed as one for the active
+            // model (the daemon verified its `/props` before publishing), and
+            // `endpoints_for_model` routes it to `vision_base_url`.
+            let guaranteed = snap.ready
+                && (snap.active_model.as_deref() == Some(model)
+                    || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)));
+            if !guaranteed {
                 return Err(format!(
                     "{}: model '{}' is not the active served model (serving: {}, ready: {}); \
                      the serving daemon owns which single model is resident — refusing to \
