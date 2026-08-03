@@ -23,7 +23,6 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
