@@ -120,3 +120,32 @@ jobs:
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+
+  # windows-msvc BUILD gate (#304). Glass-boxed 2026-08-02: the Windows grid
+  # node (the CUDA lane) could not run ANY core test locally — un-gated unix
+  # imports (std::os::unix FileExt/MetadataExt/symlink, unix-socket test
+  # helpers) broke the windows-msvc build, so every measurement that lives in
+  # the test tree needed a Mac as proxy. `cargo check --lib --tests` compiles
+  # the lib AND the test harness (the exact surface `cargo test` builds)
+  # without running anything — the cheapest job that keeps the Windows node a
+  # first-class developer of this crate. Also the first CI brick of #291
+  # (fresh-clone on all 3 platforms).
+  cargo-check-windows:
+    name: cargo check windows-msvc (lib + tests)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain
+          rustc --version
+      - name: Cache cargo state
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: continuum-rust-windows-1.95
+          cache-on-failure: true
+      - name: cargo check (lib + test harness)
+        run: cargo check -p continuum-core --lib --tests

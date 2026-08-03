@@ -58,6 +58,7 @@ pub mod model_registry;
 pub mod modules;
 pub mod orm;
 pub mod paging;
+pub mod fs_portable;
 pub mod paths;
 pub mod perception;
 pub mod persona;
