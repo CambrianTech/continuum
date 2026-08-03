@@ -9,6 +9,11 @@
 //! REQUIREMENTS: Server must be running (npm start)
 //! Run with: cargo test -p continuum-core --release --test tts_stt_roundtrip -- --nocapture
 
+// unix-only integration target (#304): dials the core UNIX IPC socket /
+// sends unix signals. Windows checks compile it to empty; the lib +
+// unit tests are the windows-supported surface today.
+#![cfg(unix)]
+
 mod common;
 
 use base64::Engine;

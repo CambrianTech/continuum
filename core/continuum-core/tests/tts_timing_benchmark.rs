@@ -5,6 +5,11 @@
 //!
 //! Run with: cargo test -p continuum-core --release --test tts_timing_benchmark -- --nocapture
 
+// unix-only integration target (#304): dials the core UNIX IPC socket /
+// sends unix signals. Windows checks compile it to empty; the lib +
+// unit tests are the windows-supported surface today.
+#![cfg(unix)]
+
 mod common;
 
 use common::{ipc_connect_with_timeout, ipc_request, IpcResult};

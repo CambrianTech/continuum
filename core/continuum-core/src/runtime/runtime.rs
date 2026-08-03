@@ -159,6 +159,23 @@ impl Runtime {
         let modules = self.registry.list_modules();
         info!("Initializing {} modules...", modules.len());
 
+        // Dispatch-parity audit (see [`ModuleRegistry::dispatch_orphans`]): every
+        // advertised command must be routable NOW, before any client can be told
+        // it exists. ERROR (not panic) so a drift is loud on the first boot that
+        // ships it without bricking the substrate; promote to a boot refusal once
+        // the count holds at zero across the fleet.
+        let orphans = self.registry.dispatch_orphans();
+        if !orphans.is_empty() {
+            tracing::error!(
+                probe_class = "registry.dispatch_parity",
+                orphans = ?orphans,
+                count = orphans.len(),
+                "ADVERTISED-BUT-UNDISPATCHABLE commands: these appear in help, \
+                 suggestions, and the persona tool offer but cannot route — add each \
+                 to its module's commands() vec (the work/list class, #309)"
+            );
+        }
+
         // Per-module init deadline. A module's `initialize()` is meant to be fast
         // (in-memory wiring; heavy work is detached / tick-driven), so 60s is a
         // wedged-init backstop, NOT a normal budget — it bounds the airc-120s-hang

@@ -1912,6 +1912,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
+        // Wire truth for the tool surface (glass-box, 2026-08-03): live residents
+        // narrated for hours with zero tool calls while every offline replay of the
+        // same context+tools+sampling called instantly — the ONLY remaining unknown
+        // was what this body actually carried. This probe states it per request so
+        // "tools offered" is never inferred from a capture again.
+        crate::probe!(
+            class = "ai.request.tool_surface",
+            model = %model,
+            tools_n = body.get("tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),
+            tool_choice = body.get("tool_choice").is_some(),
+            stops_n = body.get("stop").and_then(|s| s.as_array()).map_or(0, |a| a.len()),
+            msgs_n = body.get("messages").and_then(|m| m.as_array()).map_or(0, |a| a.len()),
+            temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0),
+            "outbound chat request tool surface"
+        );
+
         // Make request — the endpoint base for THIS request's model. Normally the
         // runtime/config base; for the local serving gateway, a request for the
         // snapshot's VISION model (the #106 sidecar lane serving beside a

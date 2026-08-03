@@ -528,6 +528,46 @@ pub(super) fn peer_echo_fact(turns: &[BurstTurn], own_last: Option<&str>) -> Opt
         })
 }
 
+/// The DRAFT-side peer-echo fact (#303): the utterance she JUST settled on
+/// near-duplicates a PEER's turn from the very burst she reasoned over. The
+/// missing sibling of [`peer_echo_fact`] — that one fires the NEXT tick,
+/// when the echoed peer message may already have scrolled out of the
+/// visible window (the same window race #148 closed for self-repeats);
+/// this one runs at the settle seam with guaranteed evidence co-presence,
+/// and its fact lands in working memory, which no burst budget can age out.
+///
+/// Why (task #303, live specimens 2026-08-02): an agent-only #general spent
+/// the afternoon in mutual mirroring — one persona near-verbatim echoed
+/// another's manifest-review plan, then BOTH emitted the same "it would help
+/// to understand the specific requirements…" text; three minds converged on
+/// identical framing with zero division of labor. Echo-instead-of-division
+/// is the one still-open stall physics of the flywheel diagnosis, and the
+/// escape is claiming a DIFFERENT piece — a fork only visible once the echo
+/// itself is perceived. Recorded as proprioception, never a gate
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
+pub(crate) fn draft_peer_echo(draft: &str, turns: &[BurstTurn]) -> Option<String> {
+    // Newest-first so the fact names the most recently echoed peer. Same
+    // geometry as every repetition axis ([`near_identical_substantial`]:
+    // ≥12 tokens both sides, Jaccard ≥ [`NEAR_DUP_JACCARD`]) — one
+    // definition of "nearly identical", so short acks stay inert and a
+    // quote-with-commentary never fires.
+    turns
+        .iter()
+        .rev()
+        .filter(|t| !t.is_self && !t.author.trim().is_empty())
+        .find(|t| near_identical_substantial(draft, &t.content))
+        .map(|t| {
+            format!(
+                "[echo] the message I just sent repeats what {} already said — an \
+                 echo, not a contribution. A real contribution is a DIFFERENT \
+                 piece: a subtask nobody has claimed, a result, or a question \
+                 they did not ask; with none of those, silence is the honest \
+                 reply.",
+                t.author
+            )
+        })
+}
+
 /// Stop sequences that end generation at the TURN BOUNDARY (#150): one
 /// `\n<Name>:` per OTHER live participant. The burst renders peers as
 /// `Name: text` lines, which teaches the model the continuation pattern —
@@ -869,6 +909,43 @@ mod tests {
 
         // Nothing spoken yet → nothing to compare.
         assert_eq!(peer_echo_fact(&turns, None), None);
+    }
+
+    // what this catches: #303 — the DRAFT-side echo axis, at the settle seam.
+    // A settled utterance near-duplicating a peer's substantial turn from the
+    // SAME burst yields a fact NAMING that peer (newest echoed peer wins); a
+    // genuinely new draft, a short-ack pair (token floor), and a match
+    // against her OWN turn (the self-detector's axis) all stay silent. Live
+    // specimen: 2026-08-02 agent-only #general — two personas emitting the
+    // same "review existing manifests" plan with zero division of labor.
+    #[test]
+    fn draft_peer_echo_fires_on_peer_mirror_and_stays_inert_on_new_content() {
+        let plan = "I'll focus on the broader goal of implementing acceptance checks for \
+                    macOS install modules. First, review existing manifests and related \
+                    documentation to understand the acceptance criteria for these checks.";
+        let turns = vec![
+            BurstTurn::attributed(false, SPEAKER_REVIEWER, plan, None),
+            BurstTurn::attributed(false, SPEAKER_LEAD, "sounds good, go ahead", None),
+        ];
+        // Near-verbatim mirror of the peer's plan → fact names the peer.
+        let mirror = "I will focus on the broader goal of implementing acceptance checks for \
+                      macOS install modules. First, review existing manifests and related \
+                      documentation to understand the acceptance criteria for those checks.";
+        let fact = draft_peer_echo(mirror, &turns).expect("a mirrored peer plan is a fact");
+        assert!(fact.contains(SPEAKER_REVIEWER), "names the echoed peer: {fact}");
+        assert!(fact.starts_with("[echo]"));
+
+        // A genuinely different contribution (division of labor) → inert.
+        let division = "I'll take the OTHER half: writing the failing acceptance test \
+                        harness for the linux modules so our halves meet in the middle.";
+        assert_eq!(draft_peer_echo(division, &turns), None);
+
+        // Short ack matching a short ack → inert (token floor).
+        assert_eq!(draft_peer_echo("sounds good, go ahead", &turns), None);
+
+        // Matching her OWN prior turn is the self-detector's axis, not this one.
+        let own = vec![BurstTurn::attributed(true, SPEAKER_TESTER, plan, None)];
+        assert_eq!(draft_peer_echo(mirror, &own), None);
     }
 
     // what this catches: #264 — the PREDICTIVE restatement fact must fire on

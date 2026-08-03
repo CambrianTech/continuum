@@ -810,6 +810,7 @@ mod tests {
 
     #[test]
     #[ignore] // Requires running continuum-core server
+    #[cfg(unix)] // dials the unix IPC socket; even #[ignore] must compile (#304)
     fn test_ipc_health_check_live() {
         use std::io::Write;
         use std::os::unix::net::UnixStream;
@@ -842,6 +843,7 @@ mod tests {
 
     #[test]
     #[ignore] // Requires running continuum-core server with Kokoro model
+    #[cfg(unix)] // dials the unix IPC socket; even #[ignore] must compile (#304)
     fn test_ipc_voice_synthesize_binary_live() {
         use std::io::Write;
 

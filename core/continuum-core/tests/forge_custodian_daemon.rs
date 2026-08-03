@@ -14,6 +14,11 @@
 //! `convert_lora_to_gguf.py` is dropped under the temp home so readiness probes
 //! true without needing real llama.cpp.
 
+// unix-only integration target (#304): dials the core UNIX IPC socket /
+// sends unix signals. Windows checks compile it to empty; the lib +
+// unit tests are the windows-supported surface today.
+#![cfg(unix)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
