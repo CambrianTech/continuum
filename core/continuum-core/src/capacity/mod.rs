@@ -26,6 +26,7 @@ pub mod bandit_plan_controller;
 pub mod cold_twin;
 pub mod consumer;
 pub mod device_fit;
+pub mod division_actuation;
 pub mod expert_container;
 pub mod expert_decay_policy;
 pub mod expert_ecache;
