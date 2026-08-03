@@ -269,23 +269,21 @@ pub fn git_sync_from_shared(
             "FETCH_HEAD",
         ],
     ) {
-        // Submodule POINTERS live outside `-X theirs`: when both sides moved a
-        // gitlink (the persona's autosave commits her stale vendored pointer while
-        // shared advances it — the normal state once shared's submodule moves at
-        // all), git's recursive merge refuses outright ("Recursive merging with
-        // submodules currently only supports trivial cases"). That single failure
-        // mode had every citizen workspace stranded stale — the exact bug this
-        // sync exists to heal (glass-boxed 2026-08-03: all four residents, every
-        // ensure). When the ONLY unmerged entries are gitlinks, resolve them
-        // shared-wins (the same doctrine as `-X theirs` for files: the framework
-        // is not hers to diverge) and conclude the merge. Any other conflict
-        // shape still aborts loud, workspace intact.
-        match resolve_gitlink_conflicts_shared_wins(workspace_root) {
+        // Two conflict shapes live outside `-X theirs` and stranded every citizen
+        // workspace stale (glass-boxed 2026-08-03, rounds 1+2): diverged SUBMODULE
+        // pointers (git refuses non-trivial gitlink merges outright) and
+        // modify/delete (shared deleted debris the persona's autosave had touched
+        // — the #2135 sweep made this the steady state). Resolve every staged
+        // conflict SHARED-WINS — the sync's one documented rule — and conclude the
+        // merge; the persona's versions live on in her autosave history
+        // (preserve-first is the commit, not the tree). A merge that failed
+        // without staging anything still aborts loud, workspace intact.
+        match resolve_conflicts_shared_wins(workspace_root) {
             Ok(true) => {
                 crate::probe!(
-                    class = "workspace.sync.gitlink_resolved",
+                    class = "workspace.sync.conflicts_resolved",
                     root = %workspace_root.display(),
-                    "merge blocked on submodule pointers only — resolved shared-wins and concluded"
+                    "merge blocked on gitlink/modify-delete conflicts — resolved shared-wins and concluded"
                 );
             }
             _ => {
@@ -318,33 +316,60 @@ pub fn git_sync_from_shared(
     Ok(GitSyncReport { synced, summary })
 }
 
-/// After a failed `merge -X theirs`, salvage the one shape `-X theirs` cannot
-/// touch: unmerged SUBMODULE pointers (mode 160000). If every unmerged index
-/// entry is a gitlink, point each at FETCH_HEAD's recorded sha (shared wins) and
-/// conclude the in-progress merge. Returns Ok(true) on a concluded merge,
-/// Ok(false) when the conflict shape is not ours to solve (caller aborts).
-fn resolve_gitlink_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, String> {
+/// After a failed `merge -X theirs`, salvage the shapes `-X theirs` cannot
+/// touch, resolving each SHARED-WINS — the sync's one documented rule, extended
+/// uniformly to what git refuses to auto-resolve:
+///
+///  - SUBMODULE pointers (mode 160000): both sides moved the gitlink (the
+///    persona's autosave commits her stale vendored pointer while shared
+///    advances it) — git aborts with "only trivial cases". Resolve to
+///    FETCH_HEAD's recorded sha.
+///  - modify/delete: shared DELETED a path the persona modified (glass-boxed
+///    2026-08-03 round 2: the #2135 debris sweep deleted conway/wordstats from
+///    shared while every citizen's autosave had touched them — the sync then
+///    failed forever on the very files it was supposed to clear). Shared's
+///    deletion wins the WORKING TREE; the persona's version is NOT lost — her
+///    autosave commit holds it in her own history (preserve-first is the
+///    commit, not the tree).
+///  - any other unmerged entry: theirs-stage exists → take theirs; theirs-stage
+///    absent → the path is gone in shared → remove.
+///
+/// Returns Ok(true) on a concluded merge, Ok(false) when there was nothing
+/// staged to salvage (caller aborts loud).
+fn resolve_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, String> {
     let unmerged = run_git(workspace_root, &["ls-files", "-u"])?;
     if unmerged.trim().is_empty() {
         return Ok(false); // merge failed before staging conflicts — nothing to salvage
     }
-    let mut paths = std::collections::BTreeSet::new();
+    // path → has a stage-3 (theirs) entry? Stage layout: 1=base, 2=ours, 3=theirs.
+    let mut theirs_present: std::collections::BTreeMap<String, bool> =
+        std::collections::BTreeMap::new();
     for line in unmerged.lines() {
         // "<mode> <sha> <stage>\t<path>"
         let Some((meta, path)) = line.split_once('\t') else {
             return Ok(false);
         };
-        if meta.split_whitespace().next() != Some("160000") {
-            return Ok(false); // a real file conflict survived -X theirs — abort path
+        let stage = meta.split_whitespace().nth(2).unwrap_or("");
+        let entry = theirs_present.entry(path.to_string()).or_insert(false);
+        if stage == "3" {
+            *entry = true;
         }
-        paths.insert(path.to_string());
     }
-    for p in &paths {
-        run_git(workspace_root, &["checkout", "FETCH_HEAD", "--", p])
-            .map_err(|e| format!("gitlink resolve of '{p}' to shared failed: {e}"))?;
+    for (p, has_theirs) in &theirs_present {
+        if *has_theirs {
+            // Content/gitlink present on shared's side — adopt it. `checkout
+            // FETCH_HEAD --` covers both regular files and gitlinks (updates the
+            // index entry; for gitlinks the pointer, for files the blob).
+            run_git(workspace_root, &["checkout", "FETCH_HEAD", "--", p])
+                .map_err(|e| format!("shared-wins resolve of '{p}' failed: {e}"))?;
+        } else {
+            // Deleted in shared (modify/delete) — the deletion wins the tree.
+            run_git(workspace_root, &["rm", "-f", "--", p])
+                .map_err(|e| format!("shared-wins delete of '{p}' failed: {e}"))?;
+        }
     }
     run_git(workspace_root, &["commit", "--no-edit"])
-        .map_err(|e| format!("concluding merge after gitlink resolve failed: {e}"))?;
+        .map_err(|e| format!("concluding merge after shared-wins resolve failed: {e}"))?;
     Ok(true)
 }
 
@@ -451,6 +476,57 @@ mod tests {
         // Idempotent: a second sync is a clean no-op.
         let again = git_sync_from_shared(citizen.path(), shared.path()).expect("2nd sync ok");
         assert!(!again.synced, "already current: {}", again.summary);
+    }
+
+    // what this catches: the citizen-sync modify/delete strand (glass-boxed
+    // 2026-08-03 round 2): shared DELETED debris files (the #2135 sweep) that the
+    // persona's autosave had modified — `-X theirs` never auto-resolves
+    // modify/delete, so the sync failed forever on the very files it was meant to
+    // clear. Shared's deletion must win the working tree; the persona's version
+    // survives in her autosave commit (history, not tree).
+    #[test]
+    fn sync_resolves_modify_delete_shared_deletion_wins() {
+        let shared = setup_git_repo();
+        // Debris file exists in the common base.
+        fs::write(shared.path().join("conway.rs"), "// v1\n").unwrap();
+        run_git(shared.path(), &["add", "."]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "base: debris present"]).unwrap();
+
+        // Citizen cp-clone (related history).
+        let citizen = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(format!("{}/.", shared.path().display()))
+            .arg(citizen.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        run_git(citizen.path(), &["config", "user.email", "citizen@test"]).unwrap();
+        run_git(citizen.path(), &["config", "user.name", "Citizen"]).unwrap();
+
+        // Shared SWEEPS the debris + ships a framework file; citizen MODIFIES it
+        // (uncommitted — the autosave inside the sync commits it, the live shape).
+        run_git(shared.path(), &["rm", "-q", "conway.rs"]).unwrap();
+        fs::write(shared.path().join("framework3.rs"), "// newer\n").unwrap();
+        run_git(shared.path(), &["add", "framework3.rs"]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "shared: sweep debris"]).unwrap();
+        fs::write(citizen.path().join("conway.rs"), "// persona edit\n").unwrap();
+
+        let report = git_sync_from_shared(citizen.path(), shared.path())
+            .expect("sync must survive modify/delete");
+        assert!(report.synced, "should sync: {}", report.summary);
+        assert!(
+            !citizen.path().join("conway.rs").exists(),
+            "shared's deletion wins the tree"
+        );
+        assert!(citizen.path().join("framework3.rs").exists(), "shared file arrives");
+        // Preserve-first: her edit is one commit back in HER history.
+        let show = run_git(citizen.path(), &["log", "--all", "-S", "persona edit", "--oneline"])
+            .unwrap_or_default();
+        assert!(
+            !show.trim().is_empty(),
+            "the persona's modified version survives in history"
+        );
     }
 
     // what this catches: the citizen-sync submodule strand (glass-boxed 2026-08-03,
