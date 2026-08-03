@@ -1902,24 +1902,53 @@ pub(crate) fn build_workspace_turns(
             .filter(|n| *n != agent_name)
             .take(8)
             .collect();
-        let cards: Vec<&str> = deliveries
-            .iter()
-            .filter(|d| d.source_id == "active-work")
-            .flat_map(|d| d.items.iter())
-            .filter_map(|i| i.content.trim().lines().next())
-            .filter(|l| !l.is_empty())
-            .take(5)
-            .collect();
-        let mut b = format!(
-            "[wake] You are {agent_name}, awake on the continuum grid. Nothing has              been said in this room since you last looked — this quiet is real, not              a missing message."
+        // Split her work into THREAD vs transition tail: live claims are the
+        // purpose she wakes back into; a lost-claim fact (#156) is the thread's
+        // honest ending.
+        let mut live_cards: Vec<&str> = Vec::new();
+        let mut lost_threads: Vec<&str> = Vec::new();
+        for d in deliveries.iter().filter(|d| d.source_id == "active-work") {
+            for i in &d.items {
+                let Some(first) = i.content.trim().lines().next().filter(|l| !l.is_empty())
+                else {
+                    continue;
+                };
+                if i.metadata.get("fact").and_then(|v| v.as_str()) == Some("claim_lost") {
+                    lost_threads.push(first);
+                } else {
+                    live_cards.push(first);
+                }
+            }
+        }
+        live_cards.truncate(5);
+        lost_threads.truncate(3);
+
+        let mut b = format!("[wake] You are {agent_name}, awake on the continuum grid.");
+        // THE THREAD LEADS (#125 slice 1 — Joel 2026-08-03: "should never be a
+        // mind from scratch; the whole point is the opposite"). A continuous mind
+        // wakes into what it was DOING, not into a room description — glass-boxed
+        // the same night: Asha's wake carried her real claimed task in the
+        // transcript yet self-summarized as verb-filler ("looking at the room,
+        // reading a file") because orientation was room-first. Purpose-shaped
+        // facts first; the room follows. Facts she weighs, never instructions
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        if !live_cards.is_empty() {
+            b.push_str(&format!(
+                " You are mid-work — cards you hold: {}. That thread is yours; it is              where you left off.",
+                live_cards.join(" | ")
+            ));
+        }
+        for lt in &lost_threads {
+            b.push_str(&format!(" {lt}"));
+        }
+        b.push_str(
+            " Nothing has been said in this room since you last looked — this quiet              is real, not a missing message.",
         );
         if !peers.is_empty() {
             b.push_str(&format!(" Present with you: {}.", peers.join(", ")));
         }
-        if cards.is_empty() {
-            b.push_str(" No work cards are visible to you right now.");
-        } else {
-            b.push_str(&format!(" Standing work in this room: {}.", cards.join(" | ")));
+        if live_cards.is_empty() && lost_threads.is_empty() {
+            b.push_str(" No work of yours is on record right now.");
         }
         b.push_str(
             " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
@@ -2462,6 +2491,48 @@ mod tests {
         assert!(
             !turns.iter().any(|t| t.content.starts_with("[wake]")),
             "populated wake must not carry the briefing"
+        );
+    }
+
+    // what this catches: #125 slice 1 (Joel 2026-08-03: "should never be a mind
+    // from scratch — the whole point is the opposite"). An empty wake with LIVE
+    // claims must lead with the THREAD (her held cards) BEFORE the room
+    // description, and a lost-claim fact must ride the briefing as the thread's
+    // honest tail — never a room-first orientation that reduces her life to
+    // verb-filler.
+    #[test]
+    fn empty_wake_leads_with_her_work_thread_before_the_room() {
+        let work = crate::persona::rag_budget::RagDelivery {
+            source_id: "active-work".to_string(),
+            items: vec![
+                crate::persona::rag_budget::RagItem {
+                    content: "card 20fe404a \"macOS install acceptance checks\" (P1, owner YOU)"
+                        .to_string(),
+                    tokens: 0,
+                    metadata: serde_json::json!({}),
+                },
+                crate::persona::rag_budget::RagItem {
+                    content: "[work] Your claim on card 33a0e899 \"conway\" is no longer held by you (lease expired or released)."
+                        .to_string(),
+                    tokens: 0,
+                    metadata: serde_json::json!({ "fact": "claim_lost" }),
+                },
+            ],
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+        };
+        let turns = build_workspace_turns(&[work], "peer-1", "Asha", None);
+        assert_eq!(turns.len(), 1);
+        let c = &turns[0].content;
+        let thread = c.find("mid-work").expect("thread present");
+        let lost = c.find("no longer held").expect("lost-claim tail present");
+        let room = c.find("Nothing has been said").expect("room line present");
+        assert!(thread < room, "thread must LEAD the room description: {c}");
+        assert!(lost < room, "lost-claim tail rides before the room line: {c}");
+        assert!(
+            !c.contains("No work of yours is on record"),
+            "the no-thread line must not appear when a thread exists: {c}"
         );
     }
     use crate::ai::HeuristicInferenceAdapter;
