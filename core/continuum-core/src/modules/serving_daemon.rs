@@ -215,6 +215,15 @@ pub struct ServingDaemonModule {
     /// never republishes; a material shrink publishes NOW; grow-back publishes past
     /// the band (#214). Same sync-Mutex discipline as `moe_serving` (never across await).
     host_cache_lease: std::sync::Mutex<crate::capacity::host_cache_lease::StickyLease>,
+    /// Sticky publisher state for the DEVICE-side expert-slot budget (#305;
+    /// BigMama's measured ask): free-VRAM-after-device-fit, from the live
+    /// resource board (the serve's own residency is already a registered
+    /// consumer per #79, so the board's available IS post-fit), less the
+    /// placement margin. Same band + same never-thrash discipline as the
+    /// host lease — raw VRAM flutters every tick; the published budget
+    /// moves only on material change. Warm coverage scales directly with
+    /// this (measured 2026-08-02: 13.8% @ 1.9 GiB → 65.7% @ 30 GiB).
+    device_budget_lease: std::sync::Mutex<crate::capacity::host_cache_lease::StickyLease>,
     /// The artifact path currently registered in the process-wide
     /// [`serving_active_artifacts`](crate::system_resources::serving_active_artifacts)
     /// set (#302 invariant 1: the NvmeServingTierPool must never migrate the
@@ -334,6 +343,9 @@ impl ServingDaemonModule {
             active_artifact: std::sync::Mutex::new(None),
             moe_trace_tail: std::sync::Mutex::new(None),
             host_cache_lease: std::sync::Mutex::new(
+                crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
+            ),
+            device_budget_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
             // Read ONCE here (single config entry point, no per-tick I/O). Off by default.
@@ -810,6 +822,25 @@ impl ServingDaemonModule {
         if budget_bytes == 0 {
             return; // nothing governed yet — never publish a zero lease
         }
+        // DEVICE axis (#305, BigMama's measured ask): the copy-stream's
+        // expert-slot budget = live free-VRAM-after-fit less the placement
+        // margin. The board's `available(Vram)` is already net of the
+        // resident serve (#79 registers it as a consumer), so this is
+        // exactly "size to the free VRAM AFTER device-fit, not a fixed
+        // number". Sticky like the host axis; a zero publishes as ABSENT
+        // (the mechanism keeps its own sizing), never as a zero budget.
+        let device_derived = governed_vram_ceiling(&self.resource_daemon)
+            .unwrap_or(0)
+            .saturating_sub(EXPERT_PLACEMENT_MARGIN_BYTES);
+        let (device_budget_bytes, device_moved) = {
+            let Ok(mut sticky) = self.device_budget_lease.lock() else {
+                return;
+            };
+            match sticky.observe(device_derived) {
+                Some(published) => (published, true),
+                None => (sticky.published_bytes(), false),
+            }
+        };
         let Some(gb) = crate::inference::llama_server::moe_glass_box_paths(port) else {
             return;
         };
@@ -853,15 +884,18 @@ impl ServingDaemonModule {
                 tail.schedulable_coverage_x100(),
             )
         };
-        if !budget_moved && !pins_moved && !boundary_crossed {
-            return; // neither axis changed — no write, no mtime churn
+        if !budget_moved && !pins_moved && !boundary_crossed && !device_moved {
+            return; // no axis changed — no write, no mtime churn
         }
         let pins_count = pins.len();
-        let doc = crate::capacity::plan_file::PlanFileDocument::new(
+        let mut doc = crate::capacity::plan_file::PlanFileDocument::new(
             budget_bytes,
             MOE_PLAN_WINDOW_K,
             pins,
         );
+        if device_budget_bytes > 0 {
+            doc = doc.with_device_budget(device_budget_bytes);
+        }
         // Retention verdict (#287): does the published lease retain even one
         // token's expert working set? Below 100 (×100 fixed-point) the cache
         // buys NOTHING — every token evicts the previous token's experts (the
@@ -891,6 +925,8 @@ impl ServingDaemonModule {
                 class = "serving.moe_host_cache_lease",
                 model = active.as_str(),
                 budget_bytes,
+                device_budget_bytes,
+                device_derived_bytes = device_derived,
                 derived_bytes = derived,
                 weights_host_bytes = inputs.weights_host_bytes,
                 live_kv_bytes = inputs.live_kv_bytes,
