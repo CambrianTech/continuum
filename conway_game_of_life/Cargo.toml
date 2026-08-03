@@ -1,7 +1,0 @@
-[package]
-name = "conway_game_of_life"
-edition.workspace = true
-version.workspace = true
-authors.workspace = true
-
-[dependencies]
