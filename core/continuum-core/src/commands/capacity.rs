@@ -188,7 +188,7 @@ fn probe(
                         x ^= x >> 7;
                         x ^= x << 17;
                         let rec = x % bank_records;
-                        if crate::platform_io::pread_exact(&f, &mut buf, rec * record_bytes).is_ok() {
+                        if crate::fs_portable::read_exact_at(&f, &mut buf, rec * record_bytes).is_ok() {
                             done.fetch_add(record_bytes, Ordering::Relaxed);
                         }
                     }

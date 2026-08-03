@@ -781,6 +781,39 @@ impl AIProviderModule {
             }
         }
 
+        // DwarfStar (ds4) sidecar — the V4-Flash deliberator lane (#306).
+        // Same probe-then-register shape as DMR: an OPERATOR-managed local
+        // OpenAI-compatible endpoint we consume, never spawn (#179 interop
+        // doctrine). Registered at priority 2 — below in-process llama.cpp
+        // (0) and DMR (1): ds4 only wins for the models it exclusively
+        // claims (deepseek-v4 prefix), so it can never shadow a lane. If
+        // the sidecar isn't up at boot it simply isn't registered; watchdog
+        // parity (re-register when it appears, deregister when it dies)
+        // follows once the lifecycle is governed.
+        let ds4_up = std::net::TcpStream::connect_timeout(
+            &"127.0.0.1:8901".parse().unwrap(),
+            Duration::from_secs(1),
+        )
+        .is_ok();
+        if ds4_up {
+            self.log()
+                .info("Registering DwarfStar (ds4) sidecar adapter (localhost:8901)");
+            let mut ds4 =
+                Box::new(OpenAICompatibleAdapter::from_registry("ds4")) as Box<dyn AIProviderAdapter>;
+            if let Err(e) = ds4.initialize().await {
+                self.log()
+                    .warn(&format!("ds4 adapter initialize failed: {e} — not registered"));
+            } else {
+                registry.register(Arc::from(ds4), 2);
+            }
+        } else {
+            self.log().info(
+                "ds4 sidecar not reachable on localhost:8901 — deepseek-v4-flash \
+                 unavailable this boot (launch ds4-server and reboot, or wait for \
+                 watchdog parity)",
+            );
+        }
+
         // Candle is NOT registered in the AI provider's inference registry.
         // Candle is a TRAINING framework (LoRA fine-tuning, autodiff, safetensors).
         // It does not belong in the same registry as inference providers.

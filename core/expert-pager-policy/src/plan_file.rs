@@ -95,6 +95,29 @@ pub struct PlanFileDocument {
     /// byte-identical to the v1 wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_tier: Option<u32>,
+    /// DEVICE-side expert-slot byte budget for the copy-stream fetcher
+    /// (#305; BigMama's measured ask, 2026-08-02): how much VRAM the
+    /// `DeviceUploadFetcher` may fill with resident expert slots, derived
+    /// LIVE from free-VRAM-after-device-fit — never a constant. Warm
+    /// coverage scales directly with this (measured on run2.trace:
+    /// 13.8% @ 1.9 GiB → 51.3% @ 15 GiB → 65.7% @ 30 GiB, one slot ≈ one
+    /// 8.09 MB expert record), so the mechanism sizes `slots =
+    /// device_budget_bytes / record_bytes`. `None` = the mechanism keeps
+    /// its own sizing (pre-#305 wire, byte-identical on serialize).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_budget_bytes: Option<u64>,
+    /// Which RESIDENT (non-expert) precision override the serving spawn should
+    /// load, by artifact tier label (e.g. "q4-resident") — the governor's half of
+    /// the resident-precision ↔ cache-size co-optimization (the split policy that
+    /// replaces resident-first-scraps-last): shrinking the resident frees VRAM the
+    /// `device_budget_bytes` above then grows into, and the policy picks the
+    /// (resident_tier, cache_bytes) pair that maximizes predicted tok/s from the
+    /// measured coverage curve. Labels resolve against the artifact manifest the
+    /// `--resident-only` quantize tool emits beside each override (BigMama's #40
+    /// enabler, contract agreed 2026-08-03). `None` = spawn keeps the full-precision
+    /// resident exactly as before — prior documents parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_tier: Option<String>,
 }
 
 impl PlanFileDocument {
@@ -105,12 +128,26 @@ impl PlanFileDocument {
             window_k,
             pin_list,
             default_tier: None,
+            device_budget_bytes: None,
+            resident_tier: None,
         }
     }
 
     /// Set the ladder index unpinned experts fetch from.
     pub fn with_default_tier(mut self, tier: u32) -> Self {
         self.default_tier = Some(tier);
+        self
+    }
+
+    /// Set the device-side expert-slot budget (free-VRAM-after-fit derived).
+    pub fn with_device_budget(mut self, bytes: u64) -> Self {
+        self.device_budget_bytes = Some(bytes);
+        self
+    }
+
+    /// Select a resident-precision override artifact by tier label (split policy).
+    pub fn with_resident_tier(mut self, tier: impl Into<String>) -> Self {
+        self.resident_tier = Some(tier.into());
         self
     }
 }
@@ -208,6 +245,51 @@ mod tests {
         }
         let back: PlanFileDocument = serde_json::from_str(&json).expect("round trip");
         assert_eq!(back, doc);
+    }
+
+    /// what this catches (#305 device-budget extension): a document with
+    /// no device budget serializes byte-identical to the pre-#305 wire
+    /// her deployed consumer parses (no `device_budget_bytes` key at
+    /// all); a budget-carrying document pins the literal field name her
+    /// fetcher binds to; and a pre-#305 document still parses (None).
+    /// Additive-optional or lockstep — this enforces additive.
+    #[test]
+    fn device_budget_is_optional_on_the_wire_and_prior_documents_still_parse() {
+        let plain = PlanFileDocument::new(1_000, 8, vec![]);
+        let json = serde_json::to_string(&plain).expect("serialize");
+        assert!(
+            !json.contains("device_budget_bytes"),
+            "absent budget must not serialize: {json}"
+        );
+
+        let with = PlanFileDocument::new(1_000, 8, vec![]).with_device_budget(16_106_127_360);
+        let json = serde_json::to_string(&with).expect("serialize");
+        assert!(
+            json.contains("\"device_budget_bytes\":16106127360"),
+            "literal field name pinned: {json}"
+        );
+        let back: PlanFileDocument = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.device_budget_bytes, Some(16_106_127_360));
+
+        // Pre-#305 document (no key) parses with None.
+        let old = r#"{"version":1,"budget_bytes":1000,"window_k":8,"pin_list":[]}"#;
+        let back: PlanFileDocument = serde_json::from_str(old).expect("old wire parses");
+        assert_eq!(back.device_budget_bytes, None);
+
+        // resident_tier (split policy, #40 seam): same optional-wire contract —
+        // absent never serializes, set round-trips by literal name, old docs None.
+        let with = PlanFileDocument::new(1_000, 8, vec![]).with_resident_tier("q4-resident");
+        let json = serde_json::to_string(&with).expect("serialize");
+        assert!(
+            json.contains("\"resident_tier\":\"q4-resident\""),
+            "literal field name pinned: {json}"
+        );
+        let back: PlanFileDocument = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.resident_tier.as_deref(), Some("q4-resident"));
+        let back: PlanFileDocument = serde_json::from_str(old).expect("old wire parses");
+        assert_eq!(back.resident_tier, None);
+        let plain_json = serde_json::to_string(&PlanFileDocument::new(1, 1, vec![])).expect("ser");
+        assert!(!plain_json.contains("resident_tier"), "absent must not serialize");
     }
 
     /// what this catches (precision-hint extension, 2026-08-01): a

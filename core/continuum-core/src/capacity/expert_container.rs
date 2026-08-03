@@ -270,7 +270,7 @@ impl ExpertBank {
         }
         debug_assert_eq!(buf.len() as u64, self.record_bytes);
         let offset = expert as u64 * self.record_bytes;
-        crate::platform_io::pread_exact(&self.file, buf, offset)
+        crate::fs_portable::read_exact_at(&self.file, buf, offset)
             .map_err(|source| ContainerError::BankIo {
                 path: self.path.clone(),
                 source,

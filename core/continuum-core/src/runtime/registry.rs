@@ -126,6 +126,27 @@ impl ModuleRegistry {
         self.type_routes.insert(type_id, name);
     }
 
+    /// Dispatch-parity audit — the structural kill for the registered-but-
+    /// undispatchable class (#309's final layer, found live 2026-08-03): every
+    /// command DESCRIPTOR (what `commands/help`, did-you-mean suggestions, and the
+    /// persona tool offer all advertise) must be DISPATCHABLE — either a typed
+    /// command object, or a module prefix route. `register_command!` (descriptors)
+    /// and `commands()` (dispatch) are two per-module lists a human must keep in
+    /// sync; `work/list` shipped advertised-but-unroutable for a night because
+    /// nothing checked. Benchy's first-ever live native tool call was refused with
+    /// a did-you-mean listing the refused name ITSELF — the two registries
+    /// disagreeing in one sentence. Returns the orphan names; the boot path logs
+    /// them as ERRORs so the gap is loud on the very first startup that ships it.
+    pub fn dispatch_orphans(&self) -> Vec<&'static str> {
+        crate::sdk_codegen::command_registry()
+            .into_iter()
+            .map(|d| d.name)
+            .filter(|name| {
+                !self.command_objects.contains_key(name) && self.route_command(name).is_none()
+            })
+            .collect()
+    }
+
     /// Route a command to the correct module.
     /// Returns (module, full_command) — the module receives the full command string.
     /// Replaces the 55-arm match statement.
@@ -360,5 +381,46 @@ mod tests {
         // Can find by type
         let found = registry.module_of_type::<TestModule>();
         assert!(found.is_some());
+    }
+
+    // what this catches: the registered-but-undispatchable class (#309 final layer —
+    // work/list shipped advertised in help/suggestions/the tool offer while dispatch
+    // refused it, live 2026-08-03). dispatch_orphans must read BOTH sides: with no
+    // module registered, every dep-holding descriptor is an orphan (proves it reads
+    // the descriptor registry, and that stateless self-registering commands are
+    // exempt by construction); registering the work module clears ALL SEVEN work
+    // verbs (proves objects clear orphans — and pins that commands() carries every
+    // verb the descriptors advertise, the exact two-line gap that shipped).
+    #[test]
+    fn dispatch_orphans_reads_descriptors_and_clears_on_module_registration() {
+        let registry = ModuleRegistry::new();
+        let before = registry.dispatch_orphans();
+        let work_names = [
+            "work/list",
+            "work/get",
+            "work/claim",
+            "work/create",
+            "work/release",
+            "work/state",
+            "work/heartbeat",
+        ];
+        for name in work_names {
+            assert!(
+                before.contains(&name),
+                "{name} must be an orphan before its module registers"
+            );
+        }
+
+        registry.register(std::sync::Arc::new(crate::modules::work::WorkModule::new(
+            crate::persona::PersonaAircRuntimeRegistry::new(),
+        )));
+        let after = registry.dispatch_orphans();
+        for name in work_names {
+            assert!(
+                !after.contains(&name),
+                "{name} still orphaned after WorkModule registered — a verb is \
+                 missing from commands() (the #309 two-line gap)"
+            );
+        }
     }
 }
