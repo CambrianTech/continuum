@@ -260,62 +260,127 @@ fn kind_of(v: &Value) -> &'static str {
     }
 }
 
-// Unix-only: the echo server binds a unix socket. The windows transport arm
-// (TCP loopback) deserves a TCP-echo sibling — tracked in #304; gating (not
-// porting) keeps windows-msvc `cargo test` BUILDING today.
-#[cfg(all(test, unix))]
+// Both transport arms are covered: unix binds a per-test unix socket, windows
+// binds a TCP loopback listener on an ephemeral port and pins the transport's
+// CONTINUUM_CORE_TCP env var to it (serialized — the var is process-global).
+// One generic wire-serving body, two bind sites (#304's residual, closed).
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, BufReader};
+    #[cfg(windows)]
+    use tokio::net::TcpListener;
+    #[cfg(unix)]
     use tokio::net::UnixListener;
 
-    /// A minimal IPC server speaking the REAL wire protocol (newline JSON request
-    /// in, length-prefixed JSON frame out) — so the transport is tested against
-    /// the actual codec, not a mock of itself. Returns the temp socket path; the
-    /// server handles one connection, echoing each request's command+params back
-    /// as the result (or refusing a command named "refuse/me").
-    async fn spawn_echo_ipc_server() -> PathBuf {
+    /// Serve ONE connection of the REAL wire protocol (newline JSON request in,
+    /// length-prefixed JSON frame out) — so the transport is tested against the
+    /// actual codec, not a mock of itself. Echoes each request's command+params
+    /// back as the result (or refuses a command named "refuse/me"). Generic over
+    /// the stream so the unix-socket and TCP arms exercise the SAME server body.
+    async fn serve_conn<S>(stream: S)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+    {
+        let (read_half, mut write_half) = tokio::io::split(stream);
+        let mut lines = BufReader::new(read_half).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let req: Value = serde_json::from_str(&line).expect("server: parse request");
+            let command = req.get("command").and_then(|c| c.as_str()).unwrap_or("");
+            let request_id = req.get("requestId").and_then(|r| r.as_u64());
+
+            // Build the response payload (typed shape mirrored as json for the
+            // server side — the SERVER is the core's role here).
+            let payload = if command == "refuse/me" {
+                json!({ "success": false, "error": "refused by test server", "requestId": request_id })
+            } else {
+                json!({ "success": true, "result": { "echoed": command, "saw": req }, "requestId": request_id })
+            };
+            let bytes = serde_json::to_vec(&payload).unwrap();
+            let len = (bytes.len() as u32).to_be_bytes();
+            write_half.write_all(&len).await.unwrap();
+            write_half.write_all(&bytes).await.unwrap();
+            write_half.flush().await.unwrap();
+        }
+    }
+
+    /// Handle to a spawned echo server — carries whatever the platform's
+    /// transport needs to reach it (socket path on unix, TCP port on windows).
+    struct EchoServer {
+        #[cfg(unix)]
+        path: PathBuf,
+        #[cfg(windows)]
+        port: u16,
+    }
+
+    /// The windows transport reads `CONTINUUM_CORE_TCP` at connect time — a
+    /// process-global env var, so connecting tests hold this lock while their
+    /// server's port is pinned into it (parallel tests would race otherwise).
+    #[cfg(windows)]
+    static TCP_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    impl EchoServer {
+        #[cfg(unix)]
+        fn transport(&self) -> CoreIpcTransport {
+            CoreIpcTransport::new(&self.path)
+        }
+
+        #[cfg(windows)]
+        fn transport(&self) -> CoreIpcTransport {
+            // The path is unused on windows — the connect site dials TCP loopback.
+            CoreIpcTransport::new("unused-on-windows.sock")
+        }
+
+        /// windows only: acquire the env lock and point the transport's TCP
+        /// port var at THIS server. Hold the returned guard for the whole test.
+        #[cfg(windows)]
+        async fn pin_env(&self) -> tokio::sync::MutexGuard<'static, ()> {
+            let guard = TCP_ENV_LOCK.lock().await;
+            std::env::set_var("CONTINUUM_CORE_TCP", self.port.to_string());
+            guard
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for EchoServer {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[cfg(unix)]
+    async fn spawn_echo_ipc_server() -> EchoServer {
         // Unique per server instance — tests run in parallel in one binary, so a
         // shared (pid-only) path would collide. A per-call atomic counter isolates them.
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("cc-coreipc-test-{}-{n}.sock", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "cc-coreipc-test-{}-{n}.sock",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).expect("bind test socket");
-        let path_ret = path.clone();
-
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept");
-            let (read_half, mut write_half) = stream.into_split();
-            let mut lines = BufReader::new(read_half).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let req: Value = serde_json::from_str(&line).expect("server: parse request");
-                let command = req.get("command").and_then(|c| c.as_str()).unwrap_or("");
-                let request_id = req.get("requestId").and_then(|r| r.as_u64());
-
-                // Build the response payload (typed shape mirrored as json for the
-                // server side — the SERVER is the core's role here).
-                let payload = if command == "refuse/me" {
-                    json!({ "success": false, "error": "refused by test server", "requestId": request_id })
-                } else {
-                    json!({ "success": true, "result": { "echoed": command, "saw": req }, "requestId": request_id })
-                };
-                let bytes = serde_json::to_vec(&payload).unwrap();
-                let len = (bytes.len() as u32).to_be_bytes();
-                write_half.write_all(&len).await.unwrap();
-                write_half.write_all(&bytes).await.unwrap();
-                write_half.flush().await.unwrap();
-            }
+            serve_conn(stream).await;
         });
+        EchoServer { path }
+    }
 
-        // Give the listener a moment to be ready before the client connects.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        path_ret
+    #[cfg(windows)]
+    async fn spawn_echo_ipc_server() -> EchoServer {
+        // Ephemeral port on loopback — the OS picks a free one, no collisions.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test tcp");
+        let port = listener.local_addr().expect("local addr").port();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            serve_conn(stream).await;
+        });
+        EchoServer { port }
     }
 
     // what this catches: the full direct-IPC round-trip over the REAL wire codec —
@@ -325,8 +390,10 @@ mod tests {
     // timeout (the live finding) and the coverage the unit MockTransport couldn't give.
     #[tokio::test]
     async fn execute_round_trips_over_the_real_wire_codec() {
-        let socket = spawn_echo_ipc_server().await;
-        let transport = CoreIpcTransport::new(&socket);
+        let server = spawn_echo_ipc_server().await;
+        #[cfg(windows)]
+        let _env = server.pin_env().await;
+        let transport = server.transport();
 
         let result = transport
             .execute("chat/send", json!({ "room": "general", "text": "hi" }))
@@ -343,8 +410,6 @@ mod tests {
             result["saw"]["requestId"].is_number(),
             "requestId stamped on the request"
         );
-
-        let _ = std::fs::remove_file(&socket);
     }
 
     // what this catches: a core refusal (success:false + error) maps to
@@ -352,8 +417,10 @@ mod tests {
     // surface it as isError content rather than hanging or mis-reporting.
     #[tokio::test]
     async fn command_refusal_maps_to_refused_error() {
-        let socket = spawn_echo_ipc_server().await;
-        let transport = CoreIpcTransport::new(&socket);
+        let server = spawn_echo_ipc_server().await;
+        #[cfg(windows)]
+        let _env = server.pin_env().await;
+        let transport = server.transport();
 
         let err = transport
             .execute("refuse/me", json!({}))
@@ -369,7 +436,6 @@ mod tests {
             }
             other => panic!("expected Refused, got {other:?}"),
         }
-        let _ = std::fs::remove_file(&socket);
     }
 
     // what this catches: non-object params are rejected with a clear typed error
