@@ -626,6 +626,8 @@ impl ServiceModule for WorkModule {
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         vec![
+            Arc::new(WorkList { registry: self.registry.clone() }),
+            Arc::new(WorkGet { registry: self.registry.clone() }),
             Arc::new(WorkClaim { registry: self.registry.clone() }),
             Arc::new(WorkCreate { registry: self.registry.clone() }),
             Arc::new(WorkRelease { registry: self.registry.clone() }),
