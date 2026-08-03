@@ -1353,6 +1353,38 @@ impl Faculty for LlmDeliberationFaculty {
                 };
                 return Some(self.act_verdict(vec![call], &resp));
             }
+            // Reasoning-channel intent lift (#181 sibling, glass-boxed on the
+            // deepseek4 eval battery 2026-08-03): a thinking model commits its act
+            // into `reasoning_content` — "I'll read the file: {tool_call…}" — and
+            // leaves `content` EMPTY (budget exhausted mid-think, or the act simply
+            // landed in the wrong channel). Every check above reads only the content
+            // channel, so the turn settled as Speak("") — a guaranteed empty fail
+            // (2 of 3 real failures in that battery). When content is empty there is
+            // no committed answer to respect, so the reasoning tail is the model's
+            // only stated intention: run the SAME format stack over it and lift the
+            // LAST parseable call (the final intention — earlier matches may be
+            // considered-and-discarded exploration). Strictly gated on empty content:
+            // a real Speak or an explicit PASS is a commitment in the answer channel
+            // and private deliberation must never override it.
+            if resp.text.trim().is_empty() {
+                if let Some(reasoning) = resp.reasoning.as_deref() {
+                    if let Some(mut call) =
+                        crate::ai::json_in_prompt_tools::parse_tool_calls(reasoning)
+                            .into_iter()
+                            .last()
+                    {
+                        call.name =
+                            crate::cognition::tool_dialect::from_wire_name(&call.name).to_string();
+                        crate::probe!(
+                            class = "persona.act.reasoning_lift",
+                            persona = %self.persona_name,
+                            tool = %call.name,
+                            "content channel empty — lifted the final tool intention from the reasoning tail"
+                        );
+                        return Some(self.act_verdict(vec![call], &resp));
+                    }
+                }
+            }
         }
 
         // No action chosen → the prose IS the verdict (PASS token → silence, else
@@ -2403,6 +2435,69 @@ mod tests {
                     assert_eq!(calls[0].name, "ping");
                 }
                 other => panic!("expected Act from a text-emitted tool call, got {other:?}"),
+            }
+        }
+
+        // what this catches: the reasoning-intent-no-lift class (#181 sibling,
+        // deepseek4 eval battery 2026-08-03) — a thinking model commits its tool
+        // call inside `reasoning_content` and leaves `content` empty; the verdict
+        // branch must lift the LAST parseable call from the reasoning tail instead
+        // of settling as an empty Speak. Also pins last-wins (earlier exploration
+        // in the same reasoning is not the final intention) + wire-dialect mapping.
+        #[tokio::test]
+        async fn empty_content_with_reasoning_tool_intent_lifts_the_final_call() {
+            let persona = Uuid::new_v4();
+            let reasoning = format!(
+                "I could list the directory first: {}\nActually the task names the file, so I'll just read it: {}",
+                json!({ "tool_call": { "name": "code/list", "arguments": { "path": "." } } }),
+                json!({ "tool_call": { "name": "code/read", "arguments": { "path": "src/main.rs" } } }),
+            );
+            let mut resp = make_response(FinishReason::Stop, "", None);
+            resp.reasoning = Some(reasoning);
+            let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![read_tool()])
+                .with_context_window(32_768);
+
+            let c = faculty
+                .contribute(&Workspace::new("what does main.rs contain?"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Act { calls, .. }) => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(calls[0].name, "code/read", "the FINAL intention wins, not the discarded exploration");
+                    assert_eq!(calls[0].input, json!({ "path": "src/main.rs" }));
+                }
+                other => panic!("expected Act lifted from the reasoning tail, got {other:?}"),
+            }
+        }
+
+        // what this catches: the guard on the reasoning lift — a committed answer in
+        // the content channel (real prose OR an explicit PASS) must never be
+        // overridden by a tool call the model merely considered in its private
+        // reasoning. Only an EMPTY content channel consults the reasoning tail.
+        #[tokio::test]
+        async fn committed_content_is_never_overridden_by_reasoning_calls() {
+            let persona = Uuid::new_v4();
+            let reasoning = format!(
+                "Maybe I should verify: {}. No — I already know the answer.",
+                json!({ "tool_call": { "name": "code/read", "arguments": { "path": "src/main.rs" } } }),
+            );
+            let mut resp = make_response(FinishReason::Stop, "It prints hello world.", None);
+            resp.reasoning = Some(reasoning);
+            let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![read_tool()])
+                .with_context_window(32_768);
+
+            let c = faculty
+                .contribute(&Workspace::new("what does main.rs contain?"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Speak { .. }) => {}
+                other => panic!("expected the spoken answer to stand, got {other:?}"),
             }
         }
 
