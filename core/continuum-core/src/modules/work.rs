@@ -199,13 +199,41 @@ impl ActionCommand for WorkClaim {
     async fn run(&self, ctx: &Ctx, p: WorkClaimParams) -> Result<WorkClaimResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
-        let claim_id = airc
+        let claim_attempt = airc
             .claim_work_card(ClaimWorkCard {
                 card_id,
                 ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS),
             })
-            .await
-            .map_err(|e| {
+            .await;
+        let claim_id = match claim_attempt {
+            Ok(id) => id,
+            Err(e) => {
+                // Name the HOLDER, not just the fact (Joel, 2026-08-03, on
+                // Atlas's first live contention bounce: "It should tell you the
+                // peer"). A bare "already claimed" is a dead end; "claimed by
+                // <peer>" is a coordination move — ask them, watch their
+                // progress, or pick another card. Best-effort board read; the
+                // original error stands alone if the board is unreadable.
+                let mut msg = e.to_string();
+                if let Ok(board) = airc
+                    .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                    .await
+                {
+                    let board = board.snapshot();
+                    if let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) {
+                        if let Some(owner) = card.owner {
+                            msg = format!(
+                                "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
+                                 them in the room, or pick an unclaimed card via list_tasks. \
+                                 (claim error: {e})",
+                                short8(card_id.as_uuid()),
+                                card.title,
+                                short8(owner.as_uuid()),
+                                state_str(&card.state),
+                            );
+                        }
+                    }
+                }
                 // A rejection is WORK-STATE, not a transient tool result: the
                 // raw receipt scrolls out of the persona's short window and the
                 // intent narrative resurfaces as "I've claimed it" (glass-boxed
@@ -215,11 +243,12 @@ impl ActionCommand for WorkClaim {
                     crate::persona::claim_rejections::record(
                         caller.peer_id.as_uuid(),
                         &p.card_id,
-                        &e.to_string(),
+                        &msg,
                     );
                 }
-                CommandError::Internal(e.to_string())
-            })?;
+                return Err(CommandError::Internal(msg));
+            }
+        };
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
