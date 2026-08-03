@@ -346,4 +346,39 @@ mod tests {
         // saturation: MORE residency (idx 2) is NOT better than the knee (idx 1)
         assert!(bandit.predicted_value(2).unwrap() <= bandit.predicted_value(1).unwrap());
     }
+
+    /// what this catches: the load-bearing reason the bandit corrects its OWN prior. The device-cache
+    /// coverage/tok-s response is NON-MONOTONIC in VRAM budget — measured on V4-Flash (5090, UD-IQ2_M,
+    /// GGML_MOE_VRAM_CACHE_GB sweep): 6GB/992 slots → 1.80 (undersized, evict-churn), 12GB/1985 → 3.10
+    /// (plateau knee), 22GB/3630 → 2.96 (oversized: 100% hit but the O(slots) reserve_slot eviction scan
+    /// costs). Coverage is 100% from ~12GB up, so predict_tok_s's monotonic "more slots → more tok/s"
+    /// prior is WRONG past the coverage knee: it would pick 22GB. Only the MEASURED reward finds the 12GB
+    /// optimum — and 12GB frees ~20GB of a 32GB card for other lanes. If this test inverts, the governor
+    /// oversizes the cache and starves co-resident models. Measured 2026-08-03; coverage-curve.jsonl.
+    #[test]
+    fn bandit_finds_nonmonotonic_device_cache_budget_optimum() {
+        // arms = device-cache VRAM budgets; tier_idx maps to the sweep point. cache_slots carries the
+        // measured slot count so a naive coverage prior WOULD rank 22GB highest — the measured reward
+        // must override that and land on 12GB (the plateau knee, max tok/s at min VRAM).
+        let divs = vec![
+            DivisionConfig { tier_idx: 0, device_budget_bytes: 6 << 30, cache_slots: 992 },  // undersized
+            DivisionConfig { tier_idx: 1, device_budget_bytes: 12 << 30, cache_slots: 1985 }, // knee
+            DivisionConfig { tier_idx: 2, device_budget_bytes: 22 << 30, cache_slots: 3630 }, // oversized
+        ];
+        // The monotonic prior (k3 curve) ranks the biggest cache first — set up the wrong belief...
+        let model = CoverageModel::k3_measured();
+        let shape = MoeShape { expert_bytes: 2_163_200, experts_per_token: 774 };
+        let mut bandit = DivisionBandit::warm_start(divs, &model, &shape, 25.0e9, 0.010);
+        assert_eq!(bandit.predicted_value(2).unwrap() >= bandit.predicted_value(1).unwrap(), true,
+                   "prior should (wrongly) favor the biggest cache before measurement");
+        // ...then MEASUREMENT corrects it to the real non-monotonic curve.
+        bandit.observe(0, 1.80);
+        bandit.observe(1, 3.10);
+        bandit.observe(2, 2.96);
+        assert_eq!(bandit.choose().unwrap().tier_idx, 1, "bandit must land on the 12GB plateau knee");
+        // oversizing (22GB) is NOT better than the knee — so the governor frees the difference
+        assert!(bandit.predicted_value(2).unwrap() <= bandit.predicted_value(1).unwrap());
+        // undersizing (6GB, evict-churn) is clearly worse despite also showing 100% hit on warm tokens
+        assert!(bandit.predicted_value(0).unwrap() < bandit.predicted_value(1).unwrap());
+    }
 }
