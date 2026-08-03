@@ -881,6 +881,66 @@ async fn build_external_eval_lane_inner(
     })
 }
 
+/// #312 — the exam's disposable world: a CoW clone of the shared checkout under the
+/// system temp dir, one per run. clonefile on APFS / reflink on btrfs-XFS (instant,
+/// block-sharing), plain recursive copy where the FS lacks CoW — the same platform
+/// split as citizen-layer provisioning (`ensure_citizen_layer_from_base`). `cfg!`
+/// (not `#[cfg]`) so both arms type-check on every platform.
+fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String> {
+    let base = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let root = std::env::temp_dir().join("continuum-eval").join(tag);
+    if root.is_dir() {
+        return Ok(root); // resume of the same run reuses its world
+    }
+    let parent = root
+        .parent()
+        .ok_or_else(|| "eval root has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    let mut clone = std::process::Command::new("cp");
+    if cfg!(target_os = "macos") {
+        clone.arg("-cR");
+    } else {
+        clone.args(["--reflink=auto", "-R"]);
+    }
+    let out = clone
+        .arg(&base)
+        .arg(&root)
+        .output()
+        .map_err(|e| format!("cp spawn: {e}"))?;
+    if !out.status.success() {
+        let _ = std::fs::remove_dir_all(&root); // never leave a half-clone
+        return Err(format!(
+            "CoW clone {} -> {} failed: {}",
+            base.display(),
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    crate::probe!(
+        class = "eval.workspace.provisioned",
+        root = root.display().to_string().as_str(),
+        "exam world provisioned — CoW clone of the shared checkout, removed when the run ends"
+    );
+    Ok(root)
+}
+
+/// RAII holder for the run's disposable world — `Drop` removes it on EVERY return
+/// path (score, infra-abort, error), so a crashed exam never leaks fixtures into
+/// the temp dir long-term and NEVER touches the shared checkout at all.
+struct EphemeralEvalRoot(std::path::PathBuf);
+
+impl Drop for EphemeralEvalRoot {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.0) {
+            tracing::warn!(
+                root = %self.0.display(),
+                error = %e,
+                "ephemeral eval workspace cleanup failed — temp-dir debris only, shared checkout unaffected"
+            );
+        }
+    }
+}
+
 /// Ask an OpenAI-compatible provider what context window it ACTUALLY serves for
 /// `model_id` (`/v1/models` `context_length`). `None` when unreachable or unreported —
 /// callers fall back to the catalog row.
@@ -1515,6 +1575,36 @@ impl CognitionEval {
         // repo-nav gym speak-only. Run-level = any task needs tools (offered to the whole run).
         let needs_tools = p.workspace_root.is_some() || tasks.iter().any(EvalTask::needs_tools);
 
+        // #312 — THE EXAM'S WORLD IS A COPY, NEVER THE SHARED CHECKOUT. With no pinned
+        // workspace_root the fork's hands rooted at the CORE CWD (the real repo): fixture
+        // writes + per-task wipes (#209) landed in the shared world every persona
+        // perceives, and gym debris (conway_game_of_life, work-*) accumulated as the
+        // personas' "own" projects — the exam↔live contamination the room degraded under.
+        // The mind side was already isolated (fork_detached + NoopSink + volatile-tier
+        // exclusion); the WORLD side wasn't. Repo-nav exams still need the repo, so the
+        // default is a per-run CoW clone (APFS clonefile / reflink; plain copy where the
+        // FS lacks CoW), removed on every return path via Drop. An explicit
+        // workspace_root pin still wins (SWE-bench checkouts own their state).
+        let ephemeral_root = if p.workspace_root.is_none() && needs_tools {
+            let tag = p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            match provision_ephemeral_eval_root(&tag) {
+                Ok(root) => Some(EphemeralEvalRoot(root)),
+                Err(e) => {
+                    // Fail LOUD and refuse to contaminate — no silent fallback to cwd.
+                    return Err(CommandError::Internal(format!(
+                        "eval workspace provisioning failed ({e}) — refusing to run a \
+                         tool-bearing exam in the shared checkout (#312)"
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+        let eval_workspace_root: Option<String> = p
+            .workspace_root
+            .clone()
+            .or_else(|| ephemeral_root.as_ref().map(|r| r.0.display().to_string()));
+
         // #207: suppress the fork's drifting episodic recall for a reproducible ABSOLUTE
         // baseline. Opt-in; default false = memories intact (the natural persona).
         let suppress_recall = p.suppress_recall.unwrap_or(false);
@@ -1567,7 +1657,7 @@ impl CognitionEval {
                 let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -1586,7 +1676,7 @@ impl CognitionEval {
                 let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -1670,7 +1760,7 @@ impl CognitionEval {
                         let served_ctx = el.served_ctx;
                         let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                             crate::cognition::persona_workspace::global()
-                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
                         })
                         .await
                         .ok_or_else(|| CommandError::NotFound(format!(
@@ -1685,7 +1775,7 @@ impl CognitionEval {
                         _exam_serving = Some(acquire_exam_serving_context().await);
                         fork_eval_cycle_waiting(&persona_uuid, || {
                             crate::cognition::persona_workspace::global()
-                                .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                                .fork_eval_cycle(&persona_uuid, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
                         })
                         .await
                         .ok_or_else(|| CommandError::NotFound(format!(
@@ -1814,7 +1904,7 @@ impl CognitionEval {
             // A/B LIFT arms consume `.pass`/`.results`; the infra-fault accounting rides
             // on the EphemeralServingLane path (decode-verified at spawn) as a scoped
             // follow-up — the shared-lane single-pass below is what Slice B makes honest.
-            let base_score = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await.pass;
+            let base_score = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, eval_workspace_root.as_deref()).await.pass;
 
             // Both arms start each task from the pre-eval memory frame — `run_pass`
             // rewinds the admission frame before EVERY task (per-task isolation), so
@@ -1827,7 +1917,7 @@ impl CognitionEval {
                 scale: gene.scale.unwrap_or(1.0),
             }]);
             let gene_outcome =
-                run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await;
+                run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, eval_workspace_root.as_deref()).await;
             let (gene_score, gene_results) = (gene_outcome.pass, gene_outcome.results);
             cycle.page_out();
 
@@ -1922,7 +2012,7 @@ impl CognitionEval {
         let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
         let outcome = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid, needs_tools, p.workspace_root.as_deref(), suppress_recall)
+                .fork_eval_cycle(&persona_uuid, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;
@@ -1932,7 +2022,7 @@ impl CognitionEval {
             drop(reviewer_iso);
             out
         } else {
-            run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, p.workspace_root.as_deref()).await
+            run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries, eval_workspace_root.as_deref()).await
         };
         drop(isolation);
 
