@@ -1027,9 +1027,16 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::None,
             kind: ProviderKind::Local,
             model_prefixes: &["deepseek-v4"],
-            // One model per ds4-server process; the engine owns residency.
+            // One model per ds4-server process — but the SIDECAR owns its
+            // residency, not our serving daemon. `single_resident_model`
+            // would make the adapter consult the llama-server snapshot (the
+            // wrong authority — it refused deepseek-v4-flash because
+            // Devstral holds the daemon's lane, verified live 2026-08-02).
+            // `dynamic_model_catalog` is the truthful contract: answer
+            // supports_model from the sidecar's OWN /v1/models. In-process
+            // concurrency is uncapped here; ds4-server queues internally.
             capabilities: ProviderCapabilities {
-                single_resident_model: true,
+                dynamic_model_catalog: true,
                 ..Default::default()
             },
             ..Default::default()
