@@ -421,8 +421,168 @@ impl ActionCommand for WorkHeartbeat {
     }
 }
 
+// ─────────────────────────── work/list + work/get ─────────────────
+//
+// The READ half the board proved it needed live (#309, 2026-08-03): the
+// surface was claim/create/release/state/heartbeat — write-only. Card
+// content reached personas ONLY through the perception-side projection,
+// so a persona that missed the render (or wanted to re-verify a spec)
+// had no tool to fetch it. "I don't have access to the work card" was
+// LITERALLY TRUE: the claimant of the bakery card could not re-read its
+// own requirements, and the card sat at five plans / zero files. Every
+// write-only surface eventually proves it needs its read half.
+
+/// Inverse of [`parse_state`] — the wire spelling of a card state.
+fn state_str(s: &CardState) -> &'static str {
+    match s {
+        CardState::Open => "open",
+        CardState::Claimed => "claimed",
+        CardState::InProgress => "in_progress",
+        CardState::Blocked => "blocked",
+        CardState::Review => "review",
+        CardState::Merged => "merged",
+        CardState::Closed => "closed",
+    }
+}
+
+/// The board's displayed 8-char short form of an id — what every surface
+/// shows and what the lifecycle verbs accept back.
+fn short8(u: Uuid) -> String {
+    u.simple().to_string().chars().take(8).collect()
+}
+
+/// Browse the live work board (read-only).
+pub struct WorkList {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct WorkListParams {
+    /// Optional state filter: open | claimed | in_progress | blocked | review | merged | closed.
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkListCard {
+    /// 8-char short id — quote this back to work/get / work/claim / work/state.
+    pub id: String,
+    pub title: String,
+    pub state: String,
+    /// Short id of the claiming peer, when claimed.
+    pub owner: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkListResult {
+    pub cards: Vec<WorkListCard>,
+}
+
+#[async_trait]
+impl ActionCommand for WorkList {
+    const NAME: &'static str = "work/list";
+    const ALIASES: &'static [&'static str] = &["list_tasks"];
+    const NATIVE: bool = true; // core room workflow — the read half of claim_task; without it the board is write-only
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "List the work board's cards (read-only): short id, title, state, owner. Use the short id \
+         with work/get for a card's full requirements, or work/claim to take it. Optionally filter \
+         by state (open|claimed|in_progress|blocked|review|merged|closed).";
+    type Params = WorkListParams;
+    type Output = WorkListResult;
+
+    async fn run(&self, ctx: &Ctx, p: WorkListParams) -> Result<WorkListResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx)?;
+        let filter = p.state.as_deref().map(parse_state).transpose()?;
+        let board = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+            .snapshot();
+        let cards = board
+            .cards
+            .iter()
+            .filter(|c| filter.map_or(true, |f| c.state == f))
+            .map(|c| WorkListCard {
+                id: short8(c.card_id.as_uuid()),
+                title: c.title.clone(),
+                state: state_str(&c.state).to_string(),
+                owner: c.owner.map(|o| short8(o.as_uuid())),
+            })
+            .collect();
+        Ok(WorkListResult { cards })
+    }
+}
+
+/// Read ONE card's full content (read-only) — the requirements a worker
+/// re-checks mid-task.
+pub struct WorkGet {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct WorkGetParams {
+    /// The card id — full UUID or the 8-char short id the board shows.
+    pub card_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkGetResult {
+    pub id: String,
+    pub title: String,
+    /// The card's full body — the task's requirements/spec, when authored.
+    pub body: Option<String>,
+    pub state: String,
+    pub owner: Option<String>,
+    pub claim_id: Option<String>,
+}
+
+#[async_trait]
+impl ActionCommand for WorkGet {
+    const NAME: &'static str = "work/get";
+    const ALIASES: &'static [&'static str] = &["get_task"];
+    const NATIVE: bool = true; // core room workflow — re-reading a card's spec mid-task must not require asking the room
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Read one work card in full (read-only): title, body (the task's requirements), state, \
+         owner, claim id. Accepts the 8-char short id the board shows. This is how you re-check a \
+         spec mid-task instead of asking the room.";
+    type Params = WorkGetParams;
+    type Output = WorkGetResult;
+
+    async fn run(&self, ctx: &Ctx, p: WorkGetParams) -> Result<WorkGetResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
+        let board = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+            .snapshot();
+        let card = board
+            .cards
+            .iter()
+            .find(|c| c.card_id == card_id)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!(
+                    "card {} resolved but is not on the current board projection",
+                    p.card_id
+                ))
+            })?;
+        Ok(WorkGetResult {
+            id: short8(card.card_id.as_uuid()),
+            title: card.title.clone(),
+            body: card.body.clone(),
+            state: state_str(&card.state).to_string(),
+            owner: card.owner.map(|o| short8(o.as_uuid())),
+            claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
+        })
+    }
+}
+
 // ─────────────────── one registry: descriptors + objects ─────────────────
 
+crate::register_command!(WorkList);
+crate::register_command!(WorkGet);
 crate::register_command!(WorkClaim);
 crate::register_command!(WorkCreate);
 crate::register_command!(WorkRelease);

@@ -154,7 +154,14 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
          This workspace is NOT empty: it has {count} top-level directories (above) \
          and many files. If a memory or earlier note says the workspace is empty, that \
          note is STALE — trust THIS live layout, and re-run code/list before concluding \
-         anything is missing.",
+         anything is missing.\n\
+         This is YOUR OWN private workspace (a personal git layer over the team's \
+         shared base). Each teammate works in their own separate layer: files a \
+         teammate says they created exist in THEIR workspace, not necessarily in \
+         yours — and your files are invisible to them until shared. Never conclude a \
+         teammate is wrong (or that work is missing) because your own listing differs \
+         from theirs; your listings are of different places. Committing your work with \
+         the git tools is what makes it shareable.",
         root = layout.root.display(),
         dirs = dirs,
     )
@@ -169,25 +176,30 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
 /// files the persona itself created. Now the map's root == the tools' root, and
 /// it updates as the persona shapes its own workspace.
 ///
-/// Read-only: resolves the layer PATH (no CoW provisioning — that's the hands'
-/// job on first write). If the layer isn't provisioned yet, it falls back to the
-/// shared base (the core cwd the layer will clone), whose top-level layout is
-/// identical — so the map is truthful either way, never empty, never a panic.
+/// PROVISION-AND-TELL (#49): provisions the layer through the SAME
+/// `ensure_citizen_layer` the hands use (including its sync-forward self-heal),
+/// so the map can never describe a root the tools don't act in. The old
+/// pre-provision fallback to the shared cwd created a mixed-truth window —
+/// perceive the shared layout, act in a fresh layer — that cost the residents a
+/// full evening of "I see it / mine is empty" contradictions (2026-08-02).
 pub struct CitizenLayerWorkspaceLayoutReader {
     peer: String,
 }
 
 impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
     fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let layer = crate::modules::code_commands::citizen_layer_path(&self.peer)
-            .map_err(|e| format!("citizen layer path unavailable: {e}"))?;
-        // Not yet provisioned → the shared base (cwd) has the same top-level
-        // layout the layer will clone; grounding stays truthful, never empty.
-        let root = if layer.is_dir() {
-            layer
-        } else {
-            std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?
-        };
+        // PROVISION-AND-TELL (#49, glass-boxed 2026-08-02): the old fallback
+        // showed the SHARED cwd's layout when the layer wasn't provisioned yet
+        // — so a fresh persona PERCEIVED directories (conway_game_of_life…)
+        // that its first tool call, which provisions and acts in the layer,
+        // could not see. That mixed-truth window produced the live "I see it /
+        // my list is empty" contradiction and a full evening of workspace
+        // confusion between roommates. Now the map provisions the layer
+        // exactly as the hands would (same function, same sync-forward
+        // self-heal) — map and tools can never again describe different
+        // worlds. A provisioning failure degrades to no block, never a lie.
+        let root = crate::modules::code_commands::ensure_citizen_layer(&self.peer)
+            .map_err(|e| format!("citizen layer unavailable: {e}"))?;
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);
@@ -267,11 +279,11 @@ impl WorkspaceMapSource {
 
     /// Construct rooted at the persona's own citizen layer — the live persona
     /// wiring, so the map matches the root the persona's hands act in (#49 swap).
-    pub fn for_peer_layer(persona_id: uuid::Uuid) -> Self {
+    pub fn for_peer_layer(peer_id: uuid::Uuid) -> Self {
         Self::new(
-            persona_id,
+            peer_id,
             Arc::new(CitizenLayerWorkspaceLayoutReader {
-                peer: persona_id.to_string(),
+                peer: peer_id.to_string(),
             }),
         )
     }
@@ -594,14 +606,36 @@ mod tests {
     // (random id under a temp home), so the fallback path must yield the real cwd
     // layout rather than erroring.
     #[test]
-    fn citizen_layer_reader_falls_back_to_base_when_unprovisioned() {
+    fn citizen_layer_reader_provisions_and_tells_the_real_root() {
+        // what this catches (#49, the mixed-truth window): the map must NEVER
+        // describe the shared cwd while the tools act in the peer's layer. The
+        // reader now PROVISIONS the layer (same ensure the hands use) and
+        // reports THAT root — so root != cwd, and the layout it lists is the
+        // layer's own (a CoW clone of the base, hence non-empty). The old
+        // fallback-to-cwd behavior this replaces produced the live 2026-08-02
+        // "I see it / mine is empty" roommate contradictions.
+        let peer = "00000000-0000-0000-0000-0000000000ff";
         let reader = CitizenLayerWorkspaceLayoutReader {
-            peer: "00000000-0000-0000-0000-0000000000ff".to_string(),
+            peer: peer.to_string(),
         };
-        let layout = reader.layout().expect("unprovisioned layer falls back to base cwd");
+        let layout = reader.layout().expect("reader provisions the layer");
+        let cwd = std::env::current_dir().expect("cwd");
+        assert_ne!(
+            layout.root, cwd,
+            "map root must be the peer's OWN layer, never the shared cwd"
+        );
+        assert!(
+            layout.root.to_string_lossy().contains(peer),
+            "root is the peer's citizen layer: {}",
+            layout.root.display()
+        );
         assert!(
             !layout.top_level_dirs.is_empty(),
-            "fallback to base cwd yields the real checkout layout, never empty"
+            "the provisioned layer clones the base layout — never empty"
         );
+        // Clean up the throwaway peer's provisioned layer (CoW, but still dirs).
+        if let Some(peer_dir) = layout.root.parent() {
+            let _ = std::fs::remove_dir_all(peer_dir);
+        }
     }
 }
