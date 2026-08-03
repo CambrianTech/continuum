@@ -286,6 +286,7 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
         &NarratedWriteFormat,
         &NarratedScriptFormat,
         &NarratedBareArgsFormat,
+        &NarratedToolMentionFormat,
     ]
 }
 
@@ -1164,6 +1165,71 @@ impl ToolCallFormat for NarratedBareArgsFormat {
     }
 }
 
+/// First-person narrated intent naming a tool with NO payload at all — "Let's use
+/// `list_tasks` to find the card" as a whole message: no fence, no arguments.
+/// Glass-boxed live 2026-08-03: three residents circled the bakery card for an
+/// hour, each narrating "use `list_tasks`" at the room while ZERO calls fired —
+/// the tool was offered, the instruction understood and even relayed as advice,
+/// and never once executed. The board verb takes no required arguments, so the
+/// only missing piece was this lift.
+///
+/// Fires as the LAST resort, only when: the message has no fenced blocks (a fence
+/// belongs to the other narrated formats), the framing is first-person committed
+/// (never a request TO a peer — "please use X" stays inert), and the backticked
+/// token is tool-shaped — a slash name (`work/list`) or a snake_case wire alias
+/// (`list_tasks`; underscore required so backticked prose like `general` never
+/// reads as a tool). Arguments are `{}`: a lifted tool that actually needs params
+/// fails loud downstream with the executor's did-you-mean / missing-param receipt,
+/// which re-enters as memory — an honest teacher, unlike silent narration.
+struct NarratedToolMentionFormat;
+impl ToolCallFormat for NarratedToolMentionFormat {
+    fn id(&self) -> &'static str {
+        "narrated-tool-mention"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        if !fenced_blocks(text).is_empty() {
+            return Vec::new();
+        }
+        let lowered = text.to_lowercase();
+        if addressed_to_peer(&lowered) || !first_person_intent(&lowered) {
+            return Vec::new();
+        }
+        let Some(tool) = backticked_wire_token(text) else {
+            return Vec::new();
+        };
+        vec![ToolCall {
+            id: format!("jip-{}", Uuid::new_v4()),
+            name: tool,
+            input: serde_json::Value::Object(serde_json::Map::new()),
+        }]
+    }
+}
+
+/// Like [`backticked_tool_token`] but for a whole fence-free message: accepts a
+/// slash name OR a snake_case wire alias (underscore required — the shape every
+/// offered wire name has, and the shape backticked prose words don't).
+fn backticked_wire_token(text: &str) -> Option<String> {
+    let mut found = None;
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else { break };
+        let tok = &after[..end];
+        let tool_shaped = !tok.contains(char::is_whitespace)
+            && (4..=64).contains(&tok.len())
+            && !tok.starts_with("http")
+            && (tok.contains('/')
+                || (tok.contains('_')
+                    && tok.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                    && tok.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')));
+        if tool_shaped {
+            found = Some(tok.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    found
+}
+
 /// The LAST backticked slash-token in the narration — the tool name a bare-args
 /// fence belongs to. Slash required so `` `ai` `` (a filter value) never reads as
 /// a tool; whitespace and absurd length rejected so backticked prose stays inert.
@@ -1958,6 +2024,34 @@ fn matching_brace_end(bytes: &[u8], start: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::ai::types::ToolInputSchema;
+
+    // what this catches: the fence-free narrated-mention idiom (#309 tail, live
+    // 2026-08-03) — "let's use `list_tasks`" spoken as a whole message must lift as
+    // a zero-arg call, while the three guard rails hold: a request TO a peer stays
+    // inert, uncommitted framing ("we should…" with no first-person marker) stays
+    // inert, and backticked prose without tool shape (`general`) never reads as a
+    // tool. Regression here = the room's advice-loop class comes back.
+    #[test]
+    fn narrated_tool_mention_lifts_committed_intent_and_only_that() {
+        // Benchy's live shape (condensed): plan-speak + committed marker + alias.
+        let live = "To proceed, let's focus on using the available tools. Given that \
+                    `work/list` isn't recognized here, I'll use `list_tasks` to find \
+                    the relevant card and get its details.";
+        let call = parse_tool_call(live).expect("committed narrated mention must lift");
+        assert_eq!(call.name, "list_tasks");
+        assert_eq!(call.input, serde_json::Value::Object(serde_json::Map::new()));
+
+        // Request TO a peer — quotation, never execution.
+        assert!(parse_tool_call("Please use `list_tasks` to find the card.").is_none());
+        // No first-person commitment marker → stays narration.
+        assert!(parse_tool_call("We should use `list_tasks` for this.").is_none());
+        // Backticked prose without tool shape (no slash, no underscore) → inert.
+        assert!(parse_tool_call("Let's meet in `general` and talk it over.").is_none());
+        // A message WITH a fence belongs to the other narrated formats — this one
+        // stays out even under committed framing.
+        let fenced = "Let's use `list_tasks` now:\n```json\n{\"state\": \"open\"}\n```";
+        assert!(NarratedToolMentionFormat.parse(fenced).is_empty());
+    }
 
     fn spec(name: &str, desc: &str) -> NativeToolSpec {
         NativeToolSpec {
