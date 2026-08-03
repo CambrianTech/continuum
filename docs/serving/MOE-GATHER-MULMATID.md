@@ -34,26 +34,47 @@ the kernel.
   garbage). Rollout: Metal first (UMA proving ground), CUDA second; CPU rejects
   initially.
 
-## Table build (consume arm, `ggml-backend.cpp` D2D block)
+## Table build (consume arm, `ggml-backend.cpp` D2D block) — BUILT (fork, 2026-08-03)
 
-Replaces the per-expert `tensor_copy` into `input_cpy`:
+Replaces the per-expert copy into `input_cpy`. As landed:
 
-1. Per ubatch, build the host-side `uint64_t ptrs[n_expert]`:
-   - device-resident slot hit → slot base pointer (`buffer_get_base + offset`);
-   - miss → fetch into `input_cpy` region as today, table entry points there.
-     (Mixed hit/miss ubatches work — the table unifies both cases.)
-2. One small H2D upload of the table (`n_expert * 8` bytes — noise), then the
-   graph's MUL_MAT_ID consumes it via `src[3]`.
-3. **Eviction fence:** each `ExpertSlot` carries a generation stamp; the table
-   build records `(slot, gen)` and the pager MUST NOT recycle a slot whose gen is
-   pinned by an in-flight graph. Stamp-check at table-build time, release at graph
-   completion — no locks on the hot path. (This is the same eviction-race class
-   suspected in #43; here it becomes load-bearing.)
-4. #43 lesson pinned: whatever tensor/pointer shapes the backend path derefs must
-   be real — the table carries raw device addresses, so the kernel never touches
+1. **Opt-in:** `GGML_MOE_GATHER=1` (`moe_config().gather`) — off means every path
+   is byte-for-byte the pre-gather serve.
+2. **Per-backend repr behind ONE seam:** the proc-address extension
+   `"ggml_backend_moe_gather_entry"` (`ggml_backend_moe_gather_entry_t` in
+   `ggml-backend.h`) builds one table entry from `(src0_cpy, slot_buf, slot_off)`.
+   Metal returns a **GPU-VA byte delta relative to src0's tensor start** computed
+   from `MTLBuffer.gpuAddress` (`ggml_metal_buffer_gpu_va`) — CPU-pointer deltas
+   do NOT transfer across MTLBuffers, so host arithmetic is never used. CUDA
+   (BigMama's half) returns an absolute device pointer. A backend without the
+   proc, or a slot the repr can't address → per-expert fallback to the copy path.
+3. **Table lifecycle:** `MoeGatherTables` — process-global pool (mirrors
+   `moe_expert_cache()` ownership), one I64 tensor + device buffer + host staging
+   per MUL_MAT_ID node per call, claimed in order, reset each compute call,
+   sub-pooled by `sched->cur_copy` so pipeline-parallel copies never clobber a
+   table an in-flight graph still reads. Every entry defaults to the expert's
+   natural offset inside `input_cpy` (built through the same proc), so unused
+   experts stay valid and per-expert fallback needs no bookkeeping. ONE
+   `tensor_set_async` upload per node per ubatch, enqueued inside the same
+   event-guarded region as the `input_cpy` writes (inherits their ordering
+   contract). The node's `src[3]` is reset to NULL before each build; a
+   `supports_op` probe with `src[3]` set gates engagement per backend.
+4. **Eviction fence (landed shape):** `ResidencyCache::set_gather_fence(true)` is
+   armed sticky on first gather engagement; `reserve_slot` then refuses ANY
+   victim with `slot_gen == token_gen` (returns `NO_SLOT` → caller falls back to
+   copy/mmap for that expert). Rationale: a slot touched this generation may sit
+   in an already-published table whose kernel runs later; the `[RETAIN] evict>0`
+   probe proved intra-token eviction really happens when a token's working set
+   exceeds the pool. Flag-gated, not unconditional — container mode (no mmap
+   fallback) relies on admission and would turn pool-too-small into an abort.
+5. #43 lesson pinned: whatever tensor/pointer shapes the backend path derefs must
+   be real — the table carries backend-repr addresses, so the kernel never touches
    `tensor->buffer/context` for per-expert bases at all. Host-side `memset`/writes
    against device pointers are forbidden (the #43 crash: prefetch pad-zero
    host-memset on a VRAM pointer; guard landed in `fa7e0d8e9`).
+
+Observability: `[MOE-PAGER]` line carries `gather=N` (experts aliased, zero bytes
+moved) and the capture JSONL carries `"gathered"`.
 
 ## Kernel change (per backend)
 
@@ -73,6 +94,39 @@ Same probes as tonight: `[MOE-PAGER]` hit line + `fault_wait` split + decode
 tok/s, A/B `src[3]` on/off at identical config. Success = fault_wait collapses to
 the table upload (< 1ms) and decode approaches the residency-only ceiling
 (BigMama's non-monotonic budget sweep supplies the per-budget expectation).
+
+### First live A/B — Metal, M5, 2026-08-03 (MEASURED)
+
+OLMoE-1B-7B Q4 (real 64-expert MoE), `--device MTL0 -ngl 99 --no-repack
+-ot "exps=CPU"`, `GGML_MOE_VRAM_CACHE_GB=2`, `GGML_OP_OFFLOAD_MIN_BATCH=1`,
+temp-0 coherence verified both arms (identical output prefix):
+
+| identical config, 100% hit | copy path | gather path |
+|---|---|---|
+| decode tok/s | 12.23 | **49.09 (4.0×)** |
+| bytes moved / token | 465.2 MiB | **0.0 MiB** |
+| per-token expert servicing | ~80 ms | ~20 ms |
+
+`[MOE-PAGER] experts=384 gather=384 bytes=0.0 MiB hit_rate=100.0%` — every
+expert of every token serviced in place through the table. The 5090/CUDA A/B on
+V4-Flash (BigMama's lane) measures the same mechanism at scale.
+
+### Serving-config traps (cost a kernel panic + two dead smokes to learn)
+
+1. **CPU repack silently disables the whole path.** Expert tensors placed by
+   `-ot exps=CPU` get captured into `CPU_REPACK` buffers (transformed layout);
+   ops on repacked weights are never offloaded, so the expert-streaming path
+   no-ops with ZERO diagnostics — no `[MOE-PAGER]`, no error, just slow CPU
+   decode. `--no-repack` is REQUIRED for offloaded-expert serving on Metal.
+2. **Decode never offloads by default.** Metal's `offload_op` min-batch
+   threshold (default 32, `GGML_OP_OFFLOAD_MIN_BATCH`) keeps batch-1 decode on
+   CPU. Forcing it to 1 is what the gather makes AFFORDABLE (zero-copy hits) —
+   but never force it when the expert working set exceeds free RAM: that exact
+   combination (K3 49GB on 64GB UMA) fault-stormed against wired Metal memory
+   and watchdog-panicked the M5. Headroom precheck first, always.
+3. **Verify the device engaged.** One fork llama-server launch came up
+   CPU-only silently despite `-ngl 99`; explicit `--device MTL0` fixed it.
+   Check `offloaded N/N layers` in the load log before trusting any number.
 
 ## Why this is a "fit" feature, not just a speed feature
 
