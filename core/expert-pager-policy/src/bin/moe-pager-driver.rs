@@ -34,7 +34,14 @@ use expert_pager_policy::BanditPlanController;
 
 struct Args {
     trace: PathBuf,
-    table: PathBuf,
+    /// Operator-authored tkey→layer JSON. Mutually exclusive with
+    /// `synth_layers` — exactly one is required.
+    table: Option<PathBuf>,
+    /// Synthesize the tkey→layer map from layer count alone
+    /// ([`TkeyTable::for_layers`]) — the zero-config seam `MoeTraceTail`
+    /// uses. Lets the driver replay a completed trace on any box
+    /// without an operator JSON (offline warm-coverage measurement).
+    synth_layers: Option<u32>,
     plan: PathBuf,
     budget_bytes: u64,
     window_k: u32,
@@ -47,11 +54,20 @@ struct Args {
     /// Precision-ladder index the unpinned cold tail fetches from (the
     /// small-quant bank — the beat-WASTE knob). None = container default.
     default_tier: Option<u32>,
+    /// Offline replay: exit once the trace stops growing (EOF), print a
+    /// SUMMARY line with mean decode-token serving hit. Without it the
+    /// driver tails forever (the live-next-to-serve mode).
+    once: bool,
+    /// Override the predictor's residency budget (expert slots). Default
+    /// is auto (first token × 1.5). Set this to measure coverage at a
+    /// REALISTIC free-VRAM budget — the device-fit tradeoff curve.
+    budget_slots: Option<usize>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut trace = None;
     let mut table = None;
+    let mut synth_layers = None;
     let mut plan = None;
     let mut budget_bytes = None;
     let mut window_k = None;
@@ -60,16 +76,28 @@ fn parse_args() -> Result<Args, String> {
     let mut poll_ms = 50u64;
     let mut pin_tier = None;
     let mut default_tier = None;
+    let mut once = false;
+    let mut budget_slots = None;
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
         let flag = argv[i].as_str();
+        // `--once` is a lone toggle (no value); handle it before the
+        // value-consuming flags so it doesn't swallow the next arg.
+        if flag == "--once" {
+            once = true;
+            i += 1;
+            continue;
+        }
         let value = argv
             .get(i + 1)
             .ok_or_else(|| format!("{flag} needs a value"))?;
         match flag {
             "--trace" => trace = Some(PathBuf::from(value)),
             "--table" => table = Some(PathBuf::from(value)),
+            "--synth-layers" => {
+                synth_layers = Some(value.parse().map_err(|e| format!("--synth-layers: {e}"))?)
+            }
             "--plan" => plan = Some(PathBuf::from(value)),
             "--budget-bytes" => {
                 budget_bytes = Some(value.parse().map_err(|e| format!("--budget-bytes: {e}"))?)
@@ -86,13 +114,20 @@ fn parse_args() -> Result<Args, String> {
             "--default-tier" => {
                 default_tier = Some(value.parse().map_err(|e| format!("--default-tier: {e}"))?)
             }
+            "--budget-slots" => {
+                budget_slots = Some(value.parse().map_err(|e| format!("--budget-slots: {e}"))?)
+            }
             other => return Err(format!("unknown flag {other}")),
         }
         i += 2;
     }
+    if table.is_some() == synth_layers.is_some() {
+        return Err("exactly one of --table <json> or --synth-layers <n> is required".into());
+    }
     Ok(Args {
         trace: trace.ok_or("--trace required")?,
-        table: table.ok_or("--table required")?,
+        table,
+        synth_layers,
         plan: plan.ok_or("--plan required")?,
         budget_bytes: budget_bytes.ok_or("--budget-bytes required")?,
         window_k: window_k.ok_or("--window-k required")?,
@@ -101,6 +136,8 @@ fn parse_args() -> Result<Args, String> {
         poll_ms,
         pin_tier,
         default_tier,
+        once,
+        budget_slots,
     })
 }
 
@@ -117,19 +154,29 @@ fn main() {
         }
     };
 
-    let table_json = match std::fs::read_to_string(&args.table) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("moe-pager-driver: read table {}: {e}", args.table.display());
-            std::process::exit(1);
+    let table = match (&args.table, args.synth_layers) {
+        (Some(path), _) => {
+            let table_json = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("moe-pager-driver: read table {}: {e}", path.display());
+                    std::process::exit(1);
+                }
+            };
+            match TkeyTable::from_json(&table_json) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("moe-pager-driver: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
-    };
-    let table = match TkeyTable::from_json(&table_json) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("moe-pager-driver: {e}");
-            std::process::exit(1);
+        (None, Some(n)) => {
+            println!("# synthesizing tkey table for {n} layers (zero-config seam)");
+            TkeyTable::for_layers(n)
         }
+        // parse_args guarantees exactly one is set.
+        (None, None) => unreachable!("parse_args enforces --table xor --synth-layers"),
     };
     println!(
         "# driver up: table {} tkeys, trace {}, plan {}, pin_top {}, rewrite_every {}",
@@ -148,17 +195,32 @@ fn main() {
     let mut offset: u64 = 0;
     let mut carry: Vec<u8> = Vec::new();
     let mut token_idx: u64 = 0;
+    // Offline (`--once`) warm-coverage aggregation: mean serving hit over
+    // DECODE tokens only (prefill's big batches are not representative of
+    // the steady-state paging load). `in_decode` flips true at the
+    // prefill→decode boundary.
+    let mut in_decode = false;
+    let mut decode_tokens = 0u64;
+    let mut hit_sum = 0.0f64;
 
     loop {
         let mut file = match std::fs::File::open(&args.trace) {
             Ok(f) => f,
             Err(_) => {
+                if args.once && offset > 0 {
+                    break;
+                }
                 // Serve not started yet — wait for the trace to appear.
                 std::thread::sleep(std::time::Duration::from_millis(args.poll_ms));
                 continue;
             }
         };
         let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        // Offline replay: the trace has stopped growing and we've drained
+        // it — emit the summary and exit instead of tailing forever.
+        if args.once && offset > 0 && len <= offset {
+            break;
+        }
         if len < offset {
             // Truncated: a NEW serve started. Reset the whole loop
             // state — stale scores belong to the previous generation.
@@ -193,6 +255,7 @@ fn main() {
                             // prefill batches churn the cache, so the
                             // boundary is when the hint matters most).
                             if boundary.observe(experts.len()) {
+                                in_decode = true;
                                 if let Some(ctl) = controller.as_ref() {
                                     match ctl.write_tiered_plan(
                                         &args.plan,
@@ -213,15 +276,25 @@ fn main() {
                                 }
                             }
                             let ctl = controller.get_or_insert_with(|| {
-                                let budget = experts.len() * 3 / 2;
+                                let budget = args.budget_slots.unwrap_or(experts.len() * 3 / 2);
                                 println!(
-                                    "# first token: {} experts -> budget {budget} slots",
-                                    experts.len()
+                                    "# first token: {} experts -> budget {budget} slots{}",
+                                    experts.len(),
+                                    if args.budget_slots.is_some() {
+                                        " (operator override)"
+                                    } else {
+                                        " (auto: ×1.5)"
+                                    }
                                 );
                                 BanditPlanController::new(budget)
                             });
                             let hit = ctl.observe_token(&experts);
                             token_idx += 1;
+                            // Warm-coverage aggregation: decode tokens only.
+                            if in_decode {
+                                decode_tokens += 1;
+                                hit_sum += hit;
+                            }
                             let arms: Vec<String> = ctl
                                 .per_arm_reward()
                                 .iter()
@@ -259,4 +332,18 @@ fn main() {
         }
         std::thread::sleep(std::time::Duration::from_millis(args.poll_ms));
     }
+
+    // Reached only in `--once` (offline) mode: the trace is fully drained.
+    // The mean decode-token serving hit IS the warm schedulable coverage —
+    // the fraction of per-token expert H2D copies the pager avoids.
+    let mean_hit = if decode_tokens > 0 {
+        hit_sum / decode_tokens as f64
+    } else {
+        0.0
+    };
+    println!(
+        "# SUMMARY tokens_total {token_idx} decode_tokens {decode_tokens} \
+         mean_decode_hit {mean_hit:.4} unknown_tkeys {}",
+        segmenter.unknown_tkeys
+    );
 }
