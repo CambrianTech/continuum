@@ -269,11 +269,33 @@ pub fn git_sync_from_shared(
             "FETCH_HEAD",
         ],
     ) {
-        // Never leave a half-merge — abort so the workspace stays usable, fail loud.
-        let _ = run_git(workspace_root, &["merge", "--abort"]);
-        return Err(format!(
-            "shared merge failed (aborted; workspace left intact): {e}"
-        ));
+        // Submodule POINTERS live outside `-X theirs`: when both sides moved a
+        // gitlink (the persona's autosave commits her stale vendored pointer while
+        // shared advances it — the normal state once shared's submodule moves at
+        // all), git's recursive merge refuses outright ("Recursive merging with
+        // submodules currently only supports trivial cases"). That single failure
+        // mode had every citizen workspace stranded stale — the exact bug this
+        // sync exists to heal (glass-boxed 2026-08-03: all four residents, every
+        // ensure). When the ONLY unmerged entries are gitlinks, resolve them
+        // shared-wins (the same doctrine as `-X theirs` for files: the framework
+        // is not hers to diverge) and conclude the merge. Any other conflict
+        // shape still aborts loud, workspace intact.
+        match resolve_gitlink_conflicts_shared_wins(workspace_root) {
+            Ok(true) => {
+                crate::probe!(
+                    class = "workspace.sync.gitlink_resolved",
+                    root = %workspace_root.display(),
+                    "merge blocked on submodule pointers only — resolved shared-wins and concluded"
+                );
+            }
+            _ => {
+                // Never leave a half-merge — abort so the workspace stays usable, fail loud.
+                let _ = run_git(workspace_root, &["merge", "--abort"]);
+                return Err(format!(
+                    "shared merge failed (aborted; workspace left intact): {e}"
+                ));
+            }
+        }
     }
 
     let after = run_git(workspace_root, &["rev-parse", "HEAD"])
@@ -294,6 +316,36 @@ pub fn git_sync_from_shared(
         "already current with the shared checkout".to_string()
     };
     Ok(GitSyncReport { synced, summary })
+}
+
+/// After a failed `merge -X theirs`, salvage the one shape `-X theirs` cannot
+/// touch: unmerged SUBMODULE pointers (mode 160000). If every unmerged index
+/// entry is a gitlink, point each at FETCH_HEAD's recorded sha (shared wins) and
+/// conclude the in-progress merge. Returns Ok(true) on a concluded merge,
+/// Ok(false) when the conflict shape is not ours to solve (caller aborts).
+fn resolve_gitlink_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, String> {
+    let unmerged = run_git(workspace_root, &["ls-files", "-u"])?;
+    if unmerged.trim().is_empty() {
+        return Ok(false); // merge failed before staging conflicts — nothing to salvage
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for line in unmerged.lines() {
+        // "<mode> <sha> <stage>\t<path>"
+        let Some((meta, path)) = line.split_once('\t') else {
+            return Ok(false);
+        };
+        if meta.split_whitespace().next() != Some("160000") {
+            return Ok(false); // a real file conflict survived -X theirs — abort path
+        }
+        paths.insert(path.to_string());
+    }
+    for p in &paths {
+        run_git(workspace_root, &["checkout", "FETCH_HEAD", "--", p])
+            .map_err(|e| format!("gitlink resolve of '{p}' to shared failed: {e}"))?;
+    }
+    run_git(workspace_root, &["commit", "--no-edit"])
+        .map_err(|e| format!("concluding merge after gitlink resolve failed: {e}"))?;
+    Ok(true)
 }
 
 /// Run a git command in the workspace directory.
@@ -399,6 +451,95 @@ mod tests {
         // Idempotent: a second sync is a clean no-op.
         let again = git_sync_from_shared(citizen.path(), shared.path()).expect("2nd sync ok");
         assert!(!again.synced, "already current: {}", again.summary);
+    }
+
+    // what this catches: the citizen-sync submodule strand (glass-boxed 2026-08-03,
+    // all four residents, every ensure): the persona's autosave commits her stale
+    // vendored-submodule pointer while shared advances it, and git's recursive
+    // merge refuses non-trivial gitlink divergence regardless of -X theirs
+    // ("Recursive merging with submodules currently only supports trivial cases")
+    // — so the self-heal ABORTED forever and every workspace stayed stale. The
+    // sync must resolve gitlink conflicts shared-wins and conclude the merge.
+    #[test]
+    fn sync_resolves_diverged_submodule_pointer_shared_wins() {
+        fn raw_git(dir: &Path, args: &[&str]) -> std::process::Output {
+            let mut c = std::process::Command::new("git");
+            c.args(args).current_dir(dir);
+            for v in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX"] {
+                c.env_remove(v);
+            }
+            c.output().expect("git spawn")
+        }
+
+        // Upstream submodule repo with two commits: P0 (the pointer both clones
+        // start at) and S2 (what shared advances to).
+        let sub = setup_git_repo();
+        let _p0 = run_git(sub.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        fs::write(sub.path().join("v2.txt"), "v2\n").unwrap();
+        run_git(sub.path(), &["add", "."]).unwrap();
+        run_git(sub.path(), &["commit", "-m", "sub: v2"]).unwrap();
+        let s2 = run_git(sub.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+
+        // Shared checkout carrying the submodule at P0.
+        let shared = setup_git_repo();
+        let out = raw_git(
+            shared.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &sub.path().display().to_string(),
+                "vendor/sub",
+            ],
+        );
+        assert!(out.status.success(), "submodule add: {}", String::from_utf8_lossy(&out.stderr));
+        // Pin the submodule at P0 (submodule add checks out its current HEAD = S2 tip;
+        // rewind the gitlink so both sides start from a common base pointer).
+        run_git(shared.path(), &["commit", "-m", "shared: add submodule"]).unwrap();
+
+        // Citizen: cp-clone of shared (related history), like the CoW layer.
+        let citizen = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(format!("{}/.", shared.path().display()))
+            .arg(citizen.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        run_git(citizen.path(), &["config", "user.email", "citizen@test"]).unwrap();
+        run_git(citizen.path(), &["config", "user.name", "Citizen"]).unwrap();
+
+        // Shared moves the pointer to S2 + ships a framework file.
+        run_git(
+            shared.path(),
+            &["update-index", "--cacheinfo", &format!("160000,{s2},vendor/sub")],
+        )
+        .unwrap();
+        fs::write(shared.path().join("framework2.rs"), "// newer shared\n").unwrap();
+        run_git(shared.path(), &["add", "framework2.rs"]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "shared: bump sub + framework2"]).unwrap();
+
+        // Citizen diverges the pointer to a THIRD sha (what autosave does with a
+        // drifted vendored tree) plus her own uncommitted work.
+        let stray = run_git(citizen.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        run_git(
+            citizen.path(),
+            &["update-index", "--cacheinfo", &format!("160000,{stray},vendor/sub")],
+        )
+        .unwrap();
+        run_git(citizen.path(), &["commit", "-m", "citizen: drifted pointer"]).unwrap();
+        fs::write(citizen.path().join("my_work.rs"), "// persona code\n").unwrap();
+
+        let report = git_sync_from_shared(citizen.path(), shared.path())
+            .expect("sync must survive a diverged submodule pointer");
+        assert!(report.synced, "should sync: {}", report.summary);
+
+        // Shared's pointer wins; shared's file arrives; persona work survives.
+        let tree = run_git(citizen.path(), &["ls-tree", "HEAD", "vendor/sub"]).unwrap();
+        assert!(tree.contains(&s2), "gitlink must resolve to shared's sha: {tree}");
+        assert!(citizen.path().join("framework2.rs").exists());
+        assert!(citizen.path().join("my_work.rs").exists());
     }
 
     #[test]
