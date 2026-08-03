@@ -210,8 +210,9 @@ pub fn resolve_device_fit_override(
 
 /// Per-user cache dir a device-fit override for `model_id` lives in:
 /// `<storage_root>/device-fit/<normalized id>/`. A convention (mirrors
-/// [`local_model_roots`]), never a hardcoded operator path.
-fn device_fit_cache_dir(model_id: &str) -> PathBuf {
+/// [`local_model_roots`]), never a hardcoded operator path. Public because the
+/// division actuator discovers its `*.resident.json` tier manifests here.
+pub fn device_fit_cache_dir(model_id: &str) -> PathBuf {
     let slug: String = model_id
         .chars()
         .map(|c| {

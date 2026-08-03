@@ -340,6 +340,18 @@ pub struct ServingDaemonModule {
     /// MoE lease publish; rebuilt on geometry change. Same sync-Mutex
     /// discipline as `moe_serving` (never held across await).
     moe_trace_tail: std::sync::Mutex<Option<crate::capacity::trace_tail::MoeTraceTail>>,
+    /// Division actuator (#2 of the resident/cache split, contract 2026-08-03): tier
+    /// catalog discovered from the `--resident-only` manifests + warm-started
+    /// `DivisionBandit` + the trace-tail reward watermark, for the ACTIVE MoE serve.
+    /// Chooses which RESIDENT precision the next relaunch should load (`resident_tier`
+    /// on the governed plan); the LIVE device budget stays #305's board-derived axis —
+    /// one budget authority, one tier authority. Rebuilt on model change; `None` until
+    /// a MoE serve exists. Same sync-Mutex discipline (never held across await).
+    division: std::sync::Mutex<Option<crate::capacity::division_actuation::DivisionActuator>>,
+    /// The resident-override path the LAST reconcile applied to the spawn — ground truth
+    /// for which tier the RUNNING serve actually loaded. Division rewards credit this
+    /// tier, never the bandit's latest (unlaunched) choice — two-speed honesty.
+    served_resident: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// MEASUREMENT-ONLY, off by default: an explicit forced VRAM budget for K3 expert
     /// placement, read ONCE at construction from `K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES`. When
     /// `Some`, it OVERRIDES the governed ceiling so a model that would otherwise fit is driven
@@ -479,6 +491,8 @@ impl ServingDaemonModule {
             moe_serving: std::sync::Mutex::new(None),
             active_artifact: std::sync::Mutex::new(None),
             moe_trace_tail: std::sync::Mutex::new(None),
+            division: std::sync::Mutex::new(None),
+            served_resident: std::sync::Mutex::new(None),
             host_cache_lease: std::sync::Mutex::new(
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
@@ -1222,7 +1236,23 @@ impl ServingDaemonModule {
                 tail.schedulable_coverage_x100(),
             )
         };
-        if !budget_moved && !pins_moved && !boundary_crossed && !device_moved {
+        // Division actuation (#2 of the resident/cache split, contract 2026-08-03): the
+        // warm-started bandit over the discovered `--resident-only` tiers picks which
+        // RESIDENT precision the next relaunch should load, and the trace-tail token
+        // delta feeds back the measured decode tok/s for the tier actually serving.
+        // The tier label is a fourth plan axis; the device budget above remains the
+        // one budget authority (a smaller resident frees VRAM the board then sees).
+        let division = self.division_tick(
+            &active,
+            inputs.weights_host_bytes,
+            expert_bytes_total,
+            n_experts_per_layer,
+            top_k,
+            n_layers,
+            tokens_observed,
+        );
+        let tier_moved = division.as_ref().is_some_and(|(_, moved)| *moved);
+        if !budget_moved && !pins_moved && !boundary_crossed && !device_moved && !tier_moved {
             return; // no axis changed — no write, no mtime churn
         }
         let pins_count = pins.len();
@@ -1233,6 +1263,9 @@ impl ServingDaemonModule {
         );
         if device_budget_bytes > 0 {
             doc = doc.with_device_budget(device_budget_bytes);
+        }
+        if let Some((tier_label, _)) = &division {
+            doc = doc.with_resident_tier(tier_label.clone());
         }
         // Retention verdict (#287): does the published lease retain even one
         // token's expert working set? Below 100 (×100 fixed-point) the cache
@@ -1292,6 +1325,101 @@ impl ServingDaemonModule {
                 "plan-file write FAILED — actuator frozen at last published budget",
             ),
         }
+    }
+
+    /// One division-actuation tick (#2 of the resident/cache split, contract
+    /// 2026-08-03). Ensures the actuator exists for the ACTIVE model (tier discovery +
+    /// warm-start, rebuilt on model change), feeds the measured decode reward from the
+    /// trace-tail token watermark, and returns the chosen resident-tier label + whether
+    /// it moved. `None` = no feasible division (no governed VRAM, or every tier starves
+    /// the cache) — the plan carries no `resident_tier` and spawn behavior is unchanged.
+    fn division_tick(
+        &self,
+        active: &str,
+        native_resident_bytes: u64,
+        expert_bytes_total: u64,
+        n_experts_per_layer: u32,
+        top_k: u32,
+        n_layers: u32,
+        tokens_observed: u64,
+    ) -> Option<(String, bool)> {
+        use crate::capacity::division_actuation as da;
+        let shape =
+            da::shape_from_geometry(expert_bytes_total, n_layers, n_experts_per_layer, top_k)?;
+        let Ok(mut guard) = self.division.lock() else {
+            return None;
+        };
+        let stale = guard.as_ref().map(|a| a.model_id() != active).unwrap_or(true);
+        if stale {
+            // Live-anchored budget: the board's free-VRAM-after-fit (the #305 device
+            // axis — already net of the resident serve and the placement margin) IS the
+            // native tier's expert-cache pool, and a precision-shrunk resident grows it
+            // by exactly its shrink delta. Expressed in the policy's HardwareBudget
+            // shape as vram_total = live_free + native_resident with kv/reserve
+            // pre-netted to 0 — one budget derivation, no parallel arithmetic.
+            let live_free = governed_vram_ceiling(&self.resource_daemon)?
+                .saturating_sub(EXPERT_PLACEMENT_MARGIN_BYTES);
+            if live_free == 0 {
+                return None;
+            }
+            let tiers = da::discover_resident_tiers(
+                &crate::model_registry::artifacts::device_fit_cache_dir(active),
+                native_resident_bytes,
+            );
+            let n_tiers = tiers.len();
+            let hw = expert_pager_policy::division::HardwareBudget {
+                vram_total_bytes: live_free.saturating_add(native_resident_bytes),
+                kv_bytes: 0,
+                compute_reserve_bytes: 0,
+            };
+            let served = self.served_resident.lock().ok().and_then(|g| g.clone());
+            *guard = da::DivisionActuator::build(
+                active,
+                tiers,
+                &hw,
+                &shape,
+                // v1 curve: the measured K3 trace-replay points. Per-model measured
+                // curves ride the same seam once other MoEs report theirs.
+                &expert_pager_policy::division::CoverageModel::k3_measured(),
+                served.as_deref(),
+            );
+            crate::probe!(
+                class = "serving.division",
+                model = active,
+                tiers = n_tiers as u64,
+                feasible = guard.is_some(),
+                live_free_bytes = live_free,
+                native_resident_bytes,
+                "division actuator (re)built: {} tier(s) in catalog, feasible={}",
+                n_tiers,
+                guard.is_some(),
+            );
+        }
+        let act = guard.as_mut()?;
+        if let Some(tok_s) = act.observe_tick(tokens_observed, std::time::Instant::now()) {
+            crate::probe!(
+                class = "serving.division_reward",
+                model = active,
+                served_tier = act.served_tier_label(),
+                tok_s_x100 = (tok_s * 100.0) as u64,
+                "measured decode {:.2} tok/s credited to served tier '{}'",
+                tok_s,
+                act.served_tier_label(),
+            );
+        }
+        let (label, moved) = act.choose()?;
+        if moved {
+            crate::probe!(
+                class = "serving.division",
+                model = active,
+                chosen_tier = label.as_str(),
+                served_tier = act.served_tier_label(),
+                "division choice MOVED: next relaunch should load resident tier '{}' \
+                 (two-speed — no relaunch is triggered by this publish)",
+                label,
+            );
+        }
+        Some((label, moved))
     }
 
     /// No plan → publish the empty snapshot (no servable model = nothing live).
@@ -1625,6 +1753,17 @@ impl ServingDaemonModule {
         // launcher sources resident from it via `LLAMA_RESIDENT_OVERRIDE`); `None`
         // when resident fits natively OR no override is cached yet (resolver #35).
         let resident_override = self.compute_resident_override(&model);
+        // Division reward attribution (two-speed honesty): record which resident the
+        // spawn ACTUALLY loads so measured tok/s credits the serving tier, never the
+        // bandit's latest unlaunched choice.
+        if let Ok(mut g) = self.served_resident.lock() {
+            *g = resident_override.clone();
+        }
+        if let Ok(mut d) = self.division.lock() {
+            if let Some(act) = d.as_mut() {
+                act.set_served_resident(resident_override.as_deref());
+            }
+        }
         // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
         // touches it — the NvmeServingTierPool must never migrate the GGUF the
         // engine is loading or serving. Model change swaps the registration.
