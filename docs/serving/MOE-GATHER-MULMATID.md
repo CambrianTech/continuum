@@ -81,3 +81,26 @@ same per-token consume copies as a 12GB one; with gather, a hit costs nothing bu
 the address. That moves the whole GPU-tier table up a row (12/16GB cards) and is
 the same mechanism the M5-class UMA path uses when a model DOESN'T fully fit —
 the difference between "fits at 128GB" and "fits well at 64GB".
+
+## Metal implementation map (recon 2026-08-03, fork @ b4be42ff8)
+
+- **Dispatch:** `ggml-metal-ops.cpp:2292 ggml_metal_op_mul_mat_id` — binds ONE
+  `bid_src0` (buffer id + offset) for the whole expert tensor; shaders compute
+  per-expert bases via `nb02` strides. Two kernel families by batch size:
+  matrix-matrix (`kernel_mul_mm_id_*`, ne21 ≥ 32, with a `map0` id-mapping
+  pre-pass) and matrix-vector (`mul_mv_id`), shaders in `ggml-metal.metal:10308+`.
+- **Addressing decision (Metal-specific):** MSL addresses through BOUND buffers,
+  not raw device addresses. On Metal the `src[3]` table therefore carries
+  **byte OFFSETS into a bound expert-pool buffer** (one extra buffer binding =
+  the cache pool; every ExpertSlot already lives in it), not raw 64-bit
+  addresses. CUDA kernels deref raw device addresses directly, so its table
+  carries absolute pointers. The op contract stays one I64 tensor; each
+  backend's consume-arm table build writes the representation its kernel reads
+  (documented per-backend, asserted at build time).
+- **Kernel change per family:** where the shader computes
+  `src0 + i02*args.nb02`, read `pool_base + ptrs[i02]` (Metal) /
+  `(const char *) ptrs[i02]` (CUDA) when the table binding is present. The
+  `map0` pre-pass is address-agnostic (it maps token→expert rows) — unchanged.
+- **Fallback path already safe:** supports_op rejects `src[3] != NULL` on all
+  backends as of b4be42ff8, so partial rollout can never compute a wrong
+  contiguous-stride result.
