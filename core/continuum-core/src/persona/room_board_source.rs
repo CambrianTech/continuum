@@ -144,7 +144,7 @@ impl RoomBoardSource {
     /// and owner (or `unclaimed`) — the shape a teammate reads off the board.
     /// The whole board carries all owners, so owner is always surfaced (unlike
     /// the active-work source, which is implicitly self-owned).
-    fn render(card: &airc_work::WorkCard, self_id: uuid::Uuid) -> String {
+    fn render(card: &airc_work::WorkCard, self_id: uuid::Uuid, now_ms: u64) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let owner = match card.owner {
             // Her OWN claim must read as HERS — glass-boxed 2026-07-11: cards she
@@ -152,10 +152,20 @@ impl RoomBoardSource {
             // as herself, so claimed work carried zero self-relevance and the room
             // drifted to chatter over held cards. Identity is a structural fact
             // the projection must carry (same law as (to you) addressing).
-            Some(o) if o.as_uuid() == self_id => "owner YOU".to_string(),
-            Some(o) => {
+            // A LAPSED lease is equally structural (2026-08-03): rendering an
+            // expired claim as plain ownership contradicts the #156 lost-claim
+            // fact and re-anchors work the holder no longer has.
+            Some(o) if claim_is_live(card, now_ms) && o.as_uuid() == self_id => {
+                "owner YOU".to_string()
+            }
+            Some(o) if claim_is_live(card, now_ms) => {
                 let o8: String = o.as_uuid().to_string().chars().take(8).collect();
                 format!("owner {o8}")
+            }
+            Some(o) if o.as_uuid() == self_id => "claim lapsed (was YOURS) — claimable".to_string(),
+            Some(o) => {
+                let o8: String = o.as_uuid().to_string().chars().take(8).collect();
+                format!("claim lapsed (was {o8}) — claimable")
             }
             None => "unclaimed".to_string(),
         };
@@ -166,6 +176,28 @@ impl RoomBoardSource {
             prio = card.priority,
         )
     }
+}
+
+/// Mirror of airc-lib's `is_active_claim` (work_roster.rs) — the lease truth this
+/// projection must agree with. airc's roster already drops an expired lease from
+/// `active_claims` (that transition is what fires the #156 lost-claim fact), but
+/// this board view kept rendering the same card as HELD — so one perception said
+/// "your claim lapsed" while the next said "you HOLD it", and the residents
+/// re-oriented on dead work every wake, forever (glass-boxed 2026-08-03: all 17
+/// board claims stale, the conway/wordstats loop attractor). Duplicated rather
+/// than imported because continuum deps airc-protocol/-core, not airc-lib; the
+/// doc-link is the drift guard.
+fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
+    card.owner.is_some()
+        && card.claim_id.is_some()
+        && card.claim_expires_at_ms.is_some_and(|e| e > now_ms)
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[async_trait]
@@ -216,6 +248,9 @@ impl RagSource for RoomBoardSource {
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut dropped: usize = 0;
+        // One clock reading per delivery — every lease judgment in this block
+        // (held / lapsed / available) agrees on the same instant.
+        let now_ms = now_unix_ms();
 
         // YOUR-WORK SALIENCE (2026-07-11, "did they wander off and forget they
         // can work on things?"): all three personas held claimed cards, zero
@@ -230,6 +265,10 @@ impl RagSource for RoomBoardSource {
             .iter()
             .filter(|c| {
                 c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+                    // Only a LIVE lease is "held" (see `claim_is_live`): a lapsed
+                    // claim rendered as held contradicts the #156 lost-claim fact
+                    // and is the stale-lease loop attractor (2026-08-03).
+                    && claim_is_live(c, now_ms)
                     && !matches!(
                         c.state,
                         airc_work::CardState::Merged | airc_work::CardState::Closed
@@ -278,7 +317,24 @@ impl RagSource for RoomBoardSource {
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
-            .filter(|c| c.owner.is_none() && matches!(c.state, airc_work::CardState::Open))
+            .filter(|c| {
+                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED —
+                // an expired lease is genuinely available work (claim-contention
+                // allows takeover), and before 2026-08-03 lapsed cards appeared in
+                // NEITHER "available" nor honestly-held: invisible as work, sticky
+                // as an attractor.
+                let terminal = matches!(
+                    c.state,
+                    airc_work::CardState::Merged | airc_work::CardState::Closed
+                );
+                if terminal {
+                    return false;
+                }
+                match c.owner {
+                    None => matches!(c.state, airc_work::CardState::Open),
+                    Some(_) => !claim_is_live(c, now_ms),
+                }
+            })
             .collect();
         if !open.is_empty() {
             let titles = open
@@ -298,10 +354,10 @@ impl RagSource for RoomBoardSource {
                 String::new()
             };
             let lead = format!(
-                "[available work] {n} card(s) on this board are unclaimed — open work \
-                 no one holds yet:\n{titles}{tail}\nA card is picked up with \
-                 `work/claim` (its id); once claimed it is yours to work with your \
-                 tools. Unclaimed work waits until someone chooses it.",
+                "[available work] {n} card(s) on this board are claimable — unclaimed, \
+                 or their holder's claim lease lapsed:\n{titles}{tail}\nA card is \
+                 picked up with `work/claim` (its id); once claimed it is yours to \
+                 work with your tools. Claimable work waits until someone chooses it.",
                 n = open.len(),
             );
             let lead_tokens = estimate_tokens(&lead);
@@ -317,7 +373,7 @@ impl RagSource for RoomBoardSource {
 
         let mut cards_delivered = 0usize;
         for card in &board.cards {
-            let content = Self::render(card, self.persona_id);
+            let content = Self::render(card, self.persona_id, now_ms);
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
                 // Budget exhausted — a truncated board is still truthful for the
@@ -395,6 +451,11 @@ mod tests {
     }
 
     fn card(title: &str, state: CardState, owner: Option<airc_core::PeerId>) -> WorkCard {
+        // An OWNED fixture card carries a LIVE lease by default — matching how a
+        // real claim exists on the board (claim_id + unexpired claim_expires_at_ms).
+        // An owner with NO live lease is the LAPSED shape, built via
+        // `lapse(card(...))` below.
+        let claimed = owner.is_some();
         WorkCard {
             card_id: WorkCardId::new(),
             repo: RepoId::new("acme/continuum").expect("valid repo id in fixture"),
@@ -404,8 +465,8 @@ mod tests {
             lane_id: None,
             state,
             owner,
-            claim_id: None,
-            claim_expires_at_ms: None,
+            claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
+            claim_expires_at_ms: claimed.then(|| now_unix_ms() + 60_000),
             last_heartbeat_at_ms: None,
             pull_request: None,
             created_by: airc_core::PeerId::new(),
@@ -413,6 +474,14 @@ mod tests {
             updated_at_ms: 1_000_000,
             reviews: None,
         }
+    }
+
+    /// Turn an owned fixture card into the stale-lease shape: claim still on the
+    /// card, lease long expired — what the live board showed for all 17 claims
+    /// on 2026-08-03.
+    fn lapse(mut c: WorkCard) -> WorkCard {
+        c.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
+        c
     }
 
     fn snapshot(cards: Vec<WorkCard>) -> BoardSnapshot {
@@ -608,6 +677,52 @@ mod tests {
         assert!(
             !all.contains("you HOLD 2"),
             "another peer's claim is not hers: {all}"
+        );
+    }
+
+    // what this catches: the stale-lease loop attractor (glass-boxed 2026-08-03:
+    // all 17 board claims stale, residents re-orienting on "held" conway/wordstats
+    // cards every wake forever). A card whose claim lease EXPIRED must (a) never
+    // count in "[your work] you HOLD", (b) surface as claimable in the
+    // available-work lead, and (c) render its lapsed state — agreeing with the
+    // #156 lost-claim fact instead of contradicting it every turn.
+    #[tokio::test]
+    async fn lapsed_lease_reads_claimable_not_held() {
+        let me = persona();
+        let stale_mine = lapse(card(
+            "conway game of life",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        ));
+        let live_mine = card(
+            "wordstats tests",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        );
+        let reader = Arc::new(StubReader::new(snapshot(vec![stale_mine, live_mine])));
+        let source = RoomBoardSource::new(me, reader);
+        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let all: String = delivery
+            .items
+            .iter()
+            .map(|i| i.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("[your work] you HOLD 1 card(s)"),
+            "only the LIVE lease is held: {all}"
+        );
+        assert!(
+            all.contains("wordstats tests") && !all.contains("you HOLD 2"),
+            "the lapsed card must not count as held: {all}"
+        );
+        assert!(
+            all.contains("[available work] 1 card(s)"),
+            "the lapsed card is claimable work: {all}"
+        );
+        assert!(
+            all.contains("claim lapsed (was YOURS) — claimable"),
+            "the lapsed card renders its lapse honestly: {all}"
         );
     }
 
