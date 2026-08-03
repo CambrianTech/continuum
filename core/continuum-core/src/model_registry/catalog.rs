@@ -544,6 +544,39 @@ pub fn models() -> Vec<Model> {
             persona_serving_eligible: false, // opponent: benchmark-only, never the citizens' model
             ..ModelSpec::default()
         }),
+        // DeepSeek-V4-Flash via the ds4 sidecar (#306; launched 2026-08-02,
+        // running on this M5 the same night). 304B MoE (256 experts × 48
+        // layers), uniform-2bit routed experts + Q8 decision spine, layer-
+        // dependent compressed attention (KV ≈ hundreds of KB — near-free).
+        // MEASURED here: 2.73 t/s gen cold / ~2.3 t/s warm end-to-end at a
+        // 16GB expert-cache budget with the full stack resident; first-shot
+        // correct Rust (compile-graded 3/3) on the merge_intervals probe.
+        // context_window is the MODEL's capability; the live served window
+        // comes from the adapter/live serve per #50 (tonight's serve: 8192).
+        // NOT persona_serving_eligible yet: the sidecar's lifecycle is
+        // operator-managed (no governed spawn/reconcile), so the autonomic
+        // planner must not adopt her — evals reach her by explicit model id.
+        // Flip deliberately once lifecycle is governed.
+        model(ModelSpec {
+            id: "deepseek-v4-flash",
+            name: "DeepSeek-V4-Flash 304B (ds4 SSD-streaming, deliberator)",
+            provider: "ds4",
+            arch: Arch::Unknown, // CSA+HCA hybrid — served by ds4, never by llama-server
+            context_window: 1_000_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 2.3, // measured warm end-to-end, 2026-08-02
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            chat_template: None, // ds4-server renders its own template
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &[],
+            persona_serving_eligible: false,
+            ..ModelSpec::default()
+        }),
         // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──
         // Opponents + community champions for the 64GB-class matrix. Arch + context
         // read from each GGUF's OWN header at add time (#74 — never guessed):
@@ -973,6 +1006,32 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["mistral", "mixtral", "codestral", "open-mistral", "open-mixtral"],
+            ..Default::default()
+        }),
+        // DwarfStar (antirez/ds4) local sidecar — the V4-Flash lane (#306).
+        // A deliberately narrow native engine serving ONE DeepSeek-class MoE
+        // per process over an OpenAI-compatible HTTP surface (also /v1/messages
+        // + /v1/responses). We run it with --ssd-streaming + a governed expert
+        // cache: measured 2026-08-02 on the 64GB M5, 2.73 t/s gen cold /
+        // ~2.3 t/s warm end-to-end at a 16GB budget with the full continuum
+        // stack resident beside it. Lifecycle is EXTERNAL for now (operator-
+        // launched, port 8901) — the autonomic planner must not try to spawn
+        // or reconcile it; interop doctrine (#179): consume the engine,
+        // don't fight it.
+        provider(ProviderSpec {
+            id: "ds4",
+            name: "DwarfStar (local ds4-server, SSD-streaming MoE)",
+            base_url: "http://127.0.0.1:8901",
+            api_key_env: None,
+            default_model: Some("deepseek-v4-flash"),
+            auth: AuthKind::None,
+            kind: ProviderKind::Local,
+            model_prefixes: &["deepseek-v4"],
+            // One model per ds4-server process; the engine owns residency.
+            capabilities: ProviderCapabilities {
+                single_resident_model: true,
+                ..Default::default()
+            },
             ..Default::default()
         }),
         provider(ProviderSpec {
