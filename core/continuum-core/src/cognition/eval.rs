@@ -118,8 +118,10 @@ fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
 pub(crate) struct EvalLaneInner {
     /// The throwaway server; kills its process on drop (#59). Declared FIRST so it drops
     /// (kills the process, frees the physical VRAM) BEFORE `_vram_lease` releases the
-    /// accounting — same release order the pre-share struct guaranteed.
-    lane: crate::inference::llama_server::EphemeralServingLane,
+    /// accounting — same release order the pre-share struct guaranteed. `None` for a
+    /// gateway-routed lane on an EXTERNAL provider (#310): the model is served by someone
+    /// else's process (ds4 sidecar, cloud row) — there is nothing to spawn, hold, or kill.
+    lane: Option<crate::inference::llama_server::EphemeralServingLane>,
     /// Adapter pinned to THIS lane (never the global serving root). `pub(crate)` so the
     /// teacher path (`genome/teach`) can generate against a DEDICATED bare-base lane —
     /// the same isolation that makes the eval score trustworthy — instead of the live
@@ -726,7 +728,7 @@ async fn spawn_gene_eval_lane(
     // the shared inner just makes it a handle so both lane kinds are one type.
     Ok(EvalLane {
         inner: std::sync::Arc::new(EvalLaneInner {
-            lane,
+            lane: Some(lane),
             adapter: std::sync::Arc::new(adapter),
             served_ctx,
             placement: placement_evidence,
@@ -763,6 +765,16 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
                 "base_model_id '{base_id}' is not in the model registry — cannot stand up a measurement lane for it. Call ai/inference/models for loadable ids."
             ))
         })?;
+    // External-provider rows (ds4 sidecar, cloud models) are served by someone else's
+    // process — they are NEVER lane-spawnable here. Route the measurement through the
+    // registered provider adapter instead of cold-loading a llama-server for weights
+    // this box may not even hold. (#310: the live failure was this path trying to stand
+    // up an ~81GB ephemeral lane for deepseek-v4-flash while the ds4 sidecar was already
+    // answering on :8901 — the memory veto then rightly refused a lane that should never
+    // have been asked for.)
+    if base.provider != PROVIDER_ID {
+        return build_external_eval_lane_inner(&base).await;
+    }
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
     await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
@@ -802,12 +814,98 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         ))
     })?;
     Ok(EvalLaneInner {
-        lane,
+        lane: Some(lane),
         adapter: std::sync::Arc::new(adapter),
         served_ctx,
         placement: placement_evidence,
         _vram_lease: vram_lease,
     })
+}
+
+/// Measurement "lane" for a model served by an EXTERNAL provider (#310): the ds4
+/// sidecar, a cloud row — any registry model whose `provider` is not the local
+/// llama-server. Nothing is spawned and no VRAM is leased; the fork's generation is
+/// routed through an adapter built from the provider row, exactly how the inference
+/// gateway reaches the same provider. The memory-headroom gate is deliberately NOT
+/// consulted — it prices a local cold-load this path never pays.
+async fn build_external_eval_lane_inner(
+    base: &crate::model_registry::Model,
+) -> Result<EvalLaneInner, CommandError> {
+    use crate::ai::adapter::AIProviderAdapter;
+
+    let base_url = crate::model_registry::try_global()
+        .and_then(|r| r.provider(&base.provider).map(|p| p.base_url.clone()))
+        .ok_or_else(|| {
+            CommandError::Internal(format!(
+                "model '{}' names provider '{}' but the registry has no such provider row",
+                base.id, base.provider
+            ))
+        })?;
+    emit_eval_phase(
+        "loading_lane",
+        &format!("routing eval through external provider '{}' for {}", base.provider, base.id),
+    );
+    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(&base.provider)
+        .with_default_model(base.id.clone());
+    adapter.initialize().await.map_err(|e| {
+        CommandError::Internal(format!(
+            "external provider '{}' failed to initialize for eval (is it running at {base_url}?): {e}",
+            base.provider
+        ))
+    })?;
+    // The provider's live /v1/models context_length is the serving truth (the ds4
+    // sidecar serves 8192 while the catalog row states the model's 1M capability);
+    // budget the fork against what the server will actually accept. Row ctx is the
+    // fallback when the provider doesn't report one.
+    let served_ctx = external_served_context_window(&base_url, &base.id)
+        .await
+        .unwrap_or(base.context_window);
+    Ok(EvalLaneInner {
+        lane: None,
+        adapter: std::sync::Arc::new(adapter),
+        served_ctx,
+        // `LanePlacement` drives llama-server spawn flags, which never apply here;
+        // `Cpu` carries the honest zero-VRAM-contention semantics, and the device
+        // string names the real host.
+        placement: PlacementEvidence {
+            placement: crate::inference::llama_server::LanePlacement::Cpu,
+            device: format!("external:{}", base.provider),
+            reason: format!(
+                "model is served by external provider '{}' at {base_url} — no lane spawned, no VRAM leased",
+                base.provider
+            ),
+            free_vram_bytes: None,
+            footprint_bytes: None,
+        },
+        _vram_lease: None,
+    })
+}
+
+/// Ask an OpenAI-compatible provider what context window it ACTUALLY serves for
+/// `model_id` (`/v1/models` `context_length`). `None` when unreachable or unreported —
+/// callers fall back to the catalog row.
+async fn external_served_context_window(base_url: &str, model_id: &str) -> Option<u32> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    let body: serde_json::Value = resp.json().await.ok()?;
+    parse_provider_context_length(&body, model_id)
+}
+
+/// Pure `/v1/models` → `context_length` extraction, split from the fetch so the
+/// provider-shape contract is unit-testable without a live sidecar.
+fn parse_provider_context_length(body: &serde_json::Value, model_id: &str) -> Option<u32> {
+    body.get("data")?
+        .as_array()?
+        .iter()
+        .find(|m| m.get("id").and_then(|i| i.as_str()) == Some(model_id))?
+        .get("context_length")?
+        .as_u64()
+        .map(|n| n as u32)
 }
 
 /// One eval task. Both the JSONL rows and inline `tasks` deserialize into this;
@@ -3514,6 +3612,24 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: #310 — the /v1/models context_length contract for gateway-routed
+    // eval lanes. The ds4 sidecar serves 8192 while its catalog row states the model's 1M
+    // capability; budgeting the fork against the row overflows the real server. Pins:
+    // exact-id match wins, missing id/field degrades to None (caller falls back to the
+    // row), never a panic on a shape drift.
+    #[test]
+    fn provider_context_length_parses_the_ds4_shape_and_degrades_to_none() {
+        let body: serde_json::Value = serde_json::json!({
+            "object": "list",
+            "data": [{ "id": "deepseek-v4-flash", "object": "model", "context_length": 8192 }]
+        });
+        assert_eq!(parse_provider_context_length(&body, "deepseek-v4-flash"), Some(8192));
+        assert_eq!(parse_provider_context_length(&body, "some-other-model"), None);
+        let no_field: serde_json::Value = serde_json::json!({ "data": [{ "id": "deepseek-v4-flash" }] });
+        assert_eq!(parse_provider_context_length(&no_field, "deepseek-v4-flash"), None);
+        assert_eq!(parse_provider_context_length(&serde_json::json!({}), "deepseek-v4-flash"), None);
+    }
 
     // what this catches: the web-dev mouth-or-hands capture (#206/#143 fence→act gap).
     // A capable model that emits a complete page in a ```html fence but never calls
