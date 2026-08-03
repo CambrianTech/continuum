@@ -984,6 +984,17 @@ pub async fn settle_step(
     framing: TurnFraming,
     situation: Situation,
 ) -> (SettleStep, Option<TurnMetrics>) {
+    let burst: Burst = burst.into();
+    // Snapshot the burst's PEER turns before the workspace consumes it — the
+    // draft-side echo check (#303) below compares her settled utterance
+    // against exactly what she reasoned over, so the evidence can never
+    // scroll out of the window between generation and the fact.
+    let peer_turns: Vec<crate::cognition::workspace::BurstTurn> = burst
+        .turns
+        .iter()
+        .filter(|t| !t.is_self && !t.author.trim().is_empty())
+        .cloned()
+        .collect();
     let ws = cycle.run_situated(burst, room_id, framing, situation).await;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
@@ -1155,6 +1166,25 @@ pub async fn settle_step(
                 // it, record that trace fact. Honest about its own limits: memory is
                 // finite, so it asserts "my memory shows no act", never "you lied" —
                 // work from a prior session may be real but is unverified NOW.
+                // The DRAFT-side peer-echo (#303): her settled utterance
+                // near-duplicates a PEER's turn from this very burst — the
+                // mutual-mirroring attractor (echo-instead-of-division). The
+                // retroactive perception fact fires one tick later against a
+                // window the evidence may have left; this proprioception
+                // lands NOW, in working memory. Fact only, never a gate —
+                // the utterance still reaches the room; the fork (a
+                // different piece, or silence) stays hers next tick.
+                if let Some(fact) =
+                    super::deliberation_budget::draft_peer_echo(&text, &peer_turns)
+                {
+                    body.working_memory.record_fact(&fact);
+                    crate::probe!(
+                        class = "persona.act.draft_peer_echo",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "settled utterance near-duplicates a peer turn from this burst — recorded echo proprioception"
+                    );
+                }
                 if let Some(file) = claimed_file_without_act(&text, &pre_settle) {
                     body.working_memory.record_fact(&format!(
                         "[unacted] I spoke of having created or implemented `{file}`, \
