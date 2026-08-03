@@ -19,6 +19,11 @@
 //! minimal runtime on a temp socket so this runs in CI without npm start) is the
 //! tracked depth follow-up (#22).
 
+// unix-only integration target (#304): dials the core UNIX IPC socket /
+// sends unix signals. Windows checks compile it to empty; the lib +
+// unit tests are the windows-supported surface today.
+#![cfg(unix)]
+
 mod common;
 
 use continuum_client::Connection;
