@@ -57,3 +57,31 @@ through the serving request to the pager's plan, mapping to
 delta on the eval battery per mode. That instrumented pair (fast score vs deep
 score on identical tasks) is also a README-grade demo: the machine visibly
 choosing to think harder.
+
+## Detection: the router IS the depth sensor (Joel, refinement)
+
+The shift is not only an upfront request — it is DETECTED mid-task: *"from 27
+tok/sec running for high speed, detect it needed more experts, and adapt — slow
+to 5 as it deeply thinks. Best of both worlds as long as our system can
+accommodate."*
+
+The detector already exists in the serving loop: the router's expert-selection
+pressure against the resident set.
+
+- **Cruise (fast)**: resident-set hit rate ~100% (the measured V4-Flash regime) —
+  stay reflexive, serve at platform speed (27+ t/s on big-RAM Macs, 3-6 on GPUs).
+- **Downshift trigger**: routing repeatedly wants NON-resident experts (miss-rate
+  rising over a window, or routing-entropy spike — the #229 surprise/OOD signal).
+  That IS "this input needs more of the model": widen eligibility, start NVMe
+  prefetch, accept the slower tokens. The persona is now visibly "thinking hard".
+- **Upshift**: miss pressure decays below the low-water mark for a sustained
+  window → shrink back to residency and resume cruise. Hysteresis on both edges
+  ([[never-thrash-sticky-hysteresis-on-every-lane]]); the two thresholds are
+  governor policy, not constants.
+
+This makes depth ORGANIC: nobody labels the task; the model's own routing
+behavior reveals when the resident subset stops being enough, and the pager
+answers with depth instead of forcing next-best-resident substitution quality
+loss. Speed becomes an honest signal for observers too — the console shows
+tok/s dip exactly when the mind is reaching deeper (#284's SCADA face renders
+the downshift live).
