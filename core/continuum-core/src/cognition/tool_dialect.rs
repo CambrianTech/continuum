@@ -241,6 +241,8 @@ mod tests {
             ("code/run", "run_code"),
             ("code/list", "list_files"),
             ("work/claim", "claim_task"),
+            ("work/list", "list_tasks"),
+            ("work/get", "get_task"),
         ] {
             // TrainedReflex offers the alias; it maps back to canonical.
             assert_eq!(

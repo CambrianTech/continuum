@@ -481,6 +481,8 @@ pub struct WorkListResult {
 #[async_trait]
 impl ActionCommand for WorkList {
     const NAME: &'static str = "work/list";
+    const ALIASES: &'static [&'static str] = &["list_tasks"];
+    const NATIVE: bool = true; // core room workflow — the read half of claim_task; without it the board is write-only
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the work board's cards (read-only): short id, title, state, owner. Use the short id \
@@ -538,6 +540,8 @@ pub struct WorkGetResult {
 #[async_trait]
 impl ActionCommand for WorkGet {
     const NAME: &'static str = "work/get";
+    const ALIASES: &'static [&'static str] = &["get_task"];
+    const NATIVE: bool = true; // core room workflow — re-reading a card's spec mid-task must not require asking the room
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Read one work card in full (read-only): title, body (the task's requirements), state, \
