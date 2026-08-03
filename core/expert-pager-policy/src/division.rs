@@ -312,4 +312,38 @@ mod tests {
         let after = bandit.predicted_value(0).unwrap();
         assert!(after < before && after > 1.0, "EMA blend: {after} between prior 5.0 and new 1.0");
     }
+
+    /// what this catches: the RL division bandit, fed the REAL measured V4-Flash residency curve
+    /// (BigMama RTX 5090, DeepSeek-V4-Flash UD-IQ2_M, `--n-cpu-moe` sweep), learns the SATURATION KNEE
+    /// from measurement — it picks the tok/s-max division (8 resident layers), NOT the max-residency
+    /// one, even though the latter pins ~11 GB more VRAM. This is the empirical proof that static
+    /// residency saturates: 0→8 layers buys +0.30 tok/s, 8→14 buys nothing (1.69 vs 1.68). A bandit
+    /// that merely maximized residency would waste the VRAM the device cache should own — which is why
+    /// "minimal static residency + max device cache" is the division the governor must converge to.
+    /// Measured 2026-08-03; sweep = scratch-v4flash-sweep.sh, curve = division-curve.jsonl.
+    #[test]
+    fn bandit_learns_residency_saturation_from_measured_v4flash_curve() {
+        // Each arm is one `--n-cpu-moe` division. This axis is STATIC layer residency (not the device
+        // cache), so budget/slots are placeholders and the MEASURED reward — not the coverage prior —
+        // drives the choice. Flat prior (empty coverage model → equal warm-start) makes that explicit.
+        let divs = vec![
+            DivisionConfig { tier_idx: 0, device_budget_bytes: 0, cache_slots: 0 }, // ncpu=48, 0 resident
+            DivisionConfig { tier_idx: 1, device_budget_bytes: 0, cache_slots: 0 }, // ncpu=40, 8 resident
+            DivisionConfig { tier_idx: 2, device_budget_bytes: 0, cache_slots: 0 }, // ncpu=34, 14 resident
+        ];
+        let flat = CoverageModel::new(vec![]);
+        let shape = MoeShape { expert_bytes: 1, experts_per_token: 1 };
+        let mut bandit = DivisionBandit::warm_start(divs, &flat, &shape, 25.0e9, 0.010);
+        assert_eq!(bandit.len(), 3);
+        // feed the REAL measured decode tok/s (BigMama 5090, this session)
+        bandit.observe(0, 1.39); // 0 resident (all experts stream from NVMe)
+        bandit.observe(1, 1.69); // 8 resident  — the knee
+        bandit.observe(2, 1.68); // 14 resident — saturated, no gain over 8 at +11 GB VRAM
+        // the bandit converges on the KNEE (idx 1), not the max-residency arm (idx 2)
+        assert_eq!(bandit.choose().unwrap().tier_idx, 1, "must learn the saturation knee, not max residency");
+        // strictly better than the all-stream baseline
+        assert!(bandit.predicted_value(1).unwrap() > bandit.predicted_value(0).unwrap());
+        // saturation: MORE residency (idx 2) is NOT better than the knee (idx 1)
+        assert!(bandit.predicted_value(2).unwrap() <= bandit.predicted_value(1).unwrap());
+    }
 }
