@@ -212,6 +212,15 @@ pub struct ServingTarget {
     /// `relaunch_needed`), not by the probe-based reconcile here, since there is no API to
     /// read a running server's `-ot`. Per-expert paging (no relaunch) is slice-2.
     pub expert_placement: Option<crate::capacity::placement::PlacementRequest>,
+    /// Device-fit resident-override: when the model's RESIDENT (non-expert) tier
+    /// overflows the governed VRAM budget as-shipped, the governor's
+    /// [`device_fit`](crate::capacity::device_fit) plan resolves a precision-shrunk
+    /// resident-override GGUF that fits. The launcher exports it as
+    /// `LLAMA_RESIDENT_OVERRIDE` so llama.cpp sources the resident tensors from it
+    /// (all offloaded to GPU) while the primary GGUF streams experts. `None` =
+    /// resident fits as-shipped (Native), served with no override — the default and
+    /// the only shape for a dense or small-MoE model. [[device-fit-repeatable-primitive]] / #29.
+    pub resident_override: Option<std::path::PathBuf>,
 }
 
 /// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
@@ -1686,6 +1695,16 @@ impl LlamaServerControl for LlamaServerProcess {
                  mmproj_local_path) or drop the Vision capability so the row stops claiming sight."
             );
         }
+        // Device-fit resident-override (#29): source the RESIDENT (non-expert)
+        // tensors from the precision-shrunk fit GGUF so the whole resident tier fits
+        // VRAM offloaded to GPU, while this primary GGUF streams the experts. The
+        // loader hook (`LLAMA_RESIDENT_OVERRIDE`) lazy-maps only the override's
+        // resident bytes (its experts are ignored). Set by the governor's device_fit
+        // plan when as-shipped resident overflows the VRAM budget; absent = resident
+        // fits as-shipped (no override, no env). [[device-fit-repeatable-primitive]].
+        if let Some(ov) = &target.resident_override {
+            cmd.env("LLAMA_RESIDENT_OVERRIDE", ov);
+        }
         // `--embeddings` is deliberately NOT set on this GENERATION lane. On the
         // current llama.cpp build it puts the server in embedding (non-causal)
         // mode, which makes generation fail with `500 "Compute error."` on EVERY
@@ -2157,6 +2176,7 @@ mod tests {
             adapters: Vec::new(),
             placement: LanePlacement::Gpu,
             expert_placement: None,
+            resident_override: None,
         }
     }
 

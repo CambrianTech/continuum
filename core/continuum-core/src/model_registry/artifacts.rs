@@ -180,6 +180,53 @@ fn resolve_from_local_model_roots(model_id: &str) -> Option<PathBuf> {
     None
 }
 
+/// Resolve a CACHED device-fit resident-override for `(model_id, usable_bytes)`.
+/// The device-fit foundry (`tools/moe-fit`) writes a precision-shrunk RESIDENT
+/// (non-expert) GGUF into a per-model cache dir plus a `resident-bytes` sidecar;
+/// this looks it up and returns it ONLY when its resident tier fits the caller's
+/// usable VRAM. Generation / HF discovery is #35 — absent a cached artifact this
+/// returns `None` and the caller falls to `Unfittable` (loud), never a hardcoded
+/// path. [[device-fit-repeatable-primitive]]
+pub fn resolve_device_fit_override(
+    model_id: &str,
+    usable_bytes: u64,
+) -> Option<crate::capacity::device_fit::ResidentOverride> {
+    let dir = device_fit_cache_dir(model_id);
+    if !dir.is_dir() {
+        return None;
+    }
+    let first_shard = first_gguf_in_dir(&dir)?;
+    // The foundry records the resident byte total the shrink produced, so the plan
+    // verifies fit without loading the GGUF. Missing sidecar = not our foundry's
+    // artifact → refuse rather than guess its size ([[no-masking-fallbacks-my-style-tell]]).
+    let resident_bytes: u64 = fs::read_to_string(dir.join("resident-bytes"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (resident_bytes <= usable_bytes).then_some(crate::capacity::device_fit::ResidentOverride {
+        path: first_shard,
+        resident_bytes,
+    })
+}
+
+/// Per-user cache dir a device-fit override for `model_id` lives in:
+/// `<storage_root>/device-fit/<normalized id>/`. A convention (mirrors
+/// [`local_model_roots`]), never a hardcoded operator path.
+fn device_fit_cache_dir(model_id: &str) -> PathBuf {
+    let slug: String = model_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    storage_root().join("device-fit").join(slug)
+}
+
 fn local_model_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(home) = home_dir_string() {

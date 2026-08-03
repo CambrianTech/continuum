@@ -720,6 +720,76 @@ impl ServingDaemonModule {
         ctx.committed_placement.clone()
     }
 
+    /// Device-fit resident-override (#29): does this model's RESIDENT (non-expert)
+    /// tier fit the governed VRAM budget as-shipped, or must the launcher source a
+    /// precision-shrunk resident from a device-fit override GGUF? The resident-FIT
+    /// decision turns ONLY on `resident_bytes` vs the budget minus a fixed compute
+    /// reserve — per-layer KV (M5's #2107 `ModelCapabilities`) drives the CONTEXT +
+    /// expert-VRAM split, NOT this, so KV is deliberately not consulted here. `None`
+    /// = resident fits as-shipped (dense / small MoE, served normally) OR no fitting
+    /// override is cached yet (a >VRAM-resident MoE like K3 until the resolver #35
+    /// discovers/generates one — then the launch OOMs LOUD rather than silently
+    /// mis-serving, [[no-masking-fallbacks-my-style-tell]]).
+    fn compute_resident_override(&self, model: &Model) -> Option<std::path::PathBuf> {
+        let budget = governed_vram_ceiling(&self.resource_daemon)?;
+        if budget == 0 {
+            return None;
+        }
+        // Expert-tensor total — present only for a MoE serve (a dense model's
+        // resident always places on GPU normally, no device-fit split). Read under
+        // the same never-across-await sync Mutex as the placement path.
+        let expert_bytes_total = {
+            let guard = self.moe_serving.lock().ok()?;
+            match guard.as_ref() {
+                Some((id, ctx)) if id.as_str() == model.id.as_str() => ctx.expert_bytes_total,
+                _ => return None,
+            }
+        };
+        let fp = footprint_for(model)?;
+        let resident_bytes = fp.weights_bytes.saturating_sub(expert_bytes_total);
+        let model_id = model.id.clone();
+        let inputs = crate::capacity::device_fit::DeviceFitInputs {
+            resident_bytes,
+            vram_budget_bytes: budget,
+            kv_bytes_per_token: 0, // not consulted for the resident-fit decision — see doc
+            compute_reserve_bytes:
+                crate::capacity::device_fit::default_compute_reserve_bytes(budget),
+            desired_context: model.context_window,
+            model_max_context: model.context_window,
+            lanes: 1,
+        };
+        let plan = crate::capacity::device_fit::plan_device_fit(&inputs, |usable| {
+            crate::model_registry::artifacts::resolve_device_fit_override(&model_id, usable)
+        });
+        crate::probe!(
+            class = "serving.device_fit",
+            model = model.id.as_str(),
+            resident_bytes,
+            budget_bytes = budget,
+            gpu_servable = plan.is_gpu_servable(),
+            has_override = plan.resident.override_path().is_some(),
+            "device-fit resident tier: {}",
+            match &plan.resident {
+                crate::capacity::device_fit::ResidentFit::Native =>
+                    "fits as-shipped (native, all resident on GPU)".to_string(),
+                crate::capacity::device_fit::ResidentFit::Override(o) => format!(
+                    "device-fit override {} GiB resident from {}",
+                    o.resident_bytes / (1024 * 1024 * 1024),
+                    o.path.display()
+                ),
+                crate::capacity::device_fit::ResidentFit::Unfittable {
+                    resident_bytes,
+                    usable_bytes,
+                } => format!(
+                    "UNFITTABLE: resident {} GiB > {} GiB usable — route to grid or generate an override (#35)",
+                    resident_bytes / (1024 * 1024 * 1024),
+                    usable_bytes / (1024 * 1024 * 1024)
+                ),
+            },
+        );
+        plan.resident.override_path().cloned()
+    }
+
     /// #287 slice 2 — the governed host-cache lease, derived LIVE on the tick and
     /// published to the per-port plan file her `ResidencyCache` mtime-polls. This is
     /// the loop-closer that retires the `GGML_MOE_HOST_CACHE_GB=40` scratchpad
@@ -1098,6 +1168,12 @@ impl ServingDaemonModule {
         // for a dense model (or before the pager has committed a placement) — served exactly
         // as before, no override.
         let expert_placement = self.compute_expert_placement(&model);
+        // Device-fit resident-override (#29): computed from the model's resident
+        // (non-expert) footprint vs the governed VRAM budget. `Some(path)` when
+        // resident overflows as-shipped and a cached device-fit override fits (the
+        // launcher sources resident from it via `LLAMA_RESIDENT_OVERRIDE`); `None`
+        // when resident fits natively OR no override is cached yet (resolver #35).
+        let resident_override = self.compute_resident_override(&model);
         // #302 invariant 1: mark the model's artifact ACTIVE before any spawn
         // touches it — the NvmeServingTierPool must never migrate the GGUF the
         // engine is loading or serving. Model change swaps the registration.
@@ -1111,6 +1187,7 @@ impl ServingDaemonModule {
             // offloadable layer). [[LanePlacement]].
             placement: crate::inference::llama_server::LanePlacement::Gpu,
             expert_placement,
+            resident_override,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already
