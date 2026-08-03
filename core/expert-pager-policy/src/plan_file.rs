@@ -106,6 +106,18 @@ pub struct PlanFileDocument {
     /// its own sizing (pre-#305 wire, byte-identical on serialize).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_budget_bytes: Option<u64>,
+    /// Which RESIDENT (non-expert) precision override the serving spawn should
+    /// load, by artifact tier label (e.g. "q4-resident") — the governor's half of
+    /// the resident-precision ↔ cache-size co-optimization (the split policy that
+    /// replaces resident-first-scraps-last): shrinking the resident frees VRAM the
+    /// `device_budget_bytes` above then grows into, and the policy picks the
+    /// (resident_tier, cache_bytes) pair that maximizes predicted tok/s from the
+    /// measured coverage curve. Labels resolve against the artifact manifest the
+    /// `--resident-only` quantize tool emits beside each override (BigMama's #40
+    /// enabler, contract agreed 2026-08-03). `None` = spawn keeps the full-precision
+    /// resident exactly as before — prior documents parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_tier: Option<String>,
 }
 
 impl PlanFileDocument {
@@ -117,6 +129,7 @@ impl PlanFileDocument {
             pin_list,
             default_tier: None,
             device_budget_bytes: None,
+            resident_tier: None,
         }
     }
 
@@ -129,6 +142,12 @@ impl PlanFileDocument {
     /// Set the device-side expert-slot budget (free-VRAM-after-fit derived).
     pub fn with_device_budget(mut self, bytes: u64) -> Self {
         self.device_budget_bytes = Some(bytes);
+        self
+    }
+
+    /// Select a resident-precision override artifact by tier label (split policy).
+    pub fn with_resident_tier(mut self, tier: impl Into<String>) -> Self {
+        self.resident_tier = Some(tier.into());
         self
     }
 }
@@ -256,6 +275,21 @@ mod tests {
         let old = r#"{"version":1,"budget_bytes":1000,"window_k":8,"pin_list":[]}"#;
         let back: PlanFileDocument = serde_json::from_str(old).expect("old wire parses");
         assert_eq!(back.device_budget_bytes, None);
+
+        // resident_tier (split policy, #40 seam): same optional-wire contract —
+        // absent never serializes, set round-trips by literal name, old docs None.
+        let with = PlanFileDocument::new(1_000, 8, vec![]).with_resident_tier("q4-resident");
+        let json = serde_json::to_string(&with).expect("serialize");
+        assert!(
+            json.contains("\"resident_tier\":\"q4-resident\""),
+            "literal field name pinned: {json}"
+        );
+        let back: PlanFileDocument = serde_json::from_str(&json).expect("round trip");
+        assert_eq!(back.resident_tier.as_deref(), Some("q4-resident"));
+        let back: PlanFileDocument = serde_json::from_str(old).expect("old wire parses");
+        assert_eq!(back.resident_tier, None);
+        let plain_json = serde_json::to_string(&PlanFileDocument::new(1, 1, vec![])).expect("ser");
+        assert!(!plain_json.contains("resident_tier"), "absent must not serialize");
     }
 
     /// what this catches (precision-hint extension, 2026-08-01): a
