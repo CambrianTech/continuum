@@ -1494,6 +1494,17 @@ pub struct SweSolveResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub run_id: Option<String>,
+    /// INFRASTRUCTURE FAILURE — this row is NOT a score. Set when her drive stopped
+    /// because the deliberation model call failed (lane torn down mid-drive, serving
+    /// refusing a model it isn't hosting, timeout), not because she finished or ran out
+    /// of acts. Measured 2026-08-04, sympy-21379: the lane went `serving: <none>,
+    /// ready: false` at act 7 of 30 and the verdict reported a clean-looking
+    /// `resolved: false, patchBytes: 0` — indistinguishable from a real capability zero.
+    /// Any aggregate MUST exclude rows carrying this
+    /// ([[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub infra_error: Option<String>,
 }
 
 /// The task text handed to her. Deliberately says WHERE she is and what "done" means — the
@@ -1621,6 +1632,7 @@ impl BenchmarkSweSolve {
             grade: Some(grade),
             detached: false,
             run_id: None,
+            infra_error: solved.infra_error,
         })
     }
 }
@@ -1727,6 +1739,7 @@ impl ActionCommand for BenchmarkSweSolve {
                 grade: None,
                 detached: true,
                 run_id: Some(run_ack),
+                infra_error: None,
             });
         }
         Self::body(p).await
