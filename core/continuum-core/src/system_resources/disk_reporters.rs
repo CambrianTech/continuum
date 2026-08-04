@@ -146,6 +146,11 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         TrackedDir::new("hf-hub", home.join(".cache/huggingface")),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
         TrackedDir::new("forge", home.join(".continuum/forge")),
+        // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
+        // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy
+        // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
+        // cache class rather than data.
+        TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
     ]
 }
 
