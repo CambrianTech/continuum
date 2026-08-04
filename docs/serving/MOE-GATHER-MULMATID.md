@@ -131,6 +131,37 @@ bases stayed 16-aligned by luck of the quantization — the 4.0× proof was true
 but lucky. A green result on one backend/quant is not evidence an invariant
 holds. Test in-place paths across a quant matrix.
 
+### The NaN hunt: what it actually was, and what the hardening bought
+
+The 5090 NaN (coherent for many tokens, then `llama-sampler.cpp:1098`) was NOT
+an addressing or lifetime bug. Root cause, found by BigMama: **`supports_op`
+accepted shapes that DISPATCH does not route to the gather kernel.** Her gate
+allowed `src[3]` for any quantized MUL_MAT_ID with `ne2 <= 16`, but CUDA only
+routes to the gathered mmvq at `ne2 <= get_mmvq_mmid_max_batch()` (4–6 for
+IQ2/Q4). In-between batches fell through to MMQ — which has no gather and reads
+the contiguous `input_cpy` the consume-arm deliberately does not populate for
+aliased experts. Stale bytes, rare expert, NaN.
+
+**The rule that generalizes: a backend's `supports_op` must mirror its DISPATCH
+predicate exactly — which kernel actually runs for the shape, not which one you
+think runs.** A mismatch produces garbage that reads convincingly as an
+addressing bug and costs a day.
+
+The hunt still bought two real things, both landed as hardening rather than fix:
+
+- **`GGML_MOE_GATHER_IDENTITY`** — publishes the table with natural offsets AND
+  keeps every copy, so the kernel's table path runs over bytes identical to the
+  proven-good copy path. One run splits "wrong bytes" from "wrong kernel". This
+  is the instrument that ended the theory spiral; keep it.
+- **Fence precision + optional event retirement** — the fence now refuses only
+  slots a published table actually REFERENCES (copy-served experts stay
+  evictable, preserving headroom under pressure). Event-proven retirement exists
+  behind `GGML_MOE_GATHER_RETIRE=1`: measured, its ring depth must equal the true
+  in-flight set (depth 4 proved completion late and took OLMoE full-fit from 100%
+  to 67.7% hit) and even at depth 2 the per-call event sync costs ~9% decode on
+  Metal — so the conservative window stays the default, sound wherever the
+  frontend syncs per token. Rigor available, cost not imposed.
+
 ### Serving-config traps (cost a kernel panic + two dead smokes to learn)
 
 1. **CPU repack silently disables the whole path.** Expert tensors placed by
