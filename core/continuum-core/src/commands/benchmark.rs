@@ -1552,6 +1552,31 @@ impl BenchmarkSweSolve {
             .await
             .map_err(CommandError::Internal)?;
 
+        // GIVE HER THE INTERPRETER. The harness already builds an era-matched venv per
+        // instance for GRADING; her hands never saw it, so `python` did not exist for her.
+        // Measured on sympy-21379: she wrote a correct reproduction script, ran it, and got
+        // `bash: python: command not found` (exit 127) — then settled. A persona who cannot
+        // EXECUTE cannot verify a fix, so every Python instance was scoring her on a loop she
+        // was physically unable to close.
+        //
+        // Non-fatal on failure: a missing venv makes her slower, not wrong, and refusing the
+        // whole run over it would trade a measurable result for none. The probe says which.
+        let venv_bin: Vec<String> = match swe_bench::ensure_env(&instance, &solve_repo).await {
+            Ok(venv_py) => venv_py
+                .parent()
+                .map(|bin| vec![bin.to_string_lossy().to_string()])
+                .unwrap_or_default(),
+            Err(e) => {
+                crate::probe!(
+                    class = "benchmark.swe.no_interpreter",
+                    instance = instance.instance_id.as_str(),
+                    error = e.as_str(),
+                    "could not provision the era-matched venv — she will work without a runnable `python`"
+                );
+                Vec::new()
+            }
+        };
+
         // Compose agent/solve IN PROCESS — no subprocess, no CLI, no polling a file we wrote
         // ourselves. This is the composition the command surface exists for.
         let solved = crate::commands::agent::solve::AgentSolve::solve_body(
@@ -1594,6 +1619,9 @@ impl BenchmarkSweSolve {
                 // the act budget unspent (glass-boxed on sympy-21379: one `code/tree`, then a
                 // prose analysis, 0 patch bytes).
                 deliverable: Some(crate::commands::agent::solve::Deliverable::Workspace),
+                // Her shell gets the SAME interpreter the grader uses — so `python
+                // reproduce.py` and `python -m pytest` actually run.
+                path_prepend: (!venv_bin.is_empty()).then(|| venv_bin.clone()),
             },
         )
         .await?;

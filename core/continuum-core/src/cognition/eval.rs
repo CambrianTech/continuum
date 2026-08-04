@@ -1988,7 +1988,7 @@ impl CognitionEval {
         // `agent/solve` (drives `code/create-workspace` through her executor; fails LOUD rather
         // than let a silent no-root score a false 0-byte diff, [[fallbacks-are-illegal-fail-loud]]).
         if let Some(root) = &p.workspace_root {
-            crate::cognition::persona_workspace::root_acting_workspace(&cycle, root).await?;
+            crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[]).await?;
         }
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;

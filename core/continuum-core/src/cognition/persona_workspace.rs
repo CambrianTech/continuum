@@ -584,6 +584,7 @@ fn repoint_workspace_map_if_pinned(
 pub(crate) async fn root_acting_workspace(
     cycle: &WorkspaceCycle,
     root: &str,
+    path_prepend: &[String],
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     let acting = cycle.acting().ok_or_else(|| {
         crate::sdk_codegen::CommandError::Internal(
@@ -606,7 +607,7 @@ pub(crate) async fn root_acting_workspace(
     let ws_call = crate::ai::types::ToolCall {
         id: "root-acting-workspace".to_string(),
         name: "code/create-workspace".to_string(),
-        input: serde_json::json!({ "workspace_root": root }),
+        input: serde_json::json!({ "workspace_root": root, "path_prepend": path_prepend }),
     };
     let ws_out = acting
         .executor

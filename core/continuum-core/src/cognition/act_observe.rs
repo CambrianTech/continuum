@@ -130,7 +130,9 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     }
     let scope = entries_since_last_settlement(recent);
     calls.iter().all(|call| {
-        let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        // Bounded (#165): a whole-file `content` arg must not be echoed back verbatim ahead
+        // of the RESULT — see `summarize_args_for_recency`.
+        let args = summarize_args_for_recency(&call.input);
         // Keyed on the `name(args)` core of the receipt render below — kept in sync
         // with it (the render dropped the first-person "I ran " opener, #158, so a
         // base model can't copy a receipt as a message opener; the fingerprint is
@@ -228,6 +230,58 @@ fn bound_recency_result(body: &str) -> String {
         "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
          a more specific query/path, or read a single file)"
     )
+}
+
+/// Max chars of ONE argument value echoed back into the recency channel.
+///
+/// The result-side sibling of this bound (`RESULT_FOLD_MAX_CHARS`) is generous because she
+/// must READ a result to act on it. Arguments are the opposite case: she WROTE them, one
+/// generation ago. Echoing a whole file back at her buys nothing and costs everything.
+const ARG_FOLD_MAX_CHARS: usize = 600;
+
+/// Collapse tool ARGS for the RECENCY channel (working memory).
+///
+/// The recall path has collapsed big args since it was written — `summarize_args_for_recall`
+/// turns a whole-file `content` into `content: N chars`, because re-showing that file every
+/// future turn is measured dead weight. The recency path rendered
+/// `serde_json::to_string(&call.input)` RAW, unbounded, and `bound_recency_result` bounds only
+/// the RESULT. So one code path had the rule and its sibling didn't.
+///
+/// What that costs, glass-boxed on sympy-21379: her single `code/edit` of the run passed
+/// `sympy/core/basic.py` as whole-file `content` — thousands of lines. That entire paste went
+/// into working memory as ARGS, ahead of the `EDIT REFUSED` result carrying the diagnostic she
+/// needed. On a 16k-token lane there is no room left for the diagnosis to survive.
+///
+/// Deliberately MUCH more generous than the recall bound (600 vs 80 chars): recency is shown
+/// once and she may genuinely need to see the edit she just issued. Only a pathological
+/// whole-file paste collapses.
+fn summarize_args_for_recency(args: &serde_json::Value) -> String {
+    match args {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| match v {
+                serde_json::Value::String(s) if s.chars().count() > ARG_FOLD_MAX_CHARS => {
+                    // The digest keeps this collapse INJECTIVE, which the dedup guard
+                    // depends on: `all_calls_already_satisfied` matches this exact rendering
+                    // against the receipt trail, so two DIFFERENT big values must never
+                    // collapse to the same text. Without it, a corrected re-write whose
+                    // length happened to match the refused one would be silently skipped as
+                    // "already satisfied" — losing the very edit she just fixed.
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    s.hash(&mut h);
+                    format!(
+                        "{k}: <{} chars, #{:x} — not echoed back; you wrote it>",
+                        s.chars().count(),
+                        h.finish()
+                    )
+                }
+                other => format!("{k}={}", other.to_string().trim_matches('"').to_string()),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => truncate_chars(&other.to_string(), ARG_FOLD_MAX_CHARS),
+    }
 }
 
 /// Collapse tool ARGS for the recall channel: a large string value (e.g. a whole file
@@ -532,7 +586,11 @@ pub async fn apply_act(
             None => "(no result returned)",
         };
         let is_err = result.map(|r| r.is_error == Some(true)).unwrap_or(false);
-        let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        // Bounded (#165) and kept BYTE-IDENTICAL to the dedup signature in
+        // `all_calls_already_satisfied` — that guard matches this rendering against the
+        // receipt trail, so the two must render args the same way or dedup silently breaks
+        // (caught by `identical_already_satisfied_act_does_not_re_execute`).
+        let args = summarize_args_for_recency(&call.input);
         // Omit the "because …" clause when there is no real stated reason — an
         // empty intent must never render as an imitable receipt template (#158).
         let because = if intent.trim().is_empty() {
@@ -1682,6 +1740,41 @@ mod tests {
     // the source with a teaching marker, never dumped whole (flood) and never left
     // for the downstream budget to cut mid-JSON (the garbled/nested line_content a
     // persona then loops on). A small result passes through untouched.
+    // what this catches: the RESULT buried under her own ARGS. The recall path has collapsed
+    // whole-file args forever; the recency path echoed `serde_json::to_string(&call.input)`
+    // raw. Live on sympy-21379 — her one `code/edit` passed all of basic.py as `content`, so
+    // that paste went into working memory AHEAD of the `EDIT REFUSED` result carrying the
+    // diagnostic, on a 16k lane. She never landed an edit. The thing she must READ is the
+    // result; the args she wrote herself one generation ago.
+    #[test]
+    fn a_whole_file_arg_is_not_echoed_back_ahead_of_the_result() {
+        let whole_file = "x = 1\n".repeat(4000); // ~24k chars, a real source file
+        let args = serde_json::json!({ "file_path": "sympy/core/basic.py", "content": whole_file });
+        let rendered = summarize_args_for_recency(&args);
+        assert!(
+            rendered.chars().count() < 400,
+            "a whole-file arg must collapse, not flood: {} chars",
+            rendered.chars().count()
+        );
+        assert!(rendered.contains("chars"), "says how big it was: {rendered}");
+        assert!(
+            rendered.contains("sympy/core/basic.py"),
+            "the SMALL args stay whole — she still sees WHICH file: {rendered}"
+        );
+
+        // A realistic targeted edit is NOT collapsed — recency is shown once, and she may
+        // genuinely need to see the change she just issued.
+        let small = serde_json::json!({
+            "file_path": "a.py",
+            "new_content": "def f():\n    return refine_arg(x)\n"
+        });
+        let kept = summarize_args_for_recency(&small);
+        assert!(
+            kept.contains("refine_arg"),
+            "an ordinary edit stays visible verbatim: {kept}"
+        );
+    }
+
     #[test]
     fn recency_result_is_bounded_cleanly_not_flooded() {
         // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now

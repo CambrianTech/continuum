@@ -76,4 +76,14 @@ suppress_recall?: boolean,
  * driver stops treating a zero-change explanation as a finished turn. Structural,
  * caller-owned; it steers nothing about WHAT she does.
  */
-deliverable?: Deliverable, };
+deliverable?: Deliverable, 
+/**
+ * Directories to PREPEND to `PATH` for her shell — the interpreter/toolchain this
+ * task needs in order to be RUNNABLE. A SWE harness passes the era-matched venv's
+ * `bin` here so `python` and `pytest` exist for her.
+ *
+ * Without it she can write a fix but never execute anything to check it. Measured
+ * on sympy-21379: a correct reproduction script met `bash: python: command not
+ * found`, and the run scored as a capability failure.
+ */
+path_prepend?: Array<string>, };

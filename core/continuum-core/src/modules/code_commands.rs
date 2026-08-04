@@ -1379,6 +1379,19 @@ pub struct CodeCreateWorkspaceParams {
     /// a shared dependency tree). Omit for a write-only-within-root sandbox.
     #[serde(default)]
     pub read_roots: Vec<String>,
+    /// Directories to PREPEND to `PATH` for this caller's shell.
+    ///
+    /// Why this exists: the SWE harness provisions an era-matched interpreter per
+    /// instance (`uv venv --python 3.9|3.11`) and used it ONLY for grading. Her hands
+    /// got the bare inherited PATH — so `python` did not exist for her at all.
+    /// Glass-boxed on sympy-21379: she wrote a correct reproduction script, ran it,
+    /// and got `bash: python: command not found` (exit 127). A persona who cannot
+    /// EXECUTE cannot verify a fix, which makes the whole iterate-and-observe loop
+    /// impossible on any Python repo — and silently scores it as a capability failure.
+    ///
+    /// Environment, not steering: it grants the interpreter the task already implies.
+    #[serde(default)]
+    pub path_prepend: Vec<String>,
 }
 
 /// What `code/create-workspace` established.
@@ -1428,6 +1441,25 @@ impl ActionCommand for CodeCreateWorkspace {
         self.state
             .file_engines
             .insert(who.clone(), FileEngine::new(&who, security));
+        // DROP the caller's shell session so it is re-created at the NEW root.
+        // `ensure_shell` early-returns when a session exists, so without this a
+        // re-root moved her FILE engine and left her SHELL in the old directory —
+        // the two halves of her hands pointing at different workspaces.
+        self.state.shell_sessions.remove(&who);
+        if !p.path_prepend.is_empty() {
+            ensure_shell(&self.state, &who)?;
+            if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
+                let inherited = std::env::var("PATH").unwrap_or_default();
+                let prepend = p.path_prepend.join(":");
+                shell.set_env("PATH".to_string(), format!("{prepend}:{inherited}"));
+                crate::probe!(
+                    class = "code.workspace.path_prepend",
+                    caller = who.as_str(),
+                    prepend = prepend.as_str(),
+                    "granted the caller's shell an explicit PATH prefix (era-matched interpreter)"
+                );
+            }
+        }
         Ok(CreateWorkspaceResult {
             created: true,
             workspace_root: p.workspace_root,

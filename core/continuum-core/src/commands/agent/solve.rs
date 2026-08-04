@@ -99,6 +99,16 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deliverable: Option<Deliverable>,
+    /// Directories to PREPEND to `PATH` for her shell — the interpreter/toolchain this
+    /// task needs in order to be RUNNABLE. A SWE harness passes the era-matched venv's
+    /// `bin` here so `python` and `pytest` exist for her.
+    ///
+    /// Without it she can write a fix but never execute anything to check it. Measured
+    /// on sympy-21379: a correct reproduction script met `bash: python: command not
+    /// found`, and the run scored as a capability failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path_prepend: Option<Vec<String>>,
 }
 
 /// What the caller grades when the solve returns. Two genuinely different contracts,
@@ -301,7 +311,7 @@ impl AgentSolve {
         //     false ZERO (glass-boxed 2026-07-22: Devstral did 2 real acts, wrote the correct file,
         //     patch was empty). Same fail-loud mechanism cognition/eval uses to root a measurement
         //     persona at a target repo.
-        crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace).await?;
+        crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace, p.path_prepend.as_deref().unwrap_or(&[])).await?;
 
         // GLASS-BOX (same seam as cognition/eval, task #14): opt-in JSONL turn capture on
         // the fork — bids + DECISION + timings per tick, the instrument that turns an
