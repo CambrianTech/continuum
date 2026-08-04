@@ -227,6 +227,48 @@ impl FileEngine {
         self.security
             .validate_size(relative_path, new_content.len() as u64)?;
 
+        // AN EDIT MAY NOT BREAK A FILE THAT PARSED. Refuse, restore, explain.
+        //
+        // Glass-boxed on sympy-22005 (M5, 2026-08-04). She had the right idea and asked for
+        // `line_range` 240..247 — but the block she meant to replace ends at 249, because
+        // lines 248-249 are the tail of a triple-quoted string. Her replacement carried its
+        // own `'''))`, so the original's last two lines survived as an orphaned tail and the
+        // module stopped parsing. Semantics right, extent wrong, score zero.
+        //
+        // The syntax receipt below already caught this and named the `code/undo` handle. It
+        // was not enough: across every run measured this session she repaired FORWARD and
+        // never once reverted, so the wreckage stayed under the later edits
+        // ([[the-edit-defect-is-grammar-not-text-bracket-balance-is-not-a-proxy]]). Reporting
+        // a break she does not act on leaves a broken file either way.
+        //
+        // So the check moves from reporting to GATING. Same information, same moment, but the
+        // file stays valid and there is nothing to stack on. This is not a heuristic steering
+        // her cognition — it is the tool refusing to perform an operation it can prove is
+        // destructive, and the ONLY case it fires is "parsed before, does not parse after",
+        // which no correct single edit produces. A whole-file `code/write` is deliberately NOT
+        // gated: when she genuinely intends content that does not parse yet, that is the verb.
+        if !parses_clean(&abs_path, &new_content) && parses_clean(&abs_path, &old_content) {
+            return Ok(WriteResult {
+                success: false,
+                change_id: None,
+                file_path: relative_path.to_string(),
+                bytes_written: 0,
+                error: Some(format!(
+                    "EDIT REFUSED — it would have made {relative_path} unparseable. The file \
+                     is UNCHANGED on disk; nothing was written and there is nothing to undo.\n\
+                     {}\n\
+                     The most common cause is a line range that ends INSIDE a construct it \
+                     does not close — a triple-quoted string, an open paren, a bracket. Widen \
+                     the range to cover the whole construct, or anchor on the text itself with \
+                     a search_replace edit instead of counting lines. Re-read the region first: \
+                     `code/read` numbers lines by absolute position, so the numbers it shows are \
+                     the numbers this tool expects.",
+                    syntax_error_detail(&abs_path, &new_content).unwrap_or_default()
+                )),
+                applied_context: None,
+            });
+        }
+
         // Compute diffs
         let (forward_diff, reverse_diff) =
             compute_bidirectional_diff(&old_content, &new_content, relative_path);
@@ -265,8 +307,7 @@ impl FileEngine {
             // The parse verdict LEADS: broken code reads as plausible in a six-line
             // window, and "SyntaxError: line 21" does not.
             applied_context: edit_anchor_line(edit_mode, &new_content).map(|anchor| {
-                let mut out =
-                    syntax_error_after_edit(&abs_path, &old_content, &change_id).unwrap_or_default();
+                let mut out = syntax_error_after_edit(&abs_path).unwrap_or_default();
                 out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
                 out.push_str(&numbered_neighborhood(
                     &new_content,
@@ -917,11 +958,14 @@ fn syntax_checker_for(path: &std::path::Path) -> Option<(&'static str, Vec<Strin
 /// and thrown away). "Valid text at this location" and "valid program" are different
 /// predicates. A real `SyntaxError: line 21` is unambiguous where six numbered lines of
 /// plausible-looking Python are not.
-fn syntax_error_after_edit(
-    abs_path: &std::path::Path,
-    old_content: &str,
-    change_id: &str,
-) -> Option<String> {
+///
+/// NOTE the narrowed scope since the refusal gate landed. An edit that would break a file
+/// that parsed is now rejected before it is written, so reaching this function means the file
+/// was ALREADY broken and this edit did not fix it. There is no longer a "your edit caused
+/// this" case to report here — the gate reports that, at the moment it refuses, and the file
+/// never enters the broken state. The only remaining way in is damage from a whole-file
+/// `code/write` (deliberately ungated) or a change made outside the engine.
+fn syntax_error_after_edit(abs_path: &std::path::Path) -> Option<String> {
     let (program, args) = syntax_checker_for(abs_path)?;
     let output = std::process::Command::new(program).args(&args).output().ok()?;
     if output.status.success() {
@@ -935,61 +979,70 @@ fn syntax_error_after_edit(
     // Keep it short — working memory is the scarce resource, and the first lines of a
     // SyntaxError carry the file, the line, and the caret.
     let head: Vec<&str> = detail.lines().take(6).collect();
-    let mut out = format!(
-        "SYNTAX ERROR — the file does NOT parse after this edit:\n{}\n",
+    let out = format!(
+        "STILL BROKEN — this file does not parse, and the damage was already here before \
+         this edit (an edit that would BREAK a parsing file is refused outright, so it \
+         cannot be from this one):\n{}\n\
+         Fixing only the error above will leave the earlier damage in place. `code/undo` \
+         walks changes back one at a time.\n",
         head.join("\n")
     );
-    // WHO broke it, and the exact handle to put it back.
-    //
-    // Glass-boxed on flask-4045 run 5 (M5, 2026-08-04): an early edit landed a guard clause
-    // inside `super().__init__(`'s argument list. Four acts later she worked out the right
-    // idiom — a content-anchored SearchReplace — and applied a CORRECT fix. The task still
-    // failed, because the first edit's wreckage was still sitting in the file underneath it.
-    // She repaired FORWARD every time and never once reverted, across five runs.
-    //
-    // The old text named `code/undo` generically, which is advice. This names a fact she
-    // cannot otherwise compute — this file parsed BEFORE your edit and does not now, so the
-    // breakage is yours and it is exactly one change deep — and hands over the change_id that
-    // reverses it. Deciding whether to undo or to repair forward stays hers
-    // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-    //
-    // Only pays for the second parse when the first one FAILED, so a clean edit still costs
-    // exactly one check.
-    if parses_clean(abs_path, old_content) {
-        out.push_str(&format!(
-            "This file PARSED before this edit — the break was introduced by this change, \
-             and nothing else is between you and a working file. `code/undo` with \
-             change_id={change_id} restores it exactly. Repairing forward on top of a broken \
-             file stacks a second edit on the first one's wreckage.\n"
-        ));
-    } else {
-        out.push_str(
-            "This file did NOT parse before this edit either — there is damage from an \
-             earlier change still in it. Fixing only the error reported above will leave \
-             that damage in place; `code/undo` walks changes back one at a time.\n",
-        );
-    }
     Some(out)
 }
+
 
 /// Would `content` have parsed, at this path's language? Writes it to a sibling temp file so
 /// the check never disturbs what is on disk. `false` whenever we cannot tell — the caller
 /// uses this only to decide WHICH true statement to make, and "we could not verify" must
 /// never masquerade as "it was already broken".
 fn parses_clean(abs_path: &std::path::Path, content: &str) -> bool {
-    let Some(ext) = abs_path.extension().and_then(|e| e.to_str()) else {
-        return false;
-    };
+    probe_parse(abs_path, content)
+        .map(|o| o.is_none())
+        .unwrap_or(false)
+}
+
+/// The syntax error `content` WOULD produce at this path's language, formatted for a persona.
+/// `None` when it parses, or when this language has no checker — a refusal still stands on the
+/// `parses_clean` pair, so an unavailable detail costs an explanation, never a wrong verdict.
+fn syntax_error_detail(abs_path: &std::path::Path, content: &str) -> Option<String> {
+    let detail = probe_parse(abs_path, content).ok()??;
+    let head = detail.lines().take(6).collect::<Vec<_>>().join("\n");
+    // The checker names the temp probe it actually read. Handing a persona a path that does
+    // not exist sends her to look for a file she cannot find — say the real one.
+    let real = abs_path.file_name()?.to_str()?;
+    let probe = format!(
+        "{}.continuum-parse-probe.{}",
+        abs_path.file_stem()?.to_str()?,
+        abs_path.extension()?.to_str()?
+    );
+    Some(head.replace(&probe, real))
+}
+
+/// Run the language's syntax checker over `content` WITHOUT touching what is on disk.
+///
+/// `Ok(None)` parsed clean, `Ok(Some(stderr))` did not, `Err(())` we could not tell (no
+/// extension, no checker for this language, probe unwritable). The three-way return is the
+/// point: callers must never be able to read "could not verify" as "already broken".
+fn probe_parse(abs_path: &std::path::Path, content: &str) -> Result<Option<String>, ()> {
+    let ext = abs_path.extension().and_then(|e| e.to_str()).ok_or(())?;
+    // A sibling of the real file so relative imports and package layout still resolve, and a
+    // name no source tree would collide with.
     let probe = abs_path.with_extension(format!("continuum-parse-probe.{ext}"));
-    if fs::write(&probe, content).is_err() {
-        return false;
-    }
-    let verdict = syntax_checker_for(&probe)
+    fs::write(&probe, content).map_err(|_| ())?;
+    let outcome = syntax_checker_for(&probe)
         .and_then(|(program, args)| std::process::Command::new(program).args(&args).output().ok())
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .ok_or(());
     let _ = fs::remove_file(&probe);
-    verdict
+    let output = outcome?;
+    if output.status.success() {
+        return Ok(None);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    // A checker that failed without saying why tells us nothing we can act on.
+    if stderr.is_empty() {
+        return Err(());
+    }
+    Ok(Some(stderr))
 }
 
 /// What a whole-file write REPLACED, when it replaced anything. `None` for a genuinely
@@ -1466,7 +1519,7 @@ mod tests {
     // to the file the first assertion had just broken, then asserted no warning — it failed
     // for that reason and nearly cost a correct implementation.
     #[test]
-    fn an_edit_that_breaks_the_parse_reports_the_syntax_error() {
+    fn an_edit_that_would_break_the_parse_is_refused_and_changes_nothing() {
         if std::process::Command::new("python3")
             .arg("--version")
             .output()
@@ -1489,14 +1542,25 @@ mod tests {
                 },
                 None,
             )
-            .expect("the edit still applies — we report, never refuse");
-        let ctx = broken
-            .applied_context
-            .expect("a line-addressed edit reports its landing site");
+            .expect("a refusal is a RESULT, not a transport error");
         assert!(
-            ctx.contains("SYNTAX ERROR"),
-            "a statement dropped into a parameter list must be reported as unparseable — \
-             this is the failure that repeated in all three runs, got:\n{ctx}"
+            !broken.success,
+            "an edit that makes a parsing file unparseable must be refused, not applied"
+        );
+        let err = broken.error.expect("a refusal must say why");
+        assert!(
+            err.contains("EDIT REFUSED") && err.contains("UNCHANGED"),
+            "the refusal must name itself and state the file was left alone, got:\n{err}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/broken.py")).unwrap(),
+            signature,
+            "REFUSED means byte-for-byte unchanged — the whole point is that no wreckage \
+             is left behind for a later edit to stack on"
+        );
+        assert!(
+            broken.change_id.is_none(),
+            "nothing was written, so there must be no change to undo"
         );
 
         // A valid edit on an INTACT file must stay quiet, or the warning is noise.
@@ -1524,7 +1588,7 @@ mod tests {
     // she cannot compute from a SyntaxError alone: whether THIS edit is what broke a
     // previously-working file, and the change_id that reverses it.
     #[test]
-    fn a_break_says_whether_this_edit_caused_it_and_how_to_reverse_it() {
+    fn an_edit_on_an_already_broken_file_says_the_damage_predates_it() {
         if std::process::Command::new("python3")
             .arg("--version")
             .output()
@@ -1533,31 +1597,17 @@ mod tests {
             return; // no interpreter here; degrade-silent is the contract
         }
         let (dir, engine) = setup_engine();
-        fs::write(dir.path().join("src/first.py"), "def f(\n    a,\n):\n    return a\n").unwrap();
+        // Damage that did NOT come from an edit — the engine refuses those now. This is what a
+        // whole-file `code/write` (deliberately ungated) or an outside change leaves behind.
+        fs::write(
+            dir.path().join("src/first.py"),
+            "def f(\n    a,\n    if a:\n):\n    return a\n",
+        )
+        .unwrap();
 
-        // FIRST break: the file parsed before, so the edit owns it — and the receipt must
-        // hand over the change_id, not generic advice to "use code/undo".
-        let broke = engine
-            .edit(
-                "src/first.py",
-                &EditMode::InsertAt {
-                    line: 2,
-                    content: "    if a:\n        raise ValueError(\"no\")\n".to_string(),
-                },
-                None,
-            )
-            .expect("the edit still applies — we report, never refuse");
-        let ctx = broke.applied_context.expect("landing site");
-        let change_id = broke.change_id.expect("an edit records a change");
-        assert!(
-            ctx.contains("PARSED before this edit") && ctx.contains(&change_id),
-            "the first break must name itself as the cause and carry its own undo handle, \
-             got:\n{ctx}"
-        );
-
-        // SECOND edit on the ALREADY-broken file: the honest statement flips. Claiming this
-        // edit caused the break would send her to undo the wrong change and leave the real
-        // damage in place — the exact trap run 5 fell into.
+        // An edit that neither causes nor fixes the break must say the damage PREDATES it.
+        // Claiming otherwise would send her to undo her own innocent change and leave the real
+        // damage in place — the trap run 5 fell into.
         let again = engine
             .edit(
                 "src/first.py",
@@ -1566,10 +1616,11 @@ mod tests {
                 },
                 None,
             )
-            .expect("edit applies");
+            .expect("an edit on an already-broken file still applies");
+        assert!(again.success, "the gate only fires when the file PARSED before");
         let ctx = again.applied_context.expect("landing site");
         assert!(
-            ctx.contains("did NOT parse before this edit") && !ctx.contains("PARSED before this"),
+            ctx.contains("STILL BROKEN") && ctx.contains("already here before"),
             "an edit on an already-broken file must say the damage predates it, got:\n{ctx}"
         );
     }
@@ -1579,6 +1630,101 @@ mod tests {
     // addresses lines by NUMBER; code/read returned bare text. She read the whole 128-line
     // file, asked for insert_at line 35, and landed 4 lines off — inside
     // `super().__init__(`'s argument list — because she had to count by hand. Pins that a
+    // what this catches: the ORPHANED TAIL — a line_range whose end falls inside a construct
+    // it does not close. sympy-22005 (M5, 2026-08-04, agent/solve): she asked for lines
+    // 240..247 of `polysys.py`, but the block she meant ends at 249 because 248-249 are the
+    // tail of a triple-quoted string. Her replacement carried its own `'''))`, so the
+    // original's last two lines survived after it and the module stopped parsing. The FIX
+    // itself was reasonable — semantics right, extent wrong, score zero.
+    //
+    // Bracket balance cannot catch this and was falsified for the insert case; only a parser
+    // can. The gate is the parser, and refusing keeps the correct-ish attempt recoverable
+    // instead of burying it under a syntax error she never reverts.
+    #[test]
+    fn a_line_range_ending_inside_a_triple_quoted_string_is_refused() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // no interpreter here; degrade-silent is the contract
+        }
+        let (dir, engine) = setup_engine();
+        // Lines 1..8, with the string closing on 8 — the sympy shape, minus the distance.
+        let original = "def solve(gens, basis):\n\
+                        \x20   univariate = [b for b in basis]\n\
+                        \x20   if len(univariate) == 1:\n\
+                        \x20       f = univariate.pop()\n\
+                        \x20   else:\n\
+                        \x20       raise NotImplementedError('''\n\
+                        \x20           only zero-dimensional systems supported\n\
+                        \x20           (finite number of solutions)\n\
+                        \x20           ''')\n";
+        fs::write(dir.path().join("src/polysys.py"), original).unwrap();
+
+        // End at 7 — one line INTO the string. Her replacement closes the quote itself, so
+        // lines 8-9 are left dangling exactly as they were on the real run.
+        let refused = engine
+            .edit(
+                "src/polysys.py",
+                &EditMode::LineRange {
+                    start_line: 3,
+                    end_line: 7,
+                    new_content: "    if len(univariate) == 1 and len(gens) == 1:\n\
+                                  \x20       f = univariate.pop()\n\
+                                  \x20   else:\n\
+                                  \x20       raise NotImplementedError('''\n\
+                                  \x20           only zero-dimensional systems supported\n\
+                                  \x20           ''')"
+                        .to_string(),
+                },
+                None,
+            )
+            .expect("a refusal is a RESULT, not a transport error");
+
+        assert!(!refused.success, "the orphaned tail must not be written");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/polysys.py")).unwrap(),
+            original,
+            "the file must survive byte-for-byte so her next attempt starts from working code"
+        );
+        let err = refused.error.expect("a refusal must say why");
+        assert!(
+            err.contains("ends INSIDE a construct") && err.contains("search_replace"),
+            "the refusal must name the actual cause and the anchored alternative, got:\n{err}"
+        );
+
+        // And the SAME edit with the range widened to cover the whole construct must APPLY —
+        // otherwise the gate would just be blocking the fix rather than correcting the aim.
+        let ok = engine
+            .edit(
+                "src/polysys.py",
+                &EditMode::LineRange {
+                    start_line: 3,
+                    end_line: 9,
+                    new_content: "    if len(univariate) == 1 and len(gens) == 1:\n\
+                                  \x20       f = univariate.pop()\n\
+                                  \x20   else:\n\
+                                  \x20       raise NotImplementedError('''\n\
+                                  \x20           only zero-dimensional systems supported\n\
+                                  \x20           ''')"
+                        .to_string(),
+                },
+                None,
+            )
+            .expect("edit");
+        assert!(
+            ok.success,
+            "a correctly-bounded edit must still apply — the gate rejects breakage, not intent"
+        );
+        assert!(
+            fs::read_to_string(dir.path().join("src/polysys.py"))
+                .unwrap()
+                .contains("len(gens) == 1"),
+            "the widened edit lands the fix"
+        );
+    }
+
     // read shows the coordinate system an edit requires, and that the gutter matches
     // `applied_context`'s (`{n:>6} | `), so one file reads the same before and after.
     #[test]
