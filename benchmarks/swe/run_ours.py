@@ -25,6 +25,36 @@ def hf_instance(dataset, iid):
                 return r["row"]
     raise SystemExit(f"instance {iid} not found in {dataset}")
 
+def continuum_cli():
+    """The CLI this machine actually deploys — `continuum`, resolved from PATH FIRST.
+
+    This used to hard-code `cu` and take the first cargo-target hit. Two ways that lies:
+    the binary was renamed (`cu` is macOS call-unix), and a stale `cu` left in the target
+    dir outlives the rename — on the M5, 2026-08-04, a `release/cu` from Jul 25 was still
+    sitting there, so a benchmark run would have silently driven TEN-DAY-OLD client code
+    against a freshly deployed core and reported the result as current
+    ([[verify-the-deploy]], [[continuum-cli-binary-is-continuum-not-cu]]).
+
+    PATH first because that is what `continuum reboot` installs and what a human runs;
+    the cargo-target paths are the fallback for a machine that has built but not installed.
+    Fails LOUD rather than falling back to something older.
+    """
+    from shutil import which
+    found = which("continuum") or next(
+        (p for p in (
+            os.path.expanduser("~/.continuum/cache/cargo-target/release/continuum"),
+            os.path.expanduser("~/.continuum/cache/cargo-target/debug/continuum"),
+        ) if os.path.exists(p)),
+        None,
+    )
+    if not found:
+        raise SystemExit(
+            "no `continuum` CLI on PATH or in the cargo target dir — build/install it "
+            "first (`continuum reboot`). Refusing to guess at an older binary."
+        )
+    return found
+
+
 def sh(cmd, cwd=None, check=True):
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if check and r.returncode != 0:
@@ -61,10 +91,7 @@ def main():
         # tool parsing + workspace grounding) — the path that scores 87-93% on the t1 battery,
         # vs the older cognition/eval exam framing that looped ([[eval-is-an-exam-not-a-life]]).
         import time
-        CU = next(p for p in (
-            os.path.expanduser("~/.continuum/cache/cargo-target/release/cu"),
-            os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"),
-        ) if os.path.exists(p))
+        CU = continuum_cli()
         pr = subprocess.run([CU, "cognition/personas"], capture_output=True, text=True)
         personas = (json.loads(pr.stdout).get("personas") or []) if pr.stdout.strip().startswith("{") else []
         if not personas:
@@ -149,7 +176,7 @@ def main():
         # Grading is EXTERNAL (the git diff → official harness), so the eval's own dod is a
         # no-op; we only need her to ACT on the working tree.
         import time
-        CU=os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu")
+        CU = continuum_cli()
         # resolve the resident persona LIVE from the booted core — never a baked UUID
         # (only exists on one machine; breaks every other install).
         pr=subprocess.run([CU,"cognition/personas"],capture_output=True,text=True)
