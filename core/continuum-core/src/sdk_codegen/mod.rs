@@ -805,6 +805,7 @@ mod tests {
     // A non-compliant tool fails THIS test — it cannot be merged, so it cannot exist.
     #[test]
     fn every_ai_facing_command_is_self_describing() {
+        // context-budget-exempt: a MINIMUM doc-length a command must meet to pass conformance — a quality bar on authored text, not a bound on anything the model reads
         const MIN_DESCRIPTION_CHARS: usize = 20;
         let offenders: Vec<String> = command_registry()
             .into_iter()

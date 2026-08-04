@@ -409,6 +409,7 @@ async fn serve_persona_loop_inner(
     // Recent inbound texts (bounded ring) — the exchange record the message-path
     // loop-filler gate below judges against. Inbound only: own posts are filtered
     // above the gate, and the peer's repeats are what re-arm the resonance.
+    // context-budget-exempt: a count of recent inbound MESSAGES to consider, not a size in tokens or chars
     const RECENT_INBOUND_WINDOW: usize = 24;
     let mut recent_inbound: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);

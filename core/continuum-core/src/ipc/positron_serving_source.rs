@@ -35,9 +35,11 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Ring length for the time-series (per-token samples, newest last). Bounded
 /// per the perception resolution contract's byte-bound rule.
+// context-budget-exempt: a chart ring-buffer length for the serving widget, not a context bound
 const WINDOW: usize = 120;
 
 /// Bounded event-card ring.
+// context-budget-exempt: how many recent EVENTS the serving widget shows, not a context bound
 const EVENT_WINDOW: usize = 12;
 
 /// The env var the serving binary writes its per-token capture JSONL under.

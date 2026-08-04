@@ -55,6 +55,8 @@ use crate::persona::rag_capture::{
 /// result. Replay against the trace gets the full content; the
 /// inspection result is for "look at what the persona would see right
 /// now" mechanic-shop summarization.
+// context-budget-exempt: preview width for the human-facing rag-inspect command output;
+// never text sent to a model
 pub const CONTENT_PREVIEW_CHARS: usize = 200;
 
 /// Tunable inputs for one inspection. Defaults via `defaults_for`

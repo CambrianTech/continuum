@@ -18,6 +18,7 @@ use crate::cognition::tool_executor::spill;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 
 /// Default context lines around each grep match (like `grep -C2`).
+// context-budget-exempt: grep-style -C lines around a match — a display shape; the rendered slice's total size is window-derived (render_slice_chars)
 const DEFAULT_CONTEXT_LINES: usize = 2;
 /// Default cap on grep match windows — enough to see the failures, bounded so a
 /// pattern that matches everything can't re-flood.

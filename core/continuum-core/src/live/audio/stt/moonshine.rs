@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 // Token constants (SentencePiece, same as Llama)
 const BOS_TOKEN_ID: i64 = 1;
 const EOS_TOKEN_ID: i64 = 2;
+// context-budget-exempt: the STT model's max_position_embeddings — read off the model itself, not chosen
 const MAX_TOKENS: usize = 194; // max_position_embeddings
 
 /// Global model (loaded once — ONNX sessions are expensive)

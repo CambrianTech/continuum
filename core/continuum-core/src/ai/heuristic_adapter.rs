@@ -72,10 +72,12 @@ pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
 
 /// Echo length cap — last N chars of the most recent user message
 /// surfaces in the response.
+// context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
 const ECHO_CHARS: usize = 200;
 
 /// Char-to-token ratio (same rough heuristic the rest of the L1 RAG
 /// pipeline uses for cost estimation).
+// context-budget-exempt: a chars-per-token UNIT CONVERSION in the test fixture's fake token accounting
 const CHARS_PER_TOKEN: usize = 4;
 
 /// The adapter struct itself. No mutable state, no clock access, no

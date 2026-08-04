@@ -104,6 +104,7 @@ const HOST_CACHE_LEASE_BAND_DIVISOR: u64 = 8;
 /// Recency-window tokens carried on the published plan document. Inert while
 /// `pin_list` is empty (v1 publishes budget-only); matches the golden v1 wire
 /// fixture so the C++ consumer's parse sees the shape it was validated against.
+// context-budget-exempt: the EXPERT PAGER's recency window (thousands of tokens of routing history for the pin list), part of the published plan wire format the C++ consumer validates against — not the prompt
 const MOE_PLAN_WINDOW_K: u32 = 8;
 
 /// Resolves a base-model id (as named in a [`ServingPlan`]) back to its full

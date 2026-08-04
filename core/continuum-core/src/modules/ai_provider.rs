@@ -107,6 +107,41 @@ pub struct AIProviderModule {
     executor: LateBound<crate::runtime::CommandExecutor>,
 }
 
+/// Largest context this host can safely serve for `model`: its trained window, capped by what
+/// the GOVERNED memory budget can hold at this model's real KV bytes/token. The replacement for
+/// the old `KV_SAFE_CONTEXT_CEILING` placeholder — same authority `plan_serving` and the eval
+/// lane size against, never a raw probe and never a constant.
+///
+/// Returns the trained window unchanged when the host is ungoverned or the model can't be sized:
+/// an unknown budget must not become an invented ceiling.
+fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
+    let trained = model.context_window;
+    let Some(fp) = crate::modules::serving_daemon::footprint_for(model) else {
+        return trained;
+    };
+    if fp.kv_per_token == 0 {
+        return trained;
+    }
+    let Some(budget) = crate::resources::ResourceDaemon::global()
+        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .filter(|b| *b > 0)
+    else {
+        return trained;
+    };
+    let Some(kv_budget) = budget
+        .checked_sub(fp.weights_bytes)
+        .and_then(|b| b.checked_sub(fp.compute_buffer_per_lane()))
+    else {
+        // Weights alone exceed the budget — the serving planner refuses this model anyway;
+        // don't also invent a window here.
+        return trained;
+    };
+    let fits = (kv_budget / fp.kv_per_token).min(u32::MAX as u64) as u32;
+    trained
+        .min(fits)
+        .max(crate::cognition::serving_plan::MIN_SERVE_CTX)
+}
+
 impl AIProviderModule {
     pub fn new() -> Self {
         Self {
@@ -649,15 +684,23 @@ impl AIProviderModule {
                 // window is already below the ceiling serves at its real
                 // value rather than a fictitious larger one.
                 //
-                // The ceiling is a placeholder for the real budget: available
-                // VRAM (via the ResourceGovernor lease) divided by THIS
-                // model's KV bytes/token (derivable from ModelArchConfig) —
-                // see task #79. Until that lands, KV_SAFE_CONTEXT_CEILING is
-                // the conservative floor-of-safety that fits the smallest
-                // target device and comfortably exceeds every persona RAG we
-                // currently build.
-                const KV_SAFE_CONTEXT_CEILING: u32 = 32_768;
-                let effective_context = model_meta.context_window.min(KV_SAFE_CONTEXT_CEILING);
+                // The cap is now THE REAL BUDGET, not a placeholder. It used to be
+                // `const KV_SAFE_CONTEXT_CEILING: u32 = 32_768`, whose own comment said it
+                // was standing in "until task #79 lands: available VRAM (via the
+                // ResourceGovernor lease) divided by THIS model's KV bytes/token". #79
+                // landed — `footprint_for` gives the per-model KV rate and
+                // `governed_host_budget` gives the leased budget — and the placeholder was
+                // never removed, so every locally-registered GGUF kept serving cognition at
+                // 32k no matter what the machine or the model could hold. A placeholder
+                // that outlives its own stated precondition is just a clamp.
+                // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+                //
+                // Degrades honestly: an ungoverned host, or a model whose GGUF can't be
+                // sized, serves at the model's own trained window — never a fresh invented
+                // ceiling. Over-allocation is what this guards (a huge trained window would
+                // allocate multi-GB F16 KV per seq and fail first-decode with
+                // `llama_decode returned -3`), and the governed budget guards it correctly.
+                let effective_context = kv_safe_context(&model_meta);
                 let adapter_base = crate::inference::LlamaCppAdapter::with_model_id(
                     gguf_path.clone(),
                     model_meta.id.clone(),

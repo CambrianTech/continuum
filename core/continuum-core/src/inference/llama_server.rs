@@ -134,6 +134,7 @@ const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 /// a spurious grow and re-triggers a relaunch every tick. Comfortably above one
 /// 256-pad; the daemon only sends a grow target when it is ≥ 2× the served window
 /// (its `starved` gate), so this margin never masks a real grow.
+// context-budget-exempt: a HYSTERESIS band: how far the served window may drift before a relaunch is worth it. Tolerance, never a cap — it doesn't limit the window, it stops us thrashing it
 const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
@@ -144,6 +145,7 @@ const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 /// tell that lane from a healthy one — so the probe now forces a prompt a healthy model
 /// MUST answer with many tokens and asserts it did. `5` sits comfortably above the
 /// ~2-token wedge and far below the ~20+ a healthy "count to 20" yields.
+// context-budget-exempt: how many tokens a post-spawn smoke decode must produce to prove the lane is alive — a liveness probe, not a budget
 const MIN_SMOKE_DECODE_TOKENS: u64 = 5;
 
 /// Everything the launcher needs to bring a model up, GROUPED so adding a new
