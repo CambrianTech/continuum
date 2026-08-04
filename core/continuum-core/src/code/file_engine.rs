@@ -248,6 +248,7 @@ impl FileEngine {
             // window, and "SyntaxError: line 21" does not.
             applied_context: edit_anchor_line(edit_mode, &new_content).map(|anchor| {
                 let mut out = syntax_error_after_edit(&abs_path).unwrap_or_default();
+                out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
                 out.push_str(&numbered_neighborhood(
                     &new_content,
                     anchor,
@@ -952,6 +953,38 @@ fn overwrite_magnitude(old_content: &str, new_content: &str) -> Option<String> {
     Some(out)
 }
 
+/// What this edit did to every line number BELOW it — the fact that makes a second
+/// line-addressed edit safe.
+///
+/// A line-addressed edit that changes the line COUNT silently invalidates every line
+/// number the caller is holding from an earlier read. Glass-boxed on SWE-bench flask-4045
+/// (run 4, 2026-08-04): read the file → `line_range 16..17` replacing 2 lines with 4 →
+/// `line_range 14..23` computed against the numbers from the READ. The second edit was a
+/// correct, complete replacement block aimed exactly 2 lines short, so it left the tail of
+/// the old parameter list orphaned below it and broke the parse. Nothing in the receipt
+/// said the map had moved.
+///
+/// So the receipt says it. The delta is arithmetic, not a guess, and it states a fact about
+/// the file rather than an instruction about what to do next
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]) — a caller who re-reads and a caller who
+/// adjusts by `delta` are both acting on the same true statement. Empty when the line count
+/// did not change: an in-place replacement invalidates nothing, and a notice that fires on
+/// every edit is a notice nobody reads.
+fn line_shift_notice(old_content: &str, new_content: &str, anchor: u32) -> String {
+    let before = old_content.lines().count() as i64;
+    let after = new_content.lines().count() as i64;
+    let delta = after - before;
+    if delta == 0 {
+        return String::new();
+    }
+    format!(
+        "LINE NUMBERS SHIFTED: this file went from {before} to {after} lines ({delta:+}). \
+         Every line below {anchor} now sits {delta:+} from where it was, so any line number \
+         taken from an earlier read of this file is stale. Re-read before addressing lines \
+         by number again.\n"
+    )
+}
+
 /// The line an edit landed on, resolved against the content that was ACTUALLY written.
 ///
 /// Every `EditMode` puts text somewhere, so every one of them has a landing site worth
@@ -1354,6 +1387,60 @@ mod tests {
         assert!(
             !ctx.contains("SYNTAX ERROR"),
             "valid Python must not warn, got:\n{ctx}"
+        );
+    }
+
+    // what this catches: the stale-line-number defect that produced the orphaned parameter
+    // tail on SWE-bench flask-4045, run 4 (M5, 2026-08-04). She read the file, edited
+    // lines 16..17 replacing 2 lines with 4, then addressed lines 14..23 using the numbers
+    // from the READ — two short, because the first edit had pushed everything down by 2.
+    // Her second block was correct; it just landed against a map that had moved and nothing
+    // told her. Pins both directions: a growing edit says how far the lines below it slid,
+    // and an edit that does NOT change the line count stays silent so the notice keeps
+    // meaning something.
+    #[test]
+    fn an_edit_that_changes_the_line_count_says_the_numbers_below_it_moved() {
+        let (dir, engine) = setup_engine();
+        let five = "one\ntwo\nthree\nfour\nfive\n";
+        fs::write(dir.path().join("src/grew.txt"), five).unwrap();
+        fs::write(dir.path().join("src/same.txt"), five).unwrap();
+
+        let grew = engine
+            .edit(
+                "src/grew.txt",
+                &EditMode::LineRange {
+                    start_line: 2,
+                    end_line: 3,
+                    new_content: "a\nb\nc\nd".to_string(),
+                },
+                None,
+            )
+            .expect("edit applies");
+        let ctx = grew
+            .applied_context
+            .expect("a line-addressed edit reports its landing site");
+        assert!(
+            ctx.contains("LINE NUMBERS SHIFTED") && ctx.contains("+2"),
+            "replacing 2 lines with 4 must state the +2 slide of everything below, got:\n{ctx}"
+        );
+
+        // Same line count in, same line count out — nothing downstream moved, so a notice
+        // here would be noise on every ordinary in-place edit.
+        let same = engine
+            .edit(
+                "src/same.txt",
+                &EditMode::LineRange {
+                    start_line: 2,
+                    end_line: 3,
+                    new_content: "a\nb".to_string(),
+                },
+                None,
+            )
+            .expect("edit applies");
+        let ctx = same.applied_context.expect("landing site");
+        assert!(
+            !ctx.contains("LINE NUMBERS SHIFTED"),
+            "an edit that preserves the line count invalidates nothing, got:\n{ctx}"
         );
     }
 
