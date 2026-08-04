@@ -13,4 +13,15 @@ acts: number, filesChanged: Array<string>,
 /**
  * Absent on the immediate ack of a detached run — poll the ledger for the real verdict.
  */
-grade?: SweGradeResult, detached: boolean, runId?: string, };
+grade?: SweGradeResult, detached: boolean, runId?: string, 
+/**
+ * INFRASTRUCTURE FAILURE — this row is NOT a score. Set when her drive stopped
+ * because the deliberation model call failed (lane torn down mid-drive, serving
+ * refusing a model it isn't hosting, timeout), not because she finished or ran out
+ * of acts. Measured 2026-08-04, sympy-21379: the lane went `serving: <none>,
+ * ready: false` at act 7 of 30 and the verdict reported a clean-looking
+ * `resolved: false, patchBytes: 0` — indistinguishable from a real capability zero.
+ * Any aggregate MUST exclude rows carrying this
+ * ([[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]).
+ */
+infraError?: string, };
