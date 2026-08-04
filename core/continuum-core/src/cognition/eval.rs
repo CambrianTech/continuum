@@ -876,16 +876,27 @@ async fn share_live_serving_lane(
     {
         return None;
     }
-    if !live_lane_serves_bare_base(&snap.base_url).await {
-        crate::probe!(
-            class = "eval.lane.share_refused",
-            model = %base.id,
-            "live lane serves this base but has an APPLIED genome layer — cold-loading a \
-             dedicated bare-base lane rather than measuring through a contaminated one"
-        );
-        return None;
-    }
-
+    // NO genome probe here, deliberately. Genome activation on this lane is PER REQUEST:
+    // the daemon loads the `--lora` catalog and immediately zeroes every global scale
+    // (`llama_server::zero_adapter_scales` — "catalog LOADED, scales DORMANT (0.0),
+    // per-request activation only"), and a turn pages its gene in through the request
+    // body's `lora: [{id, scale}]` field. This adapter is built without that field, so
+    // what it measures is the bare base — whatever else is in the catalog and whoever else
+    // is using the lane.
+    //
+    // The probe that used to be here asked `/lora-adapters` for the GLOBAL scales, which
+    // by that same design are always 0.0. It could therefore only ever answer "inert" or
+    // fail — it carried no information. What it did do is fail: `/lora-adapters` BLOCKS
+    // while the lane is generating (measured on the M5, 2026-08-04: `/health` 200 in
+    // milliseconds, `/lora-adapters` no response in 5s on a busy lane), and the timeout
+    // was rendered as the definite claim "has an APPLIED genome layer". So the share was
+    // refused exactly when the lane was in use — i.e. whenever sharing mattered — and the
+    // fallback cold-loaded a SECOND 17.9 GB copy that missed the GPU by 126 MB and spilled
+    // to CPU, turning a measurement into a run that could never finish.
+    //
+    // Blind must not mean "assume clean" — that principle was right. The error was
+    // treating an unanswered HTTP call as evidence when the invariant was already
+    // guaranteed upstream by the code that applies the adapters.
     let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
         .with_runtime_base_url(snap.base_url.clone())
         .with_default_model(base.id.clone());
@@ -923,42 +934,6 @@ async fn share_live_serving_lane(
         },
         _vram_lease: None,
     })
-}
-
-/// Does the lane at `base_url` currently apply ZERO genome layers? Asked of the running
-/// server (`/lora-adapters`), because "loaded" and "applied" are different facts:
-/// llama.cpp keeps `--lora` adapters in its catalog at scale 0 until a request asks for
-/// them. A lane with no adapters at all, or all of them at scale 0, is a bare base.
-///
-/// Unreachable or unparseable ⇒ `false`: a measurement falls back to its own dedicated
-/// lane rather than borrowing one whose genome state is unknown. Blind never means
-/// "assume clean" for a number that gets published.
-async fn live_lane_serves_bare_base(base_url: &str) -> bool {
-    let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
-    let Ok(resp) = reqwest::Client::new()
-        .get(format!("{root}/lora-adapters"))
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-        .await
-    else {
-        return false;
-    };
-    let Ok(body) = resp.json::<serde_json::Value>().await else {
-        return false;
-    };
-    lora_catalog_is_inert(&body)
-}
-
-/// Pure `/lora-adapters` → "is every layer inert?" decision, split from the fetch so the
-/// contract is unit-testable without a live server (same split rationale as
-/// [`parse_provider_context_length`]).
-fn lora_catalog_is_inert(body: &serde_json::Value) -> bool {
-    let Some(entries) = body.as_array() else {
-        return false;
-    };
-    entries
-        .iter()
-        .all(|a| a.get("scale").and_then(serde_json::Value::as_f64) == Some(0.0))
 }
 
 /// Measurement "lane" for a model served by an EXTERNAL provider (#310): the ds4
@@ -3841,40 +3816,6 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // what this catches: the share-the-live-lane admission fact. A resident lane may hold
-    // genome layers that are LOADED but not APPLIED (the M5 lane carries six at scale 0);
-    // measuring a "bare base" through a lane with an APPLIED layer would publish a
-    // genome-boosted number as a base number. Pins: all-zero (and empty) is inert, ANY
-    // non-zero scale is not, and a shape we don't recognize is never optimistically
-    // treated as clean — the caller cold-loads its own lane instead.
-    #[test]
-    fn only_a_lane_with_every_genome_layer_at_scale_zero_counts_as_bare_base() {
-        let inert = serde_json::json!([
-            { "id": 0, "path": "/g/asha/coder.gguf", "scale": 0.0 },
-            { "id": 1, "path": "/g/benchy/code.gguf", "scale": 0.0 },
-        ]);
-        assert!(lora_catalog_is_inert(&inert), "all layers at scale 0 IS a bare base");
-
-        assert!(
-            lora_catalog_is_inert(&serde_json::json!([])),
-            "a lane with no adapters at all is the plainest bare base there is"
-        );
-
-        let applied = serde_json::json!([
-            { "id": 0, "path": "/g/asha/coder.gguf", "scale": 0.0 },
-            { "id": 1, "path": "/g/benchy/code.gguf", "scale": 0.8 },
-        ]);
-        assert!(
-            !lora_catalog_is_inert(&applied),
-            "one applied layer contaminates the whole lane — a base measured here is a lie"
-        );
-
-        // Unrecognized shapes (an error object, a scale-less entry) must refuse, never
-        // assume-clean: blind is a reason to spawn your own lane, not to publish a number.
-        assert!(!lora_catalog_is_inert(&serde_json::json!({ "error": "not found" })));
-        assert!(!lora_catalog_is_inert(&serde_json::json!([{ "id": 0 }])));
-    }
 
     // what this catches: #310 — the /v1/models context_length contract for gateway-routed
     // eval lanes. The ds4 sidecar serves 8192 while its catalog row states the model's 1M
