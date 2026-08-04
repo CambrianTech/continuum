@@ -94,6 +94,15 @@ impl FileEngine {
         let start = start_line.unwrap_or(1).max(1);
         let end = end_line.unwrap_or(total_lines).min(total_lines);
 
+        // NUMBERED, because `code/edit` addresses lines by NUMBER and this is the only
+        // tool that shows the file. Returning bare text asked the caller to count lines by
+        // hand and then bet an edit on the count. Glass-boxed on SWE-bench flask-4045 (M5,
+        // 2026-08-04): she read the whole 128-line file, asked for `insert_at` line 35, and
+        // landed 4 lines off — inside `super().__init__(`'s argument list, where a statement
+        // is a SyntaxError. Same shape in runs 1 and 3. A read tool and an edit tool that
+        // disagree about whether lines have numbers is a defect in the PAIR, not in the
+        // caller. `{n:>6} | {line}` matches `applied_context`'s neighborhood, so the file
+        // reads identically before an edit and after one.
         let selected: String = content
             .lines()
             .enumerate()
@@ -101,7 +110,7 @@ impl FileEngine {
                 let line_num = *i as u32 + 1;
                 line_num >= start && line_num <= end
             })
-            .map(|(_, line)| line)
+            .map(|(i, line)| format!("{:>6} | {}", i as u32 + 1, line))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -187,8 +196,15 @@ impl FileEngine {
             bytes_written: content.len() as u64,
             error: None,
             // A whole-file write has no landing site — but when it lands ON existing
-            // content it has something more consequential to report: what it destroyed.
-            applied_context: overwrite_magnitude(&old_content, content),
+            // content it has something more consequential to report: what it destroyed,
+            // and whether the bytes it wrote were ever meant to be file content at all.
+            applied_context: {
+                let mut out = numbered_paste_notice(content);
+                if let Some(magnitude) = overwrite_magnitude(&old_content, content) {
+                    out.push_str(&magnitude);
+                }
+                (!out.is_empty()).then_some(out)
+            },
         })
     }
 
@@ -238,7 +254,9 @@ impl FileEngine {
 
         Ok(WriteResult {
             success: true,
-            change_id: Some(change_id),
+            // Cloned because `applied_context` below hands the SAME id back as the undo
+            // handle for a break this edit introduced — one id, two places it must appear.
+            change_id: Some(change_id.clone()),
             file_path: relative_path.to_string(),
             bytes_written,
             error: None,
@@ -247,7 +265,8 @@ impl FileEngine {
             // The parse verdict LEADS: broken code reads as plausible in a six-line
             // window, and "SyntaxError: line 21" does not.
             applied_context: edit_anchor_line(edit_mode, &new_content).map(|anchor| {
-                let mut out = syntax_error_after_edit(&abs_path).unwrap_or_default();
+                let mut out =
+                    syntax_error_after_edit(&abs_path, &old_content, &change_id).unwrap_or_default();
                 out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
                 out.push_str(&numbered_neighborhood(
                     &new_content,
@@ -299,12 +318,24 @@ impl FileEngine {
 
         Ok(WriteResult {
             success: true,
-            change_id: Some(change_id),
+            change_id: Some(change_id.clone()),
             file_path: relative_path.to_string(),
             bytes_written: 0,
             error: None,
-            // The file is gone; there is no neighborhood left to show.
-            applied_context: None,
+            // "The file is gone, so there is no neighborhood to show" was true and beside the
+            // point — the same reasoning that left `code/write` silent about what it
+            // overwrote until a persona replaced a 128-line module with a 5-line stub behind
+            // `success: true` (4e74d93ce). Delete is the most destructive verb in the set and
+            // reported the LEAST: `success: true, bytes_written: 0`, which reads like a
+            // no-op. State the size of what went and the handle that brings it back.
+            applied_context: Some(format!(
+                "DELETED {} — {} line(s), {} byte(s) removed from disk. `code/undo` with \
+                 change_id={} restores the file exactly.\n",
+                relative_path,
+                old_content.lines().count(),
+                old_content.len(),
+                change_id,
+            )),
         })
     }
 
@@ -886,7 +917,11 @@ fn syntax_checker_for(path: &std::path::Path) -> Option<(&'static str, Vec<Strin
 /// and thrown away). "Valid text at this location" and "valid program" are different
 /// predicates. A real `SyntaxError: line 21` is unambiguous where six numbered lines of
 /// plausible-looking Python are not.
-fn syntax_error_after_edit(abs_path: &std::path::Path) -> Option<String> {
+fn syntax_error_after_edit(
+    abs_path: &std::path::Path,
+    old_content: &str,
+    change_id: &str,
+) -> Option<String> {
     let (program, args) = syntax_checker_for(abs_path)?;
     let output = std::process::Command::new(program).args(&args).output().ok()?;
     if output.status.success() {
@@ -900,12 +935,61 @@ fn syntax_error_after_edit(abs_path: &std::path::Path) -> Option<String> {
     // Keep it short — working memory is the scarce resource, and the first lines of a
     // SyntaxError carry the file, the line, and the caret.
     let head: Vec<&str> = detail.lines().take(6).collect();
-    Some(format!(
-        "SYNTAX ERROR — the file does NOT parse after this edit:\n{}\n\
-         The edit was applied anyway; the file on disk is broken until you fix it. \
-         code/undo restores the previous content.\n",
+    let mut out = format!(
+        "SYNTAX ERROR — the file does NOT parse after this edit:\n{}\n",
         head.join("\n")
-    ))
+    );
+    // WHO broke it, and the exact handle to put it back.
+    //
+    // Glass-boxed on flask-4045 run 5 (M5, 2026-08-04): an early edit landed a guard clause
+    // inside `super().__init__(`'s argument list. Four acts later she worked out the right
+    // idiom — a content-anchored SearchReplace — and applied a CORRECT fix. The task still
+    // failed, because the first edit's wreckage was still sitting in the file underneath it.
+    // She repaired FORWARD every time and never once reverted, across five runs.
+    //
+    // The old text named `code/undo` generically, which is advice. This names a fact she
+    // cannot otherwise compute — this file parsed BEFORE your edit and does not now, so the
+    // breakage is yours and it is exactly one change deep — and hands over the change_id that
+    // reverses it. Deciding whether to undo or to repair forward stays hers
+    // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    //
+    // Only pays for the second parse when the first one FAILED, so a clean edit still costs
+    // exactly one check.
+    if parses_clean(abs_path, old_content) {
+        out.push_str(&format!(
+            "This file PARSED before this edit — the break was introduced by this change, \
+             and nothing else is between you and a working file. `code/undo` with \
+             change_id={change_id} restores it exactly. Repairing forward on top of a broken \
+             file stacks a second edit on the first one's wreckage.\n"
+        ));
+    } else {
+        out.push_str(
+            "This file did NOT parse before this edit either — there is damage from an \
+             earlier change still in it. Fixing only the error reported above will leave \
+             that damage in place; `code/undo` walks changes back one at a time.\n",
+        );
+    }
+    Some(out)
+}
+
+/// Would `content` have parsed, at this path's language? Writes it to a sibling temp file so
+/// the check never disturbs what is on disk. `false` whenever we cannot tell — the caller
+/// uses this only to decide WHICH true statement to make, and "we could not verify" must
+/// never masquerade as "it was already broken".
+fn parses_clean(abs_path: &std::path::Path, content: &str) -> bool {
+    let Some(ext) = abs_path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    let probe = abs_path.with_extension(format!("continuum-parse-probe.{ext}"));
+    if fs::write(&probe, content).is_err() {
+        return false;
+    }
+    let verdict = syntax_checker_for(&probe)
+        .and_then(|(program, args)| std::process::Command::new(program).args(&args).output().ok())
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let _ = fs::remove_file(&probe);
+    verdict
 }
 
 /// What a whole-file write REPLACED, when it replaced anything. `None` for a genuinely
@@ -951,6 +1035,48 @@ fn overwrite_magnitude(old_content: &str, new_content: &str) -> Option<String> {
         APPLIED_CONTEXT_RADIUS * 2,
     ));
     Some(out)
+}
+
+/// Do these bytes look like `code/read` OUTPUT rather than file CONTENT?
+///
+/// The hazard that arrives with numbered reads: read a file, hand the numbered text
+/// straight back to `code/write`, and every line is now prefixed with a gutter that was
+/// never in the source. The write succeeds, the file is corrupt, and the receipt would
+/// otherwise say `success: true`. This is the read→write round trip, and it is a
+/// predictable consequence of the numbering — so it ships WITH the numbering, not after
+/// the first time it destroys a file.
+///
+/// Reports; never refuses. A file that genuinely contains a numbered gutter (a captured
+/// listing, a diff fixture) is legitimate content, and the caller is the one who knows
+/// which this is. Requires a strong majority so ordinary code with a few `123 | x` lines
+/// stays quiet, and a floor of 3 lines so a two-line snippet can't trip it.
+fn looks_like_numbered_read(content: &str) -> bool {
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() < 3 {
+        return false;
+    }
+    let gutters = lines
+        .iter()
+        .filter(|l| {
+            // `   123 | text` — digits, then " | ", exactly the shape read/edit emit.
+            let t = l.trim_start();
+            let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+            !digits.is_empty() && t[digits.len()..].starts_with(" | ")
+        })
+        .count();
+    gutters * 10 >= lines.len() * 9
+}
+
+/// The notice `looks_like_numbered_read` earns, or empty when the content is clean.
+fn numbered_paste_notice(content: &str) -> String {
+    if !looks_like_numbered_read(content) {
+        return String::new();
+    }
+    "WARNING: nearly every line of what you wrote begins with a `NNN | ` line-number \
+     gutter. That gutter is how code/read DISPLAYS a file — it is not part of the file. \
+     If you pasted read output back, this file is now corrupt; code/undo restores it, and \
+     writing the lines WITHOUT the `NNN | ` prefixes fixes it.\n"
+        .to_string()
 }
 
 /// What this edit did to every line number BELOW it — the fact that makes a second
@@ -1390,6 +1516,129 @@ mod tests {
         );
     }
 
+    // what this catches: repair-forward-on-rubble. flask-4045 run 5 (M5, 2026-08-04): an
+    // early edit dropped a guard clause into `super().__init__(`'s argument list; four acts
+    // later she worked out the right idiom and applied a CORRECT content-anchored fix — on
+    // top of the still-present wreckage, so the file never parsed and the task failed. Across
+    // five runs she repaired forward every time and never reverted once. Pins the two facts
+    // she cannot compute from a SyntaxError alone: whether THIS edit is what broke a
+    // previously-working file, and the change_id that reverses it.
+    #[test]
+    fn a_break_says_whether_this_edit_caused_it_and_how_to_reverse_it() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // no interpreter here; degrade-silent is the contract
+        }
+        let (dir, engine) = setup_engine();
+        fs::write(dir.path().join("src/first.py"), "def f(\n    a,\n):\n    return a\n").unwrap();
+
+        // FIRST break: the file parsed before, so the edit owns it — and the receipt must
+        // hand over the change_id, not generic advice to "use code/undo".
+        let broke = engine
+            .edit(
+                "src/first.py",
+                &EditMode::InsertAt {
+                    line: 2,
+                    content: "    if a:\n        raise ValueError(\"no\")\n".to_string(),
+                },
+                None,
+            )
+            .expect("the edit still applies — we report, never refuse");
+        let ctx = broke.applied_context.expect("landing site");
+        let change_id = broke.change_id.expect("an edit records a change");
+        assert!(
+            ctx.contains("PARSED before this edit") && ctx.contains(&change_id),
+            "the first break must name itself as the cause and carry its own undo handle, \
+             got:\n{ctx}"
+        );
+
+        // SECOND edit on the ALREADY-broken file: the honest statement flips. Claiming this
+        // edit caused the break would send her to undo the wrong change and leave the real
+        // damage in place — the exact trap run 5 fell into.
+        let again = engine
+            .edit(
+                "src/first.py",
+                &EditMode::Append {
+                    content: "\ndef g():\n    return 1\n".to_string(),
+                },
+                None,
+            )
+            .expect("edit applies");
+        let ctx = again.applied_context.expect("landing site");
+        assert!(
+            ctx.contains("did NOT parse before this edit") && !ctx.contains("PARSED before this"),
+            "an edit on an already-broken file must say the damage predates it, got:\n{ctx}"
+        );
+    }
+
+    // what this catches: THE upstream defect behind the whole "statement inside an open
+    // paren" family (SWE-bench flask-4045 runs 1, 3, 5 on the M5, 2026-08-04). code/edit
+    // addresses lines by NUMBER; code/read returned bare text. She read the whole 128-line
+    // file, asked for insert_at line 35, and landed 4 lines off — inside
+    // `super().__init__(`'s argument list — because she had to count by hand. Pins that a
+    // read shows the coordinate system an edit requires, and that the gutter matches
+    // `applied_context`'s (`{n:>6} | `), so one file reads the same before and after.
+    #[test]
+    fn a_read_shows_the_line_numbers_an_edit_addresses() {
+        let (dir, engine) = setup_engine();
+        fs::write(dir.path().join("src/counted.txt"), "alpha\nbravo\ncharlie\n").unwrap();
+
+        let whole = engine.read("src/counted.txt", None, None).expect("read");
+        let content = whole.content.expect("content");
+        assert!(
+            content.contains("     1 | alpha") && content.contains("     3 | charlie"),
+            "a full read numbers every line, got:\n{content}"
+        );
+
+        // A WINDOWED read must number by ABSOLUTE file position, not 1..n of the slice —
+        // a relative number is worse than none, because it looks addressable and is not.
+        let window = engine.read("src/counted.txt", Some(2), Some(3)).expect("read");
+        let content = window.content.expect("content");
+        assert!(
+            content.contains("     2 | bravo") && !content.contains("     1 | bravo"),
+            "a windowed read numbers from the file's start, not the window's, got:\n{content}"
+        );
+    }
+
+    // what this catches: the hazard the numbering itself creates. Read a file, hand the
+    // numbered text back to code/write, and every line carries a gutter that was never in
+    // the source — a corrupt file behind `success: true`. Pins that the write receipt names
+    // it, and that ordinary code (which has no gutter) never trips the warning.
+    #[test]
+    fn writing_read_output_back_verbatim_is_named_in_the_receipt() {
+        let (dir, engine) = setup_engine();
+        fs::write(dir.path().join("src/round.py"), "a = 1\nb = 2\nc = 3\n").unwrap();
+        let numbered = engine
+            .read("src/round.py", None, None)
+            .expect("read")
+            .content
+            .expect("content");
+
+        let pasted = engine
+            .write("src/round.py", &numbered, None)
+            .expect("the write still applies — we report, never refuse");
+        let ctx = pasted
+            .applied_context
+            .expect("an overwrite always reports something");
+        assert!(
+            ctx.contains("line-number gutter"),
+            "pasting read output back must be named as such, got:\n{ctx}"
+        );
+
+        // Real source has no gutter — the warning must stay silent or it is noise.
+        let clean = engine
+            .write("src/round.py", "a = 1\nb = 2\nc = 3\n", None)
+            .expect("clean write");
+        let ctx = clean.applied_context.expect("overwrite reports magnitude");
+        assert!(
+            !ctx.contains("line-number gutter"),
+            "ordinary source must not trip the gutter warning, got:\n{ctx}"
+        );
+    }
+
     // what this catches: the stale-line-number defect that produced the orphaned parameter
     // tail on SWE-bench flask-4045, run 4 (M5, 2026-08-04). She read the file, edited
     // lines 16..17 replacing 2 lines with 4, then addressed lines 14..23 using the numbers
@@ -1547,7 +1796,9 @@ mod tests {
         let result = engine.read("src/main.ts", Some(2), Some(2)).unwrap();
         assert!(result.success);
         assert_eq!(result.lines_returned, 1);
-        assert_eq!(result.content.unwrap(), "line 2");
+        // Numbered by ABSOLUTE file position — a read must show the coordinate system
+        // code/edit addresses, and a windowed read must not renumber from 1.
+        assert_eq!(result.content.unwrap(), "     2 | line 2");
     }
 
     #[test]
@@ -1729,7 +1980,10 @@ mod tests {
             .unwrap();
         assert!(result.success);
 
-        let content = engine.read("src/main.ts", None, None).unwrap().content.unwrap();
+        // Assert on the FILE, not on code/read's rendering — this is an edit test, and
+        // coupling it to how the read tool displays lines is what made it fail when the
+        // display gained line numbers.
+        let content = fs::read_to_string(_dir.path().join("src/main.ts")).unwrap();
         assert!(content.contains("line 3\nappended tail"));
     }
 
@@ -1749,8 +2003,9 @@ mod tests {
             .unwrap();
         assert!(result.success);
 
-        let read = engine.read("src/main.ts", None, None).unwrap();
-        let content = read.content.unwrap();
+        // Assert on the FILE, not on code/read's rendering — see the sibling note in
+        // insert_at_past_eof_appends.
+        let content = fs::read_to_string(_dir.path().join("src/main.ts")).unwrap();
         assert!(content.contains("line 1\ninserted line\nline 2"));
     }
 
@@ -1782,6 +2037,20 @@ mod tests {
 
         let read = engine.read("src/main.ts", None, None);
         assert!(read.is_err()); // File should not exist
+
+        // what this catches: the most destructive verb reporting the least. Delete returned
+        // `success: true, bytes_written: 0` and an empty applied_context — indistinguishable
+        // from a no-op in a receipt. Same reasoning error that left code/write silent about
+        // overwrites (4e74d93ce). Pins that a delete states the size of what it removed and
+        // carries the undo handle.
+        let ctx = result
+            .applied_context
+            .expect("a delete reports what it destroyed");
+        let change_id = result.change_id.expect("a delete records a change");
+        assert!(
+            ctx.contains("DELETED") && ctx.contains("line(s)") && ctx.contains(&change_id),
+            "a delete must name the file, its size, and the undo handle, got:\n{ctx}"
+        );
     }
 
     // what this catches: the write boundary is the SANDBOX, not a file-extension
