@@ -22,7 +22,11 @@ pub struct ProviderCapabilitiesView {
     pub embeddings: bool,
     pub is_local: bool,
     #[ts(type = "number")]
-    pub max_context_window: u32,
+    /// Declared context window, or absent when the adapter declares none. NOT defaulted to a
+    /// number — a reported window a caller could act on must be real
+    /// ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
+    #[ts(optional)]
+    pub max_context_window: Option<u32>,
 }
 
 /// One registered provider with its identity + capabilities.

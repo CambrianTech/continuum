@@ -4,4 +4,10 @@
  * Capability summary for one provider — the subset cognition + clients read
  * when choosing a provider/model.
  */
-export type ProviderCapabilitiesView = { textGeneration: boolean, chat: boolean, toolUse: boolean, vision: boolean, streaming: boolean, embeddings: boolean, isLocal: boolean, maxContextWindow: number, };
+export type ProviderCapabilitiesView = { textGeneration: boolean, chat: boolean, toolUse: boolean, vision: boolean, streaming: boolean, embeddings: boolean, isLocal: boolean, 
+/**
+ * Declared context window, or absent when the adapter declares none. NOT defaulted to a
+ * number — a reported window a caller could act on must be real
+ * ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
+ */
+maxContextWindow?: number, };
