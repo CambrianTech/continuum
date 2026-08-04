@@ -346,6 +346,8 @@ impl FileEngine {
             // window, and "SyntaxError: line 21" does not.
             applied_context: edit_anchor_line(edit_mode, &new_content).map(|anchor| {
                 let mut out = syntax_error_after_edit(&abs_path).unwrap_or_default();
+                // A displaced docstring parses clean, so nothing else here would mention it.
+                out.push_str(&displaced_docstrings(&abs_path, &old_content, &new_content).unwrap_or_default());
                 out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
                 out.push_str(&numbered_neighborhood(
                     &new_content,
@@ -1336,6 +1338,78 @@ print(json.dumps(sorted(called - bound)))
     (!introduced.is_empty()).then_some(introduced)
 }
 
+/// Functions whose docstring the edit DISPLACED — code inserted between `def` and the
+/// docstring, so the string is now a bare expression statement and no longer a docstring.
+///
+/// Same 2-line sympy-21379 edit that produced the missing import also did this:
+///     def _subs(self, old, new, **hints):
+///   +     clear_cache()
+///         """Substitutes an expression old -> new. ..."""
+/// `ast.get_docstring(_subs)` returns None afterwards. `help()` loses it, and in a project
+/// like sympy — where doctests ARE part of the suite — the doctests in that string stop being
+/// collected at all. Valid syntax, so the parse gate cannot see it.
+///
+/// A WARNING, not a refusal, and the distinction is deliberate: a missing import is a
+/// guaranteed `NameError` and earns a refusal; a displaced docstring is real degradation but
+/// the code still runs, and she may have meant it. Severity should match force — the gate that
+/// cries wolf is the gate that gets ignored.
+///
+/// Reports only functions whose docstring the edit ACTUALLY MOVED: present before, absent
+/// after. A function that never had one is untouched.
+fn displaced_docstrings(
+    abs_path: &std::path::Path,
+    old_content: &str,
+    new_content: &str,
+) -> Option<String> {
+    if abs_path.extension().and_then(|e| e.to_str()) != Some("py") {
+        return None;
+    }
+    const PROBE: &str = r#"
+import ast, json, sys
+def docs(src):
+    try: t = ast.parse(src)
+    except SyntaxError: return None
+    out = {}
+    for n in ast.walk(t):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out[n.name] = ast.get_docstring(n) is not None
+    return out
+blob = sys.stdin.read()
+old, new = blob.split("\x00", 1)
+o, n = docs(old), docs(new)
+if o is None or n is None:
+    print("[]"); sys.exit(0)
+print(json.dumps(sorted(k for k, had in o.items() if had and n.get(k) is False)))
+"#;
+    let payload = format!("{old_content}\u{0}{new_content}");
+    let out = std::process::Command::new("python3")
+        .args(["-c", PROBE])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut()?.write_all(payload.as_bytes()).ok()?;
+            child.wait_with_output().ok()
+        })?;
+    if !out.status.success() {
+        return None;
+    }
+    let lost: Vec<String> = serde_json::from_slice(&out.stdout).ok()?;
+    if lost.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "WARNING: {} no longer has a docstring — your insert went BETWEEN the `def` line and \
+         the docstring, so that string is now an ordinary expression statement. `help()` loses \
+         it, and any doctests inside it stop being collected (in this repo those may be part of \
+         the test suite). Move your code to AFTER the closing quotes.\n",
+        lost.join(", ")
+    ))
+}
+
 /// What a whole-file write REPLACED, when it replaced anything. `None` for a genuinely
 /// new file — creating one destroys nothing and needs no warning.
 ///
@@ -2001,6 +2075,48 @@ mod tests {
     // Also pins the SAFETY clause, which matters more than the catch: only names the edit
     // INTRODUCED are flagged. A name the old file already mentions is left alone — that is
     // what keeps star-imports and conditional definitions from producing false refusals.
+    // what this catches: the docstring that silently stops being one. Same 2-line
+    // sympy-21379 edit as the missing-import test — she inserted between `def` and the
+    // docstring, so ast.get_docstring(_subs) went None. Valid syntax; the parse gate is blind
+    // to it; help() loses the text and any doctests inside it stop being collected (in sympy
+    // those run as part of the suite).
+    //
+    // WARNING not refusal, on purpose: a NameError is a guaranteed crash and earns a refusal,
+    // a displaced docstring is degradation the code survives. Severity matches force — a gate
+    // that cries wolf is a gate that gets ignored.
+    #[test]
+    fn an_insert_above_a_docstring_is_reported_as_displacing_it() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let f = dir.path().join("m.py");
+        let old = "def a():\n    \"\"\"Docs.\"\"\"\n    return 1\n";
+        let displaced = "def a():\n    x = 1\n    \"\"\"Docs.\"\"\"\n    return 1\n";
+
+        match displaced_docstrings(&f, old, displaced) {
+            None => return, // no python3 — inconclusive is not a verdict
+            Some(w) => {
+                assert!(w.contains("a"), "names the function: {w}");
+                assert!(w.contains("docstring"), "says what was lost: {w}");
+                assert!(
+                    w.contains("AFTER the closing quotes"),
+                    "says exactly what to do about it: {w}"
+                );
+            }
+        }
+
+        // Inserting BELOW the docstring is fine — the common, correct edit must stay silent.
+        assert!(
+            displaced_docstrings(&f, old, "def a():\n    \"\"\"Docs.\"\"\"\n    x = 1\n    return 1\n")
+                .is_none(),
+            "a correct insert must not warn"
+        );
+        // A function that never had a docstring is not 'displaced'.
+        assert!(
+            displaced_docstrings(&f, "def b():\n    return 1\n", "def b():\n    x=1\n    return 1\n")
+                .is_none(),
+            "no docstring to lose"
+        );
+    }
+
     #[test]
     fn an_edit_that_calls_an_unimported_name_is_refused_not_silently_broken() {
         let dir = tempfile::tempdir().expect("tmp");
