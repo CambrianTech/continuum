@@ -1553,8 +1553,27 @@ impl BenchmarkSweSolve {
                 detach: Some(false),
                 run_id: None,
                 learn: Some(true),
-                // Capture is the harness's own glass box; a sweep writes none by default.
-                capture_dir: None,
+                // CAPTURE ALWAYS, per run. This started as `None` — "a sweep writes none by
+                // default" — which was exactly backwards on two counts.
+                //
+                // Glass box: a benchmark run is the run you most need to SEE. Without a trace
+                // the only output is a boolean, so a failure teaches nothing about whether she
+                // aimed wrong, looped, or ran out of acts — and the live prompt-capture file
+                // rotates at ~48 KB, so a 30-act drive overruns its own history.
+                //
+                // Curriculum: benchmarks are becoming training corpus, and the corpus is the
+                // TRACE, not the verdict. `resolved: true/false` trains nothing; the episode
+                // does ([[benchmarks-are-becoming-the-training-corpus-and-a-teacher-can-extend-them]]).
+                // Discarding it threw away the run's whole value beyond one bit.
+                //
+                // Per-run directory so a sweep's episodes never overwrite each other.
+                capture_dir: Some(
+                    swe_bench::swe_cache_dir()
+                        .join("captures")
+                        .join(&instance.instance_id)
+                        .to_string_lossy()
+                        .to_string(),
+                ),
                 // Recall STAYS ON — she is measured as her whole self, never a stripped copy
                 // ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
                 suppress_recall: None,
