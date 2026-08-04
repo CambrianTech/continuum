@@ -247,6 +247,25 @@ impl FileEngine {
         // destructive, and the ONLY case it fires is "parsed before, does not parse after",
         // which no correct single edit produces. A whole-file `code/write` is deliberately NOT
         // gated: when she genuinely intends content that does not parse yet, that is the verb.
+        // A NameError the edit INTRODUCED is provable and fatal at runtime, and the syntax
+        // gate cannot see it. Refuse the same way, for the same reason: the tool can prove
+        // this specific harm. Measured on sympy-21379 — a 2-line edit calling an unimported
+        // `clear_cache` reported success and destroyed 14 passing tests.
+        if let Some(names) = introduced_undefined_calls(&abs_path, &old_content, &new_content) {
+            let list = names.join(", ");
+            let one = names.first().cloned().unwrap_or_default();
+            return Ok(WriteResult {
+                success: false,
+                change_id: None,
+                file_path: relative_path.to_string(),
+                bytes_written: 0,
+                error: Some(format!(
+                    "EDIT REFUSED — it calls {list}, which {} defined or imported anywhere in                      {relative_path}. The file is UNCHANGED on disk.\n\nTHE FIX: this is a                      missing import, not a syntax problem — the file parses fine and would                      raise `NameError: name '{one}' is not defined` the first time this code                      runs. Add the import for {one} (find where it lives with `code/search`),                      or call something this module already has.",
+                    if names.len() == 1 { "is not" } else { "are not" }
+                )),
+                applied_context: None,
+            });
+        }
         if !parses_clean(&abs_path, &new_content) && parses_clean(&abs_path, &old_content) {
             return Ok(WriteResult {
                 success: false,
@@ -1204,6 +1223,119 @@ fn probe_parse(abs_path: &std::path::Path, content: &str) -> Result<Option<Strin
     Ok(Some(stderr))
 }
 
+/// Names the edit CALLS that exist nowhere in the module — a guaranteed `NameError`.
+///
+/// `parses_clean` is a syntax gate, and a missing import is perfectly valid syntax. So the
+/// most destructive edit a model makes routinely sails straight through it.
+///
+/// Glass-boxed on sympy-21379 (v7 — her first edit to real library source all session). The
+/// entire library change was two lines:
+///     @cacheit
+///     def _subs(self, old, new, **hints):
+///   +     # Clear cache to avoid issues with assumptions
+///   +     clear_cache()
+/// `clear_cache` is imported nowhere in `sympy/core/basic.py` — line 957 is its ONLY
+/// occurrence in the file. Every substitution in sympy now raises NameError. Graded result:
+/// passToPass 26/40, fourteen previously-passing tests destroyed, and the edit reported
+/// `success: true` with no hint of what it had done.
+///
+/// DELIBERATELY NARROW, because a false refusal here is worse than none
+/// ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]). Python scoping is genuinely hard
+/// — globals, builtins, star-imports, comprehensions, class bodies, late binding. So this
+/// flags a name only when EVERY one of these holds:
+///   • it is CALLED in the new content,
+///   • it is bound nowhere in the new module (no import, def, class, assignment, param,
+///     comprehension target, except-as, with-as, global/nonlocal declaration),
+///   • it is not a builtin,
+///   • and it appears NOWHERE in the OLD file — so the edit INTRODUCED it.
+/// That last clause is what makes it safe: a name the file never mentioned, now called and
+/// unbound, is a missing import essentially every time. Anything the file already knew about
+/// is left alone, star-imports included.
+///
+/// Returns the offending names, or `None` when the analysis cannot run at all (no python, a
+/// non-python file) — an inconclusive probe must never read as a verdict.
+fn introduced_undefined_calls(
+    abs_path: &std::path::Path,
+    old_content: &str,
+    new_content: &str,
+) -> Option<Vec<String>> {
+    if abs_path.extension().and_then(|e| e.to_str()) != Some("py") {
+        return None;
+    }
+    const ANALYZER: &str = r#"
+import ast, builtins, json, sys
+new_src = sys.stdin.read()
+try:
+    tree = ast.parse(new_src)
+except SyntaxError:
+    print("[]"); sys.exit(0)
+
+bound = set(dir(builtins))
+class Binds(ast.NodeVisitor):
+    def visit_Import(self, n):
+        for a in n.names: bound.add((a.asname or a.name).split('.')[0])
+        self.generic_visit(n)
+    def visit_ImportFrom(self, n):
+        for a in n.names: bound.add(a.asname or a.name)
+        self.generic_visit(n)
+    def visit_FunctionDef(self, n):
+        bound.add(n.name)
+        for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs: bound.add(a.arg)
+        if n.args.vararg: bound.add(n.args.vararg.arg)
+        if n.args.kwarg: bound.add(n.args.kwarg.arg)
+        self.generic_visit(n)
+    visit_AsyncFunctionDef = visit_FunctionDef
+    def visit_Lambda(self, n):
+        for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs: bound.add(a.arg)
+        self.generic_visit(n)
+    def visit_ClassDef(self, n):
+        bound.add(n.name); self.generic_visit(n)
+    def visit_Name(self, n):
+        if isinstance(n.ctx, (ast.Store, ast.Del)): bound.add(n.id)
+        self.generic_visit(n)
+    def visit_Global(self, n):
+        bound.update(n.names); self.generic_visit(n)
+    def visit_Nonlocal(self, n):
+        bound.update(n.names); self.generic_visit(n)
+    def visit_ExceptHandler(self, n):
+        if n.name: bound.add(n.name)
+        self.generic_visit(n)
+    def visit_arg(self, n):
+        bound.add(n.arg); self.generic_visit(n)
+Binds().visit(tree)
+
+called = set()
+for n in ast.walk(tree):
+    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+        called.add(n.func.id)
+print(json.dumps(sorted(called - bound)))
+"#;
+    let out = std::process::Command::new("python3")
+        .args(["-c", ANALYZER])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.as_mut()?.write_all(new_content.as_bytes()).ok()?;
+            child.wait_with_output().ok()
+        })?;
+    if !out.status.success() {
+        return None; // inconclusive — never a verdict
+    }
+    let unbound: Vec<String> =
+        serde_json::from_slice(&out.stdout).ok()?;
+    // The safety clause: only names the edit INTRODUCED. Anything the old file already
+    // mentioned (star-imported, conditionally defined, whatever) is none of our business.
+    let introduced: Vec<String> = unbound
+        .into_iter()
+        .filter(|n| !old_content.contains(n.as_str()))
+        .collect();
+    (!introduced.is_empty()).then_some(introduced)
+}
+
 /// What a whole-file write REPLACED, when it replaced anything. `None` for a genuinely
 /// new file — creating one destroys nothing and needs no warning.
 ///
@@ -1857,6 +1989,60 @@ mod tests {
     // The gutter detector already existed; it was only wired to the write SUCCESS path.
     // A refusal must name the cause it can actually prove, and must not lie about damage it
     // prevented. [[a-probe-that-can-only-fail-is-worse-than-no-probe]]
+    // what this catches: the missing import — valid syntax, guaranteed NameError, invisible
+    // to the parse gate. Live on sympy-21379, her FIRST edit to real library source all
+    // session, and the entire library change was two lines:
+    //     def _subs(self, old, new, **hints):
+    //   +     clear_cache()
+    // `clear_cache` is imported nowhere in basic.py. Every substitution in sympy raised
+    // NameError; passToPass went 40 -> 26, fourteen passing tests destroyed, and the edit
+    // reported success: true.
+    //
+    // Also pins the SAFETY clause, which matters more than the catch: only names the edit
+    // INTRODUCED are flagged. A name the old file already mentions is left alone — that is
+    // what keeps star-imports and conditional definitions from producing false refusals.
+    #[test]
+    fn an_edit_that_calls_an_unimported_name_is_refused_not_silently_broken() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let f = dir.path().join("m.py");
+        let old = "def a():\n    return 1\n";
+
+        // introduces a call to a name the file has never heard of
+        let bad = "def a():\n    clear_cache()\n    return 1\n";
+        let hit = introduced_undefined_calls(&f, old, bad);
+        match hit {
+            None => return, // no python3 here — an inconclusive probe is not a verdict
+            Some(names) => assert!(
+                names.iter().any(|n| n == "clear_cache"),
+                "must name the undefined call: {names:?}"
+            ),
+        }
+
+        // builtins are fine
+        assert!(
+            introduced_undefined_calls(&f, old, "def a():\n    return len([1])\n").is_none(),
+            "builtins are not undefined names"
+        );
+        // imported in the same edit → fine
+        assert!(
+            introduced_undefined_calls(
+                &f, old,
+                "from x import clear_cache\ndef a():\n    clear_cache()\n"
+            ).is_none(),
+            "a name imported by the same edit is bound"
+        );
+        // ALREADY MENTIONED in the old file → never flagged, even if unbound in the new text
+        assert!(
+            introduced_undefined_calls(
+                &f,
+                "# clear_cache lives in sympy.core.cache\ndef a():\n    return 1\n",
+                bad
+            )
+            .is_none(),
+            "a name the old file already mentions is out of scope — this is the anti-false-refusal clause"
+        );
+    }
+
     #[test]
     fn a_refused_gutter_paste_is_told_about_the_gutter_not_a_line_range() {
         let pasted = "     1 | def f():\n     2 |     return 1\n     3 | \n     4 | x = f()\n";
