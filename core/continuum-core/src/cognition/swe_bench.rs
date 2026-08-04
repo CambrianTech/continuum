@@ -39,7 +39,18 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// One dataset row — the fields the protocol actually needs.
+/// One instance — the fields the protocol actually needs.
+///
+/// **Deliberately provenance-agnostic.** These fields describe a repo, a commit, a fix, and the
+/// tests that define the bug — none of that is specific to a HuggingFace row. A teacher
+/// synthesizing work (revert a known-good commit in a real repo, keep its tests as the
+/// FAIL_TO_PASS set — that is `gym/mine`, #133) produces the SAME type, and `grade()` scores it
+/// with zero new code.
+///
+/// That matters because benchmarks are becoming curriculum, not just measurement: the corpus
+/// compounds as instances accumulate, and a teacher extends it via simulated work. The
+/// expensive mistake would be a second, divergent "generated instance" struct — so `load_dataset`
+/// is the only HF-shaped thing here, and everything downstream takes `&SweInstance`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweInstance {
     pub instance_id: String,
