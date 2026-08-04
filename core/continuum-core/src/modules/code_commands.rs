@@ -332,7 +332,10 @@ impl ActionCommand for CodeRead {
     const ALIASES: &'static [&'static str] = &["read_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Read a file from the workspace, optionally a line range. Returns content plus line metadata.";
+        "Read a file from the workspace, optionally a line range. Content comes back with \
+         each line NUMBERED (`   12 | text`) — those numbers are the same ones code/edit's \
+         line_range and insert_at address, so you never have to count. The `N | ` gutter is \
+         display, not file content: never write it back into a file.";
     type Params = CodeReadParams;
     type Output = ReadResult;
 
