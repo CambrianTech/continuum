@@ -256,14 +256,12 @@ impl FileEngine {
                 error: Some(format!(
                     "EDIT REFUSED — it would have made {relative_path} unparseable. The file \
                      is UNCHANGED on disk; nothing was written and there is nothing to undo.\n\
-                     {}\n\
-                     The most common cause is a line range that ends INSIDE a construct it \
-                     does not close — a triple-quoted string, an open paren, a bracket. Widen \
-                     the range to cover the whole construct, or anchor on the text itself with \
-                     a search_replace edit instead of counting lines. Re-read the region first: \
-                     `code/read` numbers lines by absolute position, so the numbers it shows are \
-                     the numbers this tool expects.",
-                    syntax_error_detail(&abs_path, &new_content).unwrap_or_default()
+                     {}\n{}",
+                    syntax_error_detail(&abs_path, &new_content).unwrap_or_default(),
+                    // Don't just diagnose — AIM HER. The refusal used to say "widen the range",
+                    // which is advice she has to act on blind. The same parser that proved the
+                    // edit destructive can find the end line that works, so say the number.
+                    repair_hint(&abs_path, &old_content, edit_mode)
                 )),
                 applied_context: None,
             });
@@ -1001,6 +999,66 @@ fn parses_clean(abs_path: &std::path::Path, content: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// How far past a mis-bounded `end_line` to look for the line that closes the construct.
+///
+/// Sized for real code, not for search: a triple-quoted docstring, an argument list, a nested
+/// literal — the shapes that actually swallow an edit — close within a couple of dozen lines.
+/// A wider window would mostly buy the ability to "repair" a range so wrong that widening it
+/// silently eats unrelated code, which is worse than saying nothing.
+const REPAIR_SEARCH_LINES: u32 = 40;
+
+/// Given a refused edit, find the concrete change that would have worked — and say it.
+///
+/// Glass-boxed on sympy-22005: she asked for `line_range` 240..247 when the block ends at 249,
+/// because 248-249 are the tail of a triple-quoted string. The old refusal told her to "widen
+/// the range to cover the whole construct", which is exactly the judgement she had already got
+/// wrong once. The parser that proved the edit destructive can also prove which end line is
+/// right, so it does the counting and hands her the number.
+///
+/// This is not a heuristic steering her cognition — nothing is guessed. Each candidate is
+/// APPLIED and PARSED; the first that parses is reported as fact, and if none do she gets the
+/// general guidance instead of a confident wrong answer.
+fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mode: &EditMode) -> String {
+    const GENERAL: &str = "The most common cause is a line range that ends INSIDE a construct \
+         it does not close — a triple-quoted string, an open paren, a bracket. Widen the range \
+         to cover the whole construct, or anchor on the text itself with a search_replace edit \
+         instead of counting lines. Re-read the region first: `code/read` numbers lines by \
+         absolute position, so the numbers it shows are the numbers this tool expects.";
+
+    let EditMode::LineRange {
+        start_line,
+        end_line,
+        new_content,
+    } = edit_mode
+    else {
+        return GENERAL.to_string();
+    };
+
+    let total = old_content.lines().count() as u32;
+    for candidate in (end_line + 1)..=(end_line + REPAIR_SEARCH_LINES).min(total) {
+        let widened = EditMode::LineRange {
+            start_line: *start_line,
+            end_line: candidate,
+            new_content: new_content.clone(),
+        };
+        let Ok(text) = apply_edit(old_content, &widened) else {
+            continue;
+        };
+        if parses_clean(abs_path, &text) {
+            let extra = candidate - end_line;
+            return format!(
+                "THE FIX: use end_line={candidate} instead of {end_line}. Your range stopped \
+                 {extra} line(s) short — lines {}..{candidate} are the tail of a construct your \
+                 replacement re-opens and closes itself, so the original's tail survived after \
+                 it. The SAME new_content with end_line={candidate} parses clean; re-issue the \
+                 edit with that one number changed.",
+                end_line + 1
+            );
+        }
+    }
+    GENERAL.to_string()
+}
+
 /// The syntax error `content` WOULD produce at this path's language, formatted for a persona.
 /// `None` when it parses, or when this language has no checker — a refusal still stands on the
 /// `parses_clean` pair, so an unavailable detail costs an explanation, never a wrong verdict.
@@ -1689,9 +1747,16 @@ mod tests {
             "the file must survive byte-for-byte so her next attempt starts from working code"
         );
         let err = refused.error.expect("a refusal must say why");
+        // THE AIM ASSIST: not "widen the range" — the NUMBER. She already made this judgement
+        // once and got it wrong; repeating the instruction is not help. The construct closes at
+        // line 9, so the refusal must say end_line=9 and confirm the same content then parses.
         assert!(
-            err.contains("ends INSIDE a construct") && err.contains("search_replace"),
-            "the refusal must name the actual cause and the anchored alternative, got:\n{err}"
+            err.contains("THE FIX: use end_line=9 instead of 7"),
+            "the refusal must compute and name the end line that works, got:\n{err}"
+        );
+        assert!(
+            err.contains("stopped 2 line(s) short"),
+            "and quantify how far off she was, got:\n{err}"
         );
 
         // And the SAME edit with the range widened to cover the whole construct must APPLY —
