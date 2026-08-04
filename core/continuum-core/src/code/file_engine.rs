@@ -244,8 +244,17 @@ impl FileEngine {
             error: None,
             // Read back from the content just written, not from what was requested — the
             // whole point is to report where the edit ACTUALLY landed.
-            applied_context: edit_anchor_line(edit_mode, &new_content)
-                .map(|anchor| numbered_neighborhood(&new_content, anchor, APPLIED_CONTEXT_RADIUS)),
+            // The parse verdict LEADS: broken code reads as plausible in a six-line
+            // window, and "SyntaxError: line 21" does not.
+            applied_context: edit_anchor_line(edit_mode, &new_content).map(|anchor| {
+                let mut out = syntax_error_after_edit(&abs_path).unwrap_or_default();
+                out.push_str(&numbered_neighborhood(
+                    &new_content,
+                    anchor,
+                    APPLIED_CONTEXT_RADIUS,
+                ));
+                out
+            }),
         })
     }
 
@@ -844,6 +853,60 @@ impl FileEngine {
 /// small working-memory window.
 const APPLIED_CONTEXT_RADIUS: u32 = 6;
 
+/// A file's own language checker, if this file type has a cheap one. `None` means "no
+/// opinion" — most extensions, and that is correct: silence must be the default so the
+/// warning carries weight when it appears.
+///
+/// Deliberately NOT a build. `py_compile` parses one file in milliseconds and answers the
+/// only question asked here — does this still parse. Running the project's real test suite
+/// is the persona's own move via `code/shell`, not something a file write does behind her.
+fn syntax_checker_for(path: &std::path::Path) -> Option<(&'static str, Vec<String>)> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("py") => Some((
+            "python3",
+            vec![
+                "-m".to_string(),
+                "py_compile".to_string(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )),
+        _ => None,
+    }
+}
+
+/// Does the file still parse after this edit? `Some(error)` only when a checker exists,
+/// ran, and REJECTED the file. A missing interpreter, an unknown extension, or a spawn
+/// failure all yield `None`: a tool that cannot verify must not render a verdict.
+///
+/// This exists because no lexical proxy works. Measured on the M5, 2026-08-04 — three
+/// SWE-bench runs, every failure the same shape: a guard clause placed inside an open
+/// `def __init__(`. The closing paren is still present, so delimiters stay balanced while
+/// the file is unparseable (a bracket-balance check was built, falsified by its own test,
+/// and thrown away). "Valid text at this location" and "valid program" are different
+/// predicates. A real `SyntaxError: line 21` is unambiguous where six numbered lines of
+/// plausible-looking Python are not.
+fn syntax_error_after_edit(abs_path: &std::path::Path) -> Option<String> {
+    let (program, args) = syntax_checker_for(abs_path)?;
+    let output = std::process::Command::new(program).args(&args).output().ok()?;
+    if output.status.success() {
+        return None;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        return None;
+    }
+    // Keep it short — working memory is the scarce resource, and the first lines of a
+    // SyntaxError carry the file, the line, and the caret.
+    let head: Vec<&str> = detail.lines().take(6).collect();
+    Some(format!(
+        "SYNTAX ERROR — the file does NOT parse after this edit:\n{}\n\
+         The edit was applied anyway; the file on disk is broken until you fix it. \
+         code/undo restores the previous content.\n",
+        head.join("\n")
+    ))
+}
+
 /// What a whole-file write REPLACED, when it replaced anything. `None` for a genuinely
 /// new file — creating one destroys nothing and needs no warning.
 ///
@@ -1230,6 +1293,67 @@ mod tests {
         assert!(
             written.applied_context.is_none(),
             "creating a NEW file destroys nothing and needs no warning"
+        );
+    }
+
+    // what this catches: THE measured failure, identical in three SWE-bench runs on the M5,
+    // 2026-08-04 — a guard clause placed inside an open `def __init__(`, via insert_at and
+    // via search/replace, six edits across twelve acts, with the file read back in between.
+    // The numbered-line receipt (59efe1ecd) could not surface it: the closing paren is still
+    // there so brackets stay balanced, and six lines of plausible Python say nothing about
+    // the grammar. Only a parser does.
+    //
+    // Each assertion gets its OWN file. The first version of this test appended valid code
+    // to the file the first assertion had just broken, then asserted no warning — it failed
+    // for that reason and nearly cost a correct implementation.
+    #[test]
+    fn an_edit_that_breaks_the_parse_reports_the_syntax_error() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return; // no interpreter here; degrade-silent is the contract
+        }
+        let (dir, engine) = setup_engine();
+        let signature = "def f(\n    a,\n    b,\n):\n    return a\n";
+        fs::write(dir.path().join("src/broken.py"), signature).unwrap();
+        fs::write(dir.path().join("src/clean.py"), signature).unwrap();
+
+        // The exact shape from the runs: a statement inside the parameter list.
+        let broken = engine
+            .edit(
+                "src/broken.py",
+                &EditMode::InsertAt {
+                    line: 2,
+                    content: "    if '.' in a:\n        raise ValueError(\"no dots\")\n".to_string(),
+                },
+                None,
+            )
+            .expect("the edit still applies — we report, never refuse");
+        let ctx = broken
+            .applied_context
+            .expect("a line-addressed edit reports its landing site");
+        assert!(
+            ctx.contains("SYNTAX ERROR"),
+            "a statement dropped into a parameter list must be reported as unparseable — \
+             this is the failure that repeated in all three runs, got:\n{ctx}"
+        );
+
+        // A valid edit on an INTACT file must stay quiet, or the warning is noise.
+        let clean = engine
+            .edit(
+                "src/clean.py",
+                &EditMode::Append {
+                    content: "\ndef g():\n    return 1\n".to_string(),
+                },
+                None,
+            )
+            .expect("clean edit");
+        let ctx = clean.applied_context.expect("append reports its tail");
+        assert!(
+            !ctx.contains("SYNTAX ERROR"),
+            "valid Python must not warn, got:\n{ctx}"
         );
     }
 
