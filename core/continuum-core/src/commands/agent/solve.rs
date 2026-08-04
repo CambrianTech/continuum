@@ -349,16 +349,29 @@ impl AgentSolve {
         // hands OFF the graded tree, then she passes to a silent settle). Honest
         // contract language, same class as the tool-forcing framing: it states where
         // the work IS, it does not hand her the answer or gate her tools.
-        let framed = format!(
-            "This is a task you must COMPLETE NOW by USING YOUR TOOLS in your workspace — writing \
-             files with code/write, running commands with code/shell, etc. Only what your tools \
-             actually do takes effect: code shown in a message, or a claim that you saved a file, \
-             does NOT create or change anything — the workspace is graded on the files your tools \
-             write. You are ALREADY in the task's workspace: work on the files that are here. Do \
-             not create a new workspace or start a new project — grading only sees this one. Do \
-             the work with tool calls, then stop.\n\nTask:\n{}",
-            p.task.trim()
-        );
+        // The wrapper states the I/O CONTRACT (only tool calls take effect) and nothing about
+        // the SHAPE of the deliverable — because the TASK owns that, and the two used to
+        // contradict each other outright.
+        //
+        // The old text said "writing files with code/write" and "graded on the files your tools
+        // WRITE". That was written for from-scratch build gyms, where new files ARE the
+        // deliverable. Nested beneath it, `swe_task_prompt` says the opposite: "do not add new
+        // top-level files — fix it IN PLACE with code/edit. The fix must land in the existing
+        // files."
+        //
+        // Outer contract first, inner constraint buried under "Task:" — and she obeyed the
+        // outer one. Three consecutive sympy-21379 runs, all full-effort, all writing NEW files
+        // and never editing the library:
+        //   v3  8 acts → reproduce_piecewise_error.py
+        //   v4 30 acts → reproduce_bug.py, test_sympy_error.py, test_sympy_issue.py
+        //   v5 18 acts → reproduce_error.py, test_sympy_error.py
+        // I read that as a judgement gap for a whole session. It was two halves of my own
+        // framing disagreeing about what the deliverable IS.
+        //
+        // Now: "as your tools leave it" covers an edit and a new file equally, and `code/edit`
+        // joins the exemplar verbs so the anti-narration force survives without smuggling in a
+        // deliverable shape. Steering nothing — the task still says what to build or fix.
+        let framed = frame_task(&p.task);
         let task_delivery = crate::persona::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
             items: vec![crate::persona::rag_budget::RagItem {
@@ -564,8 +577,65 @@ async fn workspace_patch(workspace: &str) -> (String, Vec<String>) {
 
 crate::register_stateless_command!(AgentSolve);
 
+/// The generic solve CONTRACT wrapped around a task.
+///
+/// It states HOW acts take effect (only tool calls do; narration does not) and never WHAT the
+/// deliverable looks like — the task owns that, and the two used to contradict each other.
+///
+/// The old text said "writing files with code/write" and "graded on the files your tools WRITE",
+/// which is right for a from-scratch build gym. Nested beneath it, `swe_task_prompt` says the
+/// opposite: "do not add new top-level files — fix it IN PLACE with code/edit. The fix must land
+/// in the existing files." Outer contract first, inner constraint under "Task:" — and she obeyed
+/// the outer one. Three consecutive full-effort sympy-21379 runs wrote NEW repro scripts and never
+/// edited the library (v3: 1 file, v4: 3 files, v5: 2 files; 0 edits every time). That read as a
+/// judgement gap for a whole session; it was two halves of one framing disagreeing.
+///
+/// Pure so the contract is testable in isolation ([[the-compression-principle]]: one place).
+fn frame_task(task: &str) -> String {
+    format!(
+        "This is a task you must COMPLETE NOW by USING YOUR TOOLS in your workspace — editing \
+         files with code/edit, writing them with code/write, running commands with code/shell, \
+         etc. Only what your tools actually do takes effect: code shown in a message, or a claim \
+         that you saved a file, does NOT create or change anything — the workspace is graded \
+         exactly as your tools leave it. You are ALREADY in the task's workspace: work on the \
+         files that are here. Do not create a new workspace or start a new project — grading only \
+         sees this one. Follow the task's own instructions about WHAT to change. Do the work with \
+         tool calls, then stop.\n\nTask:\n{}",
+        task.trim()
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches: the wrapper asserting a DELIVERABLE SHAPE that the task contradicts.
+    // The generic framing exists to kill narration ("only tool calls take effect"). It must not
+    // also claim the grade is about "files your tools WRITE" — `swe_task_prompt` says the
+    // opposite ("do not add new top-level files … fix it IN PLACE with code/edit"), and the
+    // wrapper comes FIRST. Three consecutive sympy-21379 runs obeyed the wrapper and wrote new
+    // repro scripts instead of editing the library. The contract may describe HOW acts take
+    // effect; only the task may describe WHAT to change.
+    #[test]
+    fn the_generic_framing_never_dictates_the_deliverable_shape() {
+        let framed = super::frame_task("fix the bug IN PLACE");
+        let lower = framed.to_lowercase();
+        assert!(
+            lower.contains("only what your tools actually do takes effect"),
+            "the anti-narration contract must survive: {framed}"
+        );
+        assert!(
+            lower.contains("code/edit"),
+            "editing must be a first-class exemplar verb, not just writing: {framed}"
+        );
+        assert!(
+            !lower.contains("graded on the files your tools write"),
+            "must NOT assert new-files-are-the-deliverable — that contradicts a fix-in-place task"
+        );
+        assert!(
+            framed.contains("fix the bug IN PLACE"),
+            "the task's own words are carried through verbatim"
+        );
+    }
+
     use super::*;
     use tokio::process::Command;
 
