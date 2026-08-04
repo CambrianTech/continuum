@@ -999,6 +999,86 @@ fn parses_clean(abs_path: &std::path::Path, content: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A `search_replace` whose text isn't in the file — reported as a LEAD, not a dead end.
+///
+/// "Search text not found: 'if len(univariate) == 1:'" is a true statement that helps with
+/// nothing. The tool is holding the file; it can say WHY the match missed. And this error is
+/// on the path the edit-refusal deliberately steers her onto ("anchor on the text itself with
+/// a search_replace edit") — a redirect that lands on a dead end is worse than no redirect.
+///
+/// The dominant cause by far is invisible: leading whitespace. A model reproducing a line from
+/// a numbered read routinely drops or normalises the indent, and the diff is unseeable in a
+/// quoted string. So when the trimmed forms match, SAY that, and give the exact line with its
+/// indent spelled out.
+fn search_miss_report(content: &str, search: &str) -> String {
+    let head: String = if search.len() > 60 {
+        format!("{}…", &search[..60])
+    } else {
+        search.to_string()
+    };
+
+    // Single-line searches are the common case and the one we can localise precisely.
+    let needle = search.trim();
+    if !needle.is_empty() && !needle.contains('\n') {
+        for (i, line) in content.lines().enumerate() {
+            if line.trim() == needle {
+                let n = i + 1;
+                let indent = line.len() - line.trim_start().len();
+                return format!(
+                    "SEARCH TEXT NOT FOUND — but line {n} matches once whitespace is ignored, so \
+                     this is an INDENT mismatch, not a missing line.\n\
+                     the file has : {line:?}\n\
+                     you searched : {search:?}\n\
+                     Line {n} starts with {indent} space(s). Copy it exactly — including leading \
+                     whitespace — or use a line_range edit on line {n}, which does not depend on \
+                     reproducing the indent."
+                );
+            }
+        }
+        // No whitespace-equal line: offer the nearest neighbour so she can see how far off she
+        // is, rather than guessing whether the file changed under her.
+        if let Some((n, line)) = nearest_line(content, needle) {
+            return format!(
+                "SEARCH TEXT NOT FOUND. The closest line is {n}:\n\
+                 the file has : {line:?}\n\
+                 you searched : {search:?}\n\
+                 If that is the line you meant, copy it verbatim from a fresh `code/read` — the \
+                 text you searched for does not appear anywhere in the file, so it is either \
+                 mis-remembered or from a different file."
+            );
+        }
+    }
+
+    format!(
+        "SEARCH TEXT NOT FOUND: '{head}'. Nothing in this file resembles it. Re-read the region \
+         with `code/read` and copy the anchor verbatim, or address the lines by number with a \
+         line_range edit."
+    )
+}
+
+/// The line most similar to `needle`, by shared-word overlap. Deliberately crude: its only job
+/// is to point at something she can LOOK at, and a wrong-but-close pointer still orients her
+/// better than "not found". `None` when nothing shares meaningful content.
+fn nearest_line(content: &str, needle: &str) -> Option<(usize, String)> {
+    let want: Vec<&str> = needle.split_whitespace().collect();
+    if want.is_empty() {
+        return None;
+    }
+    let mut best: Option<(usize, usize, String)> = None;
+    for (i, line) in content.lines().enumerate() {
+        let hits = want.iter().filter(|w| line.contains(**w)).count();
+        if hits == 0 {
+            continue;
+        }
+        if best.as_ref().map(|(h, _, _)| hits > *h).unwrap_or(true) {
+            best = Some((hits, i + 1, line.to_string()));
+        }
+    }
+    // Demand at least half the tokens so an accidental `self`/`)` overlap is not "closest".
+    best.filter(|(hits, _, _)| *hits * 2 >= want.len())
+        .map(|(_, n, line)| (n, line))
+}
+
 /// How far past a mis-bounded `end_line` to look for the line that closes the construct.
 ///
 /// Sized for real code, not for search: a triple-quoted docstring, an argument list, a nested
@@ -1356,13 +1436,8 @@ fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineE
             all,
         } => {
             if !content.contains(search.as_str()) {
-                return Err(FileEngineError::EditFailed(format!(
-                    "Search text not found: '{}'",
-                    if search.len() > 50 {
-                        format!("{}...", &search[..50])
-                    } else {
-                        search.clone()
-                    }
+                return Err(FileEngineError::EditFailed(search_miss_report(
+                    content, search,
                 )));
             }
 
@@ -1688,6 +1763,47 @@ mod tests {
     // addresses lines by NUMBER; code/read returned bare text. She read the whole 128-line
     // file, asked for insert_at line 35, and landed 4 lines off — inside
     // `super().__init__(`'s argument list — because she had to count by hand. Pins that a
+    // what this catches: a dead-end error on the path the refusal STEERS her onto. The edit
+    // gate tells her to "anchor on the text itself with a search_replace edit"; if that then
+    // says only "Search text not found", the redirect lands nowhere. The dominant real cause is
+    // invisible in a quoted string — leading whitespace — so the miss must NAME it.
+    #[test]
+    fn a_search_miss_names_the_indent_mismatch_and_the_line() {
+        let content = "def f():\n    if len(univariate) == 1:\n        return 1\n";
+        // She reproduced the line without its indent — the classic miss.
+        let report = search_miss_report(content, "if len(univariate) == 1:");
+        assert!(
+            report.contains("INDENT mismatch") && report.contains("line 2"),
+            "must localise the line and name the cause, got:\n{report}"
+        );
+        assert!(
+            report.contains("4 space(s)"),
+            "must state the actual indent so she can reproduce it, got:\n{report}"
+        );
+        assert!(
+            report.contains("line_range edit on line 2"),
+            "and offer the escape that does not depend on reproducing whitespace, got:\n{report}"
+        );
+    }
+
+    // what this catches: a genuinely absent anchor must still orient her — pointing at the
+    // nearest real line is what distinguishes "you mis-remembered" from "the file changed".
+    #[test]
+    fn a_search_miss_with_no_whitespace_match_points_at_the_nearest_line() {
+        let content = "def solve(gens, basis):\n    if len(univariate) == 2:\n        pass\n";
+        let report = search_miss_report(content, "if len(univariate) == 99:");
+        assert!(
+            report.contains("closest line is 2"),
+            "must point at something she can look at, got:\n{report}"
+        );
+        // And an anchor sharing nothing must NOT invent a neighbour.
+        let unrelated = search_miss_report(content, "completely unrelated banana text");
+        assert!(
+            unrelated.contains("Nothing in this file resembles it"),
+            "a bogus 'closest' is worse than admitting no match, got:\n{unrelated}"
+        );
+    }
+
     // what this catches: the ORPHANED TAIL — a line_range whose end falls inside a construct
     // it does not close. sympy-22005 (M5, 2026-08-04, agent/solve): she asked for lines
     // 240..247 of `polysys.py`, but the block she meant ends at 249 because 248-249 are the
