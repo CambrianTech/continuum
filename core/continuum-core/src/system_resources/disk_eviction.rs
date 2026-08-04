@@ -650,6 +650,17 @@ mod tests {
             ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
             ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
             ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
+            // Registered the day benchmark/swe-* landed, BEFORE a sweep ran. Everything under
+            // it is re-creatable — repo clones from git, venvs from uv, the dataset from HF —
+            // so eviction is safe by construction; what it must never do is delete an instance
+            // dir mid-grade, which is why it wants a pool that knows the in-flight set rather
+            // than a blind LRU. Until then it is tracked and REPORTED, so the class can never
+            // be the silent one again.
+            (
+                "benchmarks",
+                "#155: LRU over per-instance dirs, skipping the in-flight set — clones/venvs \
+                 are re-creatable from git+uv, so only an active grade is at risk",
+            ),
         ];
         use super::super::disk_pressure::DiskReporter as _;
         for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h")) {

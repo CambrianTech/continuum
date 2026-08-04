@@ -191,22 +191,76 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
+    // ONE network fetch per REPO, not per clone.
+    //
+    // The protocol needs two trees per instance — the one she works in and a pristine one to
+    // score in — and a sweep re-grades the same repo across many instances. Cloning from
+    // GitHub each time was ~240 MB of network AND disk per tree: a 300-instance Lite sweep
+    // would have been ~140 GB and hours of fetch. A local mirror plus `--shared` clones makes
+    // every tree after the first nearly free (objects are borrowed, not copied) and costs one
+    // fetch per repo for the whole sweep.
+    //
+    // `--shared` is safe precisely because these trees are DISPOSABLE: nothing here is ever
+    // pushed, and the mirror is only ever fast-forwarded. The usual caveat — pruning the parent
+    // can corrupt a borrower — does not apply to a cache we recreate from scratch.
+    let mirror = swe_cache_dir()
+        .join("mirrors")
+        .join(instance.repo.replace('/', "__"));
     let url = format!("https://github.com/{}.git", instance.repo);
-    let out = run("git", &["clone", "--quiet", &url, &repo_dir.to_string_lossy()], None).await?;
+    if !mirror.exists() {
+        if let Some(parent) = mirror.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let out = run(
+            "git",
+            &["clone", "--quiet", "--bare", &url, &mirror.to_string_lossy()],
+            None,
+        )
+        .await?;
+        if !out.status.success() {
+            return Err(format!(
+                "mirror clone of {} failed: {}",
+                instance.repo,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    }
+
+    let out = run(
+        "git",
+        &[
+            "clone",
+            "--quiet",
+            "--shared",
+            &mirror.to_string_lossy(),
+            &repo_dir.to_string_lossy(),
+        ],
+        None,
+    )
+    .await?;
     if !out.status.success() {
         return Err(format!(
-            "clone of {} failed: {}",
+            "clone of {} from its local mirror failed: {}",
             instance.repo,
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
     let out = run("git", &["checkout", "--quiet", &instance.base_commit], Some(repo_dir)).await?;
     if !out.status.success() {
-        return Err(format!(
-            "checkout {} failed: {}",
-            &instance.base_commit[..12.min(instance.base_commit.len())],
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        // A mirror created earlier can predate this instance's base_commit. Refresh it once and
+        // retry rather than failing — the alternative is a cache that silently rots into
+        // "instance not gradeable" as the dataset grows.
+        let _ = run("git", &["fetch", "--quiet", "--all"], Some(&mirror)).await;
+        let _ = run("git", &["fetch", "--quiet", "origin"], Some(repo_dir)).await;
+        let retry =
+            run("git", &["checkout", "--quiet", &instance.base_commit], Some(repo_dir)).await?;
+        if !retry.status.success() {
+            return Err(format!(
+                "checkout {} failed even after refreshing the local mirror: {}",
+                &instance.base_commit[..12.min(instance.base_commit.len())],
+                String::from_utf8_lossy(&retry.stderr).trim()
+            ));
+        }
     }
     Ok(())
 }
