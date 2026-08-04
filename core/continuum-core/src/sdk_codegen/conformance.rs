@@ -29,6 +29,7 @@ use crate::sdk_codegen::{command_registry, AccessLevel};
 
 /// The minimum a model-facing DESCRIPTION needs to orient a reasoner. Shorter than
 /// this is effectively undocumented — not a sentence, just a label.
+// context-budget-exempt: same conformance minimum as sdk_codegen/mod.rs — an authoring quality bar, not a runtime bound
 const MIN_DESCRIPTION_CHARS: usize = 12;
 
 /// One way a tool fails the AI-usability floor. Carries the tool, which rule it

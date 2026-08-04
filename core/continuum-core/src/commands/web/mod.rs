@@ -177,8 +177,25 @@ pub async fn web_search(p: WebSearchParams) -> Result<WebSearchResult, CommandEr
     })
 }
 
-const DEFAULT_FETCH_CHARS: u32 = 6_000;
-const MAX_FETCH_CHARS: u32 = 12_000;
+/// How much readable page text a `web/fetch` returns — DERIVED from the persona's live served
+/// window, never a constant. A fetched page goes straight into her context, so this is the same
+/// class of bound as a tool-result fold and it must scale the same way: a 6k/12k pair means a
+/// 1M-context model reads exactly as little of a page as a 4k one, which is the whole defect.
+/// The caller may still ask for less; it may not ask for more than the window can hold.
+/// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+fn fetch_char_bounds() -> (u32, u32) {
+    let budget = crate::cognition::context_budget::ContextBudget::live_or_floor();
+    let max = budget.result_fold_chars().min(u32::MAX as usize) as u32;
+    // Default to half the ceiling: enough of an article to answer from, cheap enough that a
+    // reflexive fetch doesn't dominate the turn. Explicit `max_chars` overrides up to `max`.
+    (max / 2, max)
+}
+
+/// Floor on a caller-requested `max_chars` — below this a fetch returns a stub too small to
+/// answer from, which reads as a broken tool rather than a small one.
+// context-budget-exempt: a MINIMUM on a caller-supplied request (it only ever raises a too-small
+// ask); the ceiling above it is window-derived
+const MIN_FETCH_CHARS: u32 = 200;
 
 /// Params for `web/fetch`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -186,7 +203,8 @@ const MAX_FETCH_CHARS: u32 = 12_000;
 pub struct WebFetchParams {
     /// The URL to fetch and read (http/https).
     pub url: String,
-    /// Max characters of readable text to return. Default 6000, clamped to [200, 12000].
+    /// Max characters of readable text to return. Defaults to half of what the live served
+    /// window can hold, and is clamped to that ceiling (never a fixed 6000/12000 pair).
     #[serde(default)]
     #[ts(optional)]
     pub max_chars: Option<u32>,
@@ -220,10 +238,11 @@ pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError
             "web/fetch url must start with http:// or https://, got '{url}'"
         )));
     }
+    let (default_fetch, max_fetch) = fetch_char_bounds();
     let cap = p
         .max_chars
-        .unwrap_or(DEFAULT_FETCH_CHARS)
-        .clamp(200, MAX_FETCH_CHARS) as usize;
+        .unwrap_or(default_fetch)
+        .clamp(MIN_FETCH_CHARS, max_fetch.max(MIN_FETCH_CHARS)) as usize;
 
     // Drive the host's REAL browser (renders JS, isn't bot-blocked) rather than an HTTP
     // scrape. 4s virtual-time budget is ample for a doc/article's first paint.

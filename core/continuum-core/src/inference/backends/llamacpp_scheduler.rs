@@ -277,6 +277,7 @@ fn driver_loop(
     let mut sample_call_total = std::time::Duration::ZERO;
     let mut post_sample_total = std::time::Duration::ZERO;
     let mut tokens_sampled_window: u64 = 0;
+    // context-budget-exempt: how often the scheduler emits a throughput log line — a logging cadence
     const PERF_LOG_INTERVAL_TOKENS: u64 = 50;
     loop {
         // ── Phase 1: Accept new requests into free slots ──

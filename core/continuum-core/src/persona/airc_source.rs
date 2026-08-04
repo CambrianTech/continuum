@@ -135,7 +135,8 @@ impl AircRagSource {
     /// pack_digest into a 3–5-message world view while the L1 budget could
     /// hold dozens — the persona then confabulated generic-assistant filler
     /// because the actual conversation was invisible (#259).
-    const MIN_TOKENS_PER_TURN: u32 = 8;
+    // context-budget-exempt: a FLOOR under a per-turn allocation — it only ever raises, so a large window is never clamped by it
+const MIN_TOKENS_PER_TURN: u32 = 8;
 
     /// Turns-that-fit grounding: derive the digest's before-bookmark window
     /// from the delivery budget. `recipe_floor` (the recipe-defined N, default

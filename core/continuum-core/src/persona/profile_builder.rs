@@ -191,7 +191,7 @@ pub fn build_profile(
     let stop_sequences = model.stop_sequences.clone();
     let sampling = SamplingProfile::from_model(
         &model.sampling,
-        crate::persona::inference_profile::DEFAULT_MAX_NEW_TOKENS,
+        crate::persona::inference_profile::default_max_new_tokens(),
     );
 
     Ok(PersonaInferenceProfile {
@@ -225,6 +225,7 @@ mod tests {
     /// Stand-in for whatever served window the ServingPlan computed for the
     /// host. The point under test is that `build_profile` passes THIS through
     /// for local models — not that it equals any particular constant.
+    // context-budget-exempt: a TEST fixture stating the window it measures against — the pattern this guard asks for, not a production bound
     const TEST_SERVE_WINDOW: u32 = 8192;
 
     /// Create a tempfile to stand in for the GGUF on disk. Registry's
@@ -390,7 +391,7 @@ mod tests {
         // NOT carried from ModelSampling (which deliberately has no such field).
         assert_eq!(
             profile.sampling.max_new_tokens,
-            crate::persona::inference_profile::DEFAULT_MAX_NEW_TOKENS
+            crate::persona::inference_profile::default_max_new_tokens()
         );
     }
 

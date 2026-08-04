@@ -964,6 +964,7 @@ impl FileEngine {
 /// insert landed inside a signature, a parameter list, or a docstring — the misplacements
 /// actually observed — without turning every edit receipt into a file dump that crowds a
 /// small working-memory window.
+// context-budget-exempt: lines of surrounding source shown around an applied edit so she can SEE what landed — a diff display shape in lines, not a size budget
 const APPLIED_CONTEXT_RADIUS: u32 = 6;
 
 /// A file's own language checker, if this file type has a cheap one. `None` means "no

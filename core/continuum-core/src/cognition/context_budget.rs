@@ -169,6 +169,21 @@ impl ContextBudget {
         self.fraction(512)
     }
 
+    /// Default CEILING on one response's generated length, in TOKENS (not chars) — the role's
+    /// fallback budget when it declares none. An eighth of the window: enough that a real
+    /// answer (a function, a diff, a traceback walk) is never truncated mid-thought, while
+    /// still leaving the prompt its room. #45's doctrine is that the adapter owns generation
+    /// length; this is the fallback for a role that says nothing, and like every other bound
+    /// here it must scale — a `512` default silently truncates every model's answers equally,
+    /// whether it holds 4k or 1M.
+    pub fn default_response_tokens(&self) -> u32 {
+        match self.total_chars {
+            // total_chars = window * GUARD_CHARS_PER_TOKEN, so /8 in tokens is /(8*ratio) here.
+            Some(total) => ((total / GUARD_CHARS_PER_TOKEN) / 8).min(u32::MAX as usize) as u32,
+            None => u32::MAX,
+        }
+    }
+
     /// Echo of ONE argument value back into the recency channel. The tightest bound, and
     /// deliberately so: she WROTE these one generation ago, so echoing a whole file's
     /// `content` back at her buys nothing and costs the window.
@@ -239,7 +254,7 @@ mod tests {
     /// weeks later under a determinism justification. Doc comments and task entries did not
     /// stop it; each new author re-derives a "reasonable" number in good faith.
     ///
-    /// So this is a RED TEST, not a doc. It scans the cognition tree for the shape — a
+    /// So this is a RED TEST, not a doc. It scans the whole crate for the shape — a
     /// constant whose name says window/context/token/prompt/chars and whose value is a bare
     /// literal — and fails on a new one. Adding a bound is still allowed: put it on
     /// [`ContextBudget`] as a FRACTION, where it scales with the served window. If you are
@@ -253,9 +268,16 @@ mod tests {
     ///
     /// Weakening this test is the same act as re-introducing the constant.
     #[test]
-    fn no_new_hardcoded_context_or_prompt_size_constant_in_cognition() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cognition");
+    fn no_new_hardcoded_context_or_prompt_size_constant_anywhere_in_the_crate() {
+        // Crate-wide, not just cognition/: the 4096/2048 adapter floor (#46's own surface) sat
+        // outside cognition and would not have been caught by a cognition-only scan.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let named = |n: &str| {
+            // Categorically not size bounds, so they don't need to spend an exemption line:
+            // a duration (`*_MS`), an identifier (`*_ID`), or a vocabulary offset (`*_OFFSET`).
+            if n.ends_with("_MS") || n.ends_with("_ID") || n.ends_with("_OFFSET") {
+                return false;
+            }
             ["WINDOW", "CONTEXT", "CTX", "TOKEN", "PROMPT", "CHARS"]
                 .iter()
                 .any(|k| n.contains(k))
@@ -269,7 +291,11 @@ mod tests {
             for e in entries.flatten() {
                 let path = e.path();
                 if path.is_dir() {
-                    stack.push(path);
+                    // Vendored upstream code (candle/llama ports) is not ours to restyle; its
+                    // constants are the upstream model's own defaults.
+                    if !path.ends_with("vendored") {
+                        stack.push(path);
+                    }
                     continue;
                 }
                 if path.extension().is_none_or(|x| x != "rs") {
@@ -286,8 +312,18 @@ mod tests {
                 let lines: Vec<&str> = src.lines().collect();
                 for (i, line) in lines.iter().enumerate() {
                     let t = line.trim_start();
-                    // Declared non-bound: the line above says why.
-                    if i > 0 && lines[i - 1].contains("context-budget-exempt:") {
+                    // Declared non-bound: the marker appears anywhere in the contiguous
+                    // comment block directly above (a reason worth writing often needs two
+                    // lines, and a doc comment may sit between it and the const).
+                    let exempt = lines[..i]
+                        .iter()
+                        .rev()
+                        .take_while(|l| {
+                            let t = l.trim_start();
+                            t.starts_with("//") || t.is_empty()
+                        })
+                        .any(|l| l.contains("context-budget-exempt:"));
+                    if exempt {
                         continue;
                     }
                     let Some(rest) = t.strip_prefix("const ").or_else(|| {
