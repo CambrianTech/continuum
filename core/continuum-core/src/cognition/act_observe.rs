@@ -418,6 +418,31 @@ pub async fn apply_act(
             .unwrap_or(0)
     };
 
+    /// The ORIENTATION counter, keyed by CLASS rather than by `name|args`.
+    ///
+    /// `is_redundant_orientation` is deliberately class-based — its own doc says demoting
+    /// "by CLASS + prior-receipt (ignoring args entirely) is immune to that jitter". The
+    /// DETECTOR learned that lesson; the COUNTER did not. `bump_repeat` fingerprints
+    /// `name|args`, so every jittered variant is a fresh key returning 1.
+    ///
+    /// Measured on sympy-21379, all 8 orientation calls of one run:
+    ///   commands/list({"filter":"code"}) ×2, commands/list({}), commands/list({"filter":"sympy"}),
+    ///   code/tree({"path":"."}), code/tree({include_hidden,max_depth,path:"sympy"}),
+    ///   commands/help({"name":"code/read"}), commands/help({"name":"code/edit"})
+    /// Nearly all distinct → the nudge read "I have now run orientation 1 times this
+    /// concern" EVERY time. Byte-identical perception off a greedy decoder is a fixed
+    /// point, which is exactly the #206 failure the escalation was built to break —
+    /// reintroduced through the argument axis.
+    ///
+    /// One stable key makes the count climb across variants, so each demotion genuinely
+    /// shifts perception. Still a FACT about her own history, never a steer
+    /// ([[repetition-brick-fires-but-does-not-break-the-loop]], [[discovery-loop-broken-by-escalating-short-circuit-nudge]]).
+    const ORIENTATION_FINGERPRINT: &str = "orientation|<class>";
+    let bump_orientation_repeat = || {
+        body.working_memory
+            .note_action_fingerprint(ORIENTATION_FINGERPRINT)
+    };
+
     let recent = body.working_memory.recent();
     if all_calls_already_satisfied(&recent, calls) {
         let names = calls
@@ -463,7 +488,7 @@ pub async fn apply_act(
             .map(|c| c.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let n = bump_repeat();
+        let n = bump_orientation_repeat();
         let nudge = format!(
             "I have now run orientation ({names}) {n} times this concern — my tool menu and \
              the workspace map are already in my working memory above, and running it again \
@@ -2390,6 +2415,44 @@ mod tests {
     // carrying any real workspace action is NOT demoted (the real call must run), and
     // an empty batch is never redundant. Guards the "demote discovery at the seam"
     // fix (Joel 2026-07-16) against demoting a genuine first orientation or a real act.
+    // what this catches: the escalation counter losing to ARG JITTER. The detector
+    // (`is_redundant_orientation`) is class-based on purpose — its doc says demoting by
+    // CLASS "ignoring args entirely" is immune to jitter. The COUNTER was not: it keyed on
+    // `name|args`, so each jittered variant was a fresh key returning 1, and the nudge read
+    // "1 times this concern" forever. Byte-identical perception off a greedy decoder is a
+    // fixed point — the exact #206 failure the escalation exists to break.
+    //
+    // Live on sympy-21379, the run's 8 orientation calls, nearly all distinct args:
+    //   commands/list({"filter":"code"}) ×2, commands/list({}), commands/list({"filter":"sympy"}),
+    //   code/tree({"path":"."}), code/tree({include_hidden,max_depth,path:"sympy"}),
+    //   commands/help({"name":"code/read"}), commands/help({"name":"code/edit"})
+    // Detector fired all 5 demotions; every nudge said "1 times".
+    #[test]
+    fn the_orientation_counter_climbs_across_jittered_args() {
+        let wm = WorkingMemory::new(16);
+        // ONE stable class key — the shape `bump_orientation_repeat` uses.
+        const K: &str = "orientation|<class>";
+        assert_eq!(wm.note_action_fingerprint(K), 1);
+        assert_eq!(wm.note_action_fingerprint(K), 2);
+        assert_eq!(wm.note_action_fingerprint(K), 3, "climbs — perception shifts each demotion");
+
+        // The OLD arg-keyed shape, for contrast: jittered variants never escalate, which is
+        // precisely how a determined model rode past the guard.
+        let wm2 = WorkingMemory::new(16);
+        let jittered = [
+            r#"commands/list|{"filter":"code"}"#,
+            r#"commands/list|{}"#,
+            r#"commands/list|{"filter":"sympy"}"#,
+        ];
+        for fp in jittered {
+            assert_eq!(
+                wm2.note_action_fingerprint(fp),
+                1,
+                "arg-keyed fingerprints stay at 1 under jitter — why the counter had to move to the class"
+            );
+        }
+    }
+
     #[test]
     fn redundant_orientation_fires_only_on_a_repeat_all_discovery_batch() {
         let list = |args: serde_json::Value| ToolCall {
