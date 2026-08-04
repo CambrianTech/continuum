@@ -23,7 +23,7 @@ loud non-zero exit, never a warning.
 Scope: pure-Python repos whose deps pip-install cleanly (flask, requests, …). Anything
 needing a build step or system libraries still belongs in the Docker harness.
 """
-import argparse, json, os, subprocess, sys, tempfile, urllib.parse, urllib.request
+import argparse, json, os, shutil, subprocess, sys, tempfile, urllib.parse, urllib.request
 
 
 def sh(cmd, cwd=None, check=True, env=None):
@@ -41,6 +41,71 @@ def hf_instance(dataset, iid):
             if r["row"]["instance_id"] == iid:
                 return r["row"]
     raise SystemExit(f"instance {iid} not found in {dataset}")
+
+
+def ensure_env(base_python, env_root, instance, repo_dir, pytest_pin, as_of):
+    """A cached per-instance venv, with dependencies resolved AS OF the instance's date.
+
+    The date is the whole trick. These instances are years old and their packaging is
+    almost always upper-bound-free — flask 2.0 asks for `Werkzeug>=2.0`, so a plain
+    `pip install -e .` in 2026 resolves Werkzeug 3.x, which deleted `url_quote`, and the
+    repo cannot even import. Guessing per-repo pins by hand does not scale past a couple
+    of instances and silently rots.
+
+    `uv pip install --exclude-newer <created_at>` resolves the whole graph against the
+    index as it existed on that day, which is what the official Docker images bake in.
+    One rule, every repo, no hand-maintained pin table.
+
+    Per-instance rather than per-repo because instances span years of a repo's history
+    and their dependency graphs genuinely differ; sharing one env is how you get a green
+    gold on one instance and a mystery failure on the next. Cached because pip resolution
+    is the slow part and a re-grade after a persona run must be instant — a grader that
+    takes minutes to re-run is a grader that gets skipped, which is the exact failure this
+    file exists to prevent.
+    """
+    env = os.path.join(env_root, instance)
+    py = os.path.join(env, "bin", "python")
+    if os.path.exists(py):
+        return py
+    os.makedirs(env_root, exist_ok=True)
+    uv = shutil.which("uv")
+    print(f"[env] building {instance} venv{f' (deps as of {as_of[:10]})' if uv and as_of else ''}")
+    if uv and as_of:
+        sh([uv, "venv", "--python", base_python, "-q", env])
+        # THE SPLIT: SUBJECT vs HARNESS.
+        #
+        # Subject — the repo's own runtime dependency graph — is pinned to the instance's
+        # date, because those versions define the behavior under test.
+        #
+        # Harness — pytest, setuptools, wheel — is deliberately MODERN, because it has to
+        # run on this machine's interpreter. Date-pinning it breaks in ways that have
+        # nothing to do with the instance, and both failures are worth naming since they
+        # cost real time here: 2021 `py` raises `AttributeError: __spec__` under Python
+        # 3.11's import machinery, and 2021 setuptools predates PEP 660 so
+        # `build_meta:__legacy__` has no `build_editable` and the install dies outright.
+        #
+        # `--no-build-isolation` is what lets the two coexist: the build runs against the
+        # modern setuptools already in the venv instead of pip fetching a date-pinned one.
+        sh([uv, "pip", "install", "-q", "--python", py, pytest_pin, "setuptools", "wheel"],
+           check=False)
+        r = sh([uv, "pip", "install", "-q", "--python", py, "--exclude-newer", as_of,
+                "--no-build-isolation", "-e", "."], cwd=repo_dir, check=False)
+    else:
+        sh([base_python, "-m", "venv", env])
+        sh([py, "-m", "pip", "-q", "install", "--upgrade", "pip", "setuptools", "wheel"], check=False)
+        sh([py, "-m", "pip", "-q", "install", pytest_pin], check=False)
+        r = sh([py, "-m", "pip", "-q", "install", "-e", "."], cwd=repo_dir, check=False)
+    if r.returncode != 0:
+        # DELETE the half-built env rather than cache it. Caching on "the venv directory
+        # exists" made a failed install sticky: every later run reused a venv with no repo
+        # in it and reported a gold failure whose real cause was three steps upstream.
+        # An env is only worth keeping if it was actually built.
+        shutil.rmtree(env, ignore_errors=True)
+        raise SystemExit(
+            f"[env] could not install {instance}'s repo into a venv — nothing can be graded "
+            f"here, and a cached broken env would poison every later run:\n{r.stderr[-600:]}"
+        )
+    return py
 
 
 def apply_patch(repo, text, what):
@@ -76,9 +141,20 @@ def main():
                     help="SPINE CHECK: grade the dataset's own patch. It MUST resolve; "
                          "a failure here means the environment is wrong and no other "
                          "number from it is meaningful.")
-    ap.add_argument("--venv", required=True, help="python interpreter with pytest + the repo's deps")
+    ap.add_argument("--venv", help="python interpreter with pytest + the repo's deps")
+    ap.add_argument("--auto-venv", metavar="BASE_PYTHON",
+                    help="build the environment instead: a venv from BASE_PYTHON with "
+                         "pytest + the repo installed editable. Cached per instance under "
+                         "--env-root, so a re-grade is instant.")
+    ap.add_argument("--env-root", default=os.path.expanduser("~/.continuum/cache/swe-envs"),
+                    help="where --auto-venv caches per-instance environments")
+    ap.add_argument("--pytest", default="pytest<7",
+                    help="pytest pin — repos older than pytest 7 need <7 (conftest using "
+                         "`monkeypatch.notset`, removed in 7). The gold gate catches a wrong pin.")
     ap.add_argument("--workdir")
     args = ap.parse_args()
+    if not args.venv and not args.auto_venv:
+        raise SystemExit("need --venv <python> or --auto-venv <base python>")
 
     if not args.gold and not args.predictions:
         raise SystemExit("need --predictions <preds.jsonl> or --gold")
@@ -100,11 +176,14 @@ def main():
     sh(["git", "clone", "--quiet", f"https://github.com/{inst['repo']}.git", repo])
     sh(["git", "checkout", "--quiet", inst["base_commit"]], cwd=repo)
 
+    venv = args.venv or ensure_env(args.auto_venv, args.env_root, args.instance, repo,
+                                   args.pytest, inst.get("created_at") or "")
+
     # THE GATE. On the pristine tree + test_patch, FAIL_TO_PASS must FAIL — that failure IS
     # the bug. If it passes here, the checkout does not contain the bug and nothing measured
     # against it can distinguish a fix from a no-op.
     apply_patch(repo, inst["test_patch"], "test")
-    pre = run_tests(repo, args.venv, f2p)
+    pre = run_tests(repo, venv, f2p)
     already = [t for t, (ok, _) in pre.items() if ok]
     if already:
         print(f"\n✗ UNGRADEABLE — FAIL_TO_PASS already passes on the PRISTINE tree: {already}")
@@ -117,8 +196,8 @@ def main():
     apply_patch(repo, model_patch, "model")
     apply_patch(repo, inst["test_patch"], "test")
 
-    f2p_res = run_tests(repo, args.venv, f2p)
-    p2p_res = run_tests(repo, args.venv, p2p[:40])  # cap: p2p can be hundreds; 40 catches breakage
+    f2p_res = run_tests(repo, venv, f2p)
+    p2p_res = run_tests(repo, venv, p2p[:40])  # cap: p2p can be hundreds; 40 catches breakage
 
     f2p_ok = all(ok for ok, _ in f2p_res.values())
     p2p_ok = all(ok for ok, _ in p2p_res.values())
