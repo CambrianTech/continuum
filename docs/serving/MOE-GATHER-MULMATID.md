@@ -111,6 +111,68 @@ temp-0 coherence verified both arms (identical output prefix):
 expert of every token serviced in place through the table. The 5090/CUDA A/B on
 V4-Flash (BigMama's lane) measures the same mechanism at scale.
 
+### CLOSED on both backends — and the one rule that would have saved a day
+
+**Result:** Metal 4.0x decode with zero bytes moved; CUDA V4-Flash coherent at
+51 MiB/token against a 3.3 GiB copy baseline. Cut-2 works.
+
+**Every one of the three real defects was the same shape: a kernel reachable
+from a gather-capable `supports_op` that did not honor `src[3]`.** They were
+found one at a time, each only after the previous fix failed to clear the fault:
+
+1. `supports_op` accepted `ne2 <= 16` while dispatch only routes to the gathered
+   mmvq at `ne2 <= get_mmvq_mmid_max_batch()` (4–6); in-between batches fell
+   through to MMQ, which has no gather.
+2. The **fused gate+up** path reused the gathered `x` offset for the `vgate`
+   dot, so every expert computed its gate from expert 0's weights.
+3. `mmvq.cu:914` — `has_ids && ncols_dst > 1` dispatches to
+   `mul_mat_vec_q_moe`, a separate MoE-specialised kernel that was never
+   gathered and read contiguous staging the consume-arm deliberately leaves
+   unpopulated for aliased experts.
+
+> **THE RULE:** every kernel reachable from a gather-capable `supports_op` must
+> either honor `src[3]` or be excluded by the gate — and *reachable* must be
+> **enumerated from the dispatch code**, not from the kernels you remember
+> writing. A gather is a promise made by the gate and kept by every kernel the
+> gate admits.
+
+### Why it took eleven eliminations: property probes vs. surface bisection
+
+Ten hypotheses died before the bug was found, and in hindsight they failed as a
+group rather than individually. Each asked **what** was wrong with the table —
+content, address, alignment, integer width, timing, eviction, weight type, table
+shape — and every one of those properties was genuinely correct. Nothing about
+the table was ever broken; the table was being *ignored* by kernels nobody had
+enumerated.
+
+The probe that cracked it asked **where** instead: `GGML_MOE_GATHER_ONLY=<substr>`
+engages the gather for only the tensors matching a name, so a fault can be
+attributed to a named tensor in log2(N) runs. Its result — *all three* weight
+arms broken — was what proved the fault could not be weight-specific and sent
+the search back to dispatch, where it was.
+
+**Heuristic worth keeping: when several probes in a row all report "that property
+is fine", the question shape is wrong. Stop enumerating properties and bisect the
+surface.**
+
+### The instrument ladder (all shipped, all reusable)
+
+| Instrument | Question it answers |
+|---|---|
+| `GGML_MOE_GATHER_IDENTITY` | wrong bytes, or wrong kernel? (table over provably identical data) |
+| cross-allocation test mode | do entries spanning independent allocations work? (width/repr) |
+| quant sweep (F32/Q8_0/Q4_0/Q4_K) | is it type-specific? — **F32-only tests never touch mmvq/MMQ** |
+| mixed table mode | can the kernel handle entries straddling two regions? (live-cache shape) |
+| `GGML_MOE_GATHER_VERIFY` | are the slot bytes correct at publish time? |
+| `GGML_MOE_GATHER_SYNC` | is it ordering? (serialize and see) |
+| `GGML_MOE_GATHER_POISON` | does the kernel read past a row? (observation, not inference) |
+| `GGML_MOE_GATHER_ONLY` | **WHERE** — attribute the fault to a named tensor/layer |
+| multi-consumer warning | does another node read the same staging? |
+
+Each is cheap, each returns a fact rather than an argument, and together they
+turn a remote-repro hunt into seconds-per-branch instead of a build cycle per
+theory.
+
 ### The alignment invariant (a real bug, found cross-backend)
 
 **In-place consumption inherits NOTHING from the tensor allocator.** The copy
