@@ -2131,6 +2131,18 @@ impl ServiceModule for ServingDaemonModule {
                 "boot lane-registry sweep",
             );
         }
+        // Same reclaim, one level up: a detached benchmark run is a tokio task INSIDE the core,
+        // so a restart kills it with no child process to find and no error to report. Any run
+        // still marked `running` belonged to the core we just replaced — journal it as
+        // killed-by-restart so a poller sees a cause instead of waiting forever on a file that
+        // will never appear (#137's train-job shape, applied to benchmarks).
+        for run_id in crate::cognition::swe_bench::reap_orphaned_solve_runs() {
+            crate::probe!(
+                class = "benchmark.swe.orphan_reaped",
+                run_id = run_id.as_str(),
+                "benchmark run orphaned by a core restart — journaled as failed",
+            );
+        }
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.

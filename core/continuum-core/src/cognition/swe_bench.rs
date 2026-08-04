@@ -104,6 +104,87 @@ pub struct SweVerdict {
     pub error: Option<String>,
 }
 
+/// Where a detached benchmark run journals its state. One file per run, rewritten in place:
+/// `state: "running"` at dispatch, then the verdict — or a killed-by-reboot marker.
+pub fn solve_ledger_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join(".continuum").join("progress")
+}
+
+/// Runs this ledger dir believes are IN FLIGHT — written at dispatch, not yet resolved.
+///
+/// Two callers, one truth: the reboot guard asks before killing the core, and the boot reaper
+/// asks after. Returning `(run_id, instance)` rather than a bool is what lets the guard NAME
+/// what it would destroy, which is the difference between a policy and a nag.
+pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut live = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("swe-solve-") || !name.ends_with(".json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        if v.get("state").and_then(|s| s.as_str()) != Some("running") {
+            continue;
+        }
+        let run_id = name
+            .trim_start_matches("swe-solve-")
+            .trim_end_matches(".json")
+            .to_string();
+        let instance = v
+            .get("instance")
+            .and_then(|i| i.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        live.push((run_id, instance));
+    }
+    live.sort();
+    live
+}
+
+/// Convenience over the real ledger dir.
+pub fn in_flight_solve_runs() -> Vec<(String, String)> {
+    in_flight_solve_runs_in(&solve_ledger_dir())
+}
+
+/// At boot, any run still marked `running` was owned by a core that no longer exists — a
+/// reboot, a crash, a SIGKILL. Rewrite it as a FAILED run naming the cause.
+///
+/// Glass-boxed the day `swe-solve` shipped: two reboots silently killed a detached run, and
+/// its ledger simply never appeared. A poller cannot distinguish "still working" from "died an
+/// hour ago" when the evidence for both is an absent file — the same shape as #137's 41 train
+/// jobs submitted with zero outcomes recorded. The marker at dispatch is what makes the death
+/// observable; this reap is what makes it honest.
+pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<String> {
+    let mut reaped = Vec::new();
+    for (run_id, instance) in in_flight_solve_runs_in(dir) {
+        let path = dir.join(format!("swe-solve-{run_id}.json"));
+        let marker = serde_json::json!({
+            "failed": true,
+            "runId": run_id,
+            "instance": instance,
+            "error": "killed by a core restart — the run was in flight when the core that owned \
+                      it went away. Nothing was scored; re-dispatch to measure this instance.",
+        });
+        if std::fs::write(&path, marker.to_string()).is_ok() {
+            reaped.push(run_id);
+        }
+    }
+    reaped
+}
+
+/// Convenience over the real ledger dir.
+pub fn reap_orphaned_solve_runs() -> Vec<String> {
+    reap_orphaned_solve_runs_in(&solve_ledger_dir())
+}
+
 /// Where cached datasets and per-instance environments live. A governed cache class, not a
 /// scratch dir — see the disk-eviction contract.
 pub fn swe_cache_dir() -> PathBuf {
@@ -634,6 +715,55 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         assert_eq!(interpreter_for_year(2019), "3.9");
         assert_eq!(interpreter_for_year(2021), "3.11");
         assert_eq!(interpreter_for_year(2023), "3.11");
+    }
+
+    // what this catches: the silent-death hole. A detached run wrote NOTHING until it
+    // finished, so "still working" and "died an hour ago" were the same observation — an
+    // absent file — and two core reboots killed a run with no trace. A `running` marker that
+    // outlives its core must be journaled as failed, naming the cause.
+    #[test]
+    fn a_run_still_marked_running_at_boot_is_journaled_as_killed() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let p = dir.path();
+        std::fs::write(
+            p.join("swe-solve-alive.json"),
+            r#"{"state":"running","runId":"alive","instance":"sympy__sympy-22005"}"#,
+        )
+        .unwrap();
+        // A FINISHED run must survive the reap untouched — reaping a real verdict would
+        // destroy the only record of a measurement that actually happened.
+        std::fs::write(
+            p.join("swe-solve-done.json"),
+            r#"{"instance":"sympy__sympy-21379","acts":7,"detached":false}"#,
+        )
+        .unwrap();
+        // An unrelated ledger from another subsystem is not ours to touch.
+        std::fs::write(p.join("agent-solve-other.json"), r#"{"state":"running"}"#).unwrap();
+
+        assert_eq!(
+            in_flight_solve_runs_in(p),
+            vec![("alive".to_string(), "sympy__sympy-22005".to_string())],
+            "only OUR unfinished runs count as in flight"
+        );
+
+        let reaped = reap_orphaned_solve_runs_in(p);
+        assert_eq!(reaped, vec!["alive".to_string()]);
+
+        let after = std::fs::read_to_string(p.join("swe-solve-alive.json")).unwrap();
+        assert!(after.contains("\"failed\":true"), "the orphan is now a FAILED run: {after}");
+        assert!(
+            after.contains("killed by a core restart"),
+            "and it names the cause rather than leaving a bare zero: {after}"
+        );
+        let done = std::fs::read_to_string(p.join("swe-solve-done.json")).unwrap();
+        assert!(done.contains("\"acts\":7"), "a finished verdict is never rewritten");
+        let other = std::fs::read_to_string(p.join("agent-solve-other.json")).unwrap();
+        assert!(!other.contains("failed"), "another subsystem's ledger is untouched");
+
+        assert!(
+            in_flight_solve_runs_in(p).is_empty(),
+            "after the reap nothing is in flight — a second boot must not re-reap"
+        );
     }
 
     // what this catches: test-id lists arrive JSON-encoded inside a string field, and a
