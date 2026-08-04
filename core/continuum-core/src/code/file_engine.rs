@@ -186,9 +186,9 @@ impl FileEngine {
             file_path: relative_path.to_string(),
             bytes_written: content.len() as u64,
             error: None,
-            // Whole-file write — the caller supplied the entire content, so there is no
-            // "where did it land" question to answer.
-            applied_context: None,
+            // A whole-file write has no landing site — but when it lands ON existing
+            // content it has something more consequential to report: what it destroyed.
+            applied_context: overwrite_magnitude(&old_content, content),
         })
     }
 
@@ -244,7 +244,7 @@ impl FileEngine {
             error: None,
             // Read back from the content just written, not from what was requested — the
             // whole point is to report where the edit ACTUALLY landed.
-            applied_context: edit_anchor_line(edit_mode)
+            applied_context: edit_anchor_line(edit_mode, &new_content)
                 .map(|anchor| numbered_neighborhood(&new_content, anchor, APPLIED_CONTEXT_RADIUS)),
         })
     }
@@ -844,14 +844,87 @@ impl FileEngine {
 /// small working-memory window.
 const APPLIED_CONTEXT_RADIUS: u32 = 6;
 
-/// The line a line-addressed edit is anchored at, or `None` for modes that rewrite the
-/// whole file (where "where did it land" has no answer worth rendering).
-fn edit_anchor_line(edit_mode: &EditMode) -> Option<u32> {
+/// What a whole-file write REPLACED, when it replaced anything. `None` for a genuinely
+/// new file — creating one destroys nothing and needs no warning.
+///
+/// Glass-boxed on the M5, 2026-08-04. A persona had just produced a correct 2-line fix to
+/// `src/flask/blueprints.py` (128 lines). Two acts later she called `code/write` with a
+/// 5-line stub reconstructed from memory — no imports, no class hierarchy, the real module
+/// gone — and the receipt told her `success: true, bytes_written: 214`. She read the file
+/// afterward and still did not repair it. The task ended with the file destroyed and the
+/// correct fix erased.
+///
+/// The `applied_context` doc says a whole-file write has no landing site to report, and
+/// that is true. It does not follow that it has nothing to report. Replacing 128 lines
+/// with 5 is the single most consequential thing a file tool can do, and it was the ONE
+/// path reporting nothing — so the verb most able to destroy work was the verb with the
+/// least feedback. The shrink ratio is the fact; what she does with it stays hers
+/// ([[no-hardcoded-heuristics-to-steer-cognition]] — this refuses nothing and gates
+/// nothing).
+fn overwrite_magnitude(old_content: &str, new_content: &str) -> Option<String> {
+    if old_content.is_empty() {
+        return None; // a new file: nothing was there to lose
+    }
+    let before = old_content.lines().count();
+    let after = new_content.lines().count();
+    let mut out = format!(
+        "OVERWROTE an existing file: {before} line(s) replaced by {after}. The previous \
+         content is gone from disk (recoverable via code/undo).\n"
+    );
+    // A large shrink is the destructive-clobber shape specifically: a file reconstructed
+    // from memory instead of edited in place. Name it, and show what survives, so the next
+    // turn perceives the loss instead of reading "success".
+    if after * 2 < before {
+        out.push_str(
+            "This REMOVED most of the file. If you meant to change part of it, code/undo \
+             restores it and code/edit changes a region without rewriting the whole file.\n",
+        );
+    }
+    out.push_str("The file now reads:\n");
+    out.push_str(&numbered_neighborhood(
+        new_content,
+        1,
+        APPLIED_CONTEXT_RADIUS * 2,
+    ));
+    Some(out)
+}
+
+/// The line an edit landed on, resolved against the content that was ACTUALLY written.
+///
+/// Every `EditMode` puts text somewhere, so every one of them has a landing site worth
+/// showing — not just the ones addressed by number. A content-anchored `SearchReplace`
+/// is the safer idiom precisely because the caller does not have to know a line number,
+/// but "safer" is not "always right": the search text can match in a place the caller did
+/// not mean, and silently. Locating the replacement in the new content answers that.
+fn edit_anchor_line(edit_mode: &EditMode, new_content: &str) -> Option<u32> {
     match edit_mode {
         EditMode::LineRange { start_line, .. } => Some(*start_line),
         EditMode::InsertAt { line, .. } => Some(*line),
-        _ => None,
+        // Report the FIRST replacement site. With `all: true` there may be several; the
+        // first is the honest representative, and the caller asked for a sweep so the
+        // count is not the surprise — placement is.
+        EditMode::SearchReplace { replace, .. } => {
+            line_of_first_occurrence(new_content, replace.lines().next().unwrap_or(replace))
+        }
+        // An append always lands at the end; showing the tail proves it joined the file
+        // cleanly rather than fusing onto a last line that had no trailing newline.
+        EditMode::Append { .. } => {
+            let total = new_content.lines().count() as u32;
+            (total > 0).then_some(total)
+        }
     }
+}
+
+/// 1-indexed line of the first line that contains `needle`, or `None` when it does not
+/// appear (a replacement that cannot be located is not one we should invent a site for).
+fn line_of_first_occurrence(content: &str, needle: &str) -> Option<u32> {
+    if needle.is_empty() {
+        return None;
+    }
+    content
+        .lines()
+        .position(|line| line.contains(needle))
+        .map(|idx| idx as u32 + 1)
 }
 
 /// Numbered lines around `anchor` in `content` — the same shape `code/read` returns, so a
@@ -1156,7 +1229,85 @@ mod tests {
             .expect("write");
         assert!(
             written.applied_context.is_none(),
-            "a whole-file write has no line to locate"
+            "creating a NEW file destroys nothing and needs no warning"
+        );
+    }
+
+    // what this catches: the destructive clobber. On the M5, 2026-08-04, a persona had a
+    // CORRECT 2-line fix in src/flask/blueprints.py (128 lines), then called code/write
+    // with a 5-line stub reconstructed from memory — imports gone, class hierarchy gone,
+    // her own fix gone — and the receipt said `success: true, bytes_written: 214`. She read
+    // the file afterward and never repaired it. Of every file verb, whole-file write can
+    // destroy the most, and it was the one reporting the least. Pins: an overwrite states
+    // what it replaced, a large shrink is called out by name, and creating a new file stays
+    // quiet (asserted above) so the warning means something when it appears.
+    #[test]
+    fn overwriting_an_existing_file_reports_what_it_destroyed() {
+        let (_dir, engine) = setup_engine();
+
+        // 3 lines -> 1: the shape that erased a 128-line module.
+        let clobbered = engine
+            .write("src/main.ts", "just this\n", None)
+            .expect("overwrite");
+        let ctx = clobbered
+            .applied_context
+            .expect("an overwrite of real content must report the loss");
+        assert!(
+            ctx.contains("3 line(s) replaced by 1"),
+            "the magnitude of the loss is the fact, got:\n{ctx}"
+        );
+        assert!(
+            ctx.contains("REMOVED most of the file"),
+            "a large shrink must be named, not left for the reader to compute, got:\n{ctx}"
+        );
+        assert!(
+            ctx.contains("code/undo"),
+            "the receipt must point at the recovery path, got:\n{ctx}"
+        );
+    }
+
+    // what this catches: the content-anchored blind spot. A search/replace is the SAFER
+    // idiom — the caller never has to know a line number — but the search text can still
+    // match somewhere they did not mean, silently. Reporting only line-addressed edits
+    // would leave exactly the idiom a careful model reaches for as the one with no
+    // feedback. Pins: a replacement is located in the written content, and an append
+    // reports the tail (proving it joined the file rather than fusing onto the last line).
+    #[test]
+    fn content_anchored_and_append_edits_report_their_landing_site_too() {
+        let (_dir, engine) = setup_engine();
+
+        let replaced = engine
+            .edit(
+                "src/main.ts",
+                &EditMode::SearchReplace {
+                    search: "line 2".to_string(),
+                    replace: "REPLACED".to_string(),
+                    all: false,
+                },
+                None,
+            )
+            .expect("search/replace");
+        let ctx = replaced
+            .applied_context
+            .expect("a replacement has a location even without a line number");
+        assert!(
+            ctx.contains(">    2 | REPLACED"),
+            "the replacement must be located and marked in the written content, got:\n{ctx}"
+        );
+
+        let appended = engine
+            .edit(
+                "src/main.ts",
+                &EditMode::Append {
+                    content: "TAIL\n".to_string(),
+                },
+                None,
+            )
+            .expect("append");
+        let ctx = appended.applied_context.expect("an append lands at the end");
+        assert!(
+            ctx.contains("TAIL"),
+            "an append must show the tail it produced, got:\n{ctx}"
         );
     }
 
