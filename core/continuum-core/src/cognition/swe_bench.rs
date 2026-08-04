@@ -172,6 +172,14 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
     if repo_dir.exists() {
         let _ = std::fs::remove_dir_all(repo_dir);
     }
+    // The PARENT must exist first. `git clone` creates its target directory but not the chain
+    // above it, and the failure surfaces late and cryptically — as a mid-fetch "unable to write
+    // .git/objects/pack/*.pack: No such file or directory", which reads like a disk or network
+    // fault rather than a missing mkdir.
+    if let Some(parent) = repo_dir.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
     let url = format!("https://github.com/{}.git", instance.repo);
     let out = run("git", &["clone", "--quiet", &url, &repo_dir.to_string_lossy()], None).await?;
     if !out.status.success() {

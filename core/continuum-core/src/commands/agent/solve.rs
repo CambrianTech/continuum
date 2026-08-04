@@ -207,7 +207,7 @@ fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
 impl AgentSolve {
     /// The solve body — deliberately ctx-free (reaches the persona via the global workspace
     /// registry), so it runs inline OR spawned detached with the same code path.
-    async fn solve_body(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
+    pub(crate) async fn solve_body(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
         let run_id = p.run_id.clone();
         // Short-form persona ids resolve too (#164): rosters/benchmark harnesses DISPLAY
         // 8-char short ids, so accept the id a caller was shown — a clean UUID passes

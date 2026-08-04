@@ -1445,3 +1445,251 @@ mod swe_grade_tests {
         assert_eq!(r.patch_bytes, 512, "patch size is reported even when the tree is void");
     }
 }
+
+/// Inputs to `benchmark/swe-solve` — the whole loop in one command.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweSolveParams.ts")]
+pub struct SweSolveParams {
+    /// The instance to solve, e.g. `sympy__sympy-22005`.
+    pub instance: String,
+    /// Dataset to resolve it from. Defaults to SWE-bench Lite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub dataset: Option<String>,
+    /// The persona whose WHOLE self works the issue — never a stripped copy.
+    pub persona_id: String,
+    /// The model to measure her on.
+    pub base_model_id: String,
+    /// Max act→observe cycles.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_acts: Option<u32>,
+    /// Fire-and-poll: a real agentic drive outlives the IPC socket, so a sweep MUST detach.
+    /// Returns a run id now; the verdict lands in `~/.continuum/progress/swe-solve-<run>.json`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// Correlation id for a detached run. Omit → minted.
+    #[serde(default)]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+/// Result of `benchmark/swe-solve` — what she did AND what it scored, in one object.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweSolveResult.ts")]
+pub struct SweSolveResult {
+    pub instance: String,
+    /// Acts she actually spent. 0 with a non-empty patch is impossible; 0 with an empty patch
+    /// is a HARNESS signal (nothing ran), not a model score.
+    pub acts: u32,
+    pub files_changed: Vec<String>,
+    /// Absent on the immediate ack of a detached run — poll the ledger for the real verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub grade: Option<SweGradeResult>,
+    pub detached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+/// The task text handed to her. Deliberately says WHERE she is and what "done" means — the
+/// glass-boxed failure it prevents is her creating a new project beside the repo, or leaving
+/// the fix in a message instead of the files.
+fn swe_task_prompt(problem_statement: &str) -> String {
+    format!(
+        "You are ALREADY in the task's workspace: a real git repository with a real bug. Do not \
+         create a new workspace and do not add new top-level files — find the existing source \
+         with code/search and code/read, and fix it IN PLACE with code/edit. Run checks with \
+         code/shell if useful. The fix must land in the existing files.\n\nISSUE:\n{problem_statement}"
+    )
+}
+
+fn swe_solve_ledger_path(run_id: &str) -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(home)
+        .join(".continuum")
+        .join("progress")
+        .join(format!("swe-solve-{run_id}.json"))
+}
+
+/// Solve one instance and grade it — the whole protocol, one command.
+#[derive(Default)]
+pub struct BenchmarkSweSolve;
+
+crate::register_stateless_command!(BenchmarkSweSolve);
+
+impl BenchmarkSweSolve {
+    async fn body(p: SweSolveParams) -> Result<SweSolveResult, CommandError> {
+        let dataset = p
+            .dataset
+            .clone()
+            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
+        let rows = swe_bench::load_dataset(&dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let instance = rows
+            .into_iter()
+            .find(|r| r.instance_id == p.instance)
+            .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+
+        // She works in her OWN clone; grading later happens in a second, pristine one.
+        let solve_repo = swe_bench::swe_cache_dir()
+            .join("solve")
+            .join(&instance.instance_id)
+            .join("repo");
+        swe_bench::clone_at(&instance, &solve_repo)
+            .await
+            .map_err(CommandError::Internal)?;
+
+        // Compose agent/solve IN PROCESS — no subprocess, no CLI, no polling a file we wrote
+        // ourselves. This is the composition the command surface exists for.
+        let solved = crate::commands::agent::solve::AgentSolve::solve_body(
+            crate::commands::agent::solve::AgentSolveParams {
+                persona_id: p.persona_id.clone(),
+                base_model_id: p.base_model_id.clone(),
+                task: swe_task_prompt(&instance.problem_statement),
+                workspace: solve_repo.to_string_lossy().to_string(),
+                max_acts: p.max_acts.or(Some(30)),
+                detach: Some(false),
+                run_id: None,
+                learn: Some(true),
+                // Capture is the harness's own glass box; a sweep writes none by default.
+                capture_dir: None,
+                // Recall STAYS ON — she is measured as her whole self, never a stripped copy
+                // ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+                suppress_recall: None,
+            },
+        )
+        .await?;
+
+        // Grade the patch she produced, in a FRESH clone at base_commit. Her workspace is
+        // never the scoring tree — that separation is what makes the gate meaningful.
+        let grade_repo = swe_bench::swe_cache_dir()
+            .join("work")
+            .join(&instance.instance_id)
+            .join("repo");
+        let patch = solved.patch.clone();
+        let grade = match swe_bench::clone_at(&instance, &grade_repo).await {
+            Ok(()) => {
+                let v = swe_bench::grade(
+                    &instance,
+                    &grade_repo,
+                    if patch.trim().is_empty() { None } else { Some(patch.as_str()) },
+                )
+                .await;
+                SweGradeResult::from((v, patch.len()))
+            }
+            Err(e) => SweGradeResult::from((
+                SweVerdict {
+                    instance_id: instance.instance_id.clone(),
+                    error: Some(e),
+                    ..Default::default()
+                },
+                patch.len(),
+            )),
+        };
+
+        Ok(SweSolveResult {
+            instance: instance.instance_id,
+            acts: solved.acts,
+            files_changed: solved.files_changed,
+            grade: Some(grade),
+            detached: false,
+            run_id: None,
+        })
+    }
+}
+
+#[async_trait]
+impl ActionCommand for BenchmarkSweSolve {
+    const NAME: &'static str = "benchmark/swe-solve";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Solve ONE SWE-bench instance end to end and score it: clone at base_commit, drop the \
+         persona's whole self into that repo with the issue, then grade the patch she produced by \
+         the official protocol in a FRESH clone. Her working tree is never the scoring tree. Use \
+         `detach: true` for a sweep — a real agentic drive outlives the socket, and the verdict \
+         lands in ~/.continuum/progress/swe-solve-<runId>.json.";
+    type Params = SweSolveParams;
+    type Output = SweSolveResult;
+
+    async fn run(&self, _ctx: &Ctx, p: SweSolveParams) -> Result<SweSolveResult, CommandError> {
+        if p.detach.unwrap_or(false) {
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| format!("{}-{}", p.instance, std::process::id()));
+            let instance_ack = p.instance.clone();
+            let run_ack = run_id.clone();
+            let mut inner = p;
+            inner.detach = Some(false);
+            tokio::spawn(async move {
+                let path = swe_solve_ledger_path(&run_id);
+                let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+                match Self::body(inner).await {
+                    Ok(r) => {
+                        if let Ok(json) = serde_json::to_string_pretty(&r) {
+                            let _ = std::fs::write(&path, json);
+                        }
+                        tracing::info!(
+                            run_id = %run_id, acts = r.acts,
+                            resolved = r.grade.as_ref().map(|g| g.resolved).unwrap_or(false),
+                            "benchmark/swe-solve detached run complete"
+                        );
+                    }
+                    Err(e) => {
+                        // Fail LOUD on the poll surface: a detached run that dies must leave a
+                        // diagnosable marker, never an empty file forever.
+                        let _ = std::fs::write(
+                            &path,
+                            serde_json::json!({"failed": true, "runId": run_id, "error": e.to_string()})
+                                .to_string(),
+                        );
+                        tracing::error!(run_id = %run_id, error = %e, "benchmark/swe-solve detached run failed");
+                    }
+                }
+            });
+            return Ok(SweSolveResult {
+                instance: instance_ack,
+                acts: 0,
+                files_changed: Vec::new(),
+                grade: None,
+                detached: true,
+                run_id: Some(run_ack),
+            });
+        }
+        Self::body(p).await
+    }
+}
+
+#[cfg(test)]
+mod swe_solve_tests {
+    use super::*;
+
+    // what this catches: name/access wiring. Solving spends real compute in a real workspace,
+    // so it sits on the Privileged surface — unlike grading, which is a read.
+    #[test]
+    fn swe_solve_name_and_access_wired() {
+        assert_eq!(BenchmarkSweSolve::NAME, "benchmark/swe-solve");
+        assert!(matches!(BenchmarkSweSolve::ACCESS, AccessLevel::Privileged));
+    }
+
+    // what this catches: the task text must tell her she is ALREADY in the repo. Without it she
+    // creates a new project beside the checkout and the diff is empty — a harness zero that
+    // reads exactly like a model failure.
+    #[test]
+    fn the_task_prompt_roots_her_in_the_existing_repo() {
+        let t = swe_task_prompt("solve_poly_system mishandles infinite solutions");
+        assert!(t.contains("ALREADY in the task's workspace"));
+        assert!(t.contains("fix it IN PLACE"));
+        assert!(t.contains("do not add new top-level files"));
+        assert!(
+            t.contains("solve_poly_system mishandles infinite solutions"),
+            "the issue text must reach her verbatim"
+        );
+    }
+}
