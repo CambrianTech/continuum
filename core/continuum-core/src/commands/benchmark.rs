@@ -1577,6 +1577,12 @@ impl BenchmarkSweSolve {
                 // Recall STAYS ON — she is measured as her whole self, never a stripped copy
                 // ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
                 suppress_recall: None,
+                // SWE grades the DIFF: `grade_instance` below applies her patch to a fresh
+                // clone and runs FAIL_TO_PASS. Nothing she says is ever read. Declaring that
+                // contract is what stops a zero-change explanation from ending the run with
+                // the act budget unspent (glass-boxed on sympy-21379: one `code/tree`, then a
+                // prose analysis, 0 patch bytes).
+                deliverable: Some(crate::commands::agent::solve::Deliverable::Workspace),
             },
         )
         .await?;
@@ -1633,6 +1639,37 @@ impl ActionCommand for BenchmarkSweSolve {
     type Output = SweSolveResult;
 
     async fn run(&self, _ctx: &Ctx, p: SweSolveParams) -> Result<SweSolveResult, CommandError> {
+        // ONE SOLVE PER PERSONA AT A TIME — refuse, loudly, rather than produce a
+        // silently invalid number.
+        //
+        // `agent/solve` roots her hands by driving `code/create-workspace` through her
+        // OWN executor, and that command KEYS ON THE CALLER (persona identity), not on
+        // the cycle. So a second concurrent solve for the same persona re-roots the
+        // FIRST one's hands too: last writer wins, and both drives then edit one repo.
+        //
+        // Measured 2026-08-04, two concurrent detached solves on persona fe4dac17:
+        //   sympy-22005 (polysys task)  → its own workspace diff: EMPTY after 26 acts
+        //   sympy-21055 (refine task)   → contains its refine work AND 22005's polysys
+        //                                 edits, one of which deleted a binding that is
+        //                                 still referenced (a guaranteed NameError)
+        // Both instances score a garbage number, and nothing anywhere says why. That is
+        // exactly the failure shape [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
+        // warns about: a plausible-looking 0 that measures the harness, not the being.
+        //
+        // Refusing is correct until the root becomes per-cycle state instead of
+        // per-persona executor state (the real fix; this guard is the honest floor, and
+        // it names the conflicting run so the caller can wait or pick another persona).
+        let in_flight = crate::cognition::swe_bench::in_flight_solve_runs();
+        if let Some((run, instance)) = in_flight.first() {
+            return Err(CommandError::Invalid(format!(
+                "refusing to start `{}`: solve run `{run}` is already in flight on instance \
+                 `{instance}`. Concurrent solves SHARE one workspace root (create-workspace keys \
+                 on the persona, not the run), so both trees would be corrupted and both scores \
+                 would be meaningless. Wait for it to land (poll \
+                 ~/.continuum/progress/swe-solve-{run}.json), or run the sweep sequentially.",
+                p.instance
+            )));
+        }
         if p.detach.unwrap_or(false) {
             let run_id = p
                 .run_id
