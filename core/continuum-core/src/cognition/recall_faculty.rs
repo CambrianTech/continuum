@@ -112,6 +112,7 @@ impl RecallBudget {
 
 /// Floor on the recall token ceiling so even a tiny served window fits at least a
 /// memory or two — below this, recall would be silently empty.
+// context-budget-exempt: a FLOOR under the recall allocation — it only ever raises a budget, never caps one, so a big window is never clamped by it
 const MIN_RECALL_TOKENS: usize = 256;
 
 /// Cheap token estimate for one surfaced memory: the body plus the `- …\n` list
@@ -353,6 +354,7 @@ fn strip_action_stamp(entry: &str) -> &str {
 /// conservative — genuinely distinct memories almost never share a 48-char identical head
 /// — so a distinct memory is never collapsed. Char-boundary safe (operates on chars,
 /// not bytes).
+// context-budget-exempt: length of a dedup KEY prefix (near-duplicate detection), never text shown to the model
 const NEAR_DUP_HEAD_CHARS: usize = 48;
 
 fn recall_near_duplicate(a: &str, b: &str) -> bool {
@@ -377,6 +379,7 @@ fn recall_near_duplicate(a: &str, b: &str) -> bool {
 /// trivially-short trace (e.g. an empty or one-token action) is too generic to safely
 /// prefix-match a distinct engram, so it never suppresses recall — only a substantive
 /// act head does.
+// context-budget-exempt: minimum body length for a dedup KEY to be meaningful, never text shown to the model
 const WM_DEDUP_MIN_BODY_CHARS: usize = 24;
 
 #[async_trait]

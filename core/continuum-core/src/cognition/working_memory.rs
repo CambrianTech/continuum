@@ -38,7 +38,7 @@
 //! helps, remember what you reasoned." No config flag needed.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -71,40 +71,25 @@ pub const WM_SETTLEMENT_PREFIX: &str = "[answered]";
 /// not outrank standing framing (roster/doctrine, 0.9) or a strong recall hit.
 const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 
-/// How much of a tool result's HEAD is kept in the rolling recency trail (older acts +
-/// the proprioceptive "I did #n X" stamp). The LATEST act is kept in FULL separately
-/// (`last_action`) so the mind can actually work with what its hands just fetched — count
-/// a file, read a screenshot description, scan a log tail — not a truncated stub. Was
-/// starving live agents: they saw only the head of their own tool results and looped
-/// ("I'll read it again") because the data never came back. [[act-results-need-a-recency-channel-not-semantic-recall]]
-pub const WM_ACTION_HEAD_CHARS: usize = 800;
-
-/// Upper bound on the FULL most-recent-action block. The full result rides in the
-/// prompt as the volatile tail (placed AFTER the byte-stable trail so the KV prefix
-/// caches) — but it re-prefills EVERY turn it's present, and it persists as "most
-/// recent action" until the next act replaces it. So a persona that runs one big
-/// `code/tree` (measured 16k chars ≈ 4k tokens — HALF the whole prompt) then has
-/// several conversational turns pays ~33s of pure re-prefill (@122 tok/s on this Mac)
-/// for that raw dump on EVERY one of those turns. This cap keeps genuine reads whole
-/// (a ~300-line source file fits) while clipping pathological dumps to a usable head
-/// plus an actionable "re-fetch narrower" marker — the mind already extracted what it
-/// needed the turn it acted, and can re-run the tool with a path/range to see more.
-/// The block is the single biggest volatile chunk of the 14k persona prompt (#139);
-/// bounding it is the OOM-safe latency lever (no lane/window change). Sits well above
-/// `WM_ACTION_HEAD_CHARS` so the trail head is never the thing that gets clipped.
-/// [[persona-turn-latency-is-slot-clobbered-reprefill]] [[act-results-need-a-recency-channel-not-semantic-recall]]
-pub const WM_ACTION_FULL_MAX_CHARS: usize = 12_000;
+// The trail-head and latest-action bounds are NOT constants. They are fractions of this
+// mind's LIVE served context window, owned by `ContextBudget` — see
+// `cognition/context_budget.rs` for the calibration (the old `WM_ACTION_HEAD_CHARS = 800`
+// and `WM_ACTION_FULL_MAX_CHARS = 12_000` are exactly 1/64 and 1/4 of a 16k-token lane, so
+// behavior on a small machine is unchanged while a big window finally gets a big budget).
+// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::context_budget::ContextBudget;
 
 /// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
 /// Returns the body unchanged when it fits; otherwise a `char`-boundary-safe head plus
 /// a marker naming exactly how many chars were dropped and how to see them (re-run the
 /// tool with a narrower scope). One place so the render site and its test agree.
-pub fn clip_action_full(full: &str) -> std::borrow::Cow<'_, str> {
-    if full.chars().count() <= WM_ACTION_FULL_MAX_CHARS {
+pub fn clip_action_full<'a>(full: &'a str, budget: &ContextBudget) -> std::borrow::Cow<'a, str> {
+    let cap = budget.latest_action_chars();
+    if full.chars().count() <= cap {
         return std::borrow::Cow::Borrowed(full);
     }
-    let head: String = full.chars().take(WM_ACTION_FULL_MAX_CHARS).collect();
-    let dropped = full.chars().count() - WM_ACTION_FULL_MAX_CHARS;
+    let head: String = full.chars().take(cap).collect();
+    let dropped = full.chars().count() - cap;
     std::borrow::Cow::Owned(format!(
         "{head}\n[… +{dropped} chars truncated — re-run the tool with a narrower scope \
          (a path or line range) to see the rest]"
@@ -146,6 +131,11 @@ struct DispatchedAction {
 #[derive(Debug)]
 pub struct WorkingMemory {
     capacity: usize,
+    /// This mind's live served context window, in tokens — the source of every re-injection
+    /// bound below. `0` = not yet known (cold boot / mid-relaunch), which means NO clipping:
+    /// the deliberation guard still trims the assembled prompt to the real `n_ctx`, so an
+    /// unknown window must never be replaced with an invented one.
+    served_window: AtomicU32,
     entries: Mutex<VecDeque<WmEntry>>,
     /// The FULL result of the most recent act, kept whole (bounded upstream by the
     /// executor's fold cap) so the mind can work with what its hands just fetched — a
@@ -267,6 +257,7 @@ impl WorkingMemory {
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
+            served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
             last_action: Mutex::new(None),
             dispatched: Mutex::new(HashMap::new()),
@@ -274,6 +265,21 @@ impl WorkingMemory {
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
             active_from_seq: AtomicU64::new(0),
+        }
+    }
+
+    /// Adopt the LIVE served context window (tokens) as the basis for every re-injection
+    /// bound. Called from the act→observe seam, which reads it off the workspace cycle's
+    /// model binding — the same served-truth pin the supervisor reconciles. Idempotent.
+    pub fn set_served_window(&self, tokens: u32) {
+        self.served_window.store(tokens, Ordering::Relaxed);
+    }
+
+    /// The re-injection budget for this mind right now. Unknown window ⇒ no bounds.
+    pub fn budget(&self) -> ContextBudget {
+        match self.served_window.load(Ordering::Relaxed) {
+            0 => ContextBudget::unknown(),
+            w => ContextBudget::from_window(w),
         }
     }
 
@@ -362,7 +368,7 @@ impl WorkingMemory {
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
         // trail's KV-cache prefix byte-stable across a settle-act.
-        let head: String = a.chars().take(WM_ACTION_HEAD_CHARS).collect();
+        let head: String = a.chars().take(self.budget().trail_head_chars()).collect();
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
             kind: WmKind::Receipt { n: seq },
@@ -785,8 +791,9 @@ impl Faculty for WorkingMemoryFaculty {
         // screenshot description, scan the log — instead of looping on the truncated head.
         // Only when it carries more than the trail head already does.
         if let Some((seq, full)) = self.memory.active_action_full() {
-            if full.chars().count() > WM_ACTION_HEAD_CHARS {
-                let clipped = clip_action_full(&full);
+            let budget = self.memory.budget();
+            if full.chars().count() > budget.trail_head_chars() {
+                let clipped = clip_action_full(&full, &budget);
                 sections.push(format!(
                     "Full result of your most recent action (#{seq}):\n{clipped}"
                 ));
@@ -1082,6 +1089,9 @@ mod tests {
     #[tokio::test]
     async fn latest_action_returns_full_result_trail_keeps_head() {
         let wm = Arc::new(WorkingMemory::new(8));
+        // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
+        // is unbounded by contract, so a clipping test must declare the window it measures.
+        wm.set_served_window(16_384);
         let big = format!("line0\n{}", "x".repeat(5_000)); // > WM_ACTION_HEAD_CHARS
         wm.record_receipt(&big);
 
@@ -1128,22 +1138,26 @@ mod tests {
     async fn oversized_action_result_is_clipped_but_genuine_reads_survive_whole() {
         // A genuine read at the design's stated legit size (5k chars ≈ 130-line file) is
         // BELOW the cap → unchanged, matches the sibling test's guarantee.
+        // Bounds are a fraction of a live window now, so the test states the window it is
+        // measuring against instead of importing a constant that no longer exists.
+        let budget = ContextBudget::from_window(16_384);
+        let cap = budget.latest_action_chars();
         let genuine = "y".repeat(5_000);
         assert_eq!(
-            clip_action_full(&genuine),
+            clip_action_full(&genuine, &budget),
             genuine,
             "a genuine file read stays whole — never clipped"
         );
 
         // A pathological dump ABOVE the cap → clipped to the head + a re-fetch marker.
-        let dump = "z".repeat(WM_ACTION_FULL_MAX_CHARS + 4_000);
-        let clipped = clip_action_full(&dump);
+        let dump = "z".repeat(cap + 4_000);
+        let clipped = clip_action_full(&dump, &budget);
         assert!(
             clipped.chars().count() < dump.chars().count(),
             "the pathological dump is shorter than the raw body"
         );
         assert!(
-            clipped.chars().count() <= WM_ACTION_FULL_MAX_CHARS + 120,
+            clipped.chars().count() <= cap + 120,
             "clipped to ~the cap plus the short marker, not the full 16k"
         );
         assert!(
@@ -1157,6 +1171,9 @@ mod tests {
 
         // End-to-end through the faculty: the oversized block renders clipped.
         let wm = Arc::new(WorkingMemory::new(8));
+        // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
+        // is unbounded by contract, so a clipping test must declare the window it measures.
+        wm.set_served_window(16_384);
         wm.record_receipt(&dump);
         let rendered = WorkingMemoryFaculty::new(wm.clone())
             .contribute(&Workspace::new("a fresh burst"))
@@ -1182,6 +1199,9 @@ mod tests {
     #[tokio::test]
     async fn full_result_drops_out_after_the_persona_settles_but_a_new_act_reactivates() {
         let wm = Arc::new(WorkingMemory::new(8));
+        // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
+        // is unbounded by contract, so a clipping test must declare the window it measures.
+        wm.set_served_window(16_384);
         let dump = format!("code/tree result\n{}", "n".repeat(3_000)); // > WM_ACTION_HEAD_CHARS
         wm.record_receipt(&dump);
 

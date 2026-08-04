@@ -94,6 +94,7 @@ pub const MAX_LANES: u32 = 2;
 /// personas actually USE, never maximized to fill RAM. A model whose weights + KV
 /// at even this floor won't fit the GPU budget is simply not a serving option on
 /// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
+// context-budget-exempt: the hardware FLOOR the whole serving stack sizes UP from — the one substrate-owned minimum every other bound derives against, and never a cap on anything
 pub const MIN_SERVE_CTX: u32 = 2048;
 
 /// Cold-start DEMAND ceiling for the served window — the "B-now" half of the

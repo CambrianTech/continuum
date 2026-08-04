@@ -948,6 +948,7 @@ impl LlmDeliberationFaculty {
         // risks the llama-server 400, over-counting costs a few tokens of
         // context). One constant for the whole-message, straddling-trim, and
         // giant-single-burst arms — the charge must not drift between them.
+        // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
         const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
         let mut fitted: Vec<ChatMessage> = Vec::new();
         let mut remaining = budget_tokens;
@@ -1010,6 +1011,7 @@ impl LlmDeliberationFaculty {
     /// 500). Cheap and pure; `describe_spec` is a single tiny schema, so this is a
     /// handful of tokens, not the old full-registry dump.
     fn describe_tool_tokens(&self) -> usize {
+        // context-budget-exempt: fixed per-tool schema overhead in the template — same reason as PER_MESSAGE_TEMPLATE_TOKENS
         const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
         self.native_specs
             .iter()
