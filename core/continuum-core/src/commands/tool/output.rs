@@ -22,9 +22,12 @@ const DEFAULT_CONTEXT_LINES: usize = 2;
 /// Default cap on grep match windows — enough to see the failures, bounded so a
 /// pattern that matches everything can't re-flood.
 const DEFAULT_MAX_MATCHES: usize = 50;
-/// Char budget for the rendered slice. Below the executor's fold cap (16k) so a
-/// normal investigation isn't itself re-spilled.
-const RENDER_BUDGET_CHARS: usize = 12_000;
+// Char budget for the rendered slice — a fraction of the caller's LIVE served window
+// (`ContextBudget::render_slice_chars`), kept below the result-fold bound so a normal
+// investigation isn't itself re-spilled. Never a constant: the old `RENDER_BUDGET_CHARS =
+// 12_000` clipped a 1M-context mind to the same slice as a 16k one.
+// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::context_budget::ContextBudget;
 
 /// Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
 /// know regex — the PX "hit the ground running" affordance for the overwhelming case
@@ -196,7 +199,7 @@ impl ActionCommand for ToolOutput {
             params.context_lines.unwrap_or(DEFAULT_CONTEXT_LINES),
             range,
             params.max_matches.unwrap_or(DEFAULT_MAX_MATCHES),
-            RENDER_BUDGET_CHARS,
+            ContextBudget::live().render_slice_chars(),
         )
         .map_err(CommandError::Invalid)?;
 

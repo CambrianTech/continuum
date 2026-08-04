@@ -28,16 +28,13 @@ use uuid::Uuid;
 use super::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
 use crate::ai::types::ToolCall;
 
-/// Max chars of a single tool result folded into the next perception / engram.
-/// A bound on what we re-inject, NOT a clamp on the model's own generation: the
-/// model owns its output length (a hung child is bounded by `code/run`'s wall
-/// clock instead). Generous — a traceback she needs to read to self-correct must
-/// survive intact.
-const RESULT_FOLD_MAX_CHARS: usize = 16_000;
+// Re-injection bounds (tool-result fold, echoed args) come from her LIVE served window via
+// `ContextBudget` — never a constant. See `cognition/context_budget.rs` for why the old
+// `RESULT_FOLD_MAX_CHARS = 16_000` / `ARG_FOLD_MAX_CHARS = 600` had to go.
+use crate::cognition::context_budget::ContextBudget;
 
 // The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
 // its own truncation). Still used here for the settlement answer-head.
-use crate::cognition::working_memory::WM_ACTION_HEAD_CHARS;
 
 /// The result of driving a mind to settlement.
 pub struct SettleOutcome {
@@ -124,7 +121,7 @@ fn entries_since_last_settlement(recent: &[String]) -> &[String] {
 /// `commands/list` on every act, never converting the result to an answer). A MIXED
 /// batch — any genuinely new call — is NOT a repeat: the new call yields new
 /// perception and must run.
-fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
+fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall], fold: Option<usize>) -> bool {
     if calls.is_empty() {
         return false;
     }
@@ -132,7 +129,7 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     calls.iter().all(|call| {
         // Bounded (#165): a whole-file `content` arg must not be echoed back verbatim ahead
         // of the RESULT — see `summarize_args_for_recency`.
-        let args = summarize_args_for_recency(&call.input);
+        let args = summarize_args_for_recency(&call.input, fold);
         // Keyed on the `name(args)` core of the receipt render below — kept in sync
         // with it (the render dropped the first-person "I ran " opener, #158, so a
         // base model can't copy a receipt as a message opener; the fingerprint is
@@ -212,32 +209,26 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// boundary + a teaching marker that names how to narrow — never a mid-structure
 /// garble. Generous (the mind still needs enough of the result to act), but
 /// finite. A result already within budget is untouched.
-fn bound_recency_result(body: &str) -> String {
-    // Hold the WHOLE fetched result up to the ONE result bound the module already
-    // defines (`RESULT_FOLD_MAX_CHARS`, ~16k chars ≈ a real ~400-line source file) —
-    // NOT a second, tiny, hand-picked cap. The earlier 1600-char clamp chopped a
-    // read file to ~25 lines, starving exactly the app-scale work that needs the
-    // file resident (Joel 2026-07-13: "you always choke context down to stupid
-    // small sizes"). This is a FLOOD guard for a pathological result (a 5000-entry
-    // glob), not the context budget: the real fit is the downstream window-sized
-    // prompt packing, which knows the served window. One bound, reused.
+fn bound_recency_result(body: &str, budget: &ContextBudget) -> String {
+    // Hold the WHOLE fetched result up to the ONE result bound, which is a FRACTION OF HER
+    // LIVE WINDOW (`ContextBudget::result_fold_chars`) — not a constant. Joel said this twice:
+    // 2026-07-13 "you always choke context down to stupid small sizes", and again 2026-08-03
+    // when the constant was still a constant. A 1600-char clamp chopped a read file to ~25
+    // lines; a 16_000-char one does the same thing to a 1M-context mind. This is a FLOOD guard
+    // for a pathological result (a 5000-entry glob), not the context budget: the real fit is
+    // the downstream window-sized prompt packing. One bound, reused, derived.
+    let cap = budget.result_fold_chars();
     let trimmed = body.trim();
-    if trimmed.chars().count() <= RESULT_FOLD_MAX_CHARS {
+    if trimmed.chars().count() <= cap {
         return trimmed.to_string();
     }
-    let head: String = trimmed.chars().take(RESULT_FOLD_MAX_CHARS).collect();
+    let head: String = trimmed.chars().take(cap).collect();
     format!(
         "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
          a more specific query/path, or read a single file)"
     )
 }
 
-/// Max chars of ONE argument value echoed back into the recency channel.
-///
-/// The result-side sibling of this bound (`RESULT_FOLD_MAX_CHARS`) is generous because she
-/// must READ a result to act on it. Arguments are the opposite case: she WROTE them, one
-/// generation ago. Echoing a whole file back at her buys nothing and costs everything.
-const ARG_FOLD_MAX_CHARS: usize = 600;
 
 /// Collapse tool ARGS for the RECENCY channel (working memory).
 ///
@@ -255,12 +246,17 @@ const ARG_FOLD_MAX_CHARS: usize = 600;
 /// Deliberately MUCH more generous than the recall bound (600 vs 80 chars): recency is shown
 /// once and she may genuinely need to see the edit she just issued. Only a pathological
 /// whole-file paste collapses.
-fn summarize_args_for_recency(args: &serde_json::Value) -> String {
+///
+/// `budget` is `None` when the live window is UNKNOWN (no model binding). Then nothing folds.
+/// An unknown window must never become an invented one — that is how a guess turns into a
+/// clamp that outlives the guess.
+fn summarize_args_for_recency(args: &serde_json::Value, budget: Option<usize>) -> String {
+    let fold_at = budget.unwrap_or(usize::MAX);
     match args {
         serde_json::Value::Object(map) => map
             .iter()
             .map(|(k, v)| match v {
-                serde_json::Value::String(s) if s.chars().count() > ARG_FOLD_MAX_CHARS => {
+                serde_json::Value::String(s) if s.chars().count() > fold_at => {
                     // The digest keeps this collapse INJECTIVE, which the dedup guard
                     // depends on: `all_calls_already_satisfied` matches this exact rendering
                     // against the receipt trail, so two DIFFERENT big values must never
@@ -280,7 +276,7 @@ fn summarize_args_for_recency(args: &serde_json::Value) -> String {
             })
             .collect::<Vec<_>>()
             .join(", "),
-        other => truncate_chars(&other.to_string(), ARG_FOLD_MAX_CHARS),
+        other => truncate_chars(&other.to_string(), fold_at.min(4096)),
     }
 }
 
@@ -443,8 +439,22 @@ pub async fn apply_act(
             .note_action_fingerprint(ORIENTATION_FINGERPRINT)
     };
 
+    // EVERY re-injection bound in this act comes from her LIVE served window, never a
+    // constant — an unknown window folds NOTHING rather than inventing a number
+    // ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
+    let budget = cycle
+        .model_loadout()
+        .map(|(_, w)| ContextBudget::from_window(w))
+        .unwrap_or_else(ContextBudget::unknown);
+    // WM clips inside its OWN record path (it owns its truncation), so it needs the live
+    // window too — pushed from here, the seam that has the cycle. Re-pushed every act so a
+    // lane relaunch at a different `-c` is picked up without a restart.
+    if let Some((_, w)) = cycle.model_loadout() {
+        body.working_memory.set_served_window(w);
+    }
+    let fold = Some(budget.echoed_arg_chars());
     let recent = body.working_memory.recent();
-    if all_calls_already_satisfied(&recent, calls) {
+    if all_calls_already_satisfied(&recent, calls, fold) {
         let names = calls
             .iter()
             .map(|c| {
@@ -569,7 +579,7 @@ pub async fn apply_act(
     }
     let outcome = match body
         .executor
-        .execute_native_batch(&fg_calls, &ctx, RESULT_FOLD_MAX_CHARS)
+        .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars())
         .await
     {
         Ok(o) => o,
@@ -615,7 +625,7 @@ pub async fn apply_act(
         // `all_calls_already_satisfied` — that guard matches this rendering against the
         // receipt trail, so the two must render args the same way or dedup silently breaks
         // (caught by `identical_already_satisfied_act_does_not_re_execute`).
-        let args = summarize_args_for_recency(&call.input);
+        let args = summarize_args_for_recency(&call.input, fold);
         // Omit the "because …" clause when there is no real stated reason — an
         // empty intent must never render as an imitable receipt template (#158).
         let because = if intent.trim().is_empty() {
@@ -630,7 +640,7 @@ pub async fn apply_act(
             call.name,
             args,
             because,
-            bound_recency_result(body_text),
+            bound_recency_result(body_text, &budget),
         ));
         recall_observation.push_str(&render_act_for_recall(
             &call.name,
@@ -1163,7 +1173,10 @@ pub async fn settle_step(
                 // Snapshot the concern BEFORE the settlement marker lands, so the
                 // observation scan below sees this concern's acts, not an empty tail.
                 let pre_settle = body.working_memory.recent();
-                let head: String = text.chars().take(WM_ACTION_HEAD_CHARS).collect();
+                let head: String = text
+                    .chars()
+                    .take(body.working_memory.budget().trail_head_chars())
+                    .collect();
                 body.working_memory.record_settlement(&head);
                 // Unfulfilled-promise backstop (#122): a Speak that NARRATES action
                 // (first-person intent + fence) which nothing lifted/executed —
@@ -1775,7 +1788,7 @@ mod tests {
     fn a_whole_file_arg_is_not_echoed_back_ahead_of_the_result() {
         let whole_file = "x = 1\n".repeat(4000); // ~24k chars, a real source file
         let args = serde_json::json!({ "file_path": "sympy/core/basic.py", "content": whole_file });
-        let rendered = summarize_args_for_recency(&args);
+        let rendered = summarize_args_for_recency(&args, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
         assert!(
             rendered.chars().count() < 400,
             "a whole-file arg must collapse, not flood: {} chars",
@@ -1793,7 +1806,7 @@ mod tests {
             "file_path": "a.py",
             "new_content": "def f():\n    return refine_arg(x)\n"
         });
-        let kept = summarize_args_for_recency(&small);
+        let kept = summarize_args_for_recency(&small, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
         assert!(
             kept.contains("refine_arg"),
             "an ordinary edit stays visible verbatim: {kept}"
@@ -1805,13 +1818,13 @@ mod tests {
         // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
         // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
         let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
-        assert_eq!(bound_recency_result(&real_file), real_file.trim(), "a real file stays whole");
+        assert_eq!(bound_recency_result(&real_file, &ContextBudget::from_window(16_384)), real_file.trim(), "a real file stays whole");
         // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
-        // the ONE result bound (RESULT_FOLD_MAX_CHARS ~16k), not a tiny hand cap.
+        // the ONE result bound (a fraction of the live window), not a tiny hand cap.
         let huge = "x".repeat(50_000);
-        let bounded = bound_recency_result(&huge);
+        let bounded = bound_recency_result(&huge, &ContextBudget::from_window(16_384));
         assert!(
-            bounded.chars().count() < RESULT_FOLD_MAX_CHARS + 200,
+            bounded.chars().count() < ContextBudget::from_window(16_384).result_fold_chars() + 200,
             "flood bounded to the fold max: {} chars",
             bounded.chars().count()
         );
@@ -1820,7 +1833,7 @@ mod tests {
         assert!(bounded.contains("narrow"), "teaches how to get a usable result");
         // char-boundary safe on multibyte content (never panics mid-codepoint)
         let multibyte = "日本語".repeat(1_000);
-        let _ = bound_recency_result(&multibyte);
+        let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));
     }
 
     // what this catches: an act is scoped to the room it is FOR (one mind is in
