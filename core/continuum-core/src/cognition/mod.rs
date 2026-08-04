@@ -73,6 +73,7 @@ pub mod tool_usage;
 pub mod resolution;
 pub mod prefill_throttle;
 pub mod resolution_bench;
+pub mod swe_bench;
 pub mod resolution_compute;
 pub mod resource_admission;
 pub mod response_orchestrator;
