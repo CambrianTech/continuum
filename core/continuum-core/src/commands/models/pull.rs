@@ -97,6 +97,13 @@ pub struct PullReport {
     #[serde(default)]
     #[ts(optional)]
     pub run_id: Option<String>,
+    /// Why the pull failed, when it did. Present ONLY on a terminal failure record written to
+    /// the progress ledger. A detached failure used to write nothing at all, so a watcher polling
+    /// the path the ack named could not tell "failed" from "still downloading" — ever. The report
+    /// type has to be able to say "this ended badly" or the ledger can only describe success.
+    #[serde(default)]
+    #[ts(optional)]
+    pub error: Option<String>,
 }
 
 /// Result file for a detached pull — the SAME progress-ledger convention `agent/solve`
@@ -132,8 +139,18 @@ crate::action_command! {
         //    watchers follow `models:pull:progress` or poll the shared progress ledger.
         //    Re-running the same pull is safe and resumes: the HF cache is content-addressed.
         if p.detach.unwrap_or(false) {
+            // PRE-FLIGHT before the ack. Validation used to live entirely inside `pull_body`, i.e.
+            // AFTER the caller had already been handed `detached: true` and a run_id — so pulling a
+            // model with no `gguf_hint` returned a cheerful "started detached", then failed in the
+            // background with nothing to show for it. MEASURED: `models/pull --model_id
+            // deepseek-v4-flash --detach` acked, moved zero bytes, and wrote no ledger; the same
+            // command WITHOUT --detach fails loud and correctly. A request that cannot possibly
+            // succeed must never be allowed to detach into silence.
+            Self::preflight(&this.catalog, &p.model_id)?;
+
             let run_id = p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let model_ack = p.model_id.clone();
+            let model_failed = p.model_id.clone();
             let catalog = this.catalog.clone();
             let mut inner = p;
             inner.detach = Some(false);
@@ -144,6 +161,27 @@ crate::action_command! {
                     Ok(r) => tracing::info!(run_id = %run_id, bytes = r.bytes, "models/pull detached complete"),
                     Err(e) => {
                         tracing::error!(run_id = %run_id, error = %e, "models/pull detached FAILED");
+                        // Write the FAILURE to the same ledger the ack told the caller to poll.
+                        // Previously only the success path wrote it (at the end of pull_body), so a
+                        // failed detached pull left a watcher polling a path that would never exist
+                        // — indistinguishable from "still downloading", forever. A terminal outcome
+                        // must always land where the contract said it would, whichever way it went.
+                        let failed = PullReport {
+                            gguf_file: String::new(),
+                            gguf_path: String::new(),
+                            mmproj_file: None,
+                            bytes: 0,
+                            detail: format!("pull of '{model_failed}' FAILED: {e}"),
+                            detached: true,
+                            run_id: Some(run_id.clone()),
+                            error: Some(e.to_string()),
+                        };
+                        if let (Some(path), Ok(json)) = (
+                            models_pull_ledger_path(&run_id),
+                            serde_json::to_string_pretty(&failed),
+                        ) {
+                            let _ = std::fs::write(path, json);
+                        }
                         if let Some(bus) = crate::runtime::MessageBus::global() {
                             bus.publish_async_only("models:pull:failed", serde_json::json!({
                                 "run_id": run_id, "error": e.to_string(),
@@ -163,6 +201,7 @@ crate::action_command! {
                 ),
                 detached: true,
                 run_id: Some(run_id_ack),
+                error: None,
             });
         }
 
@@ -171,6 +210,27 @@ crate::action_command! {
 }
 
 impl ModelsPull {
+    /// Can this model be pulled at all? Returns the `gguf_hint`, or the reason it cannot.
+    ///
+    /// ONE definition of "pullable", called from two places that must not disagree: the detached
+    /// ack path (so an impossible request fails synchronously instead of detaching into silence)
+    /// and `pull_body` (which needs the hint anyway). Splitting these checks into two copies is
+    /// how the detached path ends up accepting requests the inline path rejects.
+    fn preflight(catalog: &ModelCatalog, model_id: &str) -> Result<String, CommandError> {
+        let snap = catalog.snapshot();
+        let live = snap.get(model_id).ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "unknown model id '{model_id}' — call models/list to see the live universe"
+            ))
+        })?;
+        live.model.gguf_hint.clone().ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "model '{model_id}' has no gguf_hint — it is cloud-served or has no acquirable \
+                 GGUF; models/pull only acquires local models"
+            ))
+        })
+    }
+
     /// The pull body — deliberately ctx-free (the catalog arrives as an Arc), so it runs
     /// inline OR spawned detached through the SAME code path. Mirrors `AgentSolve::solve_body`.
     async fn pull_body(
@@ -291,6 +351,7 @@ impl ModelsPull {
             detail,
             detached: false,
             run_id: p.run_id.clone(),
+            error: None,
         };
         // A detached pull writes its real report to the shared progress ledger and announces
         // completion on the bus; an inline pull just returns (both publish, so a watcher sees
