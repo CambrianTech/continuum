@@ -111,6 +111,52 @@ temp-0 coherence verified both arms (identical output prefix):
 expert of every token serviced in place through the table. The 5090/CUDA A/B on
 V4-Flash (BigMama's lane) measures the same mechanism at scale.
 
+### ⚠️ THE MEASURED VERDICT: zero-copy is a FIT feature, not a speed feature
+
+Correctness is closed on both backends. The **speed** result is split, and the
+CUDA half is negative — recorded here because it changes what this mechanism is
+for.
+
+| V4-Flash IQ2, 5090, 12GB budget, identical config | copy path | gather |
+|---|---|---|
+| decode tok/s | **3.10** | 2.36 (**-24%**) |
+| bytes moved / token | 1875 MiB | 51 MiB (-97%) |
+
+| OLMoE Q4, M5 Metal, 2GB budget, identical config | copy path | gather |
+|---|---|---|
+| decode tok/s | 12.23 | **49.09 (4.0x)** |
+| bytes moved / token | 465 MiB | 0.0 MiB |
+
+**Why the same mechanism wins 4x on one machine and loses 24% on the other.**
+The copy path performs one bulk sequential transfer into a contiguous staging
+tensor; the matmul then reads that dense, coalesced layout repeatedly. Gather
+removes the transfer but makes every one of those reads jump to a
+recency-scattered slot across a multi-GB pool, destroying L2 locality and DRAM
+row-buffer reuse **inside the hottest kernel**.
+
+- On the 5090, 1875 MiB at HBM bandwidth is ~1–2 ms of a ~320 ms token. The copy
+  was never the bottleneck, so removing it bought ~1% and cost ~24% in locality.
+- On the M5, the copy path was 384 separate small per-expert copies at ~6 GB/s
+  effective — **overhead-bound**, nowhere near Metal's bandwidth. Removing 384
+  small ops is what won 4x; the bytes were incidental.
+
+> **RULE: gather wins where the copy is OVERHEAD-bound; it loses where the copy
+> is BANDWIDTH-efficient and scattered reads cost more than the bytes saved.**
+> Measure both arms per backend before shipping it on. `GGML_MOE_GATHER` stays
+> opt-in for exactly this reason.
+
+**What it is actually for.** Its value is wherever a copy *cannot* be cheap:
+working sets that exceed VRAM, NVMe-tier fetches, and above all
+`GRID-EXPERT-SHARE.md`, where "copy" means a **network transfer**. There,
+zero-copy is the difference between feasible and infeasible — which is what the
+"fit, not speed" section below argued before any of this was measured.
+
+**The synthesis that could give us both.** The locality penalty is a *placement*
+problem, not a gather problem. If the pager co-locates co-activated experts in
+adjacent slots — the co-occurrence work in #228/#229 — gathered reads become
+dense again and we keep zero-copy *and* locality. This measurement is the
+strongest argument yet for that lever.
+
 ### CLOSED on both backends — and the one rule that would have saved a day
 
 **Result:** Metal 4.0x decode with zero bytes moved; CUDA V4-Flash coherent at
