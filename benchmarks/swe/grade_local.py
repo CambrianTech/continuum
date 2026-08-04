@@ -23,7 +23,7 @@ loud non-zero exit, never a warning.
 Scope: pure-Python repos whose deps pip-install cleanly (flask, requests, …). Anything
 needing a build step or system libraries still belongs in the Docker harness.
 """
-import argparse, json, os, shutil, subprocess, sys, tempfile, urllib.parse, urllib.request
+import argparse, json, os, re, shutil, subprocess, sys, tempfile, urllib.parse, urllib.request
 
 
 def sh(cmd, cwd=None, check=True, env=None):
@@ -69,6 +69,18 @@ def ensure_env(base_python, env_root, instance, repo_dir, pytest_pin, as_of):
         return py
     os.makedirs(env_root, exist_ok=True)
     uv = shutil.which("uv")
+    # The INTERPRETER has an era too, not just the dependency graph. A 2014 requests
+    # vendors a urllib3 that does `from collections import Mapping`, which Python 3.10
+    # deleted — no dependency pin can rescue that, the language moved. uv can fetch any
+    # CPython on demand, so pick one the instance's code could actually have run on.
+    # Coarse on purpose: the gold gate is the arbiter, and a wrong guess fails loudly
+    # rather than producing a plausible number.
+    if uv and as_of and base_python in ("auto", "", None):
+        year = int(as_of[:4]) if as_of[:4].isdigit() else 2023
+        # 3.9 is the last release with the `collections.Mapping` aliases that pre-2020
+        # code reaches for; uv's own floor is 3.8, so there is no lower rung to offer.
+        base_python = "3.9" if year < 2020 else "3.11"
+        print(f"[env] instance is from {year} — using Python {base_python}")
     print(f"[env] building {instance} venv{f' (deps as of {as_of[:10]})' if uv and as_of else ''}")
     if uv and as_of:
         sh([uv, "venv", "--python", base_python, "-q", env])
@@ -121,14 +133,55 @@ def apply_patch(repo, text, what):
     raise SystemExit(f"could not apply {what} patch — the tree is not what the patch expects")
 
 
-def run_tests(repo, venv_py, tests):
-    """Each test id run individually: one collection error must not mask the others."""
+def patched_test_files(test_patch):
+    """The test files the instance's own test_patch touches — the scope to run."""
+    return sorted({m.group(1) for m in re.finditer(r"^\+\+\+ b/(\S+)", test_patch, re.M)})
+
+
+def run_tests(repo, venv_py, tests, test_files):
+    """
+    Resolve each required test id against ONE pytest run over the instance's test files.
+
+    The dataset does not use a single id shape. pytest/flask instances give node ids
+    (`tests/test_x.py::test_y`); sympy gives BARE function names (`test_solve_biquadratic`)
+    because sympy ships its own runner, and handing those to pytest as paths produces
+    `ERROR: file or directory not found` — which scores as a failure and looks exactly
+    like a real one. That mis-scored gold at 0/N on instances whose environment was fine.
+
+    So: run the patched test files once, parse the per-test verdicts, and look each
+    required id up by node id OR by bare function name. A test that never appears in the
+    report (collection error, renamed, wrong file) is a failure — but a NAMED one.
+    """
     env = dict(os.environ, PYTHONPATH=os.path.join(repo, "src"), PYTHONDONTWRITEBYTECODE="1")
+    scope = test_files or sorted({t.split("::")[0] for t in tests if t.endswith(".py")})
+    if not scope:
+        return {t: (False, "no test file to run — test_patch touched nothing") for t in tests}
+
+    r = sh([venv_py, "-m", "pytest", *scope, "-v", "--no-header", "-rN",
+            "-p", "no:cacheprovider"], cwd=repo, check=False, env=env)
+    report = r.stdout + r.stderr
+
+    by_node, by_func = {}, {}
+    for m in re.finditer(r"^(\S+::\S+?)\s+(PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED)", report, re.M):
+        node, verdict = m.group(1), m.group(2)
+        ok = verdict in ("PASSED", "XFAIL", "SKIPPED")
+        by_node[node] = ok
+        func = node.split("::")[-1].split("[")[0]
+        # Same bare name in two files: only count it as passing if every one passed.
+        by_func[func] = ok and by_func.get(func, True)
+
     out = {}
     for t in tests:
-        r = sh([venv_py, "-m", "pytest", t, "-q", "--no-header", "-p", "no:cacheprovider"],
-               cwd=repo, check=False, env=env)
-        out[t] = (r.returncode == 0, (r.stdout + r.stderr)[-400:])
+        if t in by_node:
+            out[t] = (by_node[t], "")
+        else:
+            key = t.split("::")[-1].split(".")[-1].split("[")[0]
+            if key in by_func:
+                out[t] = (by_func[key], "")
+            else:
+                out[t] = (False, f"not present in the pytest report for {' '.join(scope)}")
+    if not by_node:
+        print(f"[tests] pytest collected NOTHING from {' '.join(scope)}:\n{report[-800:]}")
     return out
 
 
@@ -162,6 +215,7 @@ def main():
     inst = hf_instance(args.dataset, args.instance)
     f2p = json.loads(inst["FAIL_TO_PASS"]) if isinstance(inst["FAIL_TO_PASS"], str) else inst["FAIL_TO_PASS"]
     p2p = json.loads(inst["PASS_TO_PASS"]) if isinstance(inst["PASS_TO_PASS"], str) else inst["PASS_TO_PASS"]
+    tfiles = patched_test_files(inst["test_patch"])
 
     if args.gold:
         model_patch = inst["patch"]
@@ -183,7 +237,7 @@ def main():
     # the bug. If it passes here, the checkout does not contain the bug and nothing measured
     # against it can distinguish a fix from a no-op.
     apply_patch(repo, inst["test_patch"], "test")
-    pre = run_tests(repo, venv, f2p)
+    pre = run_tests(repo, venv, f2p, tfiles)
     already = [t for t, (ok, _) in pre.items() if ok]
     if already:
         print(f"\n✗ UNGRADEABLE — FAIL_TO_PASS already passes on the PRISTINE tree: {already}")
@@ -196,8 +250,8 @@ def main():
     apply_patch(repo, model_patch, "model")
     apply_patch(repo, inst["test_patch"], "test")
 
-    f2p_res = run_tests(repo, venv, f2p)
-    p2p_res = run_tests(repo, venv, p2p[:40])  # cap: p2p can be hundreds; 40 catches breakage
+    f2p_res = run_tests(repo, venv, f2p, tfiles)
+    p2p_res = run_tests(repo, venv, p2p[:40], tfiles)  # cap: p2p can be hundreds; 40 catches breakage
 
     f2p_ok = all(ok for ok, _ in f2p_res.values())
     p2p_ok = all(ok for ok, _ in p2p_res.values())
