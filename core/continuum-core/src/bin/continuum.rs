@@ -28,13 +28,12 @@ use continuum_client::Connection;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use serde_json::Value;
 
-const DEFAULT_CORE_SOCKET: &str = "/tmp/continuum-core.sock";
 /// Where `continuum start` records the detached core's PID so `continuum stop` can find it.
 fn pidfile_for(socket: &str) -> String {
     format!("{socket}.pid")
 }
 fn start_logfile() -> String {
-    "/tmp/continuum-core-start.log".to_string()
+    continuum_core::ipc::endpoint_paths::core_start_logfile()
 }
 
 #[tokio::main]
@@ -87,6 +86,7 @@ async fn run() -> Result<(), String> {
 /// then render it as bash usage. Same single source the AI tool adapter reads;
 /// only the rendering differs by paradigm ("the manual matches the paradigm").
 async fn help_for(command: &str) -> Result<(), String> {
+    ensure_core_running(command).await?;   // the manual comes from the live registry
     let list = connection()
         .commands()
         .execute_value("commands/list", serde_json::json!({ "filter": command }))
@@ -192,11 +192,26 @@ fn camel_to_kebab(s: &str) -> String {
 }
 
 fn socket_path() -> String {
-    std::env::var("CONTINUUM_CORE_SOCKET").unwrap_or_else(|_| DEFAULT_CORE_SOCKET.to_string())
+    continuum_core::ipc::endpoint_paths::core_socket_path()
 }
 
-/// Dispatch a single command to the running core through the uniform Connection.
+/// Dispatch a single command to the core through the uniform Connection, STARTING the
+/// core first if nothing is answering.
+///
+/// Why auto-start is infrastructure and not convenience: every governed long-running
+/// operation lives behind a command (`models/pull` resumes, is content-addressed,
+/// journals to `~/.continuum/progress/`, emits progress on the bus). None of that is
+/// reachable when the core is down, so "the core isn't running" turns into a bare
+/// `nohup <downloader> &` — which has no ledger, no resume, no progress, and dies
+/// silently leaving an empty directory. That has now happened to two separate
+/// multi-hour model pulls (K3, then V4-Flash IQ1_S) and cost days.
+///
+/// The governed path must be the path of LEAST resistance or it does not get used.
+/// One ping decides; `continuum start` is already idempotent and waits for ready.
+/// Set `CONTINUUM_NO_AUTOSTART=1` where spawning a core is not acceptable (CI, probes)
+/// — it then fails with the reason rather than silently doing nothing.
 async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
+    ensure_core_running(command).await?;
     let canonical = canonical_param_names(command).await;
     let params = params_from_args(&args, &canonical)?;
     let result = connection()
@@ -370,6 +385,31 @@ async fn core_is_up() -> bool {
             .await,
         Ok(_)
     )
+}
+
+/// Make sure a core is answering before dispatching, launching one if not. See the
+/// `dispatch` doc for why this is load-bearing rather than a nicety.
+///
+/// Announces on stderr (never stdout — stdout is the command's JSON result and stays
+/// machine-parseable) so an operator who typed one command and got a 60s pause knows
+/// exactly what is happening instead of assuming it hung.
+async fn ensure_core_running(command: &str) -> Result<(), String> {
+    if core_is_up().await {
+        return Ok(());
+    }
+    if std::env::var("CONTINUUM_NO_AUTOSTART").is_ok_and(|v| v != "0") {
+        return Err(format!(
+            "no core is answering on {} and CONTINUUM_NO_AUTOSTART is set, so `{command}` \
+             cannot be dispatched. Start one with `continuum start`.",
+            socket_path()
+        ));
+    }
+    eprintln!("▶ no core running — starting one for `{command}` (continuum start)");
+    let secs = launch_core(&[]).await.map_err(|e| {
+        format!("`{command}` needs a running core and one could not be started: {e}")
+    })?;
+    eprintln!("✅ core ready after ~{secs}s — dispatching `{command}`");
+    Ok(())
 }
 
 /// `continuum start` — build + run the headless Rust core (detached), wait until it
@@ -755,6 +795,59 @@ fn pid_alive(pid: i32) -> bool {
 /// Returns the seconds waited. Deliberately prints NO success line — the caller owns the
 /// receipt (#194): `start` may celebrate liveness, but `reboot` must verify deploy
 /// provenance first and only then print its one checkmark.
+/// Resolve the bash that runs the start script.
+///
+/// `Command::new("bash")` is WRONG on Windows: PATH lookup finds `C:\Windows\System32\bash.exe`,
+/// which is the WSL launcher, not a POSIX shell. It hands the script to a Linux distro that may
+/// not exist and dies with `execvpe(/bin/bash) failed: No such file or directory`. That is exactly
+/// what `continuum start` has been doing here — so the core could never start on Windows, so no
+/// governed command was reachable, so every long-running job got hand-rolled instead.
+///
+/// Order: explicit `CONTINUUM_BASH` override, then the Git-for-Windows locations, then a PATH scan
+/// that SKIPS the System32 WSL shim. Fails loud and names the fix rather than falling back to a
+/// bash that will not work.
+fn locate_bash() -> Result<PathBuf, String> {
+    if let Ok(explicit) = std::env::var("CONTINUUM_BASH") {
+        let p = PathBuf::from(&explicit);
+        if p.is_file() {
+            return Ok(p);
+        }
+        return Err(format!("CONTINUUM_BASH is set to `{explicit}` but that is not a file"));
+    }
+
+    if !cfg!(windows) {
+        return Ok(PathBuf::from("bash"));
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for env_key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Ok(root) = std::env::var(env_key) {
+            let base = PathBuf::from(root);
+            candidates.push(base.join("Git").join("bin").join("bash.exe"));
+            candidates.push(base.join("Programs").join("Git").join("bin").join("bash.exe"));
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            // The System32 entry is the WSL shim; taking it is the bug this function exists for.
+            let lower = dir.to_string_lossy().to_lowercase();
+            if lower.contains("system32") {
+                continue;
+            }
+            candidates.push(dir.join("bash.exe"));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| {
+            "no usable bash found. The start script is a bash script and Windows' \
+             System32\\bash.exe is the WSL launcher, not a POSIX shell. Install Git for Windows \
+             (which provides bash), or point CONTINUUM_BASH at a bash.exe."
+                .to_string()
+        })
+}
+
 async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
     let socket = socket_path();
     let script = locate_start_script()?;
@@ -765,11 +858,13 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
         .try_clone()
         .map_err(|e| format!("cannot clone start log handle: {e}"))?;
 
-    println!("▶ starting core via {} (log: {logfile})", script.display());
+    // stderr, not stdout: stdout carries the dispatched command's JSON result and has to stay
+    // machine-parseable when a command auto-starts the core on its way through.
+    eprintln!("▶ starting core via {} (log: {logfile})", script.display());
 
     // Spawn the pure-Rust start script in its OWN session (setsid) so it survives
     // `continuum` exiting — a detached daemon, not a child tied to this process.
-    let mut cmd = std::process::Command::new("bash");
+    let mut cmd = std::process::Command::new(locate_bash()?);
     cmd.arg(&script)
         .env("CONTINUUM_CORE_SOCKET", &socket)
         .stdin(Stdio::null())
@@ -790,12 +885,24 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+        // NOT DETACHED_PROCESS. That flag gives the child NO console at all, and the start script
+        // is bash — a console-subsystem program that needs one. Under DETACHED_PROCESS it died
+        // with exit 1 in ~2s having written nothing at all, which is indistinguishable from "the
+        // script is broken" and is why the core appeared to be unstartable on Windows.
+        // CREATE_NO_WINDOW gives it a console with no visible window, so it runs normally and its
+        // redirected stdout/stderr still land in the start log. Survival past this CLI exiting does
+        // not need detachment on Windows: a child is not killed when its parent exits, and
+        // CREATE_NEW_PROCESS_GROUP already keeps our Ctrl+C from reaching it.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn {}: {e}", script.display()))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "failed to spawn `bash {}`: {e}. The start script is bash; on Windows that needs \
+             bash on PATH (Git Bash).",
+            script.display()
+        )
+    })?;
 
     // Record the PID so `continuum stop` can find the detached process group.
     let pidfile = pidfile_for(&socket);
@@ -805,17 +912,68 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
     // first build (cargo) can take minutes; poll generously, then fail loud with
     // the log tail rather than hang forever. The death-check is what makes a
     // reboot's success signal honest: the ping must come from the NEW core.
-    for i in 0..150u64 {
-        tokio::time::sleep(Duration::from_secs(2)).await;
+    // A COLD start legitimately takes far longer than the old 300s ceiling: the script builds
+    // llama-server (CUDA) and then the core, which is tens of minutes on a first run. 300s was not
+    // a safety margin, it was a guaranteed false failure on any clean checkout. Raising it is only
+    // safe because a DEAD script is now detected within one 2s tick below, so the long ceiling
+    // only ever applies to a build that is genuinely still making progress.
+    const TICK_SECS: u64 = 2;
+    const MAX_WAIT_SECS: u64 = 30 * 60;
+    let mut last_progress = String::new();
+    for i in 0..(MAX_WAIT_SECS / TICK_SECS) {
+        tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
         let old_still_alive = wait_for_death.iter().any(|p| pid_alive(*p));
         if !old_still_alive && core_is_up().await {
-            return Ok((i + 1) * 2);
+            return Ok((i + 1) * TICK_SECS);
+        }
+        // Show the build advancing. A multi-minute silent wait is indistinguishable from a hang,
+        // and guessing which one you are in is how a long build gets killed and hand-worked around.
+        if (i + 1) % 15 == 0 {
+            let line = tail(&logfile, 1).trim().to_string();
+            if !line.is_empty() && line != last_progress {
+                eprintln!("  … {line}");
+                last_progress = line;
+            }
+        }
+        // The start script EXITING is the fast, certain answer, and not checking for it was the
+        // defect: a script that died in 200ms was indistinguishable from one still doing a
+        // multi-minute cargo build, so every startup failure cost the full 300s and then reported
+        // a log tail. Observed shape: 300s wait, empty log, no cause -- which is how "the core
+        // never starts on this box" stayed invisible long enough to make hand-rolled downloads
+        // feel like the only option.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!(
+                "the start script exited ({status}) after ~{}s without the core coming up.\n{}",
+                (i + 1) * 2,
+                start_log_report(&logfile)
+            ));
         }
     }
     Err(format!(
-        "core did not become ready within 300s. Last log lines:\n{}",
-        tail(&logfile, 20)
+        "core did not become ready within 300s (start script still running).\n{}",
+        start_log_report(&logfile)
     ))
+}
+
+/// Render the start log for a failure message, and say so plainly when there is nothing in it.
+/// "Last log lines:" followed by an empty string is worse than no diagnostic at all: it reads as
+/// "the log had nothing interesting" when the truth is "the script produced no output whatsoever",
+/// which is itself the strongest clue available (it never got far enough to print).
+fn start_log_report(logfile: &str) -> String {
+    let t = tail(logfile, 20);
+    if t.trim().is_empty() {
+        let exists = Path::new(logfile).exists();
+        format!(
+            "The start log {logfile} is {} -- the script produced NO output at all, so it failed \
+             before reaching its first message. Run it directly to see why:\n  bash {}",
+            if exists { "empty" } else { "missing" },
+            locate_start_script()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "tools/scripts/start-server.sh".to_string())
+        )
+    } else {
+        format!("Last log lines:\n{t}")
+    }
 }
 
 /// `continuum stop` — stop the running core (the detached session started by `continuum start`).
