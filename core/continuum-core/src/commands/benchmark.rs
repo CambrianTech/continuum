@@ -1246,3 +1246,202 @@ mod tests {
         assert_eq!(md.matches("cu benchmark/run").count(), 4, "all replication cmds survive: {md}");
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// SWE-bench: the repo-test grader on the command surface.
+//
+// `swe-bench-lite` and `swe-bench-verified` have been catalog rows since this file was
+// written, with `Grader::Python` documented as "catalogued; grader lands with the python
+// collections". This is that grader — and it lands in Rust, because a benchmark is substrate
+// ([[benchmark-infra-is-substrate-commands-handles-events-never-bash]]). The Python scripts
+// it replaces produced numbers nobody could trust: eight runs scored against a clone left at
+// HEAD, gold mis-scored on three instances by an id-shape assumption, and a poll loop that
+// could not tell a dead dispatch from a working one.
+//
+// The instance's own pytest suite still runs — that is the SUBJECT under test, exactly as
+// `rustc` is for `humaneval-rs`. We write no Python.
+// ---------------------------------------------------------------------------------------
+
+use crate::cognition::swe_bench::{self, SweVerdict};
+
+/// Inputs to `benchmark/swe-grade`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweGradeParams.ts")]
+pub struct SweGradeParams {
+    /// The instance to grade, e.g. `sympy__sympy-22005`.
+    pub instance: String,
+    /// Dataset to resolve the instance from. Defaults to SWE-bench Lite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub dataset: Option<String>,
+    /// THE SPINE CHECK: grade the dataset's own gold patch. It MUST resolve — if it does not,
+    /// the environment is wrong and no other number from it means anything. Run this before
+    /// trusting any solver's score on an instance you have not graded before.
+    #[serde(default)]
+    #[ts(optional)]
+    pub gold: Option<bool>,
+    /// A candidate patch to grade (unified diff). Ignored when `gold` is set.
+    #[serde(default)]
+    #[ts(optional)]
+    pub patch: Option<String>,
+    /// A working tree a solver has already edited — its `git diff` becomes the candidate
+    /// patch. Grading still happens in a FRESH clone at `base_commit`, so a solver that dirtied
+    /// its workspace cannot launder that into a passing score.
+    #[serde(default)]
+    #[ts(optional)]
+    pub workspace: Option<String>,
+}
+
+/// Result of `benchmark/swe-grade` — the full verdict, never a bare boolean.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweGradeResult.ts")]
+pub struct SweGradeResult {
+    pub instance: String,
+    /// True only when every FAIL_TO_PASS and every sampled PASS_TO_PASS passed.
+    pub resolved: bool,
+    pub fail_to_pass_passed: u32,
+    pub fail_to_pass_total: u32,
+    pub pass_to_pass_passed: u32,
+    pub pass_to_pass_total: u32,
+    /// False when FAIL_TO_PASS already passed on the pristine tree — the checkout carries no
+    /// bug, so `resolved: false` from such a run means NOTHING about the solver.
+    pub gate_ok: bool,
+    /// Set when no verdict could be produced (clone/patch/environment failure). A result with
+    /// `error` is an ABSENCE, not a zero, and must never be tallied as a failed attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+    /// How many bytes of candidate patch were graded — 0 means the solver changed nothing,
+    /// which is a harness signal, not a model score.
+    pub patch_bytes: u32,
+}
+
+impl From<(SweVerdict, usize)> for SweGradeResult {
+    fn from((v, patch_bytes): (SweVerdict, usize)) -> Self {
+        SweGradeResult {
+            instance: v.instance_id,
+            resolved: v.resolved,
+            fail_to_pass_passed: v.f2p_passed as u32,
+            fail_to_pass_total: v.f2p_total as u32,
+            pass_to_pass_passed: v.p2p_passed as u32,
+            pass_to_pass_total: v.p2p_total as u32,
+            gate_ok: v.gate_ok,
+            error: v.error,
+            patch_bytes: patch_bytes as u32,
+        }
+    }
+}
+
+/// Grade one SWE-bench instance by the official protocol.
+#[derive(Default)]
+pub struct BenchmarkSweGrade;
+
+// Self-registered at its own declaration site — the registry has no central list.
+crate::register_stateless_command!(BenchmarkSweGrade);
+
+#[async_trait]
+impl ActionCommand for BenchmarkSweGrade {
+    const NAME: &'static str = "benchmark/swe-grade";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Grade one SWE-bench instance by the official protocol: clone at base_commit, apply the \
+         candidate patch, apply the instance's test_patch, run its tests. RESOLVED only when every \
+         FAIL_TO_PASS and every sampled PASS_TO_PASS passes. Refuses to report on a tree it cannot \
+         vouch for — FAIL_TO_PASS must FAIL on the pristine checkout (that failure IS the bug), and \
+         `gateOk: false` marks a run whose score is void. Pass `gold: true` first on any instance \
+         not graded here before: the dataset's own patch must resolve, or the environment is wrong \
+         and no other number from it means anything.";
+    type Params = SweGradeParams;
+    type Output = SweGradeResult;
+
+    async fn run(&self, _ctx: &Ctx, p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
+        let dataset = p
+            .dataset
+            .clone()
+            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
+        let rows = swe_bench::load_dataset(&dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let instance = rows
+            .into_iter()
+            .find(|r| r.instance_id == p.instance)
+            .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+
+        // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
+        // clone below — where the solver worked is never where the score is taken.
+        let candidate: Option<String> = if p.gold.unwrap_or(false) {
+            Some(instance.patch.clone())
+        } else if let Some(ws) = p.workspace.as_ref() {
+            let out = std::process::Command::new("git")
+                .args(["diff"])
+                .current_dir(ws)
+                .output()
+                .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
+            Some(String::from_utf8_lossy(&out.stdout).to_string())
+        } else {
+            p.patch.clone()
+        };
+        let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
+
+        let work = swe_bench::swe_cache_dir().join("work").join(&instance.instance_id);
+        let repo = work.join("repo");
+        let _ = std::fs::create_dir_all(&work);
+        if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
+            return Ok(SweGradeResult::from((
+                SweVerdict {
+                    instance_id: instance.instance_id,
+                    error: Some(e),
+                    ..Default::default()
+                },
+                patch_bytes,
+            )));
+        }
+        let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+        Ok(SweGradeResult::from((verdict, patch_bytes)))
+    }
+}
+
+#[cfg(test)]
+mod swe_grade_tests {
+    use super::*;
+
+    // what this catches: name/access wiring — grading is a read on the AiSafe surface, so a
+    // persona can score her own work without an operator in the loop.
+    #[test]
+    fn swe_grade_name_and_access_wired() {
+        assert_eq!(BenchmarkSweGrade::NAME, "benchmark/swe-grade");
+        assert!(matches!(BenchmarkSweGrade::ACCESS, AccessLevel::AiSafe));
+    }
+
+    // what this catches: a verdict that could not run must NOT read as a scored zero. Tallying
+    // an environment failure as "the model failed" is how a broken harness becomes a number.
+    #[test]
+    fn an_errored_verdict_is_an_absence_not_a_zero() {
+        let v = SweVerdict {
+            instance_id: "x__y-1".into(),
+            error: Some("could not install repo".into()),
+            ..Default::default()
+        };
+        let r = SweGradeResult::from((v, 0));
+        assert!(!r.resolved);
+        assert!(r.error.is_some(), "the reason must survive to the caller");
+        assert_eq!(r.fail_to_pass_total, 0, "no tests ran, so nothing was attempted");
+    }
+
+    // what this catches: the gate is reported, not just enforced. A caller tallying results
+    // must be able to EXCLUDE ungradeable instances rather than counting them as failures.
+    #[test]
+    fn the_gate_verdict_reaches_the_caller() {
+        let v = SweVerdict {
+            instance_id: "x__y-1".into(),
+            gate_ok: false,
+            error: Some("UNGRADEABLE — FAIL_TO_PASS already passes".into()),
+            ..Default::default()
+        };
+        let r = SweGradeResult::from((v, 512));
+        assert!(!r.gate_ok);
+        assert_eq!(r.patch_bytes, 512, "patch size is reported even when the tree is void");
+    }
+}
