@@ -54,6 +54,21 @@ pub struct ModelsPullParams {
     #[serde(default)]
     #[ts(optional)]
     pub quant: Option<String>,
+    /// Fire-and-poll (mirrors `agent/solve --detach`, #86). A frontier GGUF is tens of
+    /// GB and takes an HOUR — that MUST NOT hold the command socket. With `detach`, the
+    /// call returns a handle NOW (`detached: true`, empty path/bytes) and the real report
+    /// lands in `~/.continuum/progress/models-pull-<run_id>.json`. Progress is published
+    /// on the bus as `models:pull:progress` per shard so the UI / a persona / Positron can
+    /// watch it. Re-running the SAME pull is idempotent: the HF cache is content-addressed,
+    /// so completed shards skip instantly and an interrupted pull resumes where it stopped.
+    #[serde(default)]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// Correlation id for a detached pull (echoed in the ack, the progress events and the
+    /// result file). Omit → minted. Pass the SAME id to resume-and-watch one logical pull.
+    #[serde(default)]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 /// What `models/pull` landed: the chosen file, where it lives, its size, and the
@@ -73,6 +88,28 @@ pub struct PullReport {
     pub bytes: u64,
     /// Human-readable summary (repo, chosen tier, whether mmproj came too).
     pub detail: String,
+    /// True when this is the immediate ACK of a detached pull — `gguf_path`/`bytes` are
+    /// empty/zero. Poll `~/.continuum/progress/models-pull-<run_id>.json` for the real
+    /// report, or subscribe to `models:pull:progress` / `models:pull:complete`.
+    #[serde(default)]
+    pub detached: bool,
+    /// Correlation id, present on a detached ack and on every progress event for the run.
+    #[serde(default)]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+/// Result file for a detached pull — the SAME progress-ledger convention `agent/solve`
+/// and cognition/eval already use (`~/.continuum/progress/<kind>-<run_id>.json`), so one
+/// poller/`Positron` tail serves every long-running command instead of a per-command scheme.
+fn models_pull_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
+    let dir = base.join("progress");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join(format!("models-pull-{run_id}.json")))
 }
 
 crate::action_command! {
@@ -89,8 +126,59 @@ crate::action_command! {
     params: ModelsPullParams,
     output: PullReport,
     run(this, _ctx, p) => {
+        // 0. FIRE-AND-POLL (#86 shape, same as `agent/solve --detach`). A frontier GGUF is an
+        //    hour of downloading; holding the command socket for that is the bug that pattern
+        //    exists to prevent. Ack immediately with a run_id, do the work on a task, and let
+        //    watchers follow `models:pull:progress` or poll the shared progress ledger.
+        //    Re-running the same pull is safe and resumes: the HF cache is content-addressed.
+        if p.detach.unwrap_or(false) {
+            let run_id = p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let model_ack = p.model_id.clone();
+            let catalog = this.catalog.clone();
+            let mut inner = p;
+            inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
+            let run_id_ack = run_id.clone();
+            tokio::spawn(async move {
+                match ModelsPull::pull_body(catalog, inner).await {
+                    Ok(r) => tracing::info!(run_id = %run_id, bytes = r.bytes, "models/pull detached complete"),
+                    Err(e) => {
+                        tracing::error!(run_id = %run_id, error = %e, "models/pull detached FAILED");
+                        if let Some(bus) = crate::runtime::MessageBus::global() {
+                            bus.publish_async_only("models:pull:failed", serde_json::json!({
+                                "run_id": run_id, "error": e.to_string(),
+                            }));
+                        }
+                    }
+                }
+            });
+            return Ok(PullReport {
+                gguf_file: String::new(),
+                gguf_path: String::new(),
+                mmproj_file: None,
+                bytes: 0,
+                detail: format!(
+                    "pull of '{model_ack}' started detached — poll ~/.continuum/progress/models-pull-{run_id_ack}.json \
+                     or watch models:pull:progress"
+                ),
+                detached: true,
+                run_id: Some(run_id_ack),
+            });
+        }
+
+        Self::pull_body(this.catalog.clone(), p).await
+    }
+}
+
+impl ModelsPull {
+    /// The pull body — deliberately ctx-free (the catalog arrives as an Arc), so it runs
+    /// inline OR spawned detached through the SAME code path. Mirrors `AgentSolve::solve_body`.
+    async fn pull_body(
+        catalog: Arc<ModelCatalog>,
+        p: ModelsPullParams,
+    ) -> Result<PullReport, CommandError> {
         // 1. The model must exist in the live universe.
-        let snap = this.catalog.snapshot();
+        let snap = catalog.snapshot();
         let live = snap.get(&p.model_id).ok_or_else(|| {
             CommandError::NotFound(format!(
                 "unknown model id '{}' — call models/list to see the live universe",
@@ -142,11 +230,30 @@ crate::action_command! {
         let shard_count = shard_set.len();
         let mut gguf_path = None;
         let mut bytes = 0u64;
-        for shard in &shard_set {
-            let p = download_with_retry(&repo, shard).await?;
-            bytes += std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        for (shard_idx, shard) in shard_set.iter().enumerate() {
+            // OBSERVABILITY: a tens-of-GB pull is otherwise a silent hour. One event per shard
+            // boundary lets the UI / a persona / Positron show real progress and lets an operator
+            // tell "still going" from "wedged". Cheap (N events for N shards, not per byte) and
+            // Noop-safe: no bus (headless/tests) => no cost. Carries run_id so a detached pull's
+            // events correlate with its ledger file.
+            if let Some(bus) = crate::runtime::MessageBus::global() {
+                bus.publish_async_only(
+                    "models:pull:progress",
+                    serde_json::json!({
+                        "run_id":      p.run_id,
+                        "model_id":    p.model_id,
+                        "repo_id":     repo_id,
+                        "shard":       shard,
+                        "shard_index": shard_idx + 1,
+                        "shard_count": shard_count,
+                        "bytes_so_far": bytes,
+                    }),
+                );
+            }
+            let dl = download_with_retry(&repo, shard).await?;
+            bytes += std::fs::metadata(&dl).map(|m| m.len()).unwrap_or(0);
             if gguf_path.is_none() {
-                gguf_path = Some(p); // shard 1 (sorted) is llama.cpp's load entrypoint
+                gguf_path = Some(dl); // shard 1 (sorted) is llama.cpp's load entrypoint
             }
         }
         let gguf_path = gguf_path.expect("expand_shard_set never returns empty");
@@ -156,7 +263,7 @@ crate::action_command! {
         };
 
         // 6. Record the artifact onto the live universe — sets the path + flips Ready.
-        if !this.catalog.attach_local_artifact(&p.model_id, gguf_path.clone(), mmproj_path) {
+        if !catalog.attach_local_artifact(&p.model_id, gguf_path.clone(), mmproj_path) {
             return Err(CommandError::Internal(format!(
                 "model '{}' vanished from the live catalog during pull",
                 p.model_id
@@ -176,15 +283,35 @@ crate::action_command! {
             None => format!("pulled {gguf_file}{shards_note} from {repo_id}"),
         };
 
-        Ok(PullReport {
+        let report = PullReport {
             gguf_file,
             gguf_path: gguf_path.to_string_lossy().into_owned(),
             mmproj_file,
             bytes,
             detail,
-        })
+            detached: false,
+            run_id: p.run_id.clone(),
+        };
+        // A detached pull writes its real report to the shared progress ledger and announces
+        // completion on the bus; an inline pull just returns (both publish, so a watcher sees
+        // the same terminal event either way).
+        if let Some(rid) = p.run_id.as_deref() {
+            if let (Some(path), Ok(json)) = (
+                models_pull_ledger_path(rid),
+                serde_json::to_string_pretty(&report),
+            ) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+        if let Some(bus) = crate::runtime::MessageBus::global() {
+            if let Ok(v) = serde_json::to_value(&report) {
+                bus.publish_async_only("models:pull:complete", v);
+            }
+        }
+        Ok(report)
     }
 }
+
 
 /// Turn a `gguf_hint` into the `<owner>/<repo>` id hf-hub's API needs. Returns
 /// `None` for a non-HuggingFace hint (e.g. a `docker.io/...` reference) — the
