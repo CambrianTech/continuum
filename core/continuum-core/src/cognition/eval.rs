@@ -471,10 +471,19 @@ async fn await_eval_lane_memory_headroom(footprint: Option<u64>) -> Result<(), C
                 if tokio::time::Instant::now() >= deadline {
                     return Err(e);
                 }
+                // Log the REFUSAL, not just the pressure level. These are two different
+                // vetoes — a High/sustained pressure gate, and a hard free-RAM shortfall
+                // — and only one of them is a spike that clears on its own. Printing
+                // `level=Normal` beside "waiting for a transient memory spike" while the
+                // real cause was a lane that could never fit sent a reader looking at the
+                // pressure monitor for 3 minutes (M5, 2026-08-04) while the answer was in
+                // `e` the whole time. Whatever we are waiting OUT is the thing to name.
                 crate::probe!(
                     class = "eval.lane.pressure_defer",
                     level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
-                    "eval lane bringup deferred — waiting for a transient memory spike to clear"
+                    refusal = %e,
+                    "eval lane bringup deferred — retrying the refusal below until it clears \
+                     or the bounded window lapses"
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
@@ -776,6 +785,12 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     if base.provider != PROVIDER_ID {
         return build_external_eval_lane_inner(&base).await;
     }
+    // The LOCAL live lane may already hold exactly these weights. Same principle as the
+    // external route above and the same failure when missed: a model that is already
+    // being served must never be cold-loaded a second time.
+    if let Some(shared) = share_live_serving_lane(&base).await {
+        return Ok(shared);
+    }
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
     await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
@@ -822,6 +837,128 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         placement: placement_evidence,
         _vram_lease: vram_lease,
     })
+}
+
+/// Measurement "lane" for a base the LIVE serving lane is ALREADY holding — the local
+/// sibling of the external-provider route below (#310). Returns `None`, falling through
+/// to a dedicated cold-load, whenever sharing would not be honest.
+///
+/// Why this exists (glass-boxed on the M5, 2026-08-04). A SWE-bench `agent/solve` run
+/// asked for `unsloth/Devstral-Small-2507-GGUF` — the exact model the live lane was
+/// already serving, 27.2 GB resident, answering on its port. This path tried to
+/// cold-load a SECOND copy: ~17.9 GB + 2 GiB headroom against 15.0 GB free on a 64 GB
+/// box. It can never fit, so `await_eval_lane_memory_headroom` deferred every 5 s for
+/// its full 180 s window and then failed loud. The harness wrote a zero-byte diff and
+/// the benchmark reported RESOLVED=0 — a number that measured a harness which never
+/// started, not a model that could not solve. Duplicating resident weights is not a
+/// transient spike to wait out; it is a request that should never have been made.
+///
+/// Isolation (#59/#312) is preserved, not traded away. What a measurement needs
+/// isolated is the GENOME and the WINDOW, never the weights — identical weights are
+/// identical weights. So the share is refused unless every resident adapter is at
+/// scale 0, asked of the running server rather than assumed (the M5 lane carries six
+/// loaded-but-unapplied genome layers — inert here, but that is a fact to VERIFY, and
+/// a lane serving an applied genome must never be mistaken for a bare base). The
+/// returned handle owns nothing (`lane: None`, no lease), so dropping a measurement can
+/// never tear down the living persona's lane.
+async fn share_live_serving_lane(
+    base: &crate::model_registry::Model,
+) -> Option<EvalLaneInner> {
+    use crate::ai::adapter::AIProviderAdapter;
+    use crate::inference::llama_server::PROVIDER_ID;
+
+    let snap = crate::inference::llama_server::current_serving();
+    // `served_context_window == 0` only ever appears on the empty/not-yet-served
+    // snapshot; a lane with no known window cannot be budgeted against honestly.
+    if !snap.ready
+        || snap.active_model.as_deref() != Some(base.id.as_str())
+        || snap.served_context_window == 0
+    {
+        return None;
+    }
+    if !live_lane_serves_bare_base(&snap.base_url).await {
+        crate::probe!(
+            class = "eval.lane.share_refused",
+            model = %base.id,
+            "live lane serves this base but has an APPLIED genome layer — cold-loading a \
+             dedicated bare-base lane rather than measuring through a contaminated one"
+        );
+        return None;
+    }
+
+    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+        .with_runtime_base_url(snap.base_url.clone())
+        .with_default_model(base.id.clone());
+    adapter.initialize().await.ok()?;
+
+    emit_eval_phase(
+        "loading_lane",
+        &format!("sharing the live serving lane for {} — weights already resident", base.id),
+    );
+    crate::probe!(
+        class = "eval.lane.shared",
+        model = %base.id,
+        base_url = %snap.base_url,
+        served_ctx = snap.served_context_window,
+        "measuring through the live lane — no second copy of these weights cold-loaded"
+    );
+    Some(EvalLaneInner {
+        // Nothing spawned here, so nothing to kill on drop — the living persona's lane
+        // outlives every measurement that borrows it.
+        lane: None,
+        adapter: std::sync::Arc::new(adapter),
+        // The live lane's own `/props` truth, the same authority the living persona
+        // budgets against (task #50) — never a recomputed plan value.
+        served_ctx: snap.served_context_window,
+        placement: PlacementEvidence {
+            placement: crate::inference::llama_server::LanePlacement::Cpu,
+            device: "shared:live-serving-lane".to_string(),
+            reason: format!(
+                "model '{}' is already resident on the live lane at {} — shared, no lane \
+                 spawned and no VRAM leased",
+                base.id, snap.base_url
+            ),
+            free_vram_bytes: None,
+            footprint_bytes: None,
+        },
+        _vram_lease: None,
+    })
+}
+
+/// Does the lane at `base_url` currently apply ZERO genome layers? Asked of the running
+/// server (`/lora-adapters`), because "loaded" and "applied" are different facts:
+/// llama.cpp keeps `--lora` adapters in its catalog at scale 0 until a request asks for
+/// them. A lane with no adapters at all, or all of them at scale 0, is a bare base.
+///
+/// Unreachable or unparseable ⇒ `false`: a measurement falls back to its own dedicated
+/// lane rather than borrowing one whose genome state is unknown. Blind never means
+/// "assume clean" for a number that gets published.
+async fn live_lane_serves_bare_base(base_url: &str) -> bool {
+    let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let Ok(resp) = reqwest::Client::new()
+        .get(format!("{root}/lora-adapters"))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    let Ok(body) = resp.json::<serde_json::Value>().await else {
+        return false;
+    };
+    lora_catalog_is_inert(&body)
+}
+
+/// Pure `/lora-adapters` → "is every layer inert?" decision, split from the fetch so the
+/// contract is unit-testable without a live server (same split rationale as
+/// [`parse_provider_context_length`]).
+fn lora_catalog_is_inert(body: &serde_json::Value) -> bool {
+    let Some(entries) = body.as_array() else {
+        return false;
+    };
+    entries
+        .iter()
+        .all(|a| a.get("scale").and_then(serde_json::Value::as_f64) == Some(0.0))
 }
 
 /// Measurement "lane" for a model served by an EXTERNAL provider (#310): the ds4
@@ -3704,6 +3841,40 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the share-the-live-lane admission fact. A resident lane may hold
+    // genome layers that are LOADED but not APPLIED (the M5 lane carries six at scale 0);
+    // measuring a "bare base" through a lane with an APPLIED layer would publish a
+    // genome-boosted number as a base number. Pins: all-zero (and empty) is inert, ANY
+    // non-zero scale is not, and a shape we don't recognize is never optimistically
+    // treated as clean — the caller cold-loads its own lane instead.
+    #[test]
+    fn only_a_lane_with_every_genome_layer_at_scale_zero_counts_as_bare_base() {
+        let inert = serde_json::json!([
+            { "id": 0, "path": "/g/asha/coder.gguf", "scale": 0.0 },
+            { "id": 1, "path": "/g/benchy/code.gguf", "scale": 0.0 },
+        ]);
+        assert!(lora_catalog_is_inert(&inert), "all layers at scale 0 IS a bare base");
+
+        assert!(
+            lora_catalog_is_inert(&serde_json::json!([])),
+            "a lane with no adapters at all is the plainest bare base there is"
+        );
+
+        let applied = serde_json::json!([
+            { "id": 0, "path": "/g/asha/coder.gguf", "scale": 0.0 },
+            { "id": 1, "path": "/g/benchy/code.gguf", "scale": 0.8 },
+        ]);
+        assert!(
+            !lora_catalog_is_inert(&applied),
+            "one applied layer contaminates the whole lane — a base measured here is a lie"
+        );
+
+        // Unrecognized shapes (an error object, a scale-less entry) must refuse, never
+        // assume-clean: blind is a reason to spawn your own lane, not to publish a number.
+        assert!(!lora_catalog_is_inert(&serde_json::json!({ "error": "not found" })));
+        assert!(!lora_catalog_is_inert(&serde_json::json!([{ "id": 0 }])));
+    }
 
     // what this catches: #310 — the /v1/models context_length contract for gateway-routed
     // eval lanes. The ds4 sidecar serves 8192 while its catalog row states the model's 1M
