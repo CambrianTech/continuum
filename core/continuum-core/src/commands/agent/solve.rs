@@ -590,14 +590,26 @@ crate::register_stateless_command!(AgentSolve);
 /// edited the library (v3: 1 file, v4: 3 files, v5: 2 files; 0 edits every time). That read as a
 /// judgement gap for a whole session; it was two halves of one framing disagreeing.
 ///
+/// FORCE vs SHAPE, learned the hard way. The first attempt at this fix removed the
+/// contradiction and the tool-forcing PRESSURE in the same edit — "graded exactly as your
+/// tools leave it" is shape-neutral but passive. Measured immediately (v6, same instance,
+/// same persona): 8 acts, ZERO files, 0 patch bytes — worse than the three contradictory
+/// runs before it, which at least produced repro scripts. She drifted out of task mode
+/// entirely and ended the run replying to her OWN `work/list` output as though a peer had
+/// posted it in chat.
+///
+/// So the wording must be BOTH: imperative about the contract, silent about the artifact.
+/// "graded ONLY on the CHANGES your tools make" is forceful and neutral — an edit and a new
+/// file are both changes; a narration is not.
+///
 /// Pure so the contract is testable in isolation ([[the-compression-principle]]: one place).
 fn frame_task(task: &str) -> String {
     format!(
         "This is a task you must COMPLETE NOW by USING YOUR TOOLS in your workspace — editing \
          files with code/edit, writing them with code/write, running commands with code/shell, \
          etc. Only what your tools actually do takes effect: code shown in a message, or a claim \
-         that you saved a file, does NOT create or change anything — the workspace is graded \
-         exactly as your tools leave it. You are ALREADY in the task's workspace: work on the \
+         that you saved a file, does NOT create or change anything — you are graded ONLY on the \
+         CHANGES your tools make to this workspace — an explanation earns nothing. You are ALREADY in the task's workspace: work on the \
          files that are here. Do not create a new workspace or start a new project — grading only \
          sees this one. Follow the task's own instructions about WHAT to change. Do the work with \
          tool calls, then stop.\n\nTask:\n{}",
@@ -629,6 +641,12 @@ mod tests {
         assert!(
             !lower.contains("graded on the files your tools write"),
             "must NOT assert new-files-are-the-deliverable — that contradicts a fix-in-place task"
+        );
+        // …and must NOT go limp while removing that. The first attempt did, and the very next
+        // live run produced 0 acts of work: shape-neutral is necessary, force is too.
+        assert!(
+            lower.contains("only on the changes your tools make"),
+            "the contract must stay IMPERATIVE about changes, not merely descriptive: {framed}"
         );
         assert!(
             framed.contains("fix the bug IN PLACE"),
