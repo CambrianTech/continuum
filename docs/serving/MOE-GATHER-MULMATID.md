@@ -111,6 +111,26 @@ temp-0 coherence verified both arms (identical output prefix):
 expert of every token serviced in place through the table. The 5090/CUDA A/B on
 V4-Flash (BigMama's lane) measures the same mechanism at scale.
 
+### The alignment invariant (a real bug, found cross-backend)
+
+**In-place consumption inherits NOTHING from the tensor allocator.** The copy
+path launders alignment: bytes land in a tensor-allocated staging buffer, so
+every address the kernel touches carries the allocator's guarantees for free.
+Under gather the kernel reads at `pool_base + slot*slot_size` instead, so the
+cache's own geometry IS the contract.
+
+`slot_size` was `expert_size + pad`, and `expert_size` is only BLOCK-aligned —
+IQ2_XXS is 66 B/block, so it need not be a multiple of 16, and slot bases drift
+off the vector-load alignment CUDA's quantized `vec_dot` requires. Result:
+garbage reads on rarely-hit slots → NaN logits → `llama-sampler.cpp:1098`
+assert after many coherent tokens (5090 V4-Flash, 2026-08-03). Fix (655f183a9):
+round `slot_size` up to 256 B so every slot base is congruent to the pool base.
+
+**It was latent on Metal too.** Q4_K is 144 B/block = 9×16, so Metal's slot
+bases stayed 16-aligned by luck of the quantization — the 4.0× proof was true
+but lucky. A green result on one backend/quant is not evidence an invariant
+holds. Test in-place paths across a quant matrix.
+
 ### Serving-config traps (cost a kernel panic + two dead smokes to learn)
 
 1. **CPU repack silently disables the whole path.** Expert tensors placed by
