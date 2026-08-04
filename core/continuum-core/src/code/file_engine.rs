@@ -186,6 +186,9 @@ impl FileEngine {
             file_path: relative_path.to_string(),
             bytes_written: content.len() as u64,
             error: None,
+            // Whole-file write — the caller supplied the entire content, so there is no
+            // "where did it land" question to answer.
+            applied_context: None,
         })
     }
 
@@ -239,6 +242,10 @@ impl FileEngine {
             file_path: relative_path.to_string(),
             bytes_written,
             error: None,
+            // Read back from the content just written, not from what was requested — the
+            // whole point is to report where the edit ACTUALLY landed.
+            applied_context: edit_anchor_line(edit_mode)
+                .map(|anchor| numbered_neighborhood(&new_content, anchor, APPLIED_CONTEXT_RADIUS)),
         })
     }
 
@@ -286,6 +293,8 @@ impl FileEngine {
             file_path: relative_path.to_string(),
             bytes_written: 0,
             error: None,
+            // The file is gone; there is no neighborhood left to show.
+            applied_context: None,
         })
     }
 
@@ -397,6 +406,8 @@ impl FileEngine {
             change_id: Some(undo_node.id.to_string()),
             file_path,
             bytes_written: 0,
+            // An undo restores a prior whole-file state rather than editing at a line.
+            applied_context: None,
             error: if !is_latest {
                 Some(
                     "Warning: undone change was not the latest; result may have conflicts"
@@ -827,6 +838,42 @@ impl FileEngine {
     }
 }
 
+/// How many lines on each side of an edit the receipt shows. Enough to see whether the
+/// insert landed inside a signature, a parameter list, or a docstring — the misplacements
+/// actually observed — without turning every edit receipt into a file dump that crowds a
+/// small working-memory window.
+const APPLIED_CONTEXT_RADIUS: u32 = 6;
+
+/// The line a line-addressed edit is anchored at, or `None` for modes that rewrite the
+/// whole file (where "where did it land" has no answer worth rendering).
+fn edit_anchor_line(edit_mode: &EditMode) -> Option<u32> {
+    match edit_mode {
+        EditMode::LineRange { start_line, .. } => Some(*start_line),
+        EditMode::InsertAt { line, .. } => Some(*line),
+        _ => None,
+    }
+}
+
+/// Numbered lines around `anchor` in `content` — the same shape `code/read` returns, so a
+/// persona reads one surface for "what is in this file", never two. 1-indexed, clamped to
+/// the file, and marked with `>` on the anchor line so the landing site is unmissable.
+fn numbered_neighborhood(content: &str, anchor: u32, radius: u32) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len() as u32;
+    if total == 0 {
+        return "(file is now empty)".to_string();
+    }
+    let anchor = anchor.clamp(1, total);
+    let first = anchor.saturating_sub(radius).max(1);
+    let last = (anchor + radius).min(total);
+    let mut out = String::new();
+    for n in first..=last {
+        let marker = if n == anchor { '>' } else { ' ' };
+        out.push_str(&format!("{marker}{n:>5} | {}\n", lines[(n - 1) as usize]));
+    }
+    out
+}
+
 /// Apply an EditMode to file content, producing the new content.
 fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineError> {
     match edit_mode {
@@ -1063,6 +1110,55 @@ fn now_millis() -> u64 {
 mod tests {
     use super::*;
     use std::fs;
+
+    // what this catches: the silent misplaced edit. A persona addressed a line she had
+    // never seen numbered (`code/shell cat` has no line numbers) and dropped a guard clause
+    // into a function's parameter list; the receipt said `success: true` and nothing else,
+    // so her next turn had no way to know (M5 glass-box, 2026-08-04, SWE-bench flask-4045).
+    // The receipt must carry the numbered landing site so a wrong line becomes a visible
+    // fact in working memory. Pins: line-addressed edits report the neighborhood with the
+    // anchor marked, and a whole-file write reports None (no landing site to speak of).
+    #[test]
+    fn a_line_addressed_edit_reports_where_it_actually_landed() {
+        let (_dir, engine) = setup_engine();
+
+        let inserted = engine
+            .edit(
+                "src/main.ts",
+                &EditMode::InsertAt {
+                    line: 2,
+                    content: "INSERTED\n".to_string(),
+                },
+                None,
+            )
+            .expect("insert");
+        let ctx = inserted
+            .applied_context
+            .expect("a line-addressed edit must report its landing site");
+        assert!(
+            ctx.contains("INSERTED"),
+            "the receipt must show the text that landed, got:\n{ctx}"
+        );
+        assert!(
+            ctx.contains(">    2 |"),
+            "the anchor line must be marked so the landing site is unmissable, got:\n{ctx}"
+        );
+        assert!(
+            ctx.contains("line 1") && ctx.contains("line 3"),
+            "surrounding lines are the whole point — they are what reveals a guard clause \
+             dropped into a parameter list, got:\n{ctx}"
+        );
+
+        // A whole-file write replaces everything; there is no landing site to report, and
+        // inventing one would be noise in a small working-memory window.
+        let written = engine
+            .write("src/other.ts", "a\nb\n", None)
+            .expect("write");
+        assert!(
+            written.applied_context.is_none(),
+            "a whole-file write has no line to locate"
+        );
+    }
 
     fn setup_engine() -> (tempfile::TempDir, FileEngine) {
         let dir = tempfile::tempdir().unwrap();
