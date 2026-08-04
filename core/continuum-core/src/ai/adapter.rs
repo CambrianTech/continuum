@@ -186,11 +186,22 @@ pub struct AdapterCapabilities {
     pub capabilities: BTreeSet<Capability>,
     /// Inference runs on this host (provider kind == Local).
     pub is_local: bool,
-    /// Context window (input + output limit).
-    pub max_context_window: u32,
-    /// Maximum tokens the adapter will emit in a single response. Distinct
-    /// from `max_context_window`; used by cognition to bound the compose phase.
-    pub max_output_tokens: u32,
+    /// Context window (input + output limit) AS DECLARED BY THE ADAPTER.
+    ///
+    /// `None` means the adapter has not declared one — NOT "assume a small default". This
+    /// used to be a bare `u32` seeded from a `FLOOR_CONTEXT_WINDOW = 4096` constant, so any
+    /// adapter that didn't override reported 4096 as its ceiling. Nothing budgeted against it
+    /// yet, which is the only reason it hadn't already broken a 1M-context model — but the
+    /// obvious next use of this field (budgeting, which is exactly what #46 was about) would
+    /// have silently clamped every under-declaring adapter to 4k. Making "undeclared"
+    /// unrepresentable as a number closes that off by construction: a consumer must handle
+    /// `None` deliberately (ask the served lane) instead of inheriting a guess.
+    /// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+    pub max_context_window: Option<u32>,
+    /// Maximum tokens the adapter will emit in a single response, as declared. Distinct from
+    /// `max_context_window`. `None` = undeclared, same contract as above (#45: the adapter
+    /// owns generation length; nobody downstream invents a cap).
+    pub max_output_tokens: Option<u32>,
 
     /// Tool-calling protocol the adapter NATIVELY speaks. Cognition's tool
     /// loop routes through this. Default means prompt-text emulation in compose.
@@ -214,8 +225,9 @@ impl AdapterCapabilities {
     pub fn text_only() -> Self {
         Self {
             capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat]),
-            max_context_window: Self::FLOOR_CONTEXT_WINDOW,
-            max_output_tokens: Self::FLOOR_OUTPUT_TOKENS,
+            // Undeclared, NOT a small default — see the field docs.
+            max_context_window: None,
+            max_output_tokens: None,
             // The floor has no ToolUse capability, so its protocol pair must be
             // None — set it explicitly, NOT via Default. `ToolProtocol::default()`
             // is `NativeFunctionCalling` (the right default for a registry Provider
@@ -227,12 +239,6 @@ impl AdapterCapabilities {
             ..Default::default()
         }
     }
-
-    /// Context/output ceilings the text-only floor reports when an adapter has
-    /// no model-declared number to project. Real adapters override from the
-    /// served model (#46) — these only apply to the floor.
-    const FLOOR_CONTEXT_WINDOW: u32 = 4096;
-    const FLOOR_OUTPUT_TOKENS: u32 = 2048;
 
     /// Fluent constructor seeded from the text-only floor. The codified
     /// projection every adapter's `capabilities()` builds through, so the next
@@ -288,13 +294,13 @@ impl AdapterCapabilitiesBuilder {
 
     /// Context window (input + output ceiling) — from the served model.
     pub fn context_window(mut self, n: u32) -> Self {
-        self.inner.max_context_window = n;
+        self.inner.max_context_window = Some(n);
         self
     }
 
     /// Maximum tokens emitted in a single response — from the served model.
     pub fn max_output_tokens(mut self, n: u32) -> Self {
-        self.inner.max_output_tokens = n;
+        self.inner.max_output_tokens = Some(n);
         self
     }
 
@@ -1224,8 +1230,8 @@ mod tests {
             .protocols(NativeProtocols::FunctionCalling)
             .build();
         assert!(rich.has(Capability::ToolUse) && rich.is_local);
-        assert_eq!(rich.max_context_window, 200_000);
-        assert_eq!(rich.max_output_tokens, 8_192);
+        assert_eq!(rich.max_context_window, Some(200_000));
+        assert_eq!(rich.max_output_tokens, Some(8_192));
 
         // Each protocol profile maps to its coherent pair — the whole point of
         // NativeProtocols (an incoherent combo is unrepresentable).
