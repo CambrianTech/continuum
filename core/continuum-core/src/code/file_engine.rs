@@ -261,7 +261,28 @@ impl FileEngine {
                     // Don't just diagnose — AIM HER. The refusal used to say "widen the range",
                     // which is advice she has to act on blind. The same parser that proved the
                     // edit destructive can find the end line that works, so say the number.
-                    repair_hint(&abs_path, &old_content, edit_mode)
+                    //
+                    // But FIRST check the far more embarrassing cause, because the line-range
+                    // advice is actively misleading when it applies: content still carrying the
+                    // `   12 | ` gutter that `code/read` prints. `numbered_paste_notice` has
+                    // detected exactly this since it was written — but it was only ever consulted
+                    // on the write() SUCCESS path, as `applied_context`. The refusal path, the one
+                    // place the diagnosis decides whether she recovers, never asked.
+                    //
+                    // Glass-boxed on sympy-21379: she read `basic.py`, pasted the numbered output
+                    // straight back as `content`, and every line was indented by the gutter →
+                    // `IndentationError: unexpected indent`. The refusal correctly saved the file,
+                    // then told her to widen a line range she wasn't using. She spent the
+                    // remaining 16 acts of a 30-act budget chasing that wrong lead and never
+                    // landed an edit. [[a-probe-that-can-only-fail-is-worse-than-no-probe]]
+                    {
+                        let gutter = numbered_paste_refusal(&new_content);
+                        if gutter.is_empty() {
+                            repair_hint(&abs_path, &old_content, edit_mode)
+                        } else {
+                            gutter
+                        }
+                    }
                 )),
                 applied_context: None,
             });
@@ -1258,6 +1279,19 @@ fn looks_like_numbered_read(content: &str) -> bool {
     gutters * 10 >= lines.len() * 9
 }
 
+/// The REFUSAL-path sibling of [`numbered_paste_notice`]. Same detection, opposite
+/// consequence: here the gate caught it BEFORE writing, so the file is intact and there is
+/// nothing to undo. Saying "this file is now corrupt" on this path would be a plain lie, and
+/// a diagnostic that lies about the state of the world is worse than none
+/// ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+fn numbered_paste_refusal(content: &str) -> String {
+    if !looks_like_numbered_read(content) {
+        return String::new();
+    }
+    "THE FIX: nearly every line you sent begins with a `NNN | ` line-number gutter. That      gutter is how `code/read` DISPLAYS a file — it is NOT part of the file, and prefixing      every line with it is what made this unparseable (each line ends up indented). Nothing      was written, so the file is fine. Re-send the SAME content with the `NNN | ` prefix      stripped from every line."
+        .to_string()
+}
+
 /// The notice `looks_like_numbered_read` earns, or empty when the content is clean.
 fn numbered_paste_notice(content: &str) -> String {
     if !looks_like_numbered_read(content) {
@@ -1814,6 +1848,32 @@ mod tests {
     // Bracket balance cannot catch this and was falsified for the insert case; only a parser
     // can. The gate is the parser, and refusing keeps the correct-ish attempt recoverable
     // instead of burying it under a syntax error she never reverts.
+    // what this catches: the refusal pointing at the WRONG cause. Live on sympy-21379 —
+    // she read basic.py, pasted the numbered output straight back as whole-file content, so
+    // every line carried the `   12 | ` gutter and Python saw `IndentationError: unexpected
+    // indent`. The gate correctly saved the file, then handed her the line-range advice
+    // ("widen the range to cover the whole construct") for an edit that used no line range.
+    // She spent the remaining 16 of 30 acts chasing that wrong lead and never landed an edit.
+    // The gutter detector already existed; it was only wired to the write SUCCESS path.
+    // A refusal must name the cause it can actually prove, and must not lie about damage it
+    // prevented. [[a-probe-that-can-only-fail-is-worse-than-no-probe]]
+    #[test]
+    fn a_refused_gutter_paste_is_told_about_the_gutter_not_a_line_range() {
+        let pasted = "     1 | def f():\n     2 |     return 1\n     3 | \n     4 | x = f()\n";
+        let hint = numbered_paste_refusal(pasted);
+        assert!(hint.contains("NNN | "), "names the gutter itself: {hint}");
+        assert!(hint.contains("strip"), "says what to DO about it: {hint}");
+        assert!(
+            !hint.contains("undo") && !hint.to_lowercase().contains("now corrupt"),
+            "the refusal path SAVED the file — claiming damage would be a lie: {hint}"
+        );
+        // Ordinary code with a bit-or must not trip it.
+        assert!(
+            numbered_paste_refusal("fn a() {}\nlet t = 1 | 2;\nfn b() {}\n").is_empty(),
+            "real code is not a numbered paste"
+        );
+    }
+
     #[test]
     fn a_line_range_ending_inside_a_triple_quoted_string_is_refused() {
         if std::process::Command::new("python3")
