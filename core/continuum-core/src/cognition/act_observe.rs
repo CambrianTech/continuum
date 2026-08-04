@@ -745,6 +745,9 @@ pub async fn drive_to_settle(
     const STUCK_LIMIT: usize = 3;
     let mut prev_sig: Option<String> = None;
     let mut stuck = 0usize;
+    // One-shot: a workspace-deliverable turn gets exactly ONE re-perception on a
+    // zero-deliverable Speak (see the Spoke arm). Never a retry loop.
+    let mut reperceived = false;
 
     loop {
         // ONE settlement step through the SHARED primitive the live heartbeat uses
@@ -775,6 +778,47 @@ pub async fn drive_to_settle(
         }
         match step {
             SettleStep::Spoke(text) => {
+                // THE SETTLE ARTERY (glass-boxed 2026-08-04, sympy-21379): every perception
+                // fact the Speak arm records — [unfulfilled], [unacted], [unobserved],
+                // [confabulation] — lands in working memory AFTER the decision. On this
+                // path the Speak returned immediately, so she never got a tick to PERCEIVE
+                // her own diagnosis. The machinery wrote it; nobody read it. Live specimen:
+                // one `code/tree`, then a Speak explaining the bug to the user in prose —
+                // acts 1, patch 0 bytes, budget unspent, run over.
+                //
+                // When the caller declared the deliverable to be the WORKSPACE, a Speak
+                // that changed no file has produced nothing the grader will ever see. Hand
+                // her ONE re-perception carrying that structural fact, then let her decide.
+                // Bounded to one: if she speaks again she settles, so the ceiling is a
+                // single extra generation and a determined Speak is never trapped.
+                //
+                // Why this is substrate, not scaffolding: the fact is TRUE and structural
+                // (the caller declared the contract; working memory holds no mutation
+                // receipt), it names no file, no fix, and no next tool, and the decision
+                // stays entirely hers — the same shape as every other proprioception fact
+                // in `settle_step`. [[no-hardcoded-heuristics-to-steer-cognition]],
+                // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]].
+                if framing.workspace_deliverable && !reperceived {
+                    if let Some(body) = cycle.acting() {
+                        if !mutated_workspace(&body.working_memory.recent()) {
+                            reperceived = true;
+                            body.working_memory.record_fact(
+                                "[no-deliverable] I settled by speaking, and my working \
+                                 memory holds no act of mine that changed a file. This \
+                                 task is judged by the state of the workspace, not by what \
+                                 I say about it — an explanation of a fix is not the fix.",
+                            );
+                            crate::probe!(
+                                class = "persona.settle.no_deliverable",
+                                persona = %body.persona_name,
+                                room_id = %room_id,
+                                acts = acts,
+                                "workspace-deliverable turn spoke with no mutation receipt — recorded the fact and re-perceived once"
+                            );
+                            continue;
+                        }
+                    }
+                }
                 return SettleOutcome {
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
@@ -1283,6 +1327,30 @@ fn wrote_without_observation(recent: &[String]) -> bool {
     })
 }
 
+/// Did THIS concern actually change the workspace? True iff a `code/write` /
+/// `code/edit` receipt sits after the last settlement marker — the same
+/// concern-scoping and the same receipt vocabulary [`wrote_without_observation`]
+/// uses, so the two agree by construction about what a mutation is.
+///
+/// Deliberately receipt-based, not act-count-based: a turn can spend acts on
+/// `code/tree` + `code/read` and still have produced nothing a diff-grader will
+/// see (the live sympy-21379 shape — one act, zero bytes). Only a receipt of a
+/// mutation that really executed counts.
+/// CRITICAL ordering detail: `settle_step`'s Speak arm records its settlement
+/// marker BEFORE returning (which is why that arm snapshots `pre_settle` first).
+/// So by the time this runs the marker is already the tail, and scanning "after
+/// the last marker" would read an EMPTY span and call every turn unmutated. The
+/// concern that just settled is the span ENDING at that marker.
+fn mutated_workspace(recent: &[String]) -> bool {
+    let is_settle =
+        |l: &String| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX);
+    let end = recent.iter().rposition(is_settle).unwrap_or(recent.len());
+    let start = recent[..end].iter().rposition(is_settle).map_or(0, |i| i + 1);
+    recent[start..end]
+        .iter()
+        .any(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("))
+}
+
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
 /// monotonic tick) so the engram orders correctly against chat messages in recall.
 fn now_ms() -> u64 {
@@ -1537,6 +1605,42 @@ mod tests {
         }
     }
 
+    /// Only ever speaks, and COUNTS how many generations it was asked for — the
+    /// instrument for "did the drive hand her another tick, or settle on the first
+    /// Speak?".
+    struct CountingSpeaker {
+        generations: Mutex<usize>,
+    }
+    impl CountingSpeaker {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                generations: Mutex::new(0),
+            })
+        }
+        fn generations(&self) -> usize {
+            *self.generations.lock().expect("lock")
+        }
+    }
+    #[async_trait]
+    impl Faculty for CountingSpeaker {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+            *self.generations.lock().expect("lock") += 1;
+            Some(Contribution::verdict(
+                Decision::Speak {
+                    text: "here is my analysis of the bug: the call to subs() is wrong".into(),
+                },
+                0.95,
+                "explaining rather than editing",
+            ))
+        }
+    }
+
     fn tool_call() -> ToolCall {
         ToolCall {
             id: "call-1".into(),
@@ -1701,6 +1805,136 @@ mod tests {
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
         assert_eq!(outcome.spoken.as_deref(), Some("the answer is 4"));
         assert!(matches!(outcome.decision, Decision::Speak { .. }));
+    }
+
+    // what this catches: THE SETTLE ARTERY (the dominant SWE-bench killer, glass-boxed
+    // 2026-08-04 on sympy-21379: one `code/tree`, then a prose explanation of the bug —
+    // 0 patch bytes, 29 of 30 acts unspent, run over). When the CALLER declared the
+    // deliverable to be the workspace, a Speak that changed no file must not end the
+    // turn on the first pass: she gets exactly ONE more perception, carrying the
+    // structural fact that her working memory holds no mutation. Bounded — she speaks
+    // again and it settles, so a determined Speak is never trapped in a loop.
+    #[tokio::test]
+    async fn a_zero_change_speak_reperceives_once_when_the_workspace_is_the_deliverable() {
+        let speaker = CountingSpeaker::new();
+        let wm = Arc::new(WorkingMemory::new(8));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "src/".into(),
+        });
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::clone(&speaker) as Arc<dyn Faculty>,
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
+
+        let outcome = drive_to_settle(
+            &cycle,
+            "fix the bug in sympy/core/basic.py",
+            Uuid::new_v4(),
+            8,
+            TurnFraming::directed().on_workspace(),
+        )
+        .await;
+
+        assert_eq!(
+            speaker.generations(),
+            2,
+            "the zero-deliverable Speak bought exactly one more perception — not zero, not a loop"
+        );
+        assert!(
+            wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
+            "the structural fact reached working memory, where the next tick perceives it: {:?}",
+            wm.recent()
+        );
+        assert!(
+            matches!(outcome.decision, Decision::Speak { .. }),
+            "she settles on her second Speak — the decision stays hers"
+        );
+    }
+
+    // what this catches: the blast radius. An ORDINARY turn (chat, an answer-graded
+    // task — the default `Deliverable::Answer`) is untouched: her first Speak settles
+    // it, exactly as before, and no [no-deliverable] fact is invented for a turn whose
+    // deliverable IS the utterance. The re-perception is opt-in by the caller that
+    // grades a diff, never a global change to how speech settles.
+    #[tokio::test]
+    async fn an_ordinary_turn_still_settles_on_the_first_speak() {
+        let speaker = CountingSpeaker::new();
+        let wm = Arc::new(WorkingMemory::new(8));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::clone(&speaker) as Arc<dyn Faculty>,
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
+
+        let outcome = drive_to_settle(
+            &cycle,
+            "what do you think?",
+            Uuid::new_v4(),
+            8,
+            TurnFraming::directed(),
+        )
+        .await;
+
+        assert_eq!(speaker.generations(), 1, "one generation, settled — unchanged");
+        assert!(
+            !wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
+            "no workspace-deliverable fact on a turn whose deliverable is the answer"
+        );
+        assert!(matches!(outcome.decision, Decision::Speak { .. }));
+    }
+
+    // what this catches: the ORDERING TRAP in `mutated_workspace`. `settle_step`'s Speak
+    // arm records its settlement marker BEFORE the driver's arm runs, so a naive
+    // "scan after the last marker" reads an EMPTY tail and calls EVERY turn unmutated —
+    // which would fire the re-perception at a persona who had just written the file.
+    // The concern that settled is the span ENDING at that marker.
+    #[test]
+    fn mutation_is_read_from_the_concern_that_just_settled_not_the_empty_tail() {
+        let settle = crate::cognition::working_memory::WM_SETTLEMENT_PREFIX;
+        let wrote = vec![
+            "[action #1] I ran code/read(file_path: x.py) Result: ok".to_string(),
+            "[action #2] I ran code/edit(file_path: x.py) Result: ok".to_string(),
+            format!("{settle} here is what I changed"),
+        ];
+        assert!(
+            mutated_workspace(&wrote),
+            "an edit inside the concern that just settled COUNTS — the marker at the tail must not hide it"
+        );
+
+        let only_looked = vec![
+            "[action #1] I ran code/tree(path: .) Result: src/".to_string(),
+            format!("{settle} here is my analysis of the bug"),
+        ];
+        assert!(
+            !mutated_workspace(&only_looked),
+            "acts that only LOOK are not a deliverable — the live sympy-21379 shape"
+        );
+
+        // A prior concern's edit must not launder the current one.
+        let stale = vec![
+            "[action #1] I ran code/write(file_path: a.py) Result: ok".to_string(),
+            format!("{settle} done with the first thing"),
+            "[action #2] I ran code/read(file_path: b.py) Result: ok".to_string(),
+            format!("{settle} and here is my analysis of the second"),
+        ];
+        assert!(
+            !mutated_workspace(&stale),
+            "mutation is scoped to THIS concern — an earlier concern's write does not count"
+        );
     }
 
     // what this catches: the grader's stopwatch. A mind that never settles is

@@ -583,6 +583,16 @@ pub struct TurnFraming {
     /// The never-stop heartbeat pursuing her own thread (no inbound message) —
     /// see [`Workspace::self_initiated`].
     pub self_initiated: bool,
+    /// This turn's DELIVERABLE is a change in the workspace, not an utterance —
+    /// declared by the caller (a SWE-style harness grades the diff; nobody reads
+    /// the speech). Structural exactly like the two above: it describes the turn's
+    /// contract, never a read of her output. `false` (the default) is every
+    /// ordinary turn, where speech IS the deliverable.
+    ///
+    /// The ONE thing it changes: [`super::act_observe::drive_to_settle`] gives a
+    /// zero-deliverable Speak one re-perception instead of settling on it. See
+    /// that seam for why.
+    pub workspace_deliverable: bool,
 }
 
 impl TurnFraming {
@@ -597,6 +607,7 @@ impl TurnFraming {
         Self {
             directed: true,
             self_initiated: false,
+            ..Self::default()
         }
     }
 
@@ -607,6 +618,7 @@ impl TurnFraming {
         Self {
             directed,
             self_initiated: false,
+            ..Self::default()
         }
     }
 
@@ -616,7 +628,17 @@ impl TurnFraming {
         Self {
             directed,
             self_initiated: true,
+            ..Self::default()
         }
+    }
+
+    /// Declare that this turn's deliverable is a WORKSPACE CHANGE, not an
+    /// utterance — the SWE/agentic-harness contract, where the grader reads the
+    /// diff and nobody reads the speech. Caller-declared and structural; see
+    /// [`Self::workspace_deliverable`].
+    pub fn on_workspace(mut self) -> Self {
+        self.workspace_deliverable = true;
+        self
     }
 }
 

@@ -90,6 +90,28 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub suppress_recall: Option<bool>,
+    /// What the CALLER will grade — the turn's contract, declared by the harness that
+    /// holds the answer key. Default [`Deliverable::Answer`]: her utterance is the
+    /// result (#220's answer-graded tasks). A SWE-style harness that applies the DIFF
+    /// and never reads the speech declares [`Deliverable::Workspace`], and the settle
+    /// driver stops treating a zero-change explanation as a finished turn. Structural,
+    /// caller-owned; it steers nothing about WHAT she does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deliverable: Option<Deliverable>,
+}
+
+/// What the caller grades when the solve returns. Two genuinely different contracts,
+/// so it is an enum on the wire, never a magic string ([[strings-to-enums]]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../protocol/typescript/agent/Deliverable.ts")]
+pub enum Deliverable {
+    /// Her spoken answer is the result (the default — every non-diff task).
+    #[default]
+    Answer,
+    /// The state of the workspace is the result; the grader applies the diff.
+    Workspace,
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
@@ -341,7 +363,13 @@ impl AgentSolve {
             burst,
             room,
             max_acts,
-            crate::cognition::workspace::TurnFraming::directed(),
+            {
+                let f = crate::cognition::workspace::TurnFraming::directed();
+                match p.deliverable.unwrap_or_default() {
+                    Deliverable::Workspace => f.on_workspace(),
+                    Deliverable::Answer => f,
+                }
+            },
         )
         .await;
 
