@@ -413,6 +413,30 @@ async fn reboot(force: bool) -> Result<(), String> {
                 .join(",")
         ));
     }
+    // Benchmark guard — the same lease, one level up. A detached `benchmark/swe-solve` is a
+    // tokio task inside the core, so a swap kills it with no child process to notice and no
+    // partial result: minutes of a persona's drive, gone. Found the honest way the day it
+    // shipped — two reboots silently killed a run and its ledger simply never appeared.
+    let benches = continuum_core::cognition::swe_bench::in_flight_solve_runs();
+    if !benches.is_empty() && !force {
+        return Err(format!(
+            "benchmark run(s) in flight ({}) — a reboot would kill them mid-drive and they \
+             would be journaled killed-by-restart at next boot. Wait for them, or rerun with \
+             `continuum reboot --force` if losing the runs is acceptable.",
+            benches
+                .iter()
+                .map(|(run, inst)| format!("{run} on {inst}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !benches.is_empty() {
+        println!(
+            "⚠ --force: rebooting over {} live benchmark run(s) — they die here and the \
+             ledger will record killed-by-restart at next boot",
+            benches.len()
+        );
+    }
     if !trainers.is_empty() {
         println!(
             "⚠ --force: rebooting over live training (mlx_lm pid(s) {}) — the run dies \

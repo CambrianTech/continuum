@@ -1509,11 +1509,7 @@ fn swe_task_prompt(problem_statement: &str) -> String {
 }
 
 fn swe_solve_ledger_path(run_id: &str) -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    std::path::PathBuf::from(home)
-        .join(".continuum")
-        .join("progress")
-        .join(format!("swe-solve-{run_id}.json"))
+    swe_bench::solve_ledger_dir().join(format!("swe-solve-{run_id}.json"))
 }
 
 /// Solve one instance and grade it — the whole protocol, one command.
@@ -1627,9 +1623,24 @@ impl ActionCommand for BenchmarkSweSolve {
             let run_ack = run_id.clone();
             let mut inner = p;
             inner.detach = Some(false);
+            // MARK IT RUNNING BEFORE SPAWNING. Until this line existed, a detached run wrote
+            // nothing until it finished — so "still working" and "died an hour ago" were the
+            // same observation (an absent file), and two core reboots silently killed a run
+            // with no trace. The marker is what the boot reaper and the reboot guard both read
+            // (#137's lesson, applied to benchmarks).
+            let ledger = swe_solve_ledger_path(&run_id);
+            let _ = std::fs::create_dir_all(ledger.parent().unwrap_or(&ledger));
+            let _ = std::fs::write(
+                &ledger,
+                serde_json::json!({
+                    "state": "running",
+                    "runId": run_id,
+                    "instance": instance_ack,
+                })
+                .to_string(),
+            );
             tokio::spawn(async move {
                 let path = swe_solve_ledger_path(&run_id);
-                let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
                 match Self::body(inner).await {
                     Ok(r) => {
                         if let Ok(json) = serde_json::to_string_pretty(&r) {
