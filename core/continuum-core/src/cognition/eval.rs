@@ -1220,6 +1220,29 @@ pub struct EvalTask {
     #[serde(default, alias = "needsTools", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub needs_tools: Option<bool>,
+    /// The checkout THIS task lives in — her hands get rooted here before the task runs.
+    ///
+    /// The run-level `workspace_root` param pins ONE repo for a whole exam, which is right for a
+    /// SWE-bench instance (one clone, one task). It is wrong for a MINED gym: `gym/mine` gives
+    /// every task its own git worktree so tasks are independent and repeatable, so the root is a
+    /// property of the TASK. Without this the evaluator hands her one root for all N tasks — the
+    /// wrong one for every task — and she is told to fix a bug in a directory her sandboxed tools
+    /// cannot reach. That is not a hard exam, it is an unrunnable one, and it is why mined gyms
+    /// had never produced a number.
+    ///
+    /// It is DECLARED here, not applied mid-run. Rooting a persona is two operations — her hands
+    /// (`root_acting_workspace`, callable any time) and her eyes (`repoint_workspace_map_if_pinned`,
+    /// fork-time only, because the cycle's faculties are immutable once built). Applying just the
+    /// first splits her: hands in one tree, map of another, which is the #206 shape and produces a
+    /// zero that lies about the solver with no probe to show it. So a task whose root differs from
+    /// the run's is REFUSED with a named infra grade telling the caller to run one eval per root —
+    /// the run-level pin does both halves at fork, so that path is correct today. When the map
+    /// derives its root from her hands (one source of truth), this becomes a live re-root and the
+    /// refusal is deleted.
+    /// [[re-rooting-a-persona-is-two-operations-moving-one-is-worse-than-moving-neither]]
+    #[serde(default, alias = "workspaceRoot", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_root: Option<String>,
 }
 
 impl EvalTask {
@@ -1230,7 +1253,10 @@ impl EvalTask {
     /// so a mixed gym with one repo-nav task correctly arms tools for all. See #208.
     pub fn needs_tools(&self) -> bool {
         self.needs_tools.unwrap_or_else(|| {
-            self.solution_file.is_some() || self.dod_shell.is_some() || !self.ui_checks.is_empty()
+            self.solution_file.is_some()
+                || self.dod_shell.is_some()
+                || self.workspace_root.is_some()
+                || !self.ui_checks.is_empty()
         })
     }
 
@@ -1260,7 +1286,11 @@ impl EvalTask {
     /// nothing is confused about that. The rule keys on `test`: only a task that compiles and
     /// runs code has a program as its deliverable.
     fn require_hands_for_code(&mut self) {
-        if self.test.is_none() || self.solution_file.is_some() || self.dod_shell.is_some() {
+        if self.test.is_none()
+            || self.solution_file.is_some()
+            || self.dod_shell.is_some()
+            || self.workspace_root.is_some()
+        {
             return;
         }
         let ext = match self.lang.as_deref().unwrap_or("rust") {
@@ -3439,7 +3469,7 @@ async fn run_pass(
             && t.dod_shell.is_none()
             && t.solution_file.is_none();
         if from_scratch_build {
-            if let Some(root) = workspace_root {
+            if let Some(root) = t.workspace_root.as_deref().or(workspace_root) {
                 if let Err(e) = clean_dir_contents(root) {
                     tracing::warn!(
                         probe_class = "eval.task.clean_workspace",
@@ -3449,6 +3479,57 @@ async fn run_pass(
                          — grading may observe a stale artifact (#209)"
                     );
                 }
+            }
+        }
+        // PER-TASK ROOT (mined gyms) — DECLARED, and REFUSED when it would split her in half.
+        //
+        // Each mined task owns its own git worktree, so the root is a property of the TASK. The
+        // obvious move is to re-root her here. Do NOT: rooting a persona is TWO operations, and
+        // only one of them can run at this point.
+        //   * `root_acting_workspace` moves where her hands WRITE — callable any time.
+        //   * `repoint_workspace_map_if_pinned` moves what her eyes SEE — mutates
+        //     `PersonaBrainConfig`, so it runs only at FORK time; `WorkspaceCycle.faculties` is
+        //     immutable after build.
+        // Moving only the hands gives her a map of one tree and a file engine in another — the
+        // #206 shape, where she reasons over a layout that isn't hers and explores instead of
+        // building. Glass-boxed 2026-08-05: the re-root probe fired with the right checkout while
+        // her workspace-map, 4.8s later, still described the previous root. It LOOKED fixed.
+        //
+        // Half-rooted is worse than not rooted, because the resulting zero is a lie about the
+        // solver that no probe reports. So refuse, and name the working path: the RUN-level
+        // `workspace_root` does BOTH halves at fork time, so ONE EVAL PER ROOT is correct today.
+        // [[fallbacks-are-illegal-fail-loud]]
+        // [[re-rooting-a-persona-is-two-operations-moving-one-is-worse-than-moving-neither]]
+        //
+        // The real fix (then this refusal goes away): her eyes read the root FROM her hands —
+        // one source of truth — the way `CitizenLayerWorkspaceLayoutReader` already calls the
+        // same `ensure_citizen_layer` the hands call, "so map and tools can never again describe
+        // different worlds".
+        let task_root: Option<&str> = t.workspace_root.as_deref().or(workspace_root);
+        if let Some(want) = t.workspace_root.as_deref() {
+            if Some(want) != workspace_root {
+                results.push(EvalTaskResult {
+                    id: t.id.clone(),
+                    ok: false,
+                    grade: format!(
+                        "infra: task '{}' declares its own workspace_root '{want}' but this run \
+                         was forked at {:?}. Re-rooting mid-run would move her HANDS without \
+                         moving her EYES (the workspace-map is baked at fork), so she would be \
+                         graded while reading a tree she is not working in. Run one eval per \
+                         root: pass --workspace_root='{want}' with just this task.",
+                        t.id, workspace_root
+                    ),
+                    answer: String::new(),
+                    acts: 0,
+                    latency_ms: 0,
+                    output_tokens: 0,
+                    tokens_per_second: 0.0,
+                    decode_tokens_per_second: 0.0,
+                    cache_hit_rate: 0.0,
+                    prefill_ms: 0,
+                    decode_ms: 0,
+                });
+                continue;
             }
         }
         // Task-state SETUP (gym/mine tasks re-break their checkout so runs are
@@ -3728,7 +3809,7 @@ async fn run_pass(
             // reads too. Default target `index.html`; default threshold 1.0 ("it works").
             let target = t.target.as_deref().unwrap_or("index.html");
             let threshold = t.ui_pass_threshold.unwrap_or(1.0);
-            perception_grade(cycle, target, &t.ui_checks, threshold, workspace_root, &answer).await
+            perception_grade(cycle, target, &t.ui_checks, threshold, task_root, &answer).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
@@ -4148,6 +4229,64 @@ mod tests {
         d.dod_shell = Some("cargo test".into());
         d.require_hands_for_code();
         assert!(d.solution_file.is_none(), "a DoD already grades the workspace her hands changed");
+    }
+
+    /// what this catches: a mined gym being unrunnable. `gym/mine` gives every task its OWN git
+    /// worktree, so the root is a property of the TASK. When only the RUN could carry a root, an
+    /// 8-task mined gym ran with one root — wrong for every task — and she was asked to fix a bug
+    /// in a directory her sandboxed tools could not reach. She scored zero, and the zero described
+    /// the harness. Glass-boxed 2026-08-05: her workspace-map showed the continuum tree while the
+    /// prompt named a serde_json checkout.
+    ///
+    /// Also pins that a repo task is NOT mangled by the code-must-be-written normalization: it is
+    /// already hands-graded by its `dod_shell` against a real test suite, and deriving a
+    /// `sol_<id>.rs` for it would invent a deliverable the task never wanted.
+    #[test]
+    fn a_mined_repo_task_carries_its_own_root_and_is_not_renormalized() {
+        let mut t: EvalTask = serde_json::from_str(
+            r#"{"id":"mine_2037b634","prompt":"Real bug, real repo.","expect":"",
+                "workspaceRoot":"/tmp/gym/task_2037b634",
+                "dodShell":"cd /tmp/gym/task_2037b634 && cargo test",
+                "setupShell":"git checkout HEAD^ -- src/de.rs"}"#,
+        )
+        .expect("the mined wire shape (camelCase) parses");
+        assert_eq!(t.workspace_root.as_deref(), Some("/tmp/gym/task_2037b634"));
+        assert!(t.needs_tools(), "a task pinned to a repo obviously needs hands");
+        let before = t.prompt.clone();
+        t.require_hands_for_code();
+        assert!(
+            t.solution_file.is_none(),
+            "a repo task is graded by its DoD against the real suite — never by an invented file"
+        );
+        assert_eq!(t.prompt, before, "no acting preamble bolted onto a repo task");
+    }
+
+    /// what this catches: the per-task root silently not overriding the run-level pin (or vice
+    /// versa). Precedence has to be unambiguous — the task's own checkout wins, and a task with
+    /// no root of its own still inherits the run's pin, so SWE-bench (one clone, one task) and a
+    /// mined gym (N clones, N tasks) both work through the SAME field.
+    /// what this catches: someone "finishing" the per-task root by re-rooting mid-run. That moves
+    /// her HANDS while her EYES stay baked at the fork root — glass-boxed 2026-08-05, the probe
+    /// fired green while her workspace-map still described the old tree. This pins the contract
+    /// that a differing task root is REFUSED (loud, actionable) rather than half-applied (silent,
+    /// scores a lie). Delete this only together with the eyes-derive-from-hands fix.
+    #[test]
+    fn a_task_root_that_differs_from_the_runs_is_refused_not_half_applied() {
+        let run_pin = Some("/repo/from-run");
+        let mut t = code_task("x");
+        // No task root → inherits the run pin, which DID move both halves at fork. Fine.
+        assert_eq!(t.workspace_root.as_deref().or(run_pin), run_pin);
+        let matches_run = t.workspace_root.as_deref().map(|w| Some(w) != run_pin);
+        assert_eq!(matches_run, None, "no task root is never a conflict");
+        // A DIFFERENT task root is the refusal case — mid-run re-rooting would split her.
+        t.workspace_root = Some("/repo/from-task".into());
+        assert!(
+            t.workspace_root.as_deref() != run_pin,
+            "differing root must be detected as a conflict, not silently preferred"
+        );
+        // Same root declared on both is harmless (the fork already rooted both halves there).
+        t.workspace_root = Some("/repo/from-run".into());
+        assert_eq!(t.workspace_root.as_deref(), run_pin, "agreement is not a conflict");
     }
 
     // what this catches: the mid-run scoreboard's poll surface (#123/#141). One
