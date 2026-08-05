@@ -139,11 +139,30 @@ impl DiskReporter for TrackedDir {
 /// | hf-hub | HF downloads | hub LRU |
 /// | citizens | persona workspaces/stores | WorkspaceResolver CoW fix |
 /// | forge | export intermediates | export trimmer |
+///
+/// Paths that the operator can RELOCATE are resolved through the same authority the rest of the
+/// substrate uses, never re-derived from `home`. A tracked dir that points somewhere the artifacts
+/// are not is worse than no tracking at all: the scanner reports a reassuring 0 bytes, the class
+/// looks governed, and the real bytes accumulate unwatched and unowned by any eviction pool —
+/// which is precisely the 2026-07-13 shape this registry exists to prevent, one level up.
+///
+/// MEASURED on BigMama 2026-08-05: `hf-hub` tracked `~/.cache/huggingface` (0 bytes) while the
+/// cold-storage installer had pointed `HF_HOME` at `D:\continuum-cold\huggingface` holding
+/// **2.48 TB** — Kimi-K3 at 1.45 TB, Kimi-K2.7 at 430 GB, GLM-5.2 at 375 GB. Entirely invisible to
+/// the disk governor.
 pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
+    // The HF cache is relocatable (HF_HOME / config.env, set by the cold-storage installer), so ask
+    // the resolver instead of assuming the default. `huggingface_cache_root()` returns `<root>/hub`;
+    // track the PARENT so the class covers the whole cache (blobs, snapshots, locks, refs), which is
+    // what actually consumes the volume.
+    let hf_root = crate::model_registry::artifacts::huggingface_cache_root()
+        .and_then(|hub| hub.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| home.join(".cache/huggingface"));
+
     vec![
         TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
         TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
-        TrackedDir::new("hf-hub", home.join(".cache/huggingface")),
+        TrackedDir::new("hf-hub", hf_root),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
         TrackedDir::new("forge", home.join(".continuum/forge")),
     ]
@@ -237,6 +256,42 @@ impl Daemon for DiskUsageScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the hf-hub class tracking a path the artifacts are NOT at. It hardcoded
+    // `home/.cache/huggingface` while the cold-storage installer relocates HF_HOME — measured on
+    // BigMama, the class reported 0 bytes at the default while 2.48 TB sat on the cold drive,
+    // invisible to the disk governor and owned by no eviction pool. A tracked dir pointing at the
+    // wrong place is worse than an untracked one: it reports a reassuring zero.
+    //
+    // Mutation check: reverting to `home.join(".cache/huggingface")` fails the first assert.
+    #[test]
+    fn hf_hub_class_follows_a_relocated_cache_root() {
+        let relocated = tempfile::tempdir().expect("tempdir");
+        let home = tempfile::tempdir().expect("home");
+        // SAFETY: single-threaded test; the var is restored below.
+        let prev = std::env::var("HF_HOME").ok();
+        unsafe { std::env::set_var("HF_HOME", relocated.path()) };
+
+        let dirs = standard_tracked_dirs(home.path());
+        let hf = dirs
+            .iter()
+            .find(|d| d.name == "hf-hub")
+            .expect("hf-hub class must exist");
+        assert_eq!(
+            hf.path(),
+            relocated.path(),
+            "hf-hub must track the RELOCATED cache root, not the default under home"
+        );
+        assert!(
+            !hf.path().starts_with(home.path()),
+            "tracking a path under home while HF_HOME points elsewhere is the false-zero bug"
+        );
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HF_HOME", v) },
+            None => unsafe { std::env::remove_var("HF_HOME") },
+        }
+    }
 
     // what this catches: the reporter half of the seam — a TrackedDir
     // reports its cached value inside the DiskReporter contract, labels
