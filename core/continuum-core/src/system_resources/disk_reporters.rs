@@ -155,17 +155,42 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     // the resolver instead of assuming the default. `huggingface_cache_root()` returns `<root>/hub`;
     // track the PARENT so the class covers the whole cache (blobs, snapshots, locks, refs), which is
     // what actually consumes the volume.
-    let hf_root = crate::model_registry::artifacts::huggingface_cache_root()
+    // NOT `.unwrap_or_else(|| home.join(".cache/huggingface"))`. That fallback is a FABRICATION in
+    // the sense swallow-audit.py means: it substitutes a plausible path for an unknown one, and the
+    // scanner then reports a confident 0 bytes for a class whose real bytes are elsewhere. That is
+    // the exact defect this function was changed to fix — 2.48 TB invisible because the tracked path
+    // was not the real one — so silently re-introducing it as the failure branch would be the same
+    // bug wearing a fallback's clothes.
+    //
+    // If the resolver cannot answer, the honest outcome is to say so and NOT claim the class is
+    // tracked. A missing hf-hub row is visibly missing; a wrong one looks governed.
+    let hf_root = match crate::model_registry::artifacts::huggingface_cache_root()
         .and_then(|hub| hub.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| home.join(".cache/huggingface"));
+    {
+        Some(root) => Some(root),
+        None => {
+            tracing::warn!(
+                probe_class = "disk.tracked_dirs",
+                "hf-hub cache root could not be resolved (no HF_HOME, no config.env entry, no home \
+                 dir) — the hf-hub class is NOT being tracked this boot. Not defaulting to \
+                 ~/.cache/huggingface: a tracked dir pointing at the wrong place reports a \
+                 reassuring zero and is worse than an absent one."
+            );
+            None
+        }
+    };
 
-    vec![
+    let mut dirs = vec![
         TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
         TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
-        TrackedDir::new("hf-hub", hf_root),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
         TrackedDir::new("forge", home.join(".continuum/forge")),
-    ]
+    ];
+    // Present only when its real location is KNOWN (see the warn above).
+    if let Some(root) = hf_root {
+        dirs.push(TrackedDir::new("hf-hub", root));
+    }
+    dirs
 }
 
 /// Recursive size of `path` in bytes. Symlinks are NOT followed (a
