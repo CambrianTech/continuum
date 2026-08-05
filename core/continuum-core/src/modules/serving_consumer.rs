@@ -340,6 +340,8 @@ mod tests {
     // the only lever is a full unload — the tier-down path has its own rig below.
     fn rig(active: &str, bytes: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some(active.to_string()),
             ready: true,
             base_url: "http://localhost:0/v1".into(),
@@ -427,6 +429,8 @@ mod tests {
         let seen: Arc<Mutex<Option<(String, u32, u32)>>> = Arc::new(Mutex::new(None));
         let seen_w = seen.clone();
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
             ready: true,
             base_url: "http://localhost:0/v1".into(),
@@ -521,6 +525,8 @@ mod tests {
         watch::Receiver<Option<String>>,
     ) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some(active.to_string()),
             ready: true,
             base_url: "http://localhost:0/v1".into(),

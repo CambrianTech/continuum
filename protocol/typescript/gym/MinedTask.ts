@@ -6,6 +6,14 @@
  */
 export type MinedTask = { id: string, prompt: string, dodShell: string, setupShell: string, 
 /**
+ * The checkout THIS task lives in — the directory the persona's hands must be rooted at.
+ * Every mined task has its OWN worktree, so the root is per-TASK, never per-run: emitting
+ * it as a FIELD (not just prose inside `prompt`) is what lets the evaluator re-root her
+ * file engine before the task instead of leaving her sandboxed somewhere else, reading a
+ * path she cannot reach. A miner that only narrates the path produces tasks nothing can run.
+ */
+workspaceRoot: string, 
+/**
  * Provenance: the fixing commit this task was mined from.
  */
 commit: string, 

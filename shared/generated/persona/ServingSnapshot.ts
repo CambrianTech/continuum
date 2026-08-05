@@ -13,8 +13,29 @@ export type ServingSnapshot = {
 active_model?: string, 
 /**
  * True once `/health` has answered 200 for the active model.
+ *
+ * READ THIS WITH [`ready_verified_at_ms`](Self::ready_verified_at_ms). `ready`
+ * is a CACHED CLAIM, not a live probe (this snapshot is a `watch` borrow by
+ * design — see `serving/status`). Nothing revises it when the process dies, so
+ * on 2026-08-05 `serving/status` returned `ready: true, degraded_reason: null`
+ * AFTER the llama-server was SIGKILLed and its port was dead. Every consumer
+ * that trusted the bare bool was reading a claim with no expiry — the same
+ * defect class as an `[ok]` route health on a route that has not delivered in
+ * ten hours. A claim must carry the age of its evidence.
  */
 ready: boolean, 
+/**
+ * When `ready` was last CONFIRMED by real evidence (a `/health` 200 or a real
+ * token delivery) — epoch ms. `None` = never confirmed.
+ *
+ * This is the expiry the bare `ready` bool lacks. A reader deciding anything
+ * load-bearing (route a persona here? score a benchmark against it?) must ask
+ * how old the confirmation is, not merely whether the flag is set: `ready:true`
+ * verified 3s ago and `ready:true` verified 40 minutes ago are different facts,
+ * and only one of them is a lane you should send work to.
+ * [[a-wedged-llama-slot-spins-forever-while-health-and-serving-status-both-say-ready]]
+ */
+ready_verified_at_ms?: number, 
 /**
  * The `/v1` base url personas point their inference adapter at.
  */

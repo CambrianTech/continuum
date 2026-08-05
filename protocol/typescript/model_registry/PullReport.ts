@@ -24,4 +24,21 @@ bytes: number,
 /**
  * Human-readable summary (repo, chosen tier, whether mmproj came too).
  */
-detail: string, };
+detail: string, 
+/**
+ * True when this is the immediate ACK of a detached pull — `gguf_path`/`bytes` are
+ * empty/zero. Poll `~/.continuum/progress/models-pull-<run_id>.json` for the real
+ * report, or subscribe to `models:pull:progress` / `models:pull:complete`.
+ */
+detached: boolean, 
+/**
+ * Correlation id, present on a detached ack and on every progress event for the run.
+ */
+run_id?: string, 
+/**
+ * Why the pull failed, when it did. Present ONLY on a terminal failure record written to
+ * the progress ledger. A detached failure used to write nothing at all, so a watcher polling
+ * the path the ack named could not tell "failed" from "still downloading" — ever. The report
+ * type has to be able to say "this ended badly" or the ledger can only describe success.
+ */
+error?: string, };
