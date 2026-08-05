@@ -838,9 +838,17 @@ pub async fn drive_to_settle(
     const STUCK_LIMIT: usize = 3;
     let mut prev_sig: Option<String> = None;
     let mut stuck = 0usize;
-    // One-shot: a workspace-deliverable turn gets exactly ONE re-perception on a
-    // zero-deliverable Speak (see the Spoke arm). Never a retry loop.
-    let mut reperceived = false;
+    // A workspace-deliverable turn re-perceives on a zero-deliverable Speak (see the Spoke
+    // arm). This used to be ONE-SHOT, and the glass box showed what that costs: on
+    // sympy-21379 `persona.settle.no_deliverable` fired exactly once per run and she then
+    // settled at 5-7 acts with a 30-act budget unspent. The latch was guarding against a
+    // retry loop, but it also capped her at a single reminder for the whole turn.
+    //
+    // The bound that actually prevents a loop without capping her: re-fire only if she has
+    // ACTED since the last nudge. A nudge that earns an act has earned another; two Speaks
+    // in a row with no act between them means the nudge is not working, so she settles
+    // rather than being trapped. Her own behavior is the budget — no counter, no constant.
+    let mut acts_at_last_nudge: Option<usize> = None;
 
     loop {
         // ONE settlement step through the SHARED primitive the live heartbeat uses
@@ -891,10 +899,10 @@ pub async fn drive_to_settle(
                 // stays entirely hers — the same shape as every other proprioception fact
                 // in `settle_step`. [[no-hardcoded-heuristics-to-steer-cognition]],
                 // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]].
-                if framing.workspace_deliverable && !reperceived {
+                if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
                     if let Some(body) = cycle.acting() {
                         if !mutated_workspace(&body.working_memory.recent()) {
-                            reperceived = true;
+                            acts_at_last_nudge = Some(acts);
                             body.working_memory.record_fact(
                                 "[no-deliverable] I settled by speaking, and my working \
                                  memory holds no act of mine that changed a file. This \
@@ -906,7 +914,7 @@ pub async fn drive_to_settle(
                                 persona = %body.persona_name,
                                 room_id = %room_id,
                                 acts = acts,
-                                "workspace-deliverable turn spoke with no mutation receipt — recorded the fact and re-perceived once"
+                                "workspace-deliverable turn spoke with no mutation receipt — recorded the fact and re-perceived (re-fires only after she acts again)"
                             );
                             continue;
                         }
@@ -1458,6 +1466,33 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    /// what this catches: the no-deliverable nudge going back to ONE-SHOT. The first version
+    /// latched on a bool, and the probe trail proved the cost — `persona.settle.no_deliverable`
+    /// fired exactly once per SWE run and the persona then settled at 5-7 acts with a 30-act
+    /// budget unspent. The nudge must re-arm each time she ACTS, so a turn that keeps working
+    /// keeps being told the workspace is the deliverable; and it must NOT re-arm when she
+    /// speaks twice with no act between, so it can never become a spin.
+    #[test]
+    fn the_no_deliverable_nudge_rearms_on_each_act_but_never_twice_without_one() {
+        // The gate's whole condition, isolated: `acts_at_last_nudge != Some(acts)`.
+        let fires = |last: Option<usize>, acts: usize| last != Some(acts);
+
+        // Never nudged yet at act 3 → fires.
+        assert!(fires(None, 3), "first zero-deliverable Speak must nudge");
+        // Nudged at 3, still at 3 (spoke again, acted zero times) → must NOT fire again.
+        assert!(
+            !fires(Some(3), 3),
+            "a second Speak with no act in between must settle, not spin"
+        );
+        // Nudged at 3, she then acted (now 4) → re-arms.
+        assert!(
+            fires(Some(3), 4),
+            "the nudge must re-arm once she has acted again — this is the bug that capped \
+             her at one reminder per turn"
+        );
+    }
+
     use super::*;
 
     // what this catches: recall collapse (the PX/handle primitive, RAG side). A code/write
