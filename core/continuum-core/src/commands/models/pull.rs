@@ -379,18 +379,39 @@ impl ModelsPull {
                 b = b.with_cache_dir(hub);
             }
             // PARALLEL CHUNKS. hf-hub's ApiBuilder defaults to `max_files: 1` — ONE concurrent
-            // 10 MB range request — so a 76 GB model came down a single chunk at a time on a
-            // single connection. That default is fine for a config.json and absurd for a frontier
-            // GGUF; the crate ships `with_high_parallelism()` precisely for this and we simply
-            // were not calling it.
+            // 10 MB range request — so a 76 GB model came down a single chunk at a time.
             //
-            // Bounded rather than `num_cpus` (what with_high_parallelism uses): this box has 32
-            // logical cores and 32 simultaneous range requests is impolite to the CDN and buys
-            // nothing once the link is saturated. 8 is enough to fill a fast pipe while staying a
-            // reasonable citizen — and unlike a core count it does not scale a network decision
-            // off a CPU number, which is the kind of accidental coupling that later reads as a bug.
-            const PARALLEL_CHUNKS: usize = 8;
-            b = b.with_max_files(PARALLEL_CHUNKS);
+            // MEASURED on BigMama 2026-08-04 against this repo, and the measurement matters more
+            // than the number: connection count stops helping almost immediately.
+            //   1 conn    0.4 MB/s
+            //   8 conns   2.1 MB/s
+            //   24 conns  1.8 MB/s   <- WORSE; no gain past ~8
+            // and the honest ceiling came from the interface counter, not from foreground probes:
+            // TOTAL adapter RX was 4.04 MB/s while the pull ran, i.e. the pull already owned the
+            // whole link. That box is on WI-FI (865 Mbps link rate, ~32 Mbit/s actual), so the
+            // constraint is the medium, not the chunk count — an ethernet cable is worth more here
+            // than any value in this constant.
+            //
+            // Two earlier readings were wrong and are recorded so nobody re-derives them: a
+            // single-connection probe taken WHILE the 8-connection pull was running showed
+            // 0.2 MB/s, which made scaling look linear and argued for raising this to 16. Every
+            // foreground throughput probe competes with the download it is measuring; only the
+            // adapter counter is uncontaminated.
+            //
+            // Overridable because the right value is a property of the OPERATOR'S link, not of
+            // this code — and now that the progress ledger reports real throughput, it can be
+            // tuned from evidence instead of argued about.
+            const DEFAULT_PARALLEL_CHUNKS: usize = 8;
+            let parallel_chunks = crate::config_env::read("CONTINUUM_HF_PARALLEL_CHUNKS")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|n| *n >= 1 && *n <= 64)
+                .unwrap_or(DEFAULT_PARALLEL_CHUNKS);
+            tracing::info!(
+                probe_class = "models.pull.parallelism",
+                chunks = parallel_chunks,
+                "hf download parallelism"
+            );
+            b = b.with_max_files(parallel_chunks);
             b.build()
                 .map_err(|e| CommandError::Internal(format!("hf-hub init failed: {e}")))?
         };
