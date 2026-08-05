@@ -1439,6 +1439,34 @@ impl ServingDaemonModule {
             self.health_fails.store(0, Ordering::Relaxed);
             return None;
         }
+        // DELIVERY BEATS PROBING. `decode_smoke_ok` is a real multi-token generation through
+        // the LIVE slots, so it competes for the same slots as actual work. A lane saturated by
+        // long prefills cannot hand it a slot, the miss reads as "no decode", and
+        // HEALTH_FAILS_TO_RELAUNCH misses relaunch a lane that was never wedged — just busy.
+        // Glass-boxed on the SWE bench (v13): health failed twice mid-run and the relaunch left
+        // every downstream generate refusing with `serving: <none>`, killing the run.
+        //
+        // If a real generation produced tokens within this probe interval, the compute path is
+        // PROVEN alive by work that already happened — a synthetic probe can add nothing and
+        // can only steal a slot from the thing proving it. Probe QUIET lanes; trust busy ones.
+        // The window is the probe cadence itself (no second constant to drift), and a fresh
+        // boot with no observed decode yet falls through and probes as before.
+        // [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
+        let probe_window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
+        if let Some(since) = crate::inference::llama_server::ms_since_real_decode() {
+            if since <= probe_window_ms {
+                self.health_fails.store(0, Ordering::Relaxed);
+                crate::probe!(
+                    class = "serving.health",
+                    ok = true,
+                    via = "real_decode",
+                    ms_since_decode = since,
+                    "lane proven alive by real token delivery — skipped the smoke probe rather \
+                     than contend for a slot with the work that proves it",
+                );
+                return None;
+            }
+        }
         // Never race the reconcile's own spawn/kill/swap, and never stack heartbeat probes.
         if self.reconciling.load(Ordering::Acquire) {
             return None;
