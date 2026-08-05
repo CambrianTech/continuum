@@ -58,6 +58,16 @@
 
 use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
 
+/// Per-step size of the rolling trail: `1/64` of the window (the calibrated trail-head
+/// fraction from the table above). Named so the COUNT below cannot drift from the SIZE.
+const TRAIL_HEAD_DENOM: usize = 64;
+
+/// The trail's TOTAL share of the window: `1/4` — the same allotment
+/// [`ContextBudget::latest_action_chars`] gives the single most-recent act, so her history
+/// gets parity with her present. Paired with [`TRAIL_HEAD_DENOM`] this yields the step
+/// COUNT; changing either alone silently changes the other's meaning.
+const TRAIL_TOTAL_DENOM: usize = 4;
+
 /// The re-injection bounds for ONE mind at its CURRENT served window.
 ///
 /// Construct from the live window at the seam that has it — `WorkspaceCycle::model_loadout()`
@@ -131,7 +141,36 @@ impl ContextBudget {
     /// latest act is kept whole separately, so the trail only needs enough to recognize what
     /// each past act was.
     pub fn trail_head_chars(&self) -> usize {
-        self.fraction(64)
+        self.fraction(TRAIL_HEAD_DENOM)
+    }
+
+    /// How many past steps the rolling trail carries — the COUNT to
+    /// [`Self::trail_head_chars`]'s per-step SIZE.
+    ///
+    /// Derived, not invented: each step costs `1/TRAIL_HEAD_DENOM` of the window, and the
+    /// trail as a whole is allotted `1/TRAIL_TOTAL_DENOM` — the same share
+    /// [`Self::latest_action_chars`] gives the single most recent act. History gets parity
+    /// with the present. So the count is `TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM`, and because
+    /// both terms scale with the window it is window-INDEPENDENT: a bigger lane buys richer
+    /// steps (each head grows), not more of them. Wanting more steps on a big window is a
+    /// separate decision, made by changing these denominators together — never by
+    /// hardcoding a count beside them.
+    ///
+    /// ## Why this function exists at all
+    ///
+    /// It replaces `DEFAULT_WORKING_MEMORY_CAPACITY = 3`, a bare constant that survived the
+    /// sweep which made every *character* bound window-derived. The result, measured on a
+    /// live SWE-bench run 2026-08-05: a persona took 21 investigative acts and reached her
+    /// final turn with `(+19 earlier steps aged out of working memory)` — a 21-step
+    /// investigation conducted with a 3-step memory, while her prompt used 5,326 of a
+    /// 16,384-token window. She re-issued calls whose results she no longer had, and
+    /// restated a finding ("57 matches") whose evidence had aged out. Nothing was wrong with
+    /// her reasoning; we threw away her notes with two thirds of the window empty.
+    ///
+    /// Long-horizon agentic work is exactly the case a 3-deep scratchpad cannot serve.
+    /// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+    pub fn working_memory_steps(&self) -> usize {
+        (TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM).max(1)
     }
 
     /// The FULL most-recent-action block. This one rides in the volatile prompt tail and
@@ -239,6 +278,45 @@ mod tests {
     /// what this catches: an unknown window silently becoming an invented one. `unknown()`
     /// must fold NOTHING (the deliberation guard trims downstream), not fall back to some
     /// default window — that fallback is the exact bug this module exists to kill.
+    // what this catches: the working-memory DEPTH is derived from the same calibrated
+    // fractions as the per-step SIZE, never a bare constant. It replaced
+    // `DEFAULT_WORKING_MEMORY_CAPACITY = 3`, which starved a 21-act SWE-bench
+    // investigation down to a 3-step memory while two thirds of the window sat unused
+    // (measured 2026-08-05: "+19 earlier steps aged out of working memory").
+    //
+    // The count is window-INDEPENDENT by construction — both terms scale — so a bigger
+    // lane buys richer steps, not more of them. If someone changes one denominator
+    // without the other, this test says so.
+    #[test]
+    fn working_memory_depth_is_derived_from_the_budget_not_a_constant() {
+        let small = ContextBudget::from_window(4_096);
+        let lane = ContextBudget::from_window(16_384);
+        let huge = ContextBudget::from_window(1_000_000);
+
+        assert_eq!(lane.working_memory_steps(), TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM);
+        assert_eq!(
+            small.working_memory_steps(),
+            lane.working_memory_steps(),
+            "depth is a RATIO of two window fractions, so it does not shrink on a small lane"
+        );
+        assert_eq!(
+            huge.working_memory_steps(),
+            lane.working_memory_steps(),
+            "nor grow on a huge one — a bigger window buys richer steps, not more of them"
+        );
+        assert!(
+            lane.working_memory_steps() > 3,
+            "must be deeper than the 3-step scratchpad that lost 19 of 21 steps"
+        );
+        // An unknown window must still yield a USABLE depth. Unlike a char bound, an
+        // unbounded COUNT is not "no bound" — it is an unbounded buffer, so the honest
+        // answer here is the derived ratio, not usize::MAX.
+        assert_eq!(
+            ContextBudget::unknown().working_memory_steps(),
+            lane.working_memory_steps()
+        );
+    }
+
     #[test]
     fn an_unknown_window_folds_nothing_rather_than_inventing_a_number() {
         let b = ContextBudget::unknown();

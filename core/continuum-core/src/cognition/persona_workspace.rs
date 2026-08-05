@@ -22,7 +22,7 @@ use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbed
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
-use super::working_memory::{WorkingMemory, WorkingMemoryFaculty, DEFAULT_WORKING_MEMORY_CAPACITY};
+use super::working_memory::{WorkingMemory, WorkingMemoryFaculty};
 use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
@@ -266,7 +266,11 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // long-term engram store; self-activates only when thinking is enabled (suppressed
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
-    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // Depth comes from the BUDGET, never a constant: the count sibling of the per-step size
+    // bound, off the same live window. See `ContextBudget::working_memory_steps`.
+    let working_memory = Arc::new(WorkingMemory::new(
+        crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
+    ));
     // MEMENTO FIX (#138 slice 2, Joel: "they wake up blank like Memento — an
     // engineering failure; the flywheel falls apart"): on LIVE spawns, restore
     // the volatile tier persisted by the previous life so she wakes MID-WORK —
