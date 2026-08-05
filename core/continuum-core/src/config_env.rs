@@ -40,6 +40,28 @@ pub fn upsert(key: &str, value: &str) -> Result<(), String> {
     upsert_in(&path, key, value)
 }
 
+/// Strip one layer of surrounding single or double quotes from a config value.
+///
+/// Values are now WRITTEN single-quoted, because this file is `source`d by bash and an unquoted
+/// Windows path is destroyed by it: bash treats each backslash as an escape, so
+/// `HF_HOME=D:\continuum-cold\huggingface` sources as `D:continuum-coldhuggingface` — a
+/// drive-relative path that Windows then resolves to a WHOLE SEPARATE cache root. Measured: a
+/// 76 GB model download landing in `D:\continuum-coldhuggingface\` while every resolver looked
+/// under `D:\continuum-cold\huggingface\`.
+///
+/// Reading has to tolerate both forms: installs predating the quoting fix still have bare values,
+/// and an operator editing this file by hand may write either.
+fn unquote(v: &str) -> String {
+    let bytes = v.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+            return v[1..v.len() - 1].to_string();
+        }
+    }
+    v.to_string()
+}
+
 /// Path-taking core of [`read`] — testable without touching `$HOME`.
 pub fn read_from(path: &Path, key: &str) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
@@ -51,7 +73,7 @@ pub fn read_from(path: &Path, key: &str) -> Option<String> {
         }
         if let Some((k, v)) = trimmed.split_once('=') {
             if k.trim() == key {
-                found = Some(v.trim().to_string());
+                found = Some(unquote(v.trim()));
             }
         }
     }
@@ -116,6 +138,46 @@ mod tests {
         static N: AtomicU64 = AtomicU64::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("continuum-config-env-test-{n}/config.env"))
+    }
+
+    /// What this catches: a Windows path written by the installer must survive being read back,
+    /// quoted or not. The installer now single-quotes values because this file is `source`d by
+    /// bash, which eats backslashes in an unquoted value:
+    ///   HF_HOME=D:\continuum-cold\huggingface  ->  D:continuum-coldhuggingface
+    /// Windows resolves that drive-relative string into a SEPARATE cache root, and a 76 GB model
+    /// download really did land there while every resolver looked at the correct path. The reader
+    /// must therefore strip the new quotes AND still accept pre-fix installs that have bare values.
+    #[test]
+    fn windows_paths_read_back_intact_quoted_or_bare() {
+        let p = tmp_config();
+        let win = r"D:\continuum-cold\huggingface";
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(
+            &p,
+            format!("# header\nHF_HOME='{win}'\nCONTINUUM_STORAGE_PATH={win}\nQ=\"{win}\"\n"),
+        )
+        .unwrap();
+        assert_eq!(read_from(&p, "HF_HOME").as_deref(), Some(win), "single-quoted value");
+        assert_eq!(
+            read_from(&p, "CONTINUUM_STORAGE_PATH").as_deref(),
+            Some(win),
+            "bare value from a pre-fix install must still work"
+        );
+        assert_eq!(read_from(&p, "Q").as_deref(), Some(win), "double-quoted value");
+        let _ = fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// What this catches: unquote() must not eat a lone quote or mangle a value that merely
+    /// CONTAINS one — only a matched surrounding pair is a quote wrapper.
+    #[test]
+    fn unquote_only_strips_matched_surrounding_pairs() {
+        assert_eq!(unquote("plain"), "plain");
+        assert_eq!(unquote("'quoted'"), "quoted");
+        assert_eq!(unquote("\"quoted\""), "quoted");
+        assert_eq!(unquote("'mismatched\""), "'mismatched\"");
+        assert_eq!(unquote("it's"), "it's");
+        assert_eq!(unquote("'"), "'");
+        assert_eq!(unquote(""), "");
     }
 
     /// What this catches: a freshly written key reads back, and a sibling key is
