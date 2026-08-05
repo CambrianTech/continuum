@@ -518,7 +518,7 @@ impl ServingDaemonModule {
         // anti-pattern the memory-authority arc exists to kill. Pressure sensing stays live
         // via the drive mode below (which still reads system available for the fraction).
         let available = self.system.snapshot().memory.available_bytes;
-        let live = governed_vram_ceiling(&self.resource_daemon).unwrap_or(0);
+        let live = governed_vram_ceiling_or_report(&self.resource_daemon, "host_budget");
         // LUDICROUS override: a declared benchmark/exam intent floors the whole GPU
         // (Performance, fraction 1.0) — the biggest window the model+machine allow, past the
         // conservative pressure read (which on UMA under-reports free memory). The drive mode
@@ -673,7 +673,7 @@ impl ServingDaemonModule {
         // a fits-in-VRAM model spills expert layers to CPU, making the B-gate measurable. Every
         // placement made under it is flagged on the probe below — never mistaken for capacity.
         let forced = self.measure_force_expert_budget_bytes;
-        let budget = forced.unwrap_or_else(|| governed_vram_ceiling(&self.resource_daemon).unwrap_or(0));
+        let budget = forced.unwrap_or_else(|| governed_vram_ceiling_or_report(&self.resource_daemon, "compute_expert_placement"));
         if budget == 0 {
             return None;
         }
@@ -1656,7 +1656,7 @@ pub fn live_host_budget(
     // available — on UMA that raw vm_stat figure under-reports and would reject a model
     // that physically fits (the same clamp that floored the served window to 2048;
     // glass-boxed 2026-07-20). `_system` stays in the signature for call-site stability.
-    let vram_ceiling = governed_vram_ceiling(resource_daemon).unwrap_or(0);
+    let vram_ceiling = governed_vram_ceiling_or_report(resource_daemon, "board_authoritative_host_budget");
     host_budget_from(&HostBudgetInputs {
         available_bytes: vram_ceiling,
         total_vram_bytes: vram_ceiling,
@@ -1748,7 +1748,7 @@ pub fn serving_ludicrous_active() -> bool {
 }
 
 pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
-    let available = governed_vram_ceiling(resource_daemon).unwrap_or(0);
+    let available = governed_vram_ceiling_or_report(resource_daemon, "governed_host_budget");
     host_budget_from(&HostBudgetInputs {
         available_bytes: available,
         total_vram_bytes: available,
@@ -1769,6 +1769,48 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
         .map(|k| k.available_bytes)
+}
+
+/// The governed VRAM ceiling for a planner that has no way to represent "unknown",
+/// with the absence RECORDED rather than swallowed.
+///
+/// `governed_vram_ceiling` returns `None` for exactly one reason: the board carries
+/// no `Vram` row — the governor has not reported yet (boot race) or this node tracks
+/// no VRAM at all. That is **not** the same fact as "zero bytes free", and the four
+/// call sites that used to write `.unwrap_or(0)` could not tell them apart. A
+/// silently-substituted 0 makes a 64GB machine look like it has no GPU, which floors
+/// the served window and refuses lanes — indistinguishable from, and byte-identical
+/// to, the #213/#214 symptom this file's own comments were written to explain.
+///
+/// 0 remains the right CONSERVATIVE value to plan with (never over-commit VRAM we
+/// cannot confirm). What was wrong was that the substitution left no trace. Now
+/// every unknown ceiling names its call site on the wire, so a machine that plans
+/// like it has no GPU can be told apart from one that actually has none — in one
+/// grep, instead of a night.
+///
+/// Joel, 2026-08-05: "this philosophy of 'errors are bad' has ruined most of my
+/// projects" — a fallback value is only legitimate when the fallback is VISIBLE.
+fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'static str) -> u64 {
+    match governed_vram_ceiling(resource_daemon) {
+        Some(bytes) => bytes,
+        None => {
+            crate::probe!(
+                class = "serving.vram_ceiling_unknown",
+                site = site,
+                planning_with_bytes = 0u64,
+                "governed VRAM ceiling UNKNOWN at {site} — no Vram row on the resource board. \
+                 Planning as 0 bytes, which is NOT evidence the GPU is full."
+            );
+            tracing::warn!(
+                site,
+                "governed VRAM ceiling UNKNOWN (no Vram row on the resource board) — \
+                 planning as 0 bytes. If serving is floored or refusing lanes on a machine \
+                 with free VRAM, this is why: the governor has not reported, not that the \
+                 GPU is full."
+            );
+            0
+        }
+    }
 }
 
 /// Performance-core proxy for the lane cap. `num_cpus::get_physical()` is the
@@ -2082,6 +2124,23 @@ fn snapshot_from_outcome(
             if served_context_window > 0 =>
         {
             ServingSnapshot {
+                // The claim carries the age of its evidence. Stamped HERE, at the
+                // moment the reconcile confirmed readiness — not at read time, which
+                // is what let `ready:true` survive a SIGKILLed process for as long as
+                // nobody republished. A reader compares this against now and decides
+                // whether the claim is still worth trusting.
+                //
+                // `.ok()`, NOT `.unwrap_or(0)`: if the clock is before the epoch we
+                // cannot attest to WHEN this was verified, and `Some(0)` would be a
+                // fabricated attestation (verified in 1970) rather than an absent one.
+                // `None` already means "never confirmed" in this field's contract, so
+                // the honest answer is available — take it. Inventing a plausible
+                // number is the worse half of swallowing an error: it doesn't just
+                // hide the failure, it feeds fiction to every downstream reader.
+                ready_verified_at_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .ok(),
                 active_model: Some(desired.to_string()),
                 ready: true,
                 base_url: serving_v1_url(),
@@ -2966,6 +3025,8 @@ mod tests {
 
         // Pretend coder-14b is already up and ready.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
             ready: true,
             base_url: serving_v1_url(),
@@ -2988,6 +3049,8 @@ mod tests {
     /// Believe-ready snapshot fixture for the liveness-heartbeat tests.
     fn ready_snapshot() -> ServingSnapshot {
         ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
             ready: true,
             base_url: serving_v1_url(),
@@ -3142,6 +3205,8 @@ mod tests {
 
         // Same model + genome, but the live slot froze far below the plan.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
             ready: true,
             base_url: serving_v1_url(),
@@ -3162,6 +3227,8 @@ mod tests {
 
         // Within hysteresis (> half the plan) → hold, no churn.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("coder-14b".into()),
             ready: true,
             base_url: serving_v1_url(),
@@ -3190,6 +3257,8 @@ mod tests {
 
         // Seed a live snapshot, then publish an empty plan → must clear to empty.
         let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("stale".into()),
             ready: true,
             base_url: serving_v1_url(),
