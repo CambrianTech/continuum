@@ -125,6 +125,57 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// job is truth, not speed — it runs on a slow cadence; let it wait out the queue.
 const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 
+/// Wall-clock ms of the last REAL generation that produced tokens on the served lane.
+///
+/// Health is recent DELIVERY, never a synthetic probe. The decode heartbeat
+/// (`serving_daemon::spawn_health_heartbeat_if_due`) runs a real multi-token generation
+/// through the LIVE slots, so it competes for the same slots as actual work: a lane saturated
+/// by long prefills cannot hand the probe a slot, the probe reads that as "no decode", and two
+/// misses relaunch a lane that was never wedged — just busy. Glass-boxed on the SWE bench
+/// (v13): `serving.health {ok:false} x2 -> {action:"relaunch"}` mid-run, then every downstream
+/// generate refused with `serving: <none>`.
+///
+/// Real tokens are the honest liveness evidence, and they cost nothing to observe — a lane that
+/// just decoded for a persona is provably not wedged. So the probe is for QUIET lanes, which is
+/// exactly when it is both cheap and meaningful. Same principle as the airc delivery receipts:
+/// health is recently-ACKed delivery, never the existence of a connection.
+/// [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
+static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record that a real generation produced tokens on the served lane. Called from the adapter's
+/// success path — the one place that knows tokens actually came out.
+pub fn note_real_decode() {
+    // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
+    // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
+    // one. Leave the last good stamp in place and say so.
+    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        tracing::warn!(
+            "system clock is before the UNIX epoch — cannot stamp this decode; \
+             liveness will be judged from the previous stamp or by probing"
+        );
+        return;
+    };
+    LAST_REAL_DECODE_MS.store(since_epoch.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Milliseconds since the last real token-producing generation, or `None` if none has been
+/// observed yet (fresh boot) — the caller must then fall back to probing.
+pub fn ms_since_real_decode() -> Option<u64> {
+    let last = LAST_REAL_DECODE_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if last == 0 {
+        return None;
+    }
+    // `.unwrap_or(0)` here was the dangerous half: `now` = 0 makes the saturating_sub
+    // yield 0, i.e. "a token came out 0 ms ago" — an unreadable clock would present a
+    // WEDGED lane as perfectly fresh, and the caller's documented fallback (probe it)
+    // would never run. `None` already means "no usable evidence, go probe".
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some(now.saturating_sub(last))
+}
+
 /// A same-model/same-genome relaunch is required when the target per-slot window
 /// exceeds the running server's served window by MORE than this. llama.cpp has no
 /// hot-resize API, so a genuine window GROW can only be honored by a relaunch —
@@ -493,7 +544,28 @@ pub struct ServingSnapshot {
     #[ts(optional)]
     pub active_model: Option<String>,
     /// True once `/health` has answered 200 for the active model.
+    ///
+    /// READ THIS WITH [`ready_verified_at_ms`](Self::ready_verified_at_ms). `ready`
+    /// is a CACHED CLAIM, not a live probe (this snapshot is a `watch` borrow by
+    /// design — see `serving/status`). Nothing revises it when the process dies, so
+    /// on 2026-08-05 `serving/status` returned `ready: true, degraded_reason: null`
+    /// AFTER the llama-server was SIGKILLed and its port was dead. Every consumer
+    /// that trusted the bare bool was reading a claim with no expiry — the same
+    /// defect class as an `[ok]` route health on a route that has not delivered in
+    /// ten hours. A claim must carry the age of its evidence.
     pub ready: bool,
+    /// When `ready` was last CONFIRMED by real evidence (a `/health` 200 or a real
+    /// token delivery) — epoch ms. `None` = never confirmed.
+    ///
+    /// This is the expiry the bare `ready` bool lacks. A reader deciding anything
+    /// load-bearing (route a persona here? score a benchmark against it?) must ask
+    /// how old the confirmation is, not merely whether the flag is set: `ready:true`
+    /// verified 3s ago and `ready:true` verified 40 minutes ago are different facts,
+    /// and only one of them is a lane you should send work to.
+    /// [[a-wedged-llama-slot-spins-forever-while-health-and-serving-status-both-say-ready]]
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub ready_verified_at_ms: Option<u64>,
     /// The `/v1` base url personas point their inference adapter at.
     pub base_url: String,
     /// The LoRA genome layers loaded into the serving catalog (sorted paths).
@@ -572,6 +644,8 @@ impl ServingSnapshot {
         Self {
             active_model: None,
             ready: false,
+            // never confirmed — an empty snapshot has no evidence by definition
+            ready_verified_at_ms: None,
             base_url: serving_v1_url(),
             adapters: Vec::new(),
             // Nothing served → no real window yet. A `ready` snapshot never
@@ -949,8 +1023,23 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
         // (no hot-load API). An unreadable adapter probe is treated as "unknown
         // set" → relaunch to be safe, never a silent serve of a stale genome.
         let desired = target.adapter_paths();
-        let active_adapters = ctrl.active_adapters().await.unwrap_or_default();
-        if active_adapters == desired {
+        // The comment above states the policy: an unreadable probe is an UNKNOWN set →
+        // relaunch. `.unwrap_or_default()` did the opposite whenever `desired` is also
+        // empty (the common no-genome case): the error became an empty Vec that COMPARED
+        // EQUAL to the target, short-circuiting to AlreadyServing — the exact silent
+        // stale-serve the comment promises never happens. Honor the stated policy.
+        let genome_matches = match ctrl.active_adapters().await {
+            Ok(active) => active == desired,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "could not read the served genome set — treating it as UNKNOWN and \
+                     falling through to relaunch rather than risk serving a stale genome"
+                );
+                false
+            }
+        };
+        if genome_matches {
             // Right model, right genome — but does the running server's per-slot
             // WINDOW match the target? llama.cpp cannot hot-resize, so a target
             // window that meaningfully EXCEEDS the served window is a real mismatch
@@ -968,7 +1057,18 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     served == 0
                         || target.context_window <= served.saturating_add(WINDOW_RELAUNCH_TOLERANCE)
                 }
-                Err(_) => true,
+                Err(e) => {
+                    // Deliberate: a probe error must not spuriously relaunch a healthy
+                    // lane (stated above). But the error is still evidence — if windows
+                    // stop growing, this line is the reason, and it must be findable.
+                    tracing::warn!(
+                        error = %e,
+                        "could not read the served window — treating the window as OK \
+                         (no spurious relaunch); a starved lane will not grow while this \
+                         probe keeps failing"
+                    );
+                    true
+                }
             };
             if !window_ok {
                 crate::probe!(
@@ -1095,7 +1195,15 @@ impl LlamaServerProcess {
             // start_kill is non-blocking; the OS reaps. We're replacing it, so
             // we don't await the exit — the new spawn binds the same port once
             // the old one releases it (readiness poll absorbs the gap).
-            let _ = child.start_kill();
+            // A kill that FAILS is why the successor will find the port still bound —
+            // the one fact the next bring-up failure needs and could never see before.
+            if let Err(e) = child.start_kill() {
+                tracing::warn!(
+                    error = %e,
+                    "could not signal the llama-server child to die — the port may stay \
+                     bound and the next spawn may fail to bind it"
+                );
+            }
         }
     }
 
@@ -1146,7 +1254,9 @@ impl LlamaServerProcess {
         };
         match std::fs::read_to_string(&path) {
             Ok(s) => tail_or_hang_marker(&s),
-            Err(_) => "<stderr log unreadable>".to_string(),
+            // The marker is the contract (never block the error path), but a bare
+            // "unreadable" hides WHY — permissions vs absent vs mid-rotation.
+            Err(e) => format!("<stderr log unreadable: {e}>"),
         }
     }
 
@@ -1527,28 +1637,41 @@ impl LlamaServerControl for LlamaServerProcess {
         let Ok(v) = resp.json::<serde_json::Value>().await else {
             return false;
         };
-        let out_tokens = v
+        // A missing/!u64 `usage.completion_tokens` is NOT "produced 0 tokens" — it is
+        // "this server did not tell us". Both fail the smoke test, but only one of them
+        // is a wedge; say which, or a schema change reads forever as a dead lane.
+        let Some(out_tokens) = v
             .get("usage")
             .and_then(|u| u.get("completion_tokens"))
             .and_then(|t| t.as_u64())
-            .unwrap_or(0);
-        // CONTENT, not just volume. Token count alone cannot tell a chat model from a model with
-        // no usable generative head — it only distinguishes "emitted tokens" from "emitted almost
-        // none". MEASURED on BigMama: an EMBEDDING model (qwen3-embedding-0.6b) was bound to the
-        // port the persona lane was configured for, and answered this probe with
+        else {
+            tracing::warn!(
+                "smoke decode: response carried no usage.completion_tokens — cannot                  confirm the compute path (treating as NOT proven, but this is a                  missing field, not a measured zero)"
+            );
+            return false;
+        };
+        // CONTENT, not just volume — the second half of the same idea as the branch above.
+        // M5 removed a FABRICATED zero here (`.unwrap_or(0)` turned "the server did not say"
+        // into "it produced nothing"). This removes a fabricated PASS: a token count alone
+        // cannot tell a chat model from one with no usable generative head. MEASURED on
+        // BigMama: an EMBEDDING model (qwen3-embedding-0.6b) was bound to the port the persona
+        // lane was configured for and answered this probe with
         //   "user interface interface user interface UIUUIUUIuiuiuiuiuiuiuiui"
-        // — comfortably past a count-only gate, while being structurally incapable of chat. Every
+        // — comfortably past a count-only gate, while structurally incapable of chat. Every
         // persona on the node then "thought" through it, producing the token-loop garbage that
         // flooded the rooms and scored eval runs as capability zeros when they were infra zeros.
         //
-        // The prompt has a verifiable answer, so verify it. This upgrades the gate from "the
-        // decode path produces output" to "the decode path produces the RIGHT output", which
-        // catches the whole class: wrong model on the port, embedding endpoint, and a lane
-        // emitting fluent-looking noise.
-        let text = v
+        // The prompt has a verifiable answer, so verify it. Missing content is treated the same
+        // way M5 treats a missing token count: NOT PROVEN, not a silent pass.
+        let Some(text) = v
             .pointer("/choices/0/message/content")
             .and_then(|c| c.as_str())
-            .unwrap_or("");
+        else {
+            tracing::warn!(
+                "smoke decode: response carried no choices[0].message.content — cannot                  confirm the model answered (NOT proven; a missing field, not an empty reply)"
+            );
+            return false;
+        };
         out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(text)
     }
 
@@ -1963,7 +2086,20 @@ impl LlamaServerProcess {
         let root = self.v1_url.trim_end_matches('/').trim_end_matches("/v1");
         let url = format!("{root}/lora-adapters");
         let list: Vec<serde_json::Value> = match self.client.get(&url).send().await {
-            Ok(r) => r.json().await.unwrap_or_default(),
+            // `.unwrap_or_default()` turned a malformed/HTML error body into an EMPTY
+            // list — indistinguishable from "this lane has no adapters", so dormancy
+            // silently no-ops and the genome stays hot at full scale.
+            Ok(r) => match r.json().await {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "genome dormancy: /lora-adapters returned a body we cannot parse \
+                         — adapter scales were NOT zeroed (this is not an empty adapter set)"
+                    );
+                    return;
+                }
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "genome dormancy: could not read /lora-adapters");
                 return;
@@ -2642,6 +2778,8 @@ mod tests {
         assert!(!pred(&rx.borrow()));
         // ready but no model → STILL unsatisfied (the bug we guard against).
         tx.send_replace(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: None,
             ready: true,
             base_url: "x".into(),
@@ -2656,6 +2794,8 @@ mod tests {
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
         tx.send_replace(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("coder".into()),
             ready: false,
             base_url: "x".into(),
@@ -2670,6 +2810,8 @@ mod tests {
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
         tx.send_replace(ServingSnapshot {
+            // test fixture: no live readiness was ever CONFIRMED here.
+            ready_verified_at_ms: None,
             active_model: Some("coder".into()),
             ready: true,
             base_url: "x".into(),
