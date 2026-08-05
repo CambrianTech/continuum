@@ -364,7 +364,10 @@ impl FileEngine {
             applied_context: edit_anchor_line(edit_mode, &new_content).map(|anchor| {
                 let mut out = syntax_error_after_edit(&abs_path).unwrap_or_default();
                 // A displaced docstring parses clean, so nothing else here would mention it.
-                out.push_str(&displaced_docstrings(&abs_path, &old_content, &new_content).unwrap_or_default());
+                out.push_str(
+                    &displaced_docstrings(&abs_path, &old_content, &new_content)
+                        .unwrap_or_default(),
+                );
                 out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
                 out.push_str(&numbered_neighborhood(
                     &new_content,
@@ -926,10 +929,7 @@ impl FileEngine {
             // contract. (A persona that wants to enumerate directories
             // uses `code/list`.) `file_type` returns Some when the
             // walker stat'd it; treat None as "skip" (rare).
-            let is_file = entry
-                .file_type()
-                .map(|ft| ft.is_file())
-                .unwrap_or(false);
+            let is_file = entry.file_type().map(|ft| ft.is_file()).unwrap_or(false);
             if !is_file {
                 continue;
             }
@@ -991,18 +991,15 @@ const APPLIED_CONTEXT_RADIUS: u32 = 6;
 /// Deliberately NOT a build. `py_compile` parses one file in milliseconds and answers the
 /// only question asked here — does this still parse. Running the project's real test suite
 /// is the persona's own move via `code/shell`, not something a file write does behind her.
-fn syntax_checker_for(path: &std::path::Path) -> Option<(&'static str, Vec<String>)> {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("py") => Some((
-            "python3",
-            vec![
-                "-m".to_string(),
-                "py_compile".to_string(),
-                path.to_string_lossy().into_owned(),
-            ],
-        )),
-        _ => None,
-    }
+/// This path's in-process validator, if we have a parser for its language.
+///
+/// Was `syntax_checker_for`, which returned an argv for `python3 -m py_compile`. Core is
+/// entirely Rust — see `code::syntax` for why the interpreter had to go. `None` is still
+/// the honest default for a language we cannot parse.
+fn validator_for(
+    path: &std::path::Path,
+) -> Option<&'static dyn crate::code::syntax::SyntaxValidator> {
+    crate::code::syntax::validator_for(path)
 }
 
 /// Does the file still parse after this edit? `Some(error)` only when a checker exists,
@@ -1024,30 +1021,17 @@ fn syntax_checker_for(path: &std::path::Path) -> Option<(&'static str, Vec<Strin
 /// never enters the broken state. The only remaining way in is damage from a whole-file
 /// `code/write` (deliberately ungated) or a change made outside the engine.
 fn syntax_error_after_edit(abs_path: &std::path::Path) -> Option<String> {
-    let (program, args) = syntax_checker_for(abs_path)?;
-    let output = std::process::Command::new(program).args(&args).output().ok()?;
-    if output.status.success() {
-        return None;
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = stderr.trim();
-    if detail.is_empty() {
-        return None;
-    }
-    // Keep it short — working memory is the scarce resource, and the first lines of a
-    // SyntaxError carry the file, the line, and the caret.
-    let head: Vec<&str> = detail.lines().take(6).collect();
-    let out = format!(
+    let validator = validator_for(abs_path)?;
+    let content = fs::read_to_string(abs_path).ok()?;
+    let fault = validator.parse_check(&content).err()?;
+    Some(format!(
         "STILL BROKEN — this file does not parse, and the damage was already here before \
          this edit (an edit that would BREAK a parsing file is refused outright, so it \
-         cannot be from this one):\n{}\n\
+         cannot be from this one):\n{fault}\n\
          Fixing only the error above will leave the earlier damage in place. `code/undo` \
-         walks changes back one at a time.\n",
-        head.join("\n")
-    );
-    Some(out)
+         walks changes back one at a time.\n"
+    ))
 }
-
 
 /// Would `content` have parsed, at this path's language? Writes it to a sibling temp file so
 /// the check never disturbs what is on disk. `false` whenever we cannot tell — the caller
@@ -1222,25 +1206,11 @@ fn syntax_error_detail(abs_path: &std::path::Path, content: &str) -> Option<Stri
 /// extension, no checker for this language, probe unwritable). The three-way return is the
 /// point: callers must never be able to read "could not verify" as "already broken".
 fn probe_parse(abs_path: &std::path::Path, content: &str) -> Result<Option<String>, ()> {
-    let ext = abs_path.extension().and_then(|e| e.to_str()).ok_or(())?;
-    // A sibling of the real file so relative imports and package layout still resolve, and a
-    // name no source tree would collide with.
-    let probe = abs_path.with_extension(format!("continuum-parse-probe.{ext}"));
-    fs::write(&probe, content).map_err(|_| ())?;
-    let outcome = syntax_checker_for(&probe)
-        .and_then(|(program, args)| std::process::Command::new(program).args(&args).output().ok())
-        .ok_or(());
-    let _ = fs::remove_file(&probe);
-    let output = outcome?;
-    if output.status.success() {
-        return Ok(None);
+    let validator = validator_for(abs_path).ok_or(())?;
+    match validator.parse_check(content) {
+        Ok(()) => Ok(None),
+        Err(fault) => Ok(Some(fault.to_string())),
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    // A checker that failed without saying why tells us nothing we can act on.
-    if stderr.is_empty() {
-        return Err(());
-    }
-    Ok(Some(stderr))
 }
 
 /// Names the edit CALLS that exist nowhere in the module — a guaranteed `NameError`.
@@ -1279,74 +1249,8 @@ fn introduced_undefined_calls(
     old_content: &str,
     new_content: &str,
 ) -> Option<Vec<String>> {
-    if abs_path.extension().and_then(|e| e.to_str()) != Some("py") {
-        return None;
-    }
-    const ANALYZER: &str = r#"
-import ast, builtins, json, sys
-new_src = sys.stdin.read()
-try:
-    tree = ast.parse(new_src)
-except SyntaxError:
-    print("[]"); sys.exit(0)
-
-bound = set(dir(builtins))
-class Binds(ast.NodeVisitor):
-    def visit_Import(self, n):
-        for a in n.names: bound.add((a.asname or a.name).split('.')[0])
-        self.generic_visit(n)
-    def visit_ImportFrom(self, n):
-        for a in n.names: bound.add(a.asname or a.name)
-        self.generic_visit(n)
-    def visit_FunctionDef(self, n):
-        bound.add(n.name)
-        for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs: bound.add(a.arg)
-        if n.args.vararg: bound.add(n.args.vararg.arg)
-        if n.args.kwarg: bound.add(n.args.kwarg.arg)
-        self.generic_visit(n)
-    visit_AsyncFunctionDef = visit_FunctionDef
-    def visit_Lambda(self, n):
-        for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs: bound.add(a.arg)
-        self.generic_visit(n)
-    def visit_ClassDef(self, n):
-        bound.add(n.name); self.generic_visit(n)
-    def visit_Name(self, n):
-        if isinstance(n.ctx, (ast.Store, ast.Del)): bound.add(n.id)
-        self.generic_visit(n)
-    def visit_Global(self, n):
-        bound.update(n.names); self.generic_visit(n)
-    def visit_Nonlocal(self, n):
-        bound.update(n.names); self.generic_visit(n)
-    def visit_ExceptHandler(self, n):
-        if n.name: bound.add(n.name)
-        self.generic_visit(n)
-    def visit_arg(self, n):
-        bound.add(n.arg); self.generic_visit(n)
-Binds().visit(tree)
-
-called = set()
-for n in ast.walk(tree):
-    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
-        called.add(n.func.id)
-print(json.dumps(sorted(called - bound)))
-"#;
-    let out = std::process::Command::new("python3")
-        .args(["-c", ANALYZER])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.as_mut()?.write_all(new_content.as_bytes()).ok()?;
-            child.wait_with_output().ok()
-        })?;
-    if !out.status.success() {
-        return None; // inconclusive — never a verdict
-    }
-    let unbound: Vec<String> =
-        serde_json::from_slice(&out.stdout).ok()?;
+    let validator = validator_for(abs_path)?;
+    let unbound = validator.unbound_calls(new_content)?;
     // The safety clause: only names the edit INTRODUCED. Anything the old file already
     // mentioned (star-imported, conditionally defined, whatever) is none of our business.
     let introduced: Vec<String> = unbound
@@ -1379,43 +1283,8 @@ fn displaced_docstrings(
     old_content: &str,
     new_content: &str,
 ) -> Option<String> {
-    if abs_path.extension().and_then(|e| e.to_str()) != Some("py") {
-        return None;
-    }
-    const PROBE: &str = r#"
-import ast, json, sys
-def docs(src):
-    try: t = ast.parse(src)
-    except SyntaxError: return None
-    out = {}
-    for n in ast.walk(t):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            out[n.name] = ast.get_docstring(n) is not None
-    return out
-blob = sys.stdin.read()
-old, new = blob.split("\x00", 1)
-o, n = docs(old), docs(new)
-if o is None or n is None:
-    print("[]"); sys.exit(0)
-print(json.dumps(sorted(k for k, had in o.items() if had and n.get(k) is False)))
-"#;
-    let payload = format!("{old_content}\u{0}{new_content}");
-    let out = std::process::Command::new("python3")
-        .args(["-c", PROBE])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.as_mut()?.write_all(payload.as_bytes()).ok()?;
-            child.wait_with_output().ok()
-        })?;
-    if !out.status.success() {
-        return None;
-    }
-    let lost: Vec<String> = serde_json::from_slice(&out.stdout).ok()?;
+    let validator = validator_for(abs_path)?;
+    let lost = validator.displaced_docstrings(old_content, new_content)?;
     if lost.is_empty() {
         return None;
     }
@@ -1890,9 +1759,7 @@ mod tests {
 
         // A whole-file write replaces everything; there is no landing site to report, and
         // inventing one would be noise in a small working-memory window.
-        let written = engine
-            .write("src/other.ts", "a\nb\n", None)
-            .expect("write");
+        let written = engine.write("src/other.ts", "a\nb\n", None).expect("write");
         assert!(
             written.applied_context.is_none(),
             "creating a NEW file destroys nothing and needs no warning"
@@ -1929,7 +1796,8 @@ mod tests {
                 "src/broken.py",
                 &EditMode::InsertAt {
                     line: 2,
-                    content: "    if '.' in a:\n        raise ValueError(\"no dots\")\n".to_string(),
+                    content: "    if '.' in a:\n        raise ValueError(\"no dots\")\n"
+                        .to_string(),
                 },
                 None,
             )
@@ -2008,7 +1876,10 @@ mod tests {
                 None,
             )
             .expect("an edit on an already-broken file still applies");
-        assert!(again.success, "the gate only fires when the file PARSED before");
+        assert!(
+            again.success,
+            "the gate only fires when the file PARSED before"
+        );
         let ctx = again.applied_context.expect("landing site");
         assert!(
             ctx.contains("STILL BROKEN") && ctx.contains("already here before"),
@@ -2123,14 +1994,22 @@ mod tests {
 
         // Inserting BELOW the docstring is fine — the common, correct edit must stay silent.
         assert!(
-            displaced_docstrings(&f, old, "def a():\n    \"\"\"Docs.\"\"\"\n    x = 1\n    return 1\n")
-                .is_none(),
+            displaced_docstrings(
+                &f,
+                old,
+                "def a():\n    \"\"\"Docs.\"\"\"\n    x = 1\n    return 1\n"
+            )
+            .is_none(),
             "a correct insert must not warn"
         );
         // A function that never had a docstring is not 'displaced'.
         assert!(
-            displaced_docstrings(&f, "def b():\n    return 1\n", "def b():\n    x=1\n    return 1\n")
-                .is_none(),
+            displaced_docstrings(
+                &f,
+                "def b():\n    return 1\n",
+                "def b():\n    x=1\n    return 1\n"
+            )
+            .is_none(),
             "no docstring to lose"
         );
     }
@@ -2160,9 +2039,11 @@ mod tests {
         // imported in the same edit → fine
         assert!(
             introduced_undefined_calls(
-                &f, old,
+                &f,
+                old,
                 "from x import clear_cache\ndef a():\n    clear_cache()\n"
-            ).is_none(),
+            )
+            .is_none(),
             "a name imported by the same edit is bound"
         );
         // ALREADY MENTIONED in the old file → never flagged, even if unbound in the new text
@@ -2291,7 +2172,11 @@ mod tests {
     #[test]
     fn a_read_shows_the_line_numbers_an_edit_addresses() {
         let (dir, engine) = setup_engine();
-        fs::write(dir.path().join("src/counted.txt"), "alpha\nbravo\ncharlie\n").unwrap();
+        fs::write(
+            dir.path().join("src/counted.txt"),
+            "alpha\nbravo\ncharlie\n",
+        )
+        .unwrap();
 
         let whole = engine.read("src/counted.txt", None, None).expect("read");
         let content = whole.content.expect("content");
@@ -2302,7 +2187,9 @@ mod tests {
 
         // A WINDOWED read must number by ABSOLUTE file position, not 1..n of the slice —
         // a relative number is worse than none, because it looks addressable and is not.
-        let window = engine.read("src/counted.txt", Some(2), Some(3)).expect("read");
+        let window = engine
+            .read("src/counted.txt", Some(2), Some(3))
+            .expect("read");
         let content = window.content.expect("content");
         assert!(
             content.contains("     2 | bravo") && !content.contains("     1 | bravo"),
@@ -2471,7 +2358,9 @@ mod tests {
                 None,
             )
             .expect("append");
-        let ctx = appended.applied_context.expect("an append lands at the end");
+        let ctx = appended
+            .applied_context
+            .expect("an append lands at the end");
         assert!(
             ctx.contains("TAIL"),
             "an append must show the tail it produced, got:\n{ctx}"
@@ -2619,7 +2508,11 @@ mod tests {
             .unwrap();
         assert!(result.success);
 
-        let content = engine.read("src/main.ts", None, None).unwrap().content.unwrap();
+        let content = engine
+            .read("src/main.ts", None, None)
+            .unwrap()
+            .content
+            .unwrap();
         assert!(content.contains("brand new body"));
         assert!(!content.contains("line 1"));
         assert!(!content.contains("line 3"));
@@ -2644,7 +2537,11 @@ mod tests {
             .unwrap();
         assert!(result.success);
 
-        let content = engine.read("src/main.ts", None, None).unwrap().content.unwrap();
+        let content = engine
+            .read("src/main.ts", None, None)
+            .unwrap()
+            .content
+            .unwrap();
         assert!(content.contains("line 1"));
         assert!(content.contains("tail rewritten"));
         assert!(!content.contains("line 2"));
@@ -2927,7 +2824,11 @@ mod tests {
         let with_hidden = engine
             .list_dir("src/utils", true)
             .expect("include_hidden=true");
-        let names: Vec<&str> = with_hidden.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = with_hidden
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         assert_eq!(
             names,
             vec![".private.ts", "helpers.ts"],
@@ -3002,9 +2903,15 @@ mod tests {
         assert!(file_err.contains("is a FILE"), "{file_err}");
         assert!(file_err.contains("code/read"), "{file_err}");
         // HONEST: a miss re-orients instead of reading as terminal
-        let miss = engine.resolve_dir("does/not/exist").unwrap_err().to_string();
+        let miss = engine
+            .resolve_dir("does/not/exist")
+            .unwrap_err()
+            .to_string();
         assert!(miss.contains("path not found"), "{miss}");
-        assert!(miss.contains("workspace root itself IS explorable"), "{miss}");
+        assert!(
+            miss.contains("workspace root itself IS explorable"),
+            "{miss}"
+        );
         // SECURE: `..` traversal is blocked (the bypass the old handler joins skipped)
         assert!(engine.resolve_dir("../../etc").is_err());
     }
@@ -3140,7 +3047,10 @@ mod tests {
             assert!(exists.exists);
             assert_eq!(exists.kind, Some(FsEntryKind::File));
             // list: always returns the 10 src files
-            assert_eq!(list.total_count, 10, "list result must be stable across concurrent reads");
+            assert_eq!(
+                list.total_count, 10,
+                "list result must be stable across concurrent reads"
+            );
             // glob: always returns the 10 src files
             assert_eq!(
                 glob.total_matches, 10,
