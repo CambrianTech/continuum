@@ -208,7 +208,18 @@ pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, S
         Err(_) => {
             return (
                 false,
-                format!("solution_file '{rel_path}' not found — she never wrote it (acts=0 on this task)"),
+                // State only what THIS function observed: the file is absent. The old text
+                // asserted "(acts=0 on this task)" — a fact the grader does not have and which
+                // is routinely FALSE: the first live run under the hands-only grade spent 8 acts
+                // and still wrote nothing. "0 acts" and "8 acts, none of them a write" are
+                // different diagnoses pointing at different fixes, and a grade line that guesses
+                // wrong sends the reader chasing the lane instead of the cognition.
+                // [[easy-diagnostics-are-cheap-wrongness]]
+                format!(
+                    "solution_file '{rel_path}' not found — she never wrote it. The task is \
+                     graded on the file her hands produced; check the act trail for whether she \
+                     acted at all or acted without ever calling a write."
+                ),
             )
         }
     };

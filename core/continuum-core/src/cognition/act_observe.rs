@@ -931,6 +931,42 @@ pub async fn drive_to_settle(
             }
             SettleStep::Acted { calls, .. } => {
                 acts += 1;
+                // THE DELIVERABLE FACT BELONGS ON THE ACT PATH, NOT ONLY ON SETTLE.
+                //
+                // It used to live exclusively in the Spoke arm, so it could only reach a
+                // persona who SETTLED. Measured on sympy-21379 v14: she spent all 30 acts, was
+                // still acting when the budget ran out, and the driver returned the final Act
+                // un-driven — the Spoke arm never ran, the fact never fired once, and she
+                // finished a full-length run having changed no file without ever being told
+                // that changing files was the point. The one population that needs the
+                // reminder — a mind thrashing through its whole budget — was the one the
+                // mechanism structurally could not reach.
+                //
+                // Now it rides the re-perception after every act. Same truth, same veto on
+                // spam (`acts_at_last_nudge` re-arms only when she has acted since), and the
+                // act count is IN the text so consecutive facts are not byte-identical — a
+                // stationary perception is a fixed point under greedy decoding, which is the
+                // #206 failure this file already documents.
+                if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
+                    if let Some(body) = cycle.acting() {
+                        if !mutated_workspace(&body.working_memory.recent()) {
+                            acts_at_last_nudge = Some(acts);
+                            body.working_memory.record_fact(&format!(
+                                "[no-deliverable] I have taken {acts} actions on this task and \
+                                 my working memory holds no act of mine that changed a file. \
+                                 This task is judged by the state of the workspace, not by what \
+                                 I say about it — an explanation of a fix is not the fix."
+                            ));
+                            crate::probe!(
+                                class = "persona.act.no_deliverable_yet",
+                                persona = %body.persona_name,
+                                room_id = %room_id,
+                                acts = acts,
+                                "acted with no workspace mutation receipt yet — recorded the fact on the act path (the settle path cannot reach a budget-exhausted turn)"
+                            );
+                        }
+                    }
+                }
                 // Loop-detection: a byte-identical batch back-to-back is the fixed point the
                 // backstop bounds (the short-circuit guard already refused to re-execute it).
                 // A genuinely different act resets the counter, so real iteration is free.

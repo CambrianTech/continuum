@@ -211,6 +211,25 @@ impl PersonaConversation for AircPersonaConversation {
                     return Err(format!("live stream lag: {lag}"));
                 }
                 Some(Ok(event)) => {
+                    // A stream chunk is NEVER a room turn — skip it at the door, before the
+                    // decode and before the raw-event line. Every persona's subscribe stream
+                    // receives every OTHER persona's token fragments: measured live during a
+                    // SWE solve, 2644 of 4776 filtered inbound events (55%) were chunks, fanned
+                    // out identically to all four personas (1195 each) and decoded-then-discarded
+                    // by each independently — O(personas x tokens) of work in the attention path
+                    // of a persona who is trying to concentrate, plus 65% of the probe stream.
+                    //
+                    // Deliberately NOT probed: routine traffic taking its expected path is not an
+                    // anomaly, and a probe here would rebuild the exact flood this removes. The
+                    // decoder still classifies chunks as `stream_chunk` for any caller that
+                    // reaches it by another route, so nothing goes dark — the reason string
+                    // remains the single source of truth.
+                    //
+                    // This is the receive-side half. The events still cross the wire; not sending
+                    // a peer's fragments to peers at all is airc-side (#275) and stays open.
+                    if crate::airc::realtime_wire::is_stream_chunk(&event) {
+                        continue;
+                    }
                     // #146 diagnostic: EVERY raw event this persona's subscribe
                     // stream yields, before any filter. If this probe never fires
                     // under a room burst, the stream is empty → airc-lib delivery

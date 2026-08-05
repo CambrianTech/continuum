@@ -32,7 +32,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::cognition::gym_grader::test_grade;
 use crate::inference::llama_server::LanePlacement;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -1234,6 +1233,66 @@ impl EvalTask {
             self.solution_file.is_some() || self.dod_shell.is_some() || !self.ui_checks.is_empty()
         })
     }
+
+    /// CODE IS BUILT, NEVER SPOKEN. A task carrying a compile-and-run `test` grades a PROGRAM,
+    /// and a program's deliverable is a FILE. If the task didn't name one, name it here — the
+    /// grade then reads what her hands wrote, and the spoken-code payout stops existing.
+    ///
+    /// Joel, 2026-08-04, on why this is not merely a measurement fix: *"any benchmark, at least
+    /// for code, that has them speak code is actually more of a problem for learning persona with
+    /// minds. It's going to train them to think speak code (or anything that needs an action) is
+    /// building projects. That's exactly the opposite of our goals for first class citizens."*
+    ///
+    /// That is the load-bearing argument. Our graded episodes do not stop at a scoreboard — they
+    /// enter the SAME experience loop as lived ones (engram → sentinel → curriculum → genome,
+    /// [[one-experience-loop-benchmark-lessons-are-engrams-dream-sentinels-train-them]]). So a
+    /// grader that pays out for a fence does not just mis-measure the fence→act gap, it TEACHES
+    /// it, and the layer promoted on that reward carries "describing is doing" into every room —
+    /// not just the exam. 404 of 458 gym tasks paid out that way when this was written.
+    ///
+    /// Doing it at LOAD is the compression: the alternative already existed as
+    /// `hard-rs-acted.jsonl`, a hand-forked twin of `hard-rs.jsonl` differing only by this
+    /// preamble and this filename. One rule in the loader replaces N forked corpora that would
+    /// each drift. A gym author still WINS by naming `solution_file` (and its prompt) explicitly;
+    /// this only ensures no code task can be graded by mouth because someone forgot.
+    ///
+    /// `expect`-graded knowledge tasks are untouched — answering a question IS speaking, and
+    /// nothing is confused about that. The rule keys on `test`: only a task that compiles and
+    /// runs code has a program as its deliverable.
+    fn require_hands_for_code(&mut self) {
+        if self.test.is_none() || self.solution_file.is_some() || self.dod_shell.is_some() {
+            return;
+        }
+        let ext = match self.lang.as_deref().unwrap_or("rust") {
+            "rust" | "rs" => "rs",
+            "python" | "py" => "py",
+            "typescript" | "ts" => "ts",
+            "javascript" | "js" => "js",
+            "go" => "go",
+            "c" => "c",
+            "cpp" | "c++" => "cpp",
+            other => other,
+        };
+        let safe: String = self
+            .id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let file = format!("sol_{safe}.{ext}");
+        // The prompt must ASK for what the grade READS — a derived file behind an unchanged
+        // "return the complete function" prompt would score an honest 0 for the wrong reason
+        // (she answered the question she was asked). Same wording the hand-authored acted gym
+        // used, so migrated tasks read identically to ones an author wrote by hand.
+        self.prompt = format!(
+            "Implement the following, and VERIFY it before finishing. Write your solution to \
+             the file `{file}` (a relative path in your workspace) using your write tool, then \
+             compile and run it with your shell tool against a few checks you devise; if it \
+             fails, read the compiler/test output and fix it. Only finish once it actually \
+             compiles and runs. Leave the final, working code in `{file}`.\n\n{}",
+            self.prompt
+        );
+        self.solution_file = Some(file);
+    }
 }
 
 /// A gene to page in for the candidate arm of an A/B. The persona runs the eval
@@ -1714,7 +1773,7 @@ impl CognitionEval {
                 })
                 .collect()
         };
-        let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
+        let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
             let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
@@ -1722,6 +1781,12 @@ impl CognitionEval {
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
             parse_jsonl(&text, &origin)?
         };
+        // Every code task grades hands. See `require_hands_for_code` — applied HERE, after both
+        // load paths converge, so an inline task from a command payload obeys the same rule as a
+        // committed gym line. There is no loader path to a mouth-graded code task.
+        for t in tasks.iter_mut() {
+            t.require_hands_for_code();
+        }
 
         // Does this exam grade her HANDS or her MOUTH? A task graded from a file she
         // writes (`solution_file`), a workspace DoD she must satisfy (`dod_shell`), a
@@ -2972,35 +3037,52 @@ async fn perception_grade(
     // still routes to the browser eye below (a persona's real seeing loop).
     if let Some(path) = target_url.strip_prefix("file://") {
         let p = std::path::Path::new(path);
-        // MOUTH-OR-HANDS capture (#206/#143 fence→act gap). The web-dev grade observes the
-        // file she was told to write. A capable model often EMITS a complete, correct page in
-        // a ```html fence but never routes it through `code/write` — so no file exists and a
-        // model that BUILT the UI perfectly scores 0, measuring tool-routing instead of
-        // ability (glass-boxed 2026-07-21: Qwen2.5-Coder-7B wrote a flawless login form in a
-        // fence, wrote no file, scored 0/6 — below a weaker model). If she did NOT write the
-        // file with her hands but SPOKE a page, materialize it so the grade measures what she
-        // built. A real `code/write` ALWAYS wins (a present, non-empty file is left untouched),
-        // so this only rescues the spoken-artifact case and never overrides her hands. The
-        // deeper fix (make her actually call the tool) is the fence→act cognition work; this
-        // makes the benchmark a fair CAPABILITY measure meanwhile.
+        // NO MOUTH-FOR-HANDS. There used to be a rescue here: if she never wrote the file
+        // but SPOKE a page in a ```html fence, the harness materialized it and graded that.
+        // It was disclosed and well-intentioned — it isolated "can you build a UI" from "can
+        // you route a tool", after a 2026-07-21 run where Qwen2.5-Coder-7B wrote a flawless
+        // login form in a fence, wrote no file, and scored 0/6 below a weaker model.
+        //
+        // It is deleted because it measures a persona we are not building. Ours DO the thing:
+        // they operate tools and produce artifacts that exist. A page that lives only in an
+        // utterance is not a page — it is a description of one, and grading it as a page is a
+        // scam we play on ourselves. The file already says this 1800 lines up, about
+        // `solution_file`: "the act→verify loop is only visible if we grade what she actually
+        // wrote + compiled, not what she narrated." The rescue contradicted the doctrine its
+        // own module declares.
+        //
+        // The cost of keeping it was not a wrong number, it was a HIDDEN GAP: because nothing
+        // in the suite ever required hands, the fence→act failure was never scored, so it was
+        // never fixed — and it is exactly the failure SWE-bench exposes at full strength (30
+        // acts, 0 files, 0 refusals). What is rescued is never repaired.
+        //
+        // The spoken-artifact detector survives with its consequence inverted: it used to
+        // launder the failure, it now NAMES it, so a zero is diagnosable instead of mute.
+        // [[beat-oss-agentic-systems-as-whole-beings-never-strip-to-pass]],
+        // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]],
+        // [[execute-dont-narrate]]
         let wrote_with_hands = std::fs::read_to_string(p)
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
         if !wrote_with_hands {
-            if let Some(html) = html_artifact_from_answer(answer) {
-                if let Some(parent) = p.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = std::fs::write(p, html.as_bytes()) {
-                    return (
-                        false,
-                        format!(
-                            "web-dev grade: persona spoke an HTML artifact but materializing it \
-                             to '{path}' for observation failed: {e}"
-                        ),
-                    );
-                }
-            }
+            let spoke_one = html_artifact_from_answer(answer).is_some();
+            return (
+                false,
+                if spoke_one {
+                    format!(
+                        "web-dev grade: FAIL — she SPOKE a complete HTML artifact but never \
+                         routed it through `code/write`, so '{path}' does not exist. The task \
+                         is graded on the file her hands produced, never on her narration of \
+                         it. This is the fence→act gap, and it is the finding, not a harness \
+                         defect."
+                    )
+                } else {
+                    format!(
+                        "web-dev grade: FAIL — no artifact at '{path}' and no HTML in her \
+                         answer either; she neither built it nor described it."
+                    )
+                },
+            );
         }
         let obs = crate::perception::static_html::observe_file(p);
         let grade = crate::perception::scoring::grade_ui(&obs, checks, threshold);
@@ -3657,9 +3739,20 @@ async fn run_pass(
         } else if let Some(dod) = &t.dod_shell {
             // REAL task: run the definition-of-done against the repo state her edits produced.
             run_dod(dod).await
-        } else if let Some(test) = &t.test {
-            let lang = t.lang.as_deref().unwrap_or("rust");
-            test_grade(&answer, lang, test).await
+        } else if t.test.is_some() {
+            // UNREACHABLE by construction: `require_hands_for_code` gives every `test`-carrying
+            // task a `solution_file` at load, so a code task always takes the ARTIFACT arm above.
+            // This arm used to call `test_grade(&answer, ..)` — extract code from her SPOKEN
+            // answer, compile it, and PASS her. That is deleted, and it stays deleted: it paid
+            // out for narration, and because graded episodes feed the genome, that payout was a
+            // training signal for "describing is doing". Fail loud rather than let it grow back.
+            (
+                false,
+                "harness defect: a code task reached grading without a solution_file — every \
+                 test-graded task must be normalized by require_hands_for_code at load. Code is \
+                 graded on the file she wrote, never on text extracted from her answer."
+                    .to_string(),
+            )
         } else {
             let m =
                 !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
@@ -3830,11 +3923,27 @@ async fn run_pass_team(
             );
             break;
         }
-        // Grade the FINAL (reviewer's) answer — SAME branches as solo run_pass.
+        // Grade the team's FINAL deliverable — SAME branches as solo run_pass, including the
+        // rule that code is graded on the file their hands produced. A team that TALKS its way
+        // to a beautiful spoken solution and writes nothing has shipped nothing; two personas
+        // narrating at each other is the exact failure this arm must not reward (and the exact
+        // one a review/handoff loop makes MORE likely, not less).
         let (ok, grade) = if let Some(dod) = &t.dod_shell {
             run_dod(dod).await
-        } else if let Some(test) = &t.test {
-            test_grade(&answer, t.lang.as_deref().unwrap_or("rust"), test).await
+        } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
+            crate::cognition::gym_grader::test_grade_file(
+                file,
+                t.lang.as_deref().unwrap_or("rust"),
+                test,
+            )
+            .await
+        } else if t.test.is_some() {
+            (
+                false,
+                "harness defect: a code task reached team grading without a solution_file — \
+                 require_hands_for_code normalizes every test-graded task at load."
+                    .to_string(),
+            )
         } else {
             let m = !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
             (m, if m { "substring match".into() } else { "no match".into() })
@@ -3894,7 +4003,8 @@ mod tests {
     // tool-routing, not ability (Qwen2.5-Coder-7B wrote a flawless login form in a fence,
     // wrote no file, scored 0/6, below a weaker model, 2026-07-21). Regression pins:
     // last fence wins, doctype/`<html` detected with or without a lang tag, and a
-    // prose-only answer yields None (nothing to materialize → honest miss).
+    // prose-only answer yields None — nothing spoken to NAME (the detector diagnoses now,
+    // it does not rescue; see the no-mouth-for-hands block in the web-dev grade).
     #[test]
     fn html_artifact_extracts_the_spoken_page_or_nothing() {
         // tagged ```html fence
@@ -3915,6 +4025,129 @@ mod tests {
         // prose-only / a rust fence → nothing to materialize
         assert_eq!(html_artifact_from_answer("I would build a login form with an h1."), None);
         assert_eq!(html_artifact_from_answer("```rust\nfn main() {}\n```"), None);
+    }
+
+    /// what this catches: THE RESCUE COMING BACK. The web-dev grade used to materialize a page
+    /// the persona SPOKE when she never wrote the file, and grade that. It was disclosed and
+    /// well-meant — but it meant no benchmark in the suite ever required her hands, so the
+    /// fence→act failure was never scored and therefore never fixed. SWE-bench, which has no
+    /// such rescue, then showed it at full strength: 30 acts, 0 files, 0 refusals.
+    ///
+    /// A persona who describes a page has not built one. Grading the description as the artifact
+    /// is a scam we play on ourselves, and the honest zero is the finding. This pins the
+    /// contract: the extractor still detects a spoken artifact, but ONLY to name the gap.
+    #[test]
+    fn a_spoken_artifact_is_never_accepted_in_place_of_a_written_one() {
+        let spoken = "Here is the page:\n```html\n<!DOCTYPE html><html><body><h1>Hi</h1></body></html>\n```";
+        // The detector still SEES it — that capability is what makes the failure diagnosable.
+        assert!(
+            html_artifact_from_answer(spoken).is_some(),
+            "the detector must still recognise a spoken artifact — it names the gap now"
+        );
+        // And seeing it must never become materialising it. The grade path writes no file:
+        // the only writer of the graded artifact is her own `code/write`.
+        let dir = std::env::temp_dir().join(format!("no-mouth-for-hands-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let target = dir.join("index.html");
+        let _ = std::fs::remove_file(&target);
+        assert!(
+            !target.exists(),
+            "precondition: she has not written the file with her hands"
+        );
+        // (The grade fn needs a live workspace; the invariant asserted here is the one a
+        // reviewer must not break — nothing in this module may create `target` from `spoken`.)
+        assert!(
+            !std::fs::read_to_string(&target).map(|s| !s.trim().is_empty()).unwrap_or(false),
+            "a spoken artifact must never materialise into the graded file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn code_task(id: &str) -> EvalTask {
+        let mut t: EvalTask = serde_json::from_str(
+            r#"{"id":"x","prompt":"Implement `pub fn f() -> i32`. Return the complete function.",
+                "test":"assert_eq!(f(), 1);","lang":"rust","expect":""}"#,
+        )
+        .expect("fixture parses");
+        t.id = id.to_string();
+        t
+    }
+
+    /// what this catches: a code task reaching the grader with no artifact to grade — which is
+    /// how the harness used to pay out for a fence. `require_hands_for_code` gives every
+    /// test-graded task a file, so the ARTIFACT arm is the only arm code can take.
+    #[test]
+    fn every_code_task_is_normalized_to_grade_the_file_her_hands_wrote() {
+        let mut t = code_task("atoi");
+        assert!(t.solution_file.is_none(), "fixture starts mouth-graded");
+        t.require_hands_for_code();
+        assert_eq!(t.solution_file.as_deref(), Some("sol_atoi.rs"));
+        // and the ASK must match what the grade READS, or she scores 0 for answering the
+        // question she was actually asked.
+        assert!(t.prompt.contains("sol_atoi.rs"), "prompt names the file: {}", t.prompt);
+        assert!(t.prompt.contains("write tool"), "prompt tells her to WRITE it");
+        assert!(t.prompt.contains("Implement `pub fn f()"), "original task text survives");
+        // normalization needs hands, so tools get offered — otherwise the whole gym scores a
+        // silent 0 for lack of a write tool (#208's failure shape).
+        assert!(t.needs_tools(), "a file-graded task must arm tools");
+    }
+
+    /// what this catches: the rule silently un-applying for a whole class of gyms. Every
+    /// committed gym line must survive normalization with an artifact to grade — this is the
+    /// corpus-wide assertion, not a single-task one.
+    #[test]
+    fn no_committed_gym_can_pay_out_for_spoken_code() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/genome");
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return; // corpora not present in this checkout — the unit rule above still holds
+        };
+        let mut checked = 0usize;
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for (n, line) in text.lines().enumerate() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(mut t) = serde_json::from_str::<EvalTask>(line) else { continue };
+                if t.test.is_none() {
+                    continue; // knowledge task — answering by speaking is correct
+                }
+                t.require_hands_for_code();
+                assert!(
+                    t.solution_file.is_some() || t.dod_shell.is_some(),
+                    "{}:{} ({}) is a code task with no artifact to grade — it would pay out for \
+                     spoken code, which trains 'describing is doing'",
+                    path.display(),
+                    n + 1,
+                    t.id
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "expected the code corpora to be present, checked only {checked}");
+    }
+
+    /// what this catches: someone re-adding a mouth grade for a task that ALREADY names a file.
+    /// Normalization must not clobber an author's explicit choice, in either direction.
+    #[test]
+    fn an_explicit_solution_file_and_a_dod_are_both_left_alone() {
+        let mut t = code_task("keep");
+        t.solution_file = Some("mine.rs".into());
+        let before = t.prompt.clone();
+        t.require_hands_for_code();
+        assert_eq!(t.solution_file.as_deref(), Some("mine.rs"), "author's file wins");
+        assert_eq!(t.prompt, before, "no duplicated preamble on an already-acted task");
+
+        let mut d = code_task("dod");
+        d.dod_shell = Some("cargo test".into());
+        d.require_hands_for_code();
+        assert!(d.solution_file.is_none(), "a DoD already grades the workspace her hands changed");
     }
 
     // what this catches: the mid-run scoreboard's poll surface (#123/#141). One
