@@ -47,9 +47,19 @@ use parking_lot::Mutex;
 
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 
-/// How many recent reasoning traces to carry forward. Small — working memory is a
-/// scratchpad, not a log; older thinking ages out (rolling).
-pub const DEFAULT_WORKING_MEMORY_CAPACITY: usize = 3;
+// How many recent steps to carry forward is NOT a constant. It is
+// `ContextBudget::working_memory_steps()` — the COUNT sibling of the per-step SIZE bound
+// right below, derived from the same calibrated fractions.
+//
+// It used to be `DEFAULT_WORKING_MEMORY_CAPACITY = 3`, the one bare number left behind when
+// every CHARACTER bound in this file was made window-derived. Measured cost, live SWE-bench
+// run 2026-08-05: a persona took 21 investigative acts and reached her last turn reading
+// "(+19 earlier steps aged out of working memory)" — a 21-step investigation run on a
+// 3-step scratchpad, with her prompt using 5,326 of a 16,384-token window. She re-issued
+// calls whose results she no longer held and restated a finding whose evidence had aged
+// out. A scratchpad is the right METAPHOR; three is the wrong NUMBER, and it was wrong
+// because it was never connected to the budget at all.
+// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 
 /// Prefix on a SETTLEMENT entry — the proprioceptive mark that the persona produced
 /// an utterance (answered) and thereby closed the current concern. It is a boundary
@@ -1051,14 +1061,22 @@ mod tests {
         assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 4);
     }
 
-    // what this catches: the loop-awareness COUNT must survive the tiny recency window
-    // (regression for the 2026-07-14 Atlas ×38 pinned-at-3 spiral). The live default
-    // capacity is 3, so the windowed `action_fps` alone caps the count at 3 the instant
-    // other acts interleave — a deepening loop then reads "3 times" forever and conveys
-    // none of the spiral. The DURABLE per-session count must keep climbing to 38.
+    // what this catches: the loop-awareness COUNT must survive a tiny recency window
+    // (regression for the 2026-07-14 Atlas x38 pinned-at-3 spiral). The windowed
+    // `action_fps` alone caps the count at the window size the instant other acts
+    // interleave — a deepening loop then reads "3 times" forever and conveys none of the
+    // spiral. The DURABLE per-session count must keep climbing to 38.
+    //
+    // Pins its OWN small capacity on purpose: the invariant is "durable count beats the
+    // window", so the window must be small REGARDLESS of what the live budget derives.
+    // It used to borrow the live default, which coupled a durability test to a capacity
+    // number that has since changed.
     #[test]
     fn action_fingerprint_count_escalates_past_the_tiny_recency_window() {
-        let wm = WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY); // = 3, the live default
+        // Literal, not a named const: the hardcoded-bound guard rightly polices NAMED
+        // size constants in cognition (they become de-facto bounds reused elsewhere).
+        // This 3 is test DATA — the deliberately tiny window the invariant is about.
+        let wm = WorkingMemory::new(3);
         let tree = "code/tree|{\"max_depth\":1}";
         let mut last = 0;
         for _ in 0..38 {
@@ -1076,7 +1094,7 @@ mod tests {
         // The recent-window tally (action_verb_tally) stays CORRECTLY windowed — it's
         // the recent-shape channel, not the durable-repeat channel.
         assert!(
-            wm.action_verb_tally().len() <= DEFAULT_WORKING_MEMORY_CAPACITY,
+            wm.action_verb_tally().len() <= 3,
             "verb tally stays bounded to the recency window"
         );
     }
