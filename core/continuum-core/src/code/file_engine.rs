@@ -254,6 +254,17 @@ impl FileEngine {
         if let Some(names) = introduced_undefined_calls(&abs_path, &old_content, &new_content) {
             let list = names.join(", ");
             let one = names.first().cloned().unwrap_or_default();
+            // A refusal is a load-bearing decision and it was INVISIBLE: the run verdict carries
+            // acts + filesChanged, so a solve that burns its whole act budget on refused edits
+            // looks identical to one that never tried to edit at all (glass-boxed on
+            // sympy-21379 v9: 30 acts, 0 files, no way to tell which). Probe both gates.
+            crate::probe!(
+                class = "code.edit.refused",
+                reason = "undefined_name",
+                path = %relative_path,
+                names = %list,
+                "edit refused — it would introduce a NameError; file unchanged on disk"
+            );
             return Ok(WriteResult {
                 success: false,
                 change_id: None,
@@ -267,6 +278,12 @@ impl FileEngine {
             });
         }
         if !parses_clean(&abs_path, &new_content) && parses_clean(&abs_path, &old_content) {
+            crate::probe!(
+                class = "code.edit.refused",
+                reason = "parse_break",
+                path = %relative_path,
+                "edit refused — it would break the file's parse; file unchanged on disk"
+            );
             return Ok(WriteResult {
                 success: false,
                 change_id: None,
