@@ -13,7 +13,15 @@
 //! supplies the unified memory + identity + faculties.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+// parking_lot::Mutex, not std::sync::Mutex — matching `working_memory.rs`, this module's
+// sibling holding the same kind of per-persona state. std's `lock()` returns a Result that
+// is Err only when ANOTHER thread panicked while holding it, so `.lock()` converts
+// one persona's failure into a process-wide cascade: the registry every other persona needs
+// dies with it. parking_lot does not poison, so there is no Result and no unwrap to get
+// wrong. This also collapses two mutex types for one concern back to one.
+use parking_lot::Mutex;
 
 use uuid::Uuid;
 
@@ -650,7 +658,7 @@ impl PersonaWorkspaceRegistry {
 
     /// Look up a persona's mind. `None` if it hasn't been registered/built yet.
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<WorkspaceCycle>> {
-        self.cycles.lock().unwrap().get(persona_id).cloned()
+        self.cycles.lock().get(persona_id).cloned()
     }
 
     /// Build + register a persona's mind from its `cfg`, retaining a clone of the
@@ -662,10 +670,9 @@ impl PersonaWorkspaceRegistry {
     pub fn register_from_cfg(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
         // cycles THEN templates (the one canonical lock order).
-        let mut cycles = self.cycles.lock().unwrap();
+        let mut cycles = self.cycles.lock();
         self.templates
             .lock()
-            .unwrap()
             .insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
@@ -679,13 +686,12 @@ impl PersonaWorkspaceRegistry {
     pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
         // cycles THEN templates (the one canonical lock order).
-        let mut cycles = self.cycles.lock().unwrap();
+        let mut cycles = self.cycles.lock();
         if let Some(existing) = cycles.get(&persona_id) {
             return existing.clone();
         }
         self.templates
             .lock()
-            .unwrap()
             .insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
@@ -711,7 +717,7 @@ impl PersonaWorkspaceRegistry {
         workspace_root: Option<&str>,
         suppress_recall: bool,
     ) -> Option<WorkspaceCycle> {
-        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+        let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.suppress_recall = suppress_recall;
         repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
@@ -766,7 +772,7 @@ impl PersonaWorkspaceRegistry {
         workspace_root: Option<&str>,
         suppress_recall: bool,
     ) -> Option<WorkspaceCycle> {
-        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+        let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
@@ -795,7 +801,6 @@ impl PersonaWorkspaceRegistry {
     pub fn roster(&self) -> Vec<(Uuid, Option<String>)> {
         self.cycles
             .lock()
-            .unwrap()
             .iter()
             .map(|(id, cycle)| (*id, cycle.acting().map(|b| b.persona_name.clone())))
             .collect()
@@ -816,7 +821,7 @@ impl PersonaWorkspaceRegistry {
         // Lock order contract: `cycles` THEN `templates` (see struct docs).
         // `get` takes + releases the cycles lock before we touch templates.
         let cycle = self.get(persona_id)?;
-        let templates = self.templates.lock().unwrap();
+        let templates = self.templates.lock();
         let cfg = templates.get(persona_id)?;
         // Adapter AND served-model id from the live binding: a request without
         // the model id degenerated on the dream's first live pass (role-token
@@ -845,7 +850,7 @@ impl PersonaWorkspaceRegistry {
         model: Option<String>,
         context_window: u32,
     ) -> usize {
-        let cycles = self.cycles.lock().unwrap();
+        let cycles = self.cycles.lock();
         for cycle in cycles.values() {
             cycle.rebind_model(super::llm_deliberation_faculty::ModelBinding {
                 adapter: Arc::clone(&adapter),
@@ -858,7 +863,7 @@ impl PersonaWorkspaceRegistry {
 
     /// How many persona minds are resident.
     pub fn len(&self) -> usize {
-        self.cycles.lock().unwrap().len()
+        self.cycles.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1126,10 +1131,10 @@ mod tests {
         // of the tick (all bids incl. losers, the assembled context, the decision)
         // so we can diagnose cognition at any phase — record + recreate, not guess.
         #[derive(Default)]
-        struct CapturingSink(std::sync::Mutex<Vec<WorkspaceTrace>>);
+        struct CapturingSink(Mutex<Vec<WorkspaceTrace>>);
         impl WorkspaceCaptureSink for CapturingSink {
             fn record(&self, t: &WorkspaceTrace) {
-                self.0.lock().unwrap().push(t.clone());
+                self.0.lock().push(t.clone());
             }
         }
         let sink = Arc::new(CapturingSink::default());
@@ -1149,7 +1154,7 @@ mod tests {
         let ws = cycle.run(burst).await;
 
         // ---- Glass box: diagnose cognition at EVERY phase ----
-        let trace = sink.0.lock().unwrap().pop().expect("a tick was recorded");
+        let trace = sink.0.lock().pop().expect("a tick was recorded");
         eprintln!("\n================ COGNITION TRACE ================");
         eprintln!("WORLD-STATE (the burst):\n{}\n", trace.world_state);
         eprintln!("PHASE 1 — perception bids (the full competition, incl. losers):");
