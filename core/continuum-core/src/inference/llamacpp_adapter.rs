@@ -1110,6 +1110,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // events is the latency dashboard. `text_len` lets the
         // operator catch the silent-truncation class of bug where
         // the model stops short of EOS.
+        // Real tokens on the served lane = proof of life for the health heartbeat, which
+        // otherwise probes for a slot it cannot get while this very work holds them all.
+        if tokens > 0 {
+            crate::inference::llama_server::note_real_decode();
+        }
         crate::probe!(
             class = "inference.generate.exit",
             model = backend.model_id(),

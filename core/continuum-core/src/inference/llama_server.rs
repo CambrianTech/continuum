@@ -125,6 +125,47 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// job is truth, not speed — it runs on a slow cadence; let it wait out the queue.
 const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 
+/// Wall-clock ms of the last REAL generation that produced tokens on the served lane.
+///
+/// Health is recent DELIVERY, never a synthetic probe. The decode heartbeat
+/// (`serving_daemon::spawn_health_heartbeat_if_due`) runs a real multi-token generation
+/// through the LIVE slots, so it competes for the same slots as actual work: a lane saturated
+/// by long prefills cannot hand the probe a slot, the probe reads that as "no decode", and two
+/// misses relaunch a lane that was never wedged — just busy. Glass-boxed on the SWE bench
+/// (v13): `serving.health {ok:false} x2 -> {action:"relaunch"}` mid-run, then every downstream
+/// generate refused with `serving: <none>`.
+///
+/// Real tokens are the honest liveness evidence, and they cost nothing to observe — a lane that
+/// just decoded for a persona is provably not wedged. So the probe is for QUIET lanes, which is
+/// exactly when it is both cheap and meaningful. Same principle as the airc delivery receipts:
+/// health is recently-ACKed delivery, never the existence of a connection.
+/// [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
+static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record that a real generation produced tokens on the served lane. Called from the adapter's
+/// success path — the one place that knows tokens actually came out.
+pub fn note_real_decode() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    LAST_REAL_DECODE_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Milliseconds since the last real token-producing generation, or `None` if none has been
+/// observed yet (fresh boot) — the caller must then fall back to probing.
+pub fn ms_since_real_decode() -> Option<u64> {
+    let last = LAST_REAL_DECODE_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if last == 0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    Some(now.saturating_sub(last))
+}
+
 /// A same-model/same-genome relaunch is required when the target per-slot window
 /// exceeds the running server's served window by MORE than this. llama.cpp has no
 /// hot-resize API, so a genuine window GROW can only be honored by a relaunch —
@@ -1981,6 +2022,26 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    /// what this catches: the health heartbeat going back to probe-always. `decode_smoke_ok`
+    /// is a REAL generation through the live slots, so on a saturated lane it cannot get one,
+    /// the miss counts as "no decode", and two misses relaunch a lane that is merely busy —
+    /// which is what killed SWE run v13 (`serving.health {ok:false} x2 -> relaunch`, then every
+    /// generate refused with `serving: <none>`). Real tokens are the honest liveness evidence;
+    /// this pins the accessor the heartbeat gates on.
+    #[test]
+    fn real_token_delivery_is_recorded_as_liveness_evidence() {
+        // Fresh process: nothing observed yet ⇒ None, so the caller falls through and probes
+        // (a boot with no traffic must still be verified — absence of evidence is not health).
+        // NB: process-global, so only assert the post-record contract if a prior test recorded.
+        note_real_decode();
+        let since = ms_since_real_decode().expect("a recorded decode must be visible");
+        assert!(
+            since < 5_000,
+            "a decode recorded just now must read as recent, got {since}ms"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
