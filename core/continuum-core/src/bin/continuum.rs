@@ -740,48 +740,93 @@ fn running_core_binary() -> Option<std::path::PathBuf> {
 }
 
 /// PIDs of live training runs (`mlx_lm` trainers spawned by the MLX adapter) —
-/// the reboot guard's evidence. Same pgrep shape as [`running_core_pids`].
+/// the reboot guard's evidence.
+///
+/// Matches the COMMAND LINE, not the executable name, and that distinction is load-bearing:
+/// `mlx_lm` is a Python module, so the process is called `python` and the only place the trainer's
+/// identity appears is in its arguments. Matching on name here would find nothing and the reboot
+/// guard would happily kill live training — the exact outcome its doc warns about (41 jobs
+/// submitted, zero outcomes recorded, all orphaned by reboots).
 fn running_trainer_pids() -> Vec<i32> {
-    pgrep("mlx_lm")
+    processes_with_cmdline("mlx_lm")
+}
+
+/// PIDs whose command line contains `fragment` (the old `pgrep -f` behaviour, cross-platform).
+/// Kept separate from [`processes_named`] deliberately: command-line matching is what finds an
+/// interpreted process, but it is also what makes `pgrep -f continuum-core-server` match the shell
+/// that is merely LAUNCHING the core. Use the name-based one where precision matters.
+fn processes_with_cmdline(fragment: &str) -> Vec<i32> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    sys.processes()
+        .values()
+        .filter(|p| {
+            p.cmd()
+                .iter()
+                .any(|a| a.to_string_lossy().contains(fragment))
+        })
+        .map(|p| p.pid().as_u32() as i32)
+        .collect()
 }
 
 /// PIDs of every running `continuum-core-server`, via `pgrep` (pure unix, no
 /// Node). Empty on no match or if pgrep is unavailable.
 fn running_core_pids() -> Vec<i32> {
-    pgrep("continuum-core-server")
+    processes_named("continuum-core-server")
 }
 
-fn pgrep(pattern: &str) -> Vec<i32> {
-    std::process::Command::new("pgrep")
-        .args(["-f", pattern])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|l| l.trim().parse::<i32>().ok())
-                .collect()
+/// PIDs of running processes whose executable name contains `fragment`.
+///
+/// This was `pgrep -f`, which does not exist on Windows — and the error was swallowed by `.ok()`,
+/// so it returned "nothing is running" every single time. `continuum reboot` therefore believed
+/// there was no core to stop, never swapped the binary, then watched the OLD core answer ping and
+/// would have reported success. Only the #194 deploy-provenance check caught it:
+///
+///   DEPLOY MISMATCH: the running core is build 4250b4ce8, but the deploy shipped f2ed295da.
+///
+/// Every "deployed and verified" claim made on a Windows box before this is suspect.
+///
+/// sysinfo (already a direct dependency; same fix as the RSS/RAM readers) enumerates processes on
+/// every platform, so there is one implementation instead of a Unix tool plus an unported gap.
+/// Matching on the executable NAME rather than `pgrep -f`'s full command line is also more precise
+/// here: it cannot accidentally match the bash process that is merely launching the core.
+fn processes_named(fragment: &str) -> Vec<i32> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    sys.processes()
+        .values()
+        .filter(|p| {
+            p.name().to_string_lossy().contains(fragment)
+                || p.exe()
+                    .map(|e| e.to_string_lossy().contains(fragment))
+                    .unwrap_or(false)
         })
-        .unwrap_or_default()
+        .map(|p| p.pid().as_u32() as i32)
+        .collect()
 }
 
 /// True if `pid` is still alive. Unix: signal 0 is the canonical liveness probe.
 /// Windows has no signals — query the task list for the pid.
 fn pid_alive(pid: i32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: kill(pid, 0) sends no signal; it only checks existence/permission.
-        unsafe { libc::kill(pid, 0) == 0 }
-    }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-            .unwrap_or(false)
-    }
+    // Same enumerator as processes_named, for the same reason: one implementation beats a
+    // per-OS pair where one arm shells out to a tool the other platform does not have. The old
+    // Windows arm also matched the pid as a SUBSTRING of tasklist's whole output, so pid 42 read
+    // as alive whenever any pid containing "42" existed.
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid as u32);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    sys.process(target).is_some()
 }
 
 /// Spawn the pure-Rust start script detached and wait until the core answers

@@ -106,6 +106,114 @@ pub struct PullReport {
     pub error: Option<String>,
 }
 
+/// Live byte-level progress for one shard, written to the SAME ledger path the detached ack tells
+/// the caller to poll.
+///
+/// Why this exists: progress was published only on the bus, once per SHARD BOUNDARY. For a model
+/// whose middle shard is 47.66 GB that is one event, then silence for hours — and nothing at all
+/// in the ledger, which only got written on terminal success. An operator (or a UI, or Positron)
+/// had no way to distinguish a live download from a wedged one. Measured the hard way tonight:
+/// filesystem metadata cannot substitute, because hf-hub PREALLOCATES the blob to full size, so
+/// neither file length nor free-disk moves while it fills — only mtime does, and mtime cannot say
+/// how far along it is.
+///
+/// Throttled by both time and delta so a 76 GB download costs a bounded number of tiny writes.
+#[derive(Clone)]
+struct PullProgress {
+    run_id: Option<String>,
+    model_id: String,
+    repo_id: String,
+    shard: String,
+    shard_index: usize,
+    shard_count: usize,
+    prior_bytes: u64, // bytes completed in EARLIER shards, so percent is whole-pull, not per-shard
+    state: Arc<std::sync::Mutex<PullProgressState>>,
+}
+
+struct PullProgressState {
+    shard_total: u64,
+    shard_done: u64,
+    last_emit: std::time::Instant,
+    last_emit_bytes: u64,
+}
+
+impl PullProgress {
+    /// Emit at most every 2s AND at least every 256 MB — the first bounds writes on a fast link,
+    /// the second keeps a slow link from looking frozen.
+    const EMIT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+    const EMIT_BYTES: u64 = 256 * 1024 * 1024;
+
+    fn emit(&self, force: bool) {
+        let (shard_total, shard_done) = {
+            let mut st = match self.state.lock() {
+                Ok(st) => st,
+                Err(_) => return,
+            };
+            let now = std::time::Instant::now();
+            let due = force
+                || now.duration_since(st.last_emit) >= Self::EMIT_EVERY
+                || st.shard_done.saturating_sub(st.last_emit_bytes) >= Self::EMIT_BYTES;
+            if !due {
+                return;
+            }
+            st.last_emit = now;
+            st.last_emit_bytes = st.shard_done;
+            (st.shard_total, st.shard_done)
+        };
+
+        let done = self.prior_bytes + shard_done;
+        let payload = serde_json::json!({
+            "run_id":         self.run_id,
+            "model_id":       self.model_id,
+            "repo_id":        self.repo_id,
+            "phase":          "downloading",
+            "shard":          self.shard,
+            "shard_index":    self.shard_index,
+            "shard_count":    self.shard_count,
+            "shard_bytes":    shard_done,
+            "shard_total":    shard_total,
+            "bytes_so_far":   done,
+            "shard_percent":  if shard_total > 0 {
+                                  (shard_done as f64 / shard_total as f64 * 100.0).round()
+                              } else { 0.0 },
+        });
+        if let Some(bus) = crate::runtime::MessageBus::global() {
+            bus.publish_async_only("models:pull:progress", payload.clone());
+        }
+        // The ledger is the POLLABLE half of the contract — the ack names this exact path.
+        if let Some(rid) = self.run_id.as_deref() {
+            if let (Some(path), Ok(json)) = (
+                models_pull_ledger_path(rid),
+                serde_json::to_string_pretty(&payload),
+            ) {
+                let _ = std::fs::write(path, json);
+            }
+        }
+    }
+}
+
+impl hf_hub::api::tokio::Progress for PullProgress {
+    async fn init(&mut self, size: usize, _filename: &str) {
+        if let Ok(mut st) = self.state.lock() {
+            st.shard_total = size as u64;
+            st.shard_done = 0;
+            st.last_emit_bytes = 0;
+        }
+        self.emit(true);
+    }
+
+    async fn update(&mut self, size: usize) {
+        if let Ok(mut st) = self.state.lock() {
+            st.shard_done = st.shard_done.saturating_add(size as u64);
+        }
+        self.emit(false);
+    }
+
+    async fn finish(&mut self) {
+        self.emit(true);
+    }
+}
+
 /// Result file for a detached pull — the SAME progress-ledger convention `agent/solve`
 /// and cognition/eval already use (`~/.continuum/progress/<kind>-<run_id>.json`), so one
 /// poller/`Positron` tail serves every long-running command instead of a per-command scheme.
@@ -270,6 +378,19 @@ impl ModelsPull {
             if let Some(hub) = crate::model_registry::artifacts::huggingface_cache_root() {
                 b = b.with_cache_dir(hub);
             }
+            // PARALLEL CHUNKS. hf-hub's ApiBuilder defaults to `max_files: 1` — ONE concurrent
+            // 10 MB range request — so a 76 GB model came down a single chunk at a time on a
+            // single connection. That default is fine for a config.json and absurd for a frontier
+            // GGUF; the crate ships `with_high_parallelism()` precisely for this and we simply
+            // were not calling it.
+            //
+            // Bounded rather than `num_cpus` (what with_high_parallelism uses): this box has 32
+            // logical cores and 32 simultaneous range requests is impolite to the CDN and buys
+            // nothing once the link is saturated. 8 is enough to fill a fast pipe while staying a
+            // reasonable citizen — and unlike a core count it does not scale a network decision
+            // off a CPU number, which is the kind of accidental coupling that later reads as a bug.
+            const PARALLEL_CHUNKS: usize = 8;
+            b = b.with_max_files(PARALLEL_CHUNKS);
             b.build()
                 .map_err(|e| CommandError::Internal(format!("hf-hub init failed: {e}")))?
         };
@@ -296,21 +417,27 @@ impl ModelsPull {
             // tell "still going" from "wedged". Cheap (N events for N shards, not per byte) and
             // Noop-safe: no bus (headless/tests) => no cost. Carries run_id so a detached pull's
             // events correlate with its ledger file.
-            if let Some(bus) = crate::runtime::MessageBus::global() {
-                bus.publish_async_only(
-                    "models:pull:progress",
-                    serde_json::json!({
-                        "run_id":      p.run_id,
-                        "model_id":    p.model_id,
-                        "repo_id":     repo_id,
-                        "shard":       shard,
-                        "shard_index": shard_idx + 1,
-                        "shard_count": shard_count,
-                        "bytes_so_far": bytes,
-                    }),
-                );
-            }
-            let dl = download_with_retry(&repo, shard).await?;
+            // Byte-level progress, not one event per shard boundary. The old shape emitted a
+            // single event as a 47.66 GB shard STARTED and then nothing until it finished, which
+            // is indistinguishable from a wedged download for hours. The reporter below writes the
+            // ledger the detached ack names, so `poll ~/.continuum/progress/models-pull-<id>.json`
+            // finally means something while the pull is running.
+            let reporter = PullProgress {
+                run_id: p.run_id.clone(),
+                model_id: p.model_id.clone(),
+                repo_id: repo_id.clone(),
+                shard: shard.clone(),
+                shard_index: shard_idx + 1,
+                shard_count,
+                prior_bytes: bytes,
+                state: Arc::new(std::sync::Mutex::new(PullProgressState {
+                    shard_total: 0,
+                    shard_done: 0,
+                    last_emit: std::time::Instant::now(),
+                    last_emit_bytes: 0,
+                })),
+            };
+            let dl = download_with_retry(&repo, &repo_id, shard, Some(reporter)).await?;
             bytes += std::fs::metadata(&dl).map(|m| m.len()).unwrap_or(0);
             if gguf_path.is_none() {
                 gguf_path = Some(dl); // shard 1 (sorted) is llama.cpp's load entrypoint
@@ -318,7 +445,7 @@ impl ModelsPull {
         }
         let gguf_path = gguf_path.expect("expand_shard_set never returns empty");
         let mmproj_path = match &mmproj_file {
-            Some(f) => Some(download_with_retry(&repo, f).await?),
+            Some(f) => Some(download_with_retry(&repo, &repo_id, f, None).await?),
             None => None,
         };
 
@@ -450,13 +577,32 @@ fn expand_shard_set(chosen: &str, all_files: &[String]) -> Vec<String> {
 /// path) turned any blip into a total-command failure a human had to restart.
 async fn download_with_retry(
     repo: &hf_hub::api::tokio::ApiRepo,
+    repo_id: &str,
     file: &str,
+    progress: Option<PullProgress>,
 ) -> Result<std::path::PathBuf, CommandError> {
+    // Cache probe FIRST, exactly as `ApiRepo::get` does internally (cache hit → return, else
+    // download). Done here rather than calling `get` so the download half can carry a progress
+    // reporter — `get` hard-codes the no-op one. Losing this probe would cost the property the
+    // whole resume story rests on: a completed shard skips INSTANTLY on a re-run instead of being
+    // re-fetched, which is what makes re-running an interrupted 76 GB pull cheap.
+    if let Some(hub) = crate::model_registry::artifacts::huggingface_cache_root() {
+        if let Some(hit) = hf_hub::Cache::new(hub)
+            .repo(hf_hub::Repo::model(repo_id.to_string()))
+            .get(file)
+        {
+            return Ok(hit);
+        }
+    }
     const MAX_ATTEMPTS: u32 = 5;
     let mut backoff = std::time::Duration::from_secs(2);
     let mut last_err = String::new();
     for attempt in 1..=MAX_ATTEMPTS {
-        match repo.get(file).await {
+        let attempt_result = match progress.clone() {
+            Some(p) => repo.download_with_progress(file, p).await,
+            None => repo.get(file).await,
+        };
+        match attempt_result {
             Ok(p) => return Ok(p),
             Err(e) => {
                 last_err = e.to_string();

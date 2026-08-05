@@ -900,6 +900,24 @@ pub trait LlamaServerControl: Send + Sync {
     }
 }
 
+/// Does `text` contain a run of three consecutive ascending integers (`… 4 5 6 …`)?
+///
+/// The decode smoke-probe's assertion. Deliberately tolerant of formatting — separators,
+/// preambles and trailing chatter are all fine, because what is being tested is whether the model
+/// FOLLOWED a trivial instruction, not whether it formatted nicely. Three in a row is the point:
+/// noise can emit a stray digit, but a monotonic run means the model actually understood.
+///
+/// Pure (str in, bool out) so it is unit-testable without a server.
+fn counts_upward(text: &str) -> bool {
+    let nums: Vec<u64> = text
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    nums.windows(3)
+        .any(|w| w[1] == w[0] + 1 && w[2] == w[1] + 1)
+}
+
 /// Pure reconcile decision: bring the running server in line with `desired`.
 /// Split from the process impl so the branch logic is unit-tested against a
 /// fake. `Unreachable` from the probe means "nothing up" → serve; any other
@@ -1484,11 +1502,13 @@ impl LlamaServerControl for LlamaServerProcess {
         // The `--alias` id is what the server answers to; reuse the live v1 url.
         let url = format!("{}/chat/completions", self.v1_url);
         let body = serde_json::json!({
-            "messages": [{ "role": "user", "content": "Count from 1 to 20, separated by spaces." }],
-            // Enough tokens to prove real decode (MIN_SMOKE_DECODE_TOKENS = 5) with
-            // margin, WITHOUT hogging a busy co-tenant lane for 3s of decode — the
-            // probe must be a light passenger, not another load source.
-            "max_tokens": 12,
+            // Digits-only instruction so a compliant model spends its budget on the ANSWER, not a
+            // preamble — the content assertion below needs the answer to actually fit.
+            "messages": [{ "role": "user", "content":
+                "Reply with only the numbers 1 through 10 separated by single spaces. No other words." }],
+            // Room for the full answer plus a short preamble, still a light passenger on a busy
+            // co-tenant lane (the probe must not become another load source).
+            "max_tokens": 24,
             "stream": false,
             "temperature": 0.0,
         });
@@ -1512,7 +1532,24 @@ impl LlamaServerControl for LlamaServerProcess {
             .and_then(|u| u.get("completion_tokens"))
             .and_then(|t| t.as_u64())
             .unwrap_or(0);
-        out_tokens >= MIN_SMOKE_DECODE_TOKENS
+        // CONTENT, not just volume. Token count alone cannot tell a chat model from a model with
+        // no usable generative head — it only distinguishes "emitted tokens" from "emitted almost
+        // none". MEASURED on BigMama: an EMBEDDING model (qwen3-embedding-0.6b) was bound to the
+        // port the persona lane was configured for, and answered this probe with
+        //   "user interface interface user interface UIUUIUUIuiuiuiuiuiuiuiui"
+        // — comfortably past a count-only gate, while being structurally incapable of chat. Every
+        // persona on the node then "thought" through it, producing the token-loop garbage that
+        // flooded the rooms and scored eval runs as capability zeros when they were infra zeros.
+        //
+        // The prompt has a verifiable answer, so verify it. This upgrades the gate from "the
+        // decode path produces output" to "the decode path produces the RIGHT output", which
+        // catches the whole class: wrong model on the port, embedding endpoint, and a lane
+        // emitting fluent-looking noise.
+        let text = v
+            .pointer("/choices/0/message/content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(text)
     }
 
     fn owns_child(&self) -> bool {
@@ -1981,6 +2018,34 @@ fn split_host_port(root: &str) -> (String, u16) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // what this catches: the decode smoke-probe passing a lane that cannot chat at all. The gate
+    // used to assert only `completion_tokens >= 5`, which measures VOLUME, not correctness — so
+    // when an EMBEDDING model was bound to the port the persona lane was configured for
+    // (BigMama 2026-08-04, qwen3-embedding-0.6b on :8090), it sailed through and every persona on
+    // the node "thought" through it. The literal reply below is the real one that passed.
+    //
+    // Mutation checks: accepting any digit instead of a run of three passes the embedding string
+    // ("UIUUIU..." has none, but "1 interface 7 ui 3" would); requiring exact formatting fails the
+    // legitimate preamble/comma cases a real model produces.
+    #[test]
+    fn decode_probe_content_check_rejects_a_lane_that_cannot_count() {
+        // The measured failure — fluent-looking noise, well past any token-count gate.
+        assert!(
+            !counts_upward("user interface interface user interface UIUUIUUIuiuiuiuiuiuiuiui"),
+            "the embedding model's real reply must NOT pass the decode probe"
+        );
+        // Scattered digits are not comprehension.
+        assert!(!counts_upward("7 interface 3 ui 9"));
+        assert!(!counts_upward("1 1 1 1"));
+        assert!(!counts_upward(""));
+        // Healthy answers, in the shapes real models actually emit.
+        assert!(counts_upward("1 2 3 4 5 6 7 8 9 10"));
+        assert!(counts_upward("Sure! 1, 2, 3, 4, 5"));
+        assert!(counts_upward("1\n2\n3"));
+        // A truncated-but-correct answer (max_tokens cut it off) is still healthy.
+        assert!(counts_upward("1 2 3 4"));
+    }
 
     // what this catches (#205 unmask, glass-boxed 2026-07-28): an ephemeral eval lane
     // whose child was OS-killed (SIGKILL/137) before it emitted anything produced an
