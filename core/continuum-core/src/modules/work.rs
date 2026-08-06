@@ -215,6 +215,12 @@ impl ActionCommand for WorkClaim {
                 // progress, or pick another card. Best-effort board read; the
                 // original error stands alone if the board is unreadable.
                 let mut msg = e.to_string();
+                // Whether the refusal is a CONTENTION (someone holds it) or a real
+                // fault decides the error CLASS below — a taken card is a normal
+                // outcome of a shared board, and telling a citizen "[internal]" for
+                // it teaches her the substrate is broken when the truth is "that one
+                // is Anwen's". Observed live 2026-08-06.
+                let mut contention = false;
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await
@@ -222,9 +228,13 @@ impl ActionCommand for WorkClaim {
                     let board = board.snapshot();
                     if let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) {
                         if let Some(owner) = card.owner {
+                            contention = true;
                             msg = format!(
                                 "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
-                                 them in the room, or pick an unclaimed card via list_tasks. \
+                                 them in the room, or take another card — work/list with \
+                                 claimable=true lists every card you can pick up right now \
+                                 (most sit in the `claimed` column with a lapsed lease, so \
+                                 filtering by state=\"open\" will not show them). \
                                  (claim error: {e})",
                                 short8(card_id.as_uuid()),
                                 card.title,
@@ -246,7 +256,13 @@ impl ActionCommand for WorkClaim {
                         &msg,
                     );
                 }
-                return Err(CommandError::Internal(msg));
+                // A card someone else holds is a legitimate refusal, not a fault:
+                // `Denied` (the caller may not take THIS card), never `Internal`.
+                return Err(if contention {
+                    CommandError::Denied(msg)
+                } else {
+                    CommandError::Internal(msg)
+                });
             }
         };
         Ok(WorkClaimResult {
