@@ -703,7 +703,21 @@ impl LlmDeliberationFaculty {
             .sum()
     }
 
-    fn render_assembled_context_within(&self, ws: &Workspace, budget_tokens: usize) -> String {
+    /// `composition` is `(context_window, framing, fitted_conversation, ctx_floor)`
+    /// — the terms that PRODUCED `budget_tokens`. Carried purely so this probe and
+    /// `delib.turn.demand` can be reconciled against each other: read separately
+    /// they disagreed (Atlas showed `after_framing 9,243 − conv 4,334` yet rendered
+    /// `budget=287`) and nothing on hand could say which was wrong, because the two
+    /// numbers lived in different probes with no shared term. A seam that can only
+    /// be reasoned about by cross-referencing two records is a seam that gets
+    /// guessed at ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+    fn render_assembled_context_within(
+        &self,
+        ws: &Workspace,
+        budget_tokens: usize,
+        composition: (u32, usize, usize, usize),
+    ) -> String {
+        let (context_window, framing_tokens, conversation_tokens, ctx_floor) = composition;
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -714,6 +728,10 @@ impl LlmDeliberationFaculty {
                 class = "delib.context.render",
                 persona = %self.persona_name,
                 budget_tokens = 0usize,
+                context_window,
+                framing_tokens,
+                conversation_tokens,
+                ctx_floor,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
@@ -837,6 +855,10 @@ impl LlmDeliberationFaculty {
             class = "delib.context.render",
             persona = %self.persona_name,
             budget_tokens,
+            context_window,
+            framing_tokens,
+            conversation_tokens,
+            ctx_floor,
             used_tokens = used,
             received,
             rendered = selected.len(),
@@ -1053,7 +1075,11 @@ impl LlmDeliberationFaculty {
             .saturating_sub(used_msg_tokens)
             .saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
             .max(ctx_floor.saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER)));
-        let context = self.render_assembled_context_within(ws, ctx_budget);
+        let context = self.render_assembled_context_within(
+            ws,
+            ctx_budget,
+            (context_window, framing_tokens, used_msg_tokens, ctx_floor),
+        );
 
         DeliberationPromptView {
             system: self.compose_system(
@@ -2044,7 +2070,7 @@ mod tests {
             );
 
             // Generous budget so BOTH fit — this isolates ORDER, not truncation.
-            let block = faculty.render_assembled_context_within(&ws, 4096);
+            let block = faculty.render_assembled_context_within(&ws, 4096, (0, 0, 0, 0));
             let roster_at = block.find("[room-roster]").expect("roster present");
             let recall_at = block.find("[recall]").expect("recall present");
             assert!(
@@ -2130,7 +2156,7 @@ mod tests {
             let total = board.parts.len();
             ws.broadcast.push(board);
 
-            let block = faculty.render_assembled_context_within(&ws, 120);
+            let block = faculty.render_assembled_context_within(&ws, 120, (0, 0, 0, 0));
             assert!(
                 block.contains("run `work/list`"),
                 "the notice must name the verb verbatim, not describe it\n{block}"
@@ -2153,7 +2179,7 @@ mod tests {
             let mut ws = Workspace::new("anything open?");
             ws.broadcast.push(board_like(60)); // expand_command defaults to None
 
-            let block = faculty.render_assembled_context_within(&ws, 120);
+            let block = faculty.render_assembled_context_within(&ws, 120, (0, 0, 0, 0));
             assert!(block.contains("more not shown"), "still says it truncated\n{block}");
             assert!(
                 !block.contains("run `"),
@@ -2181,7 +2207,7 @@ mod tests {
             // A budget FAR under the whole board — the live shape (55 vs 5,364).
             let budget = 120;
             assert!(whole > budget * 10, "fixture must reproduce the live ratio");
-            let block = faculty.render_assembled_context_within(&ws, budget);
+            let block = faculty.render_assembled_context_within(&ws, budget, (0, 0, 0, 0));
 
             assert!(
                 block.contains("[room-kanban]"),
@@ -2228,7 +2254,7 @@ mod tests {
                 "recalled",
             ));
 
-            let block = faculty.render_assembled_context_within(&ws, 40);
+            let block = faculty.render_assembled_context_within(&ws, 40, (0, 0, 0, 0));
             assert!(
                 !block.contains("[recall]"),
                 "an over-budget INDIVISIBLE contribution must be dropped whole, not \
@@ -2252,7 +2278,7 @@ mod tests {
             let mut ws = Workspace::new("anything open?");
             ws.broadcast.push(board_like(60));
 
-            let block = faculty.render_assembled_context_within(&ws, 4);
+            let block = faculty.render_assembled_context_within(&ws, 4, (0, 0, 0, 0));
             assert!(
                 !block.contains("[room-kanban]"),
                 "no unit fits, so there must be no header — a labelled empty block is a \
