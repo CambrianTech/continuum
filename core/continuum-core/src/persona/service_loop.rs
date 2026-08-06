@@ -409,6 +409,7 @@ async fn serve_persona_loop_inner(
     // Recent inbound texts (bounded ring) — the exchange record the message-path
     // loop-filler gate below judges against. Inbound only: own posts are filtered
     // above the gate, and the peer's repeats are what re-arm the resonance.
+    // context-budget-exempt: a count of recent inbound MESSAGES to consider, not a size in tokens or chars
     const RECENT_INBOUND_WINDOW: usize = 24;
     let mut recent_inbound: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
@@ -1573,7 +1574,11 @@ fn push_work_board_anchor(
         );
         return;
     }
-    turns.push(crate::cognition::workspace::BurstTurn::opaque(anchor));
+    // `perception`, not `opaque` — hers supersedes the version I cherry-picked.
+    // The anchor IS a perception fact about the board, and typing it as one is
+    // what lets the parroted-perception gate recognise it as system-authored
+    // rather than the citizen's own words.
+    turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 
 /// Build the `[anchor]` escalation line — the perception-side FACT that gives a
@@ -1615,23 +1620,64 @@ fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> 
         .flat_map(|d| d.items.iter())
         .filter(|i| i.metadata.get("card_id").is_some())
         .collect();
-    fn state(i: &crate::persona::rag_budget::RagItem) -> &str {
-        i.metadata.get("state").and_then(|s| s.as_str()).unwrap_or("")
+    /// The card's state as the TYPE, never as a string to be spelled correctly.
+    ///
+    /// `None` for an item whose metadata carries no parseable state — which is a real
+    /// possibility (a future variant this build doesn't know) and must read as "unknown",
+    /// never as a silent mismatch against a hardcoded spelling.
+    fn state(i: &crate::persona::rag_budget::RagItem) -> Option<airc_work::CardState> {
+        i.metadata
+            .get("state")
+            .and_then(|s| serde_json::from_value(s.clone()).ok())
     }
-    // Top 1-2 unclaimed (open work anyone could pick up) + 1 in-flight card
-    // (proof the room's work is real and moving), in airc's own board order —
-    // no re-ranking heuristic.
+    /// Is this card's hold still good? Read as the structural fact the board source
+    /// carries, never re-derived here — `claim_is_live` is the ONE definition and
+    /// `room_board_source` already applied it. Absent (an older projection) reads as
+    /// LIVE, so a missing field can never invent availability that isn't there.
+    fn claim_live(i: &crate::persona::rag_budget::RagItem) -> bool {
+        i.metadata
+            .get("claim_live")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+    // AVAILABLE work is not just `Open` — it is anything nobody currently holds. A card
+    // stuck in `Claimed` with a LAPSED lease is free to take, and treating it as taken is
+    // what emptied this anchor while 19 takeable cards sat on the board (2026-08-06: every
+    // resident read "nothing available" off their own expired claims and passed, for hours).
+    // `state == Open` and "unheld" are different questions; ask the second one.
+    use airc_work::CardState;
     let unclaimed: Vec<&str> = cards
         .iter()
         .filter(|i| {
-            state(i) == "Open" && i.metadata.get("owner").is_none_or(|o| o.is_null())
+            let unowned_open = state(i) == Some(CardState::Open)
+                && i.metadata.get("owner").is_none_or(|o| o.is_null());
+            // A lapsed hold on ANY non-terminal card is available work, whoever held it.
+            let lapsed = !claim_live(i)
+                && matches!(
+                    state(i),
+                    Some(CardState::Claimed | CardState::InProgress | CardState::Review)
+                );
+            unowned_open || lapsed
         })
         .map(|i| i.content.trim())
         .take(2)
         .collect();
+    // Exhaustive over the enum, so ADDING a variant to `CardState` forces a decision here
+    // instead of silently falling through as "not in flight". That is the whole point of
+    // matching the type rather than a string.
     let in_flight: Vec<&str> = cards
         .iter()
-        .filter(|i| matches!(state(i), "Claimed" | "InProgress" | "Review"))
+        // Genuinely in flight = claimed AND the hold is still live. Without the liveness
+        // term a lapsed card counts as both available and in-flight, and the anchor would
+        // tell her the same card is free and busy in one breath.
+        .filter(|i| claim_live(i))
+        .filter(|i| match state(i) {
+            Some(CardState::Claimed | CardState::InProgress | CardState::Review) => true,
+            Some(
+                CardState::Open | CardState::Blocked | CardState::Merged | CardState::Closed,
+            ) => false,
+            None => false,
+        })
         .map(|i| i.content.trim())
         .take(1)
         .collect();
@@ -1781,7 +1827,7 @@ pub(crate) fn build_workspace_turns(
             }
         }
         if self_run >= 1 {
-            turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+            turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                 "[pattern] {agent_name}'s last {} messages in this room repeat the same \
                  sentiment in nearly the same words. This exchange may have run its \
                  course — continuing to restate it adds nothing new.",
@@ -1829,7 +1875,7 @@ pub(crate) fn build_workspace_turns(
             if cyclic >= TAIL_CYCLIC && authors.len() >= 2 {
                 let mut names: Vec<&str> = authors.into_iter().collect();
                 names.sort_unstable();
-                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] The last several messages in this room — from {} — trade the \
                      same sentiment back and forth in nearly the same words. This exchange \
                      has already concluded; every further reply restates it, and a courtesy \
@@ -1892,7 +1938,7 @@ pub(crate) fn build_workspace_turns(
                 }
             }
             if mirror_run >= 1 {
-                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] {agent_name}'s last {mirror_run} message(s) restate what other \
                      participants in this room had already said, in nearly the same words — \
                      an echo, not a contribution. Reflecting their words back adds nothing; \
@@ -1984,7 +2030,7 @@ pub(crate) fn build_workspace_turns(
         b.push_str(
             " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
         );
-        turns.push(crate::cognition::workspace::BurstTurn::opaque(b));
+        turns.push(crate::cognition::workspace::BurstTurn::perception(b));
     }
 
     turns
@@ -2471,7 +2517,9 @@ mod tests {
             continuation: None,
             resolution_used: ResolutionPreference::Raw,
         };
-        let card = |state: &str| RagItem {
+        // The ENUM, not a spelling. If the wire form ever changes, this fixture changes
+        // with it automatically instead of quietly testing a string that no longer occurs.
+        let card = |state: airc_work::CardState| RagItem {
             content: "#00f2a380 self-heal #2: receive-binding re-derive".to_string(),
             tokens: 8,
             metadata: serde_json::json!({ "card_id": "00f2a380", "state": state }),
@@ -2500,7 +2548,7 @@ mod tests {
         );
 
         // Cards present → the anchor names real work, as before.
-        let with_cards = vec![delivery("room-kanban", vec![card("Claimed")])];
+        let with_cards = vec![delivery("room-kanban", vec![card(airc_work::CardState::Claimed)])];
         let anchor = work_board_anchor(&with_cards);
         assert!(
             anchor.contains("Open work exists"),
@@ -2761,13 +2809,30 @@ mod tests {
         /// A `room-kanban` delivery item exactly as `RoomBoardSource::render`
         /// ships it (content line + card_id/state/owner metadata) — the stub
         /// board read the anchor escalation is built from.
-        fn kanban_card(id8: &str, title: &str, state: &str, owner: Option<&str>) -> RagItem {
+        ///
+        /// Takes the ENUM, not a spelling. It used to take `&str` and every caller
+        /// passed `"Open"`, which silently stopped matching the moment the wire form
+        /// became serde's `"open"` — the anchor parsed `None`, filtered every card out,
+        /// and reported an empty board while the fixture plainly held one. Four tests
+        /// went red on a fixture bug, not a behaviour change. With the enum the wire
+        /// form is whatever serde emits and the fixture tracks it automatically —
+        /// the same reasoning the sibling `card` fixture above already documents.
+        fn kanban_card(
+            id8: &str,
+            title: &str,
+            state: airc_work::CardState,
+            owner: Option<&str>,
+        ) -> RagItem {
             let owner_txt = match owner {
                 Some(o) => format!("owner {}", &o[..8]),
                 None => "unclaimed".to_string(),
             };
+            // The rendered line is what a persona READS, so it keeps the HUMAN spelling
+            // (`InProgress`), not the wire form (`in_progress`). Only the metadata — which
+            // the anchor parses — carries the serde encoding.
+            let shown = format!("{state:?}");
             RagItem {
-                content: format!("card {id8} [{state}] \"{title}\" (P2, {owner_txt})"),
+                content: format!("card {id8} [{shown}] \"{title}\" (P2, {owner_txt})"),
                 tokens: 0,
                 metadata: json!({
                     "card_id": format!("{id8}-card"),
@@ -3020,15 +3085,18 @@ mod tests {
                 1,
                 "exactly one observation per burst — perception, not nagging"
             );
-            // This loop's cyclic run (5) extends one turn PAST first-fire depth
-            // (4), so the description escalates (card d6f010c8). No board
-            // delivery is present here, so the anchor must be the HONEST-empty
-            // one — never a fabricated card.
-            let anchor = turns.last().unwrap();
+            // This loop's cyclic run (5) extends one turn PAST first-fire depth (4), so the
+            // description escalates. NO board delivery is present here — and an absent
+            // board source is NOT an empty board, so `work_board_anchor`'s `board_spoke`
+            // guard correctly emits nothing rather than asserting "No open cards" on behalf
+            // of a source that never spoke. The escalation is the [pattern] observation
+            // itself; the anchor arrives only when the board actually reports.
+            // See `empty_board_escalation_is_honest` for both arms.
             assert!(
-                anchor.content.starts_with("[anchor]")
-                    && anchor.content.contains("No open cards"),
-                "a run past first-fire depth escalates to an honest-empty anchor, got: {anchor:?}"
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "with no board delivery there must be NO anchor — inventing emptiness \
+                 overrides her own work/list receipt, got: {:?}",
+                turns.iter().map(|t| &t.content).collect::<Vec<_>>()
             );
             // Negative: a 6-turn two-speaker WORK thread where tail turns keep
             // introducing new tokens must stay clean.
@@ -3077,7 +3145,7 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("94ad103f", "Fix the widget", "Open", None)],
+                    vec![kanban_card("94ad103f", "Fix the widget", airc_work::CardState::Open, None)],
                 ),
                 delivery("airc", greeting_spiral(me, peer, 3)),
             ];
@@ -3107,11 +3175,11 @@ mod tests {
                 delivery(
                     "room-kanban",
                     vec![
-                        kanban_card("94ad103f", "Fix the lane admission planner", "Open", None),
+                        kanban_card("94ad103f", "Fix the lane admission planner", airc_work::CardState::Open, None),
                         kanban_card(
                             "21ffe3c0",
                             "Wire the projector",
-                            "InProgress",
+                            airc_work::CardState::InProgress,
                             Some("0d3209a1-c675-41db-9867-86f1011f9520"),
                         ),
                     ],
@@ -3142,26 +3210,60 @@ mod tests {
             );
         }
 
-        // what this catches: an empty (or absent/unreadable) board must yield the
-        // HONEST empty anchor — "no open cards, propose one" — never a fabricated
-        // card ([[fallbacks-are-illegal-fail-loud]]).
+        // what this catches: the TWO different facts an absent card list can mean, which
+        // `work_board_anchor`'s `board_spoke` guard separates and this test pins at the
+        // burst level.
+        //
+        //   board DELIVERED but empty -> the HONEST empty anchor ("no open cards, propose
+        //                                one"), never a fabricated card
+        //                                ([[fallbacks-are-illegal-fail-loud]]).
+        //   board NOT delivered       -> SILENCE. "The board is empty" and "I never read
+        //                                the board" are different claims about the world,
+        //                                and only the first is knowable from an absent
+        //                                delivery.
+        //
+        // The second arm is not pedantry. Glass-boxed 2026-08-06 from Benchy's live
+        // capture: `room-kanban` delivered nothing (grounding is last in the budget queue),
+        // the anchor asserted "No open cards are visible" anyway, and she repeated exactly
+        // that in-room for six turns — while `work/list()` in her own working memory listed
+        // a full board in the same prompt. She trusted the authoritative-sounding anchor
+        // over her own receipt. An anchor that invents emptiness actively overrides the one
+        // truthful board claim she has.
+        // [[grounding-is-last-in-the-budget-queue-so-she-goes-blind-one-turn-in-ten]]
         #[test]
         fn empty_board_escalation_is_honest() {
             let me = "me-peer";
             let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
-            let deliveries = vec![delivery("airc", greeting_spiral(me, peer, 4))];
-            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+
+            // ARM 1 — the board SPOKE and had nothing open: say so, and name the verb that
+            // would add something ("propose one") rather than another restatement.
+            let spoke_empty = vec![
+                delivery("room-kanban", vec![]),
+                delivery("airc", greeting_spiral(me, peer, 4)),
+            ];
+            let turns = build_workspace_turns(&spoke_empty, me, "Asha", None);
             let anchor = turns.last().unwrap();
             assert!(
                 anchor.content.starts_with("[anchor]")
                     && anchor.content.contains("No open cards")
                     && anchor.content.contains("work/create"),
-                "an empty board must be stated honestly, got: {anchor:?}"
+                "a board that spoke and was empty must be stated honestly, got: {anchor:?}"
             );
             assert!(
                 !anchor.content.contains("card 9") && !anchor.content.contains("card 2"),
                 "an empty board must never grow invented cards, got: {}",
                 anchor.content
+            );
+
+            // ARM 2 — the board never spoke: no anchor at all. Her own `work/list` receipt
+            // stays the only board claim in the prompt, which is the truthful one.
+            let never_spoke = vec![delivery("airc", greeting_spiral(me, peer, 4))];
+            let turns = build_workspace_turns(&never_spoke, me, "Asha", None);
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "an absent board must produce NO anchor — asserting emptiness on behalf of \
+                 a source that never spoke is the six-turn false-claim bug, got: {:?}",
+                turns.iter().map(|t| &t.content).collect::<Vec<_>>()
             );
         }
 
@@ -3316,7 +3418,7 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", "Open", None)],
+                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
                 ),
                 delivery("airc", echo_hall(me, anwen, benchy)),
             ];
@@ -3396,7 +3498,7 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", "Open", None)],
+                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
                 ),
                 delivery("airc", items),
             ];

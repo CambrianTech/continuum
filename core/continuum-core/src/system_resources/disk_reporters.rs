@@ -53,6 +53,14 @@ impl TrackedDir {
         &self.path
     }
 
+    /// The cache-class name. `path` and `bytes` already had accessors;
+    /// this one was missing, so a pool built over the class had to
+    /// re-declare its own name and could drift from the reporter's.
+    /// One measurement, two consumers — one name too.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
     /// Cached recursive size — lock-free. Shared view for the reporter
     /// AND any eviction pool built over the same class (one measurement,
     /// two consumers — never two walkers disagreeing about one dir).
@@ -185,8 +193,30 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
         TrackedDir::new("forge", home.join(".continuum/forge")),
+        // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
+        // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy
+        // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
+        // cache class rather than data.
+        TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
+        // The substrate's OWN rotation-generation dirs. Registered
+        // 2026-08-06 — they had been the two directories continuum
+        // writes to most continuously and the only ones the disk
+        // monitor could not see, because the writer
+        // (`routing::capped_appender`) bounded itself with a private
+        // constant and nobody treated that as a governed class. A
+        // writer that caps itself is not governance: the broker can't
+        // claw bytes back under real disk pressure, and a
+        // still-unbounded writer (the probe sink booted through
+        // `tracing_init` was exactly that until today) accumulates
+        // invisibly. Owner: `RotationLogPool` — see
+        // `super::rotation_log_pool`.
+        TrackedDir::new("logs", home.join(".continuum/logs")),
+        TrackedDir::new("probes", home.join(".continuum/probes")),
     ];
-    // Present only when its real location is KNOWN (see the warn above).
+    // Present only when its real location is KNOWN (see the warn above). Kept
+    // CONDITIONAL rather than defaulted: fabricating a path here is how a class
+    // gets "tracked" at a location nothing writes to, which reads as an empty
+    // cache forever.
     if let Some(root) = hf_root {
         dirs.push(TrackedDir::new("hf-hub", root));
     }

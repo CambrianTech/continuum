@@ -89,4 +89,27 @@ ui_pass_threshold?: number,
  * forces tools on for the run; `Some(false)` pins a task speak-only even if it looks
  * hands-graded. `None` (the common case) falls back to the grading-modality derivation.
  */
-needs_tools?: boolean, };
+needs_tools?: boolean, 
+/**
+ * The checkout THIS task lives in — her hands get rooted here before the task runs.
+ *
+ * The run-level `workspace_root` param pins ONE repo for a whole exam, which is right for a
+ * SWE-bench instance (one clone, one task). It is wrong for a MINED gym: `gym/mine` gives
+ * every task its own git worktree so tasks are independent and repeatable, so the root is a
+ * property of the TASK. Without this the evaluator hands her one root for all N tasks — the
+ * wrong one for every task — and she is told to fix a bug in a directory her sandboxed tools
+ * cannot reach. That is not a hard exam, it is an unrunnable one, and it is why mined gyms
+ * had never produced a number.
+ *
+ * It is DECLARED here, not applied mid-run. Rooting a persona is two operations — her hands
+ * (`root_acting_workspace`, callable any time) and her eyes (`repoint_workspace_map_if_pinned`,
+ * fork-time only, because the cycle's faculties are immutable once built). Applying just the
+ * first splits her: hands in one tree, map of another, which is the #206 shape and produces a
+ * zero that lies about the solver with no probe to show it. So a task whose root differs from
+ * the run's is REFUSED with a named infra grade telling the caller to run one eval per root —
+ * the run-level pin does both halves at fork, so that path is correct today. When the map
+ * derives its root from her hands (one source of truth), this becomes a live re-root and the
+ * refusal is deleted.
+ * [[re-rooting-a-persona-is-two-operations-moving-one-is-worse-than-moving-neither]]
+ */
+workspace_root?: string, };

@@ -87,6 +87,34 @@ pub enum KanbanCardState {
     Closed,
 }
 
+/// Whether a claimed card's LEASE is still good — the fact a column alone
+/// cannot carry.
+///
+/// A claim is a lease, not a permanent assignment. When it expires the holder
+/// has stopped and the card is takeable, but `state` still reads `Claimed`,
+/// so a board rendering only the column shows dead work as active work.
+/// Measured 2026-08-06: 19 cards, 17 expired leases, and six citizens across
+/// two machines spent a night reporting they had nothing to do. The renderer
+/// must be able to grey a lapsed hold and offer it, which requires the
+/// substrate to SAY it — renderers never re-derive
+/// ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// Kept free of an `airc-work` dependency like [`KanbanCardState`]; the
+/// continuum projector maps its `card_holder::Hold` → this at the seam, so
+/// the persona's board line and the human's card agree by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanHold.ts")]
+pub enum KanbanHold {
+    /// A live claim — someone is genuinely on this card right now.
+    Held,
+    /// The lease expired; the holder stopped. Takeable, and `assignee_name`
+    /// names who to ask before taking it.
+    Lapsed,
+    /// No claim at all.
+    Unclaimed,
+}
+
 /// A lane's state — mirrors airc's `LaneState` variant-for-variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -210,6 +238,13 @@ pub struct KanbanCardView {
     /// `assignee_id` is `None`.
     #[ts(optional)]
     pub assignee_name: Option<String>,
+    /// Whether the assignee's LEASE is still live — see [`KanbanHold`].
+    /// `Lapsed` means takeable: the renderer should show it as available and
+    /// name `assignee_name` as who to ask, not as who is busy with it.
+    /// Without this the board renders a hold that died hours ago exactly like
+    /// one someone is actively working, which is the defect that stalled six
+    /// citizens for a night.
+    pub hold: KanbanHold,
     /// Landing link, once a PR exists for the card. `None` before then.
     #[ts(optional)]
     pub pull_request: Option<KanbanPullRequest>,
@@ -325,6 +360,7 @@ mod tests {
             provenance: Provenance::unresolved(),
             assignee_id: Some(Uuid::from_u128(3)),
             assignee_name: Some("BigMama".to_string()),
+            hold: KanbanHold::Held,
             pull_request: Some(KanbanPullRequest {
                 repo: "CambrianTech/continuum".to_string(),
                 number: 1735,

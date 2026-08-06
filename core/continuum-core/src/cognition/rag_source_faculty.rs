@@ -74,6 +74,7 @@ use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
 /// the common 16k served window (preserving the tuned value that let each source
 /// breathe), grows so a 128k model holds its full board/map/roster, and shrinks
 /// honestly on a tight window — the packer still keeps the TOTAL ≤ window.
+// context-budget-exempt: a DENOMINATOR — this is already the window-relative pattern this test exists to enforce
 const GROUNDING_WINDOW_FRACTION: u32 = 4;
 
 /// The per-source grounding ceiling for a given LIVE served window. Floored at the

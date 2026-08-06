@@ -108,11 +108,22 @@ pub struct SemanticDistiller {
     max_observation_chars: usize,
 }
 
-/// Conservative default observation budget (chars) when the caller doesn't inject
-/// the live served window — sized to fit comfortably inside a small served slot
-/// (~6k tokens × ~4 chars/token) so a dream can never overflow even an unwired
-/// build. Production wires the real per-slot window via `with_observation_budget`.
-pub const DEFAULT_MAX_OBSERVATION_CHARS: usize = 24_000;
+/// Default observation budget (chars) when the caller doesn't inject the live served
+/// window. DERIVED, never a literal: it reads the window the local lane is serving right
+/// now, and only if nothing is served falls back to the substrate's own declared minimum
+/// (`MIN_SERVE_CTX`) — the one floor the serving stack already owns, not a fresh guess.
+/// Production still wires the real per-slot window via `with_observation_budget`; this is
+/// the honest answer for an unwired build.
+/// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+pub fn default_max_observation_chars() -> usize {
+    let live = crate::inference::llama_server::current_serving();
+    let window = if live.ready && live.served_context_window > 0 {
+        live.served_context_window
+    } else {
+        crate::cognition::serving_plan::MIN_SERVE_CTX
+    };
+    crate::cognition::context_budget::ContextBudget::from_window(window).latest_action_chars()
+}
 
 /// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
 /// [[mind-wanderers-subpersonal-processes]]). Each lens is the SAME machinery
@@ -197,7 +208,7 @@ impl SemanticDistiller {
         Self {
             adapter,
             model: None,
-            max_observation_chars: DEFAULT_MAX_OBSERVATION_CHARS,
+            max_observation_chars: default_max_observation_chars(),
         }
     }
 
@@ -458,6 +469,7 @@ pub struct PersonaReflector {
 }
 
 /// Default recall window: scan the last N engrams for undigested experience.
+// context-budget-exempt: how many engrams a lens WALKS, not how much text reaches the prompt (the observations block is separately bounded)
 const DEFAULT_RECALL_WINDOW: usize = 64;
 
 /// How many related prior beliefs the supersession review shows the distiller

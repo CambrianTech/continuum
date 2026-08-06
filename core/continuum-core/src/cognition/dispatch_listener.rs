@@ -18,21 +18,24 @@ use crate::cognition::working_memory::{DispatchStatus, WorkingMemory};
 use crate::runtime::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use crate::runtime::message_bus::MessageBus;
 
-/// Max chars of a dispatched command's result folded back into the mind — a compile log or
-/// a sentinel's report is bounded so one huge result can't dominate the perception. The
-/// full result is recoverable via the command's own handle if the mind needs more.
-const DISPATCH_RESULT_MAX_CHARS: usize = 4_000;
+// A dispatched command's result (a compile log, a sentinel's report) is bounded so one huge
+// result can't dominate perception; the full text stays recoverable through the command's own
+// handle. The bound is a FRACTION OF HER LIVE WINDOW, never a constant — the old
+// `DISPATCH_RESULT_MAX_CHARS = 4_000` is exactly the "4k or smaller window" that makes a
+// 1M-context model useless. [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::context_budget::ContextBudget;
 
 /// Render a command result Value into the compact text the mind reads. A JSON string is
 /// shown bare (no quotes); anything else is compact JSON. Bounded by
-/// `DISPATCH_RESULT_MAX_CHARS`.
+/// the live window (`ContextBudget::dispatch_result_chars`).
 fn summarize_result(value: &serde_json::Value) -> String {
     let raw = match value {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    if raw.chars().count() > DISPATCH_RESULT_MAX_CHARS {
-        raw.chars().take(DISPATCH_RESULT_MAX_CHARS).collect::<String>() + " …[truncated]"
+    let cap = ContextBudget::live().dispatch_result_chars();
+    if raw.chars().count() > cap {
+        raw.chars().take(cap).collect::<String>() + " …[truncated]"
     } else {
         raw
     }

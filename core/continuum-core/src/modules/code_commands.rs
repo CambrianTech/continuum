@@ -329,10 +329,13 @@ pub struct CodeReadParams {
 #[async_trait]
 impl ActionCommand for CodeRead {
     const NAME: &'static str = "code/read";
-    const ALIASES: &'static [&'static str] = &["read_file"];
+    const ALIASES: &'static [&'static str] = &["read_file", "view", "cat", "open_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
-        "Read a file from the workspace, optionally a line range. Returns content plus line metadata.";
+        "Read a file from the workspace, optionally a line range. Content comes back with \
+         each line NUMBERED (`   12 | text`) — those numbers are the same ones code/edit's \
+         line_range and insert_at address, so you never have to count. The `N | ` gutter is \
+         display, not file content: never write it back into a file.";
     type Params = CodeReadParams;
     type Output = ReadResult;
 
@@ -365,7 +368,7 @@ pub struct CodeWriteParams {
 #[async_trait]
 impl ActionCommand for CodeWrite {
     const NAME: &'static str = "code/write";
-    const ALIASES: &'static [&'static str] = &["write_file"];
+    const ALIASES: &'static [&'static str] = &["write_file", "create_file", "save_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Create or overwrite a file with new content. Tracked in the change history (undoable).";
@@ -541,7 +544,7 @@ fn reject_placeholder_path(file_path: &str) -> Result<(), CommandError> {
 #[async_trait]
 impl ActionCommand for CodeEdit {
     const NAME: &'static str = "code/edit";
-    const ALIASES: &'static [&'static str] = &["edit_file"];
+    const ALIASES: &'static [&'static str] = &["edit_file", "str_replace", "apply_patch", "replace_in_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Edit an existing file: line-range replace, search/replace, insert-at, or append. Undoable.";
@@ -578,7 +581,7 @@ pub struct CodeListParams {
 #[async_trait]
 impl ActionCommand for CodeList {
     const NAME: &'static str = "code/list";
-    const ALIASES: &'static [&'static str] = &["list_files"];
+    const ALIASES: &'static [&'static str] = &["list_files", "list_dir", "glob", "ls"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "List a directory (flat, non-recursive): names, kinds, and sizes. Use code/tree for recursion.";
@@ -786,7 +789,7 @@ pub struct CodeTreeParams {
 #[async_trait]
 impl ActionCommand for CodeTree {
     const NAME: &'static str = "code/tree";
-    const ALIASES: &'static [&'static str] = &["file_tree"];
+    const ALIASES: &'static [&'static str] = &["file_tree", "directory_tree", "tree"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Print a recursive directory tree (bounded depth) — the project's structure at a glance.";
@@ -846,7 +849,7 @@ pub struct CodeSearchParams {
 #[async_trait]
 impl ActionCommand for CodeSearch {
     const NAME: &'static str = "code/search";
-    const ALIASES: &'static [&'static str] = &["grep"];
+    const ALIASES: &'static [&'static str] = &["grep", "search_files", "ripgrep", "rg", "search"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Search file contents for a pattern across the workspace (grep). Returns file:line matches.";
@@ -1055,7 +1058,7 @@ fn shell_response(s: &crate::code::shell_session::ExecutionState) -> ShellExecut
 #[async_trait]
 impl ActionCommand for CodeShell {
     const NAME: &'static str = "code/shell";
-    const ALIASES: &'static [&'static str] = &["bash"];
+    const ALIASES: &'static [&'static str] = &["bash", "shell", "run_terminal_cmd", "execute_command", "run_command"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     // Privileged → Trusted tier: arbitrary execution is for high-trust local
     // citizens (a local persona / a trusted node), never a Provisional remote peer.
@@ -1376,6 +1379,26 @@ pub struct CodeCreateWorkspaceParams {
     /// a shared dependency tree). Omit for a write-only-within-root sandbox.
     #[serde(default)]
     pub read_roots: Vec<String>,
+    /// Directories to PREPEND to `PATH` for this caller's shell.
+    ///
+    /// Why this exists: the SWE harness provisions an era-matched interpreter per
+    /// instance (`uv venv --python 3.9|3.11`) and used it ONLY for grading. Her hands
+    /// got the bare inherited PATH — so `python` did not exist for her at all.
+    /// Glass-boxed on sympy-21379: she wrote a correct reproduction script, ran it,
+    /// and got `bash: python: command not found` (exit 127). A persona who cannot
+    /// EXECUTE cannot verify a fix, which makes the whole iterate-and-observe loop
+    /// impossible on any Python repo — and silently scores it as a capability failure.
+    ///
+    /// Environment, not steering: it grants the interpreter the task already implies.
+    #[serde(default)]
+    pub path_prepend: Vec<String>,
+    /// Harden this workspace for a SCORED run: an edit whose inserted code would land inside a
+    /// string literal is REFUSED instead of warned (#317). Default `false` — a living citizen
+    /// writes code as text all the time (docstring examples, fixtures, quoted snippets) and the
+    /// warning on the success path already tells her it will not execute. Only a measurement,
+    /// whose deliverable IS an executing patch, has no such ambiguity.
+    #[serde(default)]
+    pub refuse_inert_edits: bool,
 }
 
 /// What `code/create-workspace` established.
@@ -1422,9 +1445,34 @@ impl ActionCommand for CodeCreateWorkspace {
         // provisioned for this caller (its doc reserves this override path). Keyed by
         // caller, so each peer's change-DAG stays isolated — exactly like the migrated
         // read/write/edit siblings, and never on a spoofable persona_id param.
-        self.state
-            .file_engines
-            .insert(who.clone(), FileEngine::new(&who, security));
+        let policy = if p.refuse_inert_edits {
+            crate::code::file_engine::WritePolicy::RefuseInert
+        } else {
+            crate::code::file_engine::WritePolicy::Warn
+        };
+        self.state.file_engines.insert(
+            who.clone(),
+            FileEngine::new(&who, security).with_write_policy(policy),
+        );
+        // DROP the caller's shell session so it is re-created at the NEW root.
+        // `ensure_shell` early-returns when a session exists, so without this a
+        // re-root moved her FILE engine and left her SHELL in the old directory —
+        // the two halves of her hands pointing at different workspaces.
+        self.state.shell_sessions.remove(&who);
+        if !p.path_prepend.is_empty() {
+            ensure_shell(&self.state, &who)?;
+            if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
+                let inherited = std::env::var("PATH").unwrap_or_default();
+                let prepend = p.path_prepend.join(":");
+                shell.set_env("PATH".to_string(), format!("{prepend}:{inherited}"));
+                crate::probe!(
+                    class = "code.workspace.path_prepend",
+                    caller = who.as_str(),
+                    prepend = prepend.as_str(),
+                    "granted the caller's shell an explicit PATH prefix (era-matched interpreter)"
+                );
+            }
+        }
         Ok(CreateWorkspaceResult {
             created: true,
             workspace_root: p.workspace_root,

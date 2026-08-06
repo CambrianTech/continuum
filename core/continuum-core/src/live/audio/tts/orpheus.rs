@@ -52,6 +52,7 @@ const SNAC_SAMPLE_RATE: u32 = 24000;
 /// Max audio tokens to generate (prevents runaway generation).
 /// 7 tokens/frame × ~10 frames/sec = ~70 tokens/sec of audio.
 /// 2100 tokens ≈ 30 seconds max.
+// context-budget-exempt: the TTS model's own audio-token architecture limit, not a text-context bound
 const MAX_AUDIO_TOKENS: usize = 2100;
 
 /// Temperature for audio token sampling (Orpheus default)

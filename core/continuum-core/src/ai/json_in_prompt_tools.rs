@@ -50,7 +50,21 @@ struct ToolCallJson {
 }
 
 /// The name-key family a model may use for "which tool". First present wins.
-const NAME_KEYS: &[&str] = &["name", "function", "tool"];
+///
+/// `command` joined the family 2026-08-05 after the SAME failure this struct's
+/// doc already describes, a second time: Asha (Devstral-Small-2507) emitted
+/// `{"command": "file_tree", "params": {"path": "."}}` — an OFFERED tool name
+/// (`file_tree` is in her tool surface and aliases to `code/tree`), correct
+/// params, correct shape — and it was dropped on the name-key SPELLING alone,
+/// so she narrated exploration for hours without a single act. `params` was
+/// already an accepted args key, which is what makes the miss so sharp: half of
+/// her envelope was understood and the half naming the tool was not.
+///
+/// It is last in the list on purpose — `command` is also `code/shell`'s ARGUMENT
+/// name, so `{"command": "cargo test"}` must never forge a tool called
+/// "cargo test". [`BareFormat`] enforces that by requiring a command-keyed name
+/// to be TOOL-SHAPED (slash, or a wire name the alias registry resolves to one).
+const NAME_KEYS: &[&str] = &["name", "function", "tool", "command"];
 /// The args-key family. First present wins; when ABSENT, the remaining sibling
 /// keys become the arguments object.
 const ARG_KEYS: &[&str] = &["arguments", "parameters", "params", "input"];
@@ -1316,8 +1330,9 @@ impl ToolCallFormat for BareFormat {
     }
     fn parse(&self, text: &str) -> Vec<ToolCall> {
         scan_objects(text, |obj| {
-            let has_name =
-                ["\"name\"", "\"function\"", "\"tool\""].iter().any(|k| obj.contains(k));
+            let has_name = ["\"name\"", "\"function\"", "\"tool\"", "\"command\""]
+                .iter()
+                .any(|k| obj.contains(k));
             if !has_name {
                 return None; // not a tool call — avoid false positives
             }
@@ -1327,6 +1342,34 @@ impl ToolCallFormat for BareFormat {
             let call = serde_json::from_str::<ToolCallJson>(obj).ok()?;
             if call.name.trim().is_empty() {
                 return None;
+            }
+            // A name that could ONLY have come from the `command` key is held to
+            // the tool-shaped bar even when an args key is present, because
+            // `command` is `code/shell`'s own argument name: the inner object of
+            // `{"name":"code/shell","arguments":{"command":"cargo test"}}` scans
+            // as a candidate too, and without this a shell invocation would forge
+            // a tool literally called "cargo test". Same discriminator the
+            // sibling-args lift uses below — does the name RESOLVE, not does the
+            // key exist.
+            let command_keyed = !["\"name\"", "\"function\"", "\"tool\""]
+                .iter()
+                .any(|k| obj.contains(k));
+            if command_keyed {
+                let name = call.name.trim();
+                let tool_shaped = name.contains('/')
+                    || crate::cognition::tool_dialect::resolve_wire_name(name).contains('/');
+                if !tool_shaped {
+                    return None;
+                }
+                // A tool-shaped `command` with NO args is a complete no-arg call —
+                // the documented `{"tool_call": {"name": "ping"}}` form. Observed
+                // live from a second persona minutes after the first:
+                // `{"command": "file_tree"}`, meaning "tree the whole workspace".
+                // The sibling-args requirement below exists to keep prose like
+                // `{"name": "Asha"}` inert; the tool-shaped check already does
+                // that job here, since a name only passes if the alias registry
+                // resolves it to a real slash command.
+                return Some(call.into());
             }
             if !has_args {
                 // Sibling-args lift (#293): precision-first. The name must be
@@ -2202,6 +2245,55 @@ mod tests {
 
     // what this catches: Llama/Mistral-style BARE call with `parameters` (not
     // `arguments`). BareFormat + the `parameters` alias normalize it.
+    // what this catches: the `{"command": <tool>, "params": {…}}` envelope must
+    // lift. Glass-boxed live 2026-08-05 from Asha (Devstral-Small-2507): she
+    // emitted an OFFERED tool name with correct params in exactly this shape and
+    // it was dropped on the name-key spelling alone — `params` was already an
+    // accepted args key, so half her envelope was understood and the half naming
+    // the tool was not. Result: hours of narrated exploration, zero acts. This is
+    // the SECOND time this exact class bit us (see ToolCallJson's doc for the
+    // `{"function": …}` instance), which is why the negative guard below matters
+    // more than the positive case.
+    #[test]
+    fn command_keyed_envelope_lifts_but_never_forges_a_tool_from_shell_args() {
+        // Asha's exact live emission, fence and narration included.
+        let live = "To proceed effectively, let me start by exploring the root \
+directory of the workspace to understand its structure. I'll use the `file_tree` \
+command to get an overview:\n\n```json\n{\n \"command\": \"file_tree\",\n \"params\": {\n  \
+\"path\": \".\"\n }\n}\n```\n\nThis will help me identify which directories contain \
+relevant code.";
+        let tc = parse_tool_call(live).expect("her command-keyed envelope must lift");
+        assert_eq!(tc.name, "file_tree", "the offered wire name is preserved for resolution");
+        assert_eq!(tc.input.get("path").and_then(|v| v.as_str()), Some("."));
+
+        // THE GUARD: `command` is code/shell's own ARGUMENT name. A shell call's
+        // inner args object scans as a candidate too, and must never become a
+        // tool named after the shell line.
+        let shell = r#"{"name": "code/shell", "arguments": {"command": "cargo test"}}"#;
+        let calls = parse_tool_calls(shell);
+        assert_eq!(calls.len(), 1, "exactly one call — the shell call itself: {calls:?}");
+        assert_eq!(calls[0].name, "code/shell");
+        assert!(
+            !calls.iter().any(|c| c.name == "cargo test"),
+            "a shell command string must never be lifted as a tool name: {calls:?}"
+        );
+
+        // Observed live minutes later from a SECOND persona (e5f4141d): the same
+        // envelope with NO params at all. A tool-shaped command name is a complete
+        // call on its own — `file_tree` with no path is exactly the documented
+        // no-arg form (`{"tool_call": {"name": "ping"}}`), and rejecting it would
+        // leave her narrating "let me explore the whole workspace" forever.
+        let no_args = parse_tool_call("Let me use the `file_tree` command with no path:\n\n```json\n{\n \"command\": \"file_tree\"\n}\n```")
+            .expect("a tool-shaped command name with no args is still a call");
+        assert_eq!(no_args.name, "file_tree");
+
+        // A bare command string that resolves to nothing stays speech.
+        assert!(
+            parse_tool_call(r#"{"command": "make it so", "params": {}}"#).is_none(),
+            "a non-tool-shaped command name must not lift"
+        );
+    }
+
     #[test]
     fn parses_llama_style_bare_parameters_call() {
         let l = r#"sure, calling: {"name": "code/search", "parameters": {"pattern": "todo"}}"#;

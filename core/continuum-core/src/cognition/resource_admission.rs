@@ -130,19 +130,11 @@ pub fn shared_model_saturated() -> bool {
 /// this never throttles a quiet room.
 const AMBIENT_TURN_CONCURRENCY: usize = 1;
 
-static AMBIENT_TURN_PERMITS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::OnceLock::new();
-
-fn ambient_permits() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    AMBIENT_TURN_PERMITS
-        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY)))
-}
-
 /// Try to claim an ambient-turn slot. `Some(permit)` → run the ambient turn (hold the
 /// permit for the turn's lifetime; it releases on drop). `None` → all ambient slots
 /// are busy; the caller yields this ambient turn. Non-blocking (never waits).
 pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
-    ambient_permits().clone().try_acquire_owned().ok()
+    LANES.try_hold_ambient_turn()
 }
 
 // ── Serving-lane reservation for directed turns (#139) ──────────────────────────
@@ -176,24 +168,47 @@ pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
 /// exact; now the plan serves DEMAND (e.g. 4 lanes on this box while MAX_LANES = 6), so
 /// sizing the admission semaphores by the constant would over-admit by the difference
 /// and weaken the directed-turn reservation. Sizing by THIS keeps the reservation exact.
-static SERVED_LANE_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Every piece of admission state that used to be six separate process-global statics
+/// (`SERVED_LANE_COUNT`, `SERVING_LANES`, `NONDIRECTED_LANES`, their two installed
+/// counters, and the resize lock) plus the ambient-turn permits — owned by ONE type.
+///
+/// Why (2026-08-06): scattered mutable statics made the tests order-dependent, so they took
+/// a `TEST_SERIAL` lock whose own comment admitted it was insufficient — "TEST_SERIAL only
+/// serializes THIS module, but a cross-module guard could bump it mid-loop". This file had
+/// already learned the lesson once and applied it to the in-flight Gauge, stating the
+/// principle outright: *the race is gone at the SOURCE, not merely serialized*. That cure
+/// reached one of three cases. This applies it to the other two, and to the sibling
+/// [`crate::cognition::prefill_throttle`] the same day.
+///
+/// The semaphores stay LAZY (`OnceLock` per field, not eager construction) and that is
+/// load-bearing, not incidental: they must capture the lane count at FIRST USE, once
+/// serving is up. Sizing them eagerly at struct construction would bake in the
+/// `MAX_LANES` boot ceiling, and a later `set_served_lane_count` to a SMALLER real count
+/// only ever GROWS — so an eager version would sit permanently over-admitted. On a weak
+/// box that is not a slow tick; it is admitting more concurrent decodes than the machine
+/// can hold.
+pub struct LaneAdmission {
+    /// LIVE `--parallel` count; 0 until serving publishes one.
+    served: AtomicUsize,
+    serving: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+    nondirected: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+    serving_installed: AtomicUsize,
+    nondirected_installed: AtomicUsize,
+    /// Serializes the rare live semaphore reconcile so two concurrent re-plans can't
+    /// double-count a grow.
+    resize_lock: Mutex<()>,
+    ambient: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+}
 
-/// Serializes the rare live semaphore reconcile in [`set_served_lane_count`] so two
-/// concurrent re-plans can't double-count a grow.
-static LANE_RESIZE_LOCK: Mutex<()> = Mutex::new(());
+/// The process-global admission gate — ONE INSTANCE of [`LaneAdmission`], not a separate
+/// implementation of it. Tests build their own with [`LaneAdmission::new`].
+static LANES: LaneAdmission = LaneAdmission::new();
 
 /// Physical decode lanes on the shared serving target — the LIVE served count when
 /// serving has come up, else the planner's `MAX_LANES` ceiling as the boot-time fallback.
 /// Floored at 1. Read live by the saturation gauge; captured at lazy-init by the lane
 /// semaphores (serving is always up before the first persona model call, so the init
 /// captures the real count, not the ceiling).
-fn serving_lane_count() -> usize {
-    match SERVED_LANE_COUNT.load(Ordering::Acquire) {
-        0 => (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
-        n => n,
-    }
-}
-
 /// Publish the running serving target's live lane count (the plan's `--parallel`). The
 /// serving daemon calls this on every reconcile. Sizes the admission semaphores exactly:
 /// the lazy-init captures it at boot, and a LATER increase (roster grows, more personas
@@ -202,15 +217,7 @@ fn serving_lane_count() -> usize {
 /// takes effect on the next process start. Over-admitting by a lane until then only means
 /// a call queues at llama, never an OOM — the fit math already guards residency.
 pub fn set_served_lane_count(lanes: usize) {
-    let lanes = lanes.max(1);
-    SERVED_LANE_COUNT.store(lanes, Ordering::Release);
-    let _guard = LANE_RESIZE_LOCK.lock().expect("lane-resize lock never poisoned");
-    if let Some(sem) = SERVING_LANES.get() {
-        grow_semaphore_to(sem, &SERVING_LANES_INSTALLED, lanes);
-    }
-    if let Some(sem) = NONDIRECTED_LANES.get() {
-        grow_semaphore_to(sem, &NONDIRECTED_LANES_INSTALLED, lanes.saturating_sub(1).max(1));
-    }
+    LANES.set_served_lane_count(lanes);
 }
 
 /// Grow a live semaphore to `target` total permits (no-op if already ≥). Never shrinks —
@@ -226,44 +233,18 @@ fn grow_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, targ
 
 /// Total permits installed into each lane semaphore — the grow-delta bookkeeping for
 /// [`grow_semaphore_to`], set at lazy-init and bumped on each live grow.
-static SERVING_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
-static NONDIRECTED_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
+
 
 /// The lane count a sibling gate should boot with before any plan publishes — the same
 /// live-count-else-ceiling read the lane semaphores lazy-init from. Used by the prefill
 /// throttle (#56) so both gates start from the ONE number.
 pub fn boot_lane_count() -> usize {
-    serving_lane_count()
+    LANES.lane_count()
 }
 
 /// Lanes a non-directed (ambient / idle) model call may occupy: all lanes minus one
 /// reserved for directed work, floored at 1 so a single-lane machine — where there is
 /// nothing to reserve — still lets idle work run rather than starving it forever.
-fn nondirected_lane_budget() -> usize {
-    serving_lane_count().saturating_sub(1).max(1)
-}
-
-static SERVING_LANES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::OnceLock::new();
-static NONDIRECTED_LANES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::OnceLock::new();
-
-fn serving_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    SERVING_LANES.get_or_init(|| {
-        let n = serving_lane_count();
-        SERVING_LANES_INSTALLED.store(n, Ordering::Release);
-        std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-    })
-}
-
-fn nondirected_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    NONDIRECTED_LANES.get_or_init(|| {
-        let n = nondirected_lane_budget();
-        NONDIRECTED_LANES_INSTALLED.store(n, Ordering::Release);
-        std::sync::Arc::new(tokio::sync::Semaphore::new(n))
-    })
-}
-
 /// RAII permit for one serving-lane model call. Holds a physical-lane permit, the
 /// (optional) non-directed sub-cap permit, and the in-flight gauge marker — ALL released
 /// on drop. Acquire it around the single generate call so the reservation window matches
@@ -275,42 +256,129 @@ pub struct ServingLanePermit {
     _inflight: InflightModelCall,
 }
 
+impl LaneAdmission {
+    /// A fresh, INDEPENDENT admission gate. `const` so the process-global can be a `static`;
+    /// tests call it to get their own and therefore run order-independently and in parallel.
+    pub const fn new() -> Self {
+        Self {
+            served: AtomicUsize::new(0),
+            serving: std::sync::OnceLock::new(),
+            nondirected: std::sync::OnceLock::new(),
+            serving_installed: AtomicUsize::new(0),
+            nondirected_installed: AtomicUsize::new(0),
+            resize_lock: Mutex::new(()),
+            ambient: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Physical decode lanes: the LIVE served count once serving is up, else the planner's
+    /// ceiling as the boot fallback. Floored at 1.
+    fn lane_count(&self) -> usize {
+        match self.served.load(Ordering::Acquire) {
+            0 => (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
+            n => n,
+        }
+    }
+
+    /// Lanes a non-directed (ambient / idle) call may occupy: all but one, floored at 1 so a
+    /// single-lane machine still lets idle work run rather than starving it forever.
+    fn nondirected_budget(&self) -> usize {
+        self.lane_count().saturating_sub(1).max(1)
+    }
+
+    /// See [`set_served_lane_count`].
+    pub fn set_served_lane_count(&self, lanes: usize) {
+        let lanes = lanes.max(1);
+        self.served.store(lanes, Ordering::Release);
+        let _guard = self.resize_lock.lock().expect("lane-resize lock never poisoned");
+        if let Some(sem) = self.serving.get() {
+            grow_semaphore_to(sem, &self.serving_installed, lanes);
+        }
+        if let Some(sem) = self.nondirected.get() {
+            grow_semaphore_to(
+                sem,
+                &self.nondirected_installed,
+                lanes.saturating_sub(1).max(1),
+            );
+        }
+    }
+
+    fn serving_lanes(&self) -> &std::sync::Arc<tokio::sync::Semaphore> {
+        self.serving.get_or_init(|| {
+            let n = self.lane_count();
+            self.serving_installed.store(n, Ordering::Release);
+            std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+        })
+    }
+
+    fn nondirected_lanes(&self) -> &std::sync::Arc<tokio::sync::Semaphore> {
+        self.nondirected.get_or_init(|| {
+            let n = self.nondirected_budget();
+            self.nondirected_installed.store(n, Ordering::Release);
+            std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+        })
+    }
+
+    /// See [`try_hold_ambient_turn`].
+    pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.ambient
+            .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY)))
+            .clone()
+            .try_acquire_owned()
+            .ok()
+    }
+
+    /// See [`acquire_serving_lane`] — the reservation policy lives HERE so the global and a
+    /// test instance can never drift into two different policies.
+    pub async fn acquire_serving_lane(&self, directed: bool) -> ServingLanePermit {
+        // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
+        // acquire below can never let non-directed work starve a directed caller.
+        let nondirected = if directed {
+            None
+        } else {
+            let sem = self.nondirected_lanes().clone();
+            let permit = match sem.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::info!(
+                        probe_class = "serving.lane.nondirected_waiting",
+                        "non-directed model call waiting — a lane is reserved for directed turns (#139)"
+                    );
+                    sem.acquire_owned()
+                        .await
+                        .expect("non-directed-lane semaphore is never closed")
+                }
+            };
+            Some(permit)
+        };
+        let lane = self
+            .serving_lanes()
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("serving-lane semaphore is never closed");
+        ServingLanePermit {
+            _lane: lane,
+            _nondirected: nondirected,
+            _inflight: InflightModelCall::enter(),
+        }
+    }
+}
+
+impl Default for LaneAdmission {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+
 /// Acquire a serving lane for a model call, priced by priority (#139). `directed`
 /// callers take from the full lane pool; non-directed callers first claim the
 /// (MAX_LANES-1) non-directed budget, guaranteeing a directed caller always finds a free
 /// physical lane. Awaits only under genuine contention; the returned permit releases
 /// every lane on drop.
 pub async fn acquire_serving_lane(directed: bool) -> ServingLanePermit {
-    // Non-directed reserves within the (MAX_LANES-1) budget FIRST, so the physical-lane
-    // acquire below can never let non-directed work starve a directed caller.
-    let nondirected = if directed {
-        None
-    } else {
-        let sem = nondirected_lanes().clone();
-        let permit = match sem.clone().try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                tracing::info!(
-                    probe_class = "serving.lane.nondirected_waiting",
-                    "non-directed model call waiting — a lane is reserved for directed turns (#139)"
-                );
-                sem.acquire_owned()
-                    .await
-                    .expect("non-directed-lane semaphore is never closed")
-            }
-        };
-        Some(permit)
-    };
-    let lane = serving_lanes()
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("serving-lane semaphore is never closed");
-    ServingLanePermit {
-        _lane: lane,
-        _nondirected: nondirected,
-        _inflight: InflightModelCall::enter(),
-    }
+    LANES.acquire_serving_lane(directed).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -520,15 +588,13 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 mod tests {
     use super::*;
 
-    // The ambient-permit and serving-lane tests mutate PROCESS-GLOBAL admission statics
-    // (the ambient-turn semaphore, the serving-lane semaphores) and must NOT run
-    // concurrently — each takes this lock first, then establishes its own baseline, so
-    // sibling order can't leak. (The in-flight GAUGE test used to need this too and still
-    // flapped under it — TEST_SERIAL only serializes THIS module, but a cross-module guard
-    // on the process-global gauge could bump it mid-loop, #1960/#191. That test now drives a
-    // LOCAL Gauge instance instead, so it needs no lock at all — the race is gone at the
-    // source, not merely serialized.)
-    static TEST_SERIAL: Mutex<()> = Mutex::new(());
+    // No serialization lock lives here any more, and that is the point. It used to exist
+    // because the ambient-permit and serving-lane tests mutated PROCESS-GLOBAL admission
+    // statics — and its own comment admitted the lock was not enough: "TEST_SERIAL only
+    // serializes THIS module, but a cross-module guard could bump it mid-loop" (#1960/#191).
+    // The in-flight Gauge test was rescued first by driving a LOCAL instance; these two now
+    // do the same with `LaneAdmission::new()`. The race is gone at the SOURCE, not merely
+    // serialized, and the tests run in parallel.
 
     // what this catches (#139 idle admission): the in-flight gauge counts each
     // model-call entry, releases on drop, and reads SATURATED exactly at the serving
@@ -578,16 +644,17 @@ mod tests {
     // the process-global ambient semaphore, so it starts with all slots free.
     #[test]
     fn ambient_permit_bounds_concurrency_and_releases_on_drop() {
-        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        // OUR OWN gate — no process-global, so no lock and no order dependence.
+        let gate = LaneAdmission::new();
         // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
         // Exactly AMBIENT_TURN_CONCURRENCY win; the rest get None and must yield.
         let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
         for _ in 0..AMBIENT_TURN_CONCURRENCY {
-            held.push(try_hold_ambient_turn().expect("a free slot is grantable"));
+            held.push(gate.try_hold_ambient_turn().expect("a free slot is grantable"));
         }
         // The next simultaneous ambient waker finds every slot taken → yields.
         assert!(
-            try_hold_ambient_turn().is_none(),
+            gate.try_hold_ambient_turn().is_none(),
             "over-capacity ambient turn must yield (the stampede the gauge let through)"
         );
 
@@ -599,9 +666,9 @@ mod tests {
         // beat, so a yielded room re-perceives and contributes when there's headroom.
         held.pop();
         let reclaimed =
-            try_hold_ambient_turn().expect("dropping a finished turn frees its slot for the next");
+            gate.try_hold_ambient_turn().expect("dropping a finished turn frees its slot for the next");
         drop(reclaimed);
-        drop(held); // release the rest → back to all-free for any later test
+        drop(held); // release the rest (nothing else can observe this gate anyway)
     }
 
     // what this catches (#139 lane starvation): a directed (addressed) turn must never
@@ -612,22 +679,22 @@ mod tests {
     // touches the process-global serving-lane semaphores, so it starts all-free.
     #[tokio::test]
     async fn directed_turn_always_finds_a_reserved_lane() {
-        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let gate = LaneAdmission::new();
         use std::time::Duration;
-        let budget = nondirected_lane_budget();
+        let budget = gate.nondirected_budget();
 
         // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
         let mut nondirected = Vec::new();
         for _ in 0..budget {
-            nondirected.push(acquire_serving_lane(false).await);
+            nondirected.push(gate.acquire_serving_lane(false).await);
         }
 
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
         // acquires immediately — it is not blocked by the saturated non-directed budget.
-        if serving_lane_count() > 1 {
+        if gate.lane_count() > 1 {
             let directed = tokio::time::timeout(
                 Duration::from_millis(250),
-                acquire_serving_lane(true),
+                gate.acquire_serving_lane(true),
             )
             .await;
             assert!(
@@ -639,7 +706,7 @@ mod tests {
             // times out rather than stealing the lane the directed turn is using.
             let extra_nondirected = tokio::time::timeout(
                 Duration::from_millis(150),
-                acquire_serving_lane(false),
+                gate.acquire_serving_lane(false),
             )
             .await;
             assert!(
@@ -649,7 +716,7 @@ mod tests {
             drop(directed);
         }
 
-        drop(nondirected); // release → all lanes free for any later test
+        drop(nondirected); // release (nothing else can observe this gate anyway)
     }
 
     // what this catches: the grow-delta bookkeeping behind live lane resizing (#139
@@ -681,18 +748,22 @@ mod tests {
     // what this catches: serving_lane_count reads the LIVE published count when serving is
     // up, and only falls back to the MAX_LANES ceiling when nothing has published yet —
     // the exact fix so the admission reservation sizes by what's SERVED (e.g. 4), not the
-    // ceiling (6). Serialized against the global atomic via the resize lock's discipline;
-    // restores 0 so it can't leak into sibling tests.
+    // ceiling (6).
+    //
+    // Drives its OWN gate. The prior version swapped the process-global atomic and restored
+    // it at the end — brittle in two ways at once: a sibling test reading the count in the
+    // window between swap and restore sees a value this test invented, and a panic anywhere
+    // in between leaves the global corrupted for every test that follows. Owning the state
+    // removes both, with neither a lock nor a restore.
     #[test]
     fn serving_lane_count_prefers_the_live_published_count_over_the_ceiling() {
-        let restore = SERVED_LANE_COUNT.swap(0, Ordering::AcqRel);
+        let gate = LaneAdmission::new();
         assert_eq!(
-            serving_lane_count(),
+            gate.lane_count(),
             (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
             "unset → MAX_LANES ceiling fallback"
         );
-        SERVED_LANE_COUNT.store(4, Ordering::Release);
-        assert_eq!(serving_lane_count(), 4, "published live count wins over the ceiling");
-        SERVED_LANE_COUNT.store(restore, Ordering::Release);
+        gate.set_served_lane_count(4);
+        assert_eq!(gate.lane_count(), 4, "published live count wins over the ceiling");
     }
 }

@@ -7,4 +7,24 @@ export type WriteResult = { success: boolean,
 /**
  * UUID of the ChangeNode created.
  */
-change_id?: string, file_path: string, bytes_written: number, error?: string, };
+change_id?: string, file_path: string, bytes_written: number, error?: string, 
+/**
+ * The NUMBERED lines around where a line-addressed edit actually landed, read back
+ * from the file AFTER writing. `None` for whole-file writes (nothing to locate).
+ *
+ * This exists because "success: true, bytes_written: N" is not feedback — it confirms
+ * the write happened, never that it landed where the caller meant. Glass-boxed on the
+ * M5, 2026-08-04: a persona ran `code/shell cat file` (output has NO line numbers),
+ * then `insert_at line 28` — a number she had never seen — and dropped a guard clause
+ * into the middle of a function's parameter list. Next act she replaced lines 62-65 of
+ * a second file after reading from line 119, a region she had never looked at. Both
+ * returned `success: true`. She spent her remaining acts flailing through discovery
+ * tools because nothing in her working memory said the edits were wrong.
+ *
+ * A human editor shows you the result; the act→observe circuit only closes if the
+ * receipt carries what a screen would ([[errors-as-data]], [[px-personas-experience-tools-as-good-ux]]).
+ * So the receipt now carries the neighborhood, numbered — the same surface `code/read`
+ * gives — and a misplaced edit becomes a visible fact on the next turn instead of a
+ * silent success.
+ */
+applied_context?: string, };

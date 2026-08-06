@@ -136,6 +136,12 @@ pub struct MinedTask {
     pub prompt: String,
     pub dod_shell: String,
     pub setup_shell: String,
+    /// The checkout THIS task lives in — the directory the persona's hands must be rooted at.
+    /// Every mined task has its OWN worktree, so the root is per-TASK, never per-run: emitting
+    /// it as a FIELD (not just prose inside `prompt`) is what lets the evaluator re-root her
+    /// file engine before the task instead of leaving her sandboxed somewhere else, reading a
+    /// path she cannot reach. A miner that only narrates the path produces tasks nothing can run.
+    pub workspace_root: String,
     /// Provenance: the fixing commit this task was mined from.
     pub commit: String,
     /// The source file the persona must repair.
@@ -378,13 +384,16 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
         };
         tasks.push(MinedTask {
             id: format!("mine_{short}"),
+            workspace_root: task_dir.display().to_string(),
+            // Addressed from HER frame: the checkout IS her workspace root, so the file is at a
+            // relative path her tools accept. The old wording named an absolute path outside the
+            // sandbox — correct as narration, unusable as an instruction.
             prompt: format!(
-                "Real bug, real repo: in the checkout at {d}, `cargo test` currently FAILS. \
-                 Diagnose and fix the bug — the file {f} contains it, and the test suite is \
-                 the specification. Use your tools to read the failing output, inspect the \
-                 code, edit the file, and re-run the tests until they pass. Do not modify \
-                 the tests.",
-                d = task_dir.display(),
+                "Real bug, real repo: YOUR WORKSPACE IS this crate's checkout, and `cargo test` \
+                 in it currently FAILS. Diagnose and fix the bug — `{f}` (relative to your \
+                 workspace root) contains it, and the test suite is the specification. Read the \
+                 failing output, inspect the code, edit the file, and re-run the tests until they \
+                 pass. Do not modify the tests.",
                 f = source_file
             ),
             dod_shell: format!(
@@ -441,6 +450,7 @@ mod tests {
     #[test]
     fn mined_task_jsonl_deserializes_as_eval_task() {
         let mined = MinedTask {
+            workspace_root: "/tmp/gym/task_abc".into(),
             id: "mine_abc".into(),
             prompt: "fix the bug".into(),
             dod_shell: "cargo test".into(),

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use ts_rs::TS;
 
+// context-budget-exempt: a ring-buffer length for per-module timing samples, not a context bound
 const TIMING_WINDOW_SIZE: usize = 1000;
 const SLOW_THRESHOLD_MS: u64 = 50;
 

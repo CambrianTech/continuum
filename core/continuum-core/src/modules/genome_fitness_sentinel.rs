@@ -101,6 +101,11 @@ pub fn assess_layers(inputs: &[LayerInputs]) -> Vec<LayerAssessment> {
             Some(lift) => measured.push((
                 LayerFitness {
                     lift,
+                    // Neutral until the being-axis A/B lands (same posture as
+                    // demand/redundancy). NOT a claim of "no harm" — a claim of "not yet
+                    // measured", and the follow-up is to measure it before this sentinel
+                    // is allowed to promote anything on its own.
+                    harm: 0.0,
                     demand: 1.0,
                     cost_bytes: inp.cost_bytes,
                     redundancy: 1.0,

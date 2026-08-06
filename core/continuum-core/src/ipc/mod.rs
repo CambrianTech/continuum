@@ -1244,6 +1244,32 @@ pub fn start_server(
             );
         }
 
+        // Rotation-generation eviction owners (2026-08-06): the
+        // substrate's own `logs` + `probes` dirs. These were the two
+        // directories continuum writes to most continuously and the
+        // only ones with no governed owner at all — `capped_appender`
+        // bounded itself with a private constant, which is a bound but
+        // not an authority: the broker could not reclaim a byte of it
+        // under real disk pressure, and the probe sink on the actual
+        // boot path wasn't even rotating. Eviction is safe by
+        // construction here (rotated `.N` generations only, never the
+        // live file), so this class is OWNED rather than deferred.
+        for class in ["logs", "probes"] {
+            if let Some(dir) = crate::system_resources::tracked_dir(class) {
+                broker.register(Arc::new(crate::system_resources::RotationLogPool::new(
+                    dir,
+                    crate::routing::capped_appender::rotation_budget_bytes(),
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
+                log_info!(
+                    "ipc",
+                    "server",
+                    "RotationLogPool registered with PressureBroker (class={class}, \
+                     oldest-generation-first, live file never evicted)"
+                );
+            }
+        }
+
         // NVMe serving-tier eviction owner (#302): the genome-models class
         // holds the HOT per-token-paged serving set (served GGUFs, expert
         // containers, device-fit overrides). Capacity derives from the

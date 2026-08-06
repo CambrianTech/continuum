@@ -348,6 +348,7 @@ impl LlamaCppBackend {
         /// and reply. Below this it can't function; if even this doesn't fit,
         /// we still allocate it (it eats headroom, not nonexistent memory) and
         /// log loudly rather than silently degrade.
+        // context-budget-exempt: a FLOOR below which a lane cannot usefully run — it only ever raises
         const MIN_CTX: u32 = 1024;
 
         let log = runtime::logger("llamacpp");
@@ -425,6 +426,7 @@ impl LlamaCppBackend {
         // clamping a pathologically long input is the correct degrade, never a
         // crash. Ceiling stays modest: this context is rebuilt per call, and
         // `n_ubatch` drives the compute-buffer size (~quadratic in attention).
+        // context-budget-exempt: the EMBEDDING model's own architectural input limit (embeddings truncate by design); a property of that model, not a policy we chose
         const EMBED_MAX_TOKENS: usize = 2048;
         let mut ctx = self.model.new_context(llama::ContextParams {
             embeddings: true,

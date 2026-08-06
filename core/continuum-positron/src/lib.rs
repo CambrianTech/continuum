@@ -146,7 +146,7 @@ pub use chat::{
 pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
 pub use kanban::{
-    KanbanCardState, KanbanCardView, KanbanLaneState, KanbanLaneView, KanbanPriority,
+    KanbanCardState, KanbanCardView, KanbanHold, KanbanLaneState, KanbanLaneView, KanbanPriority,
     KanbanPullRequest, KanbanViewState,
 };
 pub use observer::{apply_observe, ObserverRegistration};

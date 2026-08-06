@@ -26,13 +26,13 @@
 //! [`cognition/trace`]: super::introspect_commands::CognitionTrace
 //! [`cognition/prompt`]: super::introspect_commands::CognitionPrompt
 
+use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::cognition::gym_grader::test_grade;
 use crate::inference::llama_server::LanePlacement;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -84,25 +84,71 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// placement spills this lane to CPU, the window is still sized off the GPU free-VRAM
 /// budget (under-sizes for the rare CPU-spilled eval) — acceptable for short prompts;
 /// the two-phase device-aware sizing rides with #56's `ResourceGovernor`.
-/// The eval lane's context window is FIXED, NOT sized to the live free-VRAM budget. A lane
-/// sized against the governed board got a different `-c` every run (placement captures swung
-/// 2872 ↔ 99371), and a different n_ctx changes llama.cpp's KV/tensor shapes enough that even
-/// GREEDY argmax flips on borderline tokens — so the SAME task passed one run and failed the
-/// next, making the ABSOLUTE score MEANINGLESS (glass-boxed 2026-07-21: which of 3 tasks failed
-/// swapped run-to-run under greedy). A benchmark must hold n_ctx constant so the same prompt
-/// yields the same tokens every time. This value is generous for a self-contained coder exam
-/// (prompt + a function + reasoning fit far under it) yet constant, and capped at the model's
-/// trained window (never invent a bigger one). Determinism beats adaptivity for a MEASUREMENT
-/// lane — the opposite priority from a live persona lane. [[eval-reproducibility-is-two-tier-lift-controlled-absolute-drifts]]
-const EXAM_LANE_CTX: u32 = 16384;
-
+/// The eval lane's `-c` must be BOTH reproducible and honest to the model. Two failures bracket
+/// this seam and the fix has to clear both:
+///
+/// 1. Sizing off LIVE free VRAM made `-c` swing run-to-run (placement captures 2872 ↔ 99371).
+///    A different `n_ctx` changes llama.cpp's KV/tensor shapes enough that even GREEDY argmax
+///    flips on borderline tokens, so the SAME task passed one run and failed the next and the
+///    ABSOLUTE score meant nothing (glass-boxed 2026-07-21).
+/// 2. The "fix" for (1) was `const EXAM_LANE_CTX: u32 = 16384` — which re-introduced the exact
+///    anti-pattern task #124 had already deleted from this file (`EVAL_LANE_CONTEXT: u32 =
+///    16_384`, see the doc block above, still describing the removal). It scored a 1M-context
+///    MoE at 16k. That is not a measurement of the model; it is a measurement of the constant,
+///    and it deletes the reason to run MoE at all (Joel, 2026-08-03: "these 4k or smaller
+///    windows turn 1M context models into stupid numbers... eliminating all reason to have an
+///    MoE"). [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+///
+/// The resolution: the instability in (1) came from the SOURCE being live free VRAM, not from
+/// deriving at all. So derive from the model's own trained window, capped by what the GOVERNED
+/// host budget can actually hold — and quantize a capped result down to a power-of-two rung so
+/// ordinary budget flutter cannot move it. On a host that can hold the model's full trained
+/// window the exam runs at that window EXACTLY (deterministic, and as large as the model
+/// deserves — 1M stays 1M). On a host that cannot, it runs at a stable rung below the fit,
+/// identical across runs on that machine. No invented ceiling at any point.
+///
+/// Degrades honestly: ungoverned host, or a base whose GGUF can't be sized ⇒ the model's own
+/// trained window (never a fresh magic cap). Fit is still decided downstream by
+/// `decide_eval_lane_placement`; if the window won't fit, the lane spawn fails and the caller
+/// degrades to a co-tenant SHARE rather than OOM.
 fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
     use crate::cognition::serving_plan::MIN_SERVE_CTX;
-    // Fixed, capped at the model's trained window, floored at the serving minimum — a constant
-    // the same for every run on the same model, so the exam is reproducible. Fit is decided
-    // downstream (decide_eval_lane_placement): if this window won't fit, the lane spawn fails
-    // and the (None,None) caller degrades to a co-tenant SHARE — never an OOM.
-    EXAM_LANE_CTX.min(base.context_window).max(MIN_SERVE_CTX)
+    let trained = base.context_window.max(MIN_SERVE_CTX);
+    match exam_fit_window(base) {
+        // The host can hold the model's whole trained window — use it exactly.
+        Some(fit) if trained <= fit => trained,
+        // It cannot: largest stable rung under the real fit.
+        Some(fit) => stable_window_rung(fit).max(MIN_SERVE_CTX),
+        None => trained,
+    }
+}
+
+/// Largest window whose KV + weights + compute buffer fit the GOVERNED host budget — the same
+/// memory authority `plan_serving` sizes against, never a raw GPU probe. `None` when the host is
+/// ungoverned or the model can't be sized, which the caller reads as "no cap".
+fn exam_fit_window(base: &crate::model_registry::Model) -> Option<u32> {
+    let fp = crate::modules::serving_daemon::footprint_for(base)?;
+    if fp.kv_per_token == 0 {
+        return None;
+    }
+    let budget = crate::resources::ResourceDaemon::global()
+        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .filter(|b| *b > 0)?;
+    let kv_budget = budget
+        .checked_sub(fp.weights_bytes)?
+        .checked_sub(fp.compute_buffer_per_lane())?;
+    Some((kv_budget / fp.kv_per_token).min(u32::MAX as u64) as u32)
+}
+
+/// Round DOWN to the nearest power of two. A quantization for run-to-run stability — a few
+/// hundred MB of budget flutter must not change `n_ctx` and thus the greedy token path. It is
+/// deliberately NOT a cap: it only ever applies to a value already limited by real fit.
+fn stable_window_rung(window: u32) -> u32 {
+    if window == 0 {
+        0
+    } else {
+        1u32 << (u32::BITS - 1 - window.leading_zeros())
+    }
 }
 
 /// The stood-up ephemeral measurement lane and everything the eval loop needs to fork a
@@ -220,6 +266,7 @@ const EVAL_LANE_BASE_PORT: u16 = 58_200;
 /// fits far under this; the generous bound exists ONLY to cap a pathological loop-to-length
 /// generation (which is captured up to here, still a diagnosable signal). The old 200-char
 /// cap stored only the preamble and blinded every failure diagnosis + correction-corpus mine.
+// context-budget-exempt: observability: how much of an answer is CAPTURED into the run ledger for humans, never text sent to a model
 const ANSWER_CAPTURE_CHARS: usize = 24_000;
 
 /// Per-task detail retained in the DURABLE run ledger row (`append_progress_ledger`).
@@ -230,7 +277,9 @@ const ANSWER_CAPTURE_CHARS: usize = 24_000;
 /// persist a compact per-task array; the diagnostic `grade` verdict + answer head are kept
 /// ONLY for FAILED tasks, so a 164-task humaneval row stays lean while a failing 6-task
 /// webdev row is fully inspectable. [[self-test-via-command-feedback-surface-never-blind]]
+// context-budget-exempt: observability: ledger rendering width for a failed grade, human-facing only
 const LEDGER_FAIL_GRADE_CHARS: usize = 800;
+// context-budget-exempt: observability: ledger rendering width for a failed answer, human-facing only
 const LEDGER_FAIL_ANSWER_CHARS: usize = 1_200;
 
 /// Small headroom (bytes) kept free on the GPU so a lane placed right at the edge
@@ -471,10 +520,19 @@ async fn await_eval_lane_memory_headroom(footprint: Option<u64>) -> Result<(), C
                 if tokio::time::Instant::now() >= deadline {
                     return Err(e);
                 }
+                // Log the REFUSAL, not just the pressure level. These are two different
+                // vetoes — a High/sustained pressure gate, and a hard free-RAM shortfall
+                // — and only one of them is a spike that clears on its own. Printing
+                // `level=Normal` beside "waiting for a transient memory spike" while the
+                // real cause was a lane that could never fit sent a reader looking at the
+                // pressure monitor for 3 minutes (M5, 2026-08-04) while the answer was in
+                // `e` the whole time. Whatever we are waiting OUT is the thing to name.
                 crate::probe!(
                     class = "eval.lane.pressure_defer",
                     level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
-                    "eval lane bringup deferred — waiting for a transient memory spike to clear"
+                    refusal = %e,
+                    "eval lane bringup deferred — retrying the refusal below until it clears \
+                     or the bounded window lapses"
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
@@ -776,6 +834,12 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
     if base.provider != PROVIDER_ID {
         return build_external_eval_lane_inner(&base).await;
     }
+    // The LOCAL live lane may already hold exactly these weights. Same principle as the
+    // external route above and the same failure when missed: a model that is already
+    // being served must never be cold-loaded a second time.
+    if let Some(shared) = share_live_serving_lane(&base).await {
+        return Ok(shared);
+    }
     // Size THIS lane, then gate on real free RAM — refuse cleanly if it wouldn't fit
     // (a jetsam SIGKILL otherwise), before paying the cold-load.
     await_eval_lane_memory_headroom(eval_lane_footprint(&base)).await?;
@@ -821,6 +885,103 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
         served_ctx,
         placement: placement_evidence,
         _vram_lease: vram_lease,
+    })
+}
+
+/// Measurement "lane" for a base the LIVE serving lane is ALREADY holding — the local
+/// sibling of the external-provider route below (#310). Returns `None`, falling through
+/// to a dedicated cold-load, whenever sharing would not be honest.
+///
+/// Why this exists (glass-boxed on the M5, 2026-08-04). A SWE-bench `agent/solve` run
+/// asked for `unsloth/Devstral-Small-2507-GGUF` — the exact model the live lane was
+/// already serving, 27.2 GB resident, answering on its port. This path tried to
+/// cold-load a SECOND copy: ~17.9 GB + 2 GiB headroom against 15.0 GB free on a 64 GB
+/// box. It can never fit, so `await_eval_lane_memory_headroom` deferred every 5 s for
+/// its full 180 s window and then failed loud. The harness wrote a zero-byte diff and
+/// the benchmark reported RESOLVED=0 — a number that measured a harness which never
+/// started, not a model that could not solve. Duplicating resident weights is not a
+/// transient spike to wait out; it is a request that should never have been made.
+///
+/// Isolation (#59/#312) is preserved, not traded away. What a measurement needs
+/// isolated is the GENOME and the WINDOW, never the weights — identical weights are
+/// identical weights. So the share is refused unless every resident adapter is at
+/// scale 0, asked of the running server rather than assumed (the M5 lane carries six
+/// loaded-but-unapplied genome layers — inert here, but that is a fact to VERIFY, and
+/// a lane serving an applied genome must never be mistaken for a bare base). The
+/// returned handle owns nothing (`lane: None`, no lease), so dropping a measurement can
+/// never tear down the living persona's lane.
+async fn share_live_serving_lane(
+    base: &crate::model_registry::Model,
+) -> Option<EvalLaneInner> {
+    use crate::ai::adapter::AIProviderAdapter;
+    use crate::inference::llama_server::PROVIDER_ID;
+
+    let snap = crate::inference::llama_server::current_serving();
+    // `served_context_window == 0` only ever appears on the empty/not-yet-served
+    // snapshot; a lane with no known window cannot be budgeted against honestly.
+    if !snap.ready
+        || snap.active_model.as_deref() != Some(base.id.as_str())
+        || snap.served_context_window == 0
+    {
+        return None;
+    }
+    // NO genome probe here, deliberately. Genome activation on this lane is PER REQUEST:
+    // the daemon loads the `--lora` catalog and immediately zeroes every global scale
+    // (`llama_server::zero_adapter_scales` — "catalog LOADED, scales DORMANT (0.0),
+    // per-request activation only"), and a turn pages its gene in through the request
+    // body's `lora: [{id, scale}]` field. This adapter is built without that field, so
+    // what it measures is the bare base — whatever else is in the catalog and whoever else
+    // is using the lane.
+    //
+    // The probe that used to be here asked `/lora-adapters` for the GLOBAL scales, which
+    // by that same design are always 0.0. It could therefore only ever answer "inert" or
+    // fail — it carried no information. What it did do is fail: `/lora-adapters` BLOCKS
+    // while the lane is generating (measured on the M5, 2026-08-04: `/health` 200 in
+    // milliseconds, `/lora-adapters` no response in 5s on a busy lane), and the timeout
+    // was rendered as the definite claim "has an APPLIED genome layer". So the share was
+    // refused exactly when the lane was in use — i.e. whenever sharing mattered — and the
+    // fallback cold-loaded a SECOND 17.9 GB copy that missed the GPU by 126 MB and spilled
+    // to CPU, turning a measurement into a run that could never finish.
+    //
+    // Blind must not mean "assume clean" — that principle was right. The error was
+    // treating an unanswered HTTP call as evidence when the invariant was already
+    // guaranteed upstream by the code that applies the adapters.
+    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+        .with_runtime_base_url(snap.base_url.clone())
+        .with_default_model(base.id.clone());
+    adapter.initialize().await.ok()?;
+
+    emit_eval_phase(
+        "loading_lane",
+        &format!("sharing the live serving lane for {} — weights already resident", base.id),
+    );
+    crate::probe!(
+        class = "eval.lane.shared",
+        model = %base.id,
+        base_url = %snap.base_url,
+        served_ctx = snap.served_context_window,
+        "measuring through the live lane — no second copy of these weights cold-loaded"
+    );
+    Some(EvalLaneInner {
+        // Nothing spawned here, so nothing to kill on drop — the living persona's lane
+        // outlives every measurement that borrows it.
+        lane: None,
+        adapter: std::sync::Arc::new(adapter),
+        // The live lane's own `/props` truth, the same authority the living persona
+        // budgets against (task #50) — never a recomputed plan value.
+        served_ctx: snap.served_context_window,
+        placement: PlacementEvidence {
+            placement: crate::inference::llama_server::LanePlacement::Cpu,
+            device: "shared:live-serving-lane".to_string(),
+            reason: format!(
+                "model '{}' is already resident on the live lane at {} — shared, no lane \
+                 spawned and no VRAM leased",
+                base.id, snap.base_url
+            ),
+            free_vram_bytes: None,
+            footprint_bytes: None,
+        },
+        _vram_lease: None,
     })
 }
 
@@ -1060,6 +1221,29 @@ pub struct EvalTask {
     #[serde(default, alias = "needsTools", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub needs_tools: Option<bool>,
+    /// The checkout THIS task lives in — her hands get rooted here before the task runs.
+    ///
+    /// The run-level `workspace_root` param pins ONE repo for a whole exam, which is right for a
+    /// SWE-bench instance (one clone, one task). It is wrong for a MINED gym: `gym/mine` gives
+    /// every task its own git worktree so tasks are independent and repeatable, so the root is a
+    /// property of the TASK. Without this the evaluator hands her one root for all N tasks — the
+    /// wrong one for every task — and she is told to fix a bug in a directory her sandboxed tools
+    /// cannot reach. That is not a hard exam, it is an unrunnable one, and it is why mined gyms
+    /// had never produced a number.
+    ///
+    /// It is DECLARED here, not applied mid-run. Rooting a persona is two operations — her hands
+    /// (`root_acting_workspace`, callable any time) and her eyes (`repoint_workspace_map_if_pinned`,
+    /// fork-time only, because the cycle's faculties are immutable once built). Applying just the
+    /// first splits her: hands in one tree, map of another, which is the #206 shape and produces a
+    /// zero that lies about the solver with no probe to show it. So a task whose root differs from
+    /// the run's is REFUSED with a named infra grade telling the caller to run one eval per root —
+    /// the run-level pin does both halves at fork, so that path is correct today. When the map
+    /// derives its root from her hands (one source of truth), this becomes a live re-root and the
+    /// refusal is deleted.
+    /// [[re-rooting-a-persona-is-two-operations-moving-one-is-worse-than-moving-neither]]
+    #[serde(default, alias = "workspaceRoot", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_root: Option<String>,
 }
 
 impl EvalTask {
@@ -1070,8 +1254,75 @@ impl EvalTask {
     /// so a mixed gym with one repo-nav task correctly arms tools for all. See #208.
     pub fn needs_tools(&self) -> bool {
         self.needs_tools.unwrap_or_else(|| {
-            self.solution_file.is_some() || self.dod_shell.is_some() || !self.ui_checks.is_empty()
+            self.solution_file.is_some()
+                || self.dod_shell.is_some()
+                || self.workspace_root.is_some()
+                || !self.ui_checks.is_empty()
         })
+    }
+
+    /// CODE IS BUILT, NEVER SPOKEN. A task carrying a compile-and-run `test` grades a PROGRAM,
+    /// and a program's deliverable is a FILE. If the task didn't name one, name it here — the
+    /// grade then reads what her hands wrote, and the spoken-code payout stops existing.
+    ///
+    /// Joel, 2026-08-04, on why this is not merely a measurement fix: *"any benchmark, at least
+    /// for code, that has them speak code is actually more of a problem for learning persona with
+    /// minds. It's going to train them to think speak code (or anything that needs an action) is
+    /// building projects. That's exactly the opposite of our goals for first class citizens."*
+    ///
+    /// That is the load-bearing argument. Our graded episodes do not stop at a scoreboard — they
+    /// enter the SAME experience loop as lived ones (engram → sentinel → curriculum → genome,
+    /// [[one-experience-loop-benchmark-lessons-are-engrams-dream-sentinels-train-them]]). So a
+    /// grader that pays out for a fence does not just mis-measure the fence→act gap, it TEACHES
+    /// it, and the layer promoted on that reward carries "describing is doing" into every room —
+    /// not just the exam. 404 of 458 gym tasks paid out that way when this was written.
+    ///
+    /// Doing it at LOAD is the compression: the alternative already existed as
+    /// `hard-rs-acted.jsonl`, a hand-forked twin of `hard-rs.jsonl` differing only by this
+    /// preamble and this filename. One rule in the loader replaces N forked corpora that would
+    /// each drift. A gym author still WINS by naming `solution_file` (and its prompt) explicitly;
+    /// this only ensures no code task can be graded by mouth because someone forgot.
+    ///
+    /// `expect`-graded knowledge tasks are untouched — answering a question IS speaking, and
+    /// nothing is confused about that. The rule keys on `test`: only a task that compiles and
+    /// runs code has a program as its deliverable.
+    fn require_hands_for_code(&mut self) {
+        if self.test.is_none()
+            || self.solution_file.is_some()
+            || self.dod_shell.is_some()
+            || self.workspace_root.is_some()
+        {
+            return;
+        }
+        let ext = match self.lang.as_deref().unwrap_or("rust") {
+            "rust" | "rs" => "rs",
+            "python" | "py" => "py",
+            "typescript" | "ts" => "ts",
+            "javascript" | "js" => "js",
+            "go" => "go",
+            "c" => "c",
+            "cpp" | "c++" => "cpp",
+            other => other,
+        };
+        let safe: String = self
+            .id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let file = format!("sol_{safe}.{ext}");
+        // The prompt must ASK for what the grade READS — a derived file behind an unchanged
+        // "return the complete function" prompt would score an honest 0 for the wrong reason
+        // (she answered the question she was asked). Same wording the hand-authored acted gym
+        // used, so migrated tasks read identically to ones an author wrote by hand.
+        self.prompt = format!(
+            "Implement the following, and VERIFY it before finishing. Write your solution to \
+             the file `{file}` (a relative path in your workspace) using your write tool, then \
+             compile and run it with your shell tool against a few checks you devise; if it \
+             fails, read the compiler/test output and fix it. Only finish once it actually \
+             compiles and runs. Leave the final, working code in `{file}`.\n\n{}",
+            self.prompt
+        );
+        self.solution_file = Some(file);
     }
 }
 
@@ -1192,9 +1443,10 @@ pub struct CognitionEvalParams {
     /// This is what makes "learn from the exam" honest — provably clean, encouraged. Default
     /// false = pure measurement (the discarded fork teaches nothing, as before). Single-pass
     /// only in this slice (ignored under a `gene` A/B). [[redaction-makes-exam-learning-honest-so-encourage-it]]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub learn: Option<bool>,
+    /// No `Default` on [`LearningPolicy`] — every Rust caller must state which this run is.
+    #[serde(default = "LearningPolicy::wire_default")]
+    #[ts(type = "boolean", optional)]
+    pub learn: LearningPolicy,
     /// REPRODUCIBLE-ABSOLUTE mode (#207): suppress the fork's episodic recall so a
     /// self-contained proctored exam scores the SAME absolute number run-to-run. Each eval
     /// re-forks from her LIVING durable engram store, which grows as she lives between runs;
@@ -1437,7 +1689,7 @@ impl ActionCommand for CognitionEval {
             let ledger_persona = persona_id.clone();
             let ledger_run = run_id.clone();
             tokio::spawn(async move {
-                match CognitionEval::run_eval(inner).await {
+                match CognitionEval::run_eval_restoring(inner).await {
                     Ok(r) => tracing::info!(
                         note = %note,
                         score = r.score,
@@ -1465,11 +1717,48 @@ impl ActionCommand for CognitionEval {
                 ..Default::default()
             });
         }
-        CognitionEval::run_eval(p).await
+        CognitionEval::run_eval_restoring(p).await
     }
 }
 
 impl CognitionEval {
+    /// [`run_eval`](Self::run_eval) plus the HANDS restore — the ONE entry both launch modes
+    /// (inline and detached) go through, so neither can forget it.
+    ///
+    /// `--workspace_root` re-roots the persona's file engine, and that is PROCESS-GLOBAL:
+    /// `code/create-workspace` keys the engine on the caller identity, the engines live in one
+    /// map for the whole runtime, and a measurement fork borrows the LIVING persona's executor
+    /// and her id. So the eval's rooting outlives the eval, and the living persona keeps
+    /// acting in the exam repo (#312 — measured on `agent/solve`, identical mechanism here).
+    ///
+    /// Restoring HERE rather than inside the body is deliberate. The body is ~230 lines with
+    /// many fallible steps; the invariant is not "unwind whatever the body did" but "when the
+    /// eval is over, her hands are her own", and that is exactly what this boundary knows.
+    /// It also covers the error paths without wrapping them.
+    async fn run_eval_restoring(
+        p: CognitionEvalParams,
+    ) -> Result<CognitionEvalResult, CommandError> {
+        // Only an eval that re-rooted has anything to put back — an ordinary eval never
+        // touched her hands and must not provoke a citizen-layer provision for nothing.
+        let rooted = p.workspace_root.is_some();
+        let persona_id = p.persona_id.clone();
+        let out = CognitionEval::run_eval(p).await;
+        if rooted {
+            if let Err(e) =
+                crate::cognition::persona_workspace::restore_persona_workspace(&persona_id).await
+            {
+                tracing::error!(
+                    persona = %persona_id,
+                    error = %e,
+                    "cognition/eval could NOT return the persona's hands to her own workspace — \
+                     she is still rooted at the eval's workspace_root and her live turns will act \
+                     there (#312)"
+                );
+            }
+        }
+        out
+    }
+
     /// The eval body — deliberately ctx-free (reaches the persona's live cognition through
     /// the global workspace registry, owns its params), so it runs inline from `run` OR is
     /// spawned detached for fire-and-poll (#86). One code path, two launch modes: the test
@@ -1553,7 +1842,7 @@ impl CognitionEval {
                 })
                 .collect()
         };
-        let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
+        let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
             let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
@@ -1561,6 +1850,12 @@ impl CognitionEval {
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
             parse_jsonl(&text, &origin)?
         };
+        // Every code task grades hands. See `require_hands_for_code` — applied HERE, after both
+        // load paths converge, so an inline task from a command payload obeys the same rule as a
+        // committed gym line. There is no loader path to a mouth-graded code task.
+        for t in tasks.iter_mut() {
+            t.require_hands_for_code();
+        }
 
         // Does this exam grade her HANDS or her MOUTH? A task graded from a file she
         // writes (`solution_file`), a workspace DoD she must satisfy (`dod_shell`), a
@@ -1876,7 +2171,10 @@ impl CognitionEval {
         // `agent/solve` (drives `code/create-workspace` through her executor; fails LOUD rather
         // than let a silent no-root score a false 0-byte diff, [[fallbacks-are-illegal-fail-loud]]).
         if let Some(root) = &p.workspace_root {
-            crate::cognition::persona_workspace::root_acting_workspace(&cycle, root).await?;
+            // A gym run IS the measurement — the grader reads the artifact, never her prose,
+            // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
+            crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
+                .await?;
         }
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
@@ -2041,7 +2339,7 @@ impl CognitionEval {
         // forget-context: keep the memory, excise the crib sheet). The exam ran on the fork
         // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
         // NEVER learn from an infra-unavailable run — a dead-lane "failure" is not a lesson.
-        if p.learn.unwrap_or(false) && p.gene.is_none() && infra_unavailable.is_none() {
+        if p.learn.learns() && p.gene.is_none() && infra_unavailable.is_none() {
             let transferred = transfer_redacted_lessons(&persona_uuid, room, &tasks, &results);
             tracing::info!(
                 persona = %persona_uuid,
@@ -2507,11 +2805,15 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     } else {
         window
     };
-    // Floor: enough for a self-contained hard-rs task (short prompt + a function + reasoning);
-    // derived from the served window, never a hardcoded ceiling — capped at the live window so
-    // the exam never asks for MORE context than the persona actually has.
-    const EXAM_WINDOW_FLOOR: u32 = 8192;
-    let exam_window = window.min(max_fit_window.max(EXAM_WINDOW_FLOOR));
+    // Capped at the live window (the exam never asks for MORE context than the persona actually
+    // has) and at what genuinely fits beside the resident lane. The old `.max(EXAM_WINDOW_FLOOR
+    // = 8192)` here was a magic floor that could exceed the real fit — asking for KV the host
+    // could not hold, on the theory that 8k is "enough for a task". Honest fit is the floor: if
+    // even a floor-sized copy won't fit, `isolate` degrades to SHARE in plan_placement rather
+    // than inventing headroom. [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+    let exam_window = window
+        .min(max_fit_window)
+        .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
     let demand = LaneDemand {
         base_model_id: active.to_string(),
         weights_bytes: fp.weights_bytes,
@@ -2807,35 +3109,52 @@ async fn perception_grade(
     // still routes to the browser eye below (a persona's real seeing loop).
     if let Some(path) = target_url.strip_prefix("file://") {
         let p = std::path::Path::new(path);
-        // MOUTH-OR-HANDS capture (#206/#143 fence→act gap). The web-dev grade observes the
-        // file she was told to write. A capable model often EMITS a complete, correct page in
-        // a ```html fence but never routes it through `code/write` — so no file exists and a
-        // model that BUILT the UI perfectly scores 0, measuring tool-routing instead of
-        // ability (glass-boxed 2026-07-21: Qwen2.5-Coder-7B wrote a flawless login form in a
-        // fence, wrote no file, scored 0/6 — below a weaker model). If she did NOT write the
-        // file with her hands but SPOKE a page, materialize it so the grade measures what she
-        // built. A real `code/write` ALWAYS wins (a present, non-empty file is left untouched),
-        // so this only rescues the spoken-artifact case and never overrides her hands. The
-        // deeper fix (make her actually call the tool) is the fence→act cognition work; this
-        // makes the benchmark a fair CAPABILITY measure meanwhile.
+        // NO MOUTH-FOR-HANDS. There used to be a rescue here: if she never wrote the file
+        // but SPOKE a page in a ```html fence, the harness materialized it and graded that.
+        // It was disclosed and well-intentioned — it isolated "can you build a UI" from "can
+        // you route a tool", after a 2026-07-21 run where Qwen2.5-Coder-7B wrote a flawless
+        // login form in a fence, wrote no file, and scored 0/6 below a weaker model.
+        //
+        // It is deleted because it measures a persona we are not building. Ours DO the thing:
+        // they operate tools and produce artifacts that exist. A page that lives only in an
+        // utterance is not a page — it is a description of one, and grading it as a page is a
+        // scam we play on ourselves. The file already says this 1800 lines up, about
+        // `solution_file`: "the act→verify loop is only visible if we grade what she actually
+        // wrote + compiled, not what she narrated." The rescue contradicted the doctrine its
+        // own module declares.
+        //
+        // The cost of keeping it was not a wrong number, it was a HIDDEN GAP: because nothing
+        // in the suite ever required hands, the fence→act failure was never scored, so it was
+        // never fixed — and it is exactly the failure SWE-bench exposes at full strength (30
+        // acts, 0 files, 0 refusals). What is rescued is never repaired.
+        //
+        // The spoken-artifact detector survives with its consequence inverted: it used to
+        // launder the failure, it now NAMES it, so a zero is diagnosable instead of mute.
+        // [[beat-oss-agentic-systems-as-whole-beings-never-strip-to-pass]],
+        // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]],
+        // [[execute-dont-narrate]]
         let wrote_with_hands = std::fs::read_to_string(p)
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
         if !wrote_with_hands {
-            if let Some(html) = html_artifact_from_answer(answer) {
-                if let Some(parent) = p.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(e) = std::fs::write(p, html.as_bytes()) {
-                    return (
-                        false,
-                        format!(
-                            "web-dev grade: persona spoke an HTML artifact but materializing it \
-                             to '{path}' for observation failed: {e}"
-                        ),
-                    );
-                }
-            }
+            let spoke_one = html_artifact_from_answer(answer).is_some();
+            return (
+                false,
+                if spoke_one {
+                    format!(
+                        "web-dev grade: FAIL — she SPOKE a complete HTML artifact but never \
+                         routed it through `code/write`, so '{path}' does not exist. The task \
+                         is graded on the file her hands produced, never on her narration of \
+                         it. This is the fence→act gap, and it is the finding, not a harness \
+                         defect."
+                    )
+                } else {
+                    format!(
+                        "web-dev grade: FAIL — no artifact at '{path}' and no HTML in her \
+                         answer either; she neither built it nor described it."
+                    )
+                },
+            );
         }
         let obs = crate::perception::static_html::observe_file(p);
         let grade = crate::perception::scoring::grade_ui(&obs, checks, threshold);
@@ -3192,7 +3511,7 @@ async fn run_pass(
             && t.dod_shell.is_none()
             && t.solution_file.is_none();
         if from_scratch_build {
-            if let Some(root) = workspace_root {
+            if let Some(root) = t.workspace_root.as_deref().or(workspace_root) {
                 if let Err(e) = clean_dir_contents(root) {
                     tracing::warn!(
                         probe_class = "eval.task.clean_workspace",
@@ -3202,6 +3521,57 @@ async fn run_pass(
                          — grading may observe a stale artifact (#209)"
                     );
                 }
+            }
+        }
+        // PER-TASK ROOT (mined gyms) — DECLARED, and REFUSED when it would split her in half.
+        //
+        // Each mined task owns its own git worktree, so the root is a property of the TASK. The
+        // obvious move is to re-root her here. Do NOT: rooting a persona is TWO operations, and
+        // only one of them can run at this point.
+        //   * `root_acting_workspace` moves where her hands WRITE — callable any time.
+        //   * `repoint_workspace_map_if_pinned` moves what her eyes SEE — mutates
+        //     `PersonaBrainConfig`, so it runs only at FORK time; `WorkspaceCycle.faculties` is
+        //     immutable after build.
+        // Moving only the hands gives her a map of one tree and a file engine in another — the
+        // #206 shape, where she reasons over a layout that isn't hers and explores instead of
+        // building. Glass-boxed 2026-08-05: the re-root probe fired with the right checkout while
+        // her workspace-map, 4.8s later, still described the previous root. It LOOKED fixed.
+        //
+        // Half-rooted is worse than not rooted, because the resulting zero is a lie about the
+        // solver that no probe reports. So refuse, and name the working path: the RUN-level
+        // `workspace_root` does BOTH halves at fork time, so ONE EVAL PER ROOT is correct today.
+        // [[fallbacks-are-illegal-fail-loud]]
+        // [[re-rooting-a-persona-is-two-operations-moving-one-is-worse-than-moving-neither]]
+        //
+        // The real fix (then this refusal goes away): her eyes read the root FROM her hands —
+        // one source of truth — the way `CitizenLayerWorkspaceLayoutReader` already calls the
+        // same `ensure_citizen_layer` the hands call, "so map and tools can never again describe
+        // different worlds".
+        let task_root: Option<&str> = t.workspace_root.as_deref().or(workspace_root);
+        if let Some(want) = t.workspace_root.as_deref() {
+            if Some(want) != workspace_root {
+                results.push(EvalTaskResult {
+                    id: t.id.clone(),
+                    ok: false,
+                    grade: format!(
+                        "infra: task '{}' declares its own workspace_root '{want}' but this run \
+                         was forked at {:?}. Re-rooting mid-run would move her HANDS without \
+                         moving her EYES (the workspace-map is baked at fork), so she would be \
+                         graded while reading a tree she is not working in. Run one eval per \
+                         root: pass --workspace_root='{want}' with just this task.",
+                        t.id, workspace_root
+                    ),
+                    answer: String::new(),
+                    acts: 0,
+                    latency_ms: 0,
+                    output_tokens: 0,
+                    tokens_per_second: 0.0,
+                    decode_tokens_per_second: 0.0,
+                    cache_hit_rate: 0.0,
+                    prefill_ms: 0,
+                    decode_ms: 0,
+                });
+                continue;
             }
         }
         // Task-state SETUP (gym/mine tasks re-break their checkout so runs are
@@ -3481,7 +3851,7 @@ async fn run_pass(
             // reads too. Default target `index.html`; default threshold 1.0 ("it works").
             let target = t.target.as_deref().unwrap_or("index.html");
             let threshold = t.ui_pass_threshold.unwrap_or(1.0);
-            perception_grade(cycle, target, &t.ui_checks, threshold, workspace_root, &answer).await
+            perception_grade(cycle, target, &t.ui_checks, threshold, task_root, &answer).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
@@ -3492,9 +3862,20 @@ async fn run_pass(
         } else if let Some(dod) = &t.dod_shell {
             // REAL task: run the definition-of-done against the repo state her edits produced.
             run_dod(dod).await
-        } else if let Some(test) = &t.test {
-            let lang = t.lang.as_deref().unwrap_or("rust");
-            test_grade(&answer, lang, test).await
+        } else if t.test.is_some() {
+            // UNREACHABLE by construction: `require_hands_for_code` gives every `test`-carrying
+            // task a `solution_file` at load, so a code task always takes the ARTIFACT arm above.
+            // This arm used to call `test_grade(&answer, ..)` — extract code from her SPOKEN
+            // answer, compile it, and PASS her. That is deleted, and it stays deleted: it paid
+            // out for narration, and because graded episodes feed the genome, that payout was a
+            // training signal for "describing is doing". Fail loud rather than let it grow back.
+            (
+                false,
+                "harness defect: a code task reached grading without a solution_file — every \
+                 test-graded task must be normalized by require_hands_for_code at load. Code is \
+                 graded on the file she wrote, never on text extracted from her answer."
+                    .to_string(),
+            )
         } else {
             let m =
                 !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
@@ -3665,11 +4046,27 @@ async fn run_pass_team(
             );
             break;
         }
-        // Grade the FINAL (reviewer's) answer — SAME branches as solo run_pass.
+        // Grade the team's FINAL deliverable — SAME branches as solo run_pass, including the
+        // rule that code is graded on the file their hands produced. A team that TALKS its way
+        // to a beautiful spoken solution and writes nothing has shipped nothing; two personas
+        // narrating at each other is the exact failure this arm must not reward (and the exact
+        // one a review/handoff loop makes MORE likely, not less).
         let (ok, grade) = if let Some(dod) = &t.dod_shell {
             run_dod(dod).await
-        } else if let Some(test) = &t.test {
-            test_grade(&answer, t.lang.as_deref().unwrap_or("rust"), test).await
+        } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
+            crate::cognition::gym_grader::test_grade_file(
+                file,
+                t.lang.as_deref().unwrap_or("rust"),
+                test,
+            )
+            .await
+        } else if t.test.is_some() {
+            (
+                false,
+                "harness defect: a code task reached team grading without a solution_file — \
+                 require_hands_for_code normalizes every test-graded task at load."
+                    .to_string(),
+            )
         } else {
             let m = !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
             (m, if m { "substring match".into() } else { "no match".into() })
@@ -3729,7 +4126,8 @@ mod tests {
     // tool-routing, not ability (Qwen2.5-Coder-7B wrote a flawless login form in a fence,
     // wrote no file, scored 0/6, below a weaker model, 2026-07-21). Regression pins:
     // last fence wins, doctype/`<html` detected with or without a lang tag, and a
-    // prose-only answer yields None (nothing to materialize → honest miss).
+    // prose-only answer yields None — nothing spoken to NAME (the detector diagnoses now,
+    // it does not rescue; see the no-mouth-for-hands block in the web-dev grade).
     #[test]
     fn html_artifact_extracts_the_spoken_page_or_nothing() {
         // tagged ```html fence
@@ -3750,6 +4148,187 @@ mod tests {
         // prose-only / a rust fence → nothing to materialize
         assert_eq!(html_artifact_from_answer("I would build a login form with an h1."), None);
         assert_eq!(html_artifact_from_answer("```rust\nfn main() {}\n```"), None);
+    }
+
+    /// what this catches: THE RESCUE COMING BACK. The web-dev grade used to materialize a page
+    /// the persona SPOKE when she never wrote the file, and grade that. It was disclosed and
+    /// well-meant — but it meant no benchmark in the suite ever required her hands, so the
+    /// fence→act failure was never scored and therefore never fixed. SWE-bench, which has no
+    /// such rescue, then showed it at full strength: 30 acts, 0 files, 0 refusals.
+    ///
+    /// A persona who describes a page has not built one. Grading the description as the artifact
+    /// is a scam we play on ourselves, and the honest zero is the finding. This pins the
+    /// contract: the extractor still detects a spoken artifact, but ONLY to name the gap.
+    #[test]
+    fn a_spoken_artifact_is_never_accepted_in_place_of_a_written_one() {
+        let spoken = "Here is the page:\n```html\n<!DOCTYPE html><html><body><h1>Hi</h1></body></html>\n```";
+        // The detector still SEES it — that capability is what makes the failure diagnosable.
+        assert!(
+            html_artifact_from_answer(spoken).is_some(),
+            "the detector must still recognise a spoken artifact — it names the gap now"
+        );
+        // And seeing it must never become materialising it. The grade path writes no file:
+        // the only writer of the graded artifact is her own `code/write`.
+        let dir = std::env::temp_dir().join(format!("no-mouth-for-hands-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let target = dir.join("index.html");
+        let _ = std::fs::remove_file(&target);
+        assert!(
+            !target.exists(),
+            "precondition: she has not written the file with her hands"
+        );
+        // (The grade fn needs a live workspace; the invariant asserted here is the one a
+        // reviewer must not break — nothing in this module may create `target` from `spoken`.)
+        assert!(
+            !std::fs::read_to_string(&target).map(|s| !s.trim().is_empty()).unwrap_or(false),
+            "a spoken artifact must never materialise into the graded file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn code_task(id: &str) -> EvalTask {
+        let mut t: EvalTask = serde_json::from_str(
+            r#"{"id":"x","prompt":"Implement `pub fn f() -> i32`. Return the complete function.",
+                "test":"assert_eq!(f(), 1);","lang":"rust","expect":""}"#,
+        )
+        .expect("fixture parses");
+        t.id = id.to_string();
+        t
+    }
+
+    /// what this catches: a code task reaching the grader with no artifact to grade — which is
+    /// how the harness used to pay out for a fence. `require_hands_for_code` gives every
+    /// test-graded task a file, so the ARTIFACT arm is the only arm code can take.
+    #[test]
+    fn every_code_task_is_normalized_to_grade_the_file_her_hands_wrote() {
+        let mut t = code_task("atoi");
+        assert!(t.solution_file.is_none(), "fixture starts mouth-graded");
+        t.require_hands_for_code();
+        assert_eq!(t.solution_file.as_deref(), Some("sol_atoi.rs"));
+        // and the ASK must match what the grade READS, or she scores 0 for answering the
+        // question she was actually asked.
+        assert!(t.prompt.contains("sol_atoi.rs"), "prompt names the file: {}", t.prompt);
+        assert!(t.prompt.contains("write tool"), "prompt tells her to WRITE it");
+        assert!(t.prompt.contains("Implement `pub fn f()"), "original task text survives");
+        // normalization needs hands, so tools get offered — otherwise the whole gym scores a
+        // silent 0 for lack of a write tool (#208's failure shape).
+        assert!(t.needs_tools(), "a file-graded task must arm tools");
+    }
+
+    /// what this catches: the rule silently un-applying for a whole class of gyms. Every
+    /// committed gym line must survive normalization with an artifact to grade — this is the
+    /// corpus-wide assertion, not a single-task one.
+    #[test]
+    fn no_committed_gym_can_pay_out_for_spoken_code() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/genome");
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            return; // corpora not present in this checkout — the unit rule above still holds
+        };
+        let mut checked = 0usize;
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for (n, line) in text.lines().enumerate() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(mut t) = serde_json::from_str::<EvalTask>(line) else { continue };
+                if t.test.is_none() {
+                    continue; // knowledge task — answering by speaking is correct
+                }
+                t.require_hands_for_code();
+                assert!(
+                    t.solution_file.is_some() || t.dod_shell.is_some(),
+                    "{}:{} ({}) is a code task with no artifact to grade — it would pay out for \
+                     spoken code, which trains 'describing is doing'",
+                    path.display(),
+                    n + 1,
+                    t.id
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "expected the code corpora to be present, checked only {checked}");
+    }
+
+    /// what this catches: someone re-adding a mouth grade for a task that ALREADY names a file.
+    /// Normalization must not clobber an author's explicit choice, in either direction.
+    #[test]
+    fn an_explicit_solution_file_and_a_dod_are_both_left_alone() {
+        let mut t = code_task("keep");
+        t.solution_file = Some("mine.rs".into());
+        let before = t.prompt.clone();
+        t.require_hands_for_code();
+        assert_eq!(t.solution_file.as_deref(), Some("mine.rs"), "author's file wins");
+        assert_eq!(t.prompt, before, "no duplicated preamble on an already-acted task");
+
+        let mut d = code_task("dod");
+        d.dod_shell = Some("cargo test".into());
+        d.require_hands_for_code();
+        assert!(d.solution_file.is_none(), "a DoD already grades the workspace her hands changed");
+    }
+
+    /// what this catches: a mined gym being unrunnable. `gym/mine` gives every task its OWN git
+    /// worktree, so the root is a property of the TASK. When only the RUN could carry a root, an
+    /// 8-task mined gym ran with one root — wrong for every task — and she was asked to fix a bug
+    /// in a directory her sandboxed tools could not reach. She scored zero, and the zero described
+    /// the harness. Glass-boxed 2026-08-05: her workspace-map showed the continuum tree while the
+    /// prompt named a serde_json checkout.
+    ///
+    /// Also pins that a repo task is NOT mangled by the code-must-be-written normalization: it is
+    /// already hands-graded by its `dod_shell` against a real test suite, and deriving a
+    /// `sol_<id>.rs` for it would invent a deliverable the task never wanted.
+    #[test]
+    fn a_mined_repo_task_carries_its_own_root_and_is_not_renormalized() {
+        let mut t: EvalTask = serde_json::from_str(
+            r#"{"id":"mine_2037b634","prompt":"Real bug, real repo.","expect":"",
+                "workspaceRoot":"/tmp/gym/task_2037b634",
+                "dodShell":"cd /tmp/gym/task_2037b634 && cargo test",
+                "setupShell":"git checkout HEAD^ -- src/de.rs"}"#,
+        )
+        .expect("the mined wire shape (camelCase) parses");
+        assert_eq!(t.workspace_root.as_deref(), Some("/tmp/gym/task_2037b634"));
+        assert!(t.needs_tools(), "a task pinned to a repo obviously needs hands");
+        let before = t.prompt.clone();
+        t.require_hands_for_code();
+        assert!(
+            t.solution_file.is_none(),
+            "a repo task is graded by its DoD against the real suite — never by an invented file"
+        );
+        assert_eq!(t.prompt, before, "no acting preamble bolted onto a repo task");
+    }
+
+    /// what this catches: the per-task root silently not overriding the run-level pin (or vice
+    /// versa). Precedence has to be unambiguous — the task's own checkout wins, and a task with
+    /// no root of its own still inherits the run's pin, so SWE-bench (one clone, one task) and a
+    /// mined gym (N clones, N tasks) both work through the SAME field.
+    /// what this catches: someone "finishing" the per-task root by re-rooting mid-run. That moves
+    /// her HANDS while her EYES stay baked at the fork root — glass-boxed 2026-08-05, the probe
+    /// fired green while her workspace-map still described the old tree. This pins the contract
+    /// that a differing task root is REFUSED (loud, actionable) rather than half-applied (silent,
+    /// scores a lie). Delete this only together with the eyes-derive-from-hands fix.
+    #[test]
+    fn a_task_root_that_differs_from_the_runs_is_refused_not_half_applied() {
+        let run_pin = Some("/repo/from-run");
+        let mut t = code_task("x");
+        // No task root → inherits the run pin, which DID move both halves at fork. Fine.
+        assert_eq!(t.workspace_root.as_deref().or(run_pin), run_pin);
+        let matches_run = t.workspace_root.as_deref().map(|w| Some(w) != run_pin);
+        assert_eq!(matches_run, None, "no task root is never a conflict");
+        // A DIFFERENT task root is the refusal case — mid-run re-rooting would split her.
+        t.workspace_root = Some("/repo/from-task".into());
+        assert!(
+            t.workspace_root.as_deref() != run_pin,
+            "differing root must be detected as a conflict, not silently preferred"
+        );
+        // Same root declared on both is harmless (the fork already rooted both halves there).
+        t.workspace_root = Some("/repo/from-run".into());
+        assert_eq!(t.workspace_root.as_deref(), run_pin, "agreement is not a conflict");
     }
 
     // what this catches: the mid-run scoreboard's poll surface (#123/#141). One

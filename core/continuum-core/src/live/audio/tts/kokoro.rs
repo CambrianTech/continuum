@@ -41,6 +41,7 @@ struct KokoroModel {
 }
 
 /// Max phoneme/token length for Kokoro v1.0
+// context-budget-exempt: Kokoro's own phoneme-token input limit (a fixed property of the model), not a text-context bound
 const MAX_TOKEN_LENGTH: usize = 510;
 
 /// Available Kokoro voices

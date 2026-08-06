@@ -167,17 +167,38 @@ if [ "$WIN_CUDA" -eq 1 ]; then
     echo "@echo off"
     echo "call \"$vcvars\" >nul || exit /b 1"
     echo "\"$win_cmake\" -S \"$win_sub\" -B \"$win_build\" -G Ninja -DCMAKE_MAKE_PROGRAM=\"$win_ninja\" -DCMAKE_CUDA_COMPILER=\"$win_nvcc\" ${CMAKE_ARGS[*]} || exit /b 1"
-    echo "\"$win_cmake\" --build \"$win_build\" --target llama-server --config Release -j $JOBS || exit /b 1"
+    echo "\"$win_cmake\" --build \"$win_build\" --target llama-server llama-quantize --config Release -j $JOBS || exit /b 1"
   } > "$build_bat"
   cmd //c "$(cygpath -w "$build_bat")" >&2
 else
   cmake -S "$SUBMODULE" -B "$BUILD_DIR" "${CMAKE_ARGS[@]}" >&2
-  cmake --build "$BUILD_DIR" --target llama-server --config Release -j"$JOBS" >&2
+  # BOTH targets. llama-quantize is not optional tooling: it carries our fork's
+  # `--resident-only` + tier-manifest emit (fork #40), which is the ONLY way to
+  # produce the resident tier a MoE pages around. Building only llama-server
+  # vendored the capability in and never shipped the tool that exposes it — so
+  # the forge custodian had nothing to call and MoE tiering silently had no
+  # engine (glass-boxed 2026-08-05). Same built-≠-shipped class as #296.
+  cmake --build "$BUILD_DIR" --target llama-server llama-quantize --config Release -j"$JOBS" >&2
 fi
 
 BUILT_BIN="$BUILD_DIR/bin/llama-server${EXE}"
 if [ ! -x "$BUILT_BIN" ]; then
   echo "✗ FATAL: build finished but $BUILT_BIN is missing." >&2
+  exit 1
+fi
+
+# Verify the quantize tool the SAME way, and fail just as loud. A soft warning
+# here would recreate exactly the gap this change closes: for three days the
+# fork carried `--resident-only` while the build emitted no tool to invoke it,
+# and nothing said so — the forge custodian would have failed at RUN time, on a
+# 91GB job, instead of at BUILD time in one second. If a platform genuinely
+# cannot build this target we want to learn it now, explicitly, not discover it
+# from a mysteriously empty tier manifest weeks later.
+BUILT_QUANTIZE="$BUILD_DIR/bin/llama-quantize${EXE}"
+if [ ! -x "$BUILT_QUANTIZE" ]; then
+  echo "✗ FATAL: build finished but $BUILT_QUANTIZE is missing." >&2
+  echo "  llama-quantize carries our fork's --resident-only + tier manifest (fork #40)." >&2
+  echo "  Without it the forge custodian cannot produce a MoE resident tier." >&2
   exit 1
 fi
 

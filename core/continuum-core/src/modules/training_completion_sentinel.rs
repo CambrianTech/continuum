@@ -64,6 +64,7 @@
 //! claim guarantees no later tick re-handles the same completion; the spawn keeps the
 //! poll cadence crisp (mirrors the producer's best-effort spawn).
 
+use crate::cognition::learning_policy::LearningPolicy;
 use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
@@ -188,7 +189,8 @@ impl TrainingCompletionSentinel {
                 max_retries: None,
                 workspace_root: None,
                 capture_dir: None,
-                learn: None,
+                // The L3 auto-eval MEASURES lift; it is not her life. Stated, not defaulted.
+                learn: LearningPolicy::DoNotLearn,
                 // #207: L3 auto-eval measures LIFT (base vs gene in one fork), which is
                 // reproducible regardless of recall; keep memories intact (default).
                 suppress_recall: None,

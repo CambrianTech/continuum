@@ -17,6 +17,7 @@ pub mod disk_pressure;
 pub mod disk_reporters;
 pub mod memory_pressure;
 pub mod monitor;
+pub mod rotation_log_pool;
 
 pub use concurrency::local_inference_capacity;
 
@@ -36,6 +37,7 @@ pub use memory_pressure::{
     MemoryBudgetSpec, MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport,
     PressureLevel, PressureSnapshot,
 };
+pub use rotation_log_pool::RotationLogPool;
 pub use monitor::{
     CpuStats, MemoryStats, ProcessStats, SystemResourceMonitor, SystemResourceSnapshot, TopProcess,
 };

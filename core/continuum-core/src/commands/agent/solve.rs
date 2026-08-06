@@ -14,6 +14,7 @@
 //! (`fork_eval_cycle_with_adapter` → `drive_to_settle`), minus the grader — the external harness
 //! grades. One drive, two consumers (eval scores; agent/solve emits a patch).
 
+use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,12 +66,18 @@ pub struct AgentSolveParams {
     /// stale beliefs: a day of python tasks consolidates into python facts, and the
     /// dream's supersession review demotes "you work with main.rs" — work IS training.
     /// The measurement fork itself stays #59-isolated either way; only the lesson
-    /// crosses back. Default TRUE — a living being learns from her work (Joel
-    /// 2026-07-23: "learn should be default anyway"); a harness wanting a
-    /// memoryless measurement opts OUT with `learn:false`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub learn: Option<bool>,
+    /// crosses back.
+    ///
+    /// There is NO default on the Rust side — [`LearningPolicy`] has no `Default` impl, so
+    /// every construction site must state whether this run is a measurement or her life. See
+    /// [`crate::cognition::learning_policy`] for why (BigMama, 2026-08-06: two modules had
+    /// opposite defaults for this one field, and a fail-safe default would only have changed
+    /// which forgetful caller got burned). An OMITTED wire field resolves to
+    /// [`LearningPolicy::DoNotLearn`] — this command is the headless BENCHMARK entrypoint
+    /// (#218), so its population is measurement-heavy and omission must fail safe.
+    #[serde(default = "LearningPolicy::wire_default")]
+    #[ts(type = "boolean", optional)]
+    pub learn: LearningPolicy,
     /// GLASS-BOX (opt-in): directory for the JSONL turn-capture sink — every tick's bids +
     /// DECISION + timings append to `<dir>/<persona_id>.jsonl`, same sink `cognition/eval`
     /// wires (task #14). THE tool for diagnosing an acts=1 silent settle: the capture says
@@ -90,6 +97,50 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub suppress_recall: Option<bool>,
+    /// What the CALLER will grade — the turn's contract, declared by the harness that
+    /// holds the answer key. Default [`Deliverable::Answer`]: her utterance is the
+    /// result (#220's answer-graded tasks). A SWE-style harness that applies the DIFF
+    /// and never reads the speech declares [`Deliverable::Workspace`], and the settle
+    /// driver stops treating a zero-change explanation as a finished turn. Structural,
+    /// caller-owned; it steers nothing about WHAT she does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deliverable: Option<Deliverable>,
+    /// This run is SCORED — a benchmark instance whose verdict comes from applying her diff and
+    /// running the tests, not from anything she says. Hardens her write path: an edit whose code
+    /// would land inside a string literal is refused rather than warned (#317), because the run
+    /// cannot recover from a file it believes it fixed.
+    ///
+    /// Default `false`, and deliberately NOT inferred from `deliverable` — `agent/solve` also
+    /// does real work for real teammates, and a citizen doing real work writes code as text
+    /// whenever she means to (a docstring example, a fixture). Only the caller that is GRADING
+    /// her knows the ambiguity is gone, so only that caller sets this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scored: Option<bool>,
+    /// Directories to PREPEND to `PATH` for her shell — the interpreter/toolchain this
+    /// task needs in order to be RUNNABLE. A SWE harness passes the era-matched venv's
+    /// `bin` here so `python` and `pytest` exist for her.
+    ///
+    /// Without it she can write a fix but never execute anything to check it. Measured
+    /// on sympy-21379: a correct reproduction script met `bash: python: command not
+    /// found`, and the run scored as a capability failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path_prepend: Option<Vec<String>>,
+}
+
+/// What the caller grades when the solve returns. Two genuinely different contracts,
+/// so it is an enum on the wire, never a magic string ([[strings-to-enums]]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../protocol/typescript/agent/Deliverable.ts")]
+pub enum Deliverable {
+    /// Her spoken answer is the result (the default — every non-diff task).
+    #[default]
+    Answer,
+    /// The state of the workspace is the result; the grader applies the diff.
+    Workspace,
 }
 
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
@@ -115,6 +166,19 @@ pub struct AgentSolveResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub run_id: Option<String>,
+    /// INFRASTRUCTURE FAILURE, never a wrong answer. `Some(cause)` when the settle loop
+    /// stopped because the deliberation model call FAILED (lane torn down mid-drive, a
+    /// serving lane refusing a model it isn't hosting, a timeout) rather than because she
+    /// finished. `SettleOutcome::inference_error` has carried this all along and its own
+    /// doc says the grader MUST treat it as infra — but NOTHING READ IT, so a run
+    /// truncated at act 7 of 30 reported `acts: 7, patchBytes: 0` and was indistinguishable
+    /// from a persona who simply failed. Measured 2026-08-04 on sympy-21379: the lane went
+    /// `serving: <none>, ready: false` mid-drive and the verdict said nothing at all.
+    /// A number produced with this set is NOT a score
+    /// ([[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub infra_error: Option<String>,
 }
 
 /// `agent/solve` — headless single-task agent run. Pure orchestration over the eval drive
@@ -186,6 +250,7 @@ impl ActionCommand for AgentSolve {
                 files_changed: Vec::new(),
                 detached: true,
                 run_id: Some(run_id_ack),
+                infra_error: None,
             });
         }
         Self::solve_body(p).await
@@ -207,7 +272,7 @@ fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
 impl AgentSolve {
     /// The solve body — deliberately ctx-free (reaches the persona via the global workspace
     /// registry), so it runs inline OR spawned detached with the same code path.
-    async fn solve_body(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
+    pub(crate) async fn solve_body(p: AgentSolveParams) -> Result<AgentSolveResult, CommandError> {
         let run_id = p.run_id.clone();
         // Short-form persona ids resolve too (#164): rosters/benchmark harnesses DISPLAY
         // 8-char short ids, so accept the id a caller was shown — a clean UUID passes
@@ -265,7 +330,25 @@ impl AgentSolve {
         //     false ZERO (glass-boxed 2026-07-22: Devstral did 2 real acts, wrote the correct file,
         //     patch was empty). Same fail-loud mechanism cognition/eval uses to root a measurement
         //     persona at a target repo.
-        crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace).await?;
+        //
+        //     The re-root is PROCESS-GLOBAL and outlives this fork (`code/create-workspace`
+        //     keys the file engine on the caller identity, and the fork shares the living
+        //     persona's executor AND her id — see `ActingHands`). So the hands handle is
+        //     lifted out BEFORE the cycle is consumed, and every exit path below returns her
+        //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
+        //     self was still running `code/read(src/flask/app.py)` in her room hours later.
+        let hands = crate::cognition::persona_workspace::ActingHands::of(&cycle);
+        crate::cognition::persona_workspace::root_acting_workspace(
+            &cycle,
+            &workspace,
+            p.path_prepend.as_deref().unwrap_or(&[]),
+            p.scored.unwrap_or(false),
+        )
+        .await?;
+
+        // Everything the ROOTED hands touch lives in this one fallible region, so the
+        // restore below runs on Ok AND on Err. A `?` added anywhere inside stays covered.
+        let outcome = async {
 
         // GLASS-BOX (same seam as cognition/eval, task #14): opt-in JSONL turn capture on
         // the fork — bids + DECISION + timings per tick, the instrument that turns an
@@ -303,16 +386,29 @@ impl AgentSolve {
         // hands OFF the graded tree, then she passes to a silent settle). Honest
         // contract language, same class as the tool-forcing framing: it states where
         // the work IS, it does not hand her the answer or gate her tools.
-        let framed = format!(
-            "This is a task you must COMPLETE NOW by USING YOUR TOOLS in your workspace — writing \
-             files with code/write, running commands with code/shell, etc. Only what your tools \
-             actually do takes effect: code shown in a message, or a claim that you saved a file, \
-             does NOT create or change anything — the workspace is graded on the files your tools \
-             write. You are ALREADY in the task's workspace: work on the files that are here. Do \
-             not create a new workspace or start a new project — grading only sees this one. Do \
-             the work with tool calls, then stop.\n\nTask:\n{}",
-            p.task.trim()
-        );
+        // The wrapper states the I/O CONTRACT (only tool calls take effect) and nothing about
+        // the SHAPE of the deliverable — because the TASK owns that, and the two used to
+        // contradict each other outright.
+        //
+        // The old text said "writing files with code/write" and "graded on the files your tools
+        // WRITE". That was written for from-scratch build gyms, where new files ARE the
+        // deliverable. Nested beneath it, `swe_task_prompt` says the opposite: "do not add new
+        // top-level files — fix it IN PLACE with code/edit. The fix must land in the existing
+        // files."
+        //
+        // Outer contract first, inner constraint buried under "Task:" — and she obeyed the
+        // outer one. Three consecutive sympy-21379 runs, all full-effort, all writing NEW files
+        // and never editing the library:
+        //   v3  8 acts → reproduce_piecewise_error.py
+        //   v4 30 acts → reproduce_bug.py, test_sympy_error.py, test_sympy_issue.py
+        //   v5 18 acts → reproduce_error.py, test_sympy_error.py
+        // I read that as a judgement gap for a whole session. It was two halves of my own
+        // framing disagreeing about what the deliverable IS.
+        //
+        // Now: "as your tools leave it" covers an edit and a new file equally, and `code/edit`
+        // joins the exemplar verbs so the anti-narration force survives without smuggling in a
+        // deliverable shape. Steering nothing — the task still says what to build or fix.
+        let framed = frame_task(&p.task);
         let task_delivery = crate::persona::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
             items: vec![crate::persona::rag_budget::RagItem {
@@ -341,7 +437,13 @@ impl AgentSolve {
             burst,
             room,
             max_acts,
-            crate::cognition::workspace::TurnFraming::directed(),
+            {
+                let f = crate::cognition::workspace::TurnFraming::directed();
+                match p.deliverable.unwrap_or_default() {
+                    Deliverable::Workspace => f.on_workspace(),
+                    Deliverable::Answer => f,
+                }
+            },
         )
         .await;
 
@@ -357,7 +459,7 @@ impl AgentSolve {
         //    names; verbatim solutions would let a re-run score memorization instead
         //    of capability. Solve carries no held-out answer key in-band (the harness
         //    grades externally), so there is nothing to redact.
-        if p.learn.unwrap_or(true) {
+        if p.learn.learns() {
             let admitted = transfer_solve_experience(
                 &persona_uuid,
                 room,
@@ -377,17 +479,56 @@ impl AgentSolve {
         drop(lane);
 
         Ok(AgentSolveResult {
-            persona_id: p.persona_id,
-            model: p.base_model_id,
+            persona_id: p.persona_id.clone(),
+            model: p.base_model_id.clone(),
             acts: settled.acts as u32,
             spoken: settled.spoken.unwrap_or_default(),
             patch,
             files_changed,
             detached: false,
             run_id,
+            infra_error: settled.inference_error,
         })
+
+        }
+        .await;
+
+        // MEASUREMENT OVER — give her back her own hands (#312). Best-effort but LOUD: a
+        // failed restore leaves the living persona standing in the exam repo, which is a
+        // real defect, but it must not overwrite the measurement's own verdict.
+        if let Some(hands) = &hands {
+            if let Err(e) = crate::cognition::persona_workspace::restore_acting_workspace(hands)
+                .await
+            {
+                tracing::error!(
+                    persona = %persona_uuid,
+                    error = %e,
+                    "agent/solve could NOT return the persona's hands to her own workspace — she is \
+                     still rooted at the exam sandbox and her live turns will act there (#312)"
+                );
+            }
+        }
+        outcome
     }
 }
+
+/// How much of the task text the durable lesson may carry. A lesson is a MEMORY OF
+/// WORKING, not a copy of the assignment — and the task is caller-supplied text of
+/// unbounded size. A SWE-bench problem statement is a full GitHub issue; six solve runs
+/// put six of them, verbatim, into Anwen's episodic store, and the consolidator did what
+/// it is supposed to do with repeated episodic content: it crystallized SEMANTIC beliefs
+/// out of them ("When a Blueprint name in Flask contains a dot, raise ValueError…").
+/// She now durably believes things about flask that she learned in an exam room.
+///
+/// The domain signal the dream's supersession review actually feeds on rides `files_changed`
+/// (`mathlib.py` → python), which the lesson keeps in full. The task text is context, and
+/// context does not need to be verbatim.
+///
+/// context-budget-exempt: this is a CONTAMINATION bound, not a context/prompt budget. It caps
+/// how much EXAM TEXT may enter her durable memory, and deriving it from the served window
+/// would invert the intent — a bigger window would admit MORE of the assignment, which is the
+/// exact failure (#312, second vector) this constant exists to stop.
+const LESSON_TASK_EXCERPT_CHARS: usize = 200;
 
 /// Build the durable EXPERIENCE string for one solve — what she worked on and how,
 /// never what she produced (no patch content, no spoken answer: the lesson teaches
@@ -399,11 +540,13 @@ fn format_solve_lesson(task: &str, acts: usize, files_changed: &[String]) -> Str
     } else {
         format!("I changed: {}", files_changed.join(", "))
     };
+    let task = task.trim();
+    let excerpt = match task.char_indices().nth(LESSON_TASK_EXCERPT_CHARS) {
+        Some((cut, _)) => format!("{}…", &task[..cut]),
+        None => task.to_string(),
+    };
     format!(
-        "I worked a real coding task in my workspace: {} — I acted {} time(s); {}.",
-        task.trim(),
-        acts,
-        worked
+        "I worked a real coding task in my workspace: {excerpt} — I acted {acts} time(s); {worked}."
     )
 }
 
@@ -511,8 +654,83 @@ async fn workspace_patch(workspace: &str) -> (String, Vec<String>) {
 
 crate::register_stateless_command!(AgentSolve);
 
+/// The generic solve CONTRACT wrapped around a task.
+///
+/// It states HOW acts take effect (only tool calls do; narration does not) and never WHAT the
+/// deliverable looks like — the task owns that, and the two used to contradict each other.
+///
+/// The old text said "writing files with code/write" and "graded on the files your tools WRITE",
+/// which is right for a from-scratch build gym. Nested beneath it, `swe_task_prompt` says the
+/// opposite: "do not add new top-level files — fix it IN PLACE with code/edit. The fix must land
+/// in the existing files." Outer contract first, inner constraint under "Task:" — and she obeyed
+/// the outer one. Three consecutive full-effort sympy-21379 runs wrote NEW repro scripts and never
+/// edited the library (v3: 1 file, v4: 3 files, v5: 2 files; 0 edits every time). That read as a
+/// judgement gap for a whole session; it was two halves of one framing disagreeing.
+///
+/// FORCE vs SHAPE, learned the hard way. The first attempt at this fix removed the
+/// contradiction and the tool-forcing PRESSURE in the same edit — "graded exactly as your
+/// tools leave it" is shape-neutral but passive. Measured immediately (v6, same instance,
+/// same persona): 8 acts, ZERO files, 0 patch bytes — worse than the three contradictory
+/// runs before it, which at least produced repro scripts. She drifted out of task mode
+/// entirely and ended the run replying to her OWN `work/list` output as though a peer had
+/// posted it in chat.
+///
+/// So the wording must be BOTH: imperative about the contract, silent about the artifact.
+/// "graded ONLY on the CHANGES your tools make" is forceful and neutral — an edit and a new
+/// file are both changes; a narration is not.
+///
+/// Pure so the contract is testable in isolation ([[the-compression-principle]]: one place).
+fn frame_task(task: &str) -> String {
+    format!(
+        "This is a task you must COMPLETE NOW by USING YOUR TOOLS in your workspace — editing \
+         files with code/edit, writing them with code/write, running commands with code/shell, \
+         etc. Only what your tools actually do takes effect: code shown in a message, or a claim \
+         that you saved a file, does NOT create or change anything — you are graded ONLY on the \
+         CHANGES your tools make to this workspace — an explanation earns nothing. You are ALREADY in the task's workspace: work on the \
+         files that are here. Do not create a new workspace or start a new project — grading only \
+         sees this one. Follow the task's own instructions about WHAT to change. Do the work with \
+         tool calls, then stop.\n\nTask:\n{}",
+        task.trim()
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches: the wrapper asserting a DELIVERABLE SHAPE that the task contradicts.
+    // The generic framing exists to kill narration ("only tool calls take effect"). It must not
+    // also claim the grade is about "files your tools WRITE" — `swe_task_prompt` says the
+    // opposite ("do not add new top-level files … fix it IN PLACE with code/edit"), and the
+    // wrapper comes FIRST. Three consecutive sympy-21379 runs obeyed the wrapper and wrote new
+    // repro scripts instead of editing the library. The contract may describe HOW acts take
+    // effect; only the task may describe WHAT to change.
+    #[test]
+    fn the_generic_framing_never_dictates_the_deliverable_shape() {
+        let framed = super::frame_task("fix the bug IN PLACE");
+        let lower = framed.to_lowercase();
+        assert!(
+            lower.contains("only what your tools actually do takes effect"),
+            "the anti-narration contract must survive: {framed}"
+        );
+        assert!(
+            lower.contains("code/edit"),
+            "editing must be a first-class exemplar verb, not just writing: {framed}"
+        );
+        assert!(
+            !lower.contains("graded on the files your tools write"),
+            "must NOT assert new-files-are-the-deliverable — that contradicts a fix-in-place task"
+        );
+        // …and must NOT go limp while removing that. The first attempt did, and the very next
+        // live run produced 0 acts of work: shape-neutral is necessary, force is too.
+        assert!(
+            lower.contains("only on the changes your tools make"),
+            "the contract must stay IMPERATIVE about changes, not merely descriptive: {framed}"
+        );
+        assert!(
+            framed.contains("fix the bug IN PLACE"),
+            "the task's own words are carried through verbatim"
+        );
+    }
+
     use super::*;
     use tokio::process::Command;
 
@@ -615,6 +833,32 @@ mod tests {
         assert!(none.contains("I changed no files"));
     }
 
+    // what this catches: an unbounded task text turning a durable lesson into a verbatim
+    // copy of the assignment. Measured — six SWE-bench solves wrote six full GitHub issues
+    // into Anwen's episodic store, and the consolidator distilled SEMANTIC beliefs about
+    // flask internals out of the repetition. A lesson is a memory of WORKING; the file
+    // names carry the domain signal and must survive the bound intact.
+    #[test]
+    fn a_lesson_excerpts_the_task_it_never_copies_it() {
+        let issue = format!(
+            "Flask raises an unhelpful error when a Blueprint name contains a dot. {}",
+            "Blueprint names should be validated at __init__ time. ".repeat(40)
+        );
+        let l = format_solve_lesson(&issue, 5, &["src/flask/blueprints.py".to_string()]);
+        assert!(
+            l.len() < issue.len() / 2,
+            "the assignment must not land in memory verbatim ({} chars of a {}-char issue)",
+            l.len(),
+            issue.len()
+        );
+        assert!(l.contains('…'), "a truncated lesson must SAY it was truncated: {l}");
+        assert!(
+            l.contains("src/flask/blueprints.py"),
+            "the domain signal rides the file names and is never truncated: {l}"
+        );
+        assert!(l.contains("acted 5 time(s)"));
+    }
+
     // what this catches: the wire name must mirror the file path (commands/agent/solve.rs ⟺
     // "agent/solve") and stay Privileged — it drives arbitrary shell + writes files in the cwd,
     // the same authority boundary as agent/start. Drift silently breaks routing or widens the ACL.
@@ -622,5 +866,46 @@ mod tests {
     fn name_and_access_hold_the_contract() {
         assert_eq!(AgentSolve::NAME, "agent/solve");
         assert!(matches!(AgentSolve::ACCESS, AccessLevel::Privileged));
+    }
+
+
+    // what this catches (found by BigMama 2026-08-06, reading before wiring the consolidator):
+    // the SAME field with OPPOSITE defaults in two modules — `agent/solve` defaulted learn ON
+    // while `cognition/eval` defaulted it OFF, and the only thing keeping exam text out of
+    // episodic was one explicit `Some(false)` at a single call site.
+    //
+    // The Rust half of that hazard is now gone by CONSTRUCTION: `LearningPolicy` has no
+    // `Default`, so a caller who omits the decision does not compile. What CANNOT be closed by
+    // the type system is the wire — a JSON or CLI caller can always omit a field — so that one
+    // remaining door is what this test guards, on BOTH param types at once.
+    //
+    // Pins the invariant, not the number: an omitted `learn` deserializes to DO NOT LEARN
+    // everywhere. If a future edit gives `LearningPolicy` a `Default`, or points either
+    // `#[serde(default = ...)]` at a different function, this reds.
+    #[test]
+    fn an_omitted_learn_flag_means_do_not_learn_on_every_wire_path() {
+        let solve: AgentSolveParams =
+            serde_json::from_str(r#"{"persona_id":"p","base_model_id":"m","task":"x","workspace":"w"}"#)
+                .expect("solve params without `learn`");
+        assert!(
+            !solve.learn.learns(),
+            "agent/solve is the headless BENCHMARK entrypoint — an omitted learn flag must not \
+             admit exam experience into the living persona (#312)"
+        );
+
+        let eval: crate::cognition::eval::CognitionEvalParams =
+            serde_json::from_str(r#"{"persona_id":"p"}"#)
+                .expect("eval params without `learn`");
+        assert!(
+            !eval.learn.learns(),
+            "cognition/eval measures; an omitted learn flag must not write back"
+        );
+
+        // The two readers must AGREE on what omission means. One field name with two
+        // meanings, decided by which module you happened to reach, is the original defect.
+        assert_eq!(
+            solve.learn, eval.learn,
+            "both wire paths must resolve an omitted `learn` identically"
+        );
     }
 }

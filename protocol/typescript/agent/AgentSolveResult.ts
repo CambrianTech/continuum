@@ -27,4 +27,17 @@ detached: boolean,
 /**
  * The run's correlation id (set on a detached ack + the written result file).
  */
-run_id?: string, };
+run_id?: string, 
+/**
+ * INFRASTRUCTURE FAILURE, never a wrong answer. `Some(cause)` when the settle loop
+ * stopped because the deliberation model call FAILED (lane torn down mid-drive, a
+ * serving lane refusing a model it isn't hosting, a timeout) rather than because she
+ * finished. `SettleOutcome::inference_error` has carried this all along and its own
+ * doc says the grader MUST treat it as infra — but NOTHING READ IT, so a run
+ * truncated at act 7 of 30 reported `acts: 7, patchBytes: 0` and was indistinguishable
+ * from a persona who simply failed. Measured 2026-08-04 on sympy-21379: the lane went
+ * `serving: <none>, ready: false` mid-drive and the verdict said nothing at all.
+ * A number produced with this set is NOT a score
+ * ([[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]).
+ */
+infra_error?: string, };

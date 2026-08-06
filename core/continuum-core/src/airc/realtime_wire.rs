@@ -140,6 +140,23 @@ pub fn bus_event_from_envelope(envelope: &AircRealtimeEnvelope) -> Option<BusEve
 /// Consumers: persona perception (`perceptual_from_event`), the digest element
 /// (`ChannelElement::new` — was the third text-only blind surface), and any
 /// future read surface. One decoder, every reader.
+/// Is this event a live streaming token fragment rather than a settled room line?
+///
+/// THE predicate for the stream-chunk contract, in one place, so a caller that needs to
+/// skip chunks BEFORE paying for a decode uses the same rule the decoder does. A chunk is
+/// never a spoken line: the settled utterance arrives separately via `say()`.
+///
+/// Why a caller would want it early: every persona's subscribe stream receives every OTHER
+/// persona's chunks. Measured live 2026-08-04 during a SWE solve — 2644 of 4776 filtered
+/// inbound events (55%) were stream chunks, fanned out identically to all four personas
+/// (1195 each) and decoded-then-discarded by each one independently. That is
+/// O(personas x tokens) of decode work in the attention path, and it made 65% of the probe
+/// stream noise. The earlier response to the same flood was to lower the LOG LEVEL, which
+/// hid it without stopping it ([[persona-cognition-symptoms-are-not-noise-to-suppress-fix-the-mind-or-ask]]).
+pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
+    event.headers.get(airc_lib::HEADER_STREAM_ID).is_some()
+}
+
 pub fn room_turn_from_event(
     event: &TranscriptEvent,
 ) -> Result<(uuid::Uuid, String), &'static str> {
@@ -155,7 +172,7 @@ pub fn room_turn_from_event(
     //   as room content, and starved the repetition detectors of judgeable
     //   turns. The header check is the receive-side guard that holds regardless
     //   of how the sender's delivery class was stamped.
-    if event.headers.get(airc_lib::HEADER_STREAM_ID).is_some() {
+    if is_stream_chunk(event) {
         return Err("stream_chunk");
     }
     if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {

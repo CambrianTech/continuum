@@ -59,9 +59,9 @@ static PATTERN_THINKING_CONTENT: LazyLock<Regex> = LazyLock::new(|| {
 ///     feed it back as its answer. This is not a turn; it's leaked internals.
 /// The perception headers here MUST match the forms actually emitted into the prompt
 /// (`[room-roster]`, `[workspace-map]`, `[workspace]`, `[recall]`, `[context]`, `[actions]`,
-/// `[room-purpose]`, `[no-acts]`) — a header we render but omit here sails through uncaught,
+/// `[room-purpose]`, `[no-acts]`, `[no-deliverable]`) — a header we render but omit here sails through uncaught,
 /// which is exactly the gap this closes.
-const SCAFFOLD_LABELS: [&str; 17] = [
+const SCAFFOLD_LABELS: [&str; 18] = [
     "[working-memory]",
     "[working memory]",
     "[your recent messages]",
@@ -79,6 +79,7 @@ const SCAFFOLD_LABELS: [&str; 17] = [
     "[actions]",
     "[room-purpose]",
     "[no-acts]",
+    "[no-deliverable]",
 ];
 
 /// Strip a leaked leading native tool-call control token. `[TOOL_CALLS]` is the

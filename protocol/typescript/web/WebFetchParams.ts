@@ -9,6 +9,7 @@ export type WebFetchParams = {
  */
 url: string, 
 /**
- * Max characters of readable text to return. Default 6000, clamped to [200, 12000].
+ * Max characters of readable text to return. Defaults to half of what the live served
+ * window can hold, and is clamped to that ceiling (never a fixed 6000/12000 pair).
  */
 max_chars?: number, };

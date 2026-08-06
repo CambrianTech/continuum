@@ -89,7 +89,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use continuum_positron::{
-    KanbanCardState, KanbanCardView, KanbanLaneState, KanbanLaneView, KanbanPriority,
+    KanbanCardState, KanbanCardView, KanbanHold, KanbanLaneState, KanbanLaneView, KanbanPriority,
     KanbanPullRequest, KanbanViewState, RosterSlotView, StateBuilder, Substrate,
 };
 use serde::Deserialize;
@@ -170,6 +170,31 @@ fn map_lane_state(state: LaneState) -> KanbanLaneState {
         LaneState::Blocked => KanbanLaneState::Blocked,
         LaneState::Landing => KanbanLaneState::Landing,
         LaneState::Done => KanbanLaneState::Done,
+    }
+}
+
+/// Map the SHARED holder projection's lease verdict → positron's mirrored
+/// [`KanbanHold`].
+///
+/// The verdict itself is NOT computed here: it comes from
+/// [`crate::persona::card_holder::hold_of`], the same call the persona's board
+/// line and `work/list` make. That is the point — the human's card and the
+/// citizen's board line cannot disagree about whether a claim is still good,
+/// because there is one predicate and this is only its projection.
+/// Exhaustive for the same reason as [`map_card_state`].
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn map_hold(hold: crate::persona::card_holder::Hold) -> KanbanHold {
+    use crate::persona::card_holder::Hold;
+    match hold {
+        Hold::Held => KanbanHold::Held,
+        Hold::Lapsed => KanbanHold::Lapsed,
+        Hold::Unclaimed => KanbanHold::Unclaimed,
     }
 }
 
@@ -283,6 +308,11 @@ impl KanbanProjection {
             provenance: creator.provenance,
             assignee_id,
             assignee_name,
+            // Read the clock per card rather than once per board: a lease
+            // boundary crossing mid-projection must not make one card claim a
+            // different "now" than the predicate that judged it. Cheap, and
+            // the projection is not a hot path.
+            hold: map_hold(crate::persona::card_holder::hold_of(card, now_unix_ms())),
             pull_request: card.pull_request.as_ref().map(|pr| KanbanPullRequest {
                 repo: pr.repo.to_string(),
                 number: pr.number,
@@ -728,6 +758,48 @@ mod tests {
         assert_eq!(view.cards[0].state, KanbanCardState::Claimed);
         assert_eq!(view.cards[0].assignee_id, Some(owner.as_uuid()));
         assert_eq!(view.cards[0].assignee_name.as_deref(), Some("BigMama"));
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_lease_projects_as_takeable_even_though_the_column_still_says_claimed() {
+        // what this catches: the human board's half of the stale-lease defect.
+        // A claim is a LEASE; when it expires the holder stopped and the card
+        // is takeable — but `state` still reads Claimed, so a view carrying
+        // only the column shows dead work as active work. Measured 2026-08-06:
+        // 17 of 19 leases expired and six citizens reported nothing to do.
+        // The renderer can only grey a lapsed hold if the substrate SAYS it,
+        // and this asserts the substrate says it — through the SAME predicate
+        // the persona's board line uses, so the two cannot disagree.
+        let substrate = Substrate::new();
+        let room = RoomId::new();
+        let owner = PeerId::new();
+
+        let mut live = card(room, PeerId::new(), "Live hold", CardState::Claimed, Some(owner));
+        live.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
+        live.claim_expires_at_ms = Some(u64::MAX);
+
+        let mut lapsed = card(room, PeerId::new(), "Lapsed hold", CardState::Claimed, Some(owner));
+        lapsed.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
+        lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
+
+        let open = card(room, PeerId::new(), "Nobody's", CardState::Open, None);
+
+        let reader = StubReader::new(vec![live, lapsed, open], vec![]);
+        let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
+        p.reload().await;
+        let view = current_kanban(&substrate);
+
+        // The column says Claimed for BOTH held cards — that is exactly why the
+        // column alone cannot carry the fact.
+        assert_eq!(view.cards[0].state, KanbanCardState::Claimed);
+        assert_eq!(view.cards[1].state, KanbanCardState::Claimed);
+        // The hold tells them apart.
+        assert_eq!(view.cards[0].hold, KanbanHold::Held);
+        assert_eq!(view.cards[1].hold, KanbanHold::Lapsed);
+        assert_eq!(view.cards[2].hold, KanbanHold::Unclaimed);
+        // And the lapsed card still names who held it, so the renderer can say
+        // whom to ask rather than who is busy.
+        assert_eq!(view.cards[1].assignee_id, Some(owner.as_uuid()));
     }
 
     #[tokio::test]

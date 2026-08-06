@@ -30,6 +30,7 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 /// Ring length — 90 samples × 2s = a 3-minute window, the glanceable "is the
 /// machine busy" horizon. Bounded so the envelope stays small (≈ two hundred
 /// floats), per the perception resolution contract's byte-bound rule.
+// context-budget-exempt: a chart ring-buffer length (samples retained for the metrics widget), not a context bound
 const WINDOW: usize = 90;
 
 /// Format bytes as the legend's compact `25.3/32G` reading.

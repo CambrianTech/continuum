@@ -175,7 +175,10 @@ async fn messages_handler(
         })?;
 
     // Log request sizes for debugging
-    let context_window = adapter.capabilities().max_context_window;
+    let context_window = adapter
+        .capabilities()
+        .max_context_window
+        .map_or_else(|| "undeclared".to_string(), |w| w.to_string());
     let system_chars = req.system.as_ref().map(|s| s.as_text().len()).unwrap_or(0);
     let msg_chars: usize = req.messages.iter().map(|m| m.content.as_text().len()).sum();
     let tools_count = req.tools.as_ref().map(|t| t.len()).unwrap_or(0);

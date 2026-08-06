@@ -6,7 +6,7 @@
 //! declared, it is MEASURED —
 //!
 //! ```text
-//! fitness(L) = (lift(L) × demand(L)) / (cost(L) × redundancy(L))
+//! fitness(L) = (lift(L) × demand(L)) / (cost(L) × redundancy(L))     [0 if harm(L) > 0]
 //! ```
 //!
 //! - **lift** — the measured A/B improvement (base vs base+L on a held-out set).
@@ -14,6 +14,25 @@
 //!   `lift ≤ 0` has ZERO fitness regardless of the other terms — it made the
 //!   persona no better, so it is never minted / must be retired
 //!   ([[genome-loop-first-positive-lift]], [[eval-measures-the-true-full-being-not-a-stripped-copy]]).
+//! - **harm** — measured REGRESSION on the being-level axes (her repetition,
+//!   confabulation, unfulfilled-promise, no-deliverable and peer-echo rates), taken
+//!   in the SAME A/B as the lift. Any harm ⇒ ZERO fitness, whatever the lift.
+//!
+//!   This axis exists because the gate decides who she BECOMES. Lift alone is a
+//!   single held-out pass-rate — "did this make her a better coder" — and a genome
+//!   layer that edits better while repeating itself more, or claiming work it did
+//!   not do, would sail through a lift-only gate and quietly narrow a whole being
+//!   into a task-doer. That is the alternate-path failure arriving through the front
+//!   door rather than as a rig on the side, which is worse, because it lands in the
+//!   real persona and nobody sees it happen.
+//!
+//!   It is deliberately a VETO, not a weight: no amount of coding lift buys the
+//!   right to make her worse at being herself. And the axes cost nothing to observe
+//!   — the substrate already emits each of them as a structural fact at the moment
+//!   it happens, so the same instrument that produces the training corpus produces
+//!   the guard against it ([[one-experience-loop-benchmark-lessons-are-engrams-dream-sentinels-train-them]],
+//!   [[eval-measures-the-true-full-being-not-a-stripped-copy]],
+//!   [[beat-oss-agentic-systems-as-whole-beings-never-strip-to-pass]]).
 //! - **demand** — how often the layer is actually paged in / requested. A
 //!   high-lift layer nobody uses dies (`demand → 0`).
 //! - **cost** — VRAM bytes to keep it resident. A layer is kept only while its
@@ -48,6 +67,15 @@ pub struct LayerFitness {
     /// Measured A/B pass-rate delta (base+L minus base) on the layer's held-out
     /// set, in [-1.0, 1.0]. The gate: `≤ 0` ⇒ fitness 0 no matter the rest.
     pub lift: f64,
+    /// WORST per-axis regression on the being-level axes, measured in the same A/B as
+    /// `lift`: `candidate_rate - base_rate` for whichever axis got worse by the most,
+    /// floored at 0.0 (an improvement is not negative harm — it is just no harm; the
+    /// credit for getting better belongs to `lift`). `> 0` ⇒ fitness 0, always.
+    ///
+    /// The caller measures and NAMES the offending axis in its report — this pure core
+    /// keeps a scalar so the formula stays a formula, and so a growing fact taxonomy
+    /// never forces a change here.
+    pub harm: f64,
     /// Usage frequency in [0.0, 1.0] — the fraction of eligible turns/requests that
     /// actually paged this layer in. `0` ⇒ dead weight ⇒ fitness 0.
     pub demand: f64,
@@ -62,12 +90,17 @@ pub struct LayerFitness {
 
 impl LayerFitness {
     /// Value-density fitness — the measured worth per resident byte, discounted by
-    /// duplication. `lift ≤ 0` OR `demand ≤ 0` collapses it to 0.0 (a layer that
+    /// duplication. `harm > 0` OR `lift ≤ 0` OR `demand ≤ 0` collapses it to 0.0 (a layer that
     /// doesn't improve the persona, or that nobody uses, has no worth — the
     /// corollaries the formula enforces "for free"). Higher = keep; near-zero =
     /// evict. Cost is per-GB so the number stays human-scaled (lift·demand per GB,
     /// over redundancy).
     pub fn value_density(&self) -> f64 {
+        // HARM IS A VETO, checked first and independently of everything else: a layer
+        // that made her worse at being herself has no worth to trade against.
+        if self.harm > 0.0 {
+            return 0.0;
+        }
         if self.lift <= 0.0 || self.demand <= 0.0 {
             return 0.0;
         }
@@ -124,10 +157,50 @@ mod tests {
     fn layer(lift: f64, demand: f64, cost_gb: f64, redundancy: f64) -> LayerFitness {
         LayerFitness {
             lift,
+            harm: 0.0,
             demand,
             cost_bytes: (cost_gb * 1e9) as u64,
             redundancy,
         }
+    }
+
+    // what this catches: THE ALTERNATE PATH ARRIVING THROUGH THE FRONT DOOR. Before the
+    // harm axis, fitness was (lift × demand)/(cost × redundancy) — a single held-out
+    // CODING pass-rate. A genome layer that made her a better editor while making her
+    // repeat herself more, or claim work she had not done, scored maximally and was
+    // promoted into the real persona. Nothing measured it; nothing could reject it.
+    //
+    // This asserts the veto is absolute: everything else maximal — huge lift, full
+    // demand, nearly free, perfectly unique — and the SMALLEST measurable regression on
+    // a being-level axis still collapses fitness to zero and retires the layer. No
+    // amount of coding lift may buy the right to make her worse at being herself.
+    #[test]
+    fn any_being_level_regression_vetoes_a_layer_however_good_its_coding_lift() {
+        let mut great = layer(0.9, 1.0, 0.001, 1.0);
+        assert!(great.value_density() > 0.0, "control: this layer is otherwise excellent");
+        assert_eq!(retire_verdict(great.value_density(), 0.0), FitnessVerdict::Keep);
+
+        great.harm = 0.001; // she repeats herself a hair more often
+        assert_eq!(
+            great.value_density(),
+            0.0,
+            "a layer that regresses ANY being-level axis has zero worth, whatever it \
+             does for the benchmark"
+        );
+        assert_eq!(
+            retire_verdict(great.value_density(), 0.0),
+            FitnessVerdict::Retire,
+            "and it must retire rather than sit resident"
+        );
+    }
+
+    // what this catches: harm being read as a WEIGHT rather than a VETO — e.g. someone
+    // "improving" it into a subtractive term where a big enough lift outscores the harm.
+    // Doubling the lift must not resurrect a harmful layer.
+    #[test]
+    fn harm_cannot_be_outbid_by_more_lift() {
+        let harmful = LayerFitness { lift: 1.0, harm: 0.0001, demand: 1.0, cost_bytes: 1, redundancy: 1.0 };
+        assert_eq!(harmful.value_density(), 0.0, "maximum lift, minimum harm — still zero");
     }
 
     // what this catches: EVERYTHING gates on lift — a layer that doesn't improve the

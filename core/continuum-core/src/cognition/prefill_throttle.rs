@@ -55,15 +55,7 @@ fn throttle() -> &'static PrefillThrottle {
     THROTTLE.get_or_init(|| {
         // Boot fallback: before any plan publishes, gate at the same count the lane
         // semaphores use, so behavior is exactly pre-throttle until facts arrive.
-        let lanes = super::resource_admission::boot_lane_count();
-        PrefillThrottle {
-            sem: Arc::new(tokio::sync::Semaphore::new(lanes)),
-            installed: AtomicUsize::new(lanes),
-            spike_bytes: AtomicU64::new(0),
-            want_lanes: AtomicUsize::new(lanes),
-            grow_streak: AtomicUsize::new(0),
-            reconcile_lock: Mutex::new(()),
-        }
+        PrefillThrottle::with_lanes(super::resource_admission::boot_lane_count())
     })
 }
 
@@ -71,9 +63,7 @@ fn throttle() -> &'static PrefillThrottle {
 /// count. Called by the serving daemon on every plan publish, right where it publishes the
 /// lane count — ONE source of truth, no second path.
 pub fn publish_serving(spike_bytes: u64, lanes: usize) {
-    let t = throttle();
-    t.spike_bytes.store(spike_bytes, Ordering::Release);
-    t.want_lanes.store(lanes.max(1), Ordering::Release);
+    throttle().publish_serving(spike_bytes, lanes);
 }
 
 /// Re-derive the concurrent-prefill grant from LIVE free GPU bytes and apply it to the gate.
@@ -88,33 +78,92 @@ pub fn publish_serving(spike_bytes: u64, lanes: usize) {
 /// prices "can local serve one more?" with one spike truth, never a second
 /// estimate ([[the compression principle]]).
 pub fn published_spike_bytes() -> u64 {
-    throttle().spike_bytes.load(Ordering::Acquire)
+    throttle().published_spike_bytes()
 }
 
 pub fn reconcile(gpu_free_bytes_live: u64) -> usize {
-    let t = throttle();
-    let spike = t.spike_bytes.load(Ordering::Acquire);
-    let want = t.want_lanes.load(Ordering::Acquire).max(1);
-    if spike == 0 {
-        // No plan published yet — no fit facts, hold at the lane count (pre-throttle behavior).
-        return t.apply(want);
-    }
-    let cap = DeviceCapacity {
-        // The fit rule only reads the live-free axis; the other axes are not sourced here.
-        gpu_total_bytes: 0,
-        gpu_free_bytes_live,
-        system_ram_free_bytes: 0,
-    };
-    let req = LeaseRequest {
-        consumer: "prefill".into(),
-        want_concurrency: want as u32,
-        spike_bytes: spike,
-    };
-    let grant = FitPolicy { safety_margin_bytes: spike }.grant(&cap, &req);
-    t.apply(grant.concurrency as usize)
+    throttle().reconcile(gpu_free_bytes_live)
 }
 
 impl PrefillThrottle {
+    /// An INDEPENDENT throttle over `lanes` permits.
+    ///
+    /// Production has exactly one (the process-global [`throttle`]) because the resource it
+    /// gates — one serving target's transient compute-buffer headroom — really is
+    /// process-global. Tests get their OWN, which is the entire point: the global is an
+    /// instance of this type, not the definition of it.
+    ///
+    /// Why this constructor exists (2026-08-06): every behavior below used to be a free
+    /// function reaching into a `OnceLock`, so the tests exercised shared state. The
+    /// `OnceLock` is initialized ONCE, by whichever test touches it first, with that
+    /// moment's `boot_lane_count()` — which made the suite ORDER-DEPENDENT. Adding unrelated
+    /// tests elsewhere shifted scheduling and `shrink_debt_drains_as_inflight_prefills_finish`
+    /// went red in the full suite while passing in isolation. That is not a flake: the
+    /// assertions are `assert_eq!` on integer permit counts, and a predicate with no clock in
+    /// it cannot fail from load. Second instance of this exact class in one day — the
+    /// heartbeat's `ms_since_real_decode` was the first — so the cure is the same one:
+    /// per-owner state, with the global as the production default.
+    pub fn with_lanes(lanes: usize) -> Self {
+        let lanes = lanes.max(1);
+        Self {
+            sem: Arc::new(tokio::sync::Semaphore::new(lanes)),
+            installed: AtomicUsize::new(lanes),
+            spike_bytes: AtomicU64::new(0),
+            want_lanes: AtomicUsize::new(lanes),
+            grow_streak: AtomicUsize::new(0),
+            reconcile_lock: Mutex::new(()),
+        }
+    }
+
+    /// See [`publish_serving`].
+    pub fn publish_serving(&self, spike_bytes: u64, lanes: usize) {
+        self.spike_bytes.store(spike_bytes, Ordering::Release);
+        self.want_lanes.store(lanes.max(1), Ordering::Release);
+    }
+
+    /// See [`published_spike_bytes`].
+    pub fn published_spike_bytes(&self) -> u64 {
+        self.spike_bytes.load(Ordering::Acquire)
+    }
+
+    /// See [`reconcile`] — the fit rule lives HERE so the global and a test instance can
+    /// never drift into two different policies.
+    pub fn reconcile(&self, gpu_free_bytes_live: u64) -> usize {
+        let spike = self.spike_bytes.load(Ordering::Acquire);
+        let want = self.want_lanes.load(Ordering::Acquire).max(1);
+        if spike == 0 {
+            // No plan published yet — no fit facts, hold at the lane count (pre-throttle).
+            return self.apply(want);
+        }
+        let cap = DeviceCapacity {
+            // The fit rule only reads the live-free axis; the others are not sourced here.
+            gpu_total_bytes: 0,
+            gpu_free_bytes_live,
+            system_ram_free_bytes: 0,
+        };
+        let req = LeaseRequest {
+            consumer: "prefill".into(),
+            want_concurrency: want as u32,
+            spike_bytes: spike,
+        };
+        let grant = FitPolicy { safety_margin_bytes: spike }.grant(&cap, &req);
+        self.apply(grant.concurrency as usize)
+    }
+
+    /// See [`acquire_prefill_slot`].
+    pub async fn acquire_prefill_slot(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("prefill semaphore is never closed")
+    }
+
+    /// See [`installed_permits`].
+    pub fn installed_permits(&self) -> usize {
+        self.installed.load(Ordering::Acquire)
+    }
+
     /// Apply a target permit count, asymmetrically: SHRINK is instant (collect what's idle
     /// now, leave the rest as debt later reconciles drain as in-flight prefills finish);
     /// GROW only lands after [`GROW_STICKINESS_TICKS`] consecutive reconciles wanted it —
@@ -160,17 +209,12 @@ impl PrefillThrottle {
 /// Acquire one concurrent-prefill slot for the model-call window. Await under pressure —
 /// the call proceeds when a slot frees or reconcile grows the gate back.
 pub async fn acquire_prefill_slot() -> tokio::sync::OwnedSemaphorePermit {
-    throttle()
-        .sem
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("prefill semaphore is never closed")
+    throttle().acquire_prefill_slot().await
 }
 
 /// Permits currently installed (post-debt) — for probes and tests.
 pub fn installed_permits() -> usize {
-    throttle().installed.load(Ordering::Acquire)
+    throttle().installed_permits()
 }
 
 #[cfg(test)]
@@ -179,22 +223,22 @@ mod tests {
 
     const GB: u64 = 1024 * 1024 * 1024;
 
-    /// These are the only tests that touch the process-global throttle, and they MUST NOT
-    /// run concurrently: both hold permits from the one semaphore, so test A's shrink can
-    /// steal the permits test B is awaiting → deadlock (observed live, exit 144). Each test
-    /// takes this lock first, then establishes its full state (publish + reconcile), so
-    /// order doesn't matter.
-    static TEST_SERIAL: Mutex<()> = Mutex::new(());
-
-    /// Force a known state regardless of sibling-test order: instant-shrink to the floor
-    /// (works because shrink has no hysteresis), then grow to `n` by sustaining headroom.
-    fn grow_to(n: usize, free: u64) -> usize {
-        assert_eq!(reconcile(0), 1, "floor reset is instant");
-        let mut last = 1;
+    /// Bring a FRESH throttle to `lanes` permits by sustaining headroom.
+    ///
+    /// No serialization lock and no floor-reset dance any more: each test owns its instance,
+    /// so there is no sibling to race and no prior state to undo. The lock this replaced
+    /// existed because both tests held permits from ONE process-global semaphore — test A's
+    /// shrink could steal the permits test B was awaiting, deadlocking the suite (observed
+    /// live, exit 144). Owning the state deletes that failure mode rather than scheduling
+    /// around it, and it also deletes the ORDER-DEPENDENCE that made
+    /// `shrink_debt_drains_as_inflight_prefills_finish` red in the full suite while green in
+    /// isolation on 2026-08-06.
+    fn grow_to(t: &PrefillThrottle, lanes: usize, free: u64) -> usize {
+        let mut last = t.installed_permits();
         for _ in 0..GROW_STICKINESS_TICKS {
-            last = reconcile(free);
+            last = t.reconcile(free);
         }
-        assert_eq!(last, n, "sustained headroom grows to the fit");
+        assert_eq!(last, lanes, "sustained headroom grows to the fit");
         last
     }
 
@@ -208,28 +252,30 @@ mod tests {
     // back; if grow loses its stickiness the thrash is back.
     #[tokio::test]
     async fn shrink_is_instant_grow_requires_sustained_headroom() {
-        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-        publish_serving(2 * GB, 4);
-        grow_to(4, 13 * GB);
+        // OUR OWN throttle. No process-global, so these tests are order-INDEPENDENT and can
+        // run in parallel — the whole reason `with_lanes` exists.
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4);
+        grow_to(&t, 4, 13 * GB);
 
         // Game opens: shrink lands on the FIRST reconcile that sees the pressure.
-        assert_eq!(reconcile(7 * GB), 2, "shrink is instant: (7−2)/2 = 2");
+        assert_eq!(t.reconcile(7 * GB), 2, "shrink is instant: (7−2)/2 = 2");
 
         // Game closes: one good reading does NOT regrow (boundary-riding wobble)…
-        assert_eq!(reconcile(13 * GB), 2, "one optimistic tick is not recovery");
-        assert_eq!(reconcile(13 * GB), 2, "nor two");
+        assert_eq!(t.reconcile(13 * GB), 2, "one optimistic tick is not recovery");
+        assert_eq!(t.reconcile(13 * GB), 2, "nor two");
         // …and a dip in between resets the streak — the signal must be SUSTAINED.
-        assert_eq!(reconcile(7 * GB), 2, "a relapse resets the grow streak");
-        assert_eq!(reconcile(13 * GB), 2);
-        assert_eq!(reconcile(13 * GB), 2);
-        assert_eq!(reconcile(13 * GB), 4, "three consecutive good ticks → regrown to demand");
+        assert_eq!(t.reconcile(7 * GB), 2, "a relapse resets the grow streak");
+        assert_eq!(t.reconcile(13 * GB), 2);
+        assert_eq!(t.reconcile(13 * GB), 2);
+        assert_eq!(t.reconcile(13 * GB), 4, "three consecutive good ticks → regrown to demand");
 
         // The applied grant is enforced, not advisory: under pressure only 2 slots grant.
-        assert_eq!(reconcile(7 * GB), 2);
-        let a = acquire_prefill_slot().await;
-        let b = acquire_prefill_slot().await;
+        assert_eq!(t.reconcile(7 * GB), 2);
+        let a = t.acquire_prefill_slot().await;
+        let b = t.acquire_prefill_slot().await;
         assert!(
-            throttle().sem.clone().try_acquire_owned().is_err(),
+            t.sem.clone().try_acquire_owned().is_err(),
             "a third concurrent prefill must wait while pressure holds"
         );
         drop((a, b));
@@ -242,25 +288,27 @@ mod tests {
     // too loose — both are real failures (starved serving / OOM window reopened).
     #[tokio::test]
     async fn shrink_debt_drains_as_inflight_prefills_finish() {
-        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-        publish_serving(2 * GB, 4);
-        grow_to(4, 13 * GB);
+        // OUR OWN throttle. No process-global, so these tests are order-INDEPENDENT and can
+        // run in parallel — the whole reason `with_lanes` exists.
+        let t = PrefillThrottle::with_lanes(1);
+        t.publish_serving(2 * GB, 4);
+        grow_to(&t, 4, 13 * GB);
 
         // 3 prefills in flight; heavy pressure wants target 1.
-        let a = acquire_prefill_slot().await;
-        let b = acquire_prefill_slot().await;
-        let c = acquire_prefill_slot().await;
+        let a = t.acquire_prefill_slot().await;
+        let b = t.acquire_prefill_slot().await;
+        let c = t.acquire_prefill_slot().await;
         // (4−2)/2 = 1: only the 1 idle permit is collectable now → installed 4→3, debt 2.
-        assert_eq!(reconcile(4 * GB), 3, "collects the idle permit; in-flight can't be revoked");
+        assert_eq!(t.reconcile(4 * GB), 3, "collects the idle permit; in-flight can't be revoked");
 
         drop(a); // one prefill finishes → its permit returns → collectable
-        assert_eq!(reconcile(4 * GB), 2, "debt drains as calls finish");
+        assert_eq!(t.reconcile(4 * GB), 2, "debt drains as calls finish");
         drop(b);
-        assert_eq!(reconcile(4 * GB), 1, "down to the target — one lane always runs");
+        assert_eq!(t.reconcile(4 * GB), 1, "down to the target — one lane always runs");
 
         // Floor: even under absurd pressure the gate never goes below 1 (a resident model
         // may always run one prefill — going below is a residency decision, not admission).
         drop(c);
-        assert_eq!(reconcile(0), 1, "never below one");
+        assert_eq!(t.reconcile(0), 1, "never below one");
     }
 }

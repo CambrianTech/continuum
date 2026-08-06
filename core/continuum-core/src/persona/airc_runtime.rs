@@ -948,6 +948,18 @@ impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
     async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
         crate::persona::room_board_source::RoomBoardReader::work_board(self.airc.as_ref()).await
     }
+
+    /// Published display names for card owners — delegates to the inner airc
+    /// handle's alias store. This is the LIVE persona path: without it, every
+    /// teammate's card renders as an 8-hex prefix she cannot recognize or
+    /// reach out to.
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String> {
+        crate::persona::room_board_source::RoomBoardReader::peer_names(self.airc.as_ref(), peers)
+            .await
+    }
 }
 
 #[async_trait::async_trait]

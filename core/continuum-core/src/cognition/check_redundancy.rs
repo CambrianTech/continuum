@@ -58,6 +58,7 @@ use ts_rs::TS;
 /// Maximum number of recent conversation messages included in the
 /// redundancy-check prompt. Matches the TS implementation's
 /// `slice(-10)` behavior.
+// context-budget-exempt: a count of recent TURNS to compare against (sliding-window sense), not tokens or chars
 pub const REDUNDANCY_CONVERSATION_WINDOW: usize = 10;
 
 const REDUNDANCY_PROVIDER: &str = "groq";

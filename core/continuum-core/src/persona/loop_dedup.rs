@@ -65,6 +65,7 @@ const NEAR_DUP_JACCARD: f32 = 0.65;
 
 /// How many recently-kept turns each new turn is fuzzy-compared against. Bounded so
 /// the pass stays O(n·window), not O(n²), on a long history.
+// context-budget-exempt: how many recent turns the loop detector COMPARES — a count of items, not tokens or chars
 const FUZZY_WINDOW: usize = 16;
 
 /// Collapse whitespace + case so trivial formatting differences don't defeat the

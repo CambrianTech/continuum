@@ -70,6 +70,7 @@ pub struct GenomeAdapter {
 const GPU_SYNC_INTERVAL: usize = 64;
 
 /// Check for NaN only on first N generated tokens.
+// context-budget-exempt: how many decoded tokens the NaN sanity probe inspects — a health check, not a budget
 const NAN_CHECK_TOKENS: usize = 3;
 
 /// Unified trait for ALL local model backends.

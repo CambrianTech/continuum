@@ -72,10 +72,12 @@ pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
 
 /// Echo length cap — last N chars of the most recent user message
 /// surfaces in the response.
+// context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
 const ECHO_CHARS: usize = 200;
 
 /// Char-to-token ratio (same rough heuristic the rest of the L1 RAG
 /// pipeline uses for cost estimation).
+// context-budget-exempt: a chars-per-token UNIT CONVERSION in the test fixture's fake token accounting
 const CHARS_PER_TOKEN: usize = 4;
 
 /// The adapter struct itself. No mutable state, no clock access, no
@@ -323,8 +325,8 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             // Local in the "no network, no GPU" sense.
             is_local: true,
             // Effectively unlimited — we never reject by length.
-            max_context_window: u32::MAX,
-            max_output_tokens: 4096,
+            max_context_window: Some(u32::MAX),
+            max_output_tokens: Some(4096),
             // Deterministic text-only adapter — no protocols beyond text I/O.
             tool_call_protocol: crate::model_registry::ToolProtocol::None,
             structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::None,

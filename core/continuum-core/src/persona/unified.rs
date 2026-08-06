@@ -38,6 +38,7 @@ use uuid::Uuid;
 /// model, less on a tight one. Keeps the "never starve airc's recent_history"
 /// property (a small fraction, sorted last) while never clamping a 128k window to
 /// a constant. See the budget-claim rationale in `compose_for_turn`.
+// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
 const ROSTER_WINDOW_FRACTION: u32 = 64;
 
 /// Room-doctrine grounding ceiling as a FRACTION (1/16) of the served window.
@@ -45,6 +46,7 @@ const ROSTER_WINDOW_FRACTION: u32 = 64;
 /// roster (prose, not a name list) but still a small, floorless share that scales:
 /// ~1024 tokens at a 16k window (the tuned value), growing so a big model can hold
 /// a richer room contract without competing with engram/airc for grow headroom.
+// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
 const DOCTRINE_WINDOW_FRACTION: u32 = 16;
 
 /// All cognitive state for a single persona — single lock, cache-local.
