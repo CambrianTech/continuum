@@ -47,6 +47,27 @@ pub const MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// the worst case on disk is `MAX_BYTES * 2` — 16 MB, versus the 172 GB that motivated this.
 pub const KEEP: usize = 1;
 
+/// An observer of the child's output, run once per line as the sink drains it.
+///
+/// The pump already reads every line to keep the file bounded, so a stream that used to be
+/// write-only is now the cheapest place in the system to notice what the engine is saying
+/// about itself. This trait is the extension point: the sink stays about CAPPING, and each
+/// observer owns exactly one question it asks of the stream.
+///
+/// Implementors must be cheap and must never block — the pump cannot stall, because a full
+/// pipe blocks the child's `write(2)` and would wedge inference to serve an observer.
+pub trait LineWatch: Send {
+    fn observe(&mut self, line: &str);
+}
+
+/// The no-op observer: drain and cap, ask nothing.
+///
+/// Used by lanes with no lifecycle owner to report to (an ephemeral eval lane owns and
+/// tears down its own process). Not "disabled" — genuinely nothing to ask.
+impl LineWatch for () {
+    fn observe(&mut self, _line: &str) {}
+}
+
 /// Take ownership of a spawned child's piped stderr and drain it into `path` under the cap.
 ///
 /// The caller spawns with `.stderr(Stdio::piped())` and hands the taken handle here. A
@@ -55,9 +76,15 @@ pub const KEEP: usize = 1;
 /// The task must never stop reading: a full pipe blocks the child's `write(2)`, which would
 /// wedge inference to protect a log. On a write failure we keep draining and discard, and
 /// say so once — losing log lines is survivable, stalling serving is not.
-pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf) {
+///
+/// `watch` sees each line as it passes. Pass `Box::new(())` when there is nothing to ask.
+pub fn drain_capped(
+    stderr: tokio::process::ChildStderr,
+    path: PathBuf,
+    watch: Box<dyn LineWatch>,
+) {
     tokio::spawn(async move {
-        if let Err(error) = pump(stderr, &path).await {
+        if let Err(error) = pump(stderr, &path, watch).await {
             tracing::warn!(
                 probe_class = "serving.llama.log_sink_ended",
                 path = %path.display(),
@@ -72,7 +99,11 @@ pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf) {
 ///
 /// Line-oriented so a rotation never splits a message in half — a half-line at the seam is
 /// exactly the kind of "evidence that reads as corruption" that costs an hour later.
-async fn pump(reader: tokio::process::ChildStderr, path: &Path) -> io::Result<()> {
+async fn pump(
+    reader: tokio::process::ChildStderr,
+    path: &Path,
+    mut watch: Box<dyn LineWatch>,
+) -> io::Result<()> {
     let mut lines = BufReader::new(reader).lines();
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -82,6 +113,10 @@ async fn pump(reader: tokio::process::ChildStderr, path: &Path) -> io::Result<()
     let mut written = file.metadata().await.map(|m| m.len()).unwrap_or(0);
 
     while let Some(line) = lines.next_line().await? {
+        // Observe BEFORE writing: a fault the observer exists to catch must still be
+        // caught when the disk is full — which is exactly the state the 2026-08-05 wedge
+        // drove the machine into. Detection must not depend on the sink succeeding.
+        watch.observe(&line);
         let bytes = line.len() as u64 + 1;
         if written + bytes > MAX_BYTES {
             file.flush().await?;

@@ -974,6 +974,18 @@ pub trait LlamaServerControl: Send + Sync {
     fn owns_child(&self) -> bool {
         false
     }
+
+    /// The flag this control's stderr watcher raises when the running lane proves itself
+    /// WEDGED — a slot reporting arithmetically impossible progress (see
+    /// [`crate::inference::wedge`]). The serving daemon polls it on its tick and owns the
+    /// response; the watcher only reports, so lane lifecycle stays with exactly one owner.
+    ///
+    /// `None` for a control with nobody to report to: a fake, a remote control, or an
+    /// ephemeral eval lane that tears down its own process. Default `None` keeps that the
+    /// honest answer rather than a silently-never-raised flag.
+    fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
+        None
+    }
 }
 
 /// Pure reconcile decision: bring the running server in line with `desired`.
@@ -1129,6 +1141,10 @@ pub struct LlamaServerProcess {
     /// it would reap the living persona's own server. This boolean is the seam
     /// that keeps the reclaim machinery bound to exactly one process.
     is_live_lane: bool,
+    /// Raised by this lane's stderr watcher when a slot reports impossible progress,
+    /// polled by the serving daemon. Live lane only — an ephemeral lane has no daemon
+    /// watching it and tears down its own process, so its watcher would report into a void.
+    wedge: Option<crate::inference::wedge::WedgeFlag>,
 }
 
 impl LlamaServerProcess {
@@ -1147,6 +1163,7 @@ impl LlamaServerProcess {
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
+            wedge: Some(crate::inference::wedge::WedgeFlag::new()),
         }
     }
 
@@ -1170,6 +1187,9 @@ impl LlamaServerProcess {
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
+            // No serving daemon watches an ephemeral lane, and its owner tears the process
+            // down when the eval ends — a wedge report would have no consumer.
+            wedge: None,
         }
     }
 
@@ -1641,6 +1661,10 @@ impl LlamaServerControl for LlamaServerProcess {
         self.child.lock().unwrap().is_some()
     }
 
+    fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
+        self.wedge.clone()
+    }
+
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
@@ -1962,8 +1986,17 @@ impl LlamaServerControl for LlamaServerProcess {
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
         // Hand stderr to the capped sink. If either the handle or the path is missing the
         // child still serves — unlogged, and the pipe drains to close so it cannot block.
+        // The sink reads every line to keep the file capped, so it is also the cheapest
+        // place to notice the engine reporting an IMPOSSIBLE state. A slot printing
+        // `progress = 1.10` is wedged; the decode heartbeat can't see it (the OTHER slots
+        // still decode, so the lane reads healthy) — which is how one slot burned four
+        // hours on 2026-08-05. The watcher only RAISES; the serving daemon reaps.
+        let watch: Box<dyn super::child_log::LineWatch> = match self.wedge.clone() {
+            Some(flag) => Box::new(super::wedge::WedgeWatch::new(flag)),
+            None => Box::new(()),
+        };
         match (child.stderr.take(), log_path) {
-            (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path),
+            (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path, watch),
             (Some(_), None) => tracing::warn!(
                 probe_class = "serving.llama.stderr_unlogged",
                 port = port,

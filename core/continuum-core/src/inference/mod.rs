@@ -57,6 +57,7 @@ pub mod recipe_budget;
 pub mod throughput_expectation;
 pub mod vision_sidecar;
 pub mod vendored;
+pub mod wedge;
 
 // Re-export commonly used types
 pub use backends::{read_gguf_metadata, GenomeAdapter, ModelBackend, ModelFormat};

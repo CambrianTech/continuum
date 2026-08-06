@@ -1501,25 +1501,74 @@ impl ServingDaemonModule {
                  poisoned Metal backend); #175 self-heal",
             );
             if n >= HEALTH_FAILS_TO_RELAUNCH {
-                // Sustained no-decode = wedged, not transiently busy. Arm the force-probe
-                // (so the next reconcile re-proves decode instead of re-adopting the owned
-                // wedged child) AND publish not-ready (so the reconcile's no-op guard is
-                // skipped). Reset the streak so we don't re-trigger before the relaunch
-                // lands and republishes ready.
-                force_relaunch.store(true, Ordering::Release);
+                // Sustained no-decode = wedged, not transiently busy. Reset the streak so we
+                // don't re-trigger before the relaunch lands and republishes ready.
                 health_fails.store(0, Ordering::Relaxed);
-                let empty = ServingSnapshot::empty();
-                Self::emit_serving(bus.as_ref(), &empty);
-                let _ = serving_tx.send_replace(empty);
-                crate::probe!(
-                    class = "serving.health",
-                    action = "relaunch",
-                    "flipped serving snapshot not-ready after sustained decode failure — \
-                     reconcile will kill+respawn the wedged lane (#175 self-heal)",
+                Self::declare_lane_wedged(
+                    &force_relaunch,
+                    &serving_tx,
+                    bus.as_ref(),
+                    "sustained decode failure",
                 );
             }
             health_probing.store(false, Ordering::Release);
         }))
+    }
+
+    /// Declare the live lane WEDGED: arm the force-probe and publish not-ready.
+    ///
+    /// BOTH steps are load-bearing and neither works alone, which is why this is one
+    /// function instead of two lines copied per reporter:
+    /// - `force_relaunch` makes the next reconcile re-prove decode even on a child we OWN;
+    ///   without it the "trusted thereafter" short-circuit re-adopts the wedged lane forever.
+    /// - the empty snapshot makes the reconcile RUN at all; its no-op guard returns early on
+    ///   `ready && same model && same adapters` — *before* it ever consumes the force flag.
+    ///
+    /// Two independent reporters call this, because they answer different questions:
+    /// - the decode heartbeat: "can this lane produce a token?" (a poisoned Metal backend)
+    /// - the stderr wedge watcher: "is a slot reporting an impossible state?" (2026-08-05)
+    ///
+    /// The second exists because the first cannot see a single wedged SLOT: the other slots
+    /// still decode, and a lane that delivered any token inside the probe window is trusted
+    /// without probing at all. The 4.1-hour wedge was delivering 0.14 tok/s the whole time —
+    /// alive by every liveness measure, and making no progress by the only one that mattered.
+    fn declare_lane_wedged(
+        force_relaunch: &Arc<AtomicBool>,
+        serving_tx: &watch::Sender<ServingSnapshot>,
+        bus: Option<&Arc<MessageBus>>,
+        reason: &str,
+    ) {
+        force_relaunch.store(true, Ordering::Release);
+        let empty = ServingSnapshot::empty();
+        Self::emit_serving(bus, &empty);
+        let _ = serving_tx.send_replace(empty);
+        crate::probe!(
+            class = "serving.health",
+            action = "relaunch",
+            reason = reason,
+            "flipped serving snapshot not-ready — reconcile will kill+respawn the wedged \
+             lane (#175 self-heal)",
+        );
+    }
+
+    /// Consume any wedge the live lane's stderr watcher raised and escalate it.
+    ///
+    /// Polled on the daemon tick rather than pushed, because the lifecycle authority must
+    /// stay HERE: the watcher runs inside the log sink, and a log sink that could reap a
+    /// serving process would be a second owner of the lane's life.
+    fn take_reported_wedge(&self) {
+        let Some(flag) = self.server.wedge_flag() else {
+            return;
+        };
+        if !flag.take() {
+            return;
+        }
+        Self::declare_lane_wedged(
+            &self.force_relaunch,
+            &self.serving_tx,
+            self.bus.get(),
+            "a slot reported impossible progress (>1.0)",
+        );
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -2245,6 +2294,10 @@ impl ServiceModule for ServingDaemonModule {
         // publishing to `plan_tx`) — serving no longer samples memory on its own tick. This
         // tick only RECONCILES: bring the running server in line with the authority's
         // published plan. Fast-to-decide; the slow relaunch spawns off the tick.
+        // BEFORE the reconcile, so a wedge reported since the last tick is already published
+        // not-ready when the reconcile reads the snapshot — otherwise the escalation waits a
+        // full tick behind the very guard it exists to defeat.
+        self.take_reported_wedge();
         let _ = self.reconcile_to_plan();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
@@ -2589,6 +2642,9 @@ mod tests {
         /// COMPUTE path (probe → false) independently of its control plane. Defaults true
         /// (a healthy lane decodes). See [`FakeServer::healthy`].
         smoke_ok: Arc<AtomicBool>,
+        /// The stderr watcher's report channel, as the real `LlamaServerProcess` exposes it.
+        /// A test raises this to stand in for a slot printing impossible progress.
+        wedge: crate::inference::wedge::WedgeFlag,
     }
 
     impl FakeServer {
@@ -2598,12 +2654,17 @@ mod tests {
                 serves,
                 ok,
                 smoke_ok: Arc::new(AtomicBool::new(true)),
+                wedge: Default::default(),
             }
         }
     }
 
     #[async_trait]
     impl LlamaServerControl for FakeServer {
+        fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
+            Some(self.wedge.clone())
+        }
+
         async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
             Err(LlamaServerError::Unreachable("test: nothing up".into()))
         }
@@ -3064,6 +3125,53 @@ mod tests {
         }
     }
 
+    // what this catches: THE WIRING. The 2026-08-05 outage was not a missing detector — the
+    // reap actuator already existed and was tested. What was missing was anything that CALLED
+    // it, and a detector that reports into a void is indistinguishable from no detector at
+    // all. This drives the whole chain the live system uses: the stderr watcher raises the
+    // flag → the daemon tick takes it → the lane is published NOT-ready.
+    //
+    // The not-ready assertion is the load-bearing half. Arming `force_relaunch` alone is
+    // silently useless: `reconcile_to_plan` returns early on `ready && same model && same
+    // adapters` BEFORE it ever reads the flag, so a wedged-but-"ready" lane would sit there
+    // exactly as it did for four hours. regression for the 172 GB log outage
+    #[tokio::test]
+    async fn a_reported_wedge_flips_the_lane_not_ready() {
+        let fake = Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true));
+        let daemon = daemon_with(fake.clone());
+        let _ = daemon.serving_tx.send_replace(ready_snapshot());
+
+        // Nothing reported yet: a healthy lane is left alone.
+        daemon.take_reported_wedge();
+        assert!(
+            daemon.serving_tx.borrow().ready,
+            "an unreported lane must never be reaped"
+        );
+
+        // The stderr watcher sees `progress = 1.10` four times and raises.
+        fake.wedge.raise();
+        daemon.take_reported_wedge();
+
+        assert!(
+            !daemon.serving_tx.borrow().ready,
+            "a reported wedge must publish NOT-ready, or the reconcile's no-op guard \
+             returns before it ever consumes the force-relaunch flag"
+        );
+        assert!(
+            daemon.force_relaunch.load(Ordering::Acquire),
+            "the reconcile must be told to re-prove decode on a child we own"
+        );
+
+        // The report is consumed exactly once — a second tick must not re-escalate a lane
+        // that is already being relaunched.
+        let _ = daemon.serving_tx.send_replace(ready_snapshot());
+        daemon.take_reported_wedge();
+        assert!(
+            daemon.serving_tx.borrow().ready,
+            "take clears the flag; one report is one escalation"
+        );
+    }
+
     // what this catches: #175 self-heal (detection + recovery). A lane the daemon believes
     // is `ready` but whose COMPUTE path is wedged — the decode heartbeat fails while the
     // control plane still 200s, the exact Metal-OOM-poison shape — is flipped NOT-ready
@@ -3078,6 +3186,7 @@ mod tests {
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
+            wedge: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -3117,6 +3226,7 @@ mod tests {
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
+            wedge: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -3158,6 +3268,7 @@ mod tests {
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
+            wedge: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
