@@ -193,6 +193,21 @@ pub struct LlmDeliberationFaculty {
     /// reproducible; her live cognition leaves it `None`. Read wait-free per
     /// generation, exactly like `genome`.
     decoding: DecodingHandle,
+    /// Where this mind reports what its turns actually COST — the measurement the
+    /// served window is provisioned from ([`super::working_set`]).
+    ///
+    /// This faculty is the only place that knows a turn's TRUE size, because it is
+    /// the place that assembles the prompt and therefore the place that sees what it
+    /// had to throw away: the conversation before newest-first trimming, and every
+    /// grounding contribution offered including the ones that did not fit. Downstream
+    /// of here that information is gone, which is why the serving planner had to
+    /// guess with a constant.
+    ///
+    /// `None` in tests and in any path with no serving planner to inform — recording
+    /// is then simply skipped. Shared (cheap clone) with the serving daemon that reads
+    /// the ceiling; deliberately NOT a process global, because that value feeds a
+    /// decision and a global read inside a decision makes tests order-dependent.
+    working_set: Option<super::working_set::WorkingSetRegistry>,
 }
 
 impl LlmDeliberationFaculty {
@@ -223,7 +238,16 @@ impl LlmDeliberationFaculty {
             prompt_capture: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
+            working_set: None,
         }
+    }
+
+    /// Share the registry this mind reports its turn demand into — the measurement
+    /// `serving_plan` provisions the window from. Wired by the live spawn path; absent
+    /// in tests, where there is no planner to inform.
+    pub fn with_working_set(mut self, registry: super::working_set::WorkingSetRegistry) -> Self {
+        self.working_set = Some(registry);
+        self
     }
 
     /// Share the persona's decoding handle — the same [`ArcSwap`] the owning
@@ -663,6 +687,22 @@ impl LlmDeliberationFaculty {
     /// half-truncated engram is noise, so a lower-salience item that still fits is
     /// preferred over a mangled high-salience one. Same drop-whole-in-priority
     /// philosophy as `FlexboxRagBudgetAdapter`.
+    /// What ALL the grounding offered this turn would cost if none of it had to be
+    /// dropped — the grounding half of a turn's demand ([`super::working_set`]).
+    ///
+    /// Counted over the same set `render_assembled_context_within` selects from, with
+    /// the same per-item header charge, so the two agree on what a contribution costs
+    /// and only disagree on how much of it survives. Measured 2026-08-06 this is the
+    /// dominant term: the work board alone offered a median 5,364 tokens into a
+    /// context budget with a median of 55.
+    fn assembled_context_cost(ws: &Workspace) -> usize {
+        ws.broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .map(|c| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2)
+            .sum()
+    }
+
     fn render_assembled_context_within(&self, ws: &Workspace, budget_tokens: usize) -> String {
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
@@ -919,7 +959,51 @@ impl LlmDeliberationFaculty {
         // is what the turn is about — the same priority the old flat head-trim had,
         // now at turn granularity).
         let msg_budget = budget.saturating_sub(framing_tokens);
-        let messages = self.messages_within(ws, msg_budget);
+        let all_messages = self.messages_unfitted(ws);
+
+        // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
+        // fitting step throws the evidence away, and deliberately free to exceed
+        // `context_window`. That excess IS the signal: it is the only way a mind held
+        // at a too-small window can ever report that it needed a bigger one, and the
+        // measurement `serving_plan` provisions from (see [`super::working_set`]).
+        //
+        // Measuring the prompt we actually SEND instead would measure the clamp — a
+        // citizen capped at 8192 fills 8192, so a p95 of what-was-sent re-derives the
+        // cap that produced it and freezes it forever. Every term below is therefore
+        // the UNTRUNCATED one.
+        let demand_tokens = framing_tokens
+            .saturating_add(Self::messages_cost(&all_messages))
+            .saturating_add(Self::assembled_context_cost(ws))
+            .saturating_add(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
+            .saturating_add(completion_reserve)
+            .saturating_add(self.describe_tool_tokens());
+        if let Some(reg) = &self.working_set {
+            reg.record(
+                self.persona_id,
+                demand_tokens.min(u32::MAX as usize) as u32,
+                // `now_ms` is the workspace's own clock when the cycle stamped one;
+                // 0 when it didn't. The registry keeps peaks, not a time series, so an
+                // unstamped cycle still contributes its measurement honestly.
+                ws.now_ms.unwrap_or(0),
+            );
+        }
+        crate::probe!(
+            class = "delib.turn.demand",
+            persona = %self.persona_name,
+            demand_tokens,
+            context_window,
+            framing_tokens,
+            conversation_tokens = Self::messages_cost(&all_messages),
+            grounding_tokens = Self::assembled_context_cost(ws),
+            completion_reserve,
+            // The honest headline: >1.0 means this turn wanted more window than it had,
+            // and by how much. This is the number that decides whether the served
+            // window is provisioned for the work or for a constant.
+            over_window = demand_tokens as f32 / (context_window.max(1) as f32),
+            "turn demand vs served window"
+        );
+
+        let messages = self.fit_messages(all_messages, msg_budget);
 
         // Whatever remains after framing + conversation goes to enrichment
         // context. The framing estimate above was taken with an EMPTY context,
@@ -981,6 +1065,18 @@ impl LlmDeliberationFaculty {
     /// so it neither bleeds identity nor replays the transcript (the echo-loop root
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
+        self.fit_messages(self.messages_unfitted(ws), budget_tokens)
+    }
+
+    /// The conversation as it stands BEFORE any budget is applied — every turn, every
+    /// perception fact, every trailing proprioception block, in final render order.
+    ///
+    /// Split out from the fitting step so a turn's TRUE conversational size is
+    /// knowable. Fitting is lossy by design (newest-first, oldest dropped), and once
+    /// it has run the question "how much did this turn actually want?" is
+    /// unanswerable — which is precisely why the served window had to be sized by a
+    /// constant instead of by demand. [`super::working_set`] measures this.
+    fn messages_unfitted(&self, ws: &Workspace) -> Vec<ChatMessage> {
         // Collapse consecutive same-role turns into one message each (chronological).
         // Her OWN near-duplicate turns are DROPPED after the first: replaying
         // `assistant: X` three times teaches the model that repeating X is its
@@ -1117,7 +1213,35 @@ impl LlmDeliberationFaculty {
         if messages.is_empty() {
             return vec![ChatMessage::text("user", ws.world_state.clone())];
         }
+        messages
+    }
 
+    /// The per-message chat-template overhead every message pays, whether it is being
+    /// measured for demand or fitted to a budget. ONE constant so the two cannot drift
+    /// — an under-count here is an llama-server 400 at the window edge.
+    ///
+    /// Chat templates wrap each message in role markers
+    /// (`<|im_start|>role\n…<|im_end|>`, ~4-5 tokens). The original +2 was optimistic:
+    /// at the budget edge the fitted thread measured over the window by a token
+    /// (glass-boxed 2026-07-13). Round UP like every other estimate here.
+    // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
+    const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
+
+    /// What this conversation costs whole, with no budget applied — the conversational
+    /// half of a turn's demand ([`super::working_set`]).
+    fn messages_cost(messages: &[ChatMessage]) -> usize {
+        messages
+            .iter()
+            .map(|m| est_tokens(&m.content_text()) + Self::PER_MESSAGE_TEMPLATE_TOKENS)
+            .sum()
+    }
+
+    /// Fit an already-built conversation to `budget_tokens`.
+    fn fit_messages(
+        &self,
+        messages: Vec<ChatMessage>,
+        budget_tokens: usize,
+    ) -> Vec<ChatMessage> {
         // Fit to the served window, NEWEST-first: walk the thread from the most
         // recent message backward, giving each the remaining budget. A whole message
         // that fits is kept intact; the one that straddles the budget boundary is
@@ -1126,21 +1250,14 @@ impl LlmDeliberationFaculty {
         // flat head-trim: the latest activity always survives (it is what the turn is
         // about), and for the opaque single-turn (eval/test/replay) path it reduces
         // EXACTLY to the previous `tail_to_tokens(world_state, budget)` behavior.
-        // Per-message role/template framing the model pays: chat templates
-        // wrap each message in role markers (`<|im_start|>role\n…<|im_end|>`,
-        // ~4-5 tokens). The original +2 was optimistic — at the budget edge
-        // the fitted thread measured over the window by a token (glass-boxed
-        // 2026-07-13); round UP like every other estimate here (under-counting
-        // risks the llama-server 400, over-counting costs a few tokens of
-        // context). One constant for the whole-message, straddling-trim, and
-        // giant-single-burst arms — the charge must not drift between them.
-        // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
-        const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
+        // Per-message template overhead: `Self::PER_MESSAGE_TEMPLATE_TOKENS`, shared
+        // with `messages_cost` so measurement and fitting charge identically.
+        let per_message_template_tokens = Self::PER_MESSAGE_TEMPLATE_TOKENS;
         let mut fitted: Vec<ChatMessage> = Vec::new();
         let mut remaining = budget_tokens;
         for msg in messages.iter().rev() {
             let body = msg.content_text();
-            let cost = est_tokens(&body) + PER_MESSAGE_TEMPLATE_TOKENS;
+            let cost = est_tokens(&body) + per_message_template_tokens;
             if cost <= remaining {
                 remaining -= cost;
                 fitted.push(msg.clone());
@@ -1148,7 +1265,7 @@ impl LlmDeliberationFaculty {
                 // The straddling message: keep as much of its TAIL as still fits.
                 let trimmed = tail_to_tokens(
                     &body,
-                    remaining.saturating_sub(PER_MESSAGE_TEMPLATE_TOKENS),
+                    remaining.saturating_sub(per_message_template_tokens),
                 );
                 if !trimmed.is_empty() {
                     fitted.push(ChatMessage::text(msg.role.clone(), trimmed));
@@ -1163,7 +1280,7 @@ impl LlmDeliberationFaculty {
             if let Some(last) = messages.last() {
                 let body = tail_to_tokens(
                     &last.content_text(),
-                    budget_tokens.saturating_sub(PER_MESSAGE_TEMPLATE_TOKENS),
+                    budget_tokens.saturating_sub(per_message_template_tokens),
                 );
                 // FAIL LOUD, never a blank mind: with the budget squeezed to ~0
                 // this arm used to emit ONE EMPTY user message — the model

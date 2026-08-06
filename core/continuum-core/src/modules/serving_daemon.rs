@@ -23,7 +23,8 @@
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingPlan, MIN_SERVE_CTX,
+    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingDemand, ServingPlan,
+    MIN_SERVE_CTX,
 };
 use crate::gpu::GpuMemoryManager;
 use crate::inference::llama_server::{
@@ -281,6 +282,12 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
+    /// Per-persona MEASURED turn demand — the window half of `serving_demand()`.
+    /// Personas write (their deliberation faculty records every turn's unclamped
+    /// cost); this daemon reads the ceiling when it plans. Replaces the
+    /// `BOOTSTRAP_WORKING_SET` constant that used to stand in for this measurement
+    /// and capped every citizen at 8192 tokens of a 128k-capable model.
+    working_set: crate::cognition::working_set::WorkingSetRegistry,
     /// The operator/persona's explicit FORCE-serve pin — the "hard pin" the
     /// `serving/load` doc names as the future verb, the mechanism behind
     /// promote/demote (`serving/pin` ↔ `serving/unpin`). `None` = autonomic
@@ -359,6 +366,7 @@ impl ServingDaemonModule {
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            working_set: crate::cognition::working_set::global(),
             moe_serving: std::sync::Mutex::new(None),
             active_artifact: std::sync::Mutex::new(None),
             moe_trace_tail: std::sync::Mutex::new(None),
@@ -407,6 +415,21 @@ impl ServingDaemonModule {
 
     fn lane_demand(&self) -> u32 {
         self.lane_demand.load(Ordering::Relaxed).max(1)
+    }
+
+    /// Both axes of what this host's minds are asking for — lanes AND the window
+    /// they have actually demanded. The window term is MEASURED
+    /// ([`crate::cognition::working_set`]); `None` there means no turn has been
+    /// assembled yet on this host, and [`ServingDemand::new`] names the cold-start
+    /// decision in one place.
+    fn serving_demand(&self) -> ServingDemand {
+        ServingDemand::new(self.lane_demand(), self.working_set.ceiling())
+    }
+
+    /// The registry personas report their turn demand into. Cheap clone — handed to
+    /// each spawned mind's deliberation faculty so the measurement reaches the planner.
+    pub fn working_set(&self) -> crate::cognition::working_set::WorkingSetRegistry {
+        self.working_set.clone()
     }
 
     /// Test seam: override how planned model ids resolve to [`Model`] structs,
@@ -641,7 +664,7 @@ impl ServingDaemonModule {
         plan_serving(
             self.host_budget(),
             &self.live_candidates(),
-            self.lane_demand(),
+            self.serving_demand(),
         )
     }
 
@@ -1609,7 +1632,7 @@ impl ServingDaemonModule {
             .borrow()
             .as_ref()
             .map(|p| p.base_model_id.clone());
-        match plan_serving_stable(budget, candidates, incumbent.as_deref(), self.lane_demand()) {
+        match plan_serving_stable(budget, candidates, incumbent.as_deref(), self.serving_demand()) {
             Some(plan) => {
                 crate::probe!(
                     class = "serving.plan",
@@ -1709,7 +1732,7 @@ fn pin_fit_decision(
     // sizes lanes from demand separately. footprint None → not servable (plan None);
     // footprint Some but over budget → plan_serving degrades with fits_on_gpu=false,
     // which `serving/pin` reads to refuse loud.
-    let plan = candidate.and_then(|f| plan_serving(base, std::slice::from_ref(&f), 1));
+    let plan = candidate.and_then(|f| plan_serving(base, std::slice::from_ref(&f), ServingDemand::new(1, None)));
     PinFit {
         plan,
         weights_bytes,

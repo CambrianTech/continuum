@@ -442,7 +442,13 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     .with_working_memory(Arc::clone(&working_memory))
     .with_genome(Arc::clone(&genome))
     .with_decoding(Arc::clone(&decoding))
-    .with_model_binding(Arc::clone(&model_binding));
+    .with_model_binding(Arc::clone(&model_binding))
+    // Every mind reports what its turns actually COST into the shared registry the
+    // serving daemon provisions the window from. Without this line the measurement
+    // exists and reaches nobody, and `serving_plan` falls back to the cold-start
+    // constant forever — the exact shape of defect that left every citizen thinking
+    // in 8192 tokens of a 128k model. [[wire-it-into-the-default-path]]
+    .with_working_set(crate::cognition::working_set::global());
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
