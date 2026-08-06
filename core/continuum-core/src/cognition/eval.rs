@@ -1687,7 +1687,7 @@ impl ActionCommand for CognitionEval {
             let ledger_persona = persona_id.clone();
             let ledger_run = run_id.clone();
             tokio::spawn(async move {
-                match CognitionEval::run_eval(inner).await {
+                match CognitionEval::run_eval_restoring(inner).await {
                     Ok(r) => tracing::info!(
                         note = %note,
                         score = r.score,
@@ -1715,11 +1715,48 @@ impl ActionCommand for CognitionEval {
                 ..Default::default()
             });
         }
-        CognitionEval::run_eval(p).await
+        CognitionEval::run_eval_restoring(p).await
     }
 }
 
 impl CognitionEval {
+    /// [`run_eval`](Self::run_eval) plus the HANDS restore — the ONE entry both launch modes
+    /// (inline and detached) go through, so neither can forget it.
+    ///
+    /// `--workspace_root` re-roots the persona's file engine, and that is PROCESS-GLOBAL:
+    /// `code/create-workspace` keys the engine on the caller identity, the engines live in one
+    /// map for the whole runtime, and a measurement fork borrows the LIVING persona's executor
+    /// and her id. So the eval's rooting outlives the eval, and the living persona keeps
+    /// acting in the exam repo (#312 — measured on `agent/solve`, identical mechanism here).
+    ///
+    /// Restoring HERE rather than inside the body is deliberate. The body is ~230 lines with
+    /// many fallible steps; the invariant is not "unwind whatever the body did" but "when the
+    /// eval is over, her hands are her own", and that is exactly what this boundary knows.
+    /// It also covers the error paths without wrapping them.
+    async fn run_eval_restoring(
+        p: CognitionEvalParams,
+    ) -> Result<CognitionEvalResult, CommandError> {
+        // Only an eval that re-rooted has anything to put back — an ordinary eval never
+        // touched her hands and must not provoke a citizen-layer provision for nothing.
+        let rooted = p.workspace_root.is_some();
+        let persona_id = p.persona_id.clone();
+        let out = CognitionEval::run_eval(p).await;
+        if rooted {
+            if let Err(e) =
+                crate::cognition::persona_workspace::restore_persona_workspace(&persona_id).await
+            {
+                tracing::error!(
+                    persona = %persona_id,
+                    error = %e,
+                    "cognition/eval could NOT return the persona's hands to her own workspace — \
+                     she is still rooted at the eval's workspace_root and her live turns will act \
+                     there (#312)"
+                );
+            }
+        }
+        out
+    }
+
     /// The eval body — deliberately ctx-free (reaches the persona's live cognition through
     /// the global workspace registry, owns its params), so it runs inline from `run` OR is
     /// spawned detached for fire-and-poll (#86). One code path, two launch modes: the test

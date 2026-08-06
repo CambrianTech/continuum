@@ -725,6 +725,37 @@ pub(crate) async fn restore_acting_workspace(
     restore_acting_workspace_at(hands, &home.to_string_lossy()).await
 }
 
+/// [`restore_acting_workspace`] addressed by persona id, resolved against the LIVING
+/// registry rather than a fork handle.
+///
+/// This is the form `cognition/eval` needs. Its `--workspace_root` rooting happens deep
+/// inside a ~230-line fallible body, but the thing that got clobbered is the LIVING
+/// persona's file engine (one process-global map, keyed by her id — the fork only ever
+/// borrowed her executor), so the restore does not need the fork at all: it can be done
+/// from outside, at the command boundary, where "the eval is over" is unambiguous and
+/// covers the error paths for free.
+pub(crate) async fn restore_persona_workspace(
+    persona_id: &str,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    let uuid = crate::id_resolve::resolve(
+        persona_id.trim(),
+        &crate::persona::card::ids(),
+        "persona",
+    )
+    .map_err(crate::sdk_codegen::CommandError::Invalid)?;
+    let cycle = global().get(&uuid).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::NotFound(format!(
+            "persona {uuid} is not resident — cannot return her hands to her own workspace"
+        ))
+    })?;
+    let hands = ActingHands::of(&cycle).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal(format!(
+            "persona {uuid} has no acting body — nothing to restore"
+        ))
+    })?;
+    restore_acting_workspace(&hands).await
+}
+
 /// [`restore_acting_workspace`] with the home root supplied — the seam the isolation test
 /// drives, so the round-trip (root at a sandbox → restore → the sandbox is no longer
 /// visible through those hands) is provable without touching the real `CONTINUUM_HOME`.
