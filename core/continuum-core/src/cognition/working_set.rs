@@ -140,7 +140,15 @@ impl WorkingSetRegistry {
 
     /// The in-memory half, split out so persistence is a separate concern and the
     /// hot update stays testable without touching disk.
-    fn record_in_memory(&self, persona: Uuid, demand_tokens: u32, now_ms: u64) -> PersonaDemand {
+    /// The in-memory half of [`Self::record`], without the disk write. Crate-visible
+    /// so a test can stand up a MEASURED demand (the thing that makes a plan exceed
+    /// the cold-start prior at all) without touching the operator's home directory.
+    pub(crate) fn record_in_memory(
+        &self,
+        persona: Uuid,
+        demand_tokens: u32,
+        now_ms: u64,
+    ) -> PersonaDemand {
         *self
             .observed
             .entry(persona)

@@ -29,7 +29,7 @@ use crate::cognition::serving_plan::{
 use crate::gpu::GpuMemoryManager;
 use crate::inference::llama_server::{
     ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
-    LlamaServerProcess, ServingSnapshot, ServingTarget,
+    LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
 };
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
@@ -60,6 +60,38 @@ const SERVING_BUDGET_FRACTION: f64 = 0.80;
 /// next slice makes the re-plan also fire on PressureBroker watch edges so it
 /// reacts faster than the cadence under sudden pressure.
 const TICK: Duration = Duration::from_secs(5);
+
+/// The margin, in percent, by which the plan must exceed the LIVE lane before a
+/// re-home is worth killing in-flight turns for.
+///
+/// RELATIVE, not absolute: the same 2048-token shortfall is a third of a small
+/// lane and noise on a large one, so an absolute bar means something different at
+/// every window size. 15% is BigMama's number, tuned from the #2158 receipts (she
+/// owns this guard — it came out of the outage that wrote the original 2x rule).
+const REHOME_MIN_GAIN_PCT: u32 = 15;
+
+/// How many consecutive ticks the plan must exceed the lane by
+/// [`REHOME_MIN_GAIN_PCT`] before a re-home is justified.
+///
+/// Sustained-ness is the anti-thrash property the old single-sample `live * 2 <=
+/// plan` ratio was reaching for, stated directly — and it is deliberately SHORT.
+/// It is not what limits the relaunch RATE (that is [`REHOME_COOLDOWN_TICKS`],
+/// enforced independently below); it only has to outlast jitter. Three ticks (15s)
+/// does that: a dip resets the streak, so noise can never accumulate, while a real
+/// capacity change is honoured within seconds instead of being stranded forever.
+const REHOME_SUSTAINED_TICKS: u32 = 3;
+
+/// Ticks a re-home must wait before another may fire, enforced INDEPENDENTLY of
+/// the sustained-delta test above.
+///
+/// The two guards answer different questions and must not be collapsed into one:
+/// sustained-delta asks "is this gain real?", the cooldown asks "may we pay for it
+/// yet?". A relaunch kills every in-flight turn on the lane, so the rate limit has
+/// to hold even when the evidence is perfect. Anchored to a lane's own readiness
+/// budget ([`READY_TIMEOUT`], 90s) in ticks: never start a second re-home before
+/// the first could possibly have come up and proven itself.
+/// [[never-thrash-sticky-hysteresis-on-every-lane]]
+const REHOME_COOLDOWN_TICKS: u32 = (READY_TIMEOUT.as_secs() / TICK.as_secs()) as u32;
 
 /// Slow liveness HEARTBEAT cadence (#175 self-heal): reconcile ticks between decode
 /// smoke-probes of the LIVE lane. The reconcile fast-path trusts the published `ready`
@@ -282,6 +314,17 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
+    /// Consecutive ticks the PLAN has exceeded the live lane by at least
+    /// [`REHOME_MIN_GAIN_PCT`]. Reset the moment it does not. Sustained-ness is
+    /// what separates a real capacity change from memory jitter — see
+    /// [`REHOME_SUSTAINED_TICKS`].
+    rehome_streak: Arc<std::sync::atomic::AtomicU32>,
+    /// Ticks remaining before another window re-home may fire. Charged to
+    /// [`REHOME_COOLDOWN_TICKS`] when one fires, decremented every reconcile.
+    /// Counted in ticks rather than wall-clock deliberately: the rate limit is on
+    /// the daemon's own decision cadence, so it stays exact under a stopped clock,
+    /// a suspended host, or a test that drives ticks by hand.
+    rehome_cooldown: Arc<std::sync::atomic::AtomicU32>,
     /// Per-persona MEASURED turn demand — the window half of `serving_demand()`.
     /// Personas write (their deliberation faculty records every turn's unclamped
     /// cost); this daemon reads the ceiling when it plans. Replaces the
@@ -366,6 +409,8 @@ impl ServingDaemonModule {
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             working_set: crate::cognition::working_set::global(),
             moe_serving: std::sync::Mutex::new(None),
             active_artifact: std::sync::Mutex::new(None),
@@ -1156,8 +1201,66 @@ impl ServingDaemonModule {
                 // turns, so only a step-change worth of headroom justifies one.
                 // One-directional by design — over-served vs a dipped plan is
                 // the pressure broker's reclaim problem (#79), not a relaunch.
-                let starved = live.served_context_window > 0
-                    && live.served_context_window.saturating_mul(2) <= served_ctx;
+                // SUSTAINED-DELTA re-home (replaces the single-sample `live * 2 <=
+                // plan` ratio; BigMama's call 2026-08-06, she owns the guard).
+                //
+                // The old ratio was the cheapest thing that could not thrash against a
+                // plan derived from FREE MEMORY, which wandered 3.6k<->22k — its own
+                // comment says "the plan breathes with every consumer", and that was
+                // true. Demand-derived planning made the plan a peak-tracking
+                // MEASUREMENT instead, and against a stable signal a 2x bar strands
+                // everything in the 50-99% band forever: measured live, plan 26,323 vs
+                // lane 16,384 (62%) held indefinitely while every persona's binding
+                // read the stale window.
+                //
+                // TWO independent guards, deliberately not collapsed into one
+                // predicate:
+                //
+                //   1. SUSTAINED DELTA — is the gain REAL? The plan must exceed the
+                //      lane by [`REHOME_MIN_GAIN_PCT`] for [`REHOME_SUSTAINED_TICKS`]
+                //      consecutive ticks. A dip RESETS the streak, so jitter can never
+                //      accumulate into a relaunch.
+                //   2. COOLDOWN — may we PAY for it yet? At most one re-home per
+                //      [`REHOME_COOLDOWN_TICKS`], checked separately and answered
+                //      first. A relaunch kills every in-flight turn on the lane, so
+                //      the rate limit must hold even when the evidence is perfect.
+                //
+                // Conflating them is how a guard ends up firing on a burst of good
+                // evidence. (BigMama's spec 2026-08-06 — she owns this guard; the
+                // outage it came from is hers.)
+                let cooling = self.rehome_cooldown.load(Ordering::Relaxed);
+                if cooling > 0 {
+                    self.rehome_cooldown.store(cooling - 1, Ordering::Relaxed);
+                    // Lose the streak while cooling rather than banking it: otherwise
+                    // the instant the cooldown lapses we relaunch on evidence gathered
+                    // a minute and a half ago. Re-proving costs 3 ticks and keeps
+                    // "sustained" meaning sustained-NOW.
+                    self.rehome_streak.store(0, Ordering::Relaxed);
+                }
+                let gain = served_ctx.saturating_sub(live.served_context_window);
+                // Relative margin: gain/live >= 15%, in integer arithmetic that cannot
+                // overflow a u32 window (`gain * 100` on a 1M-token window is ~1e8).
+                let worth_it = live.served_context_window > 0
+                    && gain.saturating_mul(100)
+                        >= live.served_context_window.saturating_mul(REHOME_MIN_GAIN_PCT);
+                let streak = if worth_it && cooling == 0 {
+                    self.rehome_streak
+                        .fetch_add(1, Ordering::Relaxed)
+                        .saturating_add(1)
+                } else {
+                    // Not merely "don't count" — RESET. One tick that does not want
+                    // the bigger window is enough to prove the demand was not
+                    // sustained, and a streak that survives dips is a streak that
+                    // eventually fires on noise.
+                    self.rehome_streak.store(0, Ordering::Relaxed);
+                    0
+                };
+                let starved = streak >= REHOME_SUSTAINED_TICKS && cooling == 0;
+                // NOTE: the guards are re-armed at the FIRE point below, not here —
+                // `starved` only means the evidence qualifies. A later suppression
+                // (an eval holding the lane steady) still returns without relaunching,
+                // and charging a cooldown for a relaunch that never happened would
+                // rate-limit us out of the one we actually owe.
                 if !starved {
                     // A lane running BELOW the plan but above the 2x bar declines to
                     // grow — silently, until this probe. That silence is the defect:
@@ -1180,13 +1283,18 @@ impl ServingDaemonModule {
                     // quietly re-tuned by me (#332/#333).
                     if live.served_context_window < served_ctx {
                         crate::probe!(
-                            class = "serving.reconcile.stranded",
+                            class = "serving.reconcile.window",
+                            decision = "declined",
                             live_window = live.served_context_window,
                             plan_window = served_ctx,
                             live_lanes = live.lanes,
                             plan_lanes = lanes,
-                            shortfall = served_ctx.saturating_sub(live.served_context_window),
-                            "lane is serving BELOW plan and will not grow: the plan exceeds it but not by the 2x re-home bar",
+                            shortfall = gain,
+                            streak,
+                            needs_streak = REHOME_SUSTAINED_TICKS,
+                            min_gain_pct = REHOME_MIN_GAIN_PCT,
+                            cooling,
+                            "lane is serving BELOW plan and has not yet earned a re-home: the gain must persist, not just appear",
                         );
                     }
                     return None;
@@ -1200,20 +1308,48 @@ impl ServingDaemonModule {
                 // starved GROW re-home). [[benchmark-is-a-governor-preemption-lease]]
                 if serving_held_steady() {
                     crate::probe!(
-                        class = "serving.reconcile",
+                        class = "serving.reconcile.window",
+                        decision = "declined",
                         live_window = live.served_context_window,
                         plan_window = served_ctx,
+                        live_lanes = live.lanes,
+                        plan_lanes = lanes,
+                        shortfall = gain,
+                        streak,
+                        needs_streak = REHOME_SUSTAINED_TICKS,
+                        min_gain_pct = REHOME_MIN_GAIN_PCT,
+                        cooling,
                         "grow-back re-home suppressed: an eval holds the lane steady (co-tenant slot, no relaunch)",
                     );
+                    // Streak deliberately NOT reset: the demand is genuinely sustained,
+                    // the exam is simply first in line. When it drops its lease the
+                    // re-home fires on the next tick instead of re-proving from zero.
                     return None;
                 }
+                // SYMMETRIC RECEIPT (BigMama's requirement, 2026-08-06): the defect was
+                // that DECLINING was silent. A fix that makes RELAUNCHING silent has
+                // moved the silence, not removed it. Same probe class, same fields, both
+                // outcomes — so one query over `serving.reconcile.window` reads the
+                // lane's whole decision history, not half of it.
                 crate::probe!(
-                    class = "serving.reconcile",
+                    class = "serving.reconcile.window",
+                    decision = "re-homing",
                     live_window = live.served_context_window,
                     plan_window = served_ctx,
-                    lanes,
-                    "re-homing starved lane: served window froze at ≤ half the planned window",
+                    live_lanes = live.lanes,
+                    plan_lanes = lanes,
+                    shortfall = gain,
+                    streak,
+                    needs_streak = REHOME_SUSTAINED_TICKS,
+                    min_gain_pct = REHOME_MIN_GAIN_PCT,
+                    cooldown_ticks = REHOME_COOLDOWN_TICKS,
+                    "re-homing lane: the plan exceeded it by a real margin for a sustained run of ticks",
                 );
+                // Both guards re-armed at the moment we actually commit: the next
+                // re-home must earn a fresh streak AND outlast a fresh cooldown.
+                self.rehome_streak.store(0, Ordering::Relaxed);
+                self.rehome_cooldown
+                    .store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
             }
         }
 
@@ -3209,6 +3345,203 @@ mod tests {
         assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch");
     }
 
+    /// A lane whose live per-slot window sits at `live_pct` of what the plan
+    /// actually affords, ready to have `reconcile_to_plan` driven at it repeatedly.
+    /// Returns the daemon and the REAL planned window.
+    ///
+    /// Two things this fixture exists to get right, both of which a hand-written
+    /// pair of numbers gets wrong:
+    ///
+    /// 1. A plan is capped by MEASURED demand ([`ServingDemand`]). With nothing
+    ///    recorded it falls back to [`BOOTSTRAP_WORKING_SET`] — 16,384, which is
+    ///    exactly the number the live lane was stranded at, so a fixture that skips
+    ///    this reproduces a plan == live and no gain to sustain at all.
+    /// 2. The planner is free to serve less than the model's max context (host fit,
+    ///    lane split). Asserting against a window we merely ASKED for tests the
+    ///    fixture; deriving the live window from the plan we GOT tests the guard.
+    fn lane_under_plan(
+        serves: Arc<AtomicUsize>,
+        plan_model_ctx: u32,
+        live_pct: u32,
+    ) -> (ServingDaemonModule, u32) {
+        let daemon = daemon_with(Arc::new(FakeServer::healthy(serves, true)));
+        // A measured peak is what lets a plan exceed the cold-start prior.
+        daemon
+            .working_set()
+            .record_in_memory(uuid::Uuid::new_v4(), plan_model_ctx, 0);
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates =
+            vec![footprint_from_parts("coder-14b", 9 * GB, plan_model_ctx, true).unwrap()];
+        daemon.publish_plan(budget, &candidates);
+        let plan_window = daemon
+            .plan_tx
+            .borrow()
+            .as_ref()
+            .expect("plan published")
+            .served_context_window;
+        let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            ready_verified_at_ms: None,
+            active_model: Some("coder-14b".into()),
+            ready: true,
+            base_url: serving_v1_url(),
+            adapters: Vec::new(),
+            served_context_window: plan_window * live_pct / 100,
+            lanes: 4,
+            degraded_reason: None,
+            vision_ready: false,
+            vision_base_url: None,
+            vision_model: None,
+        });
+        (daemon, plan_window)
+    }
+
+    // what this catches: the failure the OLD single-sample `live * 2 <= plan` rule
+    // could not see. Measured live 2026-08-06: plan 26,323 vs lane 16,384 — a 62%
+    // lane, comfortably above half — held indefinitely while every persona's binding
+    // read the stale window and the demand loop's output was silently discarded.
+    // A real, PERSISTENT gain must eventually re-home no matter where it sits in the
+    // 50-99% band. (BigMama's call; she owns the guard the ratio came from.)
+    #[tokio::test]
+    async fn a_sustained_gain_above_the_old_half_bar_eventually_re_homes() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        // 62% of plan — the live incident's exact ratio, comfortably above the old
+        // half bar and therefore invisible to the rule this replaces.
+        let (daemon, plan_window) = lane_under_plan(serves.clone(), 65_536, 62);
+        // Guard the FIXTURE, not just the guard: if a measured demand had not raised
+        // the plan above the cold-start prior, plan == live, there would be no gain to
+        // sustain, and every assertion below would pass for the wrong reason. That is
+        // exactly how this test failed its first time out.
+        assert!(
+            plan_window > daemon.serving_tx.borrow().served_context_window,
+            "fixture is vacuous: the plan must actually exceed the lane"
+        );
+
+        // Below the streak it must hold — a relaunch kills in-flight turns, so an
+        // instant re-home on first sight is exactly the thrash we are avoiding.
+        for tick in 1..REHOME_SUSTAINED_TICKS {
+            assert!(
+                daemon.reconcile_to_plan().is_none(),
+                "tick {tick}: must not re-home before the gain has proven itself sustained"
+            );
+        }
+        assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch during the streak");
+
+        assert!(
+            daemon.reconcile_to_plan().is_some(),
+            "a gain that persisted for a full lane-readiness window MUST re-home — \
+             this is the 62%-forever case the 2x ratio never caught"
+        );
+    }
+
+    // what this catches: the property the 2x ratio was RIGHT about, which the
+    // replacement must not lose. A plan that jitters above the bar and falls back
+    // must never accumulate its way to a relaunch — the outage this guard exists for
+    // was a lane relaunching against a plan wandering 3.6k<->22k.
+    #[tokio::test]
+    async fn a_jittering_gain_never_accumulates_into_a_re_home() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let (daemon, plan_window) = lane_under_plan(serves.clone(), 65_536, 62);
+        let live_window = daemon.serving_tx.borrow().served_context_window;
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+
+        // Alternate: plenty of headroom, then none. Far MORE ticks than the streak
+        // needs in total — but never consecutively.
+        for _ in 0..(REHOME_SUSTAINED_TICKS * 3) {
+            assert!(daemon.reconcile_to_plan().is_none(), "wanting: still below streak");
+            // A dip: the plan momentarily affords no more than the lane already has.
+            let small = vec![footprint_from_parts("coder-14b", 9 * GB, live_window, true).unwrap()];
+            daemon.publish_plan(budget, &small);
+            assert!(daemon.reconcile_to_plan().is_none(), "dip: nothing to gain");
+            // …and back up.
+            let big = vec![footprint_from_parts("coder-14b", 9 * GB, plan_window, true).unwrap()];
+            daemon.publish_plan(budget, &big);
+        }
+        assert_eq!(
+            serves.load(Ordering::SeqCst),
+            0,
+            "jitter must NEVER re-home, however long it goes on — one dip resets the streak"
+        );
+    }
+
+    // what this catches: the cooldown collapsing into the sustained-delta test. The
+    // two answer different questions — "is the gain real?" vs "may we pay for it
+    // yet?" — and a relaunch kills every in-flight turn on the lane, so the rate
+    // limit has to hold even when the evidence is perfect. If the cooldown were
+    // merely "reset the streak", 3 more qualifying ticks would re-fire in 15s
+    // instead of 90. (BigMama's requirement 1 of 2, 2026-08-06.)
+    #[tokio::test]
+    async fn a_second_re_home_waits_out_the_cooldown_however_good_the_evidence_is() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let (daemon, _plan) = lane_under_plan(serves.clone(), 65_536, 62);
+        let starved = daemon.serving_tx.borrow().clone();
+
+        let mut decision = None;
+        for _ in 0..REHOME_SUSTAINED_TICKS {
+            decision = daemon.reconcile_to_plan();
+        }
+        decision.expect("evidence qualifies by the third tick").await.unwrap();
+        assert_eq!(serves.load(Ordering::SeqCst), 1, "the first re-home fires on evidence");
+
+        // Re-pin the lane to its starved window: the relaunch is faked, so nothing
+        // actually resized. That makes the gain as compelling on every following tick
+        // as it was on the first — only the cooldown stands between us and a storm.
+        let _ = daemon.serving_tx.send_replace(starved);
+        for tick in 0..REHOME_COOLDOWN_TICKS {
+            assert!(
+                daemon.reconcile_to_plan().is_none(),
+                "cooldown tick {tick}: perfect evidence must still not buy a second relaunch"
+            );
+        }
+        assert_eq!(serves.load(Ordering::SeqCst), 1, "exactly one relaunch per cooldown window");
+
+        // Cooldown spent — the gain must now re-prove itself from zero before firing.
+        for tick in 0..(REHOME_SUSTAINED_TICKS - 1) {
+            assert!(
+                daemon.reconcile_to_plan().is_none(),
+                "post-cooldown tick {tick}: the streak was lost while cooling, re-prove it"
+            );
+        }
+        assert!(
+            daemon.reconcile_to_plan().is_some(),
+            "once cooled AND re-proven, the still-stranded lane re-homes again"
+        );
+    }
+
+    // what this catches: a margin expressed as an absolute token count. The same
+    // 2,048-token shortfall is a third of a small lane and rounding error on a large
+    // one — an absolute bar means something different at every window size, so the
+    // relative margin is the property, not an implementation detail of it.
+    #[tokio::test]
+    async fn the_margin_is_relative_so_the_same_shortfall_decides_differently_by_lane_size() {
+        // A lane at 93% of plan: the shortfall is ~7.5% of what it serves — real
+        // tokens, but under the bar however long it persists.
+        let quiet = Arc::new(AtomicUsize::new(0));
+        let (near_plan, _) = lane_under_plan(quiet.clone(), 65_536, 93);
+        for _ in 0..(REHOME_SUSTAINED_TICKS * 3) {
+            near_plan.reconcile_to_plan();
+        }
+        assert_eq!(
+            quiet.load(Ordering::SeqCst),
+            0,
+            "a 7.5% shortfall is not worth killing in-flight turns for, however long it holds"
+        );
+
+        // A lane at 67% of the SAME plan: the shortfall is ~49% of what it serves —
+        // half a mind again, a step change.
+        let loud = Arc::new(AtomicUsize::new(0));
+        let (far_below, _) = lane_under_plan(loud.clone(), 65_536, 67);
+        let mut decision = None;
+        for _ in 0..REHOME_SUSTAINED_TICKS {
+            decision = far_below.reconcile_to_plan();
+        }
+        decision.expect("a 49% shortfall qualifies").await.unwrap();
+        assert_eq!(
+            loud.load(Ordering::SeqCst),
+            1,
+            "half the lane's own window again IS a step change — re-home"
+        );
+    }
+
     /// Believe-ready snapshot fixture for the liveness-heartbeat tests.
     fn ready_snapshot() -> ServingSnapshot {
         ServingSnapshot {
@@ -3482,6 +3815,15 @@ mod tests {
             vision_base_url: None,
             vision_model: None,
         });
+        // A quarter of the plan is a 300% shortfall — far past the margin — but the
+        // gain must still PERSIST before it buys a relaunch (BigMama's sustained-delta
+        // replacement for the original 2x ratio, 2026-08-06).
+        for tick in 1..REHOME_SUSTAINED_TICKS {
+            assert!(
+                daemon.reconcile_to_plan().is_none(),
+                "tick {tick}: even a starved lane must prove the gain is sustained"
+            );
+        }
         daemon
             .reconcile_to_plan()
             .expect("starved window must trigger a re-home")
