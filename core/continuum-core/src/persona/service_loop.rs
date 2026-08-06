@@ -3058,15 +3058,18 @@ mod tests {
                 1,
                 "exactly one observation per burst — perception, not nagging"
             );
-            // This loop's cyclic run (5) extends one turn PAST first-fire depth
-            // (4), so the description escalates (card d6f010c8). No board
-            // delivery is present here, so the anchor must be the HONEST-empty
-            // one — never a fabricated card.
-            let anchor = turns.last().unwrap();
+            // This loop's cyclic run (5) extends one turn PAST first-fire depth (4), so the
+            // description escalates. NO board delivery is present here — and an absent
+            // board source is NOT an empty board, so `work_board_anchor`'s `board_spoke`
+            // guard correctly emits nothing rather than asserting "No open cards" on behalf
+            // of a source that never spoke. The escalation is the [pattern] observation
+            // itself; the anchor arrives only when the board actually reports.
+            // See `empty_board_escalation_is_honest` for both arms.
             assert!(
-                anchor.content.starts_with("[anchor]")
-                    && anchor.content.contains("No open cards"),
-                "a run past first-fire depth escalates to an honest-empty anchor, got: {anchor:?}"
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "with no board delivery there must be NO anchor — inventing emptiness \
+                 overrides her own work/list receipt, got: {:?}",
+                turns.iter().map(|t| &t.content).collect::<Vec<_>>()
             );
             // Negative: a 6-turn two-speaker WORK thread where tail turns keep
             // introducing new tokens must stay clean.
@@ -3180,26 +3183,60 @@ mod tests {
             );
         }
 
-        // what this catches: an empty (or absent/unreadable) board must yield the
-        // HONEST empty anchor — "no open cards, propose one" — never a fabricated
-        // card ([[fallbacks-are-illegal-fail-loud]]).
+        // what this catches: the TWO different facts an absent card list can mean, which
+        // `work_board_anchor`'s `board_spoke` guard separates and this test pins at the
+        // burst level.
+        //
+        //   board DELIVERED but empty -> the HONEST empty anchor ("no open cards, propose
+        //                                one"), never a fabricated card
+        //                                ([[fallbacks-are-illegal-fail-loud]]).
+        //   board NOT delivered       -> SILENCE. "The board is empty" and "I never read
+        //                                the board" are different claims about the world,
+        //                                and only the first is knowable from an absent
+        //                                delivery.
+        //
+        // The second arm is not pedantry. Glass-boxed 2026-08-06 from Benchy's live
+        // capture: `room-kanban` delivered nothing (grounding is last in the budget queue),
+        // the anchor asserted "No open cards are visible" anyway, and she repeated exactly
+        // that in-room for six turns — while `work/list()` in her own working memory listed
+        // a full board in the same prompt. She trusted the authoritative-sounding anchor
+        // over her own receipt. An anchor that invents emptiness actively overrides the one
+        // truthful board claim she has.
+        // [[grounding-is-last-in-the-budget-queue-so-she-goes-blind-one-turn-in-ten]]
         #[test]
         fn empty_board_escalation_is_honest() {
             let me = "me-peer";
             let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
-            let deliveries = vec![delivery("airc", greeting_spiral(me, peer, 4))];
-            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+
+            // ARM 1 — the board SPOKE and had nothing open: say so, and name the verb that
+            // would add something ("propose one") rather than another restatement.
+            let spoke_empty = vec![
+                delivery("room-kanban", vec![]),
+                delivery("airc", greeting_spiral(me, peer, 4)),
+            ];
+            let turns = build_workspace_turns(&spoke_empty, me, "Asha", None);
             let anchor = turns.last().unwrap();
             assert!(
                 anchor.content.starts_with("[anchor]")
                     && anchor.content.contains("No open cards")
                     && anchor.content.contains("work/create"),
-                "an empty board must be stated honestly, got: {anchor:?}"
+                "a board that spoke and was empty must be stated honestly, got: {anchor:?}"
             );
             assert!(
                 !anchor.content.contains("card 9") && !anchor.content.contains("card 2"),
                 "an empty board must never grow invented cards, got: {}",
                 anchor.content
+            );
+
+            // ARM 2 — the board never spoke: no anchor at all. Her own `work/list` receipt
+            // stays the only board claim in the prompt, which is the truthful one.
+            let never_spoke = vec![delivery("airc", greeting_spiral(me, peer, 4))];
+            let turns = build_workspace_turns(&never_spoke, me, "Asha", None);
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[anchor]")),
+                "an absent board must produce NO anchor — asserting emptiness on behalf of \
+                 a source that never spoke is the six-turn false-claim bug, got: {:?}",
+                turns.iter().map(|t| &t.content).collect::<Vec<_>>()
             );
         }
 
