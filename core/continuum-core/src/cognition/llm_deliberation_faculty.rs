@@ -879,6 +879,14 @@ impl LlmDeliberationFaculty {
             conversation_tokens,
             conv_trailing_share,
             ctx_floor,
+            // What the NATIVE tool schemas cost. Inferred at ~4,609 from the other
+            // terms before it was measured, which is one inference too many: the
+            // doc on `describe_tool_tokens` still claimed "a few dozen tokens, not
+            // the 4-5k the old full-registry dump cost" — written when the surface
+            // WAS a two-tool discovery pair, and false since #206 deliberately
+            // restored the full ~dozen native tools. Reading that stale sentence is
+            // exactly why the right suspect got dismissed.
+            tool_tokens = self.describe_tool_tokens(),
             // The pool the budget is subtracted FROM, read from the local that
             // actually holds it. First written as
             // `framing + conversation + budget` — a RECONSTRUCTION from the
@@ -982,15 +990,25 @@ impl LlmDeliberationFaculty {
         // is then allowed to use. One source: [`completion_budget_for`].
         let completion_reserve = Self::completion_budget_for(context_window) as usize;
 
-        // The ONE natively-offered tool (`commands/help`) rides the served window
-        // too: the gateway injects its function spec (name + description + schema)
-        // via the chat template, outside `system`/`user`. Without counting it the
-        // budget silently overshoots `n_ctx` and llama-server 400s ("exceeds context
-        // size"). It is a SINGLE tiny schema (progressive disclosure — the rest of
-        // the surface lives in the tool MENU inside `system`, already counted by
-        // `framing_tokens`), so this is a few dozen tokens, not the 4–5k the old
-        // full-registry dump cost. The menu itself is part of `compose_system`,
-        // so it is sized into the framing below — one accounting, not two.
+        // The NATIVE tool schemas ride the served window too: the gateway injects
+        // each function spec (name + description + schema) via the chat template,
+        // outside `system`/`user`. Without counting them the budget silently
+        // overshoots `n_ctx` and llama-server 400s ("exceeds context size").
+        //
+        // This is NOT "a few dozen tokens" — that sentence described the two-tool
+        // discovery pair and has been false since #206 restored the full native
+        // surface (~a dozen tools, offered whole, deliberately: a native-tool model
+        // can only call what it was offered, and the amputated surface stranded it
+        // in a `commands/help` loop). Measured 2026-08-06 it is **~4,609 tokens** —
+        // 28% of a 16,384 window, before framing or a single message. It is now on
+        // the `delib.context.render` probe as `tool_tokens` rather than described,
+        // because this comment being wrong is what cost three commits of chasing a
+        // phantom accounting gap.
+        //
+        // Note the tool surface is paid TWICE in different forms: these schemas
+        // here, AND the human-readable tool MENU inside `compose_system` (counted in
+        // `framing_tokens`). Whether that duplication is intended is an open
+        // question, not something this comment should assert either way.
         let budget = (context_window as usize)
             .saturating_sub(completion_reserve)
             .saturating_sub(self.describe_tool_tokens());
