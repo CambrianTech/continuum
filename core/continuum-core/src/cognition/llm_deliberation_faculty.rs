@@ -193,6 +193,21 @@ pub struct LlmDeliberationFaculty {
     /// reproducible; her live cognition leaves it `None`. Read wait-free per
     /// generation, exactly like `genome`.
     decoding: DecodingHandle,
+    /// Where this mind reports what its turns actually COST — the measurement the
+    /// served window is provisioned from ([`super::working_set`]).
+    ///
+    /// This faculty is the only place that knows a turn's TRUE size, because it is
+    /// the place that assembles the prompt and therefore the place that sees what it
+    /// had to throw away: the conversation before newest-first trimming, and every
+    /// grounding contribution offered including the ones that did not fit. Downstream
+    /// of here that information is gone, which is why the serving planner had to
+    /// guess with a constant.
+    ///
+    /// `None` in tests and in any path with no serving planner to inform — recording
+    /// is then simply skipped. Shared (cheap clone) with the serving daemon that reads
+    /// the ceiling; deliberately NOT a process global, because that value feeds a
+    /// decision and a global read inside a decision makes tests order-dependent.
+    working_set: Option<super::working_set::WorkingSetRegistry>,
 }
 
 impl LlmDeliberationFaculty {
@@ -223,7 +238,16 @@ impl LlmDeliberationFaculty {
             prompt_capture: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
+            working_set: None,
         }
+    }
+
+    /// Share the registry this mind reports its turn demand into — the measurement
+    /// `serving_plan` provisions the window from. Wired by the live spawn path; absent
+    /// in tests, where there is no planner to inform.
+    pub fn with_working_set(mut self, registry: super::working_set::WorkingSetRegistry) -> Self {
+        self.working_set = Some(registry);
+        self
     }
 
     /// Share the persona's decoding handle — the same [`ArcSwap`] the owning
@@ -663,7 +687,53 @@ impl LlmDeliberationFaculty {
     /// half-truncated engram is noise, so a lower-salience item that still fits is
     /// preferred over a mangled high-salience one. Same drop-whole-in-priority
     /// philosophy as `FlexboxRagBudgetAdapter`.
-    fn render_assembled_context_within(&self, ws: &Workspace, budget_tokens: usize) -> String {
+    /// What ALL the grounding offered this turn would cost if none of it had to be
+    /// dropped — the grounding half of a turn's demand ([`super::working_set`]).
+    ///
+    /// Counted over the same set `render_assembled_context_within` selects from, with
+    /// the same per-item header charge, so the two agree on what a contribution costs
+    /// and only disagree on how much of it survives. Measured 2026-08-06 this is the
+    /// dominant term: the work board alone offered a median 5,364 tokens into a
+    /// context budget with a median of 55.
+    fn assembled_context_cost(ws: &Workspace) -> usize {
+        ws.broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .map(|c| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2)
+            .sum()
+    }
+
+    /// `composition` is `(context_window, framing, fitted_conversation, ctx_floor)`
+    /// — the terms that PRODUCED `budget_tokens`. Carried purely so this probe and
+    /// `delib.turn.demand` can be reconciled against each other: read separately
+    /// they disagreed (Atlas showed `after_framing 9,243 − conv 4,334` yet rendered
+    /// `budget=287`) and nothing on hand could say which was wrong, because the two
+    /// numbers lived in different probes with no shared term. A seam that can only
+    /// be reasoned about by cross-referencing two records is a seam that gets
+    /// guessed at ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+    fn render_assembled_context_within(
+        &self,
+        ws: &Workspace,
+        budget_tokens: usize,
+        composition: (u32, usize, usize, usize),
+    ) -> String {
+        let (context_window, framing_tokens, conversation_tokens, ctx_floor) = composition;
+        // How much of `conversation_tokens` is the TRAILING tier (working-memory
+        // ledger, full latest result, perception facts).
+        //
+        // A SUBSET, not a separate term — `messages_unfitted` pushes trailing
+        // contributions into `messages`, so `used_msg_tokens` already counts them.
+        // Named `conv_trailing_share` for exactly that reason: emitted as
+        // `trailing_tokens` it read as a fourth claimant and I subtracted it twice,
+        // inflating an unexplained gap that had not actually changed. A probe field
+        // that invites a double-count is worse than no field
+        // ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+        let conv_trailing_share: usize = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && c.trailing)
+            .map(|c| est_tokens(&c.content))
+            .sum();
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -674,6 +744,11 @@ impl LlmDeliberationFaculty {
                 class = "delib.context.render",
                 persona = %self.persona_name,
                 budget_tokens = 0usize,
+                context_window,
+                framing_tokens,
+                conversation_tokens,
+                conv_trailing_share,
+                ctx_floor,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
@@ -703,17 +778,58 @@ impl LlmDeliberationFaculty {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let received = ctx.len();
-        // SELECTION (by salience): walk highest-salience-first and keep whole items
-        // that fit the budget — a half-truncated engram is noise, so a smaller
-        // lower-salience item that still fits is preferred over a mangled high one.
-        let mut selected: Vec<&Contribution> = Vec::with_capacity(ctx.len());
+        // SELECTION (by salience): walk highest-salience-first and keep what fits.
+        //
+        // An INDIVISIBLE contribution (one part — a recalled engram, an affect
+        // signal) is still kept whole or dropped whole: half an engram is noise,
+        // so a smaller lower-salience item that fits is preferred over a mangled
+        // high one. That rule was right, and it is unchanged.
+        //
+        // A DIVISIBLE one (a grounding source that delivered a LIST, and said so
+        // via `Contribution::parts`) instead contributes the longest PREFIX of its
+        // own units that fits. Its units are ordered by the source, leads first,
+        // so a prefix is exactly the summary the source would have written if
+        // asked for less — never a mid-sentence cut. This is what un-hides the
+        // work board: measured 2026-08-06, `room-kanban` offered a median 5,364
+        // tokens all-or-nothing into a median 55-token budget and was kept 0 of
+        // 495 times, while its `[your work]` / `[available work]` leads are ~200
+        // and carry every fact a citizen needs to find work. The citizens were
+        // saying "there are no open tasks available" about a 61-card board.
+        let mut selected: Vec<(&Contribution, String)> = Vec::with_capacity(ctx.len());
         let mut dropped: Vec<String> = Vec::new();
+        let mut partial: Vec<String> = Vec::new();
         let mut used = 0usize;
         for c in ctx {
             // "\n[faculty]\n<content>\n" — count the framing chars too (~2 tokens).
-            let piece = est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2;
-            if used + piece > budget_tokens {
-                // Drop this whole item; a smaller lower-salience one may still fit.
+            let header = est_tokens(c.faculty.as_str()) + 2;
+            let piece = header + est_tokens(&c.content);
+            if used + piece <= budget_tokens {
+                used += piece;
+                selected.push((c, c.content.clone()));
+                continue;
+            }
+            // Whole won't fit. Divisible? Take the longest leading run of units
+            // that does. `parts` is never empty (every constructor seeds it), so
+            // a single-part contribution simply finds no fitting prefix and falls
+            // through to the drop below — byte-identical to the old behavior.
+            let mut kept_units: Vec<&str> = Vec::new();
+            let mut unit_tokens = header;
+            for (i, unit) in c.parts.iter().enumerate() {
+                // Units are joined by "\n" — charge the separator from the second on.
+                let cost = est_tokens(unit) + usize::from(i > 0);
+                if used + unit_tokens + cost > budget_tokens {
+                    break;
+                }
+                unit_tokens += cost;
+                kept_units.push(unit.as_str());
+            }
+            if kept_units.len() == c.parts.len() {
+                // Can only happen if the estimator disagrees with itself; treat as whole.
+                used += unit_tokens;
+                selected.push((c, c.content.clone()));
+                continue;
+            }
+            if kept_units.is_empty() {
                 dropped.push(format!(
                     "{}(sal={:.2},tok={})",
                     c.faculty.as_str(),
@@ -722,8 +838,31 @@ impl LlmDeliberationFaculty {
                 ));
                 continue;
             }
-            selected.push(c);
-            used += piece;
+            // A truncated LIST must SAY it is truncated, or the persona reads a
+            // partial board as the whole board and reports work that isn't there
+            // — a quieter lie than the empty block this replaces.
+            let omitted = c.parts.len() - kept_units.len();
+            // Name the EXACT verb, never "the matching command" — she cannot run a
+            // description, and a name she has to guess is a name she gets wrong
+            // ([[command-names-must-be-accurate]]). The source declares it
+            // (`RagSource::expand_command`, no default impl); a source with nothing
+            // more to fetch says only how much was omitted.
+            let how = match c.expand_command {
+                Some(cmd) => format!(" — run `{cmd}` to see all {}", c.parts.len()),
+                None => String::new(),
+            };
+            let notice = format!("…{omitted} more not shown (context budget){how}");
+            used += unit_tokens + est_tokens(&notice);
+            let body = format!("{}\n{notice}", kept_units.join("\n"));
+            partial.push(format!(
+                "{}({}/{} units,tok={}→{})",
+                c.faculty.as_str(),
+                kept_units.len(),
+                c.parts.len(),
+                piece,
+                unit_tokens
+            ));
+            selected.push((c, body));
         }
         // Received-vs-rendered receipt at the ONE seam where a surfaced
         // contribution can silently vanish between attention and the prompt.
@@ -733,15 +872,28 @@ impl LlmDeliberationFaculty {
             class = "delib.context.render",
             persona = %self.persona_name,
             budget_tokens,
+            context_window,
+            framing_tokens,
+            conversation_tokens,
+            conv_trailing_share,
+            ctx_floor,
+            // The two terms the subtraction actually runs on. Without them the
+            // budget can only be reconciled by GUESSING which local holds what —
+            // which is how two suspects in a row got proposed and killed against
+            // the same ~4,700-token gap. Inputs beside the output, always.
+            after_framing = framing_tokens + conversation_tokens + budget_tokens,
             used_tokens = used,
             received,
             rendered = selected.len(),
             kept = %selected
                 .iter()
-                .map(|c| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
+                .map(|(c, _)| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
                 .collect::<Vec<_>>()
                 .join(","),
             dropped = %dropped.join(","),
+            // Which divisible blocks contributed a PREFIX rather than their whole —
+            // without this a shrunken board and a full one look identical in the log.
+            partial = %partial.join(","),
             "assembled context: {}/{} contributions fit", selected.len(), received
         );
         // SERIALIZATION (by volatility): stable standing-framing FIRST (roster,
@@ -752,13 +904,13 @@ impl LlmDeliberationFaculty {
         // is a pure emit-order choice that maximizes cross-turn prefix reuse AND puts
         // the live, actionable context closest to where the model writes. `false`
         // (stable) sorts before `true` (volatile). See [`Contribution::stable`].
-        selected.sort_by_key(|c| u8::from(!c.stable));
+        selected.sort_by_key(|(c, _)| u8::from(!c.stable));
         let mut block = String::new();
-        for c in selected {
+        for (c, body) in selected {
             block.push_str("\n[");
             block.push_str(c.faculty.as_str());
             block.push_str("]\n");
-            block.push_str(&c.content);
+            block.push_str(&body);
             block.push('\n');
         }
         block
@@ -857,8 +1009,79 @@ impl LlmDeliberationFaculty {
         // overflow. The OLDEST turns yield first under pressure (the latest activity
         // is what the turn is about — the same priority the old flat head-trim had,
         // now at turn granularity).
-        let msg_budget = budget.saturating_sub(framing_tokens);
-        let messages = self.messages_within(ws, msg_budget);
+        // RESERVE THE GROUNDING FLOOR BEFORE THE CONVERSATION FILLS.
+        //
+        // `messages_within` is greedy: hand it everything after framing and it takes
+        // everything after framing, so grounding gets the remainder — which is zero.
+        // That is not a budget-size problem and growing the window does not fix it:
+        // measured 2026-08-06, the served window rose 16,384 → 24,128 and Anwen,
+        // Asha and Atlas still each rendered `budget=0 kept=[]`, dropping recall,
+        // roster, workspace-map AND the work board on every turn. The conversation
+        // simply absorbed the increase. Supply was never the binding constraint at
+        // this seam; ORDER was.
+        //
+        // The floor is derived, not invented: enough for the SMALLEST contribution
+        // actually offered this turn, so at least one grounding fact always reaches
+        // her. Bounded at half the post-framing pool so the reservation can never
+        // invert the problem and starve the conversation — an even split is a
+        // fairness rule between two claimants, not a tuning constant. Whatever
+        // grounding does not use still flows back: `ctx_budget` below is computed
+        // from what the conversation ACTUALLY consumed, not from this reservation.
+        let after_framing = budget.saturating_sub(framing_tokens);
+        let ctx_floor = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .map(|c| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2)
+            .min()
+            .unwrap_or(0)
+            .min(after_framing / 2);
+        let msg_budget = after_framing.saturating_sub(ctx_floor);
+        let all_messages = self.messages_unfitted(ws);
+
+        // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
+        // fitting step throws the evidence away, and deliberately free to exceed
+        // `context_window`. That excess IS the signal: it is the only way a mind held
+        // at a too-small window can ever report that it needed a bigger one, and the
+        // measurement `serving_plan` provisions from (see [`super::working_set`]).
+        //
+        // Measuring the prompt we actually SEND instead would measure the clamp — a
+        // citizen capped at 8192 fills 8192, so a p95 of what-was-sent re-derives the
+        // cap that produced it and freezes it forever. Every term below is therefore
+        // the UNTRUNCATED one.
+        let demand_tokens = framing_tokens
+            .saturating_add(Self::messages_cost(&all_messages))
+            .saturating_add(Self::assembled_context_cost(ws))
+            .saturating_add(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
+            .saturating_add(completion_reserve)
+            .saturating_add(self.describe_tool_tokens());
+        if let Some(reg) = &self.working_set {
+            reg.record(
+                self.persona_id,
+                demand_tokens.min(u32::MAX as usize) as u32,
+                // `now_ms` is the workspace's own clock when the cycle stamped one;
+                // 0 when it didn't. The registry keeps peaks, not a time series, so an
+                // unstamped cycle still contributes its measurement honestly.
+                ws.now_ms.unwrap_or(0),
+            );
+        }
+        crate::probe!(
+            class = "delib.turn.demand",
+            persona = %self.persona_name,
+            demand_tokens,
+            context_window,
+            framing_tokens,
+            conversation_tokens = Self::messages_cost(&all_messages),
+            grounding_tokens = Self::assembled_context_cost(ws),
+            completion_reserve,
+            // The honest headline: >1.0 means this turn wanted more window than it had,
+            // and by how much. This is the number that decides whether the served
+            // window is provisioned for the work or for a constant.
+            over_window = demand_tokens as f32 / (context_window.max(1) as f32),
+            "turn demand vs served window"
+        );
+
+        let messages = self.fit_messages(all_messages, msg_budget);
 
         // Whatever remains after framing + conversation goes to enrichment
         // context. The framing estimate above was taken with an EMPTY context,
@@ -869,11 +1092,17 @@ impl LlmDeliberationFaculty {
         // rounding slop until the tool-menu example grew the prompt to the
         // budget edge — glass-boxed 2026-07-13, llama-server 400 territory).
         let used_msg_tokens: usize = messages.iter().map(|m| est_tokens(&m.content_text())).sum();
-        let ctx_budget = budget
-            .saturating_sub(framing_tokens)
+        // Grounding gets everything the conversation did not actually use — never
+        // less than the floor reserved above.
+        let ctx_budget = after_framing
             .saturating_sub(used_msg_tokens)
-            .saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER));
-        let context = self.render_assembled_context_within(ws, ctx_budget);
+            .saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
+            .max(ctx_floor.saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER)));
+        let context = self.render_assembled_context_within(
+            ws,
+            ctx_budget,
+            (context_window, framing_tokens, used_msg_tokens, ctx_floor),
+        );
 
         DeliberationPromptView {
             system: self.compose_system(
@@ -920,6 +1149,18 @@ impl LlmDeliberationFaculty {
     /// so it neither bleeds identity nor replays the transcript (the echo-loop root
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
+        self.fit_messages(self.messages_unfitted(ws), budget_tokens)
+    }
+
+    /// The conversation as it stands BEFORE any budget is applied — every turn, every
+    /// perception fact, every trailing proprioception block, in final render order.
+    ///
+    /// Split out from the fitting step so a turn's TRUE conversational size is
+    /// knowable. Fitting is lossy by design (newest-first, oldest dropped), and once
+    /// it has run the question "how much did this turn actually want?" is
+    /// unanswerable — which is precisely why the served window had to be sized by a
+    /// constant instead of by demand. [`super::working_set`] measures this.
+    fn messages_unfitted(&self, ws: &Workspace) -> Vec<ChatMessage> {
         // Collapse consecutive same-role turns into one message each (chronological).
         // Her OWN near-duplicate turns are DROPPED after the first: replaying
         // `assistant: X` three times teaches the model that repeating X is its
@@ -1056,7 +1297,35 @@ impl LlmDeliberationFaculty {
         if messages.is_empty() {
             return vec![ChatMessage::text("user", ws.world_state.clone())];
         }
+        messages
+    }
 
+    /// The per-message chat-template overhead every message pays, whether it is being
+    /// measured for demand or fitted to a budget. ONE constant so the two cannot drift
+    /// — an under-count here is an llama-server 400 at the window edge.
+    ///
+    /// Chat templates wrap each message in role markers
+    /// (`<|im_start|>role\n…<|im_end|>`, ~4-5 tokens). The original +2 was optimistic:
+    /// at the budget edge the fitted thread measured over the window by a token
+    /// (glass-boxed 2026-07-13). Round UP like every other estimate here.
+    // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
+    const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
+
+    /// What this conversation costs whole, with no budget applied — the conversational
+    /// half of a turn's demand ([`super::working_set`]).
+    fn messages_cost(messages: &[ChatMessage]) -> usize {
+        messages
+            .iter()
+            .map(|m| est_tokens(&m.content_text()) + Self::PER_MESSAGE_TEMPLATE_TOKENS)
+            .sum()
+    }
+
+    /// Fit an already-built conversation to `budget_tokens`.
+    fn fit_messages(
+        &self,
+        messages: Vec<ChatMessage>,
+        budget_tokens: usize,
+    ) -> Vec<ChatMessage> {
         // Fit to the served window, NEWEST-first: walk the thread from the most
         // recent message backward, giving each the remaining budget. A whole message
         // that fits is kept intact; the one that straddles the budget boundary is
@@ -1065,21 +1334,14 @@ impl LlmDeliberationFaculty {
         // flat head-trim: the latest activity always survives (it is what the turn is
         // about), and for the opaque single-turn (eval/test/replay) path it reduces
         // EXACTLY to the previous `tail_to_tokens(world_state, budget)` behavior.
-        // Per-message role/template framing the model pays: chat templates
-        // wrap each message in role markers (`<|im_start|>role\n…<|im_end|>`,
-        // ~4-5 tokens). The original +2 was optimistic — at the budget edge
-        // the fitted thread measured over the window by a token (glass-boxed
-        // 2026-07-13); round UP like every other estimate here (under-counting
-        // risks the llama-server 400, over-counting costs a few tokens of
-        // context). One constant for the whole-message, straddling-trim, and
-        // giant-single-burst arms — the charge must not drift between them.
-        // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
-        const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
+        // Per-message template overhead: `Self::PER_MESSAGE_TEMPLATE_TOKENS`, shared
+        // with `messages_cost` so measurement and fitting charge identically.
+        let per_message_template_tokens = Self::PER_MESSAGE_TEMPLATE_TOKENS;
         let mut fitted: Vec<ChatMessage> = Vec::new();
         let mut remaining = budget_tokens;
         for msg in messages.iter().rev() {
             let body = msg.content_text();
-            let cost = est_tokens(&body) + PER_MESSAGE_TEMPLATE_TOKENS;
+            let cost = est_tokens(&body) + per_message_template_tokens;
             if cost <= remaining {
                 remaining -= cost;
                 fitted.push(msg.clone());
@@ -1087,7 +1349,7 @@ impl LlmDeliberationFaculty {
                 // The straddling message: keep as much of its TAIL as still fits.
                 let trimmed = tail_to_tokens(
                     &body,
-                    remaining.saturating_sub(PER_MESSAGE_TEMPLATE_TOKENS),
+                    remaining.saturating_sub(per_message_template_tokens),
                 );
                 if !trimmed.is_empty() {
                     fitted.push(ChatMessage::text(msg.role.clone(), trimmed));
@@ -1102,7 +1364,7 @@ impl LlmDeliberationFaculty {
             if let Some(last) = messages.last() {
                 let body = tail_to_tokens(
                     &last.content_text(),
-                    budget_tokens.saturating_sub(PER_MESSAGE_TEMPLATE_TOKENS),
+                    budget_tokens.saturating_sub(per_message_template_tokens),
                 );
                 // FAIL LOUD, never a blank mind: with the budget squeezed to ~0
                 // this arm used to emit ONE EMPTY user message — the model
@@ -1831,13 +2093,219 @@ mod tests {
             );
 
             // Generous budget so BOTH fit — this isolates ORDER, not truncation.
-            let block = faculty.render_assembled_context_within(&ws, 4096);
+            let block = faculty.render_assembled_context_within(&ws, 4096, (0, 0, 0, 0));
             let roster_at = block.find("[room-roster]").expect("roster present");
             let recall_at = block.find("[recall]").expect("recall present");
             assert!(
                 roster_at < recall_at,
                 "stable framing must serialize before higher-salience volatile recall \
              (roster@{roster_at} should precede recall@{recall_at})\n{block}"
+            );
+        }
+
+        /// A grounding block built from a LIST of units, sized like the live work
+        /// board (leads first, then one line per card).
+        fn board_like(units: usize) -> Contribution {
+            let mut parts = vec![
+                "[your work] you HOLD 1 card — 0dd1123c \"wire the gather fallback\"".to_string(),
+                "[available work] 60 card(s) are claimable — pick one up with work/claim"
+                    .to_string(),
+            ];
+            for i in 0..units {
+                parts.push(format!(
+                    "card {i:08x} [Open] \"a card whose title is about as long as a real one\" \
+                     (Normal, unclaimed)"
+                ));
+            }
+            let content = parts.join("\n");
+            Contribution::context(
+                FacultyId::Custom("room-kanban".to_string()),
+                content,
+                0.9,
+                "board",
+            )
+            .with_parts(parts)
+        }
+
+        // what this catches: a greedy conversation that eats every token grounding
+        // needs. `messages_within` fills whatever it is handed, so passing it the
+        // whole post-framing pool leaves grounding exactly zero — and GROWING THE
+        // WINDOW DOES NOT FIX IT, the conversation just absorbs the increase.
+        // Measured live 2026-08-06: the served window rose 16,384 → 24,128 and
+        // Anwen, Asha and Atlas each still rendered `budget=0 kept=[]`, dropping
+        // recall, roster, workspace-map AND the work board on every single turn.
+        // Supply was never the binding constraint at this seam; ORDER was.
+        #[test]
+        fn a_long_conversation_cannot_starve_grounding_to_zero() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+                .with_context_window(24_128);
+
+            // A conversation long enough to swallow the whole window on its own.
+            let mut ws = Workspace::new("anything open?");
+            for i in 0..40 {
+                ws.turns.push(crate::cognition::workspace::BurstTurn::attributed(
+                    i % 2 == 1,
+                    if i % 2 == 1 { "Ivar" } else { "Asha" },
+                    format!("turn {i}: ").repeat(60),
+                    None,
+                ));
+            }
+            ws.broadcast.push(board_like(60).with_expand_command(Some("work/list")));
+
+            let view = faculty.prompt_view_within(&ws, 24_128);
+            assert!(
+                view.system.contains("[room-kanban]"),
+                "grounding must survive a conversation that would otherwise take every \
+                 token — this is the exact live failure: window grew, board still gone\n{}",
+                &view.system[..view.system.len().min(1200)]
+            );
+        }
+
+        // what this catches: a truncation notice a citizen cannot act on. Telling
+        // her "the full list is available from the matching command" names nothing
+        // she can type — she cannot run a description, and a verb she has to guess
+        // is a verb she gets wrong ([[command-names-must-be-accurate]]). The source
+        // declares its own expansion verb; the notice must print it verbatim, with
+        // the true total so she knows the size of what she is asking for.
+        #[test]
+        fn a_truncated_block_names_the_exact_verb_that_yields_the_rest() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            let board = board_like(60).with_expand_command(Some("work/list"));
+            let total = board.parts.len();
+            ws.broadcast.push(board);
+
+            let block = faculty.render_assembled_context_within(&ws, 120, (0, 0, 0, 0));
+            assert!(
+                block.contains("run `work/list`"),
+                "the notice must name the verb verbatim, not describe it\n{block}"
+            );
+            assert!(
+                block.contains(&format!("to see all {total}")),
+                "…and say how many there are in total, so she knows what she is asking for\n{block}"
+            );
+        }
+
+        // what this catches: the other half — a source with genuinely nothing more
+        // to fetch must not invent a verb. A pointer to a command that does not
+        // expand anything is worse than no pointer: she spends a turn on it and
+        // learns nothing.
+        #[test]
+        fn a_source_with_no_expansion_verb_states_only_the_omission() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            ws.broadcast.push(board_like(60)); // expand_command defaults to None
+
+            let block = faculty.render_assembled_context_within(&ws, 120, (0, 0, 0, 0));
+            assert!(block.contains("more not shown"), "still says it truncated\n{block}");
+            assert!(
+                !block.contains("run `"),
+                "must not point at a verb it was never given\n{block}"
+            );
+        }
+
+        // what this catches: the board vanishing WHOLE. Measured live 2026-08-06 across
+        // 1,284 context assemblies, `room-kanban` was KEPT 0 times and dropped 495 — a
+        // median 5,364-token block offered all-or-nothing into a median 55-token budget
+        // — while its first two units (~200 tokens) carry every fact a citizen needs to
+        // find work. The citizens were reporting "there are no open tasks available"
+        // about a 61-card board. A source that delivered a LIST declared its own cut
+        // points; assembly must take the longest fitting PREFIX instead of nothing.
+        #[test]
+        fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            let board = board_like(60);
+            let whole = est_tokens(&board.content);
+            ws.broadcast.push(board);
+
+            // A budget FAR under the whole board — the live shape (55 vs 5,364).
+            let budget = 120;
+            assert!(whole > budget * 10, "fixture must reproduce the live ratio");
+            let block = faculty.render_assembled_context_within(&ws, budget, (0, 0, 0, 0));
+
+            assert!(
+                block.contains("[room-kanban]"),
+                "the board must still reach the prompt — it vanished whole before this fix\n{block}"
+            );
+            assert!(
+                block.contains("[your work]"),
+                "the FIRST unit is the one that matters most; a prefix must start there\n{block}"
+            );
+            assert!(
+                !block.contains("card 0000003b"),
+                "the 60th card must NOT ride along — the prefix is bounded by budget\n{block}"
+            );
+            assert!(
+                block.contains("more not shown"),
+                "a truncated LIST must SAY it is truncated, or a partial board reads as \
+                 the whole board and she reports work that isn't there\n{block}"
+            );
+            assert!(
+                est_tokens(&block) <= budget * 2,
+                "the prefix must respect the budget it was given (got {} for budget {budget})\n{block}",
+                est_tokens(&block)
+            );
+        }
+
+        // what this catches: the OTHER half of the same rule — divisibility is opt-in and
+        // must not leak. An engram is ONE indivisible thing; cutting it mid-sentence
+        // produces confident nonsense, which is worse than its absence. A faculty that
+        // never calls `with_parts` must behave exactly as it did before parts existed.
+        #[test]
+        fn an_indivisible_contribution_is_still_dropped_whole_never_cut_mid_content() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("what happened yesterday?");
+            let engram = "we agreed the gather promise binds every reachable kernel, and that \
+                          the in-place consumption path inherits none of the alignment the \
+                          copy path establishes, which is why the fallback had to be per-op"
+                .repeat(4);
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                engram.clone(),
+                0.9,
+                "recalled",
+            ));
+
+            let block = faculty.render_assembled_context_within(&ws, 40, (0, 0, 0, 0));
+            assert!(
+                !block.contains("[recall]"),
+                "an over-budget INDIVISIBLE contribution must be dropped whole, not \
+                 truncated into a confident half-thought\n{block}"
+            );
+            assert!(
+                !block.contains("more not shown"),
+                "the truncation notice belongs only to genuinely divisible lists\n{block}"
+            );
+        }
+
+        // what this catches: a zero/near-zero budget must produce NO block rather than a
+        // bare `[room-kanban]` header with nothing under it — an empty labelled block
+        // reads to the persona as "the board is empty", which is exactly the false fact
+        // this whole fix exists to stop her acting on.
+        #[test]
+        fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            ws.broadcast.push(board_like(60));
+
+            let block = faculty.render_assembled_context_within(&ws, 4, (0, 0, 0, 0));
+            assert!(
+                !block.contains("[room-kanban]"),
+                "no unit fits, so there must be no header — a labelled empty block is a \
+                 LIE that reads as an empty board\n{block}"
             );
         }
 

@@ -430,6 +430,22 @@ pub struct RagDelivery {
 pub trait RagSource: Send + Sync {
     fn source_id(&self) -> &'static str;
 
+    /// The verb that yields THIS source's content in full, for when the prompt
+    /// budget could only fit part of it.
+    ///
+    /// A truncated grounding block has to tell the reader two things: that it is
+    /// truncated, and **exactly how to see the rest**. "The full list is available
+    /// from the matching command" fails the second half — a citizen cannot run a
+    /// description. It has to be the real verb, spelled the way she would type it,
+    /// because a name she has to guess is a name she gets wrong
+    /// ([[command-names-must-be-accurate]]).
+    ///
+    /// `None` is a legitimate answer for a source with genuinely nothing more to
+    /// show (a one-shot fact, a stub). It is NOT the answer for "I didn't think
+    /// about it" — which is why there is no default impl: every source decides,
+    /// the same forcing function as [`super::room_board_source::RoomBoardReader::peer_names`].
+    fn expand_command(&self) -> Option<&'static str>;
+
     /// Deliver as many complete atomic units as fit within `budget`.
     /// The source decides what counts as complete; allocator only
     /// trusts that `delivery.tokens_used <= budget`.
@@ -812,6 +828,11 @@ impl StubRagSource {
 impl RagSource for StubRagSource {
     fn source_id(&self) -> &'static str {
         self.source_id
+    }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
     }
 
     async fn deliver(

@@ -269,6 +269,12 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
         self.inner.source_id()
     }
 
+    /// Recording is transparent — the wrapped source's expansion verb is the
+    /// real one; a capture wrapper must never change what a citizen is told.
+    fn expand_command(&self) -> Option<&'static str> {
+        self.inner.expand_command()
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

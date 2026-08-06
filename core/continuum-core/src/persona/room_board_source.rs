@@ -194,10 +194,16 @@ impl RoomBoardSource {
         names: &dyn crate::persona::card_holder::PeerNames,
     ) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let owner = crate::persona::card_holder::holder(card, self_id, now_ms, names).render();
+        let held = crate::persona::card_holder::holder(card, self_id, now_ms, names);
+        // The tag leads with what the card IS to someone deciding whether to take
+        // it, not with the column it happens to sit in — a lapsed claim is takeable
+        // work whose column still reads `Claimed`. See `CardHolder::state_tag`;
+        // found live by Benchy on a board of 61 cards, 0 in state Open, 59 leases
+        // stale — every available card read as taken.
+        let owner = held.render();
         format!(
-            "card {id8} [{state:?}] \"{title}\" ({prio:?}, {owner})",
-            state = card.state,
+            "card {id8} [{state}] \"{title}\" ({prio:?}, {owner})",
+            state = held.state_tag(card),
             title = card.title,
             prio = card.priority,
         )
@@ -233,6 +239,10 @@ fn now_unix_ms() -> u64 {
 impl RagSource for RoomBoardSource {
     fn source_id(&self) -> &'static str {
         SOURCE_ID
+    }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("work/list")
     }
 
     async fn deliver(

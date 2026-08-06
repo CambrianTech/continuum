@@ -326,6 +326,10 @@ impl RagSource for WorkspaceMapSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("code/tree")
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
