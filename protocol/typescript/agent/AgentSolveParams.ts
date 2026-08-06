@@ -78,6 +78,18 @@ suppress_recall?: boolean,
  */
 deliverable?: Deliverable, 
 /**
+ * This run is SCORED — a benchmark instance whose verdict comes from applying her diff and
+ * running the tests, not from anything she says. Hardens her write path: an edit whose code
+ * would land inside a string literal is refused rather than warned (#317), because the run
+ * cannot recover from a file it believes it fixed.
+ *
+ * Default `false`, and deliberately NOT inferred from `deliverable` — `agent/solve` also
+ * does real work for real teammates, and a citizen doing real work writes code as text
+ * whenever she means to (a docstring example, a fixture). Only the caller that is GRADING
+ * her knows the ambiguity is gone, so only that caller sets this.
+ */
+scored?: boolean, 
+/**
  * Directories to PREPEND to `PATH` for her shell — the interpreter/toolchain this
  * task needs in order to be RUNNABLE. A SWE harness passes the era-matched venv's
  * `bin` here so `python` and `pytest` exist for her.
