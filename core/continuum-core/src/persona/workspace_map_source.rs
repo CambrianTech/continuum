@@ -68,8 +68,28 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceLayout {
     pub root: PathBuf,
-    /// Non-hidden top-level directory names, sorted.
+    /// Top-level directory names, sorted. INCLUDES dot-directories — see
+    /// [`WorkspaceLayout::is_truly_empty`] for why that is load-bearing.
     pub top_level_dirs: Vec<String>,
+    /// How many top-level entries of ANY kind exist (files + dirs, hidden included).
+    /// Distinct from `top_level_dirs.len()` on purpose: a workspace holding only
+    /// `main.rs` has zero directories and is emphatically not empty.
+    pub top_level_entries: usize,
+}
+
+impl WorkspaceLayout {
+    /// The ONLY condition under which this source may claim the workspace is empty.
+    ///
+    /// Was `top_level_dirs.is_empty()`, which is a claim about DIRECTORIES wearing
+    /// the words "there are no files or directories here yet". Two live workspaces
+    /// falsify that reading: one whose files sit at the root with no subdirectory,
+    /// and one whose content lives in a dot-directory. Measured 2026-08-06 — a
+    /// persona sent to fix `.gymtool/solution.rs` was told, as a structural fact,
+    /// that her workspace was empty and that she should create files instead of
+    /// reading them. [[empty-workspace-is-a-confabulation-not-infra]] (#336)
+    pub fn is_truly_empty(&self) -> bool {
+        self.top_level_entries == 0
+    }
 }
 
 /// Abstract reader over the workspace layout. Production rides on the same
@@ -95,9 +115,13 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
         // Identity here is the reader, not a persona — this engine only LISTS the
         // root; the persona's own per-caller engine handles reads/edits.
         let engine = FileEngine::new(SOURCE_ID, security);
+        // `true` = INCLUDE HIDDEN. A dot-directory is a real part of the layout, and
+        // excluding it made this source assert an EMPTY workspace over one that held
+        // `.gymtool/solution.rs` — the exact file the persona had been sent to fix (#336).
         let listing = engine
-            .list_dir(".", false)
+            .list_dir(".", true)
             .map_err(|e| format!("workspace list failed: {e}"))?;
+        let top_level_entries = listing.entries.len();
         let mut top_level_dirs: Vec<String> = listing
             .entries
             .into_iter()
@@ -108,6 +132,7 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
         Ok(WorkspaceLayout {
             root,
             top_level_dirs,
+            top_level_entries,
         })
     }
 }
@@ -126,7 +151,7 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
     // the file — the image-feedback loop can't start until the WRITE fires). Ground the
     // truth of an empty space: there is nothing to read; produce first. Truthful, not
     // steering — it says "write to create", never WHAT to build. [[empty-workspace-is-a-confabulation-not-infra]]
-    if count == 0 {
+    if layout.is_truly_empty() {
         return format!(
             "This workspace is rooted at: {root}\n\
              It is EMPTY — there are no files or directories here yet. There is nothing \
@@ -203,9 +228,13 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         let security =
             PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);
+        // `true` = INCLUDE HIDDEN. A dot-directory is a real part of the layout, and
+        // excluding it made this source assert an EMPTY workspace over one that held
+        // `.gymtool/solution.rs` — the exact file the persona had been sent to fix (#336).
         let listing = engine
-            .list_dir(".", false)
+            .list_dir(".", true)
             .map_err(|e| format!("workspace list failed: {e}"))?;
+        let top_level_entries = listing.entries.len();
         let mut top_level_dirs: Vec<String> = listing
             .entries
             .into_iter()
@@ -216,6 +245,7 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         Ok(WorkspaceLayout {
             root,
             top_level_dirs,
+            top_level_entries,
         })
     }
 }
@@ -243,9 +273,13 @@ impl WorkspaceLayoutReader for FixedRootWorkspaceLayoutReader {
         let security = PathSecurity::new(&self.root)
             .map_err(|e| format!("workspace security init failed for pinned root: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);
+        // `true` = INCLUDE HIDDEN, same reason as the cwd reader (#336). This is the
+        // reader the CITIZEN layer actually uses, so it is the one that was lying to
+        // personas in the gym.
         let listing = engine
-            .list_dir(".", false)
+            .list_dir(".", true)
             .map_err(|e| format!("pinned-root workspace list failed: {e}"))?;
+        let top_level_entries = listing.entries.len();
         let mut top_level_dirs: Vec<String> = listing
             .entries
             .into_iter()
@@ -256,6 +290,7 @@ impl WorkspaceLayoutReader for FixedRootWorkspaceLayoutReader {
         Ok(WorkspaceLayout {
             root: self.root.clone(),
             top_level_dirs,
+            top_level_entries,
         })
     }
 }
@@ -420,7 +455,56 @@ mod tests {
         WorkspaceLayout {
             root: PathBuf::from("/repo"),
             top_level_dirs: dirs.iter().map(|s| s.to_string()).collect(),
+            // Default fixture: entries == dirs. The tests that care about the
+            // difference (files-only, hidden-only) build the struct themselves.
+            top_level_entries: dirs.len(),
         }
+    }
+
+    // what this catches: the source telling a persona her workspace is EMPTY when it
+    // is not. The old gate was `top_level_dirs.is_empty()` — a claim about DIRECTORIES
+    // wearing the words "there are no files or directories here yet", plus a listing
+    // that excluded dotfiles. Measured live 2026-08-06: a persona sent to fix
+    // `.gymtool/solution.rs` (the shape EVERY tool-bugfix-rs task uses) was told, as a
+    // structural fact, that there was nothing to read and that she should CREATE files
+    // instead. She recovered by trusting the task text over her own grounding — but the
+    // grounding was a lie we authored. [[empty-workspace-is-a-confabulation-not-infra]]
+    #[test]
+    fn a_workspace_with_files_is_never_described_as_empty() {
+        // Only a dot-directory: zero non-hidden dirs, but emphatically not empty.
+        let hidden_only = WorkspaceLayout {
+            root: PathBuf::from("/repo"),
+            top_level_dirs: vec![".gymtool".into()],
+            top_level_entries: 1,
+        };
+        assert!(!hidden_only.is_truly_empty());
+        let body = render_layout(&hidden_only);
+        assert!(!body.contains("It is EMPTY"), "{body}");
+        assert!(
+            !body.contains("nothing \\
+             to read"),
+            "must never tell her reading cannot work here: {body}"
+        );
+
+        // Files at the root, no subdirectories at all — the OTHER shape the old
+        // dirs-only gate got wrong.
+        let files_only = WorkspaceLayout {
+            root: PathBuf::from("/repo"),
+            top_level_dirs: vec![],
+            top_level_entries: 3,
+        };
+        assert!(!files_only.is_truly_empty());
+        assert!(!render_layout(&files_only).contains("It is EMPTY"));
+
+        // A genuinely empty workspace still gets the build-first grounding, which is
+        // a real finding (#206) and must survive this fix.
+        let truly_empty = WorkspaceLayout {
+            root: PathBuf::from("/repo"),
+            top_level_dirs: vec![],
+            top_level_entries: 0,
+        };
+        assert!(truly_empty.is_truly_empty());
+        assert!(render_layout(&truly_empty).contains("It is EMPTY"));
     }
 
     struct StubReader {
