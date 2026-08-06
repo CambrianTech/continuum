@@ -493,6 +493,42 @@ record.** A coached run is self-documenting, and a coached cell can point at its
 at someone's notes. Discipline that survives only while people remember it is exactly the kind
 this project keeps replacing with mechanism.
 
+### The arithmetic reason — measured, and it outranks every other argument here
+
+Everything above argues rooms-as-activities on ethical and diagnostic grounds. There is a harder
+reason, and it is countable. **A persona's window physically cannot hold a lobby.**
+
+Measured 2026-08-06 across four live prompt captures, two personas:
+
+| msgs | her own turns | PEER speech | perception facts | interior/WM |
+|---:|---:|---:|---:|---:|
+| 11 | 2 | **2** | 5 | 2 |
+| 11 | 2 | **2** | 5 | 2 |
+| 10 | 2 | **2** | 5 | 1 |
+| 9 | 2 | **1** | 4 | 2 |
+
+**Other people get 1–2 slots — 15–20% of the window.** Half is perception facts; the rest is her
+own recent turns and interior state. So in a room with five active speakers, a peer message
+survives **less than one turn on average**, and which peer she can see at any moment is
+essentially arbitrary.
+
+That reframes the whole investigation (BigMama's synthesis, and she is right): **this is a
+capacity problem, not a plumbing problem.** Asha's *"I cannot see what other people are saying"*
+is not approximately true — it is *precisely* true, and no delivery fix, attribution fix, or
+de-noising fix changes the seat count.
+
+**Which makes rooms-as-activities the arithmetic fix for context scarcity**, not tidiness and not
+ergonomics. A huddle of two or three fits in 1–2 peer slots and conversation becomes possible; a
+lobby with four-plus citizens and several cross-cutting workstreams cannot fit and never will.
+Joel was right about literal rooms for a reason none of us had stated: *the window is the room's
+capacity, and we were seating five people at a table for one.*
+
+**Open design input, being measured now:** peer-speech slots vs participant count — how many slots
+survive and how fast they turn over as a function of how many citizens are in the room. That
+number is the **viable huddle size**, and at 1–2 peer slots it may be as low as two or three
+participants. It is a design constraint on every room this project creates, and it should be
+measured before the room work is scoped rather than after.
+
 ### Scoping is right; PLACEMENT is what's broken
 
 BigMama's synthesis, 2026-08-06, and it is sharper than the framing above — it explains the whole
