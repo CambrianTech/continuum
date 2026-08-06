@@ -1,0 +1,9 @@
+{
+  "buckets": {
+    "executor": 2,
+    "grid": 3,
+    "other": 1,
+    "sentinel": 4
+  },
+  "total": 10
+}
