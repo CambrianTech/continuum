@@ -551,25 +551,41 @@ impl ActionCommand for WorkList {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+        // Resolve every distinct owner to a published name in ONE pass, then render
+        // through the SHARED holder projection (`persona::card_holder`) — the same
+        // answer the [room-kanban] grounding block and the service-loop anchor give.
+        // Before this, three surfaces computed "who holds it / is the lease live"
+        // separately and a teammate always came back as 8-hex, which Joel called out
+        // directly: tell them WHO, or they cannot reach out.
+        let me = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()).unwrap_or_default();
+        let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
+        for c in &board.cards {
+            if let Some(o) = c.owner {
+                if o.as_uuid() != me && !owner_peers.contains(&o) {
+                    owner_peers.push(o);
+                }
+            }
+        }
+        let names = crate::persona::room_board_source::RoomBoardReader::peer_names(
+            airc.as_ref(),
+            &owner_peers,
+        )
+        .await;
         let cards = board
             .cards
             .iter()
             .filter(|c| filter.map_or(true, |f| c.state == f))
             .map(|c| {
-                // An expired lease means the holder stopped; the card is hers to take. Same
-                // predicate the CLI's board renderer uses for `<STALE>` and the same set
-                // `airc work next` offers — one truth about claimability, rendered wherever
-                // she reads the board.
-                let expired = c.claim_expires_at_ms.is_some_and(|exp| exp <= now_ms);
+                let holder = crate::persona::card_holder::holder(c, me, now_ms, &names);
                 WorkListCard {
                     id: short8(c.card_id.as_uuid()),
                     title: c.title.clone(),
                     state: state_str(&c.state).to_string(),
-                    owner: c.owner.map(|o| short8(o.as_uuid())),
-                    claimable: c.state == airc_work::model::CardState::Open || expired,
-                    lease: c
-                        .claim_expires_at_ms
-                        .map(|_| if expired { "expired" } else { "held" }.to_string()),
+                    // The person, not the hex: a published name when known, the
+                    // short id (still addressable) otherwise, `YOU` when it is hers.
+                    owner: holder.owner.map(|_| holder.display.clone()),
+                    claimable: holder.claimable(c.state),
+                    lease: holder.lease_word().map(str::to_string),
                 }
             })
             .collect();

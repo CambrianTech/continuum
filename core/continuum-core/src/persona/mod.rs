@@ -35,6 +35,7 @@ pub mod airc_source;
 pub mod durable_history;
 pub mod allocator;
 pub mod card;
+pub mod card_holder;
 pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;

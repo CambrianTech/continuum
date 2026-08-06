@@ -1626,15 +1626,34 @@ fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> 
             .get("state")
             .and_then(|s| serde_json::from_value(s.clone()).ok())
     }
-    // Top 1-2 unclaimed (open work anyone could pick up) + 1 in-flight card
-    // (proof the room's work is real and moving), in airc's own board order —
-    // no re-ranking heuristic.
+    /// Is this card's hold still good? Read as the structural fact the board source
+    /// carries, never re-derived here — `claim_is_live` is the ONE definition and
+    /// `room_board_source` already applied it. Absent (an older projection) reads as
+    /// LIVE, so a missing field can never invent availability that isn't there.
+    fn claim_live(i: &crate::persona::rag_budget::RagItem) -> bool {
+        i.metadata
+            .get("claim_live")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    }
+    // AVAILABLE work is not just `Open` — it is anything nobody currently holds. A card
+    // stuck in `Claimed` with a LAPSED lease is free to take, and treating it as taken is
+    // what emptied this anchor while 19 takeable cards sat on the board (2026-08-06: every
+    // resident read "nothing available" off their own expired claims and passed, for hours).
+    // `state == Open` and "unheld" are different questions; ask the second one.
     use airc_work::CardState;
     let unclaimed: Vec<&str> = cards
         .iter()
         .filter(|i| {
-            state(i) == Some(CardState::Open)
-                && i.metadata.get("owner").is_none_or(|o| o.is_null())
+            let unowned_open = state(i) == Some(CardState::Open)
+                && i.metadata.get("owner").is_none_or(|o| o.is_null());
+            // A lapsed hold on ANY non-terminal card is available work, whoever held it.
+            let lapsed = !claim_live(i)
+                && matches!(
+                    state(i),
+                    Some(CardState::Claimed | CardState::InProgress | CardState::Review)
+                );
+            unowned_open || lapsed
         })
         .map(|i| i.content.trim())
         .take(2)
@@ -1644,6 +1663,10 @@ fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> 
     // matching the type rather than a string.
     let in_flight: Vec<&str> = cards
         .iter()
+        // Genuinely in flight = claimed AND the hold is still live. Without the liveness
+        // term a lapsed card counts as both available and in-flight, and the anchor would
+        // tell her the same card is free and busy in one breath.
+        .filter(|i| claim_live(i))
         .filter(|i| match state(i) {
             Some(CardState::Claimed | CardState::InProgress | CardState::Review) => true,
             Some(
