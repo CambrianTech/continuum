@@ -1632,7 +1632,8 @@ impl ServingDaemonModule {
             .borrow()
             .as_ref()
             .map(|p| p.base_model_id.clone());
-        match plan_serving_stable(budget, candidates, incumbent.as_deref(), self.serving_demand()) {
+        let demand = self.serving_demand();
+        match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
                 crate::probe!(
                     class = "serving.plan",
@@ -1642,6 +1643,23 @@ impl ServingDaemonModule {
                     fits_on_gpu = plan.fits_on_gpu,
                     usable_gb = (budget.usable_bytes / 1_000_000_000),
                     candidates = candidates.len(),
+                    // WHICH bound decided the window. Without this the plan is
+                    // unfalsifiable: a window that does not grow after demand rises
+                    // looks identical whether the HOST could not fit more, the
+                    // measured DEMAND did not ask for more, or the reconcile held
+                    // within hysteresis — three different bugs with one appearance.
+                    // Read 2026-08-06 when 11 turns measured over_window ≥ 1.09 and
+                    // the served window sat unmoved at 16384; nothing on hand could
+                    // say why, which is a hole in the glass box
+                    // ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+                    served_window = plan.served_context_window,
+                    demand_window = demand.window_tokens,
+                    demand_lanes = demand.lanes,
+                    bound_by = if plan.served_context_window >= demand.window_tokens {
+                        "demand"
+                    } else {
+                        "host-fit"
+                    },
                     "serving plan recomputed",
                 );
                 // Publish the LIVE lane count to the admission gate so its directed-turn
