@@ -718,6 +718,19 @@ impl LlmDeliberationFaculty {
         composition: (u32, usize, usize, usize),
     ) -> String {
         let (context_window, framing_tokens, conversation_tokens, ctx_floor) = composition;
+        // The TRAILING tier — working-memory ledger, full latest result, perception
+        // facts — renders as conversation turns AFTER the fit, so it is charged to
+        // the model but appears in neither `framing_tokens` nor
+        // `conversation_tokens`. That is the shape of the ~4,700 tokens unaccounted
+        // for on 2026-08-06 (`16384 − 4096 − 3045 − 4161` should have left ~5,000;
+        // the render got 391). Named here so the next reader confirms or kills it
+        // from the record instead of re-deriving the subtraction.
+        let trailing_tokens: usize = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && c.trailing)
+            .map(|c| est_tokens(&c.content))
+            .sum();
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -731,6 +744,7 @@ impl LlmDeliberationFaculty {
                 context_window,
                 framing_tokens,
                 conversation_tokens,
+                trailing_tokens,
                 ctx_floor,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
@@ -858,6 +872,7 @@ impl LlmDeliberationFaculty {
             context_window,
             framing_tokens,
             conversation_tokens,
+            trailing_tokens,
             ctx_floor,
             used_tokens = used,
             received,
