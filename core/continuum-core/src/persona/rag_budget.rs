@@ -701,6 +701,30 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
                 .remove(&src.source_id)
                 .expect("every source must appear in the working alloc");
             total_allocated = total_allocated.saturating_add(tokens);
+            // The allocator decided how much of her mind each source gets, and
+            // until now said NOTHING. So when a grounding block failed to
+            // appear, "the source abstained" and "the source was granted zero"
+            // were indistinguishable from outside — which is exactly the
+            // ambiguity that survived the #331 room fix: gate passing, board
+            // non-empty, block still absent, no way to tell why.
+            //
+            // Emitted per source per allocation: what it ASKED for and what it
+            // GOT. A source at allocated=0 (or below its own floor) is a
+            // faculty the persona cannot hear this turn, and that must be a
+            // readable fact, not an inference. [[observability-as-substrate]]
+            if tokens == 0 || tokens < src.floor_tokens {
+                tracing::info!(
+                    probe_class = "rag.budget.starved",
+                    source = %src.source_id,
+                    granted = tokens,
+                    floor = src.floor_tokens,
+                    min = src.min_tokens,
+                    max = src.max_tokens,
+                    state = ?st,
+                    context_window,
+                    "source granted less than its own floor — this faculty is silent this turn"
+                );
+            }
             allocations.push(SourceAllocation {
                 source_id: src.source_id.to_string(),
                 allocated_tokens: tokens,
