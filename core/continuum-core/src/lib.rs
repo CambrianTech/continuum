@@ -59,6 +59,7 @@ pub mod modules;
 pub mod orm;
 pub mod paging;
 pub mod fs_portable;
+pub mod shell_portable;
 pub mod paths;
 pub mod perception;
 pub mod persona;
