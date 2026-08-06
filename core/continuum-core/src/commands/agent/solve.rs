@@ -498,6 +498,11 @@ impl AgentSolve {
 /// The domain signal the dream's supersession review actually feeds on rides `files_changed`
 /// (`mathlib.py` → python), which the lesson keeps in full. The task text is context, and
 /// context does not need to be verbatim.
+///
+/// context-budget-exempt: this is a CONTAMINATION bound, not a context/prompt budget. It caps
+/// how much EXAM TEXT may enter her durable memory, and deriving it from the served window
+/// would invert the intent — a bigger window would admit MORE of the assignment, which is the
+/// exact failure (#312, second vector) this constant exists to stop.
 const LESSON_TASK_EXCERPT_CHARS: usize = 200;
 
 /// Build the durable EXPERIENCE string for one solve — what she worked on and how,
