@@ -42,6 +42,7 @@ pub mod lane;
 pub mod lane_pidfile;
 pub mod lane_process;
 pub mod lane_registry;
+pub mod child_log;
 pub mod llama_server;
 pub mod llamacpp_adapter;
 pub mod llm_module;
