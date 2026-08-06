@@ -110,9 +110,17 @@ def main():
         if os.path.exists(ledger):
             os.remove(ledger)
         print(f"[agent] dispatching {run_id} (workspace={repo_dir}, max_acts={args.max_acts}, detached)")
+        # learn=FALSE on a benchmark run. `agent/solve` defaults learn ON — correct, a being
+        # learns from her work (Joel: "learn should be default anyway"). But an EXAM is not
+        # work she chose, and this harness feeds her a held-out dataset. Measured 2026-08-04:
+        # with learn on, six flask-4045 runs wrote six verbatim GitHub issues into Anwen's
+        # episodic store, and her consolidator distilled durable SEMANTIC beliefs about Flask
+        # Blueprint validation out of the repetition — exam knowledge, indistinguishable from
+        # lived knowledge, and a re-run would then be scoring memorization. #59's rule is the
+        # whole point: measure a copy, never degrade the living persona.
         sh([CU, "agent/solve", "--persona-id", pid, "--base-model-id", args.base_model,
             "--task", task, "--workspace", repo_dir, "--max-acts", str(args.max_acts),
-            "--learn", "true", "--detach", "true", "--run-id", run_id], check=False)
+            "--learn", "false", "--detach", "true", "--run-id", run_id], check=False)
         # fire-and-poll (#86): the drive outlives any socket timeout; the ledger is the result
         for _ in range(120):
             time.sleep(30)
@@ -154,7 +162,7 @@ def main():
             )
             sh([CU, "agent/solve", "--persona-id", rid, "--base-model-id", args.base_model,
                 "--task", review_task, "--workspace", repo_dir,
-                "--max-acts", str(args.max_acts), "--learn", "true", "--detach", "true",
+                "--max-acts", str(args.max_acts), "--learn", "false", "--detach", "true",
                 "--run-id", review_run], check=False)
             for _ in range(120):
                 time.sleep(30)

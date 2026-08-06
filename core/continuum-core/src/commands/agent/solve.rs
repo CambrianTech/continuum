@@ -487,6 +487,19 @@ impl AgentSolve {
     }
 }
 
+/// How much of the task text the durable lesson may carry. A lesson is a MEMORY OF
+/// WORKING, not a copy of the assignment — and the task is caller-supplied text of
+/// unbounded size. A SWE-bench problem statement is a full GitHub issue; six solve runs
+/// put six of them, verbatim, into Anwen's episodic store, and the consolidator did what
+/// it is supposed to do with repeated episodic content: it crystallized SEMANTIC beliefs
+/// out of them ("When a Blueprint name in Flask contains a dot, raise ValueError…").
+/// She now durably believes things about flask that she learned in an exam room.
+///
+/// The domain signal the dream's supersession review actually feeds on rides `files_changed`
+/// (`mathlib.py` → python), which the lesson keeps in full. The task text is context, and
+/// context does not need to be verbatim.
+const LESSON_TASK_EXCERPT_CHARS: usize = 200;
+
 /// Build the durable EXPERIENCE string for one solve — what she worked on and how,
 /// never what she produced (no patch content, no spoken answer: the lesson teaches
 /// context, not solutions, so re-runs measure capability rather than memorization).
@@ -497,11 +510,13 @@ fn format_solve_lesson(task: &str, acts: usize, files_changed: &[String]) -> Str
     } else {
         format!("I changed: {}", files_changed.join(", "))
     };
+    let task = task.trim();
+    let excerpt = match task.char_indices().nth(LESSON_TASK_EXCERPT_CHARS) {
+        Some((cut, _)) => format!("{}…", &task[..cut]),
+        None => task.to_string(),
+    };
     format!(
-        "I worked a real coding task in my workspace: {} — I acted {} time(s); {}.",
-        task.trim(),
-        acts,
-        worked
+        "I worked a real coding task in my workspace: {excerpt} — I acted {acts} time(s); {worked}."
     )
 }
 
@@ -786,6 +801,32 @@ mod tests {
         assert!(l.contains("I changed: mathlib.py"));
         let none = format_solve_lesson("task", 0, &[]);
         assert!(none.contains("I changed no files"));
+    }
+
+    // what this catches: an unbounded task text turning a durable lesson into a verbatim
+    // copy of the assignment. Measured — six SWE-bench solves wrote six full GitHub issues
+    // into Anwen's episodic store, and the consolidator distilled SEMANTIC beliefs about
+    // flask internals out of the repetition. A lesson is a memory of WORKING; the file
+    // names carry the domain signal and must survive the bound intact.
+    #[test]
+    fn a_lesson_excerpts_the_task_it_never_copies_it() {
+        let issue = format!(
+            "Flask raises an unhelpful error when a Blueprint name contains a dot. {}",
+            "Blueprint names should be validated at __init__ time. ".repeat(40)
+        );
+        let l = format_solve_lesson(&issue, 5, &["src/flask/blueprints.py".to_string()]);
+        assert!(
+            l.len() < issue.len() / 2,
+            "the assignment must not land in memory verbatim ({} chars of a {}-char issue)",
+            l.len(),
+            issue.len()
+        );
+        assert!(l.contains('…'), "a truncated lesson must SAY it was truncated: {l}");
+        assert!(
+            l.contains("src/flask/blueprints.py"),
+            "the domain signal rides the file names and is never truncated: {l}"
+        );
+        assert!(l.contains("acted 5 time(s)"));
     }
 
     // what this catches: the wire name must mirror the file path (commands/agent/solve.rs ⟺
