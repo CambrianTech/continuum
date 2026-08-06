@@ -270,7 +270,22 @@ impl RagSource for RoomBoardSource {
             }
         };
         // Empty board → no block (normal: a room may have no cards yet).
+        //
+        // But SAY SO. "The board is empty" and "she never got a board" are
+        // different facts and only one is knowable from an absent block — the
+        // same law `room_scope_allows` follows, which is why the room gate was
+        // diagnosable in one grep and THIS exit cost a night of guessing
+        // (#331). A silent early-return in a grounding source is a hole in the
+        // glass box. [[observability-as-substrate]]
         if board.cards.is_empty() {
+            tracing::info!(
+                probe_class = "rag.board.empty",
+                source = SOURCE_ID,
+                persona_id = %self.persona_id,
+                bound_room = ?self.room_id,
+                turn_room = ?ctx.airc_room.as_ref().map(|r| r.as_uuid()),
+                "room-board delivered nothing: the READ SUCCEEDED and the board has zero cards"
+            );
             return Self::empty();
         }
 
