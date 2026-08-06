@@ -1159,6 +1159,36 @@ impl ServingDaemonModule {
                 let starved = live.served_context_window > 0
                     && live.served_context_window.saturating_mul(2) <= served_ctx;
                 if !starved {
+                    // A lane running BELOW the plan but above the 2x bar declines to
+                    // grow — silently, until this probe. That silence is the defect:
+                    // measured 2026-08-06 the plan sat stable at 26,323 while the
+                    // live lane served 16,384 (62% — comfortably above half), every
+                    // persona's binding read the stale 16,384, and nothing anywhere
+                    // said so. It looked like the demand-derived window had "grown
+                    // then reverted"; it had never taken hold, and the only thing
+                    // that ever applied a grown plan was a reboot.
+                    //
+                    // The 2x rule itself is NOT being changed here — it came from a
+                    // real outage (a lane frozen at 3.8k while plans wandered
+                    // 3.6k<->22k) and a relaunch kills in-flight turns
+                    // ([[never-thrash-sticky-hysteresis-on-every-lane]]). But its
+                    // stated premise is that "the plan breathes with every consumer",
+                    // and demand-derived planning made the plan STABLE, so against it
+                    // the bar now strands a third of the window indefinitely. That is
+                    // a design call on a guard written from an incident, so it is
+                    // surfaced for the humans who own that history rather than
+                    // quietly re-tuned by me (#332/#333).
+                    if live.served_context_window < served_ctx {
+                        crate::probe!(
+                            class = "serving.reconcile.stranded",
+                            live_window = live.served_context_window,
+                            plan_window = served_ctx,
+                            live_lanes = live.lanes,
+                            plan_lanes = lanes,
+                            shortfall = served_ctx.saturating_sub(live.served_context_window),
+                            "lane is serving BELOW plan and will not grow: the plan exceeds it but not by the 2x re-home bar",
+                        );
+                    }
                     return None;
                 }
                 // A living-persona eval is a co-tenant decode slot on THIS lane
