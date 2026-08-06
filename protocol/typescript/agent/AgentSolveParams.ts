@@ -44,9 +44,15 @@ run_id?: string,
  * stale beliefs: a day of python tasks consolidates into python facts, and the
  * dream's supersession review demotes "you work with main.rs" — work IS training.
  * The measurement fork itself stays #59-isolated either way; only the lesson
- * crosses back. Default TRUE — a living being learns from her work (Joel
- * 2026-07-23: "learn should be default anyway"); a harness wanting a
- * memoryless measurement opts OUT with `learn:false`.
+ * crosses back.
+ *
+ * There is NO default on the Rust side — [`LearningPolicy`] has no `Default` impl, so
+ * every construction site must state whether this run is a measurement or her life. See
+ * [`crate::cognition::learning_policy`] for why (BigMama, 2026-08-06: two modules had
+ * opposite defaults for this one field, and a fail-safe default would only have changed
+ * which forgetful caller got burned). An OMITTED wire field resolves to
+ * [`LearningPolicy::DoNotLearn`] — this command is the headless BENCHMARK entrypoint
+ * (#218), so its population is measurement-heavy and omission must fail safe.
  */
 learn?: boolean, 
 /**

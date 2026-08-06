@@ -8,6 +8,7 @@
 //! OUTSIDER replicate our numbers against their own `/v1` without our stack. Operational
 //! benchmarking is Rust; the replication convenience is the lone edge script.
 
+use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -555,7 +556,8 @@ impl ActionCommand for BenchmarkRun {
                     max_retries: Some(0),
                     workspace_root,
                     capture_dir: None,
-                    learn: None,
+                    // A measurement. Named, not defaulted — the type has no `Default`.
+                    learn: LearningPolicy::DoNotLearn,
                     // #207: benchmark keeps recall by default (unchanged behavior); the
                     // reproducible-absolute knob is opt-in on cognition/eval directly.
                     suppress_recall: None,
@@ -1027,7 +1029,7 @@ impl BenchmarkCompetition {
             run_id: None,
             workspace_root: None,
             capture_dir: None,
-            learn: Some(false),
+            learn: LearningPolicy::DoNotLearn,
             suppress_recall: None,
         };
         // CognitionEval ignores ctx (reaches cognition via the global registry), so a
@@ -1603,7 +1605,7 @@ impl BenchmarkSweSolve {
                 // This is NOT in tension with the capture-always argument below: the TRACE is
                 // corpus (curated, offline, deliberately trained on), and a belief admitted
                 // mid-measurement is not. Corpus stays; the immediate write-back goes.
-                learn: Some(false),
+                learn: LearningPolicy::DoNotLearn,
                 // CAPTURE ALWAYS, per run. This started as `None` — "a sweep writes none by
                 // default" — which was exactly backwards on two counts.
                 //
