@@ -964,7 +964,34 @@ impl LlmDeliberationFaculty {
         // overflow. The OLDEST turns yield first under pressure (the latest activity
         // is what the turn is about — the same priority the old flat head-trim had,
         // now at turn granularity).
-        let msg_budget = budget.saturating_sub(framing_tokens);
+        // RESERVE THE GROUNDING FLOOR BEFORE THE CONVERSATION FILLS.
+        //
+        // `messages_within` is greedy: hand it everything after framing and it takes
+        // everything after framing, so grounding gets the remainder — which is zero.
+        // That is not a budget-size problem and growing the window does not fix it:
+        // measured 2026-08-06, the served window rose 16,384 → 24,128 and Anwen,
+        // Asha and Atlas still each rendered `budget=0 kept=[]`, dropping recall,
+        // roster, workspace-map AND the work board on every turn. The conversation
+        // simply absorbed the increase. Supply was never the binding constraint at
+        // this seam; ORDER was.
+        //
+        // The floor is derived, not invented: enough for the SMALLEST contribution
+        // actually offered this turn, so at least one grounding fact always reaches
+        // her. Bounded at half the post-framing pool so the reservation can never
+        // invert the problem and starve the conversation — an even split is a
+        // fairness rule between two claimants, not a tuning constant. Whatever
+        // grounding does not use still flows back: `ctx_budget` below is computed
+        // from what the conversation ACTUALLY consumed, not from this reservation.
+        let after_framing = budget.saturating_sub(framing_tokens);
+        let ctx_floor = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .map(|c| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2)
+            .min()
+            .unwrap_or(0)
+            .min(after_framing / 2);
+        let msg_budget = after_framing.saturating_sub(ctx_floor);
         let all_messages = self.messages_unfitted(ws);
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
@@ -1020,10 +1047,12 @@ impl LlmDeliberationFaculty {
         // rounding slop until the tool-menu example grew the prompt to the
         // budget edge — glass-boxed 2026-07-13, llama-server 400 territory).
         let used_msg_tokens: usize = messages.iter().map(|m| est_tokens(&m.content_text())).sum();
-        let ctx_budget = budget
-            .saturating_sub(framing_tokens)
+        // Grounding gets everything the conversation did not actually use — never
+        // less than the floor reserved above.
+        let ctx_budget = after_framing
             .saturating_sub(used_msg_tokens)
-            .saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER));
+            .saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
+            .max(ctx_floor.saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER)));
         let context = self.render_assembled_context_within(ws, ctx_budget);
 
         DeliberationPromptView {
@@ -2047,6 +2076,42 @@ mod tests {
                 "board",
             )
             .with_parts(parts)
+        }
+
+        // what this catches: a greedy conversation that eats every token grounding
+        // needs. `messages_within` fills whatever it is handed, so passing it the
+        // whole post-framing pool leaves grounding exactly zero — and GROWING THE
+        // WINDOW DOES NOT FIX IT, the conversation just absorbs the increase.
+        // Measured live 2026-08-06: the served window rose 16,384 → 24,128 and
+        // Anwen, Asha and Atlas each still rendered `budget=0 kept=[]`, dropping
+        // recall, roster, workspace-map AND the work board on every single turn.
+        // Supply was never the binding constraint at this seam; ORDER was.
+        #[test]
+        fn a_long_conversation_cannot_starve_grounding_to_zero() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+                .with_context_window(24_128);
+
+            // A conversation long enough to swallow the whole window on its own.
+            let mut ws = Workspace::new("anything open?");
+            for i in 0..40 {
+                ws.turns.push(crate::cognition::workspace::BurstTurn::attributed(
+                    i % 2 == 1,
+                    if i % 2 == 1 { "Ivar" } else { "Asha" },
+                    format!("turn {i}: ").repeat(60),
+                    None,
+                ));
+            }
+            ws.broadcast.push(board_like(60).with_expand_command(Some("work/list")));
+
+            let view = faculty.prompt_view_within(&ws, 24_128);
+            assert!(
+                view.system.contains("[room-kanban]"),
+                "grounding must survive a conversation that would otherwise take every \
+                 token — this is the exact live failure: window grew, board still gone\n{}",
+                &view.system[..view.system.len().min(1200)]
+            );
         }
 
         // what this catches: a truncation notice a citizen cannot act on. Telling
