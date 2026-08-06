@@ -231,8 +231,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `npm start 2>&1 | tee /tmp/server.log` pattern.
     if let Some(ref dir) = probe_install.log_dir {
         eprintln!(
-            "[continuum-core-server] logs landing at {}/continuum-core-server.YYYY-MM-DD.log (rolling daily, retention 7)",
-            dir.display()
+            "[continuum-core-server] logs landing at {}/continuum-core-server.log \
+             (size-rotated at {} MB, {} generations kept — max {} MB total)",
+            dir.display(),
+            continuum_core::routing::capped_appender::MAX_LOG_BYTES / (1024 * 1024),
+            continuum_core::routing::capped_appender::KEEP,
+            continuum_core::routing::capped_appender::MAX_LOG_BYTES
+                * (continuum_core::routing::capped_appender::KEEP as u64 + 1)
+                / (1024 * 1024)
         );
     }
     // CRITICAL: hold the non-blocking writer's WorkerGuard for the

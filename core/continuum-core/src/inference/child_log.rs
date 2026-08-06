@@ -41,7 +41,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Per-file cap. A few MB, per Joel's rule — big enough to hold a load banner plus a fault
 /// trace, small enough that a runaway writer is a rounding error instead of an outage.
-pub const MAX_BYTES: u64 = 8 * 1024 * 1024;
+///
+/// Deliberately the SAME number the core's own logs use: "how big may one log file get" is
+/// one decision, so it is decided in one place. Two mechanisms enforce it (this drains a
+/// foreign process's pipe; [`crate::routing::capped_appender`] wraps our own synchronous
+/// writer) but they must never disagree about the bound.
+pub const MAX_BYTES: u64 = crate::routing::capped_appender::MAX_LOG_BYTES;
 
 /// Rotated generations kept beside the live file. Two files total (`x.log`, `x.log.1`), so
 /// the worst case on disk is `MAX_BYTES * 2` — 16 MB, versus the 172 GB that motivated this.
