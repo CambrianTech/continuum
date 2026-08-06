@@ -14,6 +14,7 @@
 //! (`fork_eval_cycle_with_adapter` → `drive_to_settle`), minus the grader — the external harness
 //! grades. One drive, two consumers (eval scores; agent/solve emits a patch).
 
+use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -67,31 +68,16 @@ pub struct AgentSolveParams {
     /// The measurement fork itself stays #59-isolated either way; only the lesson
     /// crosses back.
     ///
-    /// DEFAULT **FALSE**, and the flip is the point. Joel 2026-07-23 said "learn should be
-    /// default anyway", and for a LIVING persona that is right — 2026-08-06 he restated it
-    /// harder: "we learn during benchmarks and from doing… they must learn or what's the
-    /// point?" That ruling is about WHAT is learned (the doing, never the paper), not about
-    /// who carries the risk of a forgotten flag.
-    ///
-    /// This command is the headless BENCHMARK entrypoint (#218), so its population is
-    /// measurement-heavy, and the two modules that read this field had OPPOSITE defaults —
-    /// found by BigMama 2026-08-06 reading before she wired:
-    ///
-    ///     commands/agent/solve.rs   p.learn.unwrap_or(TRUE)    <- learns
-    ///     cognition/eval.rs         p.learn.unwrap_or(FALSE)   <- safe
-    ///
-    /// Nothing was leaking (the one `AgentSolveParams` construction sets `Some(false)`, and
-    /// `benchmark.rs:558`'s `learn: None` targets *eval*, whose default is safe). But one
-    /// explicit `Some(false)` at a single call site was the whole guard: the next caller who
-    /// copies the `learn: None` idiom — correct where it is — silently enables learning on a
-    /// measurement, and it reads as safe in review. That is a latent #312, where six verbatim
-    /// GitHub issues once consolidated into a durable belief that WAS the held-out answer.
-    ///
-    /// So the default now fails SAFE and the living-work caller opts IN with `learn: true`.
-    /// Forgetting costs a lesson, not a contaminated benchmark — and a lesson is recoverable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub learn: Option<bool>,
+    /// There is NO default on the Rust side — [`LearningPolicy`] has no `Default` impl, so
+    /// every construction site must state whether this run is a measurement or her life. See
+    /// [`crate::cognition::learning_policy`] for why (BigMama, 2026-08-06: two modules had
+    /// opposite defaults for this one field, and a fail-safe default would only have changed
+    /// which forgetful caller got burned). An OMITTED wire field resolves to
+    /// [`LearningPolicy::DoNotLearn`] — this command is the headless BENCHMARK entrypoint
+    /// (#218), so its population is measurement-heavy and omission must fail safe.
+    #[serde(default = "LearningPolicy::wire_default")]
+    #[ts(type = "boolean", optional)]
+    pub learn: LearningPolicy,
     /// GLASS-BOX (opt-in): directory for the JSONL turn-capture sink — every tick's bids +
     /// DECISION + timings append to `<dir>/<persona_id>.jsonl`, same sink `cognition/eval`
     /// wires (task #14). THE tool for diagnosing an acts=1 silent settle: the capture says
@@ -473,9 +459,7 @@ impl AgentSolve {
         //    names; verbatim solutions would let a re-run score memorization instead
         //    of capability. Solve carries no held-out answer key in-band (the harness
         //    grades externally), so there is nothing to redact.
-        // Safe by default (see `learn`'s doc): a forgotten flag must cost a lesson, never a
-        // contaminated measurement. Living work opts IN.
-        if p.learn.unwrap_or(false) {
+        if p.learn.learns() {
             let admitted = transfer_solve_experience(
                 &persona_uuid,
                 room,
@@ -886,37 +870,42 @@ mod tests {
 
 
     // what this catches (found by BigMama 2026-08-06, reading before wiring the consolidator):
-    // the SAME field with OPPOSITE defaults in two modules. `agent/solve` defaulted learn ON
+    // the SAME field with OPPOSITE defaults in two modules — `agent/solve` defaulted learn ON
     // while `cognition/eval` defaulted it OFF, and the only thing keeping exam text out of
-    // episodic was one explicit `Some(false)` at a single call site. Nothing leaked — but the
-    // next caller to copy `learn: None` (correct against *eval*, whose default is safe) would
-    // silently enable learning on a measurement, and it would read as safe in review.
+    // episodic was one explicit `Some(false)` at a single call site.
     //
-    // That is a latent #312: six verbatim GitHub issues once consolidated into a durable
-    // semantic belief that WAS the held-out answer, scoring memorization as capability.
+    // The Rust half of that hazard is now gone by CONSTRUCTION: `LearningPolicy` has no
+    // `Default`, so a caller who omits the decision does not compile. What CANNOT be closed by
+    // the type system is the wire — a JSON or CLI caller can always omit a field — so that one
+    // remaining door is what this test guards, on BOTH param types at once.
     //
-    // Pins the invariant, not the number: BOTH readers of `learn` must treat "unset" as
-    // DON'T. A future edit that flips either one back to `unwrap_or(true)` breaks here, which
-    // is the only reason this test exists — the divergence itself was invisible for months.
+    // Pins the invariant, not the number: an omitted `learn` deserializes to DO NOT LEARN
+    // everywhere. If a future edit gives `LearningPolicy` a `Default`, or points either
+    // `#[serde(default = ...)]` at a different function, this reds.
     #[test]
-    fn an_unset_learn_flag_means_do_not_learn_on_every_path() {
-        // The decision each module makes for `learn: None`, mirrored from its own call site.
-        let solve_default = None::<bool>.unwrap_or(false); // commands/agent/solve.rs
-        let eval_default = None::<bool>.unwrap_or(false);  // cognition/eval.rs
-
+    fn an_omitted_learn_flag_means_do_not_learn_on_every_wire_path() {
+        let solve: AgentSolveParams =
+            serde_json::from_str(r#"{"persona_id":"p","base_model_id":"m","task":"x","workspace":"w"}"#)
+                .expect("solve params without `learn`");
         assert!(
-            !solve_default,
-            "agent/solve is the headless BENCHMARK entrypoint — an unset learn flag must not \
+            !solve.learn.learns(),
+            "agent/solve is the headless BENCHMARK entrypoint — an omitted learn flag must not \
              admit exam experience into the living persona (#312)"
         );
+
+        let eval: crate::cognition::eval::CognitionEvalParams =
+            serde_json::from_str(r#"{"persona_id":"p"}"#)
+                .expect("eval params without `learn`");
         assert!(
-            !eval_default,
-            "cognition/eval measures; an unset learn flag must not write back"
+            !eval.learn.learns(),
+            "cognition/eval measures; an omitted learn flag must not write back"
         );
+
+        // The two readers must AGREE on what omission means. One field name with two
+        // meanings, decided by which module you happened to reach, is the original defect.
         assert_eq!(
-            solve_default, eval_default,
-            "the two readers of `learn` must AGREE on what unset means — divergent defaults on \
-             one field name is how a safe-looking `learn: None` becomes a contaminated benchmark"
+            solve.learn, eval.learn,
+            "both wire paths must resolve an omitted `learn` identically"
         );
     }
 }

@@ -26,6 +26,7 @@
 //! [`cognition/trace`]: super::introspect_commands::CognitionTrace
 //! [`cognition/prompt`]: super::introspect_commands::CognitionPrompt
 
+use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1442,9 +1443,10 @@ pub struct CognitionEvalParams {
     /// This is what makes "learn from the exam" honest — provably clean, encouraged. Default
     /// false = pure measurement (the discarded fork teaches nothing, as before). Single-pass
     /// only in this slice (ignored under a `gene` A/B). [[redaction-makes-exam-learning-honest-so-encourage-it]]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub learn: Option<bool>,
+    /// No `Default` on [`LearningPolicy`] — every Rust caller must state which this run is.
+    #[serde(default = "LearningPolicy::wire_default")]
+    #[ts(type = "boolean", optional)]
+    pub learn: LearningPolicy,
     /// REPRODUCIBLE-ABSOLUTE mode (#207): suppress the fork's episodic recall so a
     /// self-contained proctored exam scores the SAME absolute number run-to-run. Each eval
     /// re-forks from her LIVING durable engram store, which grows as she lives between runs;
@@ -2337,7 +2339,7 @@ impl CognitionEval {
         // forget-context: keep the memory, excise the crib sheet). The exam ran on the fork
         // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
         // NEVER learn from an infra-unavailable run — a dead-lane "failure" is not a lesson.
-        if p.learn.unwrap_or(false) && p.gene.is_none() && infra_unavailable.is_none() {
+        if p.learn.learns() && p.gene.is_none() && infra_unavailable.is_none() {
             let transferred = transfer_redacted_lessons(&persona_uuid, room, &tasks, &results);
             tracing::info!(
                 persona = %persona_uuid,
