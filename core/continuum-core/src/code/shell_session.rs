@@ -737,8 +737,29 @@ async fn run_shell_command(
     env: &HashMap<String, String>,
     timeout_ms: Option<u64>,
 ) {
-    // Build the command
-    let mut cmd = TokioCommand::new("bash");
+    // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
+    // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
+    // and every persona's `code/shell` died with
+    //   execvpe(/bin/bash) failed: No such file or directory
+    // while code/read, code/search and code/tree kept working, because only
+    // execution goes through a shell. Observed live: two citizens cycling
+    // through read-and-search all evening and never reaching execution. That
+    // reads as an inert persona; it was a severed limb.
+    let bash = match crate::shell_portable::locate_bash() {
+        Ok(bash) => bash,
+        Err(why) => {
+            // Fail with the REASON, not with a spawn error from inside a child
+            // that the caller cannot interpret.
+            if let Ok(mut s) = state.lock() {
+                s.status = ShellExecutionStatus::Failed;
+                s.stderr_lines.push(format!("no usable shell: {why}"));
+                s.finished_at = Some(now());
+                s.output_notify.notify_one();
+            }
+            return;
+        }
+    };
+    let mut cmd = TokioCommand::new(&bash);
     cmd.arg("-c")
         .arg(command)
         .current_dir(cwd)

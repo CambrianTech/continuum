@@ -112,6 +112,7 @@ impl IpcStream for TcpStream {
 // here so existing call sites resolve unchanged.
 
 pub mod diagnostics;
+pub mod endpoint_paths;
 pub mod experience_resolver;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
@@ -3032,6 +3033,7 @@ pub fn start_server(
         }
     }
 
+    // (see detect_system_ram_mb below for how the guard's limit is derived)
     // Periodic memory leak reporter — logs RSS + top leakers every 10s
     // Also acts as OOM guard: exits gracefully before OOM kills us ungracefully.
     // Limit is 80% of system RAM (not a fixed 4GB) — scales from an 8GB MacBook
@@ -3041,34 +3043,25 @@ pub fn start_server(
     let mem_rt = state.rt_handle.clone();
     mem_rt.spawn(async {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        let system_ram_mb = {
-            #[cfg(target_os = "macos")]
-            {
-                use std::process::Command;
-                Command::new("sysctl")
-                    .args(["-n", "hw.memsize"])
-                    .output()
-                    .ok()
-                    .and_then(|o| String::from_utf8(o.stdout).ok())
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .map(|bytes| bytes / (1024 * 1024))
-                    .unwrap_or(8192) // fallback 8GB
-            }
-            #[cfg(target_os = "linux")]
-            {
-                std::fs::read_to_string("/proc/meminfo")
-                    .ok()
-                    .and_then(|s| {
-                        s.lines()
-                            .find(|l| l.starts_with("MemTotal:"))
-                            .and_then(|l| l.split_whitespace().nth(1))
-                            .and_then(|kb| kb.parse::<u64>().ok())
-                            .map(|kb| kb / 1024)
-                    })
-                    .unwrap_or(8192)
-            }
-            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            { 8192u64 }
+        // Total RAM via sysinfo — already a direct dependency of this crate, described in
+        // Cargo.toml as "Cross-platform CPU, memory, system resource monitoring", and previously
+        // unused here.
+        //
+        // What it replaces: a `sysctl` shell-out for macOS, a /proc/meminfo parse for Linux, and
+        // — for every OTHER target, meaning Windows — the literal `8192`. Not a detection failure:
+        // there was no Windows arm at all. So on Windows this guard believed the machine had 8 GB
+        // and armed a FATAL self-exit at 6553 MB RSS, on hosts doing MoE serving where the host-side
+        // expert cache alone dwarfs that. The action here is `process::exit(1)`, so a wrong number
+        // does not degrade anything gracefully, it terminates the core.
+        //
+        // And when detection fails there is now NO invented number. A guessed-low limit is strictly
+        // worse than no limit, because the failure mode of guessing is killing a healthy process.
+        let Some(system_ram_mb) = crate::ipc::diagnostics::detect_system_ram_mb() else {
+            eprintln!(
+                "[MEMGUARD] could not determine system RAM — guard DISABLED. Running with no OOM \
+                 guard is safe; arming one against a guessed size is not (it self-exits)."
+            );
+            return;
         };
         // 80% of system RAM — aggressive enough to catch real leaks,
         // generous enough not to false-kill on big machines.

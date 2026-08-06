@@ -44,9 +44,30 @@ run_id?: string,
  * stale beliefs: a day of python tasks consolidates into python facts, and the
  * dream's supersession review demotes "you work with main.rs" — work IS training.
  * The measurement fork itself stays #59-isolated either way; only the lesson
- * crosses back. Default TRUE — a living being learns from her work (Joel
- * 2026-07-23: "learn should be default anyway"); a harness wanting a
- * memoryless measurement opts OUT with `learn:false`.
+ * crosses back.
+ *
+ * DEFAULT **FALSE**, and the flip is the point. Joel 2026-07-23 said "learn should be
+ * default anyway", and for a LIVING persona that is right — 2026-08-06 he restated it
+ * harder: "we learn during benchmarks and from doing… they must learn or what's the
+ * point?" That ruling is about WHAT is learned (the doing, never the paper), not about
+ * who carries the risk of a forgotten flag.
+ *
+ * This command is the headless BENCHMARK entrypoint (#218), so its population is
+ * measurement-heavy, and the two modules that read this field had OPPOSITE defaults —
+ * found by BigMama 2026-08-06 reading before she wired:
+ *
+ *     commands/agent/solve.rs   p.learn.unwrap_or(TRUE)    <- learns
+ *     cognition/eval.rs         p.learn.unwrap_or(FALSE)   <- safe
+ *
+ * Nothing was leaking (the one `AgentSolveParams` construction sets `Some(false)`, and
+ * `benchmark.rs:558`'s `learn: None` targets *eval*, whose default is safe). But one
+ * explicit `Some(false)` at a single call site was the whole guard: the next caller who
+ * copies the `learn: None` idiom — correct where it is — silently enables learning on a
+ * measurement, and it reads as safe in review. That is a latent #312, where six verbatim
+ * GitHub issues once consolidated into a durable belief that WAS the held-out answer.
+ *
+ * So the default now fails SAFE and the living-work caller opts IN with `learn: true`.
+ * Forgetting costs a lesson, not a contaminated benchmark — and a lesson is recoverable.
  */
 learn?: boolean, 
 /**
