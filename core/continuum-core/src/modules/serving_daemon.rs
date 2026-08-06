@@ -114,6 +114,21 @@ const MOE_PLAN_WINDOW_K: u32 = 8;
 /// — resolve once, pass the struct, never re-fetch ([[pass-the-model-struct-no-param-hell]]).
 type ModelResolver = Arc<dyn Fn(&str) -> Option<Model> + Send + Sync>;
 
+/// How the heartbeat learns whether a REAL generation delivered tokens recently — the input
+/// to the "trust busy lanes, probe quiet ones" short-circuit in
+/// [`ServingDaemonModule::spawn_health_heartbeat_if_due`]. Milliseconds since the last real
+/// decode, or `None` for "no decode observed yet, go probe".
+///
+/// This is a seam and not a direct call to
+/// [`crate::inference::llama_server::ms_since_real_decode`] because that function reads a
+/// PROCESS-GLOBAL atomic. Under `cargo test` the whole crate shares one process, so an
+/// unrelated test that stamps the global (`llama_server`'s own `note_real_decode` coverage
+/// does exactly that) silently converts every later heartbeat test into a short-circuit —
+/// a red that a filtered local run can never reproduce, because the filter excludes the
+/// test doing the stamping. Owning the evidence source per-daemon makes each test's answer
+/// its own; production still reads the global, through the default below.
+type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
 /// The verdict for force-serving one specific model on this host RIGHT NOW —
 /// what [`ServingDaemonModule::pin_fit_checker`] returns and `serving/pin` gates
 /// on. Carries the numbers so the command can fail loud with a NAMED shortfall
@@ -195,6 +210,9 @@ pub struct ServingDaemonModule {
     /// carry onto the [`ServingTarget`]. Defaults to the global registry; tests
     /// override it ([`Self::set_model_resolver`]).
     model_resolver: ModelResolver,
+    /// Where the liveness heartbeat gets "how long since a real decode" from. Defaults to
+    /// the llama-server process-global; tests own it ([`Self::set_decode_age_source`]).
+    decode_age: DecodeAgeSource,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
     /// command surface mutates. The daemon plans off this snapshot, NOT the
     /// immutable seed registry, so a model acquired at runtime (`models/pull`
@@ -336,6 +354,7 @@ impl ServingDaemonModule {
             model_resolver: Arc::new(|id: &str| {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
+            decode_age: Arc::new(crate::inference::llama_server::ms_since_real_decode),
             catalog,
             suppressed,
             pinned,
@@ -395,6 +414,13 @@ impl ServingDaemonModule {
     #[cfg(test)]
     fn set_model_resolver(&mut self, resolver: ModelResolver) {
         self.model_resolver = resolver;
+    }
+
+    /// Test seam: own the heartbeat's real-decode evidence instead of inheriting whatever
+    /// the process-global happens to hold. See [`DecodeAgeSource`] for why this exists.
+    #[cfg(test)]
+    fn set_decode_age_source(&mut self, source: DecodeAgeSource) {
+        self.decode_age = source;
     }
 
     /// Emit the live snapshot on the bus. Routed by topic name (cheap match, no
@@ -1453,7 +1479,7 @@ impl ServingDaemonModule {
         // boot with no observed decode yet falls through and probes as before.
         // [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
         let probe_window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
-        if let Some(since) = crate::inference::llama_server::ms_since_real_decode() {
+        if let Some(since) = (self.decode_age)() {
             if since <= probe_window_ms {
                 self.health_fails.store(0, Ordering::Relaxed);
                 crate::probe!(
@@ -2758,6 +2784,11 @@ mod tests {
         // Resolve any planned id to a fake Model so reconcile can build a
         // ServingTarget without a populated global registry.
         daemon.set_model_resolver(Arc::new(|id: &str| Some(fake_model(id))));
+        // NO real decode observed — the fresh-boot state every heartbeat test below assumes.
+        // Left to the default this reads a process-global that ANY other test in this binary
+        // can stamp (`llama_server`'s `note_real_decode` coverage does), which silently turns
+        // the trust short-circuit on and reds these tests by scheduling order alone.
+        daemon.set_decode_age_source(Arc::new(|| None));
         daemon
     }
 
@@ -3290,6 +3321,57 @@ mod tests {
             daemon.serving_tx.borrow().ready,
             "only one probe ran across the cadence window → hysteresis holds"
         );
+    }
+
+    // what this catches: DELIVERY BEATS PROBING — the trust short-circuit that was
+    // untestable until the decode-age evidence became a per-daemon seam. A lane that
+    // delivered real tokens inside the probe window is PROVEN alive by work that already
+    // happened, so the heartbeat must not spend a slot re-proving it; a lane whose last
+    // decode is older than the window has no live evidence and must probe. Regresses the
+    // measured SWE-bench kill (v13): a busy lane failed two synthetic probes purely by
+    // losing the slot race, the relaunch left every downstream generate refusing with
+    // `serving: <none>`, and the run died — the recovery being scored as a capability zero
+    // ([[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]).
+    #[tokio::test]
+    async fn a_lane_proven_alive_by_real_decode_is_not_probed() {
+        let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
+        let serves = Arc::new(AtomicUsize::new(0));
+
+        // Fresh decode INSIDE the window → trusted, no probe.
+        let mut busy = daemon_with(Arc::new(FakeServer {
+            serves: serves.clone(),
+            ok: true,
+            smoke_ok: Arc::new(AtomicBool::new(false)),
+            wedge: Default::default(),
+        }));
+        busy.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
+        let _ = busy.serving_tx.send_replace(ready_snapshot());
+        assert!(
+            busy.spawn_health_heartbeat_if_due().is_none(),
+            "tokens came out half a window ago — the compute path is already proven, so the \
+             heartbeat must not contend for a slot with the work proving it"
+        );
+        // And the trust RESETS the streak: evidence of life is evidence, not a skipped verdict.
+        assert_eq!(busy.health_fails.load(Ordering::Relaxed), 0);
+
+        // Stale decode OUTSIDE the window → no live evidence, probe as usual.
+        let mut quiet = daemon_with(Arc::new(FakeServer {
+            serves,
+            ok: true,
+            smoke_ok: Arc::new(AtomicBool::new(true)),
+            wedge: Default::default(),
+        }));
+        quiet.set_decode_age_source(Arc::new(move || Some(window_ms + 1)));
+        let _ = quiet.serving_tx.send_replace(ready_snapshot());
+        let probe = quiet.spawn_health_heartbeat_if_due();
+        assert!(
+            probe.is_some(),
+            "the last token predates the probe window — nothing proves this lane alive, so it \
+             must be probed rather than trusted"
+        );
+        if let Some(h) = probe {
+            h.await.unwrap();
+        }
     }
 
     // what this catches: a lane whose per-slot window froze at ≤ HALF the
