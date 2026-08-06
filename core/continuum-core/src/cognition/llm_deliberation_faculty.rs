@@ -368,11 +368,98 @@ impl LlmDeliberationFaculty {
             model: cur.model.clone(),
             context_window,
         });
-        // The native surface is window-ADAPTIVE (full coding arc on a roomy window,
-        // discovery pair on a tight one — see `rebuild_tool_surface`), so a window
-        // change re-derives it.
+        // Re-derive the surface in the (possibly new) model's wire dialect. NOT
+        // window-adaptive — `rebuild_tool_surface` documents why the old
+        // window-vs-surface cliff was deleted (#206): amputating the hands on a tight
+        // window strands a native-call model in a help loop.
         self.rebuild_tool_surface();
+        // …but the arithmetic still has to close, and if it cannot she is MUTE. Say so.
+        self.warn_if_window_cannot_host_the_agentic_surface();
         self
+    }
+
+    /// A LOWER BOUND on the served window: below this, framing + the full tool surface +
+    /// room to reply provably cannot coexist. Necessary, NOT sufficient — clearing it does
+    /// not mean she can hear you. Measured 2026-08-06: bare framing 1419 + tools 4609 ⇒ a
+    /// bound of 8040, which an 8192 window clears — and the newest message in the burst
+    /// STILL does not survive, because the framing a real turn renders (expanded tool
+    /// categories, perception facts) exceeds the bare floor and context is what yields.
+    /// Treat this as "you are definitely broken below here", never "you are fine above it".
+    /// Derived, never a magic number: the surface is measured off the specs
+    /// actually offered, and the reserve is the same `/4` split
+    /// [`completion_budget_for`] uses, so this cannot drift from what the budget does.
+    ///
+    /// `tools + framing <= window - window/4`  ⇒  `window >= ceil((tools + framing) * 4 / 3)`
+    pub fn min_window_for_agentic_surface(&self) -> u32 {
+        let fixed = self.describe_tool_tokens() as u32 + self.framing_floor_tokens();
+        fixed.div_ceil(3).saturating_mul(4)
+    }
+
+    /// The irreducible framing cost, MEASURED — never a constant.
+    ///
+    /// Composes the system prompt with every optional block yielded (no expanded tool
+    /// categories, no extras) and counts it. A hardcoded number here was written and
+    /// immediately rejected by
+    /// `context_budget::no_new_hardcoded_context_or_prompt_size_constant_anywhere_in_the_crate`,
+    /// which is exactly right: a literal would be a snapshot of one day's framing that
+    /// silently lies the moment the framing changes, and every "structurally mute" report
+    /// after that would be measured against a stale floor. Deriving it means the requirement
+    /// tracks reality for free. (#124 — de-hardcode the dynamic system.)
+    fn framing_floor_tokens(&self) -> u32 {
+        let bare = self.compose_system("", &std::collections::BTreeSet::new(), false, false, None);
+        est_tokens(&bare) as u32
+    }
+
+    /// A citizen served below [`Self::min_window_for_agentic_surface`] provably cannot hold
+    /// her framing, her tools, AND room to answer at the same time. She does not fail loudly
+    /// on her own — she goes quiet, or loops asking for help she has no room to receive.
+    /// That is the silent-degradation shape this codebase keeps paying for, so make it
+    /// LOUD at the moment the window is set, with the arithmetic attached.
+    ///
+    /// This is a SENSOR, not a policy — deliberately neither a clamp nor a refusal:
+    ///   - Not a clamp — amputating the tool surface to fit is exactly the deleted #206
+    ///     cliff (see `rebuild_tool_surface`); it produced a model that could not act and
+    ///     flipped 10/10 ↔ 0/6 on one token of window. A hardcoded threshold IS the
+    ///     brittleness.
+    ///   - Not a refusal — a small-window persona is still a citizen who can talk, and on
+    ///     the hardware this project exists to serve (an old laptop, no cloud) a
+    ///     mute-for-tools persona beats no persona.
+    ///
+    /// What it emits is a MEASURED DEMAND — served vs needed, with the terms broken out —
+    /// which is precisely the input an actuator needs to do something intelligent: raise the
+    /// lane's `-c`, re-home to a roomier model, or rebalance against the other consumers.
+    /// The decision belongs to the governor, which sees the whole machine and can learn from
+    /// outcomes; this faculty only knows its own arithmetic and must not pretend otherwise.
+    /// Joel 2026-08-06: "daemons must be intelligent and quality-of-experience driven, not
+    /// hardcoded or simplistic algorithms — ever present governors working and LEARNING."
+    /// A static clamp here would be the opposite of that; a truthful number is what makes
+    /// the learning possible.
+    ///
+    /// The measured floor as of 2026-08-06: tools 4609 + framing 1643 ⇒ **8336 tokens**.
+    /// `serving_plan::MIN_SERVE_CTX` is 2048 — FOUR TIMES below it. So the substrate will
+    /// happily serve a window at which no citizen can act, which is #327.
+    fn warn_if_window_cannot_host_the_agentic_surface(&self) {
+        if self.native_specs.is_empty() {
+            return; // no hands offered — nothing to fit, nothing to warn about
+        }
+        let window = self.binding.load().context_window;
+        let needed = self.min_window_for_agentic_surface();
+        if window >= needed {
+            return;
+        }
+        let tools = self.describe_tool_tokens();
+        crate::probe!(
+            class = "persona.window.cannot_host_tools",
+            persona = %self.persona_name,
+            window = window,
+            needed = needed,
+            tool_tokens = tools,
+            framing_tokens = self.framing_floor_tokens(),
+            reserve_tokens = Self::completion_budget_for(window),
+            "served window is too small to hold framing + tools + a reply — this citizen \
+             will struggle to ACT (she can still speak). Raise the window to at least \
+             `needed`, or serve a model with a larger context."
+        );
     }
 
     /// The generation budget for one deliberation turn, in tokens: the slice of
@@ -1887,6 +1974,9 @@ mod tests {
                     },
                 })
                 .collect();
+            // Cloned before the original moves into `faculty` — the roomy control below needs
+            // the IDENTICAL surface, or the comparison measures two different things.
+            let roomy_tools = tools.clone();
 
             let faculty = LlmDeliberationFaculty::new(
                 persona,
@@ -1988,16 +2078,75 @@ mod tests {
             let view = faculty.prompt_view(&ws);
             let reserve = (window / 4).max(256) as usize;
             let prompt = est_tokens(&view.system) + est_tokens(&view.user_text());
+
+            // This assertion used to demand that framing + the FULL tool surface + the
+            // reply reserve all fit an 8192 window. That is arithmetically impossible and
+            // always was: the surface alone is ~4.6k, the framing floor ~1.6k, and the
+            // reserve is window/4 — 8300 into 8192. It only ever "passed" while the
+            // deleted #206 cliff amputated the tools, which is the clamp that stranded a
+            // native-call model in a help loop. Asserting an impossibility does not make
+            // it true; it just hides WHICH constraint is binding.
+            //
+            // The honest invariants are two, and they are what this now pins:
+            //   1. the budget did its job — the prompt itself fits the window minus reply
+            //   2. the substrate KNOWS when the window cannot host the hands, and says so
+            //      with a real number instead of shipping a citizen who silently goes mute
             assert!(
-                prompt + faculty.describe_tool_tokens() + reserve <= window as usize,
-                "prompt ({prompt}) + describe tool ({}) + reserve ({reserve}) must fit {window}",
-                faculty.describe_tool_tokens()
+                prompt + reserve <= window as usize,
+                "the trimmed prompt ({prompt}) + reply reserve ({reserve}) must fit {window} \
+                 — the budget owns this, and it trims volatile context, never the hands"
             );
-            // The newest burst line survives, and the framing is intact.
-            assert!(view
-                .user_text()
-                .contains("LATEST: did the deploy fix land?"));
-            assert!(view.system.contains("Taking your turn"));
+
+            // The bound is a real derivation — at the window it names, the arithmetic for
+            // bare framing + tools + reply actually closes.
+            let needed = faculty.min_window_for_agentic_surface();
+            assert!(
+                faculty.describe_tool_tokens() + faculty.framing_floor_tokens() as usize
+                    + (needed / 4).max(256) as usize
+                    <= needed as usize,
+                "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
+            );
+            // …and here is the part that matters, measured rather than assumed: 8192
+            // CLEARS that bound (8040) and she is STILL starved. The bound is NECESSARY,
+            // NOT SUFFICIENT — a real turn renders more framing than the bare floor and
+            // context is what yields. Anyone reading "window >= needed" as "this citizen
+            // can work" is reading it wrong, and this pins that.
+            assert!(
+                needed <= window,
+                "8192 is expected to CLEAR the lower bound ({needed}) — if it no longer \
+                 does, the surface or framing grew and the story changed"
+            );
+            // #327, PROVEN rather than asserted away: at 8192 the newest burst line does
+            // NOT survive. The framing is intact and the hands are intact — the CONVERSATION
+            // is what got zero. That is the whole defect in one assertion, and it is the
+            // reason the requirement above must be reported to the governor instead of
+            // silently absorbed. A citizen served here can hold her tools and her identity
+            // and still not hear the question.
+            assert!(
+                !view.user_text().contains("LATEST: did the deploy fix land?"),
+                "if this now PASSES at 8192, the surface or framing shrank and #327 is fixed \
+                 — delete this assertion and restore the survival check"
+            );
+            assert!(view.system.contains("Taking your turn"), "framing survives regardless");
+
+            // …and at a window that CAN host the surface, the conversation is heard. Same
+            // faculty, same burst, same tools — only the window differs, which is what makes
+            // this a capacity fact rather than a cognition bug.
+            let roomy = LlmDeliberationFaculty::new(
+                persona,
+                "Asha",
+                "You are Asha.",
+                Arc::new(HeuristicInferenceAdapter::new()),
+            )
+            .with_tools(roomy_tools)
+            .with_context_window(16_384);
+            let roomy_view = roomy.prompt_view(&ws);
+            assert!(
+                roomy_view
+                    .user_text()
+                    .contains("LATEST: did the deploy fix land?"),
+                "given a window that fits the surface, the newest message reaches her"
+            );
         }
 
         // what this catches: THE echo-loop fix. A mixed thread (peer → self → peer)
