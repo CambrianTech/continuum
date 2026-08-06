@@ -703,17 +703,58 @@ impl LlmDeliberationFaculty {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let received = ctx.len();
-        // SELECTION (by salience): walk highest-salience-first and keep whole items
-        // that fit the budget — a half-truncated engram is noise, so a smaller
-        // lower-salience item that still fits is preferred over a mangled high one.
-        let mut selected: Vec<&Contribution> = Vec::with_capacity(ctx.len());
+        // SELECTION (by salience): walk highest-salience-first and keep what fits.
+        //
+        // An INDIVISIBLE contribution (one part — a recalled engram, an affect
+        // signal) is still kept whole or dropped whole: half an engram is noise,
+        // so a smaller lower-salience item that fits is preferred over a mangled
+        // high one. That rule was right, and it is unchanged.
+        //
+        // A DIVISIBLE one (a grounding source that delivered a LIST, and said so
+        // via `Contribution::parts`) instead contributes the longest PREFIX of its
+        // own units that fits. Its units are ordered by the source, leads first,
+        // so a prefix is exactly the summary the source would have written if
+        // asked for less — never a mid-sentence cut. This is what un-hides the
+        // work board: measured 2026-08-06, `room-kanban` offered a median 5,364
+        // tokens all-or-nothing into a median 55-token budget and was kept 0 of
+        // 495 times, while its `[your work]` / `[available work]` leads are ~200
+        // and carry every fact a citizen needs to find work. The citizens were
+        // saying "there are no open tasks available" about a 61-card board.
+        let mut selected: Vec<(&Contribution, String)> = Vec::with_capacity(ctx.len());
         let mut dropped: Vec<String> = Vec::new();
+        let mut partial: Vec<String> = Vec::new();
         let mut used = 0usize;
         for c in ctx {
             // "\n[faculty]\n<content>\n" — count the framing chars too (~2 tokens).
-            let piece = est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2;
-            if used + piece > budget_tokens {
-                // Drop this whole item; a smaller lower-salience one may still fit.
+            let header = est_tokens(c.faculty.as_str()) + 2;
+            let piece = header + est_tokens(&c.content);
+            if used + piece <= budget_tokens {
+                used += piece;
+                selected.push((c, c.content.clone()));
+                continue;
+            }
+            // Whole won't fit. Divisible? Take the longest leading run of units
+            // that does. `parts` is never empty (every constructor seeds it), so
+            // a single-part contribution simply finds no fitting prefix and falls
+            // through to the drop below — byte-identical to the old behavior.
+            let mut kept_units: Vec<&str> = Vec::new();
+            let mut unit_tokens = header;
+            for (i, unit) in c.parts.iter().enumerate() {
+                // Units are joined by "\n" — charge the separator from the second on.
+                let cost = est_tokens(unit) + usize::from(i > 0);
+                if used + unit_tokens + cost > budget_tokens {
+                    break;
+                }
+                unit_tokens += cost;
+                kept_units.push(unit.as_str());
+            }
+            if kept_units.len() == c.parts.len() {
+                // Can only happen if the estimator disagrees with itself; treat as whole.
+                used += unit_tokens;
+                selected.push((c, c.content.clone()));
+                continue;
+            }
+            if kept_units.is_empty() {
                 dropped.push(format!(
                     "{}(sal={:.2},tok={})",
                     c.faculty.as_str(),
@@ -722,8 +763,25 @@ impl LlmDeliberationFaculty {
                 ));
                 continue;
             }
-            selected.push(c);
-            used += piece;
+            // A truncated LIST must SAY it is truncated, or the persona reads a
+            // partial board as the whole board and reports work that isn't there
+            // — a quieter lie than the empty block this replaces.
+            let omitted = c.parts.len() - kept_units.len();
+            let body = format!(
+                "{}\n…{omitted} more not shown (context budget) — the full list is \
+                 available from the matching command.",
+                kept_units.join("\n")
+            );
+            used += unit_tokens + est_tokens("…N more not shown (context budget) …");
+            partial.push(format!(
+                "{}({}/{} units,tok={}→{})",
+                c.faculty.as_str(),
+                kept_units.len(),
+                c.parts.len(),
+                piece,
+                unit_tokens
+            ));
+            selected.push((c, body));
         }
         // Received-vs-rendered receipt at the ONE seam where a surfaced
         // contribution can silently vanish between attention and the prompt.
@@ -738,10 +796,13 @@ impl LlmDeliberationFaculty {
             rendered = selected.len(),
             kept = %selected
                 .iter()
-                .map(|c| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
+                .map(|(c, _)| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
                 .collect::<Vec<_>>()
                 .join(","),
             dropped = %dropped.join(","),
+            // Which divisible blocks contributed a PREFIX rather than their whole —
+            // without this a shrunken board and a full one look identical in the log.
+            partial = %partial.join(","),
             "assembled context: {}/{} contributions fit", selected.len(), received
         );
         // SERIALIZATION (by volatility): stable standing-framing FIRST (roster,
@@ -752,13 +813,13 @@ impl LlmDeliberationFaculty {
         // is a pure emit-order choice that maximizes cross-turn prefix reuse AND puts
         // the live, actionable context closest to where the model writes. `false`
         // (stable) sorts before `true` (volatile). See [`Contribution::stable`].
-        selected.sort_by_key(|c| u8::from(!c.stable));
+        selected.sort_by_key(|(c, _)| u8::from(!c.stable));
         let mut block = String::new();
-        for c in selected {
+        for (c, body) in selected {
             block.push_str("\n[");
             block.push_str(c.faculty.as_str());
             block.push_str("]\n");
-            block.push_str(&c.content);
+            block.push_str(&body);
             block.push('\n');
         }
         block
@@ -1838,6 +1899,129 @@ mod tests {
                 roster_at < recall_at,
                 "stable framing must serialize before higher-salience volatile recall \
              (roster@{roster_at} should precede recall@{recall_at})\n{block}"
+            );
+        }
+
+        /// A grounding block built from a LIST of units, sized like the live work
+        /// board (leads first, then one line per card).
+        fn board_like(units: usize) -> Contribution {
+            let mut parts = vec![
+                "[your work] you HOLD 1 card — 0dd1123c \"wire the gather fallback\"".to_string(),
+                "[available work] 60 card(s) are claimable — pick one up with work/claim"
+                    .to_string(),
+            ];
+            for i in 0..units {
+                parts.push(format!(
+                    "card {i:08x} [Open] \"a card whose title is about as long as a real one\" \
+                     (Normal, unclaimed)"
+                ));
+            }
+            let content = parts.join("\n");
+            Contribution::context(
+                FacultyId::Custom("room-kanban".to_string()),
+                content,
+                0.9,
+                "board",
+            )
+            .with_parts(parts)
+        }
+
+        // what this catches: the board vanishing WHOLE. Measured live 2026-08-06 across
+        // 1,284 context assemblies, `room-kanban` was KEPT 0 times and dropped 495 — a
+        // median 5,364-token block offered all-or-nothing into a median 55-token budget
+        // — while its first two units (~200 tokens) carry every fact a citizen needs to
+        // find work. The citizens were reporting "there are no open tasks available"
+        // about a 61-card board. A source that delivered a LIST declared its own cut
+        // points; assembly must take the longest fitting PREFIX instead of nothing.
+        #[test]
+        fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            let board = board_like(60);
+            let whole = est_tokens(&board.content);
+            ws.broadcast.push(board);
+
+            // A budget FAR under the whole board — the live shape (55 vs 5,364).
+            let budget = 120;
+            assert!(whole > budget * 10, "fixture must reproduce the live ratio");
+            let block = faculty.render_assembled_context_within(&ws, budget);
+
+            assert!(
+                block.contains("[room-kanban]"),
+                "the board must still reach the prompt — it vanished whole before this fix\n{block}"
+            );
+            assert!(
+                block.contains("[your work]"),
+                "the FIRST unit is the one that matters most; a prefix must start there\n{block}"
+            );
+            assert!(
+                !block.contains("card 0000003b"),
+                "the 60th card must NOT ride along — the prefix is bounded by budget\n{block}"
+            );
+            assert!(
+                block.contains("more not shown"),
+                "a truncated LIST must SAY it is truncated, or a partial board reads as \
+                 the whole board and she reports work that isn't there\n{block}"
+            );
+            assert!(
+                est_tokens(&block) <= budget * 2,
+                "the prefix must respect the budget it was given (got {} for budget {budget})\n{block}",
+                est_tokens(&block)
+            );
+        }
+
+        // what this catches: the OTHER half of the same rule — divisibility is opt-in and
+        // must not leak. An engram is ONE indivisible thing; cutting it mid-sentence
+        // produces confident nonsense, which is worse than its absence. A faculty that
+        // never calls `with_parts` must behave exactly as it did before parts existed.
+        #[test]
+        fn an_indivisible_contribution_is_still_dropped_whole_never_cut_mid_content() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("what happened yesterday?");
+            let engram = "we agreed the gather promise binds every reachable kernel, and that \
+                          the in-place consumption path inherits none of the alignment the \
+                          copy path establishes, which is why the fallback had to be per-op"
+                .repeat(4);
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                engram.clone(),
+                0.9,
+                "recalled",
+            ));
+
+            let block = faculty.render_assembled_context_within(&ws, 40);
+            assert!(
+                !block.contains("[recall]"),
+                "an over-budget INDIVISIBLE contribution must be dropped whole, not \
+                 truncated into a confident half-thought\n{block}"
+            );
+            assert!(
+                !block.contains("more not shown"),
+                "the truncation notice belongs only to genuinely divisible lists\n{block}"
+            );
+        }
+
+        // what this catches: a zero/near-zero budget must produce NO block rather than a
+        // bare `[room-kanban]` header with nothing under it — an empty labelled block
+        // reads to the persona as "the board is empty", which is exactly the false fact
+        // this whole fix exists to stop her acting on.
+        #[test]
+        fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            ws.broadcast.push(board_like(60));
+
+            let block = faculty.render_assembled_context_within(&ws, 4);
+            assert!(
+                !block.contains("[room-kanban]"),
+                "no unit fits, so there must be no header — a labelled empty block is a \
+                 LIE that reads as an empty board\n{block}"
             );
         }
 

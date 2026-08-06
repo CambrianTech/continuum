@@ -206,6 +206,7 @@ mod tests {
             fault: None,
             raw_generation: None,
             trailing: false,
+            parts: Vec::new(),
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -223,6 +224,7 @@ mod tests {
             // tolerated — the capture must preserve it so model-vs-harness is decidable.
             raw_generation: Some("<Let's roll back the migration.".to_string()),
             trailing: false,
+            parts: Vec::new(),
         };
         let trace = WorkspaceTrace {
             world_state: "teammate: what should we do about the red deploy?".to_string(),

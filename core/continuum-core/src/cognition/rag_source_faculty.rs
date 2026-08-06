@@ -242,12 +242,17 @@ impl Faculty for RagSourceFaculty {
 
         // One context block per source: concatenate the delivered atomic units.
         // The deliberation faculty renders this under a `[<source_id>]` header.
-        let content = delivery
-            .items
-            .iter()
-            .map(|i| i.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+        //
+        // The join is the RENDERING, not the loss of structure — the units ride
+        // along on the contribution as `parts` (below), so a block too large for
+        // the prompt budget can still contribute its leading units instead of
+        // vanishing whole. Flattening and DISCARDING the list is what made the
+        // work board structurally invisible: measured 2026-08-06, `room-kanban`
+        // was kept 0 / dropped 495 times, a median 5,364-token all-or-nothing
+        // offer against a median 55-token budget, while its first two units
+        // (~200 tokens) carried every fact a citizen needed to find work.
+        let units: Vec<String> = delivery.items.iter().map(|i| i.content.clone()).collect();
+        let content = units.join("\n");
         let reasoning = format!(
             "grounding from '{}' — {} item(s), {} tokens",
             self.source.source_id(),
@@ -255,7 +260,8 @@ impl Faculty for RagSourceFaculty {
             delivery.tokens_used
         );
 
-        let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning);
+        let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
+            .with_parts(units);
         Some(if self.stable { c.session_stable() } else { c })
     }
 }

@@ -197,6 +197,7 @@ mod tests {
             fault: None,
             raw_generation: None,
             trailing: false,
+            parts: Vec::new(),
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -216,6 +217,7 @@ mod tests {
             fault: None,
             raw_generation: None,
             trailing: false,
+            parts: Vec::new(),
         };
         let trace = WorkspaceTrace {
             world_state: "what's the call?".to_string(),

@@ -292,6 +292,31 @@ pub struct Contribution {
     /// growing block is now genuinely last. Defaults `false` (system-message context);
     /// set via [`trailing`](Self::trailing).
     pub trailing: bool,
+    /// The **atomic units** this content is made of, in the order the faculty
+    /// emitted them — the granularity at which it is still truthful to cut.
+    ///
+    /// A faculty whose finding is ONE indivisible thing (a recalled engram, an
+    /// affect signal) leaves this a single element equal to `content`: it fits
+    /// whole or it is dropped whole, because half an engram is noise. But a
+    /// grounding source that already delivers a LIST — the board's `[your work]`
+    /// lead, then its `[available work]` lead, then one line per card — has
+    /// declared each unit individually meaningful, and cutting between units
+    /// costs nothing but the tail.
+    ///
+    /// The distinction is load-bearing, not cosmetic. Measured 2026-08-06 across
+    /// 1,284 context assemblies: `room-kanban` was KEPT **0 times** and dropped
+    /// 495 — a median 5,364-token block offered all-or-nothing into a median
+    /// 55-token budget. Its first two units are ~200 tokens and carry every fact
+    /// a citizen needs to find work; the other ~5,100 are a verbatim 61-card
+    /// dump. Flattening the source's own list into one string is what made the
+    /// board structurally invisible, so the citizens perceived an empty world and
+    /// said "there are no open tasks available". The parts were always there —
+    /// the bridge threw them away. [[compression-principle]]
+    ///
+    /// Never re-ordered and never re-ranked: salience still governs WHICH
+    /// contributions are considered, and this only governs how much of one
+    /// survives when the whole will not fit. Set via [`with_parts`](Self::with_parts).
+    pub parts: Vec<String>,
 }
 
 impl Contribution {
@@ -302,10 +327,16 @@ impl Contribution {
         salience: f32,
         reasoning: impl Into<String>,
     ) -> Self {
+        let content = content.into();
         Self {
             faculty,
             cycle: CycleId::UNSTAMPED,
-            content: content.into(),
+            // Indivisible by default: one part IS the content, so a faculty that
+            // never calls `with_parts` behaves exactly as it always has (fits
+            // whole or drops whole). Divisibility is opt-IN, declared by the
+            // faculty that actually knows its content is a list.
+            parts: vec![content.clone()],
+            content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
             decision: None,
@@ -315,6 +346,23 @@ impl Contribution {
             raw_generation: None,
             trailing: false,
         }
+    }
+
+    /// Declare this contribution's **atomic units** — the granularity at which
+    /// cutting it stays truthful (see [`parts`](Self::parts)). Used by the
+    /// grounding bridge, which receives a source's `RagItem` list and previously
+    /// flattened it to one string, making a large block all-or-nothing against
+    /// the prompt budget.
+    ///
+    /// Empty input is ignored: a contribution always has at least one part, so
+    /// the assembly path never has to special-case "divisible but with nothing
+    /// to divide". `content` is left untouched — it remains the whole, and is
+    /// what renders whenever the whole fits.
+    pub fn with_parts(mut self, parts: Vec<String>) -> Self {
+        if !parts.is_empty() {
+            self.parts = parts;
+        }
+        self
     }
 
     /// The deliberation faculty's verdict contribution.
@@ -329,6 +377,8 @@ impl Contribution {
         Self {
             faculty: FacultyId::Deliberation,
             cycle: CycleId::UNSTAMPED,
+            // A verdict is one utterance — never a list, never divisible.
+            parts: vec![content.clone()],
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -355,6 +405,8 @@ impl Contribution {
         Self {
             faculty: FacultyId::Deliberation,
             cycle: CycleId::UNSTAMPED,
+            // A fault is one named cause — never a list, never divisible.
+            parts: vec![error.clone()],
             content: error.clone(),
             salience: 1.0,
             reasoning: "deliberation inference failed".to_string(),
