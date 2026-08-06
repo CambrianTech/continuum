@@ -139,6 +139,20 @@ fn starts_with_silence_token(text: &str) -> bool {
 /// reserved form we taught; `…and otherwise pass.` in ordinary lowercase English is a person
 /// talking about passing a value or declining an option, and must stay Speak. Fence guard
 /// stands: fenced content is substance no matter what surrounds it.
+///
+/// KNOWN GAP, measured not guessed. A THIRD live variant the same day puts the token
+/// mid-sentence: `…please let me know! Otherwise, PASS for now as I don't have anything
+/// genuinely new to add.` This guard cannot see it (not the final word), and Tier 2 does not
+/// catch it either — every `WEAK_CLOSURES` entry requires the FIRST-PERSON form (`i'll pass
+/// for now`) and this message has no `I'll`. I asserted Tier 2 would cover it, wrote the test,
+/// and the test said otherwise; the assertion was wrong.
+///
+/// Left UNFIXED on purpose. The principled generalization is "reserved token in CLAUSE-INITIAL
+/// position anywhere" (which is what `starts_with_silence_token` already is, at offset 0) — a
+/// decidable rule rather than another phrase. But it is a real widening of when a citizen is
+/// silenced, and one observation is not enough to justify it at the same moment the file's own
+/// history warns that per-variant tuning is the arms race. Wants a second sighting or Joel's
+/// call, not extrapolation from n=1.
 fn ends_with_silence_token(text: &str) -> bool {
     if text.contains("```") {
         return false;
