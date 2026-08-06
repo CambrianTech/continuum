@@ -329,6 +329,68 @@ impl RagSource for RoomBoardSource {
                     )
             })
             .collect();
+        // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
+        // someone to pick up. Computed here, before anything is rendered, because the
+        // HEADLINE below needs both counts — see its comment for why that matters.
+        let open: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            .filter(|c| {
+                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED —
+                // an expired lease is genuinely available work (claim-contention
+                // allows takeover), and before 2026-08-03 lapsed cards appeared in
+                // NEITHER "available" nor honestly-held: invisible as work, sticky
+                // as an attractor.
+                let terminal = matches!(
+                    c.state,
+                    airc_work::CardState::Merged | airc_work::CardState::Closed
+                );
+                if terminal {
+                    return false;
+                }
+                match c.owner {
+                    None => matches!(c.state, airc_work::CardState::Open),
+                    Some(_) => !claim_is_live(c, now_ms),
+                }
+            })
+            .collect();
+
+        // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
+        // so a prefix-take can never deliver half of them.
+        //
+        // The defect this exists for, read out of Asha's own capture 2026-08-06: her
+        // window fit exactly ONE of 31 board units. Divisibility (b6429f583) meant she
+        // got the longest fitting PREFIX — which was "[your work] you HOLD 1 card" — and
+        // then "…30 more not shown". The "[available work] 8 card(s) are claimable" lead
+        // was unit two, and died. So she reported "no open tasks" and was CORRECT about
+        // what she could see, in a room where 8 cards were claimable. Four citizens spent
+        // the day in that loop.
+        //
+        // Ordering alone does not fix it — flipping the leads just severs the other half.
+        // Two facts that are only true TOGETHER have to be ONE unit, and that unit has to
+        // be small enough to survive any budget that delivers grounding at all (~25
+        // tokens, vs ~210 for the two detailed leads). Detail degrades; meaning does not.
+        if !mine.is_empty() || !open.is_empty() {
+            let headline = format!(
+                "[board] you hold {held} card(s); {avail} claimable.",
+                held = mine.len(),
+                avail = open.len(),
+            );
+            let headline_tokens = estimate_tokens(&headline);
+            if headline_tokens <= budget {
+                tokens_used += headline_tokens;
+                items.push(RagItem {
+                    content: headline,
+                    tokens: headline_tokens,
+                    metadata: json!({
+                        "kind": "board-headline",
+                        "held_count": mine.len(),
+                        "open_count": open.len(),
+                    }),
+                });
+            }
+        }
+
         if !mine.is_empty() {
             let titles = mine
                 .iter()
@@ -357,39 +419,15 @@ impl RagSource for RoomBoardSource {
             }
         }
 
-        // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
+        // The detailed available-work lead (#122): unclaimed cards are work waiting for
         // someone to pick up. Glass-boxed live 2026-07-10: with hands proven and an
         // open card sitting on the board, both personas drifted to identity-monologue
         // chatter instead of noticing the available work — an unclaimed card, flat in
-        // the list, out-salienced by nothing. Lead the delivery with the open cards
-        // as a distinct perceived FACT (their count + titles + how to pick one up), so
-        // available work is the first thing seen, not buried. A true structural fact
-        // she WEIGHS — it names what's available and how claiming works; it never says
-        // she must ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still
-        // follows verbatim in airc's own order — this adds a salience lead, it does not
-        // re-rank or filter the board itself.
-        let open: Vec<&airc_work::WorkCard> = board
-            .cards
-            .iter()
-            .filter(|c| {
-                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED —
-                // an expired lease is genuinely available work (claim-contention
-                // allows takeover), and before 2026-08-03 lapsed cards appeared in
-                // NEITHER "available" nor honestly-held: invisible as work, sticky
-                // as an attractor.
-                let terminal = matches!(
-                    c.state,
-                    airc_work::CardState::Merged | airc_work::CardState::Closed
-                );
-                if terminal {
-                    return false;
-                }
-                match c.owner {
-                    None => matches!(c.state, airc_work::CardState::Open),
-                    Some(_) => !claim_is_live(c, now_ms),
-                }
-            })
-            .collect();
+        // the list, out-salienced by nothing. Names their count + titles + how to pick
+        // one up. A true structural fact she WEIGHS — it never says she must
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still follows
+        // verbatim in airc's own order — this adds salience, it does not re-rank or
+        // filter the board itself.
         if !open.is_empty() {
             let titles = open
                 .iter()
@@ -648,9 +686,10 @@ mod tests {
         ])));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
-        // With one Open card, an available-work lead precedes the card list.
-        assert_eq!(delivery.items.len(), 3);
-        assert_eq!(delivery.items[0].metadata["kind"], "available-work-lead");
+        // Headline first, then the available-work lead, then the card list.
+        assert_eq!(delivery.items.len(), 4);
+        assert_eq!(delivery.items[0].metadata["kind"], "board-headline");
+        assert_eq!(delivery.items[1].metadata["kind"], "available-work-lead");
         let cards: Vec<&RagItem> = delivery
             .items
             .iter()
@@ -669,6 +708,35 @@ mod tests {
         // serde, not Debug — one canonical wire form for the enum (see the json! above).
         assert_eq!(cards[1].metadata["state"], "open");
         assert!(delivery.continuation.is_none());
+    }
+
+    // what this catches: the board's two facts getting SEVERED by a prefix-take.
+    // Read out of Asha's own capture 2026-08-06: her window fit exactly ONE of 31
+    // board units, divisibility handed her the longest fitting prefix — "[your work]
+    // you HOLD 1 card" — and "[available work] 8 claimable" was unit two and died.
+    // She then reported "no open tasks" and was CORRECT about what she could see,
+    // in a room with 8 claimable cards. Four citizens looped on that all day.
+    // The FIRST unit must therefore state BOTH counts, and be small enough to
+    // survive a budget that delivers grounding at all.
+    #[tokio::test]
+    async fn the_first_board_unit_states_both_counts_so_a_prefix_take_cannot_halve_it() {
+        let me = persona();
+        let mut held = card("The card I hold", CardState::Claimed, Some(airc_core::PeerId::from_uuid(me)));
+        held.claim_expires_at_ms = Some(now_unix_ms() + 60_000);
+        let open_a = card("Claimable one", CardState::Open, None);
+        let open_b = card("Claimable two", CardState::Open, None);
+
+        let reader = Arc::new(StubReader::new(snapshot(vec![held, open_a, open_b])));
+        let source = RoomBoardSource::new(me, reader);
+        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+
+        let first = &delivery.items[0];
+        assert_eq!(first.metadata["kind"], "board-headline", "the headline must LEAD");
+        assert!(first.content.contains("hold 1"), "{}", first.content);
+        assert!(first.content.contains("2 claimable"), "{}", first.content);
+        // Cheap enough that any budget delivering grounding at all delivers BOTH
+        // facts — the detailed leads are ~10x this and are what should degrade.
+        assert!(first.tokens <= 32, "headline must stay tiny, was {}", first.tokens);
     }
 
     // what this catches: THE rule Joel set on 2026-08-06 — "should never say
@@ -723,11 +791,17 @@ mod tests {
         ])));
         let source = RoomBoardSource::new(persona(), reader);
         let d = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
-        assert_eq!(d.items[0].metadata["kind"], "available-work-lead");
-        assert_eq!(d.items[0].metadata["open_count"], 2);
-        assert!(d.items[0].content.contains("[available work]"));
-        assert!(d.items[0].content.contains("Compile wordstats"));
-        assert!(d.items[0].content.contains("work/claim"));
+        // Found by KIND, not by index: the headline now leads, and a test that
+        // pins position breaks every time the delivery grows a unit.
+        let lead = d
+            .items
+            .iter()
+            .find(|i| i.metadata["kind"] == "available-work-lead")
+            .expect("open cards must produce an available-work lead");
+        assert_eq!(lead.metadata["open_count"], 2);
+        assert!(lead.content.contains("[available work]"));
+        assert!(lead.content.contains("Compile wordstats"));
+        assert!(lead.content.contains("work/claim"));
 
         // A board with only claimed cards → no lead, just the card list.
         let claimed_only = Arc::new(StubReader::new(snapshot(vec![card(
