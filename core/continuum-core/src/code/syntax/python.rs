@@ -414,6 +414,64 @@ mod tests {
 
     const V: PythonValidator = PythonValidator;
 
+    // what this catches: THE measured SWE-bench failure, verbatim. On 2026-08-01 the
+    // flask-4045 run produced a patch whose REASONING was correct — `if "." in name: raise
+    // ValueError(...)` right after `self.name = name` is the real fix — but whose edit
+    // mechanics wedged a copy of that guard at MODULE level, indented, directly after a type
+    // alias. Python cannot parse an indented block there, so `blueprints.py` stopped
+    // importing and **50 PASS_TO_PASS tests failed**. The graded result was 0 resolved, which
+    // reads as "the model can't solve it" and is not what happened: the model solved it and
+    // the write destroyed the file.
+    //
+    // The gate that refuses this (`c6401f403`/`8a1a479bc`) landed 2026-08-05, FOUR DAYS after
+    // that run — so the recorded benchmark number was measured against a build with no gate.
+    // This pins the exact shape so the regression can never come back silently.
+    // regression for benchmarks/swe/.../agent-flask4045-r3/patch.diff
+    #[test]
+    fn the_flask4045_module_level_indent_is_refused() {
+        // Hunk 1 of the real patch: a guard indented at module scope after the type alias.
+        let broken = concat!(
+            "DeferredSetupFunction = t.Callable[[\"BlueprintSetupState\"], t.Callable]\n",
+            "        if \".\" in name:\n",
+            "            raise ValueError(\"Blueprint names cannot contain dots.\")\n",
+            "\n",
+            "\nclass BlueprintSetupState:\n    pass\n",
+        );
+        assert!(
+            V.parse_check(broken).is_err(),
+            "an indented block at module scope does not parse — the edit gate MUST refuse \
+             this write instead of letting 50 unrelated tests fail downstream"
+        );
+
+        // The same guard in its correct place must still be accepted — a gate that refuses
+        // the real fix would be worse than no gate.
+        let correct = concat!(
+            "class Blueprint:\n",
+            "    def __init__(self, name):\n",
+            "        self.name = name\n",
+            "        if \".\" in name:\n",
+            "            raise ValueError(\"Blueprint names cannot contain dots.\")\n",
+        );
+        assert!(
+            V.parse_check(correct).is_ok(),
+            "the CORRECT fix must pass: {:?}",
+            V.parse_check(correct).err()
+        );
+    }
+
+    // what this catches: hunk 3 of the same patch — a file truncated mid-class-body with no
+    // trailing newline, left behind when a write runs out partway. Same run, same file.
+    #[test]
+    fn a_write_truncated_mid_body_is_refused() {
+        let truncated = concat!(
+            "class Blueprint:\n",
+            "    def __init__(self, name):\n",
+            "        self.name = name\n",
+            "        self.deferred_functions: t.List[DeferredSetupFunction] = [",
+        );
+        assert!(V.parse_check(truncated).is_err());
+    }
+
     // what this catches (THE reason this module exists): the exact shape that broke three
     // SWE-bench runs — a guard clause placed inside an open `def(` parameter list. The
     // closing paren is still there, so delimiters stay BALANCED while the file is
