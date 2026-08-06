@@ -87,6 +87,56 @@ pub trait SyntaxValidator: Send + Sync {
     fn displaced_docstrings(&self, _before: &str, _after: &str) -> Option<Vec<String>> {
         None
     }
+
+    /// Code an edit inserted INSIDE a string literal — a write that parses and does nothing.
+    ///
+    /// The loudest failures are the ones that break the parse; this is the quiet one. On
+    /// `pallets__flask-4045` (2026-08-06) the model reasoned the fix correctly and wrote it
+    /// into the middle of the class docstring, deleting ~17 lines of API docs to make room:
+    ///
+    /// ```text
+    /// -    :param static_url_path: The url to serve static files from.
+    /// +        name = blueprint_name
+    /// +        if '.' in name:
+    /// +            raise ValueError("Blueprint names cannot contain dots")
+    /// ```
+    ///
+    /// `parse_check` returns Ok — it IS valid Python, the "code" is just text in a
+    /// triple-quoted string. `displaced_docstrings` returns nothing — the docstring is
+    /// still structurally a docstring. Every gate we had was silent, the tests failed, and
+    /// the score was charged to the model's intelligence rather than to the write path.
+    ///
+    /// A file that will not parse screams. A file that parses and does nothing has to be
+    /// TOLD, or the act→observe loop closes on a lie
+    /// ([[the-act-observe-circuit-only-closes-if-the-receipt-shows-the-result]]).
+    ///
+    /// `None` = this language has no such analysis. `Some(vec![])` = analyzed, none found.
+    fn inert_insertions(&self, _before: &str, _after: &str) -> Option<Vec<InertInsertion>> {
+        None
+    }
+}
+
+/// Code that landed inside a string literal instead of in the program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InertInsertion {
+    /// 1-based line in the NEW content where the inert text starts.
+    pub line: usize,
+    /// The first inserted line, for the persona to recognize her own edit.
+    pub first_line: String,
+    /// How many inserted lines landed inside the literal.
+    pub lines: usize,
+}
+
+impl std::fmt::Display for InertInsertion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "line {}: {} line(s) starting `{}`",
+            self.line,
+            self.lines,
+            self.first_line.trim()
+        )
+    }
 }
 
 /// The validator for this path's language, or `None` when we have no parser for it.

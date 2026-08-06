@@ -7,7 +7,7 @@
 use rustpython_parser::{ast, parse, Mode};
 use std::collections::HashSet;
 
-use super::{SyntaxFault, SyntaxValidator};
+use super::{InertInsertion, SyntaxFault, SyntaxValidator};
 
 pub struct PythonValidator;
 
@@ -59,6 +59,161 @@ impl SyntaxValidator for PythonValidator {
         lost.sort();
         Some(lost)
     }
+
+    /// Inserted lines that landed inside a string literal AND read as code.
+    ///
+    /// Both halves are load-bearing, and dropping either one is how this becomes noise:
+    ///
+    /// * "inside a string literal" alone flags every legitimate docstring edit — writing a
+    ///   sentence into a docstring is a normal thing to do and must stay silent.
+    /// * "reads as code" alone flags prose, because plenty of English parses as Python. A
+    ///   lone word (`Blueprint`) is a valid `Name` expression; `:param x: the thing` is not.
+    ///
+    /// So the test is: the inserted block parses AND carries at least one statement that
+    /// DOES something — an assignment, an `if`, a `raise`, a `def`. That is exactly the
+    /// measured shape (`['Assign', 'If']`) and it is what no docstring line ever is: a
+    /// docstring is prose, and prose is either unparseable or a bare expression.
+    fn inert_insertions(&self, before: &str, after: &str) -> Option<Vec<InertInsertion>> {
+        // No opinion on a file that doesn't parse — `parse_check` owns that verdict, and
+        // guessing at string spans in a broken parse would be inventing evidence.
+        let module = parse_module(after)?;
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for stmt in &module.body {
+            collect_string_spans(stmt, &mut spans);
+        }
+        let inserted = inserted_line_range(before, after)?;
+        let after_lines: Vec<&str> = after.lines().collect();
+
+        // Byte offset of the first character of each line, so a line can be located in a span.
+        let mut offsets: Vec<usize> = Vec::with_capacity(after_lines.len());
+        let mut at = 0usize;
+        for line in &after_lines {
+            offsets.push(at);
+            at += line.len() + 1; // +1 for the '\n' `lines()` stripped
+        }
+
+        let inside: Vec<usize> = (inserted.0..inserted.1)
+            .filter(|i| {
+                offsets.get(*i).is_some_and(|off| {
+                    spans.iter().any(|(s, e)| *off > *s && *off < *e)
+                })
+            })
+            .collect();
+        if inside.is_empty() {
+            return Some(Vec::new());
+        }
+        let block: Vec<&str> = inside.iter().filter_map(|i| after_lines.get(*i).copied()).collect();
+        if !reads_as_code(&block) {
+            return Some(Vec::new());
+        }
+        let first = *inside.first()?;
+        Some(vec![InertInsertion {
+            line: first + 1,
+            first_line: after_lines.get(first).copied().unwrap_or_default().to_string(),
+            lines: inside.len(),
+        }])
+    }
+}
+
+/// Byte spans of every string constant in the module, so "did this line land inside a
+/// literal" is a lookup rather than a heuristic. The AST knows exactly where each one
+/// starts and ends — this question is DECIDABLE, which is why it earns a place in the gate.
+fn collect_string_spans(stmt: &ast::Stmt, out: &mut Vec<(usize, usize)>) {
+    use rustpython_parser::ast::Ranged;
+    // A docstring is an Expr(Constant(str)) — the case that matters — and recursion into
+    // bodies reaches the nested ones (a method docstring inside a class).
+    match stmt {
+        ast::Stmt::Expr(e) => {
+            if let ast::Expr::Constant(c) = e.value.as_ref() {
+                if c.value.is_str() {
+                    let r = c.range();
+                    out.push((usize::from(r.start()), usize::from(r.end())));
+                }
+            }
+        }
+        ast::Stmt::FunctionDef(f) => f.body.iter().for_each(|s| collect_string_spans(s, out)),
+        ast::Stmt::AsyncFunctionDef(f) => f.body.iter().for_each(|s| collect_string_spans(s, out)),
+        ast::Stmt::ClassDef(c) => c.body.iter().for_each(|s| collect_string_spans(s, out)),
+        ast::Stmt::If(i) => {
+            i.body.iter().for_each(|s| collect_string_spans(s, out));
+            i.orelse.iter().for_each(|s| collect_string_spans(s, out));
+        }
+        ast::Stmt::For(f) => f.body.iter().for_each(|s| collect_string_spans(s, out)),
+        ast::Stmt::While(w) => w.body.iter().for_each(|s| collect_string_spans(s, out)),
+        ast::Stmt::With(w) => w.body.iter().for_each(|s| collect_string_spans(s, out)),
+        ast::Stmt::Try(t) => {
+            t.body.iter().for_each(|s| collect_string_spans(s, out));
+            t.finalbody.iter().for_each(|s| collect_string_spans(s, out));
+        }
+        _ => {}
+    }
+}
+
+/// The `[start, end)` line range of `after` that `before` does not contain, found by
+/// matching the common prefix and suffix.
+///
+/// Exact for the shape an edit actually produces — one contiguous region — and honest
+/// about the rest: an edit that changed nothing, or that rewrote the whole file, returns
+/// `None` rather than a guess. This is not a general diff and must not pretend to be one.
+fn inserted_line_range(before: &str, after: &str) -> Option<(usize, usize)> {
+    let b: Vec<&str> = before.lines().collect();
+    let a: Vec<&str> = after.lines().collect();
+    let mut prefix = 0usize;
+    while prefix < b.len() && prefix < a.len() && b[prefix] == a[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < b.len().saturating_sub(prefix)
+        && suffix < a.len().saturating_sub(prefix)
+        && b[b.len() - 1 - suffix] == a[a.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let end = a.len().saturating_sub(suffix);
+    (end > prefix).then_some((prefix, end))
+}
+
+/// Does this block of lines DO something, as opposed to describe something?
+///
+/// Dedents to the shallowest indent so an indented block parses standalone, then requires a
+/// statement with an effect. `Expr` is deliberately excluded: a bare expression is what
+/// prose looks like to a parser, and a docstring is prose.
+fn reads_as_code(lines: &[&str]) -> bool {
+    let indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let block: String = lines
+        .iter()
+        .map(|l| if l.len() >= indent { &l[indent..] } else { l.trim_start() })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Some(module) = parse_module(&block) else {
+        return false;
+    };
+    module.body.iter().any(|s| {
+        matches!(
+            s,
+            ast::Stmt::Assign(_)
+                | ast::Stmt::AugAssign(_)
+                | ast::Stmt::AnnAssign(_)
+                | ast::Stmt::If(_)
+                | ast::Stmt::For(_)
+                | ast::Stmt::While(_)
+                | ast::Stmt::Raise(_)
+                | ast::Stmt::Return(_)
+                | ast::Stmt::FunctionDef(_)
+                | ast::Stmt::AsyncFunctionDef(_)
+                | ast::Stmt::ClassDef(_)
+                | ast::Stmt::Import(_)
+                | ast::Stmt::ImportFrom(_)
+                | ast::Stmt::With(_)
+                | ast::Stmt::Try(_)
+                | ast::Stmt::Assert(_)
+        )
+    })
 }
 
 fn parse_module(source: &str) -> Option<ast::ModModule> {
@@ -427,6 +582,115 @@ mod tests {
     // that run — so the recorded benchmark number was measured against a build with no gate.
     // This pins the exact shape so the regression can never come back silently.
     // regression for benchmarks/swe/.../agent-flask4045-r3/patch.diff
+    // what this catches: the flask-4045 run-B shape (2026-08-06) — the model reasoned the fix
+    // CORRECTLY and wrote it into the middle of the class docstring. `ast.parse` says OK, the
+    // docstring is still a docstring, so `parse_check` and `displaced_docstrings` were both
+    // silent, the PASS_TO_PASS tests failed, and the zero was charged to the model's
+    // intelligence. A write that parses and does nothing has to be TOLD.
+    #[test]
+    fn code_written_into_a_docstring_is_reported_as_inert() {
+        let before = concat!(
+            "class Blueprint:\n",
+            "    \"\"\"Represents a blueprint.\n",
+            "\n",
+            "    :param static_url_path: The url to serve static files from.\n",
+            "    :param url_prefix: A path to prepend to all of the blueprint's URLs.\n",
+            "    \"\"\"\n",
+            "\n",
+            "    def __init__(self, name):\n",
+            "        self.name = name\n",
+        );
+        // Her edit: the guard replaces a line of API docs, INSIDE the triple-quoted string.
+        let after = concat!(
+            "class Blueprint:\n",
+            "    \"\"\"Represents a blueprint.\n",
+            "\n",
+            "        name = blueprint_name\n",
+            "        if '.' in name:\n",
+            "            raise ValueError(\"Blueprint names cannot contain dots\")\n",
+            "    :param url_prefix: A path to prepend to all of the blueprint's URLs.\n",
+            "    \"\"\"\n",
+            "\n",
+            "    def __init__(self, name):\n",
+            "        self.name = name\n",
+        );
+        assert!(
+            V.parse_check(after).is_ok(),
+            "precondition: this IS valid Python — that is exactly why every other gate is silent"
+        );
+        assert_eq!(
+            V.displaced_docstrings(before, after),
+            Some(vec![]),
+            "precondition: the docstring is still structurally a docstring, so its gate says nothing"
+        );
+
+        let inert = V.inert_insertions(before, after).expect("python has an opinion");
+        assert_eq!(inert.len(), 1, "the guard must be reported: {inert:?}");
+        assert_eq!(inert[0].lines, 3, "all three inserted lines landed in the literal");
+        assert!(
+            inert[0].first_line.contains("name = blueprint_name"),
+            "the report names her own edit back to her: {:?}",
+            inert[0]
+        );
+    }
+
+    // what this catches: the FALSE POSITIVE that would make this gate worthless. Writing prose
+    // into a docstring is a normal, correct thing to do — if that gets flagged, the warning
+    // becomes noise and stops being read. Prose is either unparseable or a bare expression;
+    // neither is an effect.
+    #[test]
+    fn ordinary_docstring_prose_is_never_flagged() {
+        let before = concat!(
+            "def f(x):\n",
+            "    \"\"\"Do a thing.\n",
+            "    \"\"\"\n",
+            "    return x\n",
+        );
+        let after = concat!(
+            "def f(x):\n",
+            "    \"\"\"Do a thing.\n",
+            "\n",
+            "    :param x: the value to transform, which must not be None\n",
+            "    :returns: the transformed value\n",
+            "    Blueprint\n",
+            "    \"\"\"\n",
+            "    return x\n",
+        );
+        assert_eq!(
+            V.inert_insertions(before, after),
+            Some(vec![]),
+            "documenting a function must stay SILENT — a gate that cries here gets ignored when \
+             it matters"
+        );
+    }
+
+    // what this catches: the other false positive — a normal code edit OUTSIDE any literal.
+    // Every real fix looks like this, and flagging it would train her to ignore the receipt.
+    #[test]
+    fn a_correct_in_place_fix_is_never_flagged() {
+        let before = concat!(
+            "class Blueprint:\n",
+            "    \"\"\"Represents a blueprint.\"\"\"\n",
+            "\n",
+            "    def __init__(self, name):\n",
+            "        self.name = name\n",
+        );
+        let after = concat!(
+            "class Blueprint:\n",
+            "    \"\"\"Represents a blueprint.\"\"\"\n",
+            "\n",
+            "    def __init__(self, name):\n",
+            "        if '.' in name:\n",
+            "            raise ValueError(\"Blueprint names cannot contain dots\")\n",
+            "        self.name = name\n",
+        );
+        assert_eq!(
+            V.inert_insertions(before, after),
+            Some(vec![]),
+            "THE REAL FIX must pass clean — a gate that flags the correct answer is worse than none"
+        );
+    }
+
     #[test]
     fn the_flask4045_module_level_indent_is_refused() {
         // Hunk 1 of the real patch: a guard indented at module scope after the type alias.

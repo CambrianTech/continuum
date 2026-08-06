@@ -368,6 +368,10 @@ impl FileEngine {
                     &displaced_docstrings(&abs_path, &old_content, &new_content)
                         .unwrap_or_default(),
                 );
+                // Neither does code written INTO a literal — the quietest failure of all (#317).
+                out.push_str(
+                    &inert_insertions(&abs_path, &old_content, &new_content).unwrap_or_default(),
+                );
                 out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
                 out.push_str(&numbered_neighborhood(
                     &new_content,
@@ -1294,6 +1298,36 @@ fn displaced_docstrings(
          it, and any doctests inside it stop being collected (in this repo those may be part of \
          the test suite). Move your code to AFTER the closing quotes.\n",
         lost.join(", ")
+    ))
+}
+
+/// Code the edit put INSIDE a string literal — the write that parses and does nothing (#317).
+///
+/// The loudest possible wording, because this failure is the quietest one there is. A file that
+/// will not parse screams: `syntax_error_after_edit` names the line, the tests fail immediately,
+/// and the cause is obvious. This one leaves a green parse, an unchanged docstring, and a test
+/// suite that fails for reasons that look like the model was simply wrong.
+///
+/// Measured on `pallets__flask-4045` (2026-08-06): she derived the correct guard and wrote it
+/// into the middle of the class docstring, deleting ~17 lines of API docs. Every gate we had was
+/// silent and the zero was charged to her intelligence.
+fn inert_insertions(
+    abs_path: &std::path::Path,
+    old_content: &str,
+    new_content: &str,
+) -> Option<String> {
+    let validator = validator_for(abs_path)?;
+    let inert = validator.inert_insertions(old_content, new_content)?;
+    if inert.is_empty() {
+        return None;
+    }
+    let where_ = inert.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; ");
+    Some(format!(
+        "WARNING: your edit landed INSIDE A STRING LITERAL ({where_}). The file parses and the \
+         tests will run, but that code is TEXT — it never executes, so nothing you intended \
+         actually changed. This is why a run can look like a wrong answer when the reasoning was \
+         right. Re-read the file around that line: find where the string CLOSES, and put the code \
+         after it.\n"
     ))
 }
 

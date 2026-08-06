@@ -1588,7 +1588,22 @@ impl BenchmarkSweSolve {
                 max_acts: p.max_acts.or(Some(30)),
                 detach: Some(false),
                 run_id: None,
-                learn: Some(true),
+                // learn=FALSE on a SCORED, HELD-OUT instance (#312). `agent/solve` defaults
+                // learn ON and that default is right — a being learns from her work. But this
+                // command's input is a held-out benchmark dataset, and what learn mode admits
+                // is a durable engram in the LIVING persona.
+                //
+                // Measured 2026-08-04: six flask-4045 runs put six verbatim GitHub issues into
+                // Anwen's episodic store, and her consolidator did its job — it crystallized
+                // SEMANTIC beliefs out of the repetition ("If a Flask Blueprint name contains a
+                // dot, raise a ValueError…"). She durably knew the answer to a held-out
+                // instance, stored indistinguishably from anything she reasoned out herself, and
+                // a re-run would have scored memorization while reading as capability.
+                //
+                // This is NOT in tension with the capture-always argument below: the TRACE is
+                // corpus (curated, offline, deliberately trained on), and a belief admitted
+                // mid-measurement is not. Corpus stays; the immediate write-back goes.
+                learn: Some(false),
                 // CAPTURE ALWAYS, per run. This started as `None` — "a sweep writes none by
                 // default" — which was exactly backwards on two counts.
                 //
