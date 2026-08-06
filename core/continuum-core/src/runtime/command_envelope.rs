@@ -180,6 +180,97 @@ pub struct CommandRequest<P> {
     pub context_id: Option<Uuid>,
 }
 
+/// Turn serde's one-sided "missing field `cmd`" into a two-sided diagnosis.
+///
+/// Every caller — persona, CLI, SDK — sends a params object, and the single most common
+/// failure is a NAME mismatch, not a missing intent: `command` for `cmd`, `path` for
+/// `file_path`. serde reports only what it WANTED, so the message reads as "you forgot
+/// something" when the truth is "you called it something else, and here is the something".
+/// Measured on myself: two different commands, two mismatches, inside two minutes — a model
+/// reaching for the industry-standard name hits this constantly and has nothing to correct
+/// toward.
+///
+/// One seam, every command: this is the only place a params object is decoded.
+///
+/// Naming what was SENT is the fix. The near-miss suggestion is a bonus and is deliberately
+/// conservative — when nothing is close, listing the sent keys is still strictly better than
+/// naming the wanted one alone.
+fn param_mismatch_message(serde_error: &str, sent: &[String]) -> String {
+    let base = format!("CommandRequest deserialization failed: {serde_error}");
+    // serde renders this as: missing field `cmd`
+    let Some(wanted) = serde_error
+        .split_once("missing field `")
+        .and_then(|(_, rest)| rest.split_once('`'))
+        .map(|(name, _)| name)
+    else {
+        return base;
+    };
+    // Params the caller controls — the envelope's own fields are not the mismatch.
+    let candidates: Vec<&String> = sent
+        .iter()
+        // Envelope + transport fields are the kernel's, never her params — parading them back
+        // as "you sent" points at things she never typed.
+        //
+        // `command` is deliberately NOT filtered even though the CLI adds it: for `code/shell`
+        // it is the single likeliest mis-name (`command` for `cmd`), and suppressing it would
+        // break the exact case this function exists for. A little CLI noise beats losing the
+        // real diagnosis — caught by this function's own test.
+        .filter(|k| {
+            !matches!(
+                k.as_str(),
+                "handle" | "sessionId" | "userId" | "contextId" | "requestId"
+            )
+        })
+        .collect();
+    if candidates.is_empty() {
+        return format!("{base}. You sent no parameters at all — this command requires `{wanted}`.");
+    }
+    let sent_list = candidates
+        .iter()
+        .map(|k| format!("`{k}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if let Some(near) = closest_param(wanted, &candidates) {
+        return format!(
+            "{base}. You sent {sent_list} — this command calls that parameter `{wanted}`, not `{near}`. Re-send with `{wanted}`."
+        );
+    }
+    format!("{base}. You sent {sent_list}, but this command requires `{wanted}`.")
+}
+
+/// The sent key most plausibly MEANT as `wanted`.
+///
+/// Two kinships, because the real pairs come in two shapes and the obvious check only catches
+/// one — my first version used substring alone and its own test caught that `cmd` is NOT a
+/// substring of `command` (the letters are not contiguous), i.e. it failed on the exact case
+/// that motivated it:
+///
+/// - QUALIFIER: `path` ⊂ `file_path` — substring.
+/// - ABBREVIATION: `cmd` ⊆ `command` — subsequence, the letters in order.
+///
+/// Both stay tight enough to refuse unrelated names: `cmd` is not a subsequence of `colour`
+/// (no `m`), and a wrong "you meant X" would send her to rename the wrong field, which is
+/// worse than a plain listing.
+fn closest_param<'a>(wanted: &str, sent: &[&'a String]) -> Option<&'a str> {
+    let w = wanted.to_lowercase();
+    sent.iter()
+        .find(|k| {
+            let k = k.to_lowercase();
+            k.contains(&w) || w.contains(&k) || is_subsequence(&k, &w) || is_subsequence(&w, &k)
+        })
+        .map(|k| k.as_str())
+}
+
+/// Is `short` an in-order subsequence of `long` — the abbreviation relation? Requires at least
+/// 3 characters so a 1-2 letter param never matches half the alphabet.
+fn is_subsequence(short: &str, long: &str) -> bool {
+    if short.len() < 3 || short.len() >= long.len() {
+        return false;
+    }
+    let mut chars = long.chars();
+    short.chars().all(|c| chars.any(|l| l == c))
+}
+
 impl<P> CommandRequest<P>
 where
     P: serde::de::DeserializeOwned,
@@ -192,8 +283,14 @@ where
     /// `ServiceModule::handle_command` error type so handlers can `?`
     /// the result directly.
     pub fn from_value(value: Value) -> Result<Self, String> {
+        // Keep what the caller actually sent — serde's error names only what it WANTED, and
+        // the gap between those two is the whole diagnosis.
+        let sent: Vec<String> = value
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
         serde_json::from_value(value)
-            .map_err(|e| format!("CommandRequest deserialization failed: {e}"))
+            .map_err(|e| param_mismatch_message(&e.to_string(), &sent))
     }
 }
 
@@ -501,6 +598,62 @@ mod tests {
             err.contains("CommandRequest deserialization failed"),
             "error must name the envelope so the caller knows which layer failed: {err}"
         );
+    }
+
+    // what this catches: the most common tool-use failure there is — a NAME mismatch, reported
+    // one-sidedly. serde says "missing field `cmd`" and never mentions that the caller sent
+    // `command`, so the message reads as "you forgot something" when the truth is "you called
+    // it something else". Measured on myself: two commands, two mismatches, two minutes. ONE
+    // seam fixes every command, because this is the only place a params object is decoded.
+    #[test]
+    fn a_param_name_mismatch_names_what_was_sent_not_just_what_was_wanted() {
+        let msg = param_mismatch_message(
+            "missing field `cmd`",
+            &["command".to_string(), "timeout".to_string()],
+        );
+        assert!(msg.contains("You sent `command`"), "must name what she sent: {msg}");
+        assert!(
+            msg.contains("calls that parameter `cmd`, not `command`"),
+            "must state the correspondence, not just the wanted name: {msg}"
+        );
+
+        // Envelope fields are the kernel's, never the caller's mistake — they must not be
+        // paraded back as if she had mis-named something.
+        let msg = param_mismatch_message(
+            "missing field `file_path`",
+            &["path".to_string(), "sessionId".to_string(), "userId".to_string()],
+        );
+        assert!(msg.contains("`path`"), "the real candidate survives: {msg}");
+        assert!(
+            !msg.contains("sessionId"),
+            "envelope fields are not param candidates: {msg}"
+        );
+    }
+
+    // what this catches: a confident WRONG rename is worse than none — it sends her to change
+    // the wrong field. Unrelated names must degrade to a plain listing, and no params at all
+    // must say so plainly rather than implying a rename.
+    #[test]
+    fn an_unrelated_param_gets_a_listing_never_an_invented_rename() {
+        let msg = param_mismatch_message("missing field `cmd`", &["colour".to_string()]);
+        assert!(
+            !msg.contains("not `colour`"),
+            "must not invent a correspondence between unrelated names: {msg}"
+        );
+        assert!(
+            msg.contains("You sent `colour`") && msg.contains("requires `cmd`"),
+            "but must still show both sides: {msg}"
+        );
+
+        let msg = param_mismatch_message("missing field `cmd`", &[]);
+        assert!(
+            msg.contains("no parameters at all"),
+            "an empty call deserves its own sentence: {msg}"
+        );
+
+        // A non-missing-field error is passed through untouched.
+        let msg = param_mismatch_message("invalid type: string, expected u32", &["n".to_string()]);
+        assert!(msg.ends_with("expected u32"), "unrelated errors are not rewritten: {msg}");
     }
 
     #[test]

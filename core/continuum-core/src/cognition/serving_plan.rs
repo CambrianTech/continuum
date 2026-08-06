@@ -94,6 +94,7 @@ pub const MAX_LANES: u32 = 2;
 /// personas actually USE, never maximized to fill RAM. A model whose weights + KV
 /// at even this floor won't fit the GPU budget is simply not a serving option on
 /// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
+// context-budget-exempt: the hardware FLOOR the whole serving stack sizes UP from — the one substrate-owned minimum every other bound derives against, and never a cap on anything
 pub const MIN_SERVE_CTX: u32 = 2048;
 
 /// Cold-start DEMAND ceiling for the served window — the "B-now" half of the
@@ -505,8 +506,13 @@ pub fn plan_serving(
 /// budget jitter. Keeps the `incumbent` model as long as it still fits the
 /// budget — switching DOWN only when the incumbent no longer fits (forced
 /// eviction) and UP only when a strictly more capable model fits with
-/// [`SWITCH_UP_HEADROOM`] to spare. Lanes + resident count always re-track the
-/// current budget. No incumbent (or it's gone / no longer fits) → plain
+/// [`SWITCH_UP_HEADROOM`] to spare.
+///
+/// Lanes and window are sized against the AT-REST budget (the live budget with the
+/// incumbent's own resident weights credited back) for as long as the incumbent keeps
+/// serving — so a model's own KV can never convince the planner to shed the lane that model
+/// is currently running. That self-eviction was a real lane flap, not a theoretical one; see
+/// the note in the body. No incumbent (or it's gone / no longer fits) → plain
 /// [`plan_serving`]. Use this for the ONGOING serving loop; boot uses
 /// `plan_serving` directly (no incumbent yet).
 pub fn plan_serving_stable(
@@ -524,11 +530,23 @@ pub fn plan_serving_stable(
     let Some(inc_id) = incumbent else {
         return fresh;
     };
-    // Fresh already chose the incumbent (or nothing else fits and fresh IS the
-    // incumbent) → nothing to stabilize.
-    if fresh.as_ref().map(|p| p.base_model_id.as_str()) == Some(inc_id) {
-        return fresh;
-    }
+    // NOTE (2026-08-04): there used to be an early return here — "fresh already chose the
+    // incumbent → nothing to stabilize" — and it was the lane-flap bug. `fresh` is computed
+    // against the LIVE budget, which the incumbent's own weights + KV depress while it serves.
+    // On the same-model path that meant the planner re-derived lane count from a budget the
+    // incumbent itself had eaten, decided it could no longer afford the lane it was already
+    // running, dropped to 1, then added it back when the KV freed. Glass-boxed on an IDLE host:
+    // 718 replans in one solve, `usable_gb` swinging 26→6, `lanes` oscillating 1↔2, and every
+    // flip resizing the live admission semaphore (`set_served_lane_count`) and the prefill
+    // throttle under in-flight requests — which is the `no response headers for 300s` lane wedge
+    // that killed three benchmark runs.
+    //
+    // The at-rest credit below already existed for exactly this reason ("so a model's OWN
+    // load/residency can never flap it out"); it was simply never applied to the case where the
+    // incumbent KEEPS serving. So the paths are unified: whenever a living incumbent is still
+    // servable, its plan is sized against the at-rest budget. Same-model is no longer a
+    // shortcut — it is the main path. [[never-thrash-sticky-hysteresis-on-every-lane]]
+    //
     // Incumbent dropped off disk entirely → honour whatever `fresh` chose
     // (possibly None = nothing servable).
     let Some(inc) = candidates.iter().find(|m| m.model_id == inc_id) else {
@@ -1007,6 +1025,58 @@ mod tests {
         let stable = plan_serving_stable(host, &pair(), Some("small"), MAX_LANES).unwrap();
         assert_eq!(stable.base_model_id, "small", "hysteresis keeps incumbent — no flap");
         assert!(stable.lanes >= 1, "lanes still re-tracked for the kept model");
+    }
+
+    // what this catches: THE LANE FLAP — a serving model self-evicting its own lane.
+    // `plan_serving_stable` used to early-return the FRESH plan whenever fresh chose the
+    // incumbent, and fresh is computed against the LIVE budget, which the incumbent's own
+    // weights + KV depress while it serves. So the planner kept re-deciding it could not
+    // afford the lane it was already running, dropped to 1, then re-added it when the KV
+    // freed. Measured on an idle host: 718 replans in ONE solve, lanes oscillating 1↔2, each
+    // flip resizing the live admission semaphore and prefill throttle under in-flight
+    // requests — the `no response headers for 300s` wedge that killed three benchmark runs.
+    //
+    // Same budget, same model, only difference is whether the incumbent is declared: the
+    // stable plan must NOT serve fewer lanes than the plan that boot would have made at rest.
+    #[test]
+    fn a_serving_model_never_sheds_its_own_lane_to_its_own_residency() {
+        // 9GB model on an 18GB host — the measured flap zone. At rest it plans (2 lanes,
+        // 16384). Once it is SERVING, its own 9GB reads as "used", and a fresh plan against
+        // that depressed budget returns (1 lane, 2048): its own residency costs it a lane AND
+        // 87% of its window, so the next tick (KV freed) plans it straight back up. That is
+        // the oscillation, and every flip resizes the live admission semaphore + prefill
+        // throttle under in-flight requests.
+        let models = vec![fp("big", 9, 90_000, 262_144, 3)];
+        let at_rest = HostBudget { usable_bytes: 18 * GB, perf_cores: 6 };
+        let boot = plan_serving(at_rest, &models, MAX_LANES).expect("servable at rest");
+
+        let live = HostBudget {
+            usable_bytes: at_rest.usable_bytes - models[0].weights_bytes,
+            perf_cores: 6,
+        };
+        let fresh = plan_serving(live, &models, MAX_LANES).expect("still servable");
+        // Guard the guard: if this ever stops being a flap, the test below proves nothing.
+        assert!(
+            fresh.lanes < boot.lanes,
+            "fixture no longer reproduces the flap (boot={} fresh={}) — re-derive the budget",
+            boot.lanes,
+            fresh.lanes
+        );
+
+        let stable = plan_serving_stable(live, &models, Some("big"), MAX_LANES)
+            .expect("incumbent still servable");
+        assert_eq!(stable.base_model_id, "big");
+        assert_eq!(
+            stable.lanes, boot.lanes,
+            "a model's OWN residency must not shrink its OWN lane count (stable={} boot={} \
+             fresh={})",
+            stable.lanes, boot.lanes, fresh.lanes
+        );
+        assert_eq!(
+            stable.served_context_window, boot.served_context_window,
+            "nor its own window (stable={} boot={} fresh={})",
+            stable.served_context_window, boot.served_context_window, fresh.served_context_window
+        );
     }
 
     // what this catches: a genuine upgrade DOES happen when the better model

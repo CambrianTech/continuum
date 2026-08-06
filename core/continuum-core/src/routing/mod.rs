@@ -30,6 +30,7 @@ pub mod airc_event_publisher;
 pub mod airc_event_transport;
 pub mod airc_transport;
 pub mod auth_policy;
+pub mod capped_appender;
 pub mod command_handler;
 pub mod command_uri;
 pub mod environment;

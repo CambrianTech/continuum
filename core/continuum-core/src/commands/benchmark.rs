@@ -8,6 +8,7 @@
 //! OUTSIDER replicate our numbers against their own `/v1` without our stack. Operational
 //! benchmarking is Rust; the replication convenience is the lone edge script.
 
+use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -555,7 +556,8 @@ impl ActionCommand for BenchmarkRun {
                     max_retries: Some(0),
                     workspace_root,
                     capture_dir: None,
-                    learn: None,
+                    // A measurement. Named, not defaulted — the type has no `Default`.
+                    learn: LearningPolicy::DoNotLearn,
                     // #207: benchmark keeps recall by default (unchanged behavior); the
                     // reproducible-absolute knob is opt-in on cognition/eval directly.
                     suppress_recall: None,
@@ -1027,7 +1029,7 @@ impl BenchmarkCompetition {
             run_id: None,
             workspace_root: None,
             capture_dir: None,
-            learn: Some(false),
+            learn: LearningPolicy::DoNotLearn,
             suppress_recall: None,
         };
         // CognitionEval ignores ctx (reaches cognition via the global registry), so a
@@ -1244,5 +1246,582 @@ mod tests {
             "gene row is its own identity, absent arm renders —: {md}"
         );
         assert_eq!(md.matches("cu benchmark/run").count(), 4, "all replication cmds survive: {md}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// SWE-bench: the repo-test grader on the command surface.
+//
+// `swe-bench-lite` and `swe-bench-verified` have been catalog rows since this file was
+// written, with `Grader::Python` documented as "catalogued; grader lands with the python
+// collections". This is that grader — and it lands in Rust, because a benchmark is substrate
+// ([[benchmark-infra-is-substrate-commands-handles-events-never-bash]]). The Python scripts
+// it replaces produced numbers nobody could trust: eight runs scored against a clone left at
+// HEAD, gold mis-scored on three instances by an id-shape assumption, and a poll loop that
+// could not tell a dead dispatch from a working one.
+//
+// The instance's own pytest suite still runs — that is the SUBJECT under test, exactly as
+// `rustc` is for `humaneval-rs`. We write no Python.
+// ---------------------------------------------------------------------------------------
+
+use crate::cognition::swe_bench::{self, SweVerdict};
+
+/// Inputs to `benchmark/swe-grade`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweGradeParams.ts")]
+pub struct SweGradeParams {
+    /// The instance to grade, e.g. `sympy__sympy-22005`.
+    pub instance: String,
+    /// Dataset to resolve the instance from. Defaults to SWE-bench Lite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub dataset: Option<String>,
+    /// THE SPINE CHECK: grade the dataset's own gold patch. It MUST resolve — if it does not,
+    /// the environment is wrong and no other number from it means anything. Run this before
+    /// trusting any solver's score on an instance you have not graded before.
+    #[serde(default)]
+    #[ts(optional)]
+    pub gold: Option<bool>,
+    /// A candidate patch to grade (unified diff). Ignored when `gold` is set.
+    #[serde(default)]
+    #[ts(optional)]
+    pub patch: Option<String>,
+    /// A working tree a solver has already edited — its `git diff` becomes the candidate
+    /// patch. Grading still happens in a FRESH clone at `base_commit`, so a solver that dirtied
+    /// its workspace cannot launder that into a passing score.
+    #[serde(default)]
+    #[ts(optional)]
+    pub workspace: Option<String>,
+}
+
+/// Result of `benchmark/swe-grade` — the full verdict, never a bare boolean.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweGradeResult.ts")]
+pub struct SweGradeResult {
+    pub instance: String,
+    /// True only when every FAIL_TO_PASS and every sampled PASS_TO_PASS passed.
+    pub resolved: bool,
+    pub fail_to_pass_passed: u32,
+    pub fail_to_pass_total: u32,
+    pub pass_to_pass_passed: u32,
+    pub pass_to_pass_total: u32,
+    /// False when FAIL_TO_PASS already passed on the pristine tree — the checkout carries no
+    /// bug, so `resolved: false` from such a run means NOTHING about the solver.
+    pub gate_ok: bool,
+    /// Set when no verdict could be produced (clone/patch/environment failure). A result with
+    /// `error` is an ABSENCE, not a zero, and must never be tallied as a failed attempt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+    /// How many bytes of candidate patch were graded — 0 means the solver changed nothing,
+    /// which is a harness signal, not a model score.
+    pub patch_bytes: u32,
+}
+
+impl From<(SweVerdict, usize)> for SweGradeResult {
+    fn from((v, patch_bytes): (SweVerdict, usize)) -> Self {
+        SweGradeResult {
+            instance: v.instance_id,
+            resolved: v.resolved,
+            fail_to_pass_passed: v.f2p_passed as u32,
+            fail_to_pass_total: v.f2p_total as u32,
+            pass_to_pass_passed: v.p2p_passed as u32,
+            pass_to_pass_total: v.p2p_total as u32,
+            gate_ok: v.gate_ok,
+            error: v.error,
+            patch_bytes: patch_bytes as u32,
+        }
+    }
+}
+
+/// Grade one SWE-bench instance by the official protocol.
+#[derive(Default)]
+pub struct BenchmarkSweGrade;
+
+// Self-registered at its own declaration site — the registry has no central list.
+crate::register_stateless_command!(BenchmarkSweGrade);
+
+#[async_trait]
+impl ActionCommand for BenchmarkSweGrade {
+    const NAME: &'static str = "benchmark/swe-grade";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Grade one SWE-bench instance by the official protocol: clone at base_commit, apply the \
+         candidate patch, apply the instance's test_patch, run its tests. RESOLVED only when every \
+         FAIL_TO_PASS and every sampled PASS_TO_PASS passes. Refuses to report on a tree it cannot \
+         vouch for — FAIL_TO_PASS must FAIL on the pristine checkout (that failure IS the bug), and \
+         `gateOk: false` marks a run whose score is void. Pass `gold: true` first on any instance \
+         not graded here before: the dataset's own patch must resolve, or the environment is wrong \
+         and no other number from it means anything.";
+    type Params = SweGradeParams;
+    type Output = SweGradeResult;
+
+    async fn run(&self, _ctx: &Ctx, p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
+        let dataset = p
+            .dataset
+            .clone()
+            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
+        let rows = swe_bench::load_dataset(&dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let instance = rows
+            .into_iter()
+            .find(|r| r.instance_id == p.instance)
+            .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+
+        // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
+        // clone below — where the solver worked is never where the score is taken.
+        let candidate: Option<String> = if p.gold.unwrap_or(false) {
+            Some(instance.patch.clone())
+        } else if let Some(ws) = p.workspace.as_ref() {
+            let out = std::process::Command::new("git")
+                .args(["diff"])
+                .current_dir(ws)
+                .output()
+                .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
+            Some(String::from_utf8_lossy(&out.stdout).to_string())
+        } else {
+            p.patch.clone()
+        };
+        let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
+
+        let work = swe_bench::swe_cache_dir().join("work").join(&instance.instance_id);
+        let repo = work.join("repo");
+        let _ = std::fs::create_dir_all(&work);
+        if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
+            return Ok(SweGradeResult::from((
+                SweVerdict {
+                    instance_id: instance.instance_id,
+                    error: Some(e),
+                    ..Default::default()
+                },
+                patch_bytes,
+            )));
+        }
+        let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+        Ok(SweGradeResult::from((verdict, patch_bytes)))
+    }
+}
+
+#[cfg(test)]
+mod swe_grade_tests {
+    use super::*;
+
+    // what this catches: name/access wiring — grading is a read on the AiSafe surface, so a
+    // persona can score her own work without an operator in the loop.
+    #[test]
+    fn swe_grade_name_and_access_wired() {
+        assert_eq!(BenchmarkSweGrade::NAME, "benchmark/swe-grade");
+        assert!(matches!(BenchmarkSweGrade::ACCESS, AccessLevel::AiSafe));
+    }
+
+    // what this catches: a verdict that could not run must NOT read as a scored zero. Tallying
+    // an environment failure as "the model failed" is how a broken harness becomes a number.
+    #[test]
+    fn an_errored_verdict_is_an_absence_not_a_zero() {
+        let v = SweVerdict {
+            instance_id: "x__y-1".into(),
+            error: Some("could not install repo".into()),
+            ..Default::default()
+        };
+        let r = SweGradeResult::from((v, 0));
+        assert!(!r.resolved);
+        assert!(r.error.is_some(), "the reason must survive to the caller");
+        assert_eq!(r.fail_to_pass_total, 0, "no tests ran, so nothing was attempted");
+    }
+
+    // what this catches: the gate is reported, not just enforced. A caller tallying results
+    // must be able to EXCLUDE ungradeable instances rather than counting them as failures.
+    #[test]
+    fn the_gate_verdict_reaches_the_caller() {
+        let v = SweVerdict {
+            instance_id: "x__y-1".into(),
+            gate_ok: false,
+            error: Some("UNGRADEABLE — FAIL_TO_PASS already passes".into()),
+            ..Default::default()
+        };
+        let r = SweGradeResult::from((v, 512));
+        assert!(!r.gate_ok);
+        assert_eq!(r.patch_bytes, 512, "patch size is reported even when the tree is void");
+    }
+}
+
+/// Inputs to `benchmark/swe-solve` — the whole loop in one command.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweSolveParams.ts")]
+pub struct SweSolveParams {
+    /// The instance to solve, e.g. `sympy__sympy-22005`.
+    pub instance: String,
+    /// Dataset to resolve it from. Defaults to SWE-bench Lite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub dataset: Option<String>,
+    /// The persona whose WHOLE self works the issue — never a stripped copy.
+    pub persona_id: String,
+    /// The model to measure her on.
+    pub base_model_id: String,
+    /// Max act→observe cycles.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_acts: Option<u32>,
+    /// Fire-and-poll: a real agentic drive outlives the IPC socket, so a sweep MUST detach.
+    /// Returns a run id now; the verdict lands in `~/.continuum/progress/swe-solve-<run>.json`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub detach: Option<bool>,
+    /// Correlation id for a detached run. Omit → minted.
+    #[serde(default)]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+}
+
+/// Result of `benchmark/swe-solve` — what she did AND what it scored, in one object.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweSolveResult.ts")]
+pub struct SweSolveResult {
+    pub instance: String,
+    /// Acts she actually spent. 0 with a non-empty patch is impossible; 0 with an empty patch
+    /// is a HARNESS signal (nothing ran), not a model score.
+    pub acts: u32,
+    pub files_changed: Vec<String>,
+    /// Absent on the immediate ack of a detached run — poll the ledger for the real verdict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub grade: Option<SweGradeResult>,
+    pub detached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+    /// INFRASTRUCTURE FAILURE — this row is NOT a score. Set when her drive stopped
+    /// because the deliberation model call failed (lane torn down mid-drive, serving
+    /// refusing a model it isn't hosting, timeout), not because she finished or ran out
+    /// of acts. Measured 2026-08-04, sympy-21379: the lane went `serving: <none>,
+    /// ready: false` at act 7 of 30 and the verdict reported a clean-looking
+    /// `resolved: false, patchBytes: 0` — indistinguishable from a real capability zero.
+    /// Any aggregate MUST exclude rows carrying this
+    /// ([[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub infra_error: Option<String>,
+}
+
+/// The task text handed to her. Deliberately says WHERE she is and what "done" means — the
+/// glass-boxed failure it prevents is her creating a new project beside the repo, or leaving
+/// the fix in a message instead of the files.
+fn swe_task_prompt(problem_statement: &str) -> String {
+    format!(
+        "You are ALREADY in the task's workspace: a real git repository with a real bug. Do not \
+         create a new workspace and do not add new top-level files — find the existing source \
+         with code/search and code/read, and fix it IN PLACE with code/edit. Run checks with \
+         code/shell if useful. The fix must land in the existing files.\n\nISSUE:\n{problem_statement}"
+    )
+}
+
+fn swe_solve_ledger_path(run_id: &str) -> std::path::PathBuf {
+    swe_bench::solve_ledger_dir().join(format!("swe-solve-{run_id}.json"))
+}
+
+/// Solve one instance and grade it — the whole protocol, one command.
+#[derive(Default)]
+pub struct BenchmarkSweSolve;
+
+crate::register_stateless_command!(BenchmarkSweSolve);
+
+impl BenchmarkSweSolve {
+    async fn body(p: SweSolveParams) -> Result<SweSolveResult, CommandError> {
+        let dataset = p
+            .dataset
+            .clone()
+            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
+        let rows = swe_bench::load_dataset(&dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let instance = rows
+            .into_iter()
+            .find(|r| r.instance_id == p.instance)
+            .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+
+        // She works in her OWN clone; grading later happens in a second, pristine one.
+        let solve_repo = swe_bench::swe_cache_dir()
+            .join("solve")
+            .join(&instance.instance_id)
+            .join("repo");
+        swe_bench::clone_at(&instance, &solve_repo)
+            .await
+            .map_err(CommandError::Internal)?;
+
+        // GIVE HER THE INTERPRETER. The harness already builds an era-matched venv per
+        // instance for GRADING; her hands never saw it, so `python` did not exist for her.
+        // Measured on sympy-21379: she wrote a correct reproduction script, ran it, and got
+        // `bash: python: command not found` (exit 127) — then settled. A persona who cannot
+        // EXECUTE cannot verify a fix, so every Python instance was scoring her on a loop she
+        // was physically unable to close.
+        //
+        // Non-fatal on failure: a missing venv makes her slower, not wrong, and refusing the
+        // whole run over it would trade a measurable result for none. The probe says which.
+        let venv_bin: Vec<String> = match swe_bench::ensure_env(&instance, &solve_repo).await {
+            Ok(venv_py) => venv_py
+                .parent()
+                .map(|bin| vec![bin.to_string_lossy().to_string()])
+                .unwrap_or_default(),
+            Err(e) => {
+                crate::probe!(
+                    class = "benchmark.swe.no_interpreter",
+                    instance = instance.instance_id.as_str(),
+                    error = e.as_str(),
+                    "could not provision the era-matched venv — she will work without a runnable `python`"
+                );
+                Vec::new()
+            }
+        };
+
+        // Compose agent/solve IN PROCESS — no subprocess, no CLI, no polling a file we wrote
+        // ourselves. This is the composition the command surface exists for.
+        let solved = crate::commands::agent::solve::AgentSolve::solve_body(
+            crate::commands::agent::solve::AgentSolveParams {
+                persona_id: p.persona_id.clone(),
+                base_model_id: p.base_model_id.clone(),
+                task: swe_task_prompt(&instance.problem_statement),
+                workspace: solve_repo.to_string_lossy().to_string(),
+                max_acts: p.max_acts.or(Some(30)),
+                detach: Some(false),
+                run_id: None,
+                // learn=FALSE on a SCORED, HELD-OUT instance (#312). `agent/solve` defaults
+                // learn ON and that default is right — a being learns from her work. But this
+                // command's input is a held-out benchmark dataset, and what learn mode admits
+                // is a durable engram in the LIVING persona.
+                //
+                // Measured 2026-08-04: six flask-4045 runs put six verbatim GitHub issues into
+                // Anwen's episodic store, and her consolidator did its job — it crystallized
+                // SEMANTIC beliefs out of the repetition ("If a Flask Blueprint name contains a
+                // dot, raise a ValueError…"). She durably knew the answer to a held-out
+                // instance, stored indistinguishably from anything she reasoned out herself, and
+                // a re-run would have scored memorization while reading as capability.
+                //
+                // This is NOT in tension with the capture-always argument below: the TRACE is
+                // corpus (curated, offline, deliberately trained on), and a belief admitted
+                // mid-measurement is not. Corpus stays; the immediate write-back goes.
+                learn: LearningPolicy::DoNotLearn,
+                // CAPTURE ALWAYS, per run. This started as `None` — "a sweep writes none by
+                // default" — which was exactly backwards on two counts.
+                //
+                // Glass box: a benchmark run is the run you most need to SEE. Without a trace
+                // the only output is a boolean, so a failure teaches nothing about whether she
+                // aimed wrong, looped, or ran out of acts — and the live prompt-capture file
+                // rotates at ~48 KB, so a 30-act drive overruns its own history.
+                //
+                // Curriculum: benchmarks are becoming training corpus, and the corpus is the
+                // TRACE, not the verdict. `resolved: true/false` trains nothing; the episode
+                // does ([[benchmarks-are-becoming-the-training-corpus-and-a-teacher-can-extend-them]]).
+                // Discarding it threw away the run's whole value beyond one bit.
+                //
+                // Per-run directory so a sweep's episodes never overwrite each other.
+                capture_dir: Some(
+                    swe_bench::swe_cache_dir()
+                        .join("captures")
+                        .join(&instance.instance_id)
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                // Recall STAYS ON — she is measured as her whole self, never a stripped copy
+                // ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
+                suppress_recall: None,
+                // SWE grades the DIFF: `grade_instance` below applies her patch to a fresh
+                // clone and runs FAIL_TO_PASS. Nothing she says is ever read. Declaring that
+                // contract is what stops a zero-change explanation from ending the run with
+                // the act budget unspent (glass-boxed on sympy-21379: one `code/tree`, then a
+                // prose analysis, 0 patch bytes).
+                deliverable: Some(crate::commands::agent::solve::Deliverable::Workspace),
+                // SCORED: the verdict below applies her diff to a fresh clone and runs
+                // FAIL_TO_PASS. An edit that lands inside a string literal produces a file that
+                // parses, tests that run, and a guard that never executes — measured three times
+                // on flask-4045, the last of which passed all 51 PASS_TO_PASS with both
+                // FAIL_TO_PASS still failing. She cannot recover from that mid-run, so on this
+                // path the write is refused and the act→observe circuit gets to retry (#317).
+                scored: Some(true),
+                // Her shell gets the SAME interpreter the grader uses — so `python
+                // reproduce.py` and `python -m pytest` actually run.
+                path_prepend: (!venv_bin.is_empty()).then(|| venv_bin.clone()),
+            },
+        )
+        .await?;
+
+        // Grade the patch she produced, in a FRESH clone at base_commit. Her workspace is
+        // never the scoring tree — that separation is what makes the gate meaningful.
+        let grade_repo = swe_bench::swe_cache_dir()
+            .join("work")
+            .join(&instance.instance_id)
+            .join("repo");
+        let patch = solved.patch.clone();
+        let grade = match swe_bench::clone_at(&instance, &grade_repo).await {
+            Ok(()) => {
+                let v = swe_bench::grade(
+                    &instance,
+                    &grade_repo,
+                    if patch.trim().is_empty() { None } else { Some(patch.as_str()) },
+                )
+                .await;
+                SweGradeResult::from((v, patch.len()))
+            }
+            Err(e) => SweGradeResult::from((
+                SweVerdict {
+                    instance_id: instance.instance_id.clone(),
+                    error: Some(e),
+                    ..Default::default()
+                },
+                patch.len(),
+            )),
+        };
+
+        Ok(SweSolveResult {
+            instance: instance.instance_id,
+            acts: solved.acts,
+            files_changed: solved.files_changed,
+            grade: Some(grade),
+            detached: false,
+            run_id: None,
+            infra_error: solved.infra_error,
+        })
+    }
+}
+
+#[async_trait]
+impl ActionCommand for BenchmarkSweSolve {
+    const NAME: &'static str = "benchmark/swe-solve";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Solve ONE SWE-bench instance end to end and score it: clone at base_commit, drop the \
+         persona's whole self into that repo with the issue, then grade the patch she produced by \
+         the official protocol in a FRESH clone. Her working tree is never the scoring tree. Use \
+         `detach: true` for a sweep — a real agentic drive outlives the socket, and the verdict \
+         lands in ~/.continuum/progress/swe-solve-<runId>.json.";
+    type Params = SweSolveParams;
+    type Output = SweSolveResult;
+
+    async fn run(&self, _ctx: &Ctx, p: SweSolveParams) -> Result<SweSolveResult, CommandError> {
+        // ONE SOLVE PER PERSONA AT A TIME — refuse, loudly, rather than produce a
+        // silently invalid number.
+        //
+        // `agent/solve` roots her hands by driving `code/create-workspace` through her
+        // OWN executor, and that command KEYS ON THE CALLER (persona identity), not on
+        // the cycle. So a second concurrent solve for the same persona re-roots the
+        // FIRST one's hands too: last writer wins, and both drives then edit one repo.
+        //
+        // Measured 2026-08-04, two concurrent detached solves on persona fe4dac17:
+        //   sympy-22005 (polysys task)  → its own workspace diff: EMPTY after 26 acts
+        //   sympy-21055 (refine task)   → contains its refine work AND 22005's polysys
+        //                                 edits, one of which deleted a binding that is
+        //                                 still referenced (a guaranteed NameError)
+        // Both instances score a garbage number, and nothing anywhere says why. That is
+        // exactly the failure shape [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
+        // warns about: a plausible-looking 0 that measures the harness, not the being.
+        //
+        // Refusing is correct until the root becomes per-cycle state instead of
+        // per-persona executor state (the real fix; this guard is the honest floor, and
+        // it names the conflicting run so the caller can wait or pick another persona).
+        let in_flight = crate::cognition::swe_bench::in_flight_solve_runs();
+        if let Some((run, instance)) = in_flight.first() {
+            return Err(CommandError::Invalid(format!(
+                "refusing to start `{}`: solve run `{run}` is already in flight on instance \
+                 `{instance}`. Concurrent solves SHARE one workspace root (create-workspace keys \
+                 on the persona, not the run), so both trees would be corrupted and both scores \
+                 would be meaningless. Wait for it to land (poll \
+                 ~/.continuum/progress/swe-solve-{run}.json), or run the sweep sequentially.",
+                p.instance
+            )));
+        }
+        if p.detach.unwrap_or(false) {
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| format!("{}-{}", p.instance, std::process::id()));
+            let instance_ack = p.instance.clone();
+            let run_ack = run_id.clone();
+            let mut inner = p;
+            inner.detach = Some(false);
+            // MARK IT RUNNING BEFORE SPAWNING. Until this line existed, a detached run wrote
+            // nothing until it finished — so "still working" and "died an hour ago" were the
+            // same observation (an absent file), and two core reboots silently killed a run
+            // with no trace. The marker is what the boot reaper and the reboot guard both read
+            // (#137's lesson, applied to benchmarks).
+            let ledger = swe_solve_ledger_path(&run_id);
+            let _ = std::fs::create_dir_all(ledger.parent().unwrap_or(&ledger));
+            let _ = std::fs::write(
+                &ledger,
+                serde_json::json!({
+                    "state": "running",
+                    "runId": run_id,
+                    "instance": instance_ack,
+                })
+                .to_string(),
+            );
+            tokio::spawn(async move {
+                let path = swe_solve_ledger_path(&run_id);
+                match Self::body(inner).await {
+                    Ok(r) => {
+                        if let Ok(json) = serde_json::to_string_pretty(&r) {
+                            let _ = std::fs::write(&path, json);
+                        }
+                        tracing::info!(
+                            run_id = %run_id, acts = r.acts,
+                            resolved = r.grade.as_ref().map(|g| g.resolved).unwrap_or(false),
+                            "benchmark/swe-solve detached run complete"
+                        );
+                    }
+                    Err(e) => {
+                        // Fail LOUD on the poll surface: a detached run that dies must leave a
+                        // diagnosable marker, never an empty file forever.
+                        let _ = std::fs::write(
+                            &path,
+                            serde_json::json!({"failed": true, "runId": run_id, "error": e.to_string()})
+                                .to_string(),
+                        );
+                        tracing::error!(run_id = %run_id, error = %e, "benchmark/swe-solve detached run failed");
+                    }
+                }
+            });
+            return Ok(SweSolveResult {
+                instance: instance_ack,
+                acts: 0,
+                files_changed: Vec::new(),
+                grade: None,
+                detached: true,
+                run_id: Some(run_ack),
+                infra_error: None,
+            });
+        }
+        Self::body(p).await
+    }
+}
+
+#[cfg(test)]
+mod swe_solve_tests {
+    use super::*;
+
+    // what this catches: name/access wiring. Solving spends real compute in a real workspace,
+    // so it sits on the Privileged surface — unlike grading, which is a read.
+    #[test]
+    fn swe_solve_name_and_access_wired() {
+        assert_eq!(BenchmarkSweSolve::NAME, "benchmark/swe-solve");
+        assert!(matches!(BenchmarkSweSolve::ACCESS, AccessLevel::Privileged));
+    }
+
+    // what this catches: the task text must tell her she is ALREADY in the repo. Without it she
+    // creates a new project beside the checkout and the diff is empty — a harness zero that
+    // reads exactly like a model failure.
+    #[test]
+    fn the_task_prompt_roots_her_in_the_existing_repo() {
+        let t = swe_task_prompt("solve_poly_system mishandles infinite solutions");
+        assert!(t.contains("ALREADY in the task's workspace"));
+        assert!(t.contains("fix it IN PLACE"));
+        assert!(t.contains("do not add new top-level files"));
+        assert!(
+            t.contains("solve_poly_system mishandles infinite solutions"),
+            "the issue text must reach her verbatim"
+        );
     }
 }

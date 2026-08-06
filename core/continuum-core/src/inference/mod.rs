@@ -42,6 +42,7 @@ pub mod lane;
 pub mod lane_pidfile;
 pub mod lane_process;
 pub mod lane_registry;
+pub mod child_log;
 pub mod llama_server;
 pub mod llamacpp_adapter;
 pub mod llm_module;
@@ -56,6 +57,7 @@ pub mod recipe_budget;
 pub mod throughput_expectation;
 pub mod vision_sidecar;
 pub mod vendored;
+pub mod wedge;
 
 // Re-export commonly used types
 pub use backends::{read_gguf_metadata, GenomeAdapter, ModelBackend, ModelFormat};

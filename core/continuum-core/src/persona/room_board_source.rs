@@ -81,6 +81,25 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 pub trait RoomBoardReader: Send + Sync {
     /// The current room's work board, folded by airc into a [`BoardSnapshot`].
     async fn work_board(&self) -> Result<BoardSnapshot, AircError>;
+
+    /// Published display names for the given peers — the DURABLE alias store,
+    /// not the room roster.
+    ///
+    /// Deliberately not presence-based: the card owner most worth naming is a
+    /// teammate who went down still holding a claim, and a presence roster
+    /// cannot name exactly that peer. Joel, 2026-08-06: *"a persona could go
+    /// down too. They should be able, like you are me, to claim a card,
+    /// diagnose etc."*
+    ///
+    /// No default impl on purpose — a default returning "no names" would let a
+    /// new reader silently render every teammate as hex, which is the defect
+    /// this method exists to kill. Every implementor decides explicitly; an
+    /// implementor with no alias store returns an empty map and the projection
+    /// falls back to short ids (addressable, unlike "someone").
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String>;
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule OK —
@@ -94,6 +113,24 @@ impl RoomBoardReader for airc_lib::Airc {
             airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                 .await?;
         Ok(projection.snapshot())
+    }
+
+    /// One scan per distinct owner, exactly as `airc work board` resolves its
+    /// own board (work_commands.rs) — N is small (distinct owners on one
+    /// board), and `peer_alias` is page_recent-backed. A peer with no published
+    /// alias is simply absent from the map; the projection renders its short
+    /// id rather than inventing a name.
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String> {
+        let mut names = std::collections::HashMap::new();
+        for peer in peers {
+            if let Ok(Some(alias)) = airc_lib::Airc::peer_alias(self, *peer).await {
+                names.insert(*peer, alias);
+            }
+        }
+        names
     }
 }
 
@@ -144,31 +181,20 @@ impl RoomBoardSource {
     /// and owner (or `unclaimed`) — the shape a teammate reads off the board.
     /// The whole board carries all owners, so owner is always surfaced (unlike
     /// the active-work source, which is implicitly self-owned).
-    fn render(card: &airc_work::WorkCard, self_id: uuid::Uuid, now_ms: u64) -> String {
+    /// Holder resolution is NOT done here — it lives in
+    /// [`crate::persona::card_holder`], the ONE place every board surface
+    /// (this source, the service-loop anchor, `work/list`, the CLI) answers
+    /// "who holds this, is the hold live". Rendering it locally is what let
+    /// five surfaces disagree, and why a peer's card read as an 8-hex prefix
+    /// no teammate could recognize or reach out to.
+    fn render(
+        card: &airc_work::WorkCard,
+        self_id: uuid::Uuid,
+        now_ms: u64,
+        names: &dyn crate::persona::card_holder::PeerNames,
+    ) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let owner = match card.owner {
-            // Her OWN claim must read as HERS — glass-boxed 2026-07-11: cards she
-            // held rendered as `owner 90e758b2`, a hex prefix she cannot recognize
-            // as herself, so claimed work carried zero self-relevance and the room
-            // drifted to chatter over held cards. Identity is a structural fact
-            // the projection must carry (same law as (to you) addressing).
-            // A LAPSED lease is equally structural (2026-08-03): rendering an
-            // expired claim as plain ownership contradicts the #156 lost-claim
-            // fact and re-anchors work the holder no longer has.
-            Some(o) if claim_is_live(card, now_ms) && o.as_uuid() == self_id => {
-                "owner YOU".to_string()
-            }
-            Some(o) if claim_is_live(card, now_ms) => {
-                let o8: String = o.as_uuid().to_string().chars().take(8).collect();
-                format!("owner {o8}")
-            }
-            Some(o) if o.as_uuid() == self_id => "claim lapsed (was YOURS) — claimable".to_string(),
-            Some(o) => {
-                let o8: String = o.as_uuid().to_string().chars().take(8).collect();
-                format!("claim lapsed (was {o8}) — claimable")
-            }
-            None => "unclaimed".to_string(),
-        };
+        let owner = crate::persona::card_holder::holder(card, self_id, now_ms, names).render();
         format!(
             "card {id8} [{state:?}] \"{title}\" ({prio:?}, {owner})",
             state = card.state,
@@ -187,10 +213,13 @@ impl RoomBoardSource {
 /// board claims stale, the conway/wordstats loop attractor). Duplicated rather
 /// than imported because continuum deps airc-protocol/-core, not airc-lib; the
 /// doc-link is the drift guard.
+///
+/// Now a one-line delegation to [`crate::persona::card_holder::hold_of`] — the
+/// predicate itself moved there so the anchor, `work/list`, and this source
+/// cannot drift apart on what "held" means. Kept as a named local so the
+/// call sites below read as liveness questions rather than enum matches.
 fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
-    card.owner.is_some()
-        && card.claim_id.is_some()
-        && card.claim_expires_at_ms.is_some_and(|e| e > now_ms)
+    crate::persona::card_holder::hold_of(card, now_ms) == crate::persona::card_holder::Hold::Held
 }
 
 fn now_unix_ms() -> u64 {
@@ -371,9 +400,25 @@ impl RagSource for RoomBoardSource {
             }
         }
 
+        // Resolve every DISTINCT non-self owner on this board to a published
+        // name, in ONE pass, before rendering. Joel's rule (2026-08-06): a card
+        // must say WHO holds it — "someone" (or an 8-hex prefix that reads as
+        // one) leaves a citizen unable to reach out, which turns a coordination
+        // problem into a dead end. Owners with nothing published stay absent
+        // from the map and render as their short id, which is still addressable.
+        let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
+        for card in &board.cards {
+            if let Some(o) = card.owner {
+                if o.as_uuid() != self.persona_id && !owner_peers.contains(&o) {
+                    owner_peers.push(o);
+                }
+            }
+        }
+        let names = self.reader.peer_names(&owner_peers).await;
+
         let mut cards_delivered = 0usize;
         for card in &board.cards {
-            let content = Self::render(card, self.persona_id, now_ms);
+            let content = Self::render(card, self.persona_id, now_ms, &names);
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
                 // Budget exhausted — a truncated board is still truthful for the
@@ -390,9 +435,31 @@ impl RagSource for RoomBoardSource {
                 tokens,
                 metadata: json!({
                     "card_id": card.card_id.as_uuid().to_string(),
-                    "state": format!("{:?}", card.state),
+                    // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience
+                    // with NO stability guarantee — renaming a variant silently changes it
+                    // and nothing fails to compile. It also gave the substrate TWO string
+                    // forms of one enum: `{:?}` wrote "Claimed" here while `work/list`'s
+                    // serde wrote "claimed", so a reader that guessed wrong compared against
+                    // a spelling that never occurs. Consumers parse this straight back into
+                    // `CardState` and match on VARIANTS, so the compiler owns the mapping.
+                    // Joel 2026-08-06: "use constants or enums so you can't make
+                    // capitalization type issues. Use rust as it is meant to be used, for
+                    // predictable behavior."
+                    "state": card.state,
                     "owner": card.owner.map(|o| o.as_uuid().to_string()),
-                    "priority": format!("{:?}", card.priority),
+                    // Is the hold STILL GOOD? `state` alone cannot answer it: a card sits in
+                    // `Claimed` forever while its lease quietly expires, so a consumer reading
+                    // only the state sees "taken" for work that is free to take. That is the
+                    // exact blindness that stalled every citizen on this node 2026-08-06 —
+                    // 19 cards, all Claimed, all leases stale, all held by the four residents,
+                    // and each of them read the board as "nothing available" and passed.
+                    //
+                    // Carried as a BOOLEAN FACT from the same `claim_is_live` the card line
+                    // renders from, so the anchor and the line can never disagree about whether
+                    // work is takeable. A consumer that wants "available" must not re-derive it
+                    // from a string.
+                    "claim_live": claim_is_live(card, now_ms),
+                    "priority": card.priority,
                     "lane_id": card.lane_id.map(|l| l.as_uuid().to_string()),
                 }),
             });
@@ -500,6 +567,10 @@ mod tests {
     struct StubReader {
         board: BoardSnapshot,
         fail: Mutex<bool>,
+        /// Published aliases the stub knows, standing in for airc's durable
+        /// alias store. Empty by default — an owner with no published name
+        /// renders as its short id, the honest degradation.
+        names: std::collections::HashMap<airc_core::PeerId, String>,
     }
 
     impl StubReader {
@@ -507,7 +578,12 @@ mod tests {
             Self {
                 board,
                 fail: Mutex::new(false),
+                names: std::collections::HashMap::new(),
             }
+        }
+        fn with_name(mut self, peer: airc_core::PeerId, name: &str) -> Self {
+            self.names.insert(peer, name.to_string());
+            self
         }
         fn set_fail(&self, fail: bool) {
             *self.fail.lock().unwrap() = fail;
@@ -521,6 +597,16 @@ mod tests {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }
             Ok(self.board.clone())
+        }
+
+        async fn peer_names(
+            &self,
+            peers: &[airc_core::PeerId],
+        ) -> std::collections::HashMap<airc_core::PeerId, String> {
+            peers
+                .iter()
+                .filter_map(|p| self.names.get(p).map(|n| (*p, n.clone())))
+                .collect()
         }
     }
 
@@ -548,12 +634,54 @@ mod tests {
         assert_eq!(cards.len(), 2);
         assert!(cards[0].content.contains("Wire the projector"));
         assert!(cards[0].content.contains("[InProgress]"));
+        // No alias published for this holder → the short id, which is still
+        // addressable (work/claim and airc DM both take it). NEVER "someone".
         let owner8: String = holder.as_uuid().to_string().chars().take(8).collect();
         assert!(cards[0].content.contains(&owner8));
+        assert!(!cards[0].content.contains("someone"));
         // An unclaimed card is surfaced as such — all owners visible on the board.
         assert!(cards[1].content.contains("unclaimed"));
-        assert_eq!(cards[1].metadata["state"], "Open");
+        // serde, not Debug — one canonical wire form for the enum (see the json! above).
+        assert_eq!(cards[1].metadata["state"], "open");
         assert!(delivery.continuation.is_none());
+    }
+
+    // what this catches: THE rule Joel set on 2026-08-06 — "should never say
+    // taken by 'someone', tell them WHO, otherwise they can't reach out. And a
+    // persona could go down too." A peer-held card must render that peer's
+    // PUBLISHED NAME, and a peer whose lease lapsed must still be named so a
+    // citizen can coordinate instead of silently stealing the card. Board
+    // owners resolve through the durable alias store, NOT the presence roster,
+    // precisely so a teammate who went down still holding work stays nameable.
+    #[tokio::test]
+    async fn a_peers_card_names_the_peer_live_and_lapsed_never_bare_hex() {
+        let asha = airc_core::PeerId::new();
+        let mut live = card("Wire the projector", CardState::InProgress, Some(asha));
+        live.claim_expires_at_ms = Some(now_unix_ms() + 60_000);
+        let mut lapsed = card("Windows blocker #1", CardState::Claimed, Some(asha));
+        lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
+
+        let reader =
+            Arc::new(StubReader::new(snapshot(vec![live, lapsed])).with_name(asha, "Asha"));
+        let source = RoomBoardSource::new(persona(), reader);
+        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let cards: Vec<&RagItem> = delivery
+            .items
+            .iter()
+            .filter(|i| i.metadata.get("card_id").is_some())
+            .collect();
+        assert_eq!(cards.len(), 2);
+
+        let asha8: String = asha.as_uuid().to_string().chars().take(8).collect();
+        // Live hold: named, and the raw hex is GONE from the line.
+        assert!(cards[0].content.contains("owner Asha"), "{}", cards[0].content);
+        assert!(!cards[0].content.contains(&asha8), "{}", cards[0].content);
+        // Lapsed hold: still names WHO held it (so she can reach out) AND says
+        // it is takeable — the two facts that were missing while six citizens
+        // read stale claims as active work and announced "no open tasks".
+        assert!(cards[1].content.contains("Asha"), "{}", cards[1].content);
+        assert!(cards[1].content.contains("claimable"), "{}", cards[1].content);
+        assert!(!cards[1].content.contains(&asha8), "{}", cards[1].content);
     }
 
     // what this catches: the available-work salience lead (#122). Unclaimed cards

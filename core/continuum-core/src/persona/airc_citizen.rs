@@ -227,6 +227,16 @@ impl crate::persona::room_board_source::RoomBoardReader for StubAircCitizen {
             hygiene_reports: Vec::new(),
         })
     }
+
+    /// No daemon in tests → no alias store. The board is empty here anyway, so
+    /// there is nothing to name; an owner that did appear would render as its
+    /// short id, which is honest and still addressable.
+    async fn peer_names(
+        &self,
+        _peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String> {
+        std::collections::HashMap::new()
+    }
 }
 
 #[async_trait]

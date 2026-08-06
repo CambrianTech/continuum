@@ -167,8 +167,10 @@ pub struct ProbeInstall {
     pub probe_log_path: Option<PathBuf>,
     /// Directory the fmt-layer rolling-log writer is draining to,
     /// when `config.log_dir` was supplied and writable. The substrate
-    /// writes `continuum-core-server.<date>.log` files there with
-    /// `Rotation::DAILY` + `max_log_files(7)` retention. `None` =
+    /// writes `continuum-core-server.log` there, rotated by SIZE via
+    /// [`crate::routing::capped_appender`] — total on disk is capped
+    /// arithmetically rather than by a retention count over
+    /// unbounded-per-day files. `None` =
     /// fmt layer fell back to stderr (test path with no managed log
     /// dir). Use this to print a "logs landing at <path>" line at
     /// boot.
@@ -230,11 +232,20 @@ pub fn install_probe_tracing(
     // Build the fmt-layer writer. When the operator supplied a
     // log_dir (production path: `~/.continuum/logs/` from
     // `ProbeTracingConfig::from_env`), drain through
-    // `tracing_appender::rolling::daily` + `non_blocking`. Rotation
-    // daily, retention 7 files — operator never has to clean up,
-    // disk usage stays bounded. The `WorkerGuard` MUST be held alive
-    // by the caller for the process lifetime; we hand it back in
-    // `ProbeInstall`.
+    // [`CappedAppender`] + `non_blocking`. The `WorkerGuard` MUST be
+    // held alive by the caller for the process lifetime; we hand it
+    // back in `ProbeInstall`.
+    //
+    // This used to be `tracing_appender::rolling::DAILY` with
+    // `max_log_files(7)`, described here as "disk usage stays
+    // bounded". It was not: 7 files times WHATEVER ONE DAY PRODUCES,
+    // with nothing constraining the second factor. In practice these
+    // logs ran 87–175 MB each (~600 MB/week) against Joel's stated
+    // rule of a few MB per file; under the 2026-08-05 wedge, which
+    // emitted 1.2 GB/minute, a clock-based rotation would have
+    // produced a 172 GB file and rotated it exactly on schedule.
+    // Rotating on SIZE is the only form of this that is a bound.
+    // See [[one-log-file-reached-172gb-and-took-the-whole-machine-to-zero-bytes]].
     //
     // When log_dir is None (test path), fall back to stderr — the
     // test harness already captures stderr through `cargo test`
@@ -255,18 +266,12 @@ pub fn install_probe_tracing(
                 path: dir.clone(),
                 source: e,
             })?;
-            let file_appender = tracing_appender::rolling::Builder::new()
-                .rotation(tracing_appender::rolling::Rotation::DAILY)
-                .filename_prefix("continuum-core-server")
-                .filename_suffix("log")
-                .max_log_files(7)
-                .build(dir)
-                .map_err(|e| ProbeFileSinkError::OpenFailed {
-                    path: dir.clone(),
-                    // tracing_appender's InitError doesn't implement
-                    // io::Error directly; wrap its Display.
-                    source: std::io::Error::other(e.to_string()),
-                })?;
+            let file_appender =
+                crate::routing::capped_appender::CappedAppender::new(dir, "continuum-core-server.log")
+                    .map_err(|source| ProbeFileSinkError::OpenFailed {
+                        path: dir.clone(),
+                        source,
+                    })?;
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
             let fmt_layer = tracing_subscriber::fmt::layer().with_writer(non_blocking);
             let probe_file_sink = build_probe_file_sink(&config.probe_file, config.probe_classes.clone())?;

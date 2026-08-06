@@ -20,6 +20,7 @@ pub mod path_security;
 pub mod search;
 pub mod shell_session;
 pub mod shell_types;
+pub mod syntax;
 pub mod tree;
 pub mod types;
 

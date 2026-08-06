@@ -329,6 +329,7 @@ mod tests {
             dod_shell: None,
             solution_file: None,
             setup_shell: None,
+            workspace_root: None,
             ui_checks: Vec::new(),
             target: None,
             ui_pass_threshold: None,

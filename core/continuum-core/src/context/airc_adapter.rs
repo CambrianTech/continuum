@@ -119,6 +119,18 @@ impl crate::persona::room_board_source::RoomBoardReader for AircHandleAdapter {
     async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
         crate::persona::room_board_source::RoomBoardReader::work_board(self.inner.as_ref()).await
     }
+
+    /// Delegates to the inner airc handle's alias store — the same durable
+    /// lookup the operator CLI uses, so a card holder reads as a person here
+    /// too. Delegation, never a "no names" stub: an adapter that quietly
+    /// dropped resolution would restore the hex-only board this exists to fix.
+    async fn peer_names(
+        &self,
+        peers: &[airc_core::PeerId],
+    ) -> std::collections::HashMap<airc_core::PeerId, String> {
+        crate::persona::room_board_source::RoomBoardReader::peer_names(self.inner.as_ref(), peers)
+            .await
+    }
 }
 
 #[async_trait]

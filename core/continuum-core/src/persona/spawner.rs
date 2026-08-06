@@ -182,6 +182,7 @@ mod tests {
     /// Stand-in served window the ServingPlan would compute for the host.
     /// The planner is unit-tested in `serving_plan.rs`; here we only assert
     /// the value threads through unchanged for local models.
+    // context-budget-exempt: a TEST fixture stating the window it measures against — the pattern this guard asks for
     const TEST_SERVE_WINDOW: u32 = 8192;
 
     fn helper_paige() -> RosterEntry {

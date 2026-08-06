@@ -13,7 +13,15 @@
 //! supplies the unified memory + identity + faculties.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+// parking_lot::Mutex, not std::sync::Mutex — matching `working_memory.rs`, this module's
+// sibling holding the same kind of per-persona state. std's `lock()` returns a Result that
+// is Err only when ANOTHER thread panicked while holding it, so `.lock()` converts
+// one persona's failure into a process-wide cascade: the registry every other persona needs
+// dies with it. parking_lot does not poison, so there is no Result and no unwrap to get
+// wrong. This also collapses two mutex types for one concern back to one.
+use parking_lot::Mutex;
 
 use uuid::Uuid;
 
@@ -22,7 +30,7 @@ use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbed
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
-use super::working_memory::{WorkingMemory, WorkingMemoryFaculty, DEFAULT_WORKING_MEMORY_CAPACITY};
+use super::working_memory::{WorkingMemory, WorkingMemoryFaculty};
 use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
@@ -266,7 +274,11 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // long-term engram store; self-activates only when thinking is enabled (suppressed
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
-    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // Depth comes from the BUDGET, never a constant: the count sibling of the per-step size
+    // bound, off the same live window. See `ContextBudget::working_memory_steps`.
+    let working_memory = Arc::new(WorkingMemory::new(
+        crate::cognition::context_budget::ContextBudget::live_or_floor().working_memory_steps(),
+    ));
     // MEMENTO FIX (#138 slice 2, Joel: "they wake up blank like Memento — an
     // engineering failure; the flywheel falls apart"): on LIVE spawns, restore
     // the volatile tier persisted by the previous life so she wakes MID-WORK —
@@ -571,30 +583,54 @@ fn repoint_workspace_map_if_pinned(
     }
 }
 
-/// Root a forked cycle's file-engine (its `ToolExecutor`) at `root` by driving the
-/// `code/create-workspace` act through her hands — the SAME mechanism `cognition/eval`
-/// uses to point a measurement persona at a target repo, and now `agent/solve` uses to
-/// point her at a benchmark sandbox. This is the counterpart to
-/// [`repoint_workspace_map_if_pinned`]: that fixes what she *sees* (the workspace-map RAG
-/// block); THIS moves where her hands *write*. Without it a forked persona writes to her
-/// durable per-persona workspace (`<home>/citizens/peers/<id>/workspace/`) and the caller's
-/// `git diff` on the sandbox scores a false ZERO — a lie about the solver
-/// ([[fallbacks-are-illegal-fail-loud]]). Fails LOUD if the cycle has no hands or the
-/// executor rejects the root; never silently no-ops.
-pub(crate) async fn root_acting_workspace(
-    cycle: &WorkspaceCycle,
+/// A persona's HANDS, lifted out of the cycle that owns them.
+///
+/// Exists because rooting a measurement fork's workspace is a PROCESS-GLOBAL side effect that
+/// must be undone after the cycle it was taken for is gone. `code/create-workspace` keys the
+/// file engine on the CALLER identity (`caller_id(ctx)` → the persona's peer id), and the
+/// engines live in one `DashMap` for the whole runtime — while a measurement fork shares the
+/// living persona's `Arc<dyn ToolExecutor>` and her id. So re-rooting "the fork's" hands
+/// re-roots the LIVING persona's hands, and nothing put them back.
+///
+/// That is #312, measured 2026-08-04: after a SWE-bench solve on a flask clone, Anwen's LIVE
+/// self ran `code/list(path=src)` → `flask/` and `code/read(src/flask/app.py)` in her ordinary
+/// room turns, hours later. She had been left standing in the exam room.
+///
+/// Carrying `(id, name, executor)` separately from the cycle is what makes the restore
+/// possible on every exit path: the cycle gets consumed by `with_capture`, moved into the
+/// drive, or dropped on an error — the hands handle outlives all of it.
+#[derive(Clone)]
+pub(crate) struct ActingHands {
+    persona_id: Uuid,
+    persona_name: String,
+    executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
+}
+
+impl ActingHands {
+    /// The hands of a cycle that has them; `None` for a pure-cognition (handless) cycle.
+    pub(crate) fn of(cycle: &WorkspaceCycle) -> Option<Self> {
+        cycle.acting().map(|a| Self {
+            persona_id: a.persona_id,
+            persona_name: a.persona_name.clone(),
+            executor: a.executor.clone(),
+        })
+    }
+}
+
+/// Drive `code/create-workspace` through the persona's OWN identity-bearing executor —
+/// the single place either direction (root for a measurement, restore afterward) goes
+/// through, so the ACL gate and the failure shape are identical for both
+/// ([[the-compression-principle]]).
+async fn drive_create_workspace(
+    hands: &ActingHands,
     root: &str,
+    path_prepend: &[String],
+    call_id: &str,
+    refuse_inert_edits: bool,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
-    let acting = cycle.acting().ok_or_else(|| {
-        crate::sdk_codegen::CommandError::Internal(
-            "workspace_root requested but this cycle has no acting body (no hands) — cannot root \
-             a workspace for a pure-cognition persona"
-                .to_string(),
-        )
-    })?;
     let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
-        persona_id: acting.persona_id,
-        persona_name: acting.persona_name.clone(),
+        persona_id: hands.persona_id,
+        persona_name: hands.persona_name.clone(),
         session_id: Uuid::new_v4(),
         context_id: Uuid::new_v4(),
         caller_context: serde_json::Value::Null,
@@ -604,11 +640,15 @@ pub(crate) async fn root_acting_workspace(
         },
     };
     let ws_call = crate::ai::types::ToolCall {
-        id: "root-acting-workspace".to_string(),
+        id: call_id.to_string(),
         name: "code/create-workspace".to_string(),
-        input: serde_json::json!({ "workspace_root": root }),
+        input: serde_json::json!({
+            "workspace_root": root,
+            "path_prepend": path_prepend,
+            "refuse_inert_edits": refuse_inert_edits,
+        }),
     };
-    let ws_out = acting
+    let ws_out = hands
         .executor
         .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx, 8000)
         .await
@@ -626,11 +666,118 @@ pub(crate) async fn root_acting_workspace(
             )));
         }
     }
+    Ok(())
+}
+
+/// Root a forked cycle's file-engine (its `ToolExecutor`) at `root` by driving the
+/// `code/create-workspace` act through her hands — the SAME mechanism `cognition/eval`
+/// uses to point a measurement persona at a target repo, and now `agent/solve` uses to
+/// point her at a benchmark sandbox. This is the counterpart to
+/// [`repoint_workspace_map_if_pinned`]: that fixes what she *sees* (the workspace-map RAG
+/// block); THIS moves where her hands *write*. Without it a forked persona writes to her
+/// durable per-persona workspace (`<home>/citizens/peers/<id>/workspace/`) and the caller's
+/// `git diff` on the sandbox scores a false ZERO — a lie about the solver
+/// ([[fallbacks-are-illegal-fail-loud]]). Fails LOUD if the cycle has no hands or the
+/// executor rejects the root; never silently no-ops.
+///
+/// **Every caller of this MUST pair it with [`restore_acting_workspace`]** on every exit
+/// path — the re-root is process-global and outlives the fork (see [`ActingHands`]).
+pub(crate) async fn root_acting_workspace(
+    cycle: &WorkspaceCycle,
+    root: &str,
+    path_prepend: &[String],
+    refuse_inert_edits: bool,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    let hands = ActingHands::of(cycle).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal(
+            "workspace_root requested but this cycle has no acting body (no hands) — cannot root \
+             a workspace for a pure-cognition persona"
+                .to_string(),
+        )
+    })?;
+    drive_create_workspace(&hands, root, path_prepend, "root-acting-workspace", refuse_inert_edits)
+        .await?;
     crate::probe!(
         class = "workspace.rooted",
-        persona = %acting.persona_name,
+        persona = %hands.persona_name,
         root = %root,
         "forked persona's file engine rooted at the target directory before her cycle"
+    );
+    Ok(())
+}
+
+/// Put the persona's hands BACK in her own home after a measurement — the HANDS
+/// counterpart of [`EvalIsolation`](crate::cognition::workspace::EvalIsolation), which
+/// already guards the MIND (admission sink, memory checkpoint, decoding temperature).
+/// The mind had a guard from the day snapshot-eval landed (#59); the hands never did, and
+/// that asymmetry IS #312.
+///
+/// Restores to her durable citizen layer (`<home>/citizens/peers/<id>/workspace`) — the
+/// root `code/create-workspace` would auto-provision for her anyway — rather than to
+/// "whatever it was before". Deliberate: if a previous measurement already left her
+/// standing in an exam repo, restoring the *previous* value would faithfully preserve the
+/// bug. Restoring to her HOME is self-healing — the next measurement corrects an earlier
+/// leak instead of inheriting it.
+///
+/// Best-effort by contract: it returns the error for the caller to LOG, never to propagate.
+/// A failed restore must not mask the measurement's own result — but it must be loud.
+pub(crate) async fn restore_acting_workspace(
+    hands: &ActingHands,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    // `ensure_`, not `path_`: `code/create-workspace` REFUSES a root that does not exist
+    // (PathSecurity canonicalizes), and a persona who has never written anything has no
+    // layer on disk yet. Provisioning here is not a new side effect — it is exactly what
+    // `ensure_engine` would do on her very next file op; an existing layer is reused.
+    let home = crate::modules::code_commands::ensure_citizen_layer(&hands.persona_id.to_string())?;
+    restore_acting_workspace_at(hands, &home.to_string_lossy()).await
+}
+
+/// [`restore_acting_workspace`] addressed by persona id, resolved against the LIVING
+/// registry rather than a fork handle.
+///
+/// This is the form `cognition/eval` needs. Its `--workspace_root` rooting happens deep
+/// inside a ~230-line fallible body, but the thing that got clobbered is the LIVING
+/// persona's file engine (one process-global map, keyed by her id — the fork only ever
+/// borrowed her executor), so the restore does not need the fork at all: it can be done
+/// from outside, at the command boundary, where "the eval is over" is unambiguous and
+/// covers the error paths for free.
+pub(crate) async fn restore_persona_workspace(
+    persona_id: &str,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    let uuid = crate::id_resolve::resolve(
+        persona_id.trim(),
+        &crate::persona::card::ids(),
+        "persona",
+    )
+    .map_err(crate::sdk_codegen::CommandError::Invalid)?;
+    let cycle = global().get(&uuid).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::NotFound(format!(
+            "persona {uuid} is not resident — cannot return her hands to her own workspace"
+        ))
+    })?;
+    let hands = ActingHands::of(&cycle).ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal(format!(
+            "persona {uuid} has no acting body — nothing to restore"
+        ))
+    })?;
+    restore_acting_workspace(&hands).await
+}
+
+/// [`restore_acting_workspace`] with the home root supplied — the seam the isolation test
+/// drives, so the round-trip (root at a sandbox → restore → the sandbox is no longer
+/// visible through those hands) is provable without touching the real `CONTINUUM_HOME`.
+async fn restore_acting_workspace_at(
+    hands: &ActingHands,
+    home: &str,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    // Restoring her to her OWN home restores the LIVE stance too: a citizen at home writes code
+    // as text whenever she means to, and only gets told when it will not execute (#317).
+    drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
+    crate::probe!(
+        class = "workspace.restored",
+        persona = %hands.persona_name,
+        root = %home,
+        "measurement over — persona's hands returned to her own citizen workspace"
     );
     Ok(())
 }
@@ -645,7 +792,7 @@ impl PersonaWorkspaceRegistry {
 
     /// Look up a persona's mind. `None` if it hasn't been registered/built yet.
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<WorkspaceCycle>> {
-        self.cycles.lock().unwrap().get(persona_id).cloned()
+        self.cycles.lock().get(persona_id).cloned()
     }
 
     /// Build + register a persona's mind from its `cfg`, retaining a clone of the
@@ -657,10 +804,9 @@ impl PersonaWorkspaceRegistry {
     pub fn register_from_cfg(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
         // cycles THEN templates (the one canonical lock order).
-        let mut cycles = self.cycles.lock().unwrap();
+        let mut cycles = self.cycles.lock();
         self.templates
             .lock()
-            .unwrap()
             .insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
@@ -674,13 +820,12 @@ impl PersonaWorkspaceRegistry {
     pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
         // cycles THEN templates (the one canonical lock order).
-        let mut cycles = self.cycles.lock().unwrap();
+        let mut cycles = self.cycles.lock();
         if let Some(existing) = cycles.get(&persona_id) {
             return existing.clone();
         }
         self.templates
             .lock()
-            .unwrap()
             .insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
@@ -706,7 +851,7 @@ impl PersonaWorkspaceRegistry {
         workspace_root: Option<&str>,
         suppress_recall: bool,
     ) -> Option<WorkspaceCycle> {
-        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+        let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.suppress_recall = suppress_recall;
         repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
@@ -761,7 +906,7 @@ impl PersonaWorkspaceRegistry {
         workspace_root: Option<&str>,
         suppress_recall: bool,
     ) -> Option<WorkspaceCycle> {
-        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+        let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
@@ -790,7 +935,6 @@ impl PersonaWorkspaceRegistry {
     pub fn roster(&self) -> Vec<(Uuid, Option<String>)> {
         self.cycles
             .lock()
-            .unwrap()
             .iter()
             .map(|(id, cycle)| (*id, cycle.acting().map(|b| b.persona_name.clone())))
             .collect()
@@ -811,7 +955,7 @@ impl PersonaWorkspaceRegistry {
         // Lock order contract: `cycles` THEN `templates` (see struct docs).
         // `get` takes + releases the cycles lock before we touch templates.
         let cycle = self.get(persona_id)?;
-        let templates = self.templates.lock().unwrap();
+        let templates = self.templates.lock();
         let cfg = templates.get(persona_id)?;
         // Adapter AND served-model id from the live binding: a request without
         // the model id degenerated on the dream's first live pass (role-token
@@ -840,7 +984,7 @@ impl PersonaWorkspaceRegistry {
         model: Option<String>,
         context_window: u32,
     ) -> usize {
-        let cycles = self.cycles.lock().unwrap();
+        let cycles = self.cycles.lock();
         for cycle in cycles.values() {
             cycle.rebind_model(super::llm_deliberation_faculty::ModelBinding {
                 adapter: Arc::clone(&adapter),
@@ -853,7 +997,7 @@ impl PersonaWorkspaceRegistry {
 
     /// How many persona minds are resident.
     pub fn len(&self) -> usize {
-        self.cycles.lock().unwrap().len()
+        self.cycles.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1121,10 +1265,10 @@ mod tests {
         // of the tick (all bids incl. losers, the assembled context, the decision)
         // so we can diagnose cognition at any phase — record + recreate, not guess.
         #[derive(Default)]
-        struct CapturingSink(std::sync::Mutex<Vec<WorkspaceTrace>>);
+        struct CapturingSink(Mutex<Vec<WorkspaceTrace>>);
         impl WorkspaceCaptureSink for CapturingSink {
             fn record(&self, t: &WorkspaceTrace) {
-                self.0.lock().unwrap().push(t.clone());
+                self.0.lock().push(t.clone());
             }
         }
         let sink = Arc::new(CapturingSink::default());
@@ -1144,7 +1288,7 @@ mod tests {
         let ws = cycle.run(burst).await;
 
         // ---- Glass box: diagnose cognition at EVERY phase ----
-        let trace = sink.0.lock().unwrap().pop().expect("a tick was recorded");
+        let trace = sink.0.lock().pop().expect("a tick was recorded");
         eprintln!("\n================ COGNITION TRACE ================");
         eprintln!("WORLD-STATE (the burst):\n{}\n", trace.world_state);
         eprintln!("PHASE 1 — perception bids (the full competition, incl. losers):");
@@ -1495,5 +1639,122 @@ mod tests {
              delta was only {}µs",
             sync_cp.saturating_sub(deferred_cp)
         );
+    }
+
+    mod hands_isolation {
+        use super::*;
+        use crate::cognition::tool_executor::{CommandToolExecutor, ToolExecutor};
+        use crate::modules::code::{CodeModule, CodeState};
+        use crate::routing::CallerIdentity;
+        use crate::runtime::{CommandExecutor, InProcessTransport, ModuleRegistry};
+        use continuum_client::Connection;
+        use dashmap::DashMap;
+
+        /// One core with the REAL `CodeModule` — the single process-global engine map
+        /// every caller's workspace lives in, which is exactly why the leak is possible.
+        fn hands_for(persona: Uuid) -> ActingHands {
+            let registry = Arc::new(ModuleRegistry::new());
+            registry.register(Arc::new(CodeModule::new(Arc::new(CodeState::new(
+                Arc::new(DashMap::new()),
+                Arc::new(DashMap::new()),
+                tokio::runtime::Handle::current(),
+            )))));
+            let executor = Arc::new(CommandExecutor::new(registry));
+            let transport = InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(
+                    persona,
+                ))),
+            );
+            ActingHands {
+                persona_id: persona,
+                persona_name: "Anwen".to_string(),
+                executor: Arc::new(CommandToolExecutor::new(Connection::new(transport))),
+            }
+        }
+
+        /// What her hands can SEE right now — the honest probe, because "where is the
+        /// engine rooted" is only interesting insofar as it changes what she can read.
+        async fn listing(hands: &ActingHands) -> String {
+            let ctx = crate::cognition::tool_executor::ToolExecutionContext {
+                persona_id: hands.persona_id,
+                persona_name: hands.persona_name.clone(),
+                session_id: Uuid::new_v4(),
+                context_id: Uuid::new_v4(),
+                caller_context: serde_json::Value::Null,
+                persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+                    auto_load_media: false,
+                    supported_media_types: vec![],
+                },
+            };
+            let call = crate::ai::types::ToolCall {
+                id: "ls".to_string(),
+                name: "code/list".to_string(),
+                input: serde_json::json!({ "path": "." }),
+            };
+            let out = hands
+                .executor
+                .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
+                .await
+                .expect("code/list runs");
+            out.results[0].content.clone()
+        }
+
+        // what this catches: #312 — the measurement leaving the LIVING persona standing in
+        // the exam repo. `code/create-workspace` keys the file engine on the CALLER, the
+        // engines live in ONE process-global map, and a measurement fork shares the living
+        // persona's executor AND her id — so rooting "the fork" re-roots HER, permanently.
+        // Measured 2026-08-04: after a SWE-bench solve on a flask clone, Anwen's live self
+        // ran `code/list(path=src)` → `flask/` and `code/read(src/flask/app.py)` in her own
+        // room turns, hours later. The MIND had a guard (EvalIsolation) from #59; the HANDS
+        // had none. If the restore regresses, the exam file is still visible here.
+        #[tokio::test]
+        async fn a_measurement_returns_her_hands_to_her_own_workspace() {
+            let exam = tempfile::TempDir::new().expect("exam dir");
+            let home = tempfile::TempDir::new().expect("home dir");
+            std::fs::write(exam.path().join("EXAM_ONLY_blueprints.py"), "# flask\n").unwrap();
+            std::fs::write(home.path().join("HER_OWN_notes.md"), "# mine\n").unwrap();
+
+            let hands = hands_for(Uuid::new_v4());
+
+            // Root at the sandbox, as agent/solve does before a drive.
+            drive_create_workspace(&hands, &exam.path().to_string_lossy(), &[], "root", false)
+                .await
+                .expect("roots at the exam sandbox");
+            let during = listing(&hands).await;
+            assert!(
+                during.contains("EXAM_ONLY_blueprints.py"),
+                "the measurement must actually move her hands, or it scores a false zero: {during}"
+            );
+
+            // Measurement over.
+            restore_acting_workspace_at(&hands, &home.path().to_string_lossy())
+                .await
+                .expect("restores to her own workspace");
+
+            let after = listing(&hands).await;
+            assert!(
+                !after.contains("EXAM_ONLY_blueprints.py"),
+                "SHE IS STILL IN THE EXAM ROOM (#312) — her live hands can still see the \
+                 measurement sandbox after the run: {after}"
+            );
+            assert!(
+                after.contains("HER_OWN_notes.md"),
+                "restore must land her in her OWN workspace, not merely unroot her: {after}"
+            );
+        }
+
+        // what this catches: a pure-cognition persona has no hands, so there is nothing to
+        // root and nothing to restore. `of` must say so rather than have the caller invent
+        // a handle — the fail-loud in `root_acting_workspace` depends on this being None.
+        #[test]
+        fn a_handless_cycle_yields_no_hands() {
+            let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+                vec![],
+                Arc::new(crate::cognition::workspace::SalienceArbiter),
+                4,
+            );
+            assert!(ActingHands::of(&cycle).is_none());
+        }
     }
 }

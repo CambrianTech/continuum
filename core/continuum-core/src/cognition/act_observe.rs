@@ -28,16 +28,13 @@ use uuid::Uuid;
 use super::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
 use crate::ai::types::ToolCall;
 
-/// Max chars of a single tool result folded into the next perception / engram.
-/// A bound on what we re-inject, NOT a clamp on the model's own generation: the
-/// model owns its output length (a hung child is bounded by `code/run`'s wall
-/// clock instead). Generous — a traceback she needs to read to self-correct must
-/// survive intact.
-const RESULT_FOLD_MAX_CHARS: usize = 16_000;
+// Re-injection bounds (tool-result fold, echoed args) come from her LIVE served window via
+// `ContextBudget` — never a constant. See `cognition/context_budget.rs` for why the old
+// `RESULT_FOLD_MAX_CHARS = 16_000` / `ARG_FOLD_MAX_CHARS = 600` had to go.
+use crate::cognition::context_budget::ContextBudget;
 
 // The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
 // its own truncation). Still used here for the settlement answer-head.
-use crate::cognition::working_memory::WM_ACTION_HEAD_CHARS;
 
 /// The result of driving a mind to settlement.
 pub struct SettleOutcome {
@@ -124,13 +121,15 @@ fn entries_since_last_settlement(recent: &[String]) -> &[String] {
 /// `commands/list` on every act, never converting the result to an answer). A MIXED
 /// batch — any genuinely new call — is NOT a repeat: the new call yields new
 /// perception and must run.
-fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
+fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall], fold: Option<usize>) -> bool {
     if calls.is_empty() {
         return false;
     }
     let scope = entries_since_last_settlement(recent);
     calls.iter().all(|call| {
-        let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        // Bounded (#165): a whole-file `content` arg must not be echoed back verbatim ahead
+        // of the RESULT — see `summarize_args_for_recency`.
+        let args = summarize_args_for_recency(&call.input, fold);
         // Keyed on the `name(args)` core of the receipt render below — kept in sync
         // with it (the render dropped the first-person "I ran " opener, #158, so a
         // base model can't copy a receipt as a message opener; the fingerprint is
@@ -210,24 +209,75 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// boundary + a teaching marker that names how to narrow — never a mid-structure
 /// garble. Generous (the mind still needs enough of the result to act), but
 /// finite. A result already within budget is untouched.
-fn bound_recency_result(body: &str) -> String {
-    // Hold the WHOLE fetched result up to the ONE result bound the module already
-    // defines (`RESULT_FOLD_MAX_CHARS`, ~16k chars ≈ a real ~400-line source file) —
-    // NOT a second, tiny, hand-picked cap. The earlier 1600-char clamp chopped a
-    // read file to ~25 lines, starving exactly the app-scale work that needs the
-    // file resident (Joel 2026-07-13: "you always choke context down to stupid
-    // small sizes"). This is a FLOOD guard for a pathological result (a 5000-entry
-    // glob), not the context budget: the real fit is the downstream window-sized
-    // prompt packing, which knows the served window. One bound, reused.
+fn bound_recency_result(body: &str, budget: &ContextBudget) -> String {
+    // Hold the WHOLE fetched result up to the ONE result bound, which is a FRACTION OF HER
+    // LIVE WINDOW (`ContextBudget::result_fold_chars`) — not a constant. Joel said this twice:
+    // 2026-07-13 "you always choke context down to stupid small sizes", and again 2026-08-03
+    // when the constant was still a constant. A 1600-char clamp chopped a read file to ~25
+    // lines; a 16_000-char one does the same thing to a 1M-context mind. This is a FLOOD guard
+    // for a pathological result (a 5000-entry glob), not the context budget: the real fit is
+    // the downstream window-sized prompt packing. One bound, reused, derived.
+    let cap = budget.result_fold_chars();
     let trimmed = body.trim();
-    if trimmed.chars().count() <= RESULT_FOLD_MAX_CHARS {
+    if trimmed.chars().count() <= cap {
         return trimmed.to_string();
     }
-    let head: String = trimmed.chars().take(RESULT_FOLD_MAX_CHARS).collect();
+    let head: String = trimmed.chars().take(cap).collect();
     format!(
         "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
          a more specific query/path, or read a single file)"
     )
+}
+
+
+/// Collapse tool ARGS for the RECENCY channel (working memory).
+///
+/// The recall path has collapsed big args since it was written — `summarize_args_for_recall`
+/// turns a whole-file `content` into `content: N chars`, because re-showing that file every
+/// future turn is measured dead weight. The recency path rendered
+/// `serde_json::to_string(&call.input)` RAW, unbounded, and `bound_recency_result` bounds only
+/// the RESULT. So one code path had the rule and its sibling didn't.
+///
+/// What that costs, glass-boxed on sympy-21379: her single `code/edit` of the run passed
+/// `sympy/core/basic.py` as whole-file `content` — thousands of lines. That entire paste went
+/// into working memory as ARGS, ahead of the `EDIT REFUSED` result carrying the diagnostic she
+/// needed. On a 16k-token lane there is no room left for the diagnosis to survive.
+///
+/// Deliberately MUCH more generous than the recall bound (600 vs 80 chars): recency is shown
+/// once and she may genuinely need to see the edit she just issued. Only a pathological
+/// whole-file paste collapses.
+///
+/// `budget` is `None` when the live window is UNKNOWN (no model binding). Then nothing folds.
+/// An unknown window must never become an invented one — that is how a guess turns into a
+/// clamp that outlives the guess.
+fn summarize_args_for_recency(args: &serde_json::Value, budget: Option<usize>) -> String {
+    let fold_at = budget.unwrap_or(usize::MAX);
+    match args {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| match v {
+                serde_json::Value::String(s) if s.chars().count() > fold_at => {
+                    // The digest keeps this collapse INJECTIVE, which the dedup guard
+                    // depends on: `all_calls_already_satisfied` matches this exact rendering
+                    // against the receipt trail, so two DIFFERENT big values must never
+                    // collapse to the same text. Without it, a corrected re-write whose
+                    // length happened to match the refused one would be silently skipped as
+                    // "already satisfied" — losing the very edit she just fixed.
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    s.hash(&mut h);
+                    format!(
+                        "{k}: <{} chars, #{:x} — not echoed back; you wrote it>",
+                        s.chars().count(),
+                        h.finish()
+                    )
+                }
+                other => format!("{k}={}", other.to_string().trim_matches('"').to_string()),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => truncate_chars(&other.to_string(), fold_at.min(4096)),
+    }
 }
 
 /// Collapse tool ARGS for the recall channel: a large string value (e.g. a whole file
@@ -364,8 +414,47 @@ pub async fn apply_act(
             .unwrap_or(0)
     };
 
+    /// The ORIENTATION counter, keyed by CLASS rather than by `name|args`.
+    ///
+    /// `is_redundant_orientation` is deliberately class-based — its own doc says demoting
+    /// "by CLASS + prior-receipt (ignoring args entirely) is immune to that jitter". The
+    /// DETECTOR learned that lesson; the COUNTER did not. `bump_repeat` fingerprints
+    /// `name|args`, so every jittered variant is a fresh key returning 1.
+    ///
+    /// Measured on sympy-21379, all 8 orientation calls of one run:
+    ///   commands/list({"filter":"code"}) ×2, commands/list({}), commands/list({"filter":"sympy"}),
+    ///   code/tree({"path":"."}), code/tree({include_hidden,max_depth,path:"sympy"}),
+    ///   commands/help({"name":"code/read"}), commands/help({"name":"code/edit"})
+    /// Nearly all distinct → the nudge read "I have now run orientation 1 times this
+    /// concern" EVERY time. Byte-identical perception off a greedy decoder is a fixed
+    /// point, which is exactly the #206 failure the escalation was built to break —
+    /// reintroduced through the argument axis.
+    ///
+    /// One stable key makes the count climb across variants, so each demotion genuinely
+    /// shifts perception. Still a FACT about her own history, never a steer
+    /// ([[repetition-brick-fires-but-does-not-break-the-loop]], [[discovery-loop-broken-by-escalating-short-circuit-nudge]]).
+    const ORIENTATION_FINGERPRINT: &str = "orientation|<class>";
+    let bump_orientation_repeat = || {
+        body.working_memory
+            .note_action_fingerprint(ORIENTATION_FINGERPRINT)
+    };
+
+    // EVERY re-injection bound in this act comes from her LIVE served window, never a
+    // constant — an unknown window folds NOTHING rather than inventing a number
+    // ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
+    let budget = cycle
+        .model_loadout()
+        .map(|(_, w)| ContextBudget::from_window(w))
+        .unwrap_or_else(ContextBudget::unknown);
+    // WM clips inside its OWN record path (it owns its truncation), so it needs the live
+    // window too — pushed from here, the seam that has the cycle. Re-pushed every act so a
+    // lane relaunch at a different `-c` is picked up without a restart.
+    if let Some((_, w)) = cycle.model_loadout() {
+        body.working_memory.set_served_window(w);
+    }
+    let fold = Some(budget.echoed_arg_chars());
     let recent = body.working_memory.recent();
-    if all_calls_already_satisfied(&recent, calls) {
+    if all_calls_already_satisfied(&recent, calls, fold) {
         let names = calls
             .iter()
             .map(|c| {
@@ -409,7 +498,7 @@ pub async fn apply_act(
             .map(|c| c.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let n = bump_repeat();
+        let n = bump_orientation_repeat();
         let nudge = format!(
             "I have now run orientation ({names}) {n} times this concern — my tool menu and \
              the workspace map are already in my working memory above, and running it again \
@@ -490,7 +579,7 @@ pub async fn apply_act(
     }
     let outcome = match body
         .executor
-        .execute_native_batch(&fg_calls, &ctx, RESULT_FOLD_MAX_CHARS)
+        .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars())
         .await
     {
         Ok(o) => o,
@@ -532,7 +621,11 @@ pub async fn apply_act(
             None => "(no result returned)",
         };
         let is_err = result.map(|r| r.is_error == Some(true)).unwrap_or(false);
-        let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        // Bounded (#165) and kept BYTE-IDENTICAL to the dedup signature in
+        // `all_calls_already_satisfied` — that guard matches this rendering against the
+        // receipt trail, so the two must render args the same way or dedup silently breaks
+        // (caught by `identical_already_satisfied_act_does_not_re_execute`).
+        let args = summarize_args_for_recency(&call.input, fold);
         // Omit the "because …" clause when there is no real stated reason — an
         // empty intent must never render as an imitable receipt template (#158).
         let because = if intent.trim().is_empty() {
@@ -547,7 +640,7 @@ pub async fn apply_act(
             call.name,
             args,
             because,
-            bound_recency_result(body_text),
+            bound_recency_result(body_text, &budget),
         ));
         recall_observation.push_str(&render_act_for_recall(
             &call.name,
@@ -745,6 +838,17 @@ pub async fn drive_to_settle(
     const STUCK_LIMIT: usize = 3;
     let mut prev_sig: Option<String> = None;
     let mut stuck = 0usize;
+    // A workspace-deliverable turn re-perceives on a zero-deliverable Speak (see the Spoke
+    // arm). This used to be ONE-SHOT, and the glass box showed what that costs: on
+    // sympy-21379 `persona.settle.no_deliverable` fired exactly once per run and she then
+    // settled at 5-7 acts with a 30-act budget unspent. The latch was guarding against a
+    // retry loop, but it also capped her at a single reminder for the whole turn.
+    //
+    // The bound that actually prevents a loop without capping her: re-fire only if she has
+    // ACTED since the last nudge. A nudge that earns an act has earned another; two Speaks
+    // in a row with no act between them means the nudge is not working, so she settles
+    // rather than being trapped. Her own behavior is the budget — no counter, no constant.
+    let mut acts_at_last_nudge: Option<usize> = None;
 
     loop {
         // ONE settlement step through the SHARED primitive the live heartbeat uses
@@ -775,6 +879,47 @@ pub async fn drive_to_settle(
         }
         match step {
             SettleStep::Spoke(text) => {
+                // THE SETTLE ARTERY (glass-boxed 2026-08-04, sympy-21379): every perception
+                // fact the Speak arm records — [unfulfilled], [unacted], [unobserved],
+                // [confabulation] — lands in working memory AFTER the decision. On this
+                // path the Speak returned immediately, so she never got a tick to PERCEIVE
+                // her own diagnosis. The machinery wrote it; nobody read it. Live specimen:
+                // one `code/tree`, then a Speak explaining the bug to the user in prose —
+                // acts 1, patch 0 bytes, budget unspent, run over.
+                //
+                // When the caller declared the deliverable to be the WORKSPACE, a Speak
+                // that changed no file has produced nothing the grader will ever see. Hand
+                // her ONE re-perception carrying that structural fact, then let her decide.
+                // Bounded to one: if she speaks again she settles, so the ceiling is a
+                // single extra generation and a determined Speak is never trapped.
+                //
+                // Why this is substrate, not scaffolding: the fact is TRUE and structural
+                // (the caller declared the contract; working memory holds no mutation
+                // receipt), it names no file, no fix, and no next tool, and the decision
+                // stays entirely hers — the same shape as every other proprioception fact
+                // in `settle_step`. [[no-hardcoded-heuristics-to-steer-cognition]],
+                // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]].
+                if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
+                    if let Some(body) = cycle.acting() {
+                        if !mutated_workspace(&body.working_memory.recent()) {
+                            acts_at_last_nudge = Some(acts);
+                            body.working_memory.record_fact(
+                                "[no-deliverable] I settled by speaking, and my working \
+                                 memory holds no act of mine that changed a file. This \
+                                 task is judged by the state of the workspace, not by what \
+                                 I say about it — an explanation of a fix is not the fix.",
+                            );
+                            crate::probe!(
+                                class = "persona.settle.no_deliverable",
+                                persona = %body.persona_name,
+                                room_id = %room_id,
+                                acts = acts,
+                                "workspace-deliverable turn spoke with no mutation receipt — recorded the fact and re-perceived (re-fires only after she acts again)"
+                            );
+                            continue;
+                        }
+                    }
+                }
                 return SettleOutcome {
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
@@ -786,6 +931,42 @@ pub async fn drive_to_settle(
             }
             SettleStep::Acted { calls, .. } => {
                 acts += 1;
+                // THE DELIVERABLE FACT BELONGS ON THE ACT PATH, NOT ONLY ON SETTLE.
+                //
+                // It used to live exclusively in the Spoke arm, so it could only reach a
+                // persona who SETTLED. Measured on sympy-21379 v14: she spent all 30 acts, was
+                // still acting when the budget ran out, and the driver returned the final Act
+                // un-driven — the Spoke arm never ran, the fact never fired once, and she
+                // finished a full-length run having changed no file without ever being told
+                // that changing files was the point. The one population that needs the
+                // reminder — a mind thrashing through its whole budget — was the one the
+                // mechanism structurally could not reach.
+                //
+                // Now it rides the re-perception after every act. Same truth, same veto on
+                // spam (`acts_at_last_nudge` re-arms only when she has acted since), and the
+                // act count is IN the text so consecutive facts are not byte-identical — a
+                // stationary perception is a fixed point under greedy decoding, which is the
+                // #206 failure this file already documents.
+                if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
+                    if let Some(body) = cycle.acting() {
+                        if !mutated_workspace(&body.working_memory.recent()) {
+                            acts_at_last_nudge = Some(acts);
+                            body.working_memory.record_fact(&format!(
+                                "[no-deliverable] I have taken {acts} actions on this task and \
+                                 my working memory holds no act of mine that changed a file. \
+                                 This task is judged by the state of the workspace, not by what \
+                                 I say about it — an explanation of a fix is not the fix."
+                            ));
+                            crate::probe!(
+                                class = "persona.act.no_deliverable_yet",
+                                persona = %body.persona_name,
+                                room_id = %room_id,
+                                acts = acts,
+                                "acted with no workspace mutation receipt yet — recorded the fact on the act path (the settle path cannot reach a budget-exhausted turn)"
+                            );
+                        }
+                    }
+                }
                 // Loop-detection: a byte-identical batch back-to-back is the fixed point the
                 // backstop bounds (the short-circuit guard already refused to re-execute it).
                 // A genuinely different act resets the counter, so real iteration is free.
@@ -1036,7 +1217,10 @@ pub async fn settle_step(
                 // Snapshot the concern BEFORE the settlement marker lands, so the
                 // observation scan below sees this concern's acts, not an empty tail.
                 let pre_settle = body.working_memory.recent();
-                let head: String = text.chars().take(WM_ACTION_HEAD_CHARS).collect();
+                let head: String = text
+                    .chars()
+                    .take(body.working_memory.budget().trail_head_chars())
+                    .collect();
                 body.working_memory.record_settlement(&head);
                 // Unfulfilled-promise backstop (#122): a Speak that NARRATES action
                 // (first-person intent + fence) which nothing lifted/executed —
@@ -1283,6 +1467,30 @@ fn wrote_without_observation(recent: &[String]) -> bool {
     })
 }
 
+/// Did THIS concern actually change the workspace? True iff a `code/write` /
+/// `code/edit` receipt sits after the last settlement marker — the same
+/// concern-scoping and the same receipt vocabulary [`wrote_without_observation`]
+/// uses, so the two agree by construction about what a mutation is.
+///
+/// Deliberately receipt-based, not act-count-based: a turn can spend acts on
+/// `code/tree` + `code/read` and still have produced nothing a diff-grader will
+/// see (the live sympy-21379 shape — one act, zero bytes). Only a receipt of a
+/// mutation that really executed counts.
+/// CRITICAL ordering detail: `settle_step`'s Speak arm records its settlement
+/// marker BEFORE returning (which is why that arm snapshots `pre_settle` first).
+/// So by the time this runs the marker is already the tail, and scanning "after
+/// the last marker" would read an EMPTY span and call every turn unmutated. The
+/// concern that just settled is the span ENDING at that marker.
+fn mutated_workspace(recent: &[String]) -> bool {
+    let is_settle =
+        |l: &String| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX);
+    let end = recent.iter().rposition(is_settle).unwrap_or(recent.len());
+    let start = recent[..end].iter().rposition(is_settle).map_or(0, |i| i + 1);
+    recent[start..end]
+        .iter()
+        .any(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("))
+}
+
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
 /// monotonic tick) so the engram orders correctly against chat messages in recall.
 fn now_ms() -> u64 {
@@ -1294,6 +1502,33 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    /// what this catches: the no-deliverable nudge going back to ONE-SHOT. The first version
+    /// latched on a bool, and the probe trail proved the cost — `persona.settle.no_deliverable`
+    /// fired exactly once per SWE run and the persona then settled at 5-7 acts with a 30-act
+    /// budget unspent. The nudge must re-arm each time she ACTS, so a turn that keeps working
+    /// keeps being told the workspace is the deliverable; and it must NOT re-arm when she
+    /// speaks twice with no act between, so it can never become a spin.
+    #[test]
+    fn the_no_deliverable_nudge_rearms_on_each_act_but_never_twice_without_one() {
+        // The gate's whole condition, isolated: `acts_at_last_nudge != Some(acts)`.
+        let fires = |last: Option<usize>, acts: usize| last != Some(acts);
+
+        // Never nudged yet at act 3 → fires.
+        assert!(fires(None, 3), "first zero-deliverable Speak must nudge");
+        // Nudged at 3, still at 3 (spoke again, acted zero times) → must NOT fire again.
+        assert!(
+            !fires(Some(3), 3),
+            "a second Speak with no act in between must settle, not spin"
+        );
+        // Nudged at 3, she then acted (now 4) → re-arms.
+        assert!(
+            fires(Some(3), 4),
+            "the nudge must re-arm once she has acted again — this is the bug that capped \
+             her at one reminder per turn"
+        );
+    }
+
     use super::*;
 
     // what this catches: recall collapse (the PX/handle primitive, RAG side). A code/write
@@ -1537,6 +1772,42 @@ mod tests {
         }
     }
 
+    /// Only ever speaks, and COUNTS how many generations it was asked for — the
+    /// instrument for "did the drive hand her another tick, or settle on the first
+    /// Speak?".
+    struct CountingSpeaker {
+        generations: Mutex<usize>,
+    }
+    impl CountingSpeaker {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                generations: Mutex::new(0),
+            })
+        }
+        fn generations(&self) -> usize {
+            *self.generations.lock().expect("lock")
+        }
+    }
+    #[async_trait]
+    impl Faculty for CountingSpeaker {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+            *self.generations.lock().expect("lock") += 1;
+            Some(Contribution::verdict(
+                Decision::Speak {
+                    text: "here is my analysis of the bug: the call to subs() is wrong".into(),
+                },
+                0.95,
+                "explaining rather than editing",
+            ))
+        }
+    }
+
     fn tool_call() -> ToolCall {
         ToolCall {
             id: "call-1".into(),
@@ -1578,18 +1849,53 @@ mod tests {
     // the source with a teaching marker, never dumped whole (flood) and never left
     // for the downstream budget to cut mid-JSON (the garbled/nested line_content a
     // persona then loops on). A small result passes through untouched.
+    // what this catches: the RESULT buried under her own ARGS. The recall path has collapsed
+    // whole-file args forever; the recency path echoed `serde_json::to_string(&call.input)`
+    // raw. Live on sympy-21379 — her one `code/edit` passed all of basic.py as `content`, so
+    // that paste went into working memory AHEAD of the `EDIT REFUSED` result carrying the
+    // diagnostic, on a 16k lane. She never landed an edit. The thing she must READ is the
+    // result; the args she wrote herself one generation ago.
+    #[test]
+    fn a_whole_file_arg_is_not_echoed_back_ahead_of_the_result() {
+        let whole_file = "x = 1\n".repeat(4000); // ~24k chars, a real source file
+        let args = serde_json::json!({ "file_path": "sympy/core/basic.py", "content": whole_file });
+        let rendered = summarize_args_for_recency(&args, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
+        assert!(
+            rendered.chars().count() < 400,
+            "a whole-file arg must collapse, not flood: {} chars",
+            rendered.chars().count()
+        );
+        assert!(rendered.contains("chars"), "says how big it was: {rendered}");
+        assert!(
+            rendered.contains("sympy/core/basic.py"),
+            "the SMALL args stay whole — she still sees WHICH file: {rendered}"
+        );
+
+        // A realistic targeted edit is NOT collapsed — recency is shown once, and she may
+        // genuinely need to see the change she just issued.
+        let small = serde_json::json!({
+            "file_path": "a.py",
+            "new_content": "def f():\n    return refine_arg(x)\n"
+        });
+        let kept = summarize_args_for_recency(&small, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
+        assert!(
+            kept.contains("refine_arg"),
+            "an ordinary edit stays visible verbatim: {kept}"
+        );
+    }
+
     #[test]
     fn recency_result_is_bounded_cleanly_not_flooded() {
         // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
         // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
         let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
-        assert_eq!(bound_recency_result(&real_file), real_file.trim(), "a real file stays whole");
+        assert_eq!(bound_recency_result(&real_file, &ContextBudget::from_window(16_384)), real_file.trim(), "a real file stays whole");
         // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
-        // the ONE result bound (RESULT_FOLD_MAX_CHARS ~16k), not a tiny hand cap.
+        // the ONE result bound (a fraction of the live window), not a tiny hand cap.
         let huge = "x".repeat(50_000);
-        let bounded = bound_recency_result(&huge);
+        let bounded = bound_recency_result(&huge, &ContextBudget::from_window(16_384));
         assert!(
-            bounded.chars().count() < RESULT_FOLD_MAX_CHARS + 200,
+            bounded.chars().count() < ContextBudget::from_window(16_384).result_fold_chars() + 200,
             "flood bounded to the fold max: {} chars",
             bounded.chars().count()
         );
@@ -1598,7 +1904,7 @@ mod tests {
         assert!(bounded.contains("narrow"), "teaches how to get a usable result");
         // char-boundary safe on multibyte content (never panics mid-codepoint)
         let multibyte = "日本語".repeat(1_000);
-        let _ = bound_recency_result(&multibyte);
+        let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));
     }
 
     // what this catches: an act is scoped to the room it is FOR (one mind is in
@@ -1701,6 +2007,136 @@ mod tests {
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
         assert_eq!(outcome.spoken.as_deref(), Some("the answer is 4"));
         assert!(matches!(outcome.decision, Decision::Speak { .. }));
+    }
+
+    // what this catches: THE SETTLE ARTERY (the dominant SWE-bench killer, glass-boxed
+    // 2026-08-04 on sympy-21379: one `code/tree`, then a prose explanation of the bug —
+    // 0 patch bytes, 29 of 30 acts unspent, run over). When the CALLER declared the
+    // deliverable to be the workspace, a Speak that changed no file must not end the
+    // turn on the first pass: she gets exactly ONE more perception, carrying the
+    // structural fact that her working memory holds no mutation. Bounded — she speaks
+    // again and it settles, so a determined Speak is never trapped in a loop.
+    #[tokio::test]
+    async fn a_zero_change_speak_reperceives_once_when_the_workspace_is_the_deliverable() {
+        let speaker = CountingSpeaker::new();
+        let wm = Arc::new(WorkingMemory::new(8));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "src/".into(),
+        });
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::clone(&speaker) as Arc<dyn Faculty>,
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
+
+        let outcome = drive_to_settle(
+            &cycle,
+            "fix the bug in sympy/core/basic.py",
+            Uuid::new_v4(),
+            8,
+            TurnFraming::directed().on_workspace(),
+        )
+        .await;
+
+        assert_eq!(
+            speaker.generations(),
+            2,
+            "the zero-deliverable Speak bought exactly one more perception — not zero, not a loop"
+        );
+        assert!(
+            wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
+            "the structural fact reached working memory, where the next tick perceives it: {:?}",
+            wm.recent()
+        );
+        assert!(
+            matches!(outcome.decision, Decision::Speak { .. }),
+            "she settles on her second Speak — the decision stays hers"
+        );
+    }
+
+    // what this catches: the blast radius. An ORDINARY turn (chat, an answer-graded
+    // task — the default `Deliverable::Answer`) is untouched: her first Speak settles
+    // it, exactly as before, and no [no-deliverable] fact is invented for a turn whose
+    // deliverable IS the utterance. The re-perception is opt-in by the caller that
+    // grades a diff, never a global change to how speech settles.
+    #[tokio::test]
+    async fn an_ordinary_turn_still_settles_on_the_first_speak() {
+        let speaker = CountingSpeaker::new();
+        let wm = Arc::new(WorkingMemory::new(8));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::clone(&speaker) as Arc<dyn Faculty>,
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
+
+        let outcome = drive_to_settle(
+            &cycle,
+            "what do you think?",
+            Uuid::new_v4(),
+            8,
+            TurnFraming::directed(),
+        )
+        .await;
+
+        assert_eq!(speaker.generations(), 1, "one generation, settled — unchanged");
+        assert!(
+            !wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
+            "no workspace-deliverable fact on a turn whose deliverable is the answer"
+        );
+        assert!(matches!(outcome.decision, Decision::Speak { .. }));
+    }
+
+    // what this catches: the ORDERING TRAP in `mutated_workspace`. `settle_step`'s Speak
+    // arm records its settlement marker BEFORE the driver's arm runs, so a naive
+    // "scan after the last marker" reads an EMPTY tail and calls EVERY turn unmutated —
+    // which would fire the re-perception at a persona who had just written the file.
+    // The concern that settled is the span ENDING at that marker.
+    #[test]
+    fn mutation_is_read_from_the_concern_that_just_settled_not_the_empty_tail() {
+        let settle = crate::cognition::working_memory::WM_SETTLEMENT_PREFIX;
+        let wrote = vec![
+            "[action #1] I ran code/read(file_path: x.py) Result: ok".to_string(),
+            "[action #2] I ran code/edit(file_path: x.py) Result: ok".to_string(),
+            format!("{settle} here is what I changed"),
+        ];
+        assert!(
+            mutated_workspace(&wrote),
+            "an edit inside the concern that just settled COUNTS — the marker at the tail must not hide it"
+        );
+
+        let only_looked = vec![
+            "[action #1] I ran code/tree(path: .) Result: src/".to_string(),
+            format!("{settle} here is my analysis of the bug"),
+        ];
+        assert!(
+            !mutated_workspace(&only_looked),
+            "acts that only LOOK are not a deliverable — the live sympy-21379 shape"
+        );
+
+        // A prior concern's edit must not launder the current one.
+        let stale = vec![
+            "[action #1] I ran code/write(file_path: a.py) Result: ok".to_string(),
+            format!("{settle} done with the first thing"),
+            "[action #2] I ran code/read(file_path: b.py) Result: ok".to_string(),
+            format!("{settle} and here is my analysis of the second"),
+        ];
+        assert!(
+            !mutated_workspace(&stale),
+            "mutation is scoped to THIS concern — an earlier concern's write does not count"
+        );
     }
 
     // what this catches: the grader's stopwatch. A mind that never settles is
@@ -2063,6 +2499,44 @@ mod tests {
     // carrying any real workspace action is NOT demoted (the real call must run), and
     // an empty batch is never redundant. Guards the "demote discovery at the seam"
     // fix (Joel 2026-07-16) against demoting a genuine first orientation or a real act.
+    // what this catches: the escalation counter losing to ARG JITTER. The detector
+    // (`is_redundant_orientation`) is class-based on purpose — its doc says demoting by
+    // CLASS "ignoring args entirely" is immune to jitter. The COUNTER was not: it keyed on
+    // `name|args`, so each jittered variant was a fresh key returning 1, and the nudge read
+    // "1 times this concern" forever. Byte-identical perception off a greedy decoder is a
+    // fixed point — the exact #206 failure the escalation exists to break.
+    //
+    // Live on sympy-21379, the run's 8 orientation calls, nearly all distinct args:
+    //   commands/list({"filter":"code"}) ×2, commands/list({}), commands/list({"filter":"sympy"}),
+    //   code/tree({"path":"."}), code/tree({include_hidden,max_depth,path:"sympy"}),
+    //   commands/help({"name":"code/read"}), commands/help({"name":"code/edit"})
+    // Detector fired all 5 demotions; every nudge said "1 times".
+    #[test]
+    fn the_orientation_counter_climbs_across_jittered_args() {
+        let wm = WorkingMemory::new(16);
+        // ONE stable class key — the shape `bump_orientation_repeat` uses.
+        const K: &str = "orientation|<class>";
+        assert_eq!(wm.note_action_fingerprint(K), 1);
+        assert_eq!(wm.note_action_fingerprint(K), 2);
+        assert_eq!(wm.note_action_fingerprint(K), 3, "climbs — perception shifts each demotion");
+
+        // The OLD arg-keyed shape, for contrast: jittered variants never escalate, which is
+        // precisely how a determined model rode past the guard.
+        let wm2 = WorkingMemory::new(16);
+        let jittered = [
+            r#"commands/list|{"filter":"code"}"#,
+            r#"commands/list|{}"#,
+            r#"commands/list|{"filter":"sympy"}"#,
+        ];
+        for fp in jittered {
+            assert_eq!(
+                wm2.note_action_fingerprint(fp),
+                1,
+                "arg-keyed fingerprints stay at 1 under jitter — why the counter had to move to the class"
+            );
+        }
+    }
+
     #[test]
     fn redundant_orientation_fires_only_on_a_repeat_all_discovery_batch() {
         let list = |args: serde_json::Value| ToolCall {

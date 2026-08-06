@@ -39,6 +39,7 @@ pub const VISION_SIDECAR_BASE_PORT: u16 = 58091;
 /// The sidecar's served window. Describe prompts are ONE image + a short
 /// instruction; 8k covers the multimodal tokenization of a full-detail frame
 /// with generous margin while keeping the KV cost trivial.
+// context-budget-exempt: the DESCRIBE sidecar's own served window, sized to its one fixed job (a single image + a short instruction) and budgeted against by SIDECAR_OVERHEAD_BYTES. Not a persona lane and not a bound on any model's cognition
 pub const SIDECAR_CTX: u32 = 8192;
 
 /// Host-RAM margin the sidecar demands beyond its weights: mmproj + KV at

@@ -185,6 +185,7 @@ pub fn ms_since_real_decode() -> Option<u64> {
 /// a spurious grow and re-triggers a relaunch every tick. Comfortably above one
 /// 256-pad; the daemon only sends a grow target when it is ≥ 2× the served window
 /// (its `starved` gate), so this margin never masks a real grow.
+// context-budget-exempt: a HYSTERESIS band: how far the served window may drift before a relaunch is worth it. Tolerance, never a cap — it doesn't limit the window, it stops us thrashing it
 const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
@@ -195,6 +196,7 @@ const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 /// tell that lane from a healthy one — so the probe now forces a prompt a healthy model
 /// MUST answer with many tokens and asserts it did. `5` sits comfortably above the
 /// ~2-token wedge and far below the ~20+ a healthy "count to 20" yields.
+// context-budget-exempt: how many tokens a post-spawn smoke decode must produce to prove the lane is alive — a liveness probe, not a budget
 const MIN_SMOKE_DECODE_TOKENS: u64 = 5;
 
 /// Everything the launcher needs to bring a model up, GROUPED so adding a new
@@ -972,6 +974,18 @@ pub trait LlamaServerControl: Send + Sync {
     fn owns_child(&self) -> bool {
         false
     }
+
+    /// The flag this control's stderr watcher raises when the running lane proves itself
+    /// WEDGED — a slot reporting arithmetically impossible progress (see
+    /// [`crate::inference::wedge`]). The serving daemon polls it on its tick and owns the
+    /// response; the watcher only reports, so lane lifecycle stays with exactly one owner.
+    ///
+    /// `None` for a control with nobody to report to: a fake, a remote control, or an
+    /// ephemeral eval lane that tears down its own process. Default `None` keeps that the
+    /// honest answer rather than a silently-never-raised flag.
+    fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
+        None
+    }
 }
 
 /// Does `text` contain a run of three consecutive ascending integers (`… 4 5 6 …`)?
@@ -1145,6 +1159,10 @@ pub struct LlamaServerProcess {
     /// it would reap the living persona's own server. This boolean is the seam
     /// that keeps the reclaim machinery bound to exactly one process.
     is_live_lane: bool,
+    /// Raised by this lane's stderr watcher when a slot reports impossible progress,
+    /// polled by the serving daemon. Live lane only — an ephemeral lane has no daemon
+    /// watching it and tears down its own process, so its watcher would report into a void.
+    wedge: Option<crate::inference::wedge::WedgeFlag>,
 }
 
 impl LlamaServerProcess {
@@ -1163,6 +1181,7 @@ impl LlamaServerProcess {
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
+            wedge: Some(crate::inference::wedge::WedgeFlag::new()),
         }
     }
 
@@ -1186,6 +1205,9 @@ impl LlamaServerProcess {
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
+            // No serving daemon watches an ephemeral lane, and its owner tears the process
+            // down when the eval ends — a wedge report would have no consumer.
+            wedge: None,
         }
     }
 
@@ -1646,7 +1668,9 @@ impl LlamaServerControl for LlamaServerProcess {
             .and_then(|t| t.as_u64())
         else {
             tracing::warn!(
-                "smoke decode: response carried no usage.completion_tokens — cannot                  confirm the compute path (treating as NOT proven, but this is a                  missing field, not a measured zero)"
+                "smoke decode: response carried no usage.completion_tokens — cannot \
+                 confirm the compute path (treating as NOT proven, but this is a \
+                 missing field, not a measured zero)"
             );
             return false;
         };
@@ -1668,15 +1692,24 @@ impl LlamaServerControl for LlamaServerProcess {
             .and_then(|c| c.as_str())
         else {
             tracing::warn!(
-                "smoke decode: response carried no choices[0].message.content — cannot                  confirm the model answered (NOT proven; a missing field, not an empty reply)"
+                "smoke decode: response carried no choices[0].message.content — cannot \n                 confirm the model answered (NOT proven; a missing field, not an empty reply)"
             );
             return false;
         };
+        // BOTH conditions survive this merge, deliberately. M5's side of the
+        // conflict kept only the token count; dropping `counts_upward(text)`
+        // would re-open the exact defect that poisoned this node all night —
+        // an embedding model bound to the persona port sails past a count-only
+        // gate while being structurally incapable of chat.
         out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(text)
     }
 
     fn owns_child(&self) -> bool {
         self.child.lock().unwrap().is_some()
+    }
+
+    fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
+        self.wedge.clone()
     }
 
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
@@ -1976,30 +2009,52 @@ impl LlamaServerControl for LlamaServerProcess {
         // opened, fall back to null and say so — an unreadable log must never block
         // serving (same posture as the pidfile below).
         // [[never-blind-feedback-driven-iteration]] [[self-test-via-command-feedback-surface-never-blind]]
-        let stderr_stdio = dirs::home_dir()
-            .map(|h| h.join(".continuum").join("logs"))
-            .and_then(|dir| {
-                std::fs::create_dir_all(&dir).ok()?;
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(dir.join(format!("llama-server-{}.log", port)))
-                    .ok()
-            })
-            .map(Stdio::from)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    probe_class = "serving.llama.stderr_unlogged",
-                    port = port,
-                    "could not open llama-server stderr log — falling back to null (#175)"
-                );
-                Stdio::null()
-            });
-        let child = cmd
+        // Capture the server's stderr (#175). llama.cpp prints its load banner AND the
+        // underlying ggml/Metal fault behind a `{"code":500}` reply here; `Stdio::null()`
+        // threw that root cause away.
+        //
+        // PIPED, not a raw file fd. Handing the child a file means the CHILD owns the write
+        // and nothing can bound it: on 2026-08-05 a wedged slot printed `progress = 1.10`
+        // at 1.2 GB/min for four hours and the log reached 172 GB, taking the machine to
+        // zero bytes free. `code::child_log` owns the file instead and rotates at a few MB.
+        // [[never-blind-feedback-driven-iteration]]
+        let log_path = dirs::home_dir().map(|h| {
+            h.join(".continuum")
+                .join("logs")
+                .join(format!("llama-server-{}.log", port))
+        });
+        if let Some(dir) = log_path.as_ref().and_then(|p| p.parent()) {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut child = cmd
             .stdout(Stdio::null())
-            .stderr(stderr_stdio)
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
+        // Hand stderr to the capped sink. If either the handle or the path is missing the
+        // child still serves — unlogged, and the pipe drains to close so it cannot block.
+        // The sink reads every line to keep the file capped, so it is also the cheapest
+        // place to notice the engine reporting an IMPOSSIBLE state. A slot printing
+        // `progress = 1.10` is wedged; the decode heartbeat can't see it (the OTHER slots
+        // still decode, so the lane reads healthy) — which is how one slot burned four
+        // hours on 2026-08-05. The watcher only RAISES; the serving daemon reaps.
+        let watch: Box<dyn super::child_log::LineWatch> = match self.wedge.clone() {
+            Some(flag) => Box::new(super::wedge::WedgeWatch::new(flag)),
+            None => Box::new(()),
+        };
+        match (child.stderr.take(), log_path) {
+            (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path, watch),
+            (Some(_), None) => tracing::warn!(
+                probe_class = "serving.llama.stderr_unlogged",
+                port = port,
+                "no home dir for the llama-server log — serving unlogged (#175)"
+            ),
+            (None, _) => tracing::warn!(
+                probe_class = "serving.llama.stderr_unlogged",
+                port = port,
+                "could not take llama-server stderr — serving unlogged (#175)"
+            ),
+        }
 
         // Record the child pid so a SIGKILLed core's successor can reclaim THIS
         // port instead of fleeing to a GPU-competing one. Live lane only — the
@@ -2152,6 +2207,26 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    /// what this catches: the health heartbeat going back to probe-always. `decode_smoke_ok`
+    /// is a REAL generation through the live slots, so on a saturated lane it cannot get one,
+    /// the miss counts as "no decode", and two misses relaunch a lane that is merely busy —
+    /// which is what killed SWE run v13 (`serving.health {ok:false} x2 -> relaunch`, then every
+    /// generate refused with `serving: <none>`). Real tokens are the honest liveness evidence;
+    /// this pins the accessor the heartbeat gates on.
+    #[test]
+    fn real_token_delivery_is_recorded_as_liveness_evidence() {
+        // Fresh process: nothing observed yet ⇒ None, so the caller falls through and probes
+        // (a boot with no traffic must still be verified — absence of evidence is not health).
+        // NB: process-global, so only assert the post-record contract if a prior test recorded.
+        note_real_decode();
+        let since = ms_since_real_decode().expect("a recorded decode must be visible");
+        assert!(
+            since < 5_000,
+            "a decode recorded just now must read as recent, got {since}ms"
+        );
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

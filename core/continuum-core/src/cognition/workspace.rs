@@ -407,6 +407,27 @@ impl Contribution {
     }
 }
 
+/// Is this text something somebody SAID, or something the system TOLD her?
+///
+/// Orthogonal to authorship on purpose. `is_self`/`author` answer "whose voice is this"
+/// (which drives assistant-vs-user role attribution); this answers "is this speech at all".
+/// They are different questions and conflating them cost a live defect: perception facts and
+/// raw-string test/eval stimuli were BOTH built with [`BurstTurn::opaque`], so "no known
+/// author" was the only signal available, and a guard keyed on it could not tell a system
+/// brick from a peer's message with the author stripped (caught 2026-08-06 by
+/// `deliberates_through_a_real_adapter`, which builds its stimulus with `Workspace::new`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TurnVoice {
+    /// Somebody spoke it — the persona, a peer, or an unattributed raw stimulus. It is
+    /// conversation, and reproducing it is a normal (if sometimes redundant) social act.
+    #[default]
+    Speech,
+    /// The SYSTEM told her — a perception fact, written in second person, addressed to her.
+    /// Never something she may say back into the room: see
+    /// [`crate::cognition::parroted_perception`].
+    Perception,
+}
+
 /// One attributed turn in the burst the persona reasons over — a single
 /// message in the conversation, with WHO said it preserved as structure rather
 /// than flattened into a `Name:`-prefixed line. This is the unit that lets the
@@ -432,6 +453,8 @@ pub struct BurstTurn {
     /// timestamp prefix in the rendered projection so a lived turn and a measured
     /// one render byte-identically.
     pub occurred_at_ms: Option<u64>,
+    /// Speech, or something the system told her. See [`TurnVoice`].
+    pub voice: TurnVoice,
 }
 
 impl BurstTurn {
@@ -447,6 +470,7 @@ impl BurstTurn {
             author: author.into(),
             content: content.into(),
             occurred_at_ms,
+            voice: TurnVoice::Speech,
         }
     }
 
@@ -462,6 +486,21 @@ impl BurstTurn {
             author: String::new(),
             content: content.into(),
             occurred_at_ms: None,
+            voice: TurnVoice::Speech,
+        }
+    }
+
+    /// A PERCEPTION FACT — the system's own words to her, not anybody's speech.
+    ///
+    /// Renders identically to an opaque turn (unattributed `user` text, byte-for-byte the
+    /// same prompt), so this changes nothing the model sees. What it changes is what the
+    /// SUBSTRATE knows: [`crate::cognition::parroted_perception`] can now tell "the system
+    /// told her this" from "someone said this", which is the difference between silencing a
+    /// parroted brick and silencing a citizen who agreed with a teammate.
+    pub fn perception(content: impl Into<String>) -> Self {
+        Self {
+            voice: TurnVoice::Perception,
+            ..Self::opaque(content)
         }
     }
 
@@ -583,6 +622,16 @@ pub struct TurnFraming {
     /// The never-stop heartbeat pursuing her own thread (no inbound message) —
     /// see [`Workspace::self_initiated`].
     pub self_initiated: bool,
+    /// This turn's DELIVERABLE is a change in the workspace, not an utterance —
+    /// declared by the caller (a SWE-style harness grades the diff; nobody reads
+    /// the speech). Structural exactly like the two above: it describes the turn's
+    /// contract, never a read of her output. `false` (the default) is every
+    /// ordinary turn, where speech IS the deliverable.
+    ///
+    /// The ONE thing it changes: [`super::act_observe::drive_to_settle`] gives a
+    /// zero-deliverable Speak one re-perception instead of settling on it. See
+    /// that seam for why.
+    pub workspace_deliverable: bool,
 }
 
 impl TurnFraming {
@@ -597,6 +646,7 @@ impl TurnFraming {
         Self {
             directed: true,
             self_initiated: false,
+            ..Self::default()
         }
     }
 
@@ -607,6 +657,7 @@ impl TurnFraming {
         Self {
             directed,
             self_initiated: false,
+            ..Self::default()
         }
     }
 
@@ -616,7 +667,17 @@ impl TurnFraming {
         Self {
             directed,
             self_initiated: true,
+            ..Self::default()
         }
+    }
+
+    /// Declare that this turn's deliverable is a WORKSPACE CHANGE, not an
+    /// utterance — the SWE/agentic-harness contract, where the grader reads the
+    /// diff and nobody reads the speech. Caller-declared and structural; see
+    /// [`Self::workspace_deliverable`].
+    pub fn on_workspace(mut self) -> Self {
+        self.workspace_deliverable = true;
+        self
     }
 }
 

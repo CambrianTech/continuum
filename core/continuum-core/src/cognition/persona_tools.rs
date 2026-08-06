@@ -44,10 +44,12 @@ use std::fmt::Write as _;
 /// one source of truth for "how do I call this?" [[command-infra-self-routing-schema-adapters]]
 pub const TOOL_HELP_NAME: &str = CommandsHelp::NAME;
 
-/// Soft cap on a tool's one-line catalog summary (chars). A catalog lists ~100
-/// tools; an unbounded description per line would re-create the dump. One clause is
-/// enough to pick; the full call format arrives via [`TOOL_HELP_NAME`].
-const SUMMARY_MAX_CHARS: usize = 96;
+// The per-tool catalog-summary bound is a fraction of her LIVE window
+// (`ContextBudget::catalog_summary_chars`), never a constant: a catalog lists ~100 tools, so
+// an unbounded line re-creates the dump — but a roomy window can afford a fuller clause per
+// tool, and that is real PX. The full call format still arrives via `TOOL_HELP_NAME`.
+// [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::context_budget::ContextBudget;
 
 /// The persona's tool surface: every command it is AUTHORIZED to run at `trust`,
 /// projected to a tool spec. **Offer == authorized, by construction** — a persona
@@ -150,7 +152,7 @@ pub fn authorized_tool_catalog(trust: TrustLevel) -> Vec<ToolCatalogEntry> {
 }
 
 /// A tool's one-line summary for the catalog: the first sentence / first line of
-/// its declared description, hard-capped at [`SUMMARY_MAX_CHARS`]. Falls back to the
+/// its declared description, bounded by the live window's catalog share. Falls back to the
 /// param-type handle when the command declares no description (same fallback as
 /// [`descriptor_to_tool_spec`], kept consistent).
 fn tool_summary(d: &CommandDescriptor) -> String {
@@ -165,10 +167,13 @@ fn tool_summary(d: &CommandDescriptor) -> String {
         }
     };
     let raw = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if raw.chars().count() <= SUMMARY_MAX_CHARS {
+    // `live_or_floor`, not `live`: the catalog is assembled BEFORE the prompt guard, so an
+    // unbounded summary here yields a menu that cannot fit rather than one trimmed later.
+    let cap = ContextBudget::live_or_floor().catalog_summary_chars();
+    if raw.chars().count() <= cap {
         raw
     } else {
-        let truncated: String = raw.chars().take(SUMMARY_MAX_CHARS - 1).collect();
+        let truncated: String = raw.chars().take(cap.saturating_sub(1)).collect();
         format!("{}…", truncated.trim_end())
     }
 }

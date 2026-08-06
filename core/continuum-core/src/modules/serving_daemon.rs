@@ -104,6 +104,7 @@ const HOST_CACHE_LEASE_BAND_DIVISOR: u64 = 8;
 /// Recency-window tokens carried on the published plan document. Inert while
 /// `pin_list` is empty (v1 publishes budget-only); matches the golden v1 wire
 /// fixture so the C++ consumer's parse sees the shape it was validated against.
+// context-budget-exempt: the EXPERT PAGER's recency window (thousands of tokens of routing history for the pin list), part of the published plan wire format the C++ consumer validates against — not the prompt
 const MOE_PLAN_WINDOW_K: u32 = 8;
 
 /// Resolves a base-model id (as named in a [`ServingPlan`]) back to its full
@@ -112,6 +113,21 @@ const MOE_PLAN_WINDOW_K: u32 = 8;
 /// registry. The resolved `Model` is carried straight onto the [`ServingTarget`]
 /// — resolve once, pass the struct, never re-fetch ([[pass-the-model-struct-no-param-hell]]).
 type ModelResolver = Arc<dyn Fn(&str) -> Option<Model> + Send + Sync>;
+
+/// How the heartbeat learns whether a REAL generation delivered tokens recently — the input
+/// to the "trust busy lanes, probe quiet ones" short-circuit in
+/// [`ServingDaemonModule::spawn_health_heartbeat_if_due`]. Milliseconds since the last real
+/// decode, or `None` for "no decode observed yet, go probe".
+///
+/// This is a seam and not a direct call to
+/// [`crate::inference::llama_server::ms_since_real_decode`] because that function reads a
+/// PROCESS-GLOBAL atomic. Under `cargo test` the whole crate shares one process, so an
+/// unrelated test that stamps the global (`llama_server`'s own `note_real_decode` coverage
+/// does exactly that) silently converts every later heartbeat test into a short-circuit —
+/// a red that a filtered local run can never reproduce, because the filter excludes the
+/// test doing the stamping. Owning the evidence source per-daemon makes each test's answer
+/// its own; production still reads the global, through the default below.
+type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 
 /// The verdict for force-serving one specific model on this host RIGHT NOW —
 /// what [`ServingDaemonModule::pin_fit_checker`] returns and `serving/pin` gates
@@ -194,6 +210,9 @@ pub struct ServingDaemonModule {
     /// carry onto the [`ServingTarget`]. Defaults to the global registry; tests
     /// override it ([`Self::set_model_resolver`]).
     model_resolver: ModelResolver,
+    /// Where the liveness heartbeat gets "how long since a real decode" from. Defaults to
+    /// the llama-server process-global; tests own it ([`Self::set_decode_age_source`]).
+    decode_age: DecodeAgeSource,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
     /// command surface mutates. The daemon plans off this snapshot, NOT the
     /// immutable seed registry, so a model acquired at runtime (`models/pull`
@@ -335,6 +354,7 @@ impl ServingDaemonModule {
             model_resolver: Arc::new(|id: &str| {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
+            decode_age: Arc::new(crate::inference::llama_server::ms_since_real_decode),
             catalog,
             suppressed,
             pinned,
@@ -394,6 +414,13 @@ impl ServingDaemonModule {
     #[cfg(test)]
     fn set_model_resolver(&mut self, resolver: ModelResolver) {
         self.model_resolver = resolver;
+    }
+
+    /// Test seam: own the heartbeat's real-decode evidence instead of inheriting whatever
+    /// the process-global happens to hold. See [`DecodeAgeSource`] for why this exists.
+    #[cfg(test)]
+    fn set_decode_age_source(&mut self, source: DecodeAgeSource) {
+        self.decode_age = source;
     }
 
     /// Emit the live snapshot on the bus. Routed by topic name (cheap match, no
@@ -1438,6 +1465,34 @@ impl ServingDaemonModule {
             self.health_fails.store(0, Ordering::Relaxed);
             return None;
         }
+        // DELIVERY BEATS PROBING. `decode_smoke_ok` is a real multi-token generation through
+        // the LIVE slots, so it competes for the same slots as actual work. A lane saturated by
+        // long prefills cannot hand it a slot, the miss reads as "no decode", and
+        // HEALTH_FAILS_TO_RELAUNCH misses relaunch a lane that was never wedged — just busy.
+        // Glass-boxed on the SWE bench (v13): health failed twice mid-run and the relaunch left
+        // every downstream generate refusing with `serving: <none>`, killing the run.
+        //
+        // If a real generation produced tokens within this probe interval, the compute path is
+        // PROVEN alive by work that already happened — a synthetic probe can add nothing and
+        // can only steal a slot from the thing proving it. Probe QUIET lanes; trust busy ones.
+        // The window is the probe cadence itself (no second constant to drift), and a fresh
+        // boot with no observed decode yet falls through and probes as before.
+        // [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
+        let probe_window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
+        if let Some(since) = (self.decode_age)() {
+            if since <= probe_window_ms {
+                self.health_fails.store(0, Ordering::Relaxed);
+                crate::probe!(
+                    class = "serving.health",
+                    ok = true,
+                    via = "real_decode",
+                    ms_since_decode = since,
+                    "lane proven alive by real token delivery — skipped the smoke probe rather \
+                     than contend for a slot with the work that proves it",
+                );
+                return None;
+            }
+        }
         // Never race the reconcile's own spawn/kill/swap, and never stack heartbeat probes.
         if self.reconciling.load(Ordering::Acquire) {
             return None;
@@ -1472,25 +1527,74 @@ impl ServingDaemonModule {
                  poisoned Metal backend); #175 self-heal",
             );
             if n >= HEALTH_FAILS_TO_RELAUNCH {
-                // Sustained no-decode = wedged, not transiently busy. Arm the force-probe
-                // (so the next reconcile re-proves decode instead of re-adopting the owned
-                // wedged child) AND publish not-ready (so the reconcile's no-op guard is
-                // skipped). Reset the streak so we don't re-trigger before the relaunch
-                // lands and republishes ready.
-                force_relaunch.store(true, Ordering::Release);
+                // Sustained no-decode = wedged, not transiently busy. Reset the streak so we
+                // don't re-trigger before the relaunch lands and republishes ready.
                 health_fails.store(0, Ordering::Relaxed);
-                let empty = ServingSnapshot::empty();
-                Self::emit_serving(bus.as_ref(), &empty);
-                let _ = serving_tx.send_replace(empty);
-                crate::probe!(
-                    class = "serving.health",
-                    action = "relaunch",
-                    "flipped serving snapshot not-ready after sustained decode failure — \
-                     reconcile will kill+respawn the wedged lane (#175 self-heal)",
+                Self::declare_lane_wedged(
+                    &force_relaunch,
+                    &serving_tx,
+                    bus.as_ref(),
+                    "sustained decode failure",
                 );
             }
             health_probing.store(false, Ordering::Release);
         }))
+    }
+
+    /// Declare the live lane WEDGED: arm the force-probe and publish not-ready.
+    ///
+    /// BOTH steps are load-bearing and neither works alone, which is why this is one
+    /// function instead of two lines copied per reporter:
+    /// - `force_relaunch` makes the next reconcile re-prove decode even on a child we OWN;
+    ///   without it the "trusted thereafter" short-circuit re-adopts the wedged lane forever.
+    /// - the empty snapshot makes the reconcile RUN at all; its no-op guard returns early on
+    ///   `ready && same model && same adapters` — *before* it ever consumes the force flag.
+    ///
+    /// Two independent reporters call this, because they answer different questions:
+    /// - the decode heartbeat: "can this lane produce a token?" (a poisoned Metal backend)
+    /// - the stderr wedge watcher: "is a slot reporting an impossible state?" (2026-08-05)
+    ///
+    /// The second exists because the first cannot see a single wedged SLOT: the other slots
+    /// still decode, and a lane that delivered any token inside the probe window is trusted
+    /// without probing at all. The 4.1-hour wedge was delivering 0.14 tok/s the whole time —
+    /// alive by every liveness measure, and making no progress by the only one that mattered.
+    fn declare_lane_wedged(
+        force_relaunch: &Arc<AtomicBool>,
+        serving_tx: &watch::Sender<ServingSnapshot>,
+        bus: Option<&Arc<MessageBus>>,
+        reason: &str,
+    ) {
+        force_relaunch.store(true, Ordering::Release);
+        let empty = ServingSnapshot::empty();
+        Self::emit_serving(bus, &empty);
+        let _ = serving_tx.send_replace(empty);
+        crate::probe!(
+            class = "serving.health",
+            action = "relaunch",
+            reason = reason,
+            "flipped serving snapshot not-ready — reconcile will kill+respawn the wedged \
+             lane (#175 self-heal)",
+        );
+    }
+
+    /// Consume any wedge the live lane's stderr watcher raised and escalate it.
+    ///
+    /// Polled on the daemon tick rather than pushed, because the lifecycle authority must
+    /// stay HERE: the watcher runs inside the log sink, and a log sink that could reap a
+    /// serving process would be a second owner of the lane's life.
+    fn take_reported_wedge(&self) {
+        let Some(flag) = self.server.wedge_flag() else {
+            return;
+        };
+        if !flag.take() {
+            return;
+        }
+        Self::declare_lane_wedged(
+            &self.force_relaunch,
+            &self.serving_tx,
+            self.bus.get(),
+            "a slot reported impossible progress (>1.0)",
+        );
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -2190,6 +2294,18 @@ impl ServiceModule for ServingDaemonModule {
                 "boot lane-registry sweep",
             );
         }
+        // Same reclaim, one level up: a detached benchmark run is a tokio task INSIDE the core,
+        // so a restart kills it with no child process to find and no error to report. Any run
+        // still marked `running` belonged to the core we just replaced — journal it as
+        // killed-by-restart so a poller sees a cause instead of waiting forever on a file that
+        // will never appear (#137's train-job shape, applied to benchmarks).
+        for run_id in crate::cognition::swe_bench::reap_orphaned_solve_runs() {
+            crate::probe!(
+                class = "benchmark.swe.orphan_reaped",
+                run_id = run_id.as_str(),
+                "benchmark run orphaned by a core restart — journaled as failed",
+            );
+        }
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
@@ -2204,6 +2320,10 @@ impl ServiceModule for ServingDaemonModule {
         // publishing to `plan_tx`) — serving no longer samples memory on its own tick. This
         // tick only RECONCILES: bring the running server in line with the authority's
         // published plan. Fast-to-decide; the slow relaunch spawns off the tick.
+        // BEFORE the reconcile, so a wedge reported since the last tick is already published
+        // not-ready when the reconcile reads the snapshot — otherwise the escalation waits a
+        // full tick behind the very guard it exists to defeat.
+        self.take_reported_wedge();
         let _ = self.reconcile_to_plan();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
@@ -2548,6 +2668,9 @@ mod tests {
         /// COMPUTE path (probe → false) independently of its control plane. Defaults true
         /// (a healthy lane decodes). See [`FakeServer::healthy`].
         smoke_ok: Arc<AtomicBool>,
+        /// The stderr watcher's report channel, as the real `LlamaServerProcess` exposes it.
+        /// A test raises this to stand in for a slot printing impossible progress.
+        wedge: crate::inference::wedge::WedgeFlag,
     }
 
     impl FakeServer {
@@ -2557,12 +2680,17 @@ mod tests {
                 serves,
                 ok,
                 smoke_ok: Arc::new(AtomicBool::new(true)),
+                wedge: Default::default(),
             }
         }
     }
 
     #[async_trait]
     impl LlamaServerControl for FakeServer {
+        fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
+            Some(self.wedge.clone())
+        }
+
         async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
             Err(LlamaServerError::Unreachable("test: nothing up".into()))
         }
@@ -2656,6 +2784,11 @@ mod tests {
         // Resolve any planned id to a fake Model so reconcile can build a
         // ServingTarget without a populated global registry.
         daemon.set_model_resolver(Arc::new(|id: &str| Some(fake_model(id))));
+        // NO real decode observed — the fresh-boot state every heartbeat test below assumes.
+        // Left to the default this reads a process-global that ANY other test in this binary
+        // can stamp (`llama_server`'s `note_real_decode` coverage does), which silently turns
+        // the trust short-circuit on and reds these tests by scheduling order alone.
+        daemon.set_decode_age_source(Arc::new(|| None));
         daemon
     }
 
@@ -3023,6 +3156,53 @@ mod tests {
         }
     }
 
+    // what this catches: THE WIRING. The 2026-08-05 outage was not a missing detector — the
+    // reap actuator already existed and was tested. What was missing was anything that CALLED
+    // it, and a detector that reports into a void is indistinguishable from no detector at
+    // all. This drives the whole chain the live system uses: the stderr watcher raises the
+    // flag → the daemon tick takes it → the lane is published NOT-ready.
+    //
+    // The not-ready assertion is the load-bearing half. Arming `force_relaunch` alone is
+    // silently useless: `reconcile_to_plan` returns early on `ready && same model && same
+    // adapters` BEFORE it ever reads the flag, so a wedged-but-"ready" lane would sit there
+    // exactly as it did for four hours. regression for the 172 GB log outage
+    #[tokio::test]
+    async fn a_reported_wedge_flips_the_lane_not_ready() {
+        let fake = Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true));
+        let daemon = daemon_with(fake.clone());
+        let _ = daemon.serving_tx.send_replace(ready_snapshot());
+
+        // Nothing reported yet: a healthy lane is left alone.
+        daemon.take_reported_wedge();
+        assert!(
+            daemon.serving_tx.borrow().ready,
+            "an unreported lane must never be reaped"
+        );
+
+        // The stderr watcher sees `progress = 1.10` four times and raises.
+        fake.wedge.raise();
+        daemon.take_reported_wedge();
+
+        assert!(
+            !daemon.serving_tx.borrow().ready,
+            "a reported wedge must publish NOT-ready, or the reconcile's no-op guard \
+             returns before it ever consumes the force-relaunch flag"
+        );
+        assert!(
+            daemon.force_relaunch.load(Ordering::Acquire),
+            "the reconcile must be told to re-prove decode on a child we own"
+        );
+
+        // The report is consumed exactly once — a second tick must not re-escalate a lane
+        // that is already being relaunched.
+        let _ = daemon.serving_tx.send_replace(ready_snapshot());
+        daemon.take_reported_wedge();
+        assert!(
+            daemon.serving_tx.borrow().ready,
+            "take clears the flag; one report is one escalation"
+        );
+    }
+
     // what this catches: #175 self-heal (detection + recovery). A lane the daemon believes
     // is `ready` but whose COMPUTE path is wedged — the decode heartbeat fails while the
     // control plane still 200s, the exact Metal-OOM-poison shape — is flipped NOT-ready
@@ -3037,6 +3217,7 @@ mod tests {
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
+            wedge: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -3076,6 +3257,7 @@ mod tests {
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
+            wedge: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -3117,6 +3299,7 @@ mod tests {
             serves,
             ok: true,
             smoke_ok: smoke.clone(),
+            wedge: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -3138,6 +3321,57 @@ mod tests {
             daemon.serving_tx.borrow().ready,
             "only one probe ran across the cadence window → hysteresis holds"
         );
+    }
+
+    // what this catches: DELIVERY BEATS PROBING — the trust short-circuit that was
+    // untestable until the decode-age evidence became a per-daemon seam. A lane that
+    // delivered real tokens inside the probe window is PROVEN alive by work that already
+    // happened, so the heartbeat must not spend a slot re-proving it; a lane whose last
+    // decode is older than the window has no live evidence and must probe. Regresses the
+    // measured SWE-bench kill (v13): a busy lane failed two synthetic probes purely by
+    // losing the slot race, the relaunch left every downstream generate refusing with
+    // `serving: <none>`, and the run died — the recovery being scored as a capability zero
+    // ([[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]).
+    #[tokio::test]
+    async fn a_lane_proven_alive_by_real_decode_is_not_probed() {
+        let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
+        let serves = Arc::new(AtomicUsize::new(0));
+
+        // Fresh decode INSIDE the window → trusted, no probe.
+        let mut busy = daemon_with(Arc::new(FakeServer {
+            serves: serves.clone(),
+            ok: true,
+            smoke_ok: Arc::new(AtomicBool::new(false)),
+            wedge: Default::default(),
+        }));
+        busy.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
+        let _ = busy.serving_tx.send_replace(ready_snapshot());
+        assert!(
+            busy.spawn_health_heartbeat_if_due().is_none(),
+            "tokens came out half a window ago — the compute path is already proven, so the \
+             heartbeat must not contend for a slot with the work proving it"
+        );
+        // And the trust RESETS the streak: evidence of life is evidence, not a skipped verdict.
+        assert_eq!(busy.health_fails.load(Ordering::Relaxed), 0);
+
+        // Stale decode OUTSIDE the window → no live evidence, probe as usual.
+        let mut quiet = daemon_with(Arc::new(FakeServer {
+            serves,
+            ok: true,
+            smoke_ok: Arc::new(AtomicBool::new(true)),
+            wedge: Default::default(),
+        }));
+        quiet.set_decode_age_source(Arc::new(move || Some(window_ms + 1)));
+        let _ = quiet.serving_tx.send_replace(ready_snapshot());
+        let probe = quiet.spawn_health_heartbeat_if_due();
+        assert!(
+            probe.is_some(),
+            "the last token predates the probe window — nothing proves this lane alive, so it \
+             must be probed rather than trusted"
+        );
+        if let Some(h) = probe {
+            h.await.unwrap();
+        }
     }
 
     // what this catches: a lane whose per-slot window froze at ≤ HALF the

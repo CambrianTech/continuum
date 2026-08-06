@@ -185,8 +185,16 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         TrackedDir::new("genome-models", home.join(".continuum/genome/models")),
         TrackedDir::new("citizens", home.join(".continuum/citizens")),
         TrackedDir::new("forge", home.join(".continuum/forge")),
+        // Benchmark working set: per-instance repo clones + per-instance venvs. Grows LINEARLY
+        // with instances graded — a full SWE-bench Lite sweep is 300 repos, and one sympy
+        // checkout is ~240 MB. Entirely re-creatable (git + uv), which is what makes it a
+        // cache class rather than data.
+        TrackedDir::new("benchmarks", home.join(".continuum/benchmarks")),
     ];
-    // Present only when its real location is KNOWN (see the warn above).
+    // Present only when its real location is KNOWN (see the warn above). Kept
+    // CONDITIONAL rather than defaulted: fabricating a path here is how a class
+    // gets "tracked" at a location nothing writes to, which reads as an empty
+    // cache forever.
     if let Some(root) = hf_root {
         dirs.push(TrackedDir::new("hf-hub", root));
     }

@@ -32,6 +32,7 @@ pub fn decision_from_response(text: &str) -> Decision {
     if trimmed.is_empty()
         || looks_like_silence_token(trimmed)
         || starts_with_silence_token(trimmed)
+        || ends_with_silence_token(trimmed)
         || is_narrated_pass(trimmed)
     {
         Decision::Pass
@@ -120,6 +121,49 @@ fn starts_with_silence_token(text: &str) -> bool {
     core.eq_ignore_ascii_case(SILENCE_TOKEN)
 }
 
+/// The TAIL form of the same leak. `starts_with_silence_token` has always honored
+/// `PASS — nothing to add here`: the reserved token means silence and the prose around it
+/// is leakage. Observed live 2026-08-06 (#264 cascade, two citizens): the leakage arrives on
+/// the OTHER side — a paragraph of filler ending `…please let me know! Otherwise, PASS.` She
+/// reached for the reserved vocabulary we taught her, put it where the sentence wanted it,
+/// and the parser did not honor it — so the announcement went to the room and re-woke every
+/// peer into announcing THEIR pass. That is the exact cascade #271 exists to end, arriving
+/// through a position the collocation list cannot cover
+/// ([[check-the-parser-before-blaming-the-model-key-spelling-has-now-cost-us-twice]]).
+///
+/// Deliberately NOT another phrase in `STRONG_CLOSURES`: this is the TOKEN, not an idiom, so
+/// it needs no length cap and no calibration — the file's own history says phrase/length
+/// tuning is an arms race that the next filler message wins.
+///
+/// The one discriminator is SPELLING, and it is case-SENSITIVE on purpose. `PASS` is the
+/// reserved form we taught; `…and otherwise pass.` in ordinary lowercase English is a person
+/// talking about passing a value or declining an option, and must stay Speak. Fence guard
+/// stands: fenced content is substance no matter what surrounds it.
+///
+/// KNOWN GAP, measured not guessed. A THIRD live variant the same day puts the token
+/// mid-sentence: `…please let me know! Otherwise, PASS for now as I don't have anything
+/// genuinely new to add.` This guard cannot see it (not the final word), and Tier 2 does not
+/// catch it either — every `WEAK_CLOSURES` entry requires the FIRST-PERSON form (`i'll pass
+/// for now`) and this message has no `I'll`. I asserted Tier 2 would cover it, wrote the test,
+/// and the test said otherwise; the assertion was wrong.
+///
+/// Left UNFIXED on purpose. The principled generalization is "reserved token in CLAUSE-INITIAL
+/// position anywhere" (which is what `starts_with_silence_token` already is, at offset 0) — a
+/// decidable rule rather than another phrase. But it is a real widening of when a citizen is
+/// silenced, and one observation is not enough to justify it at the same moment the file's own
+/// history warns that per-variant tuning is the arms race. Wants a second sighting or Joel's
+/// call, not extrapolation from n=1.
+fn ends_with_silence_token(text: &str) -> bool {
+    if text.contains("```") {
+        return false;
+    }
+    let Some(last) = text.split_whitespace().next_back() else {
+        return false;
+    };
+    let core = last.trim_matches(|c: char| !c.is_alphanumeric());
+    core == SILENCE_TOKEN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +217,42 @@ mod tests {
             decision_from_response("<think>I won't answer this</think>"),
             Decision::Pass
         );
+    }
+
+    // what this catches (#271, tail form — observed live 2026-08-06 in the #264 cascade):
+    // she reaches for the RESERVED TOKEN and puts it where the sentence wants it, at the end.
+    // Two citizens, verbatim: "…please let me know! Otherwise, PASS." The leading form
+    // ("PASS — nothing to add") has always lifted; this position did not, so the announcement
+    // went to the room and re-woke every peer into announcing THEIR pass. The discriminator is
+    // SPELLING, not phrasing: uppercase `PASS` is the reserved form we taught her, while
+    // lowercase "pass" in ordinary English (passing a value, tests that pass) must stay Speak.
+    #[test]
+    fn a_trailing_reserved_pass_token_is_silence_but_the_english_word_is_not() {
+        for live in [
+            "To move forward productively, I'll focus on finding specific tasks or questions \
+             that need attention. If there are any particular areas where assistance is needed, \
+             please let me know! Otherwise, PASS.",
+            "I've been repeating myself without adding value. Otherwise, PASS",
+        ] {
+            assert_eq!(decision_from_response(live), Decision::Pass, "must silence: {live:?}");
+        }
+        for speak in [
+            // Lowercase: ordinary English, never the reserved token.
+            "If the flag is set we log it, and otherwise pass.",
+            "I ran the suite and every one of the 34 tests pass.",
+            // Fenced substance whose prose happens to END on the token: the fence guard holds,
+            // exactly as it does for the narrated forms. (A message containing a LONE `PASS`
+            // line is silence by an older rule — `looks_like_silence_token` scans lines — which
+            // this guard neither extends nor overrides.)
+            "Here's the fix:\n```rust\nlet x = 1;\n```\nThat should do it. PASS.",
+            // Uppercase but not the final word — this is prose ABOUT the token.
+            "The PASS token is what the silence contract keys on, so keep it reserved.",
+        ] {
+            assert!(
+                matches!(decision_from_response(speak), Decision::Speak { .. }),
+                "must stay speech: {speak:?}"
+            );
+        }
     }
 
     // what this catches (#271): a SPOKEN pass must be a silent Pass. The live
