@@ -28,8 +28,9 @@ Devstral-24B. Each × {RAW, OURS, opencode where a lane exists}. `matrix.py --li
 
 ## Phase 2 — add the outlier-B benchmark: SWE-bench Lite (repo-level, agentic)
 
-The gold standard — real GitHub bugs, official Docker grader. `run_ours.py` has the spine
-(`--solver gold` validated); the workspace-root seam is the known open bug. Run the SAME three
+The gold standard — real GitHub bugs, official Docker grader. `benchmark/swe-solve` +
+`benchmark/swe-grade` own this end-to-end (the Python spine that used to live in
+`benchmarks/swe/run_ours.py` is deleted — Rust commands, handles, events). Run the SAME three
 harnesses on the SAME instances (ours = persona hands on the clone; opencode = its agentic loop;
 Hermes = one of the models). This proves the harnesses generalize from function-level → repo-level.
 
