@@ -32,6 +32,7 @@
 //! [`validator_for`]. Nothing in `file_engine` changes.
 
 pub mod python;
+pub mod rust;
 
 use std::path::Path;
 
@@ -95,6 +96,7 @@ pub trait SyntaxValidator: Send + Sync {
 pub fn validator_for(path: &Path) -> Option<&'static dyn SyntaxValidator> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("py" | "pyi") => Some(&python::PythonValidator),
+        Some("rs") => Some(&rust::RustValidator),
         _ => None,
     }
 }
@@ -110,7 +112,7 @@ mod tests {
     fn validator_resolves_by_extension_and_stays_silent_otherwise() {
         assert!(validator_for(Path::new("a/b/c.py")).is_some());
         assert!(validator_for(Path::new("stubs.pyi")).is_some());
-        assert!(validator_for(Path::new("main.rs")).is_none());
+        assert!(validator_for(Path::new("main.rs")).is_some(), "this substrate is WRITTEN in Rust — it must gate its own language");
         assert!(validator_for(Path::new("README.md")).is_none());
         assert!(validator_for(Path::new("no_extension")).is_none());
     }

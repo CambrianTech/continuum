@@ -252,6 +252,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
 deadpool-postgres.workspace = true                        # Postgres connection pool
 tokio-postgres.workspace = true                           # Postgres async driver
 rustpython-parser = "0.4.0"
+syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 
 # jemalloc EVERYWHERE EXCEPT windows-msvc. jemalloc-sys builds its vendored
 # jemalloc via an autotools `configure` shell script that fails under
