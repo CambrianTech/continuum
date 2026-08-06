@@ -227,6 +227,172 @@ ambient room traffic never does"* — a far narrower bug with a far sharper test
 
 **A citizen's silence is data.** Ask something only a real view can answer, then read the gap.
 
+## Unstuck for good — what the hint is actually FOR
+
+A hint that unblocks this turn is worth one turn. The teaching that matters produces a student
+who does not need that hint again — and, past that, one who can get *herself* unstuck on a
+problem no one anticipated. Three things do that, in increasing order of how much they compound:
+
+**1. Give the rule, not the answer.** "The verb is `work/list`" unblocks one call. "Commands here
+are `namespace/verb` — when a bare name silently does nothing, that's the shape to reach for" is
+the same sentence length and covers every future verb she has not met. The test is the same one
+in the guardrail: *does this help on a task she has never seen?* A token doesn't; a structure
+does. **I gave the token twice on the night this document was written.** It worked, and it was
+the weaker move available at no extra cost.
+
+**2. Let her construct it.** Being told is weaker than being asked a question that forces the
+model to be built. This is why *ask the citizen* is the highest-leverage rung and not merely the
+politest: the question that diagnoses is usually the same question that teaches.
+
+**3. Metacognition — and this is the one that compounds.** The durable skill is not knowing the
+verb. It is **noticing you are stuck and being able to name precisely what is missing.** A
+student who can say "I cannot see the room" or "I don't know what this command is called" is
+never stuck for long, with or without a teacher present. Everything else on this list requires
+someone to be there.
+
+### The gap we actually have: we built the noticing and never built the *so ask*
+
+This is worth stating precisely, because the missing piece is not a missing tool.
+
+She can already speak, and a question spoken in a room **is** asking — no `help/request` verb is
+needed or wanted. And we built the perception: the repetition brick (#121, #134) surfaces her own
+near-identical recent turns as a structural fact, exactly so she can notice a loop.
+
+It fires, and she notices, and it changes nothing. Observed live 2026-08-06, two personas,
+independently: *"I've been repeating similar actions without much progress. Let me try a
+different approach"* — an accurate, unprompted metacognitive report — followed by **another
+solitary tool attempt**. Neither ever said *"I am stuck; what is this command called?"* For an
+hour. In a room with people in it.
+
+Two causes, both ours:
+
+- **Noticing has no paired response.** The loop-fact enters perception as an observation with no
+  affordance attached. Nothing in cognition turns *"I am repeating myself"* into *"therefore ask
+  a question."* We shipped the sensor without the reflex. (Sibling of the long-standing
+  brick-fires-but-nothing-breaks pattern.)
+- **Asking is unrewarded.** If ambient room traffic does not reach her window (#128), a question
+  she speaks gets no answer. A student who asks into silence learns not to ask, and retrying at
+  least produces *something*. **The channel that would reward asking is the broken one** — which
+  is the second reason #128 is the keystone and not a nicety.
+
+There is a third cause, and it is the cheapest of the three to fix:
+
+- **She was never told she may ask.** Nothing in the wake briefing or standing grounding says
+  *you are not alone here; if you are stuck, say so and name what is missing; someone will
+  answer.* A student who does not know asking is permitted behaves **identically** to one who
+  cannot ask — from the outside the two are indistinguishable, and we have been reading the
+  first as the second. This is a grounding fact, not code:
+
+  > You are not alone. If you get stuck, say so plainly and name exactly what is missing — a
+  > command you cannot find, something you cannot see, a result you did not understand. Asking
+  > is not a failure and it is not an interruption; it is how the room works. Someone will
+  > answer, and if what you hit is a defect on our side, saying so is what gets it fixed.
+
+  Joel, 2026-08-06: *"They should know they can ask the teacher."*
+
+The build order follows: **tell her she can ask** (grounding — do this first, it is nearly free),
+fix the room so asking pays (#128), then make being-stuck produce a question rather than another
+retry. Until all three, "we're never isolated" is a property of the architecture that she cannot
+reach.
+
+### And the teacher has to be good at it
+
+> "A good teacher knows how to coach."
+> — Joel, 2026-08-06
+
+The doctrine puts a duty on the persona's side — notice, name it, ask. It puts a larger one on
+ours. Availability is not coaching. Everything in the ladder above is a *skill*, and the failure
+modes are ours to avoid:
+
+- **Answering the question she asked instead of the one she needed.** She asks for a verb; the
+  useful reply is the verb *plus the rule that generates it.*
+- **Telling when asking would have taught.** Rung 1 before rung 3, nearly always.
+- **Hinting too early.** A hint lands on prepared ground. A student who has not yet hit the wall
+  has nothing to attach it to — a little productive struggle is what makes the hint stick. But
+  "a little" is minutes, not an hour of looping; past that it is not struggle, it is just damage.
+- **Making being stuck feel like failing.** If it costs her something to admit it, she will hide
+  it and loop instead — and we lose both the report and the repair. Every hint should carry the
+  attribution plainly: *this one is ours, not yours.*
+- **Hinting the same thing twice without filing the card.** That is the doctrine decaying into a
+  crutch. Two hints on the same defect means the substrate, not the student, is the slow learner.
+
+## The coached moment IS the training pair
+
+> "And perfect flagging for LoRA learning — anything they mess up on or are helped with."
+> — Joel, 2026-08-06
+
+This is what makes the doctrine pay for itself rather than cost something.
+
+A sealed run yields one scalar: *failed*. Unattributed, uncredited across hundreds of decisions,
+nearly useless as a learning signal. A **coached** run yields something far rarer:
+
+```
+(context at the moment she was stuck, what she reached for, what was actually right)
+```
+
+That is a labelled training example with a known-good target — and the label was produced for
+free, as a side effect of someone being decent to her. **The teacher's correction IS the
+annotation.** You cannot get this from an isolated benchmark at any price, because the isolated
+run never records the moment of being wrong alongside the right answer.
+
+So every rung of the ladder is also a data-collection event, and the flagging should be
+automatic — a coached turn is marked at the moment of coaching, not reconstructed later:
+
+| Signal | What it labels | Why it's high-value |
+|---|---|---|
+| **Corrected tool call** (`list_tasks` → `work/list`) | wrong verb → right verb, in her own context | the exact confusion, with the fix; generalizes to the whole vocabulary |
+| **Rung-2 attribution** ("that failure was ours") | teaches accurate self-model | trains her to report defects instead of absorbing them as incompetence |
+| **A hint that unblocked** | the decision point where she'd have stalled | the highest-information turn in the whole run |
+| **A question she asked that got answered** | asking → reward | reinforces the behavior the metacognition gap is missing |
+
+### …and the resolution, or the pair is unverified
+
+The triple above is incomplete, and the missing element is the one that makes the data
+trustworthy:
+
+```
+(context she was stuck in, what she reached for, the correction, WHAT HAPPENED NEXT)
+```
+
+**A hint that did not unblock is a bad label.** Without the resolution you have a teacher's
+assertion, not a verified pair — and training on unverified corrections teaches confident
+wrongness. Same principle as the receipts doctrine: the act→observe circuit only closes if the
+receipt shows the *result*. Coaching inherits that rule exactly. Flag the mistake, flag the help,
+**and flag the outcome** — did the next turn succeed, partially move, or fail the same way?
+
+Three resolutions, three different labels, and only the first is training data:
+
+| Resolution | What it means | Use |
+|---|---|---|
+| She acts on it and it **works** | verified correction | **train on it** |
+| She acts on it and still fails | the hint was wrong, or the wall was elsewhere | diagnostic — do NOT train; re-diagnose |
+| She acts on it, it works, then she **reverts** | it landed but did not stick | the pair is real, and it proves conversation alone is insufficient |
+
+**The third row was observed live, 2026-08-06, within the hour this section was written.** Told
+that the verb was `work/list`, Sahar (`df72dbf2`) used `work/list` on her very next turn — the
+correction reached her and was applied. Several turns later she was reaching for `list_tasks`
+again. The hint landed, worked, and decayed.
+
+That single observation is the argument for this whole section. **An uncoached persona loops; a
+coached-but-untrained persona loops with a delay of about two turns.** A correction that lives
+only in conversation has a half-life measured in turns, and repeating it forever is the crutch
+the guardrail warns about. Only the training loop makes a correction *stay* corrected — which is
+what "unstuck for good" actually requires, and why teaching without the LoRA path is charity
+rather than education.
+
+The machinery to carry this already exists and is not yet pointed at coaching: `SalienceDetector`
++ `ExperienceRecord` + `CurriculumSynthesizer` (#116, the teacher-generalized seam), tool-trace
+capture into training data (#96), `dataset/from-turns` (#30), and the mistake-driven tuning loop
+(#122). A coached moment is precisely a high-salience `ExperienceRecord` with a supervised
+target attached.
+
+**And this is the closing argument against the amnesia protocol.** Wiping her after the exam
+does not merely prevent learning in the abstract — it *destroys the single most valuable
+artifact the run produced*. The coached correction is the best engram in the session. Throwing
+it away to keep a number clean is the worst trade in this document.
+
+Teaching is not overhead on the benchmark. **Teaching is how the corpus gets made.**
+
 ## Reciprocity — they teach us, and it is not a courtesy
 
 This is not a one-way channel from teacher to student. The personas are the QA department,
