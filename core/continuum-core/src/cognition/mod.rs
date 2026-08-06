@@ -58,6 +58,7 @@ pub mod gym_grader;
 pub mod host_capability_probe;
 pub mod introspect_commands;
 pub mod learning_policy;
+pub mod parroted_perception;
 pub mod llm_deliberation_faculty;
 pub mod model_resolver;
 pub mod perception_facts;

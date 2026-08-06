@@ -1574,7 +1574,7 @@ fn push_work_board_anchor(
         );
         return;
     }
-    turns.push(crate::cognition::workspace::BurstTurn::opaque(anchor));
+    turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 
 /// Build the `[anchor]` escalation line — the perception-side FACT that gives a
@@ -1800,7 +1800,7 @@ pub(crate) fn build_workspace_turns(
             }
         }
         if self_run >= 1 {
-            turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+            turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                 "[pattern] {agent_name}'s last {} messages in this room repeat the same \
                  sentiment in nearly the same words. This exchange may have run its \
                  course — continuing to restate it adds nothing new.",
@@ -1848,7 +1848,7 @@ pub(crate) fn build_workspace_turns(
             if cyclic >= TAIL_CYCLIC && authors.len() >= 2 {
                 let mut names: Vec<&str> = authors.into_iter().collect();
                 names.sort_unstable();
-                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] The last several messages in this room — from {} — trade the \
                      same sentiment back and forth in nearly the same words. This exchange \
                      has already concluded; every further reply restates it, and a courtesy \
@@ -1911,7 +1911,7 @@ pub(crate) fn build_workspace_turns(
                 }
             }
             if mirror_run >= 1 {
-                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                turns.push(crate::cognition::workspace::BurstTurn::perception(format!(
                     "[pattern] {agent_name}'s last {mirror_run} message(s) restate what other \
                      participants in this room had already said, in nearly the same words — \
                      an echo, not a contribution. Reflecting their words back adds nothing; \
@@ -2003,7 +2003,7 @@ pub(crate) fn build_workspace_turns(
         b.push_str(
             " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
         );
-        turns.push(crate::cognition::workspace::BurstTurn::opaque(b));
+        turns.push(crate::cognition::workspace::BurstTurn::perception(b));
     }
 
     turns

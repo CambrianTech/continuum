@@ -25,6 +25,7 @@
 //! `LlamaCppAdapter` (a live local model). The faculty does not care which — the
 //! brain is unchanged when the backend swaps.
 
+use crate::cognition::parroted_perception;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -503,12 +504,49 @@ impl LlmDeliberationFaculty {
         .with_raw_generation(resp.text.clone())
     }
 
+    /// A draft that reproduces what the system just told her is not a contribution — it is
+    /// the prompt coming back out. Downgrade it to silence.
+    ///
+    /// Measured live 2026-08-06: the repetition brick fired on Anwen, and her next room
+    /// message WAS the brick, verbatim, second person intact. The mechanism built to break
+    /// the loop became the loop's next turn. See [`parroted_perception`] for why this is a
+    /// containment comparison against the burst's own opaque turns and emphatically NOT a
+    /// reserved-word ban — a citizen discussing her own cognition must stay speakable.
+    ///
+    /// Silence, not stripping: a turn whose content is a reflection of its own prompt
+    /// contributed nothing, and deleting the echoed span would only make it LOOK like it did.
+    /// The probe is the glass box — an unexplained silence is its own defect
+    /// ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]), so this always says which
+    /// fact was echoed.
+    fn silence_a_parroted_draft(&self, decision: Decision, ws: &Workspace) -> Decision {
+        let Decision::Speak { text } = &decision else {
+            return decision;
+        };
+        let facts = parroted_perception::perception_facts(&ws.turns);
+        let Some(echoed) = parroted_perception::parroted_fact(
+            text,
+            &facts,
+            parroted_perception::PARROT_CONTAINMENT_THRESHOLD,
+        ) else {
+            return decision;
+        };
+        crate::probe!(
+            class = "persona.speech.parroted_perception",
+            persona = %self.persona_name,
+            echoed_fact = %echoed.chars().take(120).collect::<String>(),
+            draft_len = text.len(),
+            "draft reproduced a perception fact she was handed — settling to silence instead \
+             of speaking the prompt back into the room (#158)"
+        );
+        Decision::Pass
+    }
+
     /// Turn the model's final text into a participation verdict. `salience` is
     /// the faculty's own confidence in its verdict — a placeholder for a model-
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
     /// THIS mind is, which the arbiter integrates.
-    fn verdict(&self, resp: &TextGenerationResponse) -> Contribution {
-        let decision = decision_from_response(&resp.text);
+    fn verdict(&self, resp: &TextGenerationResponse, ws: &Workspace) -> Contribution {
+        let decision = self.silence_a_parroted_draft(decision_from_response(&resp.text), ws);
         let (salience, reasoning) = match &decision {
             Decision::Pass => (0.5, format!("{} chose silence (PASS)", self.persona_name)),
             _ => (
@@ -1391,7 +1429,7 @@ impl Faculty for LlmDeliberationFaculty {
 
         // No action chosen → the prose IS the verdict (PASS token → silence, else
         // Speak). The organism settles here.
-        Some(self.verdict(&resp))
+        Some(self.verdict(&resp, ws))
     }
 }
 
