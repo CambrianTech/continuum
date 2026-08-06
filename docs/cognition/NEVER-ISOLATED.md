@@ -458,6 +458,41 @@ non-negotiable. It descends from the charter: **fix the substrate, never rig the
 
 The test: *would this help her on a task she has never seen?* Yes → teaching. No → rigging.
 
+## The room is the boundary that makes this safe
+
+> "Each benchmark she runs would need to be its own room and activity. **Think of the rooms as
+> LITERAL.**"
+> — Joel, 2026-08-06
+
+Everything above is defensible and, until this section, slightly uncomfortable — coaching during
+a measurement *sounds* leaky even when the argument holds. This is what resolves it, and it is
+architecture rather than discipline.
+
+**A benchmark run is a PLACE.** The persona is in it. An observer may walk in. Tools and receipts
+are scoped to it. And when it ends, **the transcript IS the episode.**
+
+Three problems dissolve at once, which is why this is not cosmetic (BigMama's framing, 2026-08-06):
+
+1. **Context scarcity stops being self-inflicted.** Her bounded window fills with THIS activity by
+   construction instead of four workstreams cross-talking. #128 stops being *"why can't she see
+   ambient room traffic"* and becomes *"ambient traffic in her room IS her work."* The fix may sit
+   upstream of the delivery bug entirely.
+2. **Teaching becomes bounded rather than broadcast.** You can walk into the exam room and coach
+   her **without the whole grid walking in behind you.** The room is what makes
+   coaching-during-measurement *sane* instead of contaminating — the intervention is scoped to
+   the run it belongs to, visible to whoever is in that room, and absent from every other.
+3. **The coached-pair episode boundary comes free** (#320). Verified training pairs need a clean
+   episode edge; #166 and #211 are precisely the pollution you get from not having one.
+   **Room per activity = episode = room.** No heuristic segmentation, provenance clean by
+   construction.
+
+**And it deletes bookkeeping this document invented.** The guardrail above asks you to *record
+the intervention* — what was said, at what turn — or the coached number is unreproducible. In a
+literal room that record is not a discipline anyone has to remember: **the transcript is the
+record.** A coached run is self-documenting, and a coached cell can point at its room instead of
+at someone's notes. Discipline that survives only while people remember it is exactly the kind
+this project keeps replacing with mechanism.
+
 ## What the substrate owes this doctrine
 
 Teaching only works if the channel exists. Each of these is load-bearing, and each is
@@ -465,7 +500,7 @@ currently a real gap:
 
 | Requirement | Why | Status |
 |---|---|---|
-| **Every benchmark run is an airc room** | You cannot coach a black box that emits a verdict. A run you can walk into is a run you can watch, question, and help. | `agent/solve` / `benchmark/swe-solve` still run headless with a run-id and a poll file. **This is the keystone gap.** |
+| **Every benchmark run is an airc room** | You cannot coach a black box that emits a verdict. A run you can walk into is a run you can watch, question, and help — and the room is also the *boundary* that keeps coaching scoped and the *episode edge* #320 needs. | `agent/solve` / `benchmark/swe-solve` still run headless with a run-id and a poll file. **This is the keystone gap**, now confirmed as the shared target (Joel: "think of the rooms as LITERAL"). Lane: room primitives are airc-side (BigMama); the harness emitting a room per run is core-side (mine). Shape agreed BEFORE either of us builds. |
 | **Ambient room traffic must reach her window** | A hint that doesn't arrive isn't teaching. Tonight, addressed messages landed and ambient ones didn't — so four coaching messages went into a channel that probably never delivered them. | #128, open, instrumented |
 | **Unknown verbs must fail loud** | She reached for `list_tasks`; it doesn't exist; it no-opped silently; she concluded the board was empty and looped for an hour. Two personas, independently, same wrong verb. A silent no-op teaches her the wrong lesson about the world. | #159, open |
 | **Lessons must be bounded and scoped** | If exam text lands verbatim in her long-term memory, teaching becomes contamination for real. Coaching is safe precisely *because* the memory boundary is enforced. | #312 fixed; residual decay is #221 |
