@@ -66,8 +66,20 @@ const TICK: Duration = Duration::from_secs(5);
 ///
 /// RELATIVE, not absolute: the same 2048-token shortfall is a third of a small
 /// lane and noise on a large one, so an absolute bar means something different at
-/// every window size. 15% is BigMama's number, tuned from the #2158 receipts (she
-/// owns this guard — it came out of the outage that wrote the original 2x rule).
+/// every window size.
+///
+/// MEASURED against 6,322 live `serving.plan` samples (probes.jsonl, 2026-08-06),
+/// after BigMama flagged that she had proposed 15% from the shape of the problem
+/// with no data behind it: consecutive-sample plan jitter runs p50 0%, p90 1%, with
+/// a fat tail (p99 22%, max 106%). 15% sits an order of magnitude above the p90
+/// noise floor while staying far under the 60% shortfall of the real incident.
+///
+/// Note which parameter is actually load-bearing, because it is NOT this one: at a
+/// 10%, 15% OR 20% bar the longest run of consecutive qualifying rises in the whole
+/// sample was 2. The jitter tail is a SPIKE, not a sustained climb, so
+/// [`REHOME_SUSTAINED_TICKS`] is what rejects it and this margin only has to clear
+/// the p90. Widen it only with evidence; loosening the tick count is the change that
+/// would actually let noise through.
 const REHOME_MIN_GAIN_PCT: u32 = 15;
 
 /// How many consecutive ticks the plan must exceed the lane by
@@ -76,9 +88,19 @@ const REHOME_MIN_GAIN_PCT: u32 = 15;
 /// Sustained-ness is the anti-thrash property the old single-sample `live * 2 <=
 /// plan` ratio was reaching for, stated directly — and it is deliberately SHORT.
 /// It is not what limits the relaunch RATE (that is [`REHOME_COOLDOWN_TICKS`],
-/// enforced independently below); it only has to outlast jitter. Three ticks (15s)
-/// does that: a dip resets the streak, so noise can never accumulate, while a real
-/// capacity change is honoured within seconds instead of being stranded forever.
+/// enforced independently below); it only has to outlast jitter.
+///
+/// THE load-bearing parameter, and measured as such: across 6,322 live
+/// `serving.plan` samples (probes.jsonl, 2026-08-06) the longest run of consecutive
+/// qualifying rises was **2**, at a 10%, 15% or 20% margin alike — zero runs of 3 in
+/// the entire sample. Real plan jitter spikes for a sample or two and falls back; it
+/// does not climb. So 3 is the first value that provably rejects every observed
+/// noise event, and 2 would not have. A dip RESETS the streak, so noise cannot
+/// accumulate, while a genuine capacity change is honoured in 15s instead of being
+/// stranded forever.
+///
+/// Lowering this to 2 re-admits the entire measured jitter tail. Do not, without
+/// re-running that measurement against fresher receipts.
 const REHOME_SUSTAINED_TICKS: u32 = 3;
 
 /// Ticks a re-home must wait before another may fire, enforced INDEPENDENTLY of
@@ -1342,7 +1364,11 @@ impl ServingDaemonModule {
                     streak,
                     needs_streak = REHOME_SUSTAINED_TICKS,
                     min_gain_pct = REHOME_MIN_GAIN_PCT,
-                    cooldown_ticks = REHOME_COOLDOWN_TICKS,
+                    // Always 0 here (a re-home cannot fire while cooling) — carried
+                    // anyway so BOTH decisions emit the IDENTICAL field set and one
+                    // query over the class gets a uniform schema instead of a shape
+                    // that changes with the outcome. Symmetry is the point.
+                    cooling,
                     "re-homing lane: the plan exceeded it by a real margin for a sustained run of ticks",
                 );
                 // Both guards re-armed at the moment we actually commit: the next
