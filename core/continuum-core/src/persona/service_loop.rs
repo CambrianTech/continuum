@@ -777,7 +777,10 @@ async fn serve_persona_loop_inner(
         let compose_started = std::time::Instant::now();
         let composed = {
             let cognition = ctx.cognition.lock().await;
-            cognition.compose_for_turn(&ctx.profile, now_ms).await
+            // Stamp the WHERE axis: this turn is happening INSIDE `turn_room`.
+            // Without it every room-scoped source abstains and she perceives no
+            // board, no roster, no doctrine, no wall (#331 / #127).
+            cognition.compose_for_turn(&ctx.profile, now_ms, Some(turn_room)).await
         };
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
         // Harvest the roster resolution this compose already fetched into the
@@ -2223,7 +2226,12 @@ async fn run_self_cycle(
     let now_ms = (opts.now_ms)();
     let composed = {
         let cognition = ctx.cognition.lock().await;
-        cognition.compose_for_turn(&ctx.profile, now_ms).await
+        // A self-cycle has no triggering message, so the WHERE axis is her HOME
+        // room — the durable membership her sources are bound to. Passing None
+        // here is what made idle ticks blind to the board (#331 / #127).
+        cognition
+            .compose_for_turn(&ctx.profile, now_ms, Some(ctx.identity.default_room))
+            .await
     };
     // Collapse loop-filler BEFORE anything reasons over the burst (task #16). Two idle
     // personas cycling stock courtesy templates each append another COPY per tick — the
@@ -2490,6 +2498,43 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a turn composed WITHOUT its room — the defect that made every
+    // room-scoped grounding source (room-kanban, room-roster, room-doctrine, room-board)
+    // abstain at once, so a citizen perceived no board, no roster, no doctrine and no wall
+    // and correctly reported "there are no open tasks available".
+    //
+    // MEASURED 2026-08-06 from the live probe file (`rag.room_gate.abstain`): 504 of 564
+    // abstains carried `turn_room = 00000000-0000-0000-0000-000000000000` — 89% of turns —
+    // while `bound_room` was CORRECT. Not a room mismatch: the turn simply carried no room.
+    //
+    // #127 built the gate, the `for_persona_in_room` constructor, the probe AND the doc
+    // comment, then closed as completed while THIS caller still passed no room. One source
+    // (`persona/airc_source.rs`) papered over it locally by deriving the room from transcript
+    // events and left a comment saying so, which is exactly why the other four starved
+    // unnoticed. A grep-level guard is the right shape because the regression is a CALLER
+    // forgetting, not a logic error any unit test would reach.
+    #[test]
+    fn every_live_compose_for_turn_stamps_the_room_never_none() {
+        let src = include_str!("service_loop.rs");
+        let calls: Vec<&str> = src
+            .match_indices("compose_for_turn(")
+            .map(|(i, _)| &src[i..(i + 160).min(src.len())])
+            .collect();
+        assert!(
+            !calls.is_empty(),
+            "no compose_for_turn call found — did the live turn path move? \
+             This guard must follow it."
+        );
+        for c in &calls {
+            assert!(
+                !c.contains(", None)"),
+                "a LIVE compose_for_turn passes no room: every room-scoped source will \
+                 abstain and she goes blind to board/roster/doctrine/wall at once (#331). \
+                 Pass Some(turn_room) or Some(ctx.identity.default_room).\nsite: {c}"
+            );
+        }
+    }
 
     // what this catches: THE six-turn loop, glass-boxed from Benchy's live prompt capture
     // on 2026-08-06. `room-kanban` did not deliver that turn (grounding sits last in the
