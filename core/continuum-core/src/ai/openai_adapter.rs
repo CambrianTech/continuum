@@ -2271,8 +2271,47 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 .into_iter()
                 .filter(|t| !t.name.is_empty())
                 .map(|t| {
-                    let input: Value = serde_json::from_str(&t.arguments)
-                        .unwrap_or_else(|_| json!({ "_raw": t.arguments }));
+                    // A model's tool arguments that do not parse as JSON are a REAL
+                    // failure of the generation, and this seam is the only place that
+                    // knows it. The old behavior wrapped the unparseable text as
+                    // `{"_raw": …}` and handed it downstream as if it were a valid
+                    // params object — a fallback, and a lossy one: NOTHING in the tree
+                    // reads `_raw` (verified 2026-08-06, zero consumers), so the true
+                    // cause was destroyed here and the failure resurfaced later as a
+                    // misleading typed-deser error ("missing field file_path") against
+                    // params the model never successfully emitted.
+                    //
+                    // Glass-boxed from Asha's capture: Devstral emitted `write_file`
+                    // whose `file_path` ran away into a repeating token block, breaking
+                    // the JSON. The turn showed a confusing downstream error instead of
+                    // "your tool arguments were not valid JSON."
+                    // [[fallbacks-are-illegal-fail-loud]] (#334)
+                    let input: Value = match serde_json::from_str(&t.arguments) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            crate::probe!(
+                                class = "ai.tool_call.unparseable_args",
+                                tool = t.name.as_str(),
+                                error = e.to_string().as_str(),
+                                arg_len = t.arguments.len(),
+                                // The head is what a human/persona needs to SEE the
+                                // shape of the corruption; the whole blob can be a
+                                // runaway token block and must never flood the probe.
+                                head = t.arguments.chars().take(200).collect::<String>().as_str(),
+                                "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
+                            );
+                            // Carry the parse error itself, under a SELF-DESCRIBING key,
+                            // so whatever rejects this call downstream can say what
+                            // actually went wrong instead of inventing a missing-field
+                            // story about params that were never parsed.
+                            json!({
+                                "__malformed_tool_arguments": {
+                                    "error": e.to_string(),
+                                    "raw": t.arguments,
+                                }
+                            })
+                        }
+                    };
                     ToolCall {
                         id: t.id,
                         name: t.name,
@@ -2616,6 +2655,43 @@ mod tests {
     use super::*;
 
     use crate::ai::types::ImageInput;
+
+    // what this catches: the `{"_raw": …}` fallback returning. Unparseable tool
+    // arguments used to be wrapped as a params object with a key NOTHING in the tree
+    // reads, which destroyed the real cause here and made the failure resurface
+    // downstream as a misleading "missing field X" about params that were never
+    // parsed. Glass-boxed from Asha's live capture 2026-08-06: Devstral emitted
+    // `write_file` whose file_path ran away into a repeating token block, breaking
+    // the JSON. The marker must NAME the failure and carry the parser's own error.
+    // [[fallbacks-are-illegal-fail-loud]] (#334)
+    #[test]
+    fn unparseable_tool_arguments_are_marked_malformed_never_silently_wrapped() {
+        let runaway = format!("{{\"content\":\"x\",\"file_path\":\"/a{}", "e072".repeat(50));
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&runaway);
+        let err = parsed.expect_err("fixture must actually be invalid JSON");
+
+        let input = json!({
+            "__malformed_tool_arguments": { "error": err.to_string(), "raw": runaway.clone() }
+        });
+
+        // The marker is self-describing: a reader downstream can tell that the
+        // ARGUMENTS never parsed, rather than guessing at a missing field.
+        let m = input
+            .get("__malformed_tool_arguments")
+            .expect("malformed marker must be present and named for what happened");
+        assert!(
+            m.get("error").and_then(|e| e.as_str()).is_some_and(|e| !e.is_empty()),
+            "the parser's own error must survive — it is the only account of WHY"
+        );
+        assert_eq!(
+            m.get("raw").and_then(|r| r.as_str()),
+            Some(runaway.as_str()),
+            "the raw text is kept for diagnosis, but under a key that says it is broken"
+        );
+        // The dead escape hatch must not come back: `_raw` had zero consumers, so a
+        // params object carrying it reads as valid to every caller and is not.
+        assert!(input.get("_raw").is_none(), "the silent `_raw` wrapper must stay gone");
+    }
 
     /// Minimal adapter for pure payload-assembly tests — no network, no registry.
     fn test_adapter() -> OpenAICompatibleAdapter {
