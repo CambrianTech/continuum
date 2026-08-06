@@ -1,0 +1,8 @@
+# Manifest Schema for Build Environment
+[module.build_env]
+# Define path arrays and variable tables here
+paths = ["/usr/local/bin", "C:\\Windows\\System32"]
+env_vars = {"PATH": "/usr/local/bin:/usr/bin", "WINDOWS_PATH": "C:\\Windows\\System32"}
+
+# Add probe for imperative vcvars discovery
+vcvars_probe = true
