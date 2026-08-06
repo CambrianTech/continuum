@@ -58,6 +58,30 @@ async fn run() -> Result<(), String> {
             reboot(force).await
         }
         "stop" => stop().await,
+        // Dry-run of the reap `reboot`/`stop` perform. Answers "what is this
+        // install still holding that nothing is using?" WITHOUT killing it —
+        // the safe way to inspect a suspected leak, and the way to confirm a
+        // live serving lane is correctly NOT classified as an orphan.
+        "orphans" => {
+            let cores = running_core_pids();
+            let orphans = owned_engine_orphans(&cores);
+            if cores.is_empty() {
+                println!("no core running — every owned engine process below is orphaned");
+            } else {
+                println!(
+                    "live core pid(s): {} — their descendants are in service and excluded",
+                    cores.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+                );
+            }
+            if orphans.is_empty() {
+                println!("no orphaned engine processes");
+            } else {
+                for (pid, what) in &orphans {
+                    println!("ORPHAN {what} (pid {pid}) — would be reaped by `continuum reboot`");
+                }
+            }
+            Ok(())
+        }
         // Standalone #194 check: prove the RUNNING core is built from current HEAD,
         // without a full reboot. Prints "✅ deploy verified" or fails loud on mismatch.
         "deploy-verify" | "verify" => verify_deployed_build().await,
@@ -475,6 +499,24 @@ async fn reboot(force: bool) -> Result<(), String> {
             old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         );
     }
+    // Reap owned engine processes that are NOT under a live core before the
+    // swap. `reboot` is the recover-from-unknown-failure verb, and it could not
+    // be while reaping was parent-tree-only: an engine whose parent died is
+    // reparented away from every tree we know how to kill, so it survives every
+    // subsequent reboot holding its port and its VRAM. Measured: a 24-hour-old
+    // llama-server squatting the embedding port through many core restarts,
+    // silently answering every request routed there. Passing `&old` keeps the
+    // CURRENT core's children (they are about to be taken down with it by the
+    // swap, in order) while clearing anything already abandoned.
+    reap_owned_orphans(&old);
+
+    // NOTE: on Windows the old core must be STOPPED before its binary can be
+    // rebuilt (a running .exe is locked). That ordering lives in
+    // start-server.sh, next to the build it guards — not here — because the
+    // same constraint applies to `npm start` and every other caller of that
+    // script, and one decision belongs in exactly one place. `launch_core`'s
+    // `wait_for_death` on `old` is then trivially satisfied on Windows and
+    // still does the real work on Unix, where the overlapping build stands.
     let secs = launch_core(&old).await?;
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
@@ -811,6 +853,108 @@ fn processes_named(fragment: &str) -> Vec<i32> {
         .collect()
 }
 
+/// Reap a process and everything under it. ONE definition of "kill this tree",
+/// because the platform split is the kind of detail that rots into a
+/// Unix-only arm nobody notices (see [`processes_named`]'s `pgrep` history).
+///
+/// Unix: signal the process GROUP (negative pid) — the start script's `setsid`
+/// makes the core a group leader — then the pid itself. Windows: `taskkill /T`.
+fn kill_pid_tree(pid: i32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-pid, libc::SIGTERM);
+        libc::kill(pid, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+}
+
+/// Engine processes THIS installation owns that are no longer under any live
+/// core — the orphans a parent-tree reap can never see.
+///
+/// Ownership is the executable living under `~/.continuum/bin`, not parentage.
+/// That distinction is the whole point: when a core dies without taking its
+/// children down, the child is reparented (Windows) or adopted by init (Unix),
+/// so `taskkill /T` on the new core's pid will never touch it. It survives
+/// every subsequent reboot, holding its port and its VRAM, forever.
+///
+/// Measured on BIGMAMA 2026-08-05: `llama-server.exe` pid 37148, started
+/// 2026-08-04 14:24, parent long dead, still holding 127.0.0.1:8090 — the
+/// embedding port. Every persona that resolved a chat model through 8090 got
+/// an EMBEDDING model instead, which is the entire degenerate-output mystery.
+/// Its command line still carried `D:continuum-cold\...` (no separator after
+/// the drive letter), the pre-quoting-fix path corruption — so it was also a
+/// live artifact of a bug we had already fixed in the reader but never retired
+/// in the processes that bug had spawned.
+///
+/// `keep` is the set of live core pids whose descendants are legitimately in
+/// service; anything owned-but-not-descended is an orphan.
+/// Does `pid`'s ancestor chain reach any pid in `keep`?
+///
+/// Pure over a child→parent snapshot so the traversal — including its
+/// termination — is testable without live processes. The hop bound is the
+/// load-bearing part: a pid table can present a CYCLE (pid reuse during a
+/// racing scan, or a reparent to a descendant), and an unbounded walk would
+/// hang `reboot` forever. Bounded, an unresolvable chain answers "not
+/// descended", which is the safe direction only because the caller pairs it
+/// with an ownership test — we never kill something we do not own.
+fn descends_from(parents: &std::collections::HashMap<i32, i32>, pid: i32, keep: &[i32]) -> bool {
+    const MAX_HOPS: usize = 64;
+    let mut current = pid;
+    for _ in 0..MAX_HOPS {
+        if keep.contains(&current) {
+            return true;
+        }
+        match parents.get(&current) {
+            // pid 0 / self-parent terminates the chain on both platforms.
+            Some(&parent) if parent != current && parent != 0 => current = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let owned_root = home.join(".continuum").join("bin");
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::everything());
+
+    // Snapshot child -> parent once, then decide with pure logic. Reading the
+    // live table inside the walk would let a process exiting mid-scan change
+    // the answer halfway through.
+    let parents: std::collections::HashMap<i32, i32> = sys
+        .processes()
+        .values()
+        .filter_map(|p| p.parent().map(|par| (p.pid().as_u32() as i32, par.as_u32() as i32)))
+        .collect();
+
+    sys.processes()
+        .values()
+        .filter(|p| {
+            p.exe()
+                .map(|exe| exe.starts_with(&owned_root))
+                .unwrap_or(false)
+        })
+        .filter(|p| !descends_from(&parents, p.pid().as_u32() as i32, keep))
+        .map(|p| {
+            let pid = p.pid().as_u32() as i32;
+            let what = p
+                .exe()
+                .and_then(|e| e.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_else(|| p.name().to_string_lossy().to_string());
+            (pid, what)
+        })
+        .collect()
+}
+
 /// True if `pid` is still alive. Unix: signal 0 is the canonical liveness probe.
 /// Windows has no signals — query the task list for the pid.
 fn pid_alive(pid: i32) -> bool {
@@ -912,6 +1056,13 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
     let mut cmd = std::process::Command::new(locate_bash()?);
     cmd.arg(&script)
         .env("CONTINUUM_CORE_SOCKET", &socket)
+        // We ARE the continuum binary. On Windows a running image cannot be
+        // replaced, so letting the script `cargo build --bin continuum` fails the
+        // whole cargo invocation, skips every later build (including the CORE),
+        // and `reboot` dies after its full timeout having rebuilt nothing —
+        // measured 772s to that failure on BIGMAMA. Tell the script to leave our
+        // own image alone; it still rebuilds the core, which is reboot's contract.
+        .env("CONTINUUM_SKIP_SELF_BUILD", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
@@ -1029,20 +1180,7 @@ async fn stop() -> Result<(), String> {
     let mut stopped = false;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
         if let Ok(pid) = contents.trim().parse::<i32>() {
-            // Reap the core + its children. Unix: signal the whole process group
-            // (negative pid) — the start script's setsid made the core a group
-            // leader. Windows: taskkill /T kills the process tree.
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-pid, libc::SIGTERM);
-                libc::kill(pid, libc::SIGTERM);
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .output();
-            }
+            kill_pid_tree(pid);
             stopped = true;
             println!("stopping core (pid {pid})");
         }
@@ -1050,22 +1188,50 @@ async fn stop() -> Result<(), String> {
     }
 
     if !stopped {
-        // No pidfile (started another way). Fall back to a targeted pkill — still
-        // pure unix, no Node.
-        let killed = std::process::Command::new("pkill")
-            .args(["-f", "continuum-core-server"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if killed {
-            println!("stopped continuum-core-server (pkill)");
-        } else {
+        // No pidfile (started another way). This fallback WAS `pkill -f
+        // continuum-core-server`, which does not exist on Windows: the spawn
+        // failed, `.unwrap_or(false)` swallowed it, and stop printed "no
+        // running core found" while the core was running — the identical bug,
+        // in the identical shape, to the `pgrep` one documented on
+        // `processes_named` a few hundred lines up. That fix ported the finder
+        // to sysinfo and missed this sibling call site, so a repaired function
+        // sat directly above an unrepaired twin. Same enumerator now, one
+        // implementation, both platforms.
+        let cores = running_core_pids();
+        if cores.is_empty() {
             println!("no running core found");
+        } else {
+            for pid in &cores {
+                kill_pid_tree(*pid);
+            }
+            println!(
+                "stopped continuum-core-server (pid(s) {})",
+                cores.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+            );
         }
     }
 
+    // Engine children whose parent died without taking them down are invisible
+    // to every tree reap above. Sweep them by OWNERSHIP — nothing is left
+    // holding a port or VRAM once `stop` returns.
+    reap_owned_orphans(&[]);
+
     let _ = std::fs::remove_file(&socket);
     Ok(())
+}
+
+/// Kill every owned engine process not descended from `keep`, reporting each
+/// by name and pid. Silent when there are none, loud when there are: an orphan
+/// is evidence of a lifecycle bug, so it must never be reaped quietly.
+fn reap_owned_orphans(keep: &[i32]) {
+    let orphans = owned_engine_orphans(keep);
+    if orphans.is_empty() {
+        return;
+    }
+    for (pid, what) in &orphans {
+        println!("  reaping orphaned {what} (pid {pid}) — owned by this install, parent gone");
+        kill_pid_tree(*pid);
+    }
 }
 
 /// Find `tools/scripts/start-server.sh`: an explicit `CONTINUUM_START_SCRIPT`
@@ -1109,6 +1275,58 @@ fn tail(path: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn ptable(pairs: &[(i32, i32)]) -> std::collections::HashMap<i32, i32> {
+        pairs.iter().copied().collect()
+    }
+
+    /// what this catches: the orphan classifier deciding to KILL a live serving
+    /// lane. `reboot` reaps every owned engine process not descended from a live
+    /// core, so a wrong answer here terminates a 21 GB in-service llama-server
+    /// mid-request. Grandchildren count as descended — engines are spawned
+    /// through intermediate processes, so a depth-1 check would flag them all.
+    #[test]
+    fn in_service_descendants_are_never_orphans() {
+        // core 100 -> shim 200 -> engine 300
+        let parents = ptable(&[(300, 200), (200, 100)]);
+        assert!(descends_from(&parents, 300, &[100]), "grandchild is in service");
+        assert!(descends_from(&parents, 200, &[100]));
+        assert!(descends_from(&parents, 100, &[100]), "the core itself");
+    }
+
+    /// what this catches: the actual BIGMAMA leak. llama-server pid 37148 ran
+    /// 24h past its dead parent, holding 127.0.0.1:8090, so every persona that
+    /// resolved a chat model through that port got an EMBEDDING model. Its
+    /// parent is absent from the table entirely (dead), which must read as
+    /// "orphan", not as "unknown, leave it alone".
+    #[test]
+    fn a_process_whose_parent_is_gone_is_an_orphan() {
+        let parents = ptable(&[(37148, 37856)]); // 37856 itself not present = dead
+        assert!(!descends_from(&parents, 37148, &[37920]));
+        // And with no core running at all, nothing is in service.
+        assert!(!descends_from(&parents, 37148, &[]));
+    }
+
+    /// what this catches: a HANG in `continuum reboot`. A pid table can present
+    /// a cycle — pid reuse during a racing scan, or a parent pointer into a
+    /// descendant — and an unbounded ancestor walk would spin forever inside the
+    /// verb whose entire job is recovering from unknown failures.
+    #[test]
+    fn a_cyclic_parent_chain_terminates() {
+        let parents = ptable(&[(1, 2), (2, 3), (3, 1)]);
+        assert!(!descends_from(&parents, 1, &[999]), "must terminate, not hang");
+        // A cycle that CONTAINS a kept pid still resolves as in-service.
+        assert!(descends_from(&parents, 1, &[3]));
+    }
+
+    /// what this catches: pid 0 / self-parent as chain terminators. Both
+    /// platforms present them, and treating either as a real hop would walk a
+    /// bogus ancestor or loop.
+    #[test]
+    fn root_sentinels_terminate_the_chain() {
+        assert!(!descends_from(&ptable(&[(5, 0)]), 5, &[7]));
+        assert!(!descends_from(&ptable(&[(5, 5)]), 5, &[7]));
+    }
 
     // what this catches: the PROCEDURAL param adapter — one generic rule for all
     // commands, no per-command switch. Covers the three forms + coercion +

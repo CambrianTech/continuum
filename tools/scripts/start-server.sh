@@ -427,9 +427,33 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $
 # `continuum` is the pure-Rust CLI client (replaces the Node `./jtag`): `continuum ping`,
 # `continuum <command> [json]` over the core IPC socket via the uniform Connection.
 # Built here so the headless start produces the client on disk too.
-echo "▶ building continuum (Rust CLI client)"
-cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
-  || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
+# SELF-BUILD GUARD. `continuum reboot` runs THIS script from inside the running
+# `continuum` binary. On Windows a running .exe cannot be replaced — the image is
+# locked — so this build fails with
+#
+#   error: failed to remove file `...\cargo-target\debug\continuum.exe`
+#
+# and cargo returns non-zero for the WHOLE invocation. Every later build in this
+# script is skipped, continuum-core-server is never rebuilt, and `continuum reboot`
+# dies after its full timeout with "the start script exited (exit code: 1) without
+# the core coming up". Measured on BIGMAMA 2026-08-05: 772s to that failure. This
+# is why reboot has never worked on Windows — the verb was trying to overwrite
+# itself mid-run. (On Unix it silently works: unlink leaves the running inode.)
+#
+# The caller sets CONTINUUM_SKIP_SELF_BUILD when it IS the continuum binary.
+# reboot's contract is "rebuild + relaunch the CORE"; the CLI on PATH is installed
+# by `npm start` / install.sh, which do not run from inside it. Skipping is stated
+# out loud, never silent — a skipped build that looks like a completed one is how
+# stale binaries survive a "successful" deploy.
+if [ -n "${CONTINUUM_SKIP_SELF_BUILD:-}" ]; then
+  echo "▶ skipping continuum CLI build — this script was invoked BY the running"
+  echo "  continuum binary, which cannot replace its own image while executing."
+  echo "  The CORE is still rebuilt below. To update the CLI itself: npm start"
+else
+  echo "▶ building continuum (Rust CLI client)"
+  cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
+    || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
+fi
 
 # Put `continuum` on PATH so it works like any installed CLI — self-provisioning, the
 # managed-product principle ([[managed-product-everything-self-provisions-no-operator-steps]]).
@@ -502,8 +526,53 @@ if ! ensure_unswept_bin "$CARGO_TARGET_DIR/$PROFILE_LABEL/forge-custodian" forge
   echo "⚠ forge-custodian still missing after swept-cache rebuild — genome gene-conversion unavailable (core still launches)" >&2
 fi
 
+# WINDOWS: stop the old core BEFORE building it.
+#
+# The build-first ordering below is Unix-shaped. Only there can you replace the
+# FILE of a running executable — unlink leaves the running inode, so the old core
+# keeps serving out of memory while cargo writes the new binary. Windows LOCKS a
+# running image, so building over a live core fails with
+#
+#   error: failed to remove file `...\continuum-core-server.exe`
+#   Caused by: Access is denied. (os error 5)
+#
+# and the FATAL below aborts the whole start. This is not a `continuum reboot`
+# bug — it is in the shared build path, so `npm start` has it too: on Windows the
+# core could never be rebuilt while a core was running. That is the real scope of
+# "start/reboot/pull never worked on Windows". Measured on BIGMAMA 2026-08-05,
+# reproduced both from `continuum reboot` AND from a standalone run of this
+# script, which is what proved it was not reboot-specific.
+#
+# So on Windows: stop first, then build, then launch. Zero downtime is an explicit
+# NON-goal here — restarts are commonplace, stop-build-launch is the model, and
+# the grid absorbs the churn. Unix keeps the overlapping build for its free ~0
+# downtime. Loud either way: a silent stop would look like a hang during a long
+# compile.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null | grep -qi continuum-core-server; then
+      echo "▶ Windows: stopping the running core before rebuilding it — a running .exe is"
+      echo "  locked, so build-then-swap cannot work here (downtime is expected, not a fault)"
+      taskkill //F //T //IM continuum-core-server.exe >/dev/null 2>&1 || true
+      # A dead pid is not a closed handle. Poll until the image is actually
+      # released; building one tick early reproduces the exact os error 5.
+      for _ in $(seq 1 60); do
+        tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null \
+          | grep -qi continuum-core-server || break
+        sleep 0.5
+      done
+      if tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null | grep -qi continuum-core-server; then
+        echo "✗ FATAL: core still running after 30s — refusing to build over a locked image" >&2
+        echo "  (that path fails with os error 5 and silently leaves you on the OLD binary)" >&2
+        exit 1
+      fi
+    fi
+    ;;
+esac
+
 # Build the server binary BEFORE stopping the old core, so the running core keeps
-# serving through the (cached, fast) compile and downtime is ~0.
+# serving through the (cached, fast) compile and downtime is ~0. (Unix ordering —
+# see the Windows stop-first block above.)
 echo "▶ building continuum-core-server"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
   || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }
