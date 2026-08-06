@@ -1938,30 +1938,43 @@ impl LlamaServerControl for LlamaServerProcess {
         // opened, fall back to null and say so — an unreadable log must never block
         // serving (same posture as the pidfile below).
         // [[never-blind-feedback-driven-iteration]] [[self-test-via-command-feedback-surface-never-blind]]
-        let stderr_stdio = dirs::home_dir()
-            .map(|h| h.join(".continuum").join("logs"))
-            .and_then(|dir| {
-                std::fs::create_dir_all(&dir).ok()?;
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(dir.join(format!("llama-server-{}.log", port)))
-                    .ok()
-            })
-            .map(Stdio::from)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    probe_class = "serving.llama.stderr_unlogged",
-                    port = port,
-                    "could not open llama-server stderr log — falling back to null (#175)"
-                );
-                Stdio::null()
-            });
-        let child = cmd
+        // Capture the server's stderr (#175). llama.cpp prints its load banner AND the
+        // underlying ggml/Metal fault behind a `{"code":500}` reply here; `Stdio::null()`
+        // threw that root cause away.
+        //
+        // PIPED, not a raw file fd. Handing the child a file means the CHILD owns the write
+        // and nothing can bound it: on 2026-08-05 a wedged slot printed `progress = 1.10`
+        // at 1.2 GB/min for four hours and the log reached 172 GB, taking the machine to
+        // zero bytes free. `code::child_log` owns the file instead and rotates at a few MB.
+        // [[never-blind-feedback-driven-iteration]]
+        let log_path = dirs::home_dir().map(|h| {
+            h.join(".continuum")
+                .join("logs")
+                .join(format!("llama-server-{}.log", port))
+        });
+        if let Some(dir) = log_path.as_ref().and_then(|p| p.parent()) {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut child = cmd
             .stdout(Stdio::null())
-            .stderr(stderr_stdio)
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
+        // Hand stderr to the capped sink. If either the handle or the path is missing the
+        // child still serves — unlogged, and the pipe drains to close so it cannot block.
+        match (child.stderr.take(), log_path) {
+            (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path),
+            (Some(_), None) => tracing::warn!(
+                probe_class = "serving.llama.stderr_unlogged",
+                port = port,
+                "no home dir for the llama-server log — serving unlogged (#175)"
+            ),
+            (None, _) => tracing::warn!(
+                probe_class = "serving.llama.stderr_unlogged",
+                port = port,
+                "could not take llama-server stderr — serving unlogged (#175)"
+            ),
+        }
 
         // Record the child pid so a SIGKILLed core's successor can reclaim THIS
         // port instead of fleeing to a GPU-competing one. Live lane only — the
