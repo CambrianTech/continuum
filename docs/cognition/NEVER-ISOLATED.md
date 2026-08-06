@@ -484,6 +484,48 @@ reasonable. The number was never about her intelligence. It was about a verb nam
 room, a write path that dropped the patch — all of them ours, all of them cheap to fix, and
 **none of them visible from outside the room.**
 
+## Prior art: this IS the Academy, arrived at from the other end
+
+None of the above was written with the Academy docs open. It was derived from live defects over
+one night — and it landed on a design that was specified here more than a year ago. That
+convergence is the strongest evidence that the design was right; what it lacked was a substrate
+that could carry it.
+
+- **[docs/personas/ACADEMY-DOJO-ARCHITECTURE.md](../personas/ACADEMY-DOJO-ARCHITECTURE.md)** —
+  Teacher Sentinel / Student Sentinel. The teacher researches a skill, designs a curriculum,
+  synthesizes training data, generates exams, grades, and **"generat[es] more data where the
+  student is weak."**
+- **[docs/architecture/ACADEMY-AS-CONTINUOUS-EVOLUTION.md](../architecture/ACADEMY-AS-CONTINUOUS-EVOLUTION.md)**
+  — "persona attends a classroom, earns a lesson, gains a skill," and the load-bearing claim that
+  the persona is the AI while the net underneath is pluggable.
+- Also: `ACADEMY_GENOMIC_DESIGN.md`, `docs/genome/ACADEMY-IMPLEMENTATION-PLAN.md`,
+  `docs/papers/ACADEMY-COLLABORATIVE-TRAINING.md`, `papers/academy-competitive-evolution`.
+
+**The one substitution, and it is the whole difference.** The Academy dojo *infers* weakness from
+exam grades and *synthesizes* remedial data. This document's loop *observes* the weakness live
+and produces the remedial pair as a by-product of someone helping. Those are complements, not
+rivals:
+
+| | Academy dojo | This doctrine |
+|---|---|---|
+| Where weakness comes from | inferred from exam scores | **observed** at the moment she's stuck |
+| Where remediation comes from | teacher LLM synthesizes it | a teammate's actual correction |
+| Volume | unlimited generation capacity | small |
+| Targeting | may miss what she'd really trip on | **exactly** what she tripped on |
+| Classroom | a dedicated dojo, two sentinels | **every room**, any teacher present |
+
+Synthetic curriculum scales; lived correction aims. The Academy needs both, and the second is
+what was missing — which is why the dojo was built as a closed pair of sentinels exchanging
+events, and why it stalled. It had no way to see a student get stuck in the wild.
+
+**Why it was premature then and is not now.** The dojo had to be a daemon because none of its
+preconditions existed: rooms every citizen actually lives in, durable per-persona memory, a
+working LoRA train→eval→page-in loop, a work board, and receipts. Those exist today. So the
+Academy stops being a subsystem and becomes a **property of the environment** — what you get
+when the room, the teacher, the memory, and the training loop are all present at once. That is
+why it keeps re-deriving itself: it is not a component anyone has to remember to build, it is
+the shape this substrate takes when the pieces are connected.
+
 ## Related
 
 - `docs/cognition/REALLY-GOOD-HINTS.md` — the *machine* analogue of this doctrine: the
