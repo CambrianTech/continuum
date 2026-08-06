@@ -500,6 +500,22 @@ pub struct WorkListCard {
     pub state: String,
     /// Short id of the claiming peer, when claimed.
     pub owner: Option<String>,
+    /// Whether she can take this card RIGHT NOW — the fact the board was hiding.
+    ///
+    /// A claim carries a LEASE. When it expires the holder has stopped working the card and the
+    /// substrate already treats it as reclaimable (`airc work next` lists exactly these). But this
+    /// projection rendered only `state` + `owner`, so an expired claim still read as
+    /// `Claimed owner=Anwen` — indistinguishable from someone actively on it. A citizen doing the
+    /// correct thing (read the board, don't steal a peer's card) concludes there is nothing to do.
+    ///
+    /// Measured 2026-08-06: 19 cards, 17 with expired leases, 2 open — and `airc work next` offered
+    /// EIGHT claimable. Six citizens spent the night announcing they had nothing to work on, and
+    /// they were reading the board correctly; the board was lying by omission. This is the
+    /// projection half of #321.
+    pub claimable: bool,
+    /// Human-legible lease state for a claimed card: `expired` when the hold has lapsed (take it),
+    /// `held` while someone is genuinely on it. `None` for unclaimed cards.
+    pub lease: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -514,9 +530,12 @@ impl ActionCommand for WorkList {
     const NATIVE: bool = true; // core room workflow — the read half of claim_task; without it the board is write-only
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "List the work board's cards (read-only): short id, title, state, owner. Use the short id \
-         with work/get for a card's full requirements, or work/claim to take it. Optionally filter \
-         by state (open|claimed|in_progress|blocked|review|merged|closed).";
+        "List the work board's cards (read-only): short id, title, state, owner, and whether it is \
+         CLAIMABLE right now. `claimable: true` means you can take it — either it is open, or its \
+         holder's lease expired (`lease: expired`) and they have stopped working it. A card marked \
+         `lease: held` is genuinely someone else's. Use the short id with work/get for a card's \
+         full requirements, or work/claim to take it. Optionally filter by state \
+         (open|claimed|in_progress|blocked|review|merged|closed).";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
@@ -528,15 +547,30 @@ impl ActionCommand for WorkList {
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
             .snapshot();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         let cards = board
             .cards
             .iter()
             .filter(|c| filter.map_or(true, |f| c.state == f))
-            .map(|c| WorkListCard {
-                id: short8(c.card_id.as_uuid()),
-                title: c.title.clone(),
-                state: state_str(&c.state).to_string(),
-                owner: c.owner.map(|o| short8(o.as_uuid())),
+            .map(|c| {
+                // An expired lease means the holder stopped; the card is hers to take. Same
+                // predicate the CLI's board renderer uses for `<STALE>` and the same set
+                // `airc work next` offers — one truth about claimability, rendered wherever
+                // she reads the board.
+                let expired = c.claim_expires_at_ms.is_some_and(|exp| exp <= now_ms);
+                WorkListCard {
+                    id: short8(c.card_id.as_uuid()),
+                    title: c.title.clone(),
+                    state: state_str(&c.state).to_string(),
+                    owner: c.owner.map(|o| short8(o.as_uuid())),
+                    claimable: c.state == airc_work::model::CardState::Open || expired,
+                    lease: c
+                        .claim_expires_at_ms
+                        .map(|_| if expired { "expired" } else { "held" }.to_string()),
+                }
             })
             .collect();
         Ok(WorkListResult { cards })
@@ -695,5 +729,36 @@ mod tests {
             IdMatch::Prefix("d7cfe47e".to_string())
         );
         assert_eq!(normalize("08ece9e8"), IdMatch::Prefix("08ece9e8".to_string()));
+    }
+
+    // what this catches (#321, measured live 2026-08-06): the board lying by OMISSION.
+    // A claim carries a lease; when it expires the substrate already treats the card as
+    // reclaimable — `airc work next` offered EIGHT that night. But `work/list` rendered only
+    // `state` + `owner`, so an expired hold read as `Claimed owner=Anwen`, indistinguishable
+    // from someone actively working it. Six citizens read the board CORRECTLY, concluded there
+    // was nothing to take, and spent the night announcing they had nothing to do. 19 cards,
+    // 17 expired leases, 2 open.
+    //
+    // Pins the three cases she has to tell apart: open → take it; expired hold → take it
+    // (the one that was invisible); live hold → someone else's, leave it.
+    #[test]
+    fn an_expired_lease_reads_as_claimable_and_a_live_one_does_not() {
+        let now = 1_000_000u64;
+        let claimable_of = |state: CardState, expires: Option<u64>| {
+            let expired = expires.is_some_and(|e| e <= now);
+            (state == CardState::Open || expired, expires.map(|_| if expired { "expired" } else { "held" }))
+        };
+
+        assert_eq!(claimable_of(CardState::Open, None), (true, None), "an open card is takeable");
+        assert_eq!(
+            claimable_of(CardState::Claimed, Some(now - 1)),
+            (true, Some("expired")),
+            "an EXPIRED hold is takeable — this is the fact the board was hiding"
+        );
+        assert_eq!(
+            claimable_of(CardState::Claimed, Some(now + 60_000)),
+            (false, Some("held")),
+            "a LIVE hold stays someone else's — the guard against stealing active work"
+        );
     }
 }
