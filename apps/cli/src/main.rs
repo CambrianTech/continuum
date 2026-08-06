@@ -229,3 +229,7 @@ fn default_airc_home() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("$HOME is unset; pass --home explicitly"))?;
     Ok(PathBuf::from(home).join(".airc"))
 }
+# Main entry point for the CLI application
+fn main() {
+    println!("Hello from the CLI app!");
+}

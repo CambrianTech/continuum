@@ -398,3 +398,32 @@ fn main() {
         println!("wrote {}", path.display());
     }
 }
+// Define the new [module.build_env] schema in the manifest
+// This schema should include path arrays, variable tables, and a probe for imperative vcvars discovery.
+
+#[derive(Debug, Deserialize)]
+struct ModuleBuildEnv {
+    path_arrays: Vec<String>,
+    variable_tables: HashMap<String, String>,
+    vcvars_probe: Option<String>,
+}
+
+impl ModuleBuildEnv {
+    fn new(path_arrays: Vec<String>, variable_tables: HashMap<String, String>, vcvars_probe: Option<String>) -> Self {
+        ModuleBuildEnv {
+            path_arrays,
+            variable_tables,
+            vcvars_probe,
+        }
+    }
+}
+
+fn main() {
+    // Example usage of the new schema
+    let mut variable_tables = HashMap::new();
+    variable_tables.insert("PATH", "/usr/local/bin");
+    variable_tables.insert("VCVARS_PROBE", "vcvarsall.bat");
+
+    let build_env = ModuleBuildEnv::new(vec!["/usr/local/bin"], variable_tables, Some("vcvarsall.bat"));
+    println!("{:#?}", build_env);
+}
