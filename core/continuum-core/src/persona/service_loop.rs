@@ -2782,13 +2782,30 @@ mod tests {
         /// A `room-kanban` delivery item exactly as `RoomBoardSource::render`
         /// ships it (content line + card_id/state/owner metadata) — the stub
         /// board read the anchor escalation is built from.
-        fn kanban_card(id8: &str, title: &str, state: &str, owner: Option<&str>) -> RagItem {
+        ///
+        /// Takes the ENUM, not a spelling. It used to take `&str` and every caller
+        /// passed `"Open"`, which silently stopped matching the moment the wire form
+        /// became serde's `"open"` — the anchor parsed `None`, filtered every card out,
+        /// and reported an empty board while the fixture plainly held one. Four tests
+        /// went red on a fixture bug, not a behaviour change. With the enum the wire
+        /// form is whatever serde emits and the fixture tracks it automatically —
+        /// the same reasoning the sibling `card` fixture above already documents.
+        fn kanban_card(
+            id8: &str,
+            title: &str,
+            state: airc_work::CardState,
+            owner: Option<&str>,
+        ) -> RagItem {
             let owner_txt = match owner {
                 Some(o) => format!("owner {}", &o[..8]),
                 None => "unclaimed".to_string(),
             };
+            // The rendered line is what a persona READS, so it keeps the HUMAN spelling
+            // (`InProgress`), not the wire form (`in_progress`). Only the metadata — which
+            // the anchor parses — carries the serde encoding.
+            let shown = format!("{state:?}");
             RagItem {
-                content: format!("card {id8} [{state}] \"{title}\" (P2, {owner_txt})"),
+                content: format!("card {id8} [{shown}] \"{title}\" (P2, {owner_txt})"),
                 tokens: 0,
                 metadata: json!({
                     "card_id": format!("{id8}-card"),
@@ -3098,7 +3115,7 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("94ad103f", "Fix the widget", "Open", None)],
+                    vec![kanban_card("94ad103f", "Fix the widget", airc_work::CardState::Open, None)],
                 ),
                 delivery("airc", greeting_spiral(me, peer, 3)),
             ];
@@ -3128,11 +3145,11 @@ mod tests {
                 delivery(
                     "room-kanban",
                     vec![
-                        kanban_card("94ad103f", "Fix the lane admission planner", "Open", None),
+                        kanban_card("94ad103f", "Fix the lane admission planner", airc_work::CardState::Open, None),
                         kanban_card(
                             "21ffe3c0",
                             "Wire the projector",
-                            "InProgress",
+                            airc_work::CardState::InProgress,
                             Some("0d3209a1-c675-41db-9867-86f1011f9520"),
                         ),
                     ],
@@ -3337,7 +3354,7 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", "Open", None)],
+                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
                 ),
                 delivery("airc", echo_hall(me, anwen, benchy)),
             ];
@@ -3417,7 +3434,7 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", "Open", None)],
+                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
                 ),
                 delivery("airc", items),
             ];
