@@ -329,7 +329,7 @@ pub struct CodeReadParams {
 #[async_trait]
 impl ActionCommand for CodeRead {
     const NAME: &'static str = "code/read";
-    const ALIASES: &'static [&'static str] = &["read_file"];
+    const ALIASES: &'static [&'static str] = &["read_file", "view", "cat", "open_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Read a file from the workspace, optionally a line range. Content comes back with \
@@ -368,7 +368,7 @@ pub struct CodeWriteParams {
 #[async_trait]
 impl ActionCommand for CodeWrite {
     const NAME: &'static str = "code/write";
-    const ALIASES: &'static [&'static str] = &["write_file"];
+    const ALIASES: &'static [&'static str] = &["write_file", "create_file", "save_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Create or overwrite a file with new content. Tracked in the change history (undoable).";
@@ -544,7 +544,7 @@ fn reject_placeholder_path(file_path: &str) -> Result<(), CommandError> {
 #[async_trait]
 impl ActionCommand for CodeEdit {
     const NAME: &'static str = "code/edit";
-    const ALIASES: &'static [&'static str] = &["edit_file"];
+    const ALIASES: &'static [&'static str] = &["edit_file", "str_replace", "apply_patch", "replace_in_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Edit an existing file: line-range replace, search/replace, insert-at, or append. Undoable.";
@@ -581,7 +581,7 @@ pub struct CodeListParams {
 #[async_trait]
 impl ActionCommand for CodeList {
     const NAME: &'static str = "code/list";
-    const ALIASES: &'static [&'static str] = &["list_files"];
+    const ALIASES: &'static [&'static str] = &["list_files", "list_dir", "glob", "ls"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "List a directory (flat, non-recursive): names, kinds, and sizes. Use code/tree for recursion.";
@@ -789,7 +789,7 @@ pub struct CodeTreeParams {
 #[async_trait]
 impl ActionCommand for CodeTree {
     const NAME: &'static str = "code/tree";
-    const ALIASES: &'static [&'static str] = &["file_tree"];
+    const ALIASES: &'static [&'static str] = &["file_tree", "directory_tree", "tree"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Print a recursive directory tree (bounded depth) — the project's structure at a glance.";
@@ -849,7 +849,7 @@ pub struct CodeSearchParams {
 #[async_trait]
 impl ActionCommand for CodeSearch {
     const NAME: &'static str = "code/search";
-    const ALIASES: &'static [&'static str] = &["grep"];
+    const ALIASES: &'static [&'static str] = &["grep", "search_files", "ripgrep", "rg", "search"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Search file contents for a pattern across the workspace (grep). Returns file:line matches.";
@@ -1058,7 +1058,7 @@ fn shell_response(s: &crate::code::shell_session::ExecutionState) -> ShellExecut
 #[async_trait]
 impl ActionCommand for CodeShell {
     const NAME: &'static str = "code/shell";
-    const ALIASES: &'static [&'static str] = &["bash"];
+    const ALIASES: &'static [&'static str] = &["bash", "shell", "run_terminal_cmd", "execute_command", "run_command"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     // Privileged → Trusted tier: arbitrary execution is for high-trust local
     // citizens (a local persona / a trusted node), never a Provisional remote peer.
