@@ -261,7 +261,8 @@ impl Faculty for RagSourceFaculty {
         );
 
         let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
-            .with_parts(units);
+            .with_parts(units)
+            .with_expand_command(self.source.expand_command());
         Some(if self.stable { c.session_stable() } else { c })
     }
 }
@@ -309,6 +310,11 @@ mod tests {
         fn source_id(&self) -> &'static str {
             self.id
         }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
+    }
         async fn deliver(
             &self,
             ctx: &RagContext,

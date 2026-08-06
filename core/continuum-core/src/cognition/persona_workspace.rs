@@ -1355,6 +1355,11 @@ mod tests {
         fn source_id(&self) -> &'static str {
             "classify-stub"
         }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
+    }
         async fn deliver(
             &self,
             _ctx: &crate::persona::rag_budget::RagContext,
@@ -1436,6 +1441,11 @@ mod tests {
             fn source_id(&self) -> &'static str {
                 "workspace-map"
             }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
+    }
             async fn deliver(
                 &self,
                 _ctx: &crate::persona::rag_budget::RagContext,
@@ -1542,6 +1552,11 @@ mod tests {
         fn source_id(&self) -> &'static str {
             "slow-grounding"
         }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
+    }
         async fn deliver(
             &self,
             _ctx: &crate::persona::rag_budget::RagContext,

@@ -98,6 +98,10 @@ impl RagSource for MediaPerceptionSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("perception/observe")
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

@@ -467,6 +467,11 @@ impl RagSource for ArcRagSource {
     fn source_id(&self) -> &'static str {
         self.0.source_id()
     }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // delegates to the inner source; expansion is that source's to declare.
+        None
+    }
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -689,6 +694,11 @@ mod tests {
         fn source_id(&self) -> &'static str {
             self.id
         }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
+    }
         async fn deliver(
             &self,
             _ctx: &RagContext,

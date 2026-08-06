@@ -807,12 +807,18 @@ impl LlmDeliberationFaculty {
             // partial board as the whole board and reports work that isn't there
             // — a quieter lie than the empty block this replaces.
             let omitted = c.parts.len() - kept_units.len();
-            let body = format!(
-                "{}\n…{omitted} more not shown (context budget) — the full list is \
-                 available from the matching command.",
-                kept_units.join("\n")
-            );
-            used += unit_tokens + est_tokens("…N more not shown (context budget) …");
+            // Name the EXACT verb, never "the matching command" — she cannot run a
+            // description, and a name she has to guess is a name she gets wrong
+            // ([[command-names-must-be-accurate]]). The source declares it
+            // (`RagSource::expand_command`, no default impl); a source with nothing
+            // more to fetch says only how much was omitted.
+            let how = match c.expand_command {
+                Some(cmd) => format!(" — run `{cmd}` to see all {}", c.parts.len()),
+                None => String::new(),
+            };
+            let notice = format!("…{omitted} more not shown (context budget){how}");
+            used += unit_tokens + est_tokens(&notice);
+            let body = format!("{}\n{notice}", kept_units.join("\n"));
             partial.push(format!(
                 "{}({}/{} units,tok={}→{})",
                 c.faculty.as_str(),
@@ -2041,6 +2047,53 @@ mod tests {
                 "board",
             )
             .with_parts(parts)
+        }
+
+        // what this catches: a truncation notice a citizen cannot act on. Telling
+        // her "the full list is available from the matching command" names nothing
+        // she can type — she cannot run a description, and a verb she has to guess
+        // is a verb she gets wrong ([[command-names-must-be-accurate]]). The source
+        // declares its own expansion verb; the notice must print it verbatim, with
+        // the true total so she knows the size of what she is asking for.
+        #[test]
+        fn a_truncated_block_names_the_exact_verb_that_yields_the_rest() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            let board = board_like(60).with_expand_command(Some("work/list"));
+            let total = board.parts.len();
+            ws.broadcast.push(board);
+
+            let block = faculty.render_assembled_context_within(&ws, 120);
+            assert!(
+                block.contains("run `work/list`"),
+                "the notice must name the verb verbatim, not describe it\n{block}"
+            );
+            assert!(
+                block.contains(&format!("to see all {total}")),
+                "…and say how many there are in total, so she knows what she is asking for\n{block}"
+            );
+        }
+
+        // what this catches: the other half — a source with genuinely nothing more
+        // to fetch must not invent a verb. A pointer to a command that does not
+        // expand anything is worse than no pointer: she spends a turn on it and
+        // learns nothing.
+        #[test]
+        fn a_source_with_no_expansion_verb_states_only_the_omission() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+            let mut ws = Workspace::new("anything open?");
+            ws.broadcast.push(board_like(60)); // expand_command defaults to None
+
+            let block = faculty.render_assembled_context_within(&ws, 120);
+            assert!(block.contains("more not shown"), "still says it truncated\n{block}");
+            assert!(
+                !block.contains("run `"),
+                "must not point at a verb it was never given\n{block}"
+            );
         }
 
         // what this catches: the board vanishing WHOLE. Measured live 2026-08-06 across

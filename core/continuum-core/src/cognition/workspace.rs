@@ -317,6 +317,15 @@ pub struct Contribution {
     /// contributions are considered, and this only governs how much of one
     /// survives when the whole will not fit. Set via [`with_parts`](Self::with_parts).
     pub parts: Vec<String>,
+    /// The exact verb that yields this content IN FULL, when only part of it fit.
+    ///
+    /// A truncation notice has to name a command a citizen can actually type. "The
+    /// full list is available from the matching command" does not — she cannot run
+    /// a description, and a name she has to guess is a name she gets wrong. Carried
+    /// from the source's own `RagSource::expand_command`, which has no default impl
+    /// precisely so every source decides. `None` = nothing further to fetch, and
+    /// the notice then says only how much was omitted.
+    pub expand_command: Option<&'static str>,
 }
 
 impl Contribution {
@@ -336,6 +345,7 @@ impl Contribution {
             // whole or drops whole). Divisibility is opt-IN, declared by the
             // faculty that actually knows its content is a list.
             parts: vec![content.clone()],
+            expand_command: None,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -365,6 +375,12 @@ impl Contribution {
         self
     }
 
+    /// Name the verb that yields this content in full — see [`expand_command`](Self::expand_command).
+    pub fn with_expand_command(mut self, cmd: Option<&'static str>) -> Self {
+        self.expand_command = cmd;
+        self
+    }
+
     /// The deliberation faculty's verdict contribution.
     pub fn verdict(decision: Decision, salience: f32, reasoning: impl Into<String>) -> Self {
         let content = match &decision {
@@ -379,6 +395,7 @@ impl Contribution {
             cycle: CycleId::UNSTAMPED,
             // A verdict is one utterance — never a list, never divisible.
             parts: vec![content.clone()],
+            expand_command: None,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -407,6 +424,7 @@ impl Contribution {
             cycle: CycleId::UNSTAMPED,
             // A fault is one named cause — never a list, never divisible.
             parts: vec![error.clone()],
+            expand_command: None,
             content: error.clone(),
             salience: 1.0,
             reasoning: "deliberation inference failed".to_string(),

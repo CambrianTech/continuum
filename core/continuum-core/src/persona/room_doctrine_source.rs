@@ -140,6 +140,11 @@ impl RagSource for RoomDoctrineSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        // the room's doctrine is a single standing statement, delivered whole.
+        None
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

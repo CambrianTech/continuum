@@ -173,6 +173,39 @@ impl CardHolder {
         }
     }
 
+    /// The state tag a board line should LEAD with — what the card actually is
+    /// **to a reader deciding whether to pick it up**, which is not always the
+    /// column it sits in.
+    ///
+    /// A card whose claim lease has lapsed is takeable work. Its column still
+    /// says `Claimed`, because nobody moved it back; the lease is what expired.
+    /// Leading with the column therefore prints `[Claimed]` on work that is free,
+    /// and a reader who scans state — which is what a state tag is FOR — concludes
+    /// there is nothing to do.
+    ///
+    /// Found live 2026-08-06 by Benchy, who was right: *"The work board shows
+    /// several claimed cards, but no open ones."* The board at that moment held
+    /// 61 cards — 48 `Claimed`, 12 `Review`, 0 `Open` — with **59 of 61 leases
+    /// stale**. Every one of those 59 was available, and every one of them read as
+    /// taken. Worse, the same block contradicted itself: its lead said "N cards
+    /// are claimable" and then printed N lines tagged `[Claimed]`. A reader
+    /// resolves that contradiction toward the per-item label, every time.
+    ///
+    /// So the tag follows the HOLD, and the column is shown after it when the two
+    /// disagree — nothing is hidden, the actionable fact just comes first.
+    /// Terminal cards (`Merged` / `Closed`) are never claimable regardless of
+    /// lease and keep their own column verbatim.
+    pub fn state_tag(&self, card: &WorkCard) -> String {
+        let terminal = matches!(
+            card.state,
+            airc_work::model::CardState::Merged | airc_work::model::CardState::Closed
+        );
+        match self.hold {
+            Hold::Lapsed if !terminal => format!("CLAIMABLE (was {:?})", card.state),
+            _ => format!("{:?}", card.state),
+        }
+    }
+
     /// Machine-readable lease word for command results (`work/list`), matching
     /// the CLI's vocabulary so one word means one thing everywhere.
     pub fn lease_word(&self) -> Option<&'static str> {
