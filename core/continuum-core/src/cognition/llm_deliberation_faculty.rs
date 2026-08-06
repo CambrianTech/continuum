@@ -718,14 +718,17 @@ impl LlmDeliberationFaculty {
         composition: (u32, usize, usize, usize),
     ) -> String {
         let (context_window, framing_tokens, conversation_tokens, ctx_floor) = composition;
-        // The TRAILING tier — working-memory ledger, full latest result, perception
-        // facts — renders as conversation turns AFTER the fit, so it is charged to
-        // the model but appears in neither `framing_tokens` nor
-        // `conversation_tokens`. That is the shape of the ~4,700 tokens unaccounted
-        // for on 2026-08-06 (`16384 − 4096 − 3045 − 4161` should have left ~5,000;
-        // the render got 391). Named here so the next reader confirms or kills it
-        // from the record instead of re-deriving the subtraction.
-        let trailing_tokens: usize = ws
+        // How much of `conversation_tokens` is the TRAILING tier (working-memory
+        // ledger, full latest result, perception facts).
+        //
+        // A SUBSET, not a separate term — `messages_unfitted` pushes trailing
+        // contributions into `messages`, so `used_msg_tokens` already counts them.
+        // Named `conv_trailing_share` for exactly that reason: emitted as
+        // `trailing_tokens` it read as a fourth claimant and I subtracted it twice,
+        // inflating an unexplained gap that had not actually changed. A probe field
+        // that invites a double-count is worse than no field
+        // ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+        let conv_trailing_share: usize = ws
             .broadcast
             .iter()
             .filter(|c| c.decision.is_none() && c.trailing)
@@ -744,7 +747,7 @@ impl LlmDeliberationFaculty {
                 context_window,
                 framing_tokens,
                 conversation_tokens,
-                trailing_tokens,
+                conv_trailing_share,
                 ctx_floor,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
@@ -872,8 +875,13 @@ impl LlmDeliberationFaculty {
             context_window,
             framing_tokens,
             conversation_tokens,
-            trailing_tokens,
+            conv_trailing_share,
             ctx_floor,
+            // The two terms the subtraction actually runs on. Without them the
+            // budget can only be reconciled by GUESSING which local holds what —
+            // which is how two suspects in a row got proposed and killed against
+            // the same ~4,700-token gap. Inputs beside the output, always.
+            after_framing = framing_tokens + conversation_tokens + budget_tokens,
             used_tokens = used,
             received,
             rendered = selected.len(),
