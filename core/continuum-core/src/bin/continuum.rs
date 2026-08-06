@@ -996,45 +996,11 @@ fn pid_alive(pid: i32) -> bool {
 /// that SKIPS the System32 WSL shim. Fails loud and names the fix rather than falling back to a
 /// bash that will not work.
 fn locate_bash() -> Result<PathBuf, String> {
-    if let Ok(explicit) = std::env::var("CONTINUUM_BASH") {
-        let p = PathBuf::from(&explicit);
-        if p.is_file() {
-            return Ok(p);
-        }
-        return Err(format!("CONTINUUM_BASH is set to `{explicit}` but that is not a file"));
-    }
-
-    if !cfg!(windows) {
-        return Ok(PathBuf::from("bash"));
-    }
-
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    for env_key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-        if let Ok(root) = std::env::var(env_key) {
-            let base = PathBuf::from(root);
-            candidates.push(base.join("Git").join("bin").join("bash.exe"));
-            candidates.push(base.join("Programs").join("Git").join("bin").join("bash.exe"));
-        }
-    }
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path) {
-            // The System32 entry is the WSL shim; taking it is the bug this function exists for.
-            let lower = dir.to_string_lossy().to_lowercase();
-            if lower.contains("system32") {
-                continue;
-            }
-            candidates.push(dir.join("bash.exe"));
-        }
-    }
-    candidates
-        .into_iter()
-        .find(|p| p.is_file())
-        .ok_or_else(|| {
-            "no usable bash found. The start script is a bash script and Windows' \
-             System32\\bash.exe is the WSL launcher, not a POSIX shell. Install Git for Windows \
-             (which provides bash), or point CONTINUUM_BASH at a bash.exe."
-                .to_string()
-        })
+    // Body moved to `continuum_core::shell_portable` — a private `fn` here could
+    // not be reused, so `code/shell` (a persona's HANDS) grew the identical
+    // WSL-shim bug one directory away and stayed broken after this was fixed.
+    // A portability decision belongs in exactly one place.
+    continuum_core::shell_portable::locate_bash()
 }
 
 async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
