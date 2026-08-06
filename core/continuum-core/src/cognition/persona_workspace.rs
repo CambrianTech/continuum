@@ -448,7 +448,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // exists and reaches nobody, and `serving_plan` falls back to the cold-start
     // constant forever — the exact shape of defect that left every citizen thinking
     // in 8192 tokens of a 128k model. [[wire-it-into-the-default-path]]
-    .with_working_set(crate::cognition::working_set::global());
+    .with_working_set({
+        // Re-adopt her measured window demand BEFORE her first turn, so a restart
+        // is a pause and not a demotion — without this the reboot drops her back to
+        // the cold-start window until enough turns re-measure (observed live
+        // 2026-08-06: a measured 24,126 fell to 16,384 across one reboot).
+        let ws = crate::cognition::working_set::global();
+        ws.rehydrate(cfg.persona_id);
+        ws
+    });
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the

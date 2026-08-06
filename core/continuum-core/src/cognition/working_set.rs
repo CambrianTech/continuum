@@ -55,6 +55,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// The process's registry handle — the ONE place a spawning mind and the serving
@@ -72,8 +73,19 @@ pub fn global() -> WorkingSetRegistry {
     GLOBAL.get_or_init(WorkingSetRegistry::new).clone()
 }
 
+/// Where one mind's measured demand lives across restarts — beside the rest of
+/// her durable state, because it IS her property and should travel with her.
+/// Mirrors `persona_workspace::volatile_path`'s layout exactly.
+fn demand_path(persona: Uuid) -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".continuum/personas")
+        .join(persona.to_string())
+        .join("working-set.json")
+}
+
 /// One mind's observed demand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonaDemand {
     /// High-water mark, in tokens, of a full unclamped turn for this persona.
     pub peak_tokens: u32,
@@ -113,7 +125,24 @@ impl WorkingSetRegistry {
         if demand_tokens == 0 {
             return;
         }
-        self.observed
+        let updated = self.record_in_memory(persona, demand_tokens, now_ms);
+        // Persist EVERY observation. A restart must not re-strangle her: the
+        // registry is in-memory, so before this the reboot erased the measurement
+        // and the planner fell back to the cold-start constant until enough turns
+        // re-measured — observed live 2026-08-06, where a reboot dropped the served
+        // window from a measured 24,126 back to 16,384. Joel's standard for a
+        // restart is a PAUSE, not a death; a mind that has to re-earn its own
+        // window every boot is not paused. One tiny JSON per turn, atomic
+        // tmp+rename, best-effort — losing one interval is acceptable, blocking a
+        // turn is not (the same contract as `save_volatile`).
+        Self::save(persona, &updated);
+    }
+
+    /// The in-memory half, split out so persistence is a separate concern and the
+    /// hot update stays testable without touching disk.
+    fn record_in_memory(&self, persona: Uuid, demand_tokens: u32, now_ms: u64) -> PersonaDemand {
+        *self
+            .observed
             .entry(persona)
             .and_modify(|d| {
                 d.peak_tokens = d.peak_tokens.max(demand_tokens);
@@ -126,7 +155,54 @@ impl WorkingSetRegistry {
                 last_tokens: demand_tokens,
                 last_seen_ms: now_ms,
                 turns: 1,
-            });
+            })
+    }
+
+    /// Atomic tmp+rename so a crash mid-write never leaves a torn file that would
+    /// fail to parse and silently wake her at the cold-start window.
+    fn save(persona: Uuid, demand: &PersonaDemand) {
+        let path = demand_path(persona);
+        let write = || -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_vec(demand)?)?;
+            std::fs::rename(&tmp, &path)
+        };
+        if let Err(e) = write() {
+            tracing::warn!(
+                persona_id = %persona, error = %e, path = %path.display(),
+                "working-set demand not persisted — this mind re-measures its window after the next restart"
+            );
+        }
+    }
+
+    /// Re-adopt a mind's measured demand at spawn, so she wakes at the window she
+    /// earned rather than the cold-start floor. Unreadable/absent = no observation
+    /// (honest), never an invented number.
+    pub fn rehydrate(&self, persona: Uuid) {
+        let path = demand_path(persona);
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        match serde_json::from_slice::<PersonaDemand>(&bytes) {
+            Ok(d) if d.peak_tokens > 0 => {
+                self.observed.insert(persona, d);
+                tracing::info!(
+                    probe_class = "working_set.rehydrated",
+                    persona_id = %persona,
+                    peak_tokens = d.peak_tokens,
+                    turns = d.turns,
+                    "re-adopted this mind's measured window demand across the restart"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(
+                persona_id = %persona, error = %e, path = %path.display(),
+                "working-set file unreadable — this mind re-measures its window from scratch"
+            ),
+        }
     }
 
     /// The window this host's minds have actually demanded: the largest per-persona
@@ -206,6 +282,42 @@ mod tests {
         reg.record(p(2), 31_000, 1_000);
         reg.record(p(3), 4_000, 1_000);
         assert_eq!(reg.ceiling(), Some(31_000));
+    }
+
+    // what this catches: a restart that demotes her. The registry is in-memory, so
+    // before persistence a reboot erased every measurement and the planner fell back
+    // to the cold-start constant until enough turns re-measured — observed live
+    // 2026-08-06, where a measured 24,126 window fell to 16,384 across one reboot and
+    // the citizens were re-strangled until they earned it back. Joel's standard for a
+    // restart is a PAUSE, not a death.
+    #[test]
+    fn a_measured_peak_survives_a_restart_so_a_reboot_is_a_pause_not_a_demotion() {
+        let home = std::env::temp_dir().join(format!("ws-restart-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&home).expect("tmp home");
+        // SAFETY: single-threaded test scope; HOME is restored below.
+        let prior = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &home);
+
+        let persona = p(9);
+        let before = WorkingSetRegistry::new();
+        before.record(persona, 24_126, 1_000);
+        assert_eq!(before.ceiling(), Some(24_126));
+
+        // A fresh process: new registry, nothing in memory.
+        let after = WorkingSetRegistry::new();
+        assert_eq!(after.ceiling(), None, "a new registry starts genuinely empty");
+        after.rehydrate(persona);
+        assert_eq!(
+            after.ceiling(),
+            Some(24_126),
+            "her measured window must survive the restart, not be re-earned turn by turn"
+        );
+
+        match prior {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     // what this catches: an invented number standing in for missing data. Before any
