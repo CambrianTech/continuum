@@ -390,9 +390,19 @@ impl RagSource for RoomBoardSource {
                 tokens,
                 metadata: json!({
                     "card_id": card.card_id.as_uuid().to_string(),
-                    "state": format!("{:?}", card.state),
+                    // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience
+                    // with NO stability guarantee — renaming a variant silently changes it
+                    // and nothing fails to compile. It also gave the substrate TWO string
+                    // forms of one enum: `{:?}` wrote "Claimed" here while `work/list`'s
+                    // serde wrote "claimed", so a reader that guessed wrong compared against
+                    // a spelling that never occurs. Consumers parse this straight back into
+                    // `CardState` and match on VARIANTS, so the compiler owns the mapping.
+                    // Joel 2026-08-06: "use constants or enums so you can't make
+                    // capitalization type issues. Use rust as it is meant to be used, for
+                    // predictable behavior."
+                    "state": card.state,
                     "owner": card.owner.map(|o| o.as_uuid().to_string()),
-                    "priority": format!("{:?}", card.priority),
+                    "priority": card.priority,
                     "lane_id": card.lane_id.map(|l| l.as_uuid().to_string()),
                 }),
             });
@@ -552,7 +562,8 @@ mod tests {
         assert!(cards[0].content.contains(&owner8));
         // An unclaimed card is surfaced as such — all owners visible on the board.
         assert!(cards[1].content.contains("unclaimed"));
-        assert_eq!(cards[1].metadata["state"], "Open");
+        // serde, not Debug — one canonical wire form for the enum (see the json! above).
+        assert_eq!(cards[1].metadata["state"], "open");
         assert!(delivery.continuation.is_none());
     }
 

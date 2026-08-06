@@ -1616,23 +1616,41 @@ fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> 
         .flat_map(|d| d.items.iter())
         .filter(|i| i.metadata.get("card_id").is_some())
         .collect();
-    fn state(i: &crate::persona::rag_budget::RagItem) -> &str {
-        i.metadata.get("state").and_then(|s| s.as_str()).unwrap_or("")
+    /// The card's state as the TYPE, never as a string to be spelled correctly.
+    ///
+    /// `None` for an item whose metadata carries no parseable state — which is a real
+    /// possibility (a future variant this build doesn't know) and must read as "unknown",
+    /// never as a silent mismatch against a hardcoded spelling.
+    fn state(i: &crate::persona::rag_budget::RagItem) -> Option<airc_work::CardState> {
+        i.metadata
+            .get("state")
+            .and_then(|s| serde_json::from_value(s.clone()).ok())
     }
     // Top 1-2 unclaimed (open work anyone could pick up) + 1 in-flight card
     // (proof the room's work is real and moving), in airc's own board order —
     // no re-ranking heuristic.
+    use airc_work::CardState;
     let unclaimed: Vec<&str> = cards
         .iter()
         .filter(|i| {
-            state(i) == "Open" && i.metadata.get("owner").is_none_or(|o| o.is_null())
+            state(i) == Some(CardState::Open)
+                && i.metadata.get("owner").is_none_or(|o| o.is_null())
         })
         .map(|i| i.content.trim())
         .take(2)
         .collect();
+    // Exhaustive over the enum, so ADDING a variant to `CardState` forces a decision here
+    // instead of silently falling through as "not in flight". That is the whole point of
+    // matching the type rather than a string.
     let in_flight: Vec<&str> = cards
         .iter()
-        .filter(|i| matches!(state(i), "Claimed" | "InProgress" | "Review"))
+        .filter(|i| match state(i) {
+            Some(CardState::Claimed | CardState::InProgress | CardState::Review) => true,
+            Some(
+                CardState::Open | CardState::Blocked | CardState::Merged | CardState::Closed,
+            ) => false,
+            None => false,
+        })
         .map(|i| i.content.trim())
         .take(1)
         .collect();
@@ -2472,7 +2490,9 @@ mod tests {
             continuation: None,
             resolution_used: ResolutionPreference::Raw,
         };
-        let card = |state: &str| RagItem {
+        // The ENUM, not a spelling. If the wire form ever changes, this fixture changes
+        // with it automatically instead of quietly testing a string that no longer occurs.
+        let card = |state: airc_work::CardState| RagItem {
             content: "#00f2a380 self-heal #2: receive-binding re-derive".to_string(),
             tokens: 8,
             metadata: serde_json::json!({ "card_id": "00f2a380", "state": state }),
@@ -2501,7 +2521,7 @@ mod tests {
         );
 
         // Cards present → the anchor names real work, as before.
-        let with_cards = vec![delivery("room-kanban", vec![card("Claimed")])];
+        let with_cards = vec![delivery("room-kanban", vec![card(airc_work::CardState::Claimed)])];
         let anchor = work_board_anchor(&with_cards);
         assert!(
             anchor.contains("Open work exists"),
