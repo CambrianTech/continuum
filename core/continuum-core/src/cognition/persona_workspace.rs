@@ -626,6 +626,7 @@ async fn drive_create_workspace(
     root: &str,
     path_prepend: &[String],
     call_id: &str,
+    refuse_inert_edits: bool,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: hands.persona_id,
@@ -641,7 +642,11 @@ async fn drive_create_workspace(
     let ws_call = crate::ai::types::ToolCall {
         id: call_id.to_string(),
         name: "code/create-workspace".to_string(),
-        input: serde_json::json!({ "workspace_root": root, "path_prepend": path_prepend }),
+        input: serde_json::json!({
+            "workspace_root": root,
+            "path_prepend": path_prepend,
+            "refuse_inert_edits": refuse_inert_edits,
+        }),
     };
     let ws_out = hands
         .executor
@@ -681,6 +686,7 @@ pub(crate) async fn root_acting_workspace(
     cycle: &WorkspaceCycle,
     root: &str,
     path_prepend: &[String],
+    refuse_inert_edits: bool,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     let hands = ActingHands::of(cycle).ok_or_else(|| {
         crate::sdk_codegen::CommandError::Internal(
@@ -689,7 +695,8 @@ pub(crate) async fn root_acting_workspace(
                 .to_string(),
         )
     })?;
-    drive_create_workspace(&hands, root, path_prepend, "root-acting-workspace").await?;
+    drive_create_workspace(&hands, root, path_prepend, "root-acting-workspace", refuse_inert_edits)
+        .await?;
     crate::probe!(
         class = "workspace.rooted",
         persona = %hands.persona_name,
@@ -763,7 +770,9 @@ async fn restore_acting_workspace_at(
     hands: &ActingHands,
     home: &str,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
-    drive_create_workspace(hands, home, &[], "restore-acting-workspace").await?;
+    // Restoring her to her OWN home restores the LIVE stance too: a citizen at home writes code
+    // as text whenever she means to, and only gets told when it will not execute (#317).
+    drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
     crate::probe!(
         class = "workspace.restored",
         persona = %hands.persona_name,
@@ -1709,7 +1718,7 @@ mod tests {
             let hands = hands_for(Uuid::new_v4());
 
             // Root at the sandbox, as agent/solve does before a drive.
-            drive_create_workspace(&hands, &exam.path().to_string_lossy(), &[], "root")
+            drive_create_workspace(&hands, &exam.path().to_string_lossy(), &[], "root", false)
                 .await
                 .expect("roots at the exam sandbox");
             let during = listing(&hands).await;

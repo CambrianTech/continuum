@@ -1392,6 +1392,13 @@ pub struct CodeCreateWorkspaceParams {
     /// Environment, not steering: it grants the interpreter the task already implies.
     #[serde(default)]
     pub path_prepend: Vec<String>,
+    /// Harden this workspace for a SCORED run: an edit whose inserted code would land inside a
+    /// string literal is REFUSED instead of warned (#317). Default `false` — a living citizen
+    /// writes code as text all the time (docstring examples, fixtures, quoted snippets) and the
+    /// warning on the success path already tells her it will not execute. Only a measurement,
+    /// whose deliverable IS an executing patch, has no such ambiguity.
+    #[serde(default)]
+    pub refuse_inert_edits: bool,
 }
 
 /// What `code/create-workspace` established.
@@ -1438,9 +1445,15 @@ impl ActionCommand for CodeCreateWorkspace {
         // provisioned for this caller (its doc reserves this override path). Keyed by
         // caller, so each peer's change-DAG stays isolated — exactly like the migrated
         // read/write/edit siblings, and never on a spoofable persona_id param.
-        self.state
-            .file_engines
-            .insert(who.clone(), FileEngine::new(&who, security));
+        let policy = if p.refuse_inert_edits {
+            crate::code::file_engine::WritePolicy::RefuseInert
+        } else {
+            crate::code::file_engine::WritePolicy::Warn
+        };
+        self.state.file_engines.insert(
+            who.clone(),
+            FileEngine::new(&who, security).with_write_policy(policy),
+        );
         // DROP the caller's shell session so it is re-created at the NEW root.
         // `ensure_shell` early-returns when a session exists, so without this a
         // re-root moved her FILE engine and left her SHELL in the old directory —

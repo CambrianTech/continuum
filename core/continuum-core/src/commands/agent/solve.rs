@@ -99,6 +99,18 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deliverable: Option<Deliverable>,
+    /// This run is SCORED — a benchmark instance whose verdict comes from applying her diff and
+    /// running the tests, not from anything she says. Hardens her write path: an edit whose code
+    /// would land inside a string literal is refused rather than warned (#317), because the run
+    /// cannot recover from a file it believes it fixed.
+    ///
+    /// Default `false`, and deliberately NOT inferred from `deliverable` — `agent/solve` also
+    /// does real work for real teammates, and a citizen doing real work writes code as text
+    /// whenever she means to (a docstring example, a fixture). Only the caller that is GRADING
+    /// her knows the ambiguity is gone, so only that caller sets this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scored: Option<bool>,
     /// Directories to PREPEND to `PATH` for her shell — the interpreter/toolchain this
     /// task needs in order to be RUNNABLE. A SWE harness passes the era-matched venv's
     /// `bin` here so `python` and `pytest` exist for her.
@@ -319,7 +331,13 @@ impl AgentSolve {
         //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
         //     self was still running `code/read(src/flask/app.py)` in her room hours later.
         let hands = crate::cognition::persona_workspace::ActingHands::of(&cycle);
-        crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace, p.path_prepend.as_deref().unwrap_or(&[])).await?;
+        crate::cognition::persona_workspace::root_acting_workspace(
+            &cycle,
+            &workspace,
+            p.path_prepend.as_deref().unwrap_or(&[]),
+            p.scored.unwrap_or(false),
+        )
+        .await?;
 
         // Everything the ROOTED hands touch lives in this one fallible region, so the
         // restore below runs on Ok AND on Err. A `?` added anywhere inside stays covered.

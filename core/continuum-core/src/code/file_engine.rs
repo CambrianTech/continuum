@@ -21,6 +21,29 @@ pub struct FileEngine {
     persona_id: String,
     security: PathSecurity,
     graph: ChangeGraph,
+    write_policy: WritePolicy,
+}
+
+/// What an edit that lands INSIDE a string literal should cost (#317).
+///
+/// Writing code as TEXT is a first-class thing a citizen does — a docstring example, a quoted
+/// snippet, a fixture, a doc block. Talking about code is not a defect, and the gate must never
+/// make her unable to do it. What she needs is to KNOW the text is not executing, which is why
+/// the warning is UNCONDITIONAL and lives on every path (Joel, 2026-08-06: "They need to be able
+/// to talk about code like any other first class citizen, just know that this isn't doing").
+///
+/// [`RefuseInert`](Self::RefuseInert) exists for the one context where that ambiguity does not
+/// exist: a SCORED run, where the deliverable IS a patch that has to execute, graded by applying
+/// the diff and running the tests. There, an inert insertion is never what she meant, the run
+/// cannot recover from it (the verdict reads as a capability zero), and the file is the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WritePolicy {
+    /// Let the edit land and TELL her it is inert. Every live citizen path.
+    #[default]
+    Warn,
+    /// Reject the edit, leave the file untouched, and say why — so the act→observe circuit
+    /// turns it into a retry instead of a destroyed patch. Scored/benchmark paths only.
+    RefuseInert,
 }
 
 /// Errors from file engine operations.
@@ -71,7 +94,21 @@ impl FileEngine {
             persona_id: persona_id.to_string(),
             security,
             graph: ChangeGraph::new(&workspace_id),
+            write_policy: WritePolicy::default(),
         }
+    }
+
+    /// Harden this engine for a SCORED run: an edit whose inserted code lands inside a string
+    /// literal is refused rather than warned. See [`WritePolicy`] for why this is scoped to
+    /// measurement and never applied to a living citizen's hands.
+    pub fn with_write_policy(mut self, policy: WritePolicy) -> Self {
+        self.write_policy = policy;
+        self
+    }
+
+    /// The inert-edit stance this engine enforces.
+    pub fn write_policy(&self) -> WritePolicy {
+        self.write_policy
     }
 
     /// Read a file, optionally a range of lines (1-indexed, inclusive).
@@ -322,6 +359,40 @@ impl FileEngine {
                 )),
                 applied_context: None,
             });
+        }
+
+        // SCORED RUNS ONLY (#317): the edit parses, so the gate above passed it — but the code
+        // she inserted landed inside a string literal, where it is text. On a live path that is
+        // her business (a docstring example, a fixture, a quoted snippet) and the warning on the
+        // success path tells her it will not execute. On a MEASURED run the deliverable IS a
+        // patch that has to execute, the grader reads only the diff, and a run cannot recover
+        // from a file it believes it fixed — so refuse and let the act→observe circuit retry.
+        //
+        // Measured three times on pallets__flask-4045: the model derived the correct guard every
+        // time and the write destroyed it every time — unparseable, then inside the class
+        // docstring twice. The third run applied cleanly with all 51 PASS_TO_PASS green and both
+        // FAIL_TO_PASS still failing, which is what an inert guard looks like from the outside.
+        if self.write_policy == WritePolicy::RefuseInert {
+            if let Some(where_) = inert_insertion_sites(&abs_path, &old_content, &new_content) {
+                return Ok(WriteResult {
+                    success: false,
+                    change_id: None,
+                    file_path: relative_path.to_string(),
+                    bytes_written: 0,
+                    error: Some(format!(
+                        "EDIT REFUSED — the code you inserted would land INSIDE A STRING \
+                         LITERAL, so it would be TEXT, not code. The file is UNCHANGED on disk; \
+                         nothing was written and there is nothing to undo.\n{where_}\n\
+                         The file would have parsed and the tests would have run, which is why \
+                         this is worth stopping: nothing would have failed and nothing would have \
+                         worked, and the score would have read as though you were wrong.\n\
+                         \n\
+                         Your fix is probably right — it just needs a different anchor:\n{}",
+                        inert_edit_recovery()
+                    )),
+                    applied_context: None,
+                });
+            }
         }
 
         // Compute diffs
@@ -1311,7 +1382,7 @@ fn displaced_docstrings(
 /// Measured on `pallets__flask-4045` (2026-08-06): she derived the correct guard and wrote it
 /// into the middle of the class docstring, deleting ~17 lines of API docs. Every gate we had was
 /// silent and the zero was charged to her intelligence.
-fn inert_insertions(
+fn inert_insertion_sites(
     abs_path: &std::path::Path,
     old_content: &str,
     new_content: &str,
@@ -1321,13 +1392,44 @@ fn inert_insertions(
     if inert.is_empty() {
         return None;
     }
-    let where_ = inert.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; ");
+    Some(inert.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; "))
+}
+
+/// The recovery path, shared by the warning and the refusal so the advice cannot drift between
+/// them. Numbered and concrete: naming the verbs beats "widen the range", which is advice she
+/// has to act on blind (the sympy-21379 lesson — a correct refusal plus a vague hint burned 16
+/// of her 30 acts).
+fn inert_edit_recovery() -> &'static str {
+    "\x20 1. `code/read` that region and find where the docstring's closing `\"\"\"` is.\n\
+     \x20 2. Choose an anchor INSIDE the function or method body — a real statement you can \
+     see, not a line of prose.\n\
+     \x20 3. Re-apply with `code/edit`, matching on that statement's TEXT rather than a line \
+     number (line numbers shift as you edit; text does not).\n\
+     \x20 4. Run it (`code/shell`) and confirm the behavior actually changed — a passing parse \
+     is not proof that anything executes.\n"
+}
+
+/// The LIVE stance: the edit landed, and she is told what it will and will not do. Writing code
+/// as text is first-class (a docstring example, a fixture, a snippet she is quoting), so this
+/// opens by saying that outright before offering the way out — it must never read as a scolding
+/// for something she may have meant.
+fn inert_insertions(
+    abs_path: &std::path::Path,
+    old_content: &str,
+    new_content: &str,
+) -> Option<String> {
+    let where_ = inert_insertion_sites(abs_path, old_content, new_content)?;
     Some(format!(
-        "WARNING: your edit landed INSIDE A STRING LITERAL ({where_}). The file parses and the \
-         tests will run, but that code is TEXT — it never executes, so nothing you intended \
-         actually changed. This is why a run can look like a wrong answer when the reasoning was \
-         right. Re-read the file around that line: find where the string CLOSES, and put the code \
-         after it.\n"
+        "HEADS UP: your edit landed INSIDE A STRING LITERAL ({where_}) — a docstring or quoted \
+         block. The file parses and the tests will run, but that code is TEXT: it never executes, \
+         so nothing you intended actually changed. This is exactly how a run looks like a wrong \
+         answer when the reasoning was right.\n\
+         \n\
+         If you MEANT to write about code — a docstring example, a snippet you are quoting, a \
+         fixture — this is already correct and there is nothing to fix.\n\
+         \n\
+         If you meant it to RUN:\n{}",
+        inert_edit_recovery()
     ))
 }
 
@@ -2352,6 +2454,133 @@ mod tests {
             ctx.contains("code/undo"),
             "the receipt must point at the recovery path, got:\n{ctx}"
         );
+    }
+
+    /// The flask-4045 shape, minimised: a class whose docstring is long enough that an edit
+    /// anchored on prose lands inside the literal. `guard` is the fix she actually derived.
+    fn blueprint_module() -> &'static str {
+        "class Blueprint:\n    \"\"\"Represents a blueprint.\n\n    :param name: The name of the blueprint.\n    :param import_name: The package name.\n    \"\"\"\n\n    def __init__(self, name):\n        self.name = name\n"
+    }
+
+    fn guard() -> &'static str {
+        "        if \".\" in name:\n            raise ValueError(\"names may not contain dots\")\n"
+    }
+
+    // what this catches (#317, measured 3× on pallets__flask-4045): the write that parses and
+    // does nothing. The model derives the correct guard and anchors it on a docstring line, so
+    // the code lands INSIDE the class docstring. `ast.parse` is happy, the test suite runs, the
+    // guard is prose. The last measured run applied cleanly with all 51 PASS_TO_PASS green and
+    // both FAIL_TO_PASS still failing — indistinguishable from the model simply being wrong.
+    //
+    // Pins the LIVE stance: the edit LANDS (a citizen writes code as text whenever she means to
+    // — docstring examples, fixtures, quoted snippets — and that is first-class), and she is
+    // TOLD it will not execute. Warning, never a block.
+    #[test]
+    fn code_written_into_a_docstring_lands_but_says_it_will_not_execute() {
+        let (dir, engine) = setup_engine();
+        fs::write(dir.path().join("src/bp.py"), blueprint_module()).unwrap();
+
+        let r = engine
+            .edit(
+                "src/bp.py",
+                &EditMode::InsertAt { line: 5, content: guard().to_string() },
+                None,
+            )
+            .expect("a live citizen's edit is never refused for landing in a literal");
+        assert!(r.success, "the live path writes it: {:?}", r.error);
+        let ctx = r
+            .applied_context
+            .expect("an edit into a literal must carry a receipt");
+        assert!(
+            ctx.contains("INSIDE A STRING LITERAL") && ctx.contains("never executes"),
+            "she must be told the text is inert, in those words, got:\n{ctx}"
+        );
+        // It must AFFIRM the legitimate case first — writing about code is first-class, and a
+        // notice that reads as a scolding for something she may have meant is a PX defect.
+        assert!(
+            ctx.contains("nothing to fix"),
+            "a citizen who MEANT to write a docstring example must be told she is already \
+             correct, got:\n{ctx}"
+        );
+        // And it must teach the way out with real verbs, not "widen the range".
+        for must in ["code/read", "code/edit", "method body"] {
+            assert!(
+                ctx.contains(must),
+                "the notice must walk her through it — missing `{must}`, got:\n{ctx}"
+            );
+        }
+        // And it really is on disk — this is a warning, not a silent refusal.
+        assert!(fs::read_to_string(dir.path().join("src/bp.py"))
+            .unwrap()
+            .contains("raise ValueError"));
+    }
+
+    // what this catches: the same edit on a SCORED run, where the deliverable IS an executing
+    // patch and she cannot recover from a file she believes she fixed. Refusal is what gives the
+    // act→observe circuit something to retry. Pins that the file is left UNTOUCHED (a refusal
+    // that half-wrote would be worse than the warning) and that the message AIMS her at the body
+    // instead of only diagnosing — the lesson from the sympy-21379 refusal that sent her chasing
+    // a line range she wasn't using.
+    #[test]
+    fn a_scored_run_refuses_the_same_edit_and_leaves_the_file_intact() {
+        let (dir, engine) = setup_engine();
+        fs::write(dir.path().join("src/bp.py"), blueprint_module()).unwrap();
+        let engine = engine.with_write_policy(WritePolicy::RefuseInert);
+
+        let r = engine
+            .edit(
+                "src/bp.py",
+                &EditMode::InsertAt { line: 5, content: guard().to_string() },
+                None,
+            )
+            .expect("a refusal is a result, not an Err");
+        assert!(!r.success, "a scored run must not accept an inert patch");
+        let err = r.error.expect("a refusal must say why");
+        assert!(
+            err.contains("EDIT REFUSED") && err.contains("UNCHANGED"),
+            "the refusal must state that nothing was written, got:\n{err}"
+        );
+        // Diagnosing is not enough — it has to TEACH: name the recovery verbs and the anchor
+        // that works. The sympy-21379 refusal was correct and still burned 16 of her 30 acts
+        // because the advice ("widen the range") was something she had to act on blind.
+        for must in ["code/read", "code/edit", "method body", "confirm the behavior"] {
+            assert!(
+                err.contains(must),
+                "the refusal must walk her through it — missing `{must}`, got:\n{err}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/bp.py")).unwrap(),
+            blueprint_module(),
+            "a refused edit must leave the file byte-identical"
+        );
+    }
+
+    // what this catches: the refusal staying NARROW. Hardening a scored run must not turn into
+    // "you may not edit Python" — a real fix anchored in the method body is exactly what the
+    // benchmark wants, and it must sail through the same strict engine untouched.
+    #[test]
+    fn the_scored_gate_passes_the_same_guard_when_it_lands_in_the_body() {
+        let (dir, engine) = setup_engine();
+        fs::write(dir.path().join("src/bp.py"), blueprint_module()).unwrap();
+        let engine = engine.with_write_policy(WritePolicy::RefuseInert);
+
+        // Line 8 is `def __init__(self, name):` — inserting after it is the real fix.
+        let r = engine
+            .edit(
+                "src/bp.py",
+                &EditMode::InsertAt { line: 9, content: guard().to_string() },
+                None,
+            )
+            .expect("edit");
+        assert!(
+            r.success,
+            "the correct fix must not be collateral damage: {:?}",
+            r.error
+        );
+        assert!(fs::read_to_string(dir.path().join("src/bp.py"))
+            .unwrap()
+            .contains("raise ValueError"));
     }
 
     // what this catches: the content-anchored blind spot. A search/replace is the SAFER

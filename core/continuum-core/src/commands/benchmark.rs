@@ -1634,6 +1634,13 @@ impl BenchmarkSweSolve {
                 // the act budget unspent (glass-boxed on sympy-21379: one `code/tree`, then a
                 // prose analysis, 0 patch bytes).
                 deliverable: Some(crate::commands::agent::solve::Deliverable::Workspace),
+                // SCORED: the verdict below applies her diff to a fresh clone and runs
+                // FAIL_TO_PASS. An edit that lands inside a string literal produces a file that
+                // parses, tests that run, and a guard that never executes — measured three times
+                // on flask-4045, the last of which passed all 51 PASS_TO_PASS with both
+                // FAIL_TO_PASS still failing. She cannot recover from that mid-run, so on this
+                // path the write is refused and the act→observe circuit gets to retry (#317).
+                scored: Some(true),
                 // Her shell gets the SAME interpreter the grader uses — so `python
                 // reproduce.py` and `python -m pytest` actually run.
                 path_prepend: (!venv_bin.is_empty()).then(|| venv_bin.clone()),
