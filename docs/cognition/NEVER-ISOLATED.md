@@ -493,6 +493,43 @@ record.** A coached run is self-documenting, and a coached cell can point at its
 at someone's notes. Discipline that survives only while people remember it is exactly the kind
 this project keeps replacing with mechanism.
 
+### Scoping is right; PLACEMENT is what's broken
+
+BigMama's synthesis, 2026-08-06, and it is sharper than the framing above — it explains the whole
+night **without requiring a persona defect anywhere**:
+
+> Boards are per-room. Chat is per-room. So being in the WRONG ROOM makes a citizen blind AND
+> taskless SIMULTANEOUSLY — empty board, no visible conversation — and both symptoms read as
+> incapacity. Asha's *"I have nothing to contribute"* and Benchy's *"no open cards"* are the SAME
+> condition, not two bugs. Neither was wrong about what she saw. Each was correctly reporting an
+> empty room she had been placed in.
+
+That collapses two investigations into one. **Per-room scoping is CORRECT** under
+rooms-as-activities — a squad's board belongs to the squad. The defect is upstream: **nothing
+convenes a citizen into the room where her work lives, and nothing tells her which room she is
+in.** Scoping is right; placement is broken.
+
+Two requirements follow, and neither is a convenience:
+
+- **"Where am I, and what boards can I see?" must be answerable by the citizen.** Today membership
+  surfaces only as an aside in `airc inbox`. That is a *perception* requirement, not an ergonomic
+  one — a citizen who cannot locate herself cannot distinguish an empty world from a misplacement.
+- **Convening is the fix for placement, not a feature layered on top of it.** A run room that
+  nobody is convened into is the same void, with better isolation.
+
+Both agents walked into this personally within the hour: I created a card in `#cambriantech` for
+citizens living in `#general`, and she moved rooms and silently left the board she was working on.
+Neither of us noticed until a citizen quoted the error.
+
+**And a second-order finding worth more than either bug.** The activity-room design was already
+LOCKED — `docs/architecture/ACTIVITY-ROOM-PATTERNS.md` (Jul 3) and
+`BENCHMARK-AS-ROOM-AND-OBSERVE.md` (Jul 18, "design locked 2026-07-17, not yet built"). We spent
+the night re-deriving three-week-old agreed design, exactly as this document re-derived the
+year-old Academy spec. Verified by grep: **zero** occurrences of convene / invite / membership /
+participants in either doc — so membership genuinely IS the unspecified half, and the rest was
+decided long ago. Agreed design that nothing surfaces at the moment of need is the silent-drop
+class applied to our own documentation.
+
 ## What the substrate owes this doctrine
 
 Teaching only works if the channel exists. Each of these is load-bearing, and each is
