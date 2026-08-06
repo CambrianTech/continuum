@@ -1551,10 +1551,30 @@ fn append_ring_anchor_if_starved(
             "echo run counted from the durable rings (window evidence scrolled out) — \
              anchor escalation fired via the #301 starvation fix"
         );
-        turns.push(crate::cognition::workspace::BurstTurn::opaque(
-            work_board_anchor(deliveries),
-        ));
+        push_work_board_anchor(turns, deliveries);
     }
+}
+
+/// Push the work-board anchor as a perception fact — but only when there IS one.
+///
+/// [`work_board_anchor`] returns empty when the board source did not speak this turn, and
+/// a mind must not be handed a blank line where a fact was promised. One guard, one place,
+/// so a future caller cannot reintroduce the "assert emptiness from an absent source" bug
+/// by forgetting to check.
+fn push_work_board_anchor(
+    turns: &mut Vec<crate::cognition::workspace::BurstTurn>,
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) {
+    let anchor = work_board_anchor(deliveries);
+    if anchor.is_empty() {
+        crate::probe!(
+            class = "persona.pattern.anchor_silent",
+            "board source did not deliver this turn — anchor withheld rather than asserting \
+             an empty board she cannot verify (2026-08-06 six-turn loop)",
+        );
+        return;
+    }
+    turns.push(crate::cognition::workspace::BurstTurn::opaque(anchor));
 }
 
 /// Build the `[anchor]` escalation line — the perception-side FACT that gives a
@@ -1573,6 +1593,23 @@ fn append_ring_anchor_if_starved(
 /// steering: it names what exists NOW; she still chooses
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
 fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> String {
+    // Did the board source SPEAK this turn? "The board is empty" and "I never read the
+    // board" are different facts about the world, and only one of them is knowable from an
+    // absent delivery. Glass-boxed 2026-08-06 from Benchy's live capture: `room-kanban`
+    // delivered NOTHING (grounding is last in the budget queue), the anchor rendered that
+    // as "No open cards are visible", and she then said exactly that in-room for six turns
+    // — while `work/list()` in her OWN working memory listed a full board in the same
+    // prompt. She trusted the authoritative-sounding anchor over her own receipt.
+    //
+    // Never assert a fact about the world on behalf of a source that did not speak.
+    // [[grounding-is-last-in-the-budget-queue-so-she-goes-blind-one-turn-in-ten]]
+    let board_spoke = deliveries.iter().any(|d| d.source_id == "room-kanban");
+    if !board_spoke {
+        // Say nothing rather than something false. A silent anchor leaves her own
+        // `work/list` receipt as the only board claim in the prompt — which is the truthful
+        // one. An anchor that invents emptiness actively overrides it.
+        return String::new();
+    }
     let cards: Vec<&crate::persona::rag_budget::RagItem> = deliveries
         .iter()
         .filter(|d| d.source_id == "room-kanban")
@@ -1753,9 +1790,7 @@ pub(crate) fn build_workspace_turns(
             )));
             observed = true;
             if self_run >= PATTERN_FIRES_BEFORE_ANCHOR {
-                turns.push(crate::cognition::workspace::BurstTurn::opaque(
-                    work_board_anchor(deliveries),
-                ));
+                push_work_board_anchor(&mut turns, deliveries);
             }
         }
         // Detector 2 — CONVERSATION cycling (#122): the thread's tail turns, across
@@ -1804,9 +1839,7 @@ pub(crate) fn build_workspace_turns(
                 )));
                 observed = true;
                 if cyclic >= TAIL_CYCLIC + (PATTERN_FIRES_BEFORE_ANCHOR - 1) {
-                    turns.push(crate::cognition::workspace::BurstTurn::opaque(
-                        work_board_anchor(deliveries),
-                    ));
+                    push_work_board_anchor(&mut turns, deliveries);
                 }
             }
         }
@@ -1867,9 +1900,7 @@ pub(crate) fn build_workspace_turns(
                      only something new (a fact, an action, a result) would.",
                 )));
                 if mirror_run >= PATTERN_FIRES_BEFORE_ANCHOR {
-                    turns.push(crate::cognition::workspace::BurstTurn::opaque(
-                        work_board_anchor(deliveries),
-                    ));
+                    push_work_board_anchor(&mut turns, deliveries);
                 }
             }
         }
@@ -2418,6 +2449,65 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: THE six-turn loop, glass-boxed from Benchy's live prompt capture
+    // on 2026-08-06. `room-kanban` did not deliver that turn (grounding sits last in the
+    // budget queue), and the anchor rendered that absence as the assertion "No open cards
+    // are visible on this room's board right now". She then said exactly that in-room, six
+    // times — while `work/list()` in her OWN working memory, in the SAME prompt, listed a
+    // full board. She trusted the authoritative anchor over her own receipt.
+    //
+    // "The board is empty" and "I never read the board" are different facts, and only one
+    // is knowable from an absent source. The anchor must be SILENT when the source did not
+    // speak, so her own tool receipt stays the only board claim in the prompt.
+    // regression for the 2026-08-06 anchor/receipt contradiction
+    #[test]
+    fn an_absent_board_source_yields_no_anchor_at_all() {
+        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+
+        let delivery = |source_id: &str, items: Vec<RagItem>| RagDelivery {
+            source_id: source_id.to_string(),
+            items,
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: ResolutionPreference::Raw,
+        };
+        let card = |state: &str| RagItem {
+            content: "#00f2a380 self-heal #2: receive-binding re-derive".to_string(),
+            tokens: 8,
+            metadata: serde_json::json!({ "card_id": "00f2a380", "state": state }),
+        };
+
+        // The live shape: other sources delivered, the board source did NOT.
+        let without_board = vec![delivery("conversation", vec![])];
+        assert_eq!(
+            work_board_anchor(&without_board),
+            "",
+            "a source that never spoke must not be quoted as evidence of an empty board"
+        );
+
+        // And the guard must keep that silence out of perception entirely — a blank
+        // opaque turn is its own kind of noise.
+        let mut turns: Vec<crate::cognition::workspace::BurstTurn> = Vec::new();
+        push_work_board_anchor(&mut turns, &without_board);
+        assert!(turns.is_empty(), "no anchor means no turn, not an empty one");
+
+        // The board source SPOKE and the board really is empty → the honest-empty line is
+        // still correct and must survive. Silencing that would trade one lie for another.
+        let empty_board = vec![delivery("room-kanban", vec![])];
+        assert!(
+            work_board_anchor(&empty_board).contains("No open cards are visible"),
+            "a board that was READ and is empty is a real fact worth stating"
+        );
+
+        // Cards present → the anchor names real work, as before.
+        let with_cards = vec![delivery("room-kanban", vec![card("Claimed")])];
+        let anchor = work_board_anchor(&with_cards);
+        assert!(
+            anchor.contains("Open work exists"),
+            "delivered cards must still produce the concrete anchor: {anchor}"
+        );
+    }
 
     // what this catches: the RAG-side mirror-hall cure (Joel 2026-07-12,
     // "repetition almost always bad RAG"). Near-identical substantial turns
