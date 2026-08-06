@@ -311,7 +311,19 @@ impl AgentSolve {
         //     false ZERO (glass-boxed 2026-07-22: Devstral did 2 real acts, wrote the correct file,
         //     patch was empty). Same fail-loud mechanism cognition/eval uses to root a measurement
         //     persona at a target repo.
+        //
+        //     The re-root is PROCESS-GLOBAL and outlives this fork (`code/create-workspace`
+        //     keys the file engine on the caller identity, and the fork shares the living
+        //     persona's executor AND her id — see `ActingHands`). So the hands handle is
+        //     lifted out BEFORE the cycle is consumed, and every exit path below returns her
+        //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
+        //     self was still running `code/read(src/flask/app.py)` in her room hours later.
+        let hands = crate::cognition::persona_workspace::ActingHands::of(&cycle);
         crate::cognition::persona_workspace::root_acting_workspace(&cycle, &workspace, p.path_prepend.as_deref().unwrap_or(&[])).await?;
+
+        // Everything the ROOTED hands touch lives in this one fallible region, so the
+        // restore below runs on Ok AND on Err. A `?` added anywhere inside stays covered.
+        let outcome = async {
 
         // GLASS-BOX (same seam as cognition/eval, task #14): opt-in JSONL turn capture on
         // the fork — bids + DECISION + timings per tick, the instrument that turns an
@@ -442,8 +454,8 @@ impl AgentSolve {
         drop(lane);
 
         Ok(AgentSolveResult {
-            persona_id: p.persona_id,
-            model: p.base_model_id,
+            persona_id: p.persona_id.clone(),
+            model: p.base_model_id.clone(),
             acts: settled.acts as u32,
             spoken: settled.spoken.unwrap_or_default(),
             patch,
@@ -452,6 +464,26 @@ impl AgentSolve {
             run_id,
             infra_error: settled.inference_error,
         })
+
+        }
+        .await;
+
+        // MEASUREMENT OVER — give her back her own hands (#312). Best-effort but LOUD: a
+        // failed restore leaves the living persona standing in the exam repo, which is a
+        // real defect, but it must not overwrite the measurement's own verdict.
+        if let Some(hands) = &hands {
+            if let Err(e) = crate::cognition::persona_workspace::restore_acting_workspace(hands)
+                .await
+            {
+                tracing::error!(
+                    persona = %persona_uuid,
+                    error = %e,
+                    "agent/solve could NOT return the persona's hands to her own workspace — she is \
+                     still rooted at the exam sandbox and her live turns will act there (#312)"
+                );
+            }
+        }
+        outcome
     }
 }
 
