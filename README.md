@@ -828,9 +828,11 @@ export CONTINUUM_PROBE_DIR=/tmp/continuum-probes
 export CONTINUUM_PROBE_CLASSES=persona,cognition  # namespace prefixes — captures every persona.* and cognition.*
 # Or `*` for the full firehose, or specific classes like `persona.turn.spoke,cognition.analyze.parse`
 
-# Probes land in dated rolling files (continuum-probes.YYYY-MM-DD.jsonl, 7-day retention).
+# Probes land in SIZE-rotated files: continuum-probes.jsonl, with older
+# generations beside it as .1, .2, … Total on disk is capped, so the firehose
+# can never fill the volume (a wedged writer once reached 172 GB in four hours).
 # Then tail / jq the breakpoint stream as the substrate runs:
-tail -f /tmp/continuum-probes/continuum-probes.*.jsonl | jq -c 'select(.fields.persona == "Paige")'
+tail -f /tmp/continuum-probes/continuum-probes.jsonl | jq -c 'select(.fields.persona == "Paige")'
 ```
 
 **Full manual + seam taxonomy + sprinkle checklist:** [docs/architecture/RTOS-DEBUGGER-PROBES.md](docs/architecture/RTOS-DEBUGGER-PROBES.md). Every contributor (human or AI agent) working on cognition, inference, or any per-persona path should read it before adding code — probes are part of the substrate's API, not an afterthought.
