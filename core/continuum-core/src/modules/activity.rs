@@ -51,6 +51,9 @@ use ts_rs::TS;
 
 use airc_lib::Airc;
 
+use crate::experience::standing::{
+    project_standing, RoomStanding, STANDING_WALL_CATEGORY,
+};
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
@@ -204,36 +207,14 @@ impl ActionCommand for ActivitySpawn {
 
 // ─────────────────────────── standing ───────────────────────────
 
-/// The wall category carrying a room's STANDING — archived / protected.
-///
-/// Same shape and same reasoning as [`RECIPE_WALL_CATEGORY`]: standing is a fact
-/// every participant must agree on, so it rides the shared wall with last-wins
-/// `supersedes`, not per-peer state. It is a DECLARATION, never a deletion: the
-/// room, its transcript and its cards are untouched.
-pub const STANDING_WALL_CATEGORY: &str = "standing";
-
-/// A room's declared standing. Absent entirely on a room nobody has ever marked —
-/// which is the ordinary case and means "live, unprotected".
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct RoomStanding {
-    /// Concluded: still fully readable, but it should stop recruiting attention —
-    /// no longer offered as somewhere to pick up work. NOT deleted, NOT hidden.
-    #[serde(default)]
-    pub archived: bool,
-    /// Refuses deletion. Benchmark rooms and anything else whose record is
-    /// load-bearing get this, so a stray delete cannot take the evidence with it.
-    #[serde(default)]
-    pub protected: bool,
-    /// Why — free text from whoever set it. A standing change with no reason is a
-    /// mystery to the next reader.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub note: Option<String>,
-}
-
 /// Read the current standing of the caller's current room, or the default
 /// (live, unprotected) when nobody has ever declared one.
+///
+/// The type, the wall category, and the rule for turning posts into a standing
+/// all live in [`crate::experience::standing`] — this is only the "fetch the
+/// current room's posts" half. They were born here as a private `async fn` over
+/// `&Airc`, which meant the only code that could read a standing was the command
+/// that wrote it, and `archived` shipped as a declaration nothing consumed.
 async fn current_standing(airc: &Airc) -> Result<RoomStanding, CommandError> {
     let posts = airc
         .wall_posts(Some(STANDING_WALL_CATEGORY))
@@ -241,17 +222,7 @@ async fn current_standing(airc: &Airc) -> Result<RoomStanding, CommandError> {
         .map_err(|source| {
             CommandError::Internal(format!("could not read room standing: {source}"))
         })?;
-    // `wall_posts` already projects supersedes, so the surviving post is current.
-    match posts.last() {
-        Some(post) => serde_json::from_str(&post.body).map_err(|source| {
-            CommandError::Internal(format!(
-                "room standing is present but unreadable ({source}) — refusing to \
-                 overwrite a declaration this build cannot parse, because that would \
-                 silently drop whatever a newer client recorded"
-            ))
-        }),
-        None => Ok(RoomStanding::default()),
-    }
+    project_standing(&posts).map_err(|source| CommandError::Internal(source.to_string()))
 }
 
 /// Publish a merged standing, preserving every field the caller did not set.
