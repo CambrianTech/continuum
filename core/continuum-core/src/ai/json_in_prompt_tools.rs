@@ -358,6 +358,68 @@ impl ToolCallFormat for MistralToolCallsFormat {
 /// Precision: fires ONLY on the explicit `[TOOL_CALLS]` marker (a token no persona
 /// emits in ordinary prose) AND only when nothing valid parsed — a well-formed
 /// `[TOOL_CALLS]code/search(…)` returns `None` here because it lifts on the normal path.
+/// The sibling failure [`attempted_tool_name`] cannot see: a citizen fences correct
+/// ARGUMENTS and never names the tool, in any liftable position.
+///
+/// Sahar's verbatim emission, 2026-08-07:
+///
+/// ```text
+/// I will release the card 392bc54e since it is already completed and merged
+/// ```json
+/// { "card_id": "392bc54e" }
+/// ```
+/// ```
+///
+/// Right intent, right argument, tool identity carried ONLY as English. Nothing lifts —
+/// correctly, because binding prose intent would also fire on peer coaching (#144, where a
+/// fabricated result became room truth in two turns). But nothing REPORTS either:
+/// `attempted_tool_name` gates on the `[TOOL_CALLS]` marker as its very first check, and
+/// there is no marker here. So the fence is silently dropped, she gets no feedback, and the
+/// next generation repeats it. Measured live: the loop ran until the deadline.
+///
+/// That silence is the defect — not the parser, and not the menu (which already teaches
+/// `code/read({…})` as its first line, and that form does lift). She is one token short of a
+/// working call and nothing tells her which token.
+///
+/// Returns the offending snippet for the correction seam to REPORT. It must never be
+/// executed: we cannot know which tool she meant, and guessing is exactly the false positive
+/// the negatives in `bare_args_fence_with_named_tool_lifts_and_coaching_stays_inert` guard.
+///
+/// Deliberately conservative, because this fires on ordinary speech otherwise:
+/// - nothing lifted anywhere in the turn (a real call means she managed it)
+/// - no `[TOOL_CALLS]` marker (that case belongs to [`attempted_tool_name`])
+/// - a FENCED JSON **object** (bare prose JSON is data, not an attempted call)
+/// - argument-SHAPED: 1..=6 keys, all scalar values. A nested or long object is a data
+///   payload a persona is legitimately showing, not an argument bag.
+pub fn nameless_args_fence(text: &str) -> Option<String> {
+    if text.contains("[TOOL_CALLS]") || !parse_tool_calls(text).is_empty() {
+        return None;
+    }
+    for block in fenced_blocks(text) {
+        // A shell fence is a script she is showing, never an argument bag.
+        if fence_is_shell(&block) {
+            continue;
+        }
+        let span = block.body.trim();
+        if !span.starts_with('{') || !span.ends_with('}') {
+            continue;
+        }
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(span)
+        else {
+            continue;
+        };
+        if map.is_empty() || map.len() > 6 {
+            continue;
+        }
+        // An argument bag is flat scalars. Anything structured is a payload she is showing.
+        if map.values().any(|v| v.is_object() || v.is_array()) {
+            continue;
+        }
+        return Some(span.to_string());
+    }
+    None
+}
+
 pub fn attempted_tool_name(text: &str) -> Option<String> {
     if !text.contains("[TOOL_CALLS]") {
         return None;
@@ -3142,6 +3204,49 @@ Please provide the output so I can review it.";
     // never silently pass as speech (acts:0 spiral, glass-boxed 2026-07-16, Anwen's
     // exact live "[TOOL_CALLS][recall]" emission). A well-formed native call is NOT a
     // failed attempt (it lifts on the normal path).
+    // what this catches: the SILENT DROP its sibling above cannot see. Sahar's verbatim
+    // 2026-08-07 emission — right intent, right argument, tool identity only in English —
+    // lifted nothing (correct) and reported nothing (the defect). She got no feedback and
+    // repeated until the deadline. The negatives keep it from firing on ordinary speech:
+    // quiet when a call DID lift, when the [TOOL_CALLS] marker owns the case, when the JSON
+    // is a payload she is legitimately showing, and when the fence is a shell script.
+    #[test]
+    fn nameless_args_fence_catches_the_silent_drop_and_not_ordinary_speech() {
+        let sahar = "I will release the card 392bc54e since it is already completed and merged\n```json\n{ \"card_id\": \"392bc54e\" }\n```";
+        assert_eq!(
+            nameless_args_fence(sahar).as_deref(),
+            Some("{ \"card_id\": \"392bc54e\" }"),
+            "the exact live emission must be reportable"
+        );
+        // Her second one, same turn shape.
+        assert!(nameless_args_fence(
+            "Now, I will list tasks that are currently claimable\n```json\n{\"claimable\": true}\n```"
+        )
+        .is_some());
+
+        // A call that LIFTED is not a near-miss — she managed it.
+        assert!(nameless_args_fence(
+            "Let me call the `commands/list` tool directly:\n```json\n{\"filter\": null}\n```"
+        )
+        .is_none());
+        // The taught form lifts, so it must never also be reported as a failure.
+        assert!(nameless_args_fence(
+            "Let me read it:\n```\ncode/read({\"file_path\": \"lib.rs\"})\n```"
+        )
+        .is_none());
+        // The marker case belongs to attempted_tool_name; two reports would double-teach.
+        assert!(nameless_args_fence("[TOOL_CALLS][recall]\n```json\n{\"a\": 1}\n```").is_none());
+        // Structured payload = data she is showing, not an argument bag.
+        assert!(nameless_args_fence(
+            "Here's the config we ship:\n```json\n{\"server\": {\"port\": 8080}}\n```"
+        )
+        .is_none());
+        // Bare prose JSON, no fence — not an attempted call.
+        assert!(nameless_args_fence("the row is {\"card_id\": \"abc\"} in the table").is_none());
+        // No JSON at all.
+        assert!(nameless_args_fence("I'll take a look at the board shortly.").is_none());
+    }
+
     #[test]
     fn attempted_tool_name_flags_reserved_vocab_mimicry_not_real_calls() {
         // Anwen's exact live emission — the [recall] receipt token mimicked as a call.

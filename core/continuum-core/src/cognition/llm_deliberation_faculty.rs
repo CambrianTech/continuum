@@ -1773,6 +1773,30 @@ impl Faculty for LlmDeliberationFaculty {
                 };
                 return Some(self.act_verdict(vec![call], &resp));
             }
+            // The sibling gap the block above cannot see (#159 follow-up): she fenced correct
+            // ARGUMENTS and never named the tool, in any liftable position. `attempted_tool_name`
+            // gates on the `[TOOL_CALLS]` marker as its first check, and there is no marker here,
+            // so this emission produced no call AND no feedback — a silent drop. Measured live
+            // 2026-08-07 (Sahar): "I will release the card 392bc54e" + a bare `{"card_id": …}`
+            // fence, twice in one turn, then the same shape again next generation. Nothing lifted,
+            // correctly — binding prose intent would also fire on peer coaching (#144) — but
+            // nothing TAUGHT either, which is the whole reason #159 exists.
+            //
+            // REPORTED, never executed: we cannot know which tool she meant, and guessing is
+            // exactly the false positive the coaching negatives guard. Routing the sentinel makes
+            // the executor's teacher fire with the missing-name sentence, and `drive_to_settle`
+            // hands her another generation — the same mechanism, extended to the case it missed.
+            if let Some(snippet) =
+                crate::ai::json_in_prompt_tools::nameless_args_fence(&resp.text)
+            {
+                let call = crate::ai::types::ToolCall {
+                    id: "tool-attempt-nameless".to_string(),
+                    name: crate::cognition::tool_executor::command_executor::NAMELESS_ARGS_SENTINEL
+                        .to_string(),
+                    input: serde_json::json!({ "emitted": snippet }),
+                };
+                return Some(self.act_verdict(vec![call], &resp));
+            }
             // Reasoning-channel intent lift (#181 sibling, glass-boxed on the
             // deepseek4 eval battery 2026-08-03): a thinking model commits its act
             // into `reasoning_content` — "I'll read the file: {tool_call…}" — and
