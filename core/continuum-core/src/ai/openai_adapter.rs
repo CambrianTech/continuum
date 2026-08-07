@@ -2118,7 +2118,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
         // bounded linear backoff, then fail loud. `request_builder` carries no body yet
         // (`.json` is applied per attempt below), so `try_clone` always succeeds.
-        let mut connect_retries: u32 = 0;
+        // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
+        // listening yet; 503 = listening but still loading). One counter, so the total
+        // time this call can spend waiting on a relaunching lane stays bounded.
+        let mut relaunch_retries: u32 = 0;
         let response = loop {
             let send_start = Instant::now();
             let attempt_builder = request_builder
@@ -2144,19 +2147,56 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 )
             })?;
             match sent {
+                // A relaunching lane refuses the connection only while nothing is
+                // LISTENING. Once the new process binds, it accepts and answers
+                // 503 while it mmaps weights and warms the backend — the SAME
+                // mid-relaunch state one layer up, with a completely different
+                // signature. Observed live 2026-08-07: a re-home grew the window
+                // 16384 → 27136 → 32768, and during the respawn three citizens
+                // took `503 {"error":{"message":"Loading model..."}}` as a hard
+                // `selftick.inference_failed` while the published snapshot still
+                // said `ready` (it is a cached claim — see ServingSnapshot::ready).
+                //
+                // 503 from a SINGLE-RESIDENT local lane means "not available yet"
+                // by definition, so the status alone is the signal — no sniffing
+                // the body text for "Loading model"
+                // ([[a-string-matcher-for-a-semantic-judgement-means-a-channel-is-missing]]:
+                // the HTTP status IS the structured channel). Shares the connect
+                // arm's retry budget, because both are the same wait for the same
+                // lane and the total hold must stay bounded.
+                Ok(resp)
+                    if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                        && self.config.single_resident_model
+                        && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+                {
+                    relaunch_retries += 1;
+                    let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
+                    crate::probe!(
+                        class = "inference.lane_relaunch_retry",
+                        provider = self.config.provider_id.as_str(),
+                        attempt = relaunch_retries,
+                        backoff_ms = backoff.as_millis() as u64,
+                        reason = "503_loading",
+                        "local lane is up but still loading (503, mid-relaunch) — retrying the \
+                         same lane",
+                    );
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
                 Ok(resp) => break resp,
                 Err(e)
                     if e.is_connect()
                         && self.config.single_resident_model
-                        && connect_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+                        && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
                 {
-                    connect_retries += 1;
-                    let backoff = LANE_RELAUNCH_RETRY_BASE * connect_retries;
+                    relaunch_retries += 1;
+                    let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
                     crate::probe!(
                         class = "inference.lane_relaunch_retry",
                         provider = self.config.provider_id.as_str(),
-                        attempt = connect_retries,
+                        attempt = relaunch_retries,
                         backoff_ms = backoff.as_millis() as u64,
+                        reason = "connect_refused",
                         "local lane refused the connection (mid-relaunch) — retrying the same lane",
                     );
                     tokio::time::sleep(backoff).await;
@@ -2179,8 +2219,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         "{} POST failed after {}ms{}: {} (kind: timeout={}, connect={}, request={}, body={})",
                         self.config.name,
                         send_start.elapsed().as_millis(),
-                        if connect_retries > 0 {
-                            format!(" ({connect_retries} connect-retries exhausted — lane never came back)")
+                        if relaunch_retries > 0 {
+                            format!(
+                                " ({relaunch_retries} mid-relaunch retries exhausted — lane never came back)"
+                            )
                         } else {
                             String::new()
                         },
