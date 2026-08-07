@@ -508,8 +508,28 @@ pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     let prior_userprofile = std::env::var("USERPROFILE").ok();
     let prior_hf_home = std::env::var("HF_HOME").ok();
     std::env::set_var("HOME", home);
-    std::env::remove_var("USERPROFILE");
-    std::env::remove_var("HF_HOME");
+    // Point USERPROFILE at the sandbox rather than clearing it, so no Windows-side home lookup
+    // resolves to the real profile. (Not sufficient on its own — see HF_HOME below.) No-op on
+    // Unix, where USERPROFILE is unused.
+    std::env::set_var("USERPROFILE", home);
+    // HF_HOME is PINNED INTO THE SANDBOX, not removed — and that difference is the whole bug.
+    //
+    // `huggingface_cache_root()` reads the process env FIRST and then falls back to
+    // `config_env::read("HF_HOME")`. Clearing the process var therefore does not isolate the
+    // test; it just hands control to config.env. And that fallback cannot be sandboxed by
+    // setting env vars at all: `config_env::config_path()` resolves through `dirs::home_dir()`,
+    // which on Windows consults the Win32 known-folder API rather than HOME/USERPROFILE. So the
+    // read always found the REAL ~/.continuum/config.env, and on any box where the cold-storage
+    // installer had written `HF_HOME=D:\…` there, three artifact-resolution tests looked for the
+    // fixture on the cold drive and reported `None`. They failed on exactly the machines that
+    // have cold storage configured and passed everywhere else — a hermeticity hole wearing the
+    // costume of a code defect.
+    //
+    // Pinning the process var closes it at the seam that actually decides: env wins, so the
+    // machine's config.env can never be consulted. The value reproduces the default layout
+    // (`<home>/.cache/huggingface` + the `hub` suffix the resolver appends), so every test that
+    // builds a fixture under `$HOME/.cache/huggingface/hub/…` resolves exactly as before.
+    std::env::set_var("HF_HOME", home.join(".cache").join("huggingface"));
     let result = f();
     if let Some(value) = prior_home {
         std::env::set_var("HOME", value);

@@ -585,6 +585,59 @@ pub fn models() -> Vec<Model> {
             gguf_hint: Some("huggingface.co/unsloth/DeepSeek-V4-Flash-GGUF"),
             ..ModelSpec::default()
         }),
+        // BTL-4-Compact — an OUTSIDE claim we intend to falsify, not adopt. Added to make it
+        // measurable on our own harness rather than argued about from a model card.
+        //
+        // Every field here is read from the artifact's own declarations, never the card:
+        //   • arch: the base repo's config.json says `Qwen3_5MoeForConditionalGeneration` —
+        //     256 experts, 8 per token, 40 layers, hidden 2048. So `qwen3_5_moe`, a routed MoE.
+        //     The card describes it as "35B dense", which contradicts its OWN config; that
+        //     discrepancy is the first thing to check and the reason for the skepticism.
+        //   • context_window: `max_position_embeddings: 262144` from that same config. The live
+        //     served window is still the planner's business (model-max ∩ VRAM-KV fit, #31) —
+        //     the operator running this reported ~250k "was costing you KV", which is exactly
+        //     the intersection our planner is supposed to compute instead of hardcoding.
+        //   • Arch::Unknown is deliberate: qwen3_5_moe is not an enumerated arch here, and
+        //     llama-server reads the real arch from the GGUF header. Naming a wrong enum to
+        //     avoid an `Unknown` would be a guess wearing a type.
+        //
+        // The Compact build is TEXT-ONLY: the base repo carries a vision tower (a nested vision
+        // config with hidden_size 1152 → out_hidden_size 2048), and this GGUF drops it. Hence no
+        // Vision capability and no mmproj — `badtheorylabs/BTL-4-Compact` ships exactly one file,
+        // `BTL-4-IQ2_XXS.gguf` (9,967,966,240 bytes, unsharded). If the vision half is ever
+        // wanted, `bartowski/badtheorylabs_BTL-4-GGUF` carries mmproj + a full IQ2 ladder.
+        //
+        // chat_template: None + --jinja, because BTL-4 uses a
+        // `<tool_call><function=name><parameter=x>` DSL rather than stock Qwen's JSON form; the
+        // correct template ships INSIDE the GGUF. Overriding it here — or letting llama.cpp fall
+        // back to a builtin — silently disables every tool call the model tries to make.
+        //
+        // NOT persona_serving_eligible: unevaluated third-party weights must not be adopted by
+        // the autonomic planner. It reaches this model only by explicit id, for evals. The repo
+        // ships its own `eval/bfcl_compact.py` + `eval/probe_tools.py`, so their methodology can
+        // be run alongside our held-out suite — the point being that a model which has learned
+        // the benchmark scores well on THEIR harness and poorly on ours.
+        model(ModelSpec {
+            id: "badtheorylabs/BTL-4-Compact",
+            name: "BTL-4-Compact IQ2_XXS (third-party claim — evaluate, do not adopt)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // qwen3_5_moe — llama-server reads it from the GGUF header
+            context_window: 262_144,
+            max_output_tokens: 8192,
+            tokens_per_second: 0.0, // UNMEASURED on this grid — do not fill in an estimate
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/badtheorylabs/BTL-4-Compact"),
+            chat_template: None, // the tool-call DSL template is embedded in the GGUF (--jinja)
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &[],
+            persona_serving_eligible: false,
+            ..ModelSpec::default()
+        }),
         // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──
         // Opponents + community champions for the 64GB-class matrix. Arch + context
         // read from each GGUF's OWN header at add time (#74 — never guessed):
