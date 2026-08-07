@@ -548,12 +548,24 @@ pub struct WorkListParams {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkListCard {
+    // FIELD ORDER IS LOAD-BEARING HERE TOO — `claimable` MUST precede `state`/`owner`.
+    //
+    // serde emits in declaration order, so the reader met `"state":"claimed"` and
+    // `"owner":"Anwen"` BEFORE `"claimable":true`. Live 2026-08-07, hours after the
+    // lease + claimability fixes let him finally see the board, Benchy read exactly
+    // this shape and reported: *"there are several tasks available on the board, but
+    // they have already been claimed by others."* Every card he was looking at was
+    // his to take. Two loud fields saying "someone owns this" beat one quiet field
+    // saying "you can have it".
+    //
+    // #321 fixed the BOARD rendering so a lapsed claim reads CLAIMABLE. This is the
+    // same fact on the TOOL-RESULT surface, which that fix never reached — two
+    // surfaces answering one question, drifting independently (the same shape as the
+    // read/write claimability split fixed in 59cbbb735). Lead with the answer to
+    // "can I take this", then say who had it.
     /// 8-char short id — quote this back to work/get / work/claim / work/state.
     pub id: String,
     pub title: String,
-    pub state: String,
-    /// Short id of the claiming peer, when claimed.
-    pub owner: Option<String>,
     /// Whether she can take this card RIGHT NOW — the fact the board was hiding.
     ///
     /// A claim carries a LEASE. When it expires the holder has stopped working the card and the
@@ -570,6 +582,14 @@ pub struct WorkListCard {
     /// Human-legible lease state for a claimed card: `expired` when the hold has lapsed (take it),
     /// `held` while someone is genuinely on it. `None` for unclaimed cards.
     pub lease: Option<String>,
+    /// The card's column. Declared AFTER `claimable`/`lease` on purpose — see the
+    /// field-order note above: `"claimed"` read first defeats `claimable: true` read
+    /// fifth, and a lapsed claim IS takeable regardless of this column.
+    pub state: String,
+    /// Short id of the claiming peer, when claimed. Says WHO to reach out to — never
+    /// "someone" ([[card-holder]]) — but read AFTER whether she can take it, because
+    /// an owner on a lapsed lease is history, not an obstacle.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
