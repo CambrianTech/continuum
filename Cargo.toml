@@ -61,6 +61,11 @@ members = [
 # checkout so the IPC ABI version (IPC_PROTOCOL_VERSION) stays
 # consistent across the dependency graph.
 #
+# 2026-08-07 bump cf6e2c6 → 8dcfa76: project_room_work_board is now pub and
+# room_by_channel resolves a Room from the RoomId a caller already holds,
+# so a room-scoped caller passes the SAME room its gate checks instead of
+# letting the read resolve "my default subscription" independently (#345).
+#
 # 2026-05-31 bump 428f9281 → 5f6e25f: adopts airc v5 owner-core
 # rewrite (continuum task #82, headless break #3) AND the SDK-side
 # `impl From<>` conversions from airc#1096. Schema changes this PR
@@ -161,18 +166,18 @@ members = [
 # personas load their stored peer_id unchanged. This SHA is on the
 # feat/persona-peer-id-mint branch, not canary — reconcile to the canary SHA
 # when the airc PR lands. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "8dcfa76" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "8dcfa76" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "8dcfa76" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "8dcfa76" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "8dcfa76" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "8dcfa76" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

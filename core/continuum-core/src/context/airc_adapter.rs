@@ -116,8 +116,12 @@ impl crate::persona::room_board_source::RoomBoardReader for AircHandleAdapter {
     /// The current room's WHOLE work board — delegates to the inner airc
     /// handle's single board fold (same read the desktop-app kanban projector
     /// makes).
-    async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
-        crate::persona::room_board_source::RoomBoardReader::work_board(self.inner.as_ref()).await
+    async fn work_board(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<airc_work::BoardSnapshot, AircError> {
+        crate::persona::room_board_source::RoomBoardReader::work_board(self.inner.as_ref(), room)
+            .await
     }
 
     /// Delegates to the inner airc handle's alias store — the same durable
