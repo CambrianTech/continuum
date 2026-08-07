@@ -553,8 +553,21 @@ pub struct WorkListCard {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkListResult {
-    pub cards: Vec<WorkListCard>,
-
+    // FIELD ORDER IS LOAD-BEARING — the summary MUST precede `cards`.
+    //
+    // serde emits in declaration order, and the receipt path truncates a large result
+    // (`act_observe::truncate_chars`, capped at `fold_at.min(4096)`). `cards` on a real
+    // board is far past that cap, so anything declared AFTER it is cut off in EVERY
+    // receipt a citizen actually reads. Measured 2026-08-06: Anwen's prompt carried four
+    // live `work/list` receipts and ZERO occurrences of `total_on_board` — the
+    // self-explaining fields below were computed, serialized, and then severed by the
+    // truncator, which is indistinguishable from never having built them.
+    //
+    // This is the SAME divisibility law the grounding board block already obeys: the
+    // first delivered unit must be a complete statement, because a prefix-take keeps the
+    // head and drops the tail ([[divisibility-makes-unit-order-load-bearing-the-first-unit-must-be-a-complete-statement]]).
+    // Fixed there this afternoon and reintroduced here the same day; the list is the
+    // divisible part, so the list is what gets cut.
     /// How many cards are on the board IN TOTAL, before any filter. Always present.
     ///
     /// An empty `cards` list is ambiguous on its own — "the board is empty" and "your
@@ -574,6 +587,11 @@ pub struct WorkListResult {
     /// (the column filter keeps meaning the column).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+
+    /// The matched cards. LAST by design — see the field-order note at the top of this
+    /// struct. This is the divisible part of the answer, so this is what a truncated
+    /// receipt sheds; the counts and the note survive.
+    pub cards: Vec<WorkListCard>,
 }
 
 #[async_trait]
@@ -927,5 +945,53 @@ mod tests {
             3,
             "claimable=true finds the lapsed-lease work the column filter misses"
         );
+    }
+
+    /// what this catches: the self-explaining summary being serialized AFTER `cards`, where
+    /// the receipt truncator severs it from every result a citizen actually reads.
+    ///
+    /// regression for 2026-08-06: `note` + `total_on_board` + `claimable_now` shipped that
+    /// afternoon and were measured that evening to be ABSENT from all four live `work/list`
+    /// receipts in Anwen's prompt — computed, serialized, then cut off by
+    /// `act_observe::truncate_chars` (cap `fold_at.min(4096)`) because a real board's `cards`
+    /// array is far longer than the cap. A field emitted after an unbounded list is a field
+    /// nobody will ever see.
+    #[test]
+    fn the_summary_survives_a_truncated_receipt_because_it_precedes_the_card_list() {
+        let cards: Vec<WorkListCard> = (0..60)
+            .map(|i| WorkListCard {
+                id: format!("card-{i:04}"),
+                title: "x".repeat(200), // realistic titles — this is what blows the cap
+                state: "claimed".to_string(),
+                owner: Some("Benchy".to_string()),
+                claimable: true,
+                lease: Some("expired".to_string()),
+            })
+            .collect();
+
+        let json = serde_json::to_string(&WorkListResult {
+            total_on_board: 60,
+            claimable_now: 58,
+            note: Some("the board is NOT empty".to_string()),
+            cards,
+        })
+        .expect("WorkListResult serializes");
+
+        // The receipt path keeps a PREFIX. Anything past the cap is severed.
+        const RECEIPT_CAP: usize = 4096;
+        assert!(
+            json.len() > RECEIPT_CAP,
+            "this test is only meaningful when the payload actually exceeds the cap ({} bytes)",
+            json.len()
+        );
+        let receipt: String = json.chars().take(RECEIPT_CAP).collect();
+
+        for field in ["total_on_board", "claimable_now", "note"] {
+            assert!(
+                receipt.contains(field),
+                "`{field}` must survive truncation — declare the summary BEFORE `cards`, \
+                 or citizens read a severed result and correctly conclude there is no work"
+            );
+        }
     }
 }
