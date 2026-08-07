@@ -1071,6 +1071,14 @@ mod tests {
         assert_eq!(own_repetition_fact(&[], &healthy), None);
     }
 
+    // what this catches: the self-repetition detector that tells a looping citizen it is
+    // looping. Atlas's live loop (byte-identical repeats with peer turns between) must render
+    // a "[repetition] N of your recent messages were nearly identical" fact AND surface the
+    // silence/PASS affordance — the fact fired 3x live while the model repeated 20x anyway,
+    // so naming PASS at the detected moment is the lever. Also pins the period-2 blind spot:
+    // two alternating templates whose CONSECUTIVE pairs look dissimilar.
+    // (Was missing #[test] and had never run — the loop detector was unguarded.)
+    #[test]
     fn own_speech_loop_renders_a_repetition_fact() {
         let own = |c: &str| BurstTurn::attributed(true, SPEAKER_TESTER, c, None);
         let peer = |c: &str| BurstTurn::attributed(false, SPEAKER_LEAD, c, None);
@@ -1129,9 +1137,20 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
             own("I'll create a simple text file.\n[writing test files]"),
         ];
-        assert_eq!(
-            own_repetition_fact(&whole_window, &[]).as_deref(),
-            Some("[repetition] 3 of your recent messages were nearly identical")
+        // Assert the PREFIX and the affordance, not the exact sentence. The fact now also
+        // carries "you're circling … silence (PASS) is the honest response" — the same
+        // affordance this test already requires twenty lines above. Pinning the full string
+        // here made the assertion a hostage to wording, and since the test never ran (missing
+        // #[test]) the expectation silently rotted while the message deliberately improved.
+        // The count and the PASS lever are the behaviour; the prose around them is not.
+        let whole = own_repetition_fact(&whole_window, &[]).expect("3 identical → a fact");
+        assert!(
+            whole.starts_with("[repetition] 3 of your recent messages were nearly identical"),
+            "states the count: {whole}"
+        );
+        assert!(
+            whole.contains("silence (PASS)"),
+            "surfaces the PASS affordance in the whole-window arm too: {whole}"
         );
 
         // TWO near-identical messages (one dup each) → below the bar; a pair
@@ -1155,9 +1174,13 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
             own("Files created — here are the wordstats results for all three."),
         ];
-        assert_eq!(
-            own_repetition_fact(&recovered, &[]).as_deref(),
-            Some("[repetition] 4 of your recent messages were nearly identical")
+        // Prefix, not full string — same reason as the whole-window arm above: the count is
+        // the behaviour under test, the coaching sentence is wording that has already moved
+        // once while this test was not running.
+        let after = own_repetition_fact(&recovered, &[]).expect("history is not erased");
+        assert!(
+            after.starts_with("[repetition] 4 of your recent messages were nearly identical"),
+            "a recovery message does not erase in-window history: {after}"
         );
     }
 

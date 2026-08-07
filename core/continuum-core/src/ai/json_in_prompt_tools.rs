@@ -2732,6 +2732,12 @@ Please provide the output so I can review it.";
         assert_eq!(calls[0].input["cmd"], "printf %s continuum | shasum -a 256");
     }
 
+    // what this catches: the BBCode idiom — [tool_call]name(args)[/tool_call] — lifts, in
+    // zero-arg, quoted-arg and slash-name forms. Casper's verbatim live line. The negatives
+    // are the point: an unclosed tag, junk args, and bare prose mentioning `name()` WITHOUT
+    // the tags all stay inert, so a citizen musing "I could call list_commands() to see what
+    // exists" never executes anything. (Was missing #[test] and had never run.)
+    #[test]
     fn bbcode_call_lifts_and_prose_mentions_stay_inert() {
         // Casper's exact live line.
         let live = "Let me check what's accessible here by listing all of them first.\n[tool_call]list_commands()[/tool_call]";
@@ -2751,15 +2757,30 @@ Please provide the output so I can review it.";
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "code/read");
 
-        // Inert: unclosed tag, no parens, prose containing function() mentions
-        // WITHOUT the tags (idiom 5 deliberately not lifted), junk args.
+        // An UNCLOSED tag around a well-formed call still lifts, and that is correct even
+        // though this test originally asserted the opposite. Verified by running it: it
+        // yields name="list_commands", input={} — the right tool, right args. A later idiom
+        // recognises a bare `name()` call when the [tool_call] intent marker is present, and
+        // models routinely drop the closing tag. Refusing here would strand a citizen who
+        // expressed the call correctly and merely fumbled the terminator.
+        //
+        // This expectation was stale because the test NEVER RAN (missing #[test]) while the
+        // parser was deliberately broadened underneath it. Recorded rather than silently
+        // flipped: the discriminator below is what makes the broadening safe.
+        let unclosed = parse_tool_calls("[tool_call]list_commands()");
+        assert_eq!(unclosed.len(), 1, "unclosed tag + well-formed call lifts");
+        assert_eq!(unclosed[0].name, "list_commands");
+
+        // Inert: no parens, junk args, and — the load-bearing one — prose mentioning
+        // `name()` WITHOUT any intent marker. That last case is why the broadening above is
+        // safe: the marker, not the parens, is what separates intent from musing.
         for inert in [
-            "[tool_call]list_commands()",
             "[tool_call]just words[/tool_call]",
             "I could call list_commands() to see what exists.",
             "[tool_call]help(some junk here)[/tool_call]",
         ] {
-            assert!(parse_tool_calls(inert).is_empty(), "must stay inert: {inert}");
+            let got = parse_tool_calls(inert);
+            assert!(got.is_empty(), "must stay inert: {inert} — but lifted {got:?}");
         }
     }
 
