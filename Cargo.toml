@@ -35,13 +35,22 @@ members = [
     # tools/ — build-time codegen (not substrate, not shipped in the binary)
     "tools/manifest-gen",
 ]
-# Citizen project dirs are STANDALONE crates, never substrate-workspace members:
-# `cargo new` inside the checkout auto-adds members (rewriting THIS file
-# non-atomically — a persona's git_diff caught a torn 2-line read of it live,
-# 2026-07-11), and membership makes OUR builds compile THEIR projects. Exclude
-# keeps their in-dir cargo builds working while the substrate manifest stays
-# substrate-only. The real fix is workspace isolation (#49); this is the fence.
-exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"]
+# `members` is an explicit list — NOT a glob — so a stray crate elsewhere in the
+# tree is already not a member and needs no `exclude` entry to stay out.
+#
+# There used to be one here, for citizen project dirs that a persona's `cargo new`
+# had created at the REPO ROOT (her file engine roots at the process cwd until
+# #49 lands, and `cargo new` rewrites THIS file non-atomically — a persona's
+# git_diff caught a torn 2-line read of it live, 2026-07-11). It claimed to keep
+# their in-dir cargo builds working. It never did: those crates declare
+# `edition.workspace = true`, and an EXCLUDED package cannot inherit from the
+# workspace root, so `cargo` inside them failed with "failed to find a workspace
+# root" the whole time. The entries were decoration.
+#
+# They are now quarantined under legacy/persona-exercises/ (see the README
+# there). The real fix remains workspace isolation (#49): give a persona a real
+# workspace of her own, so what she writes is deliberate and reviewable like any
+# other contributor's — never something the substrate manifest has to fence off.
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]
 # airc substrate — git-pinned to a stable SHA for efficient-passthrough

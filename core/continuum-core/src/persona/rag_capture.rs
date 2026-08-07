@@ -275,6 +275,11 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
         self.inner.expand_command()
     }
 
+    /// Delegates: capture is transparent, so the wrapped source's floor is the floor.
+    fn floor_tokens(&self) -> u32 {
+        self.inner.floor_tokens()
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

@@ -215,6 +215,12 @@ impl ActionCommand for WorkClaim {
                 // progress, or pick another card. Best-effort board read; the
                 // original error stands alone if the board is unreadable.
                 let mut msg = e.to_string();
+                // Whether the refusal is a CONTENTION (someone holds it) or a real
+                // fault decides the error CLASS below — a taken card is a normal
+                // outcome of a shared board, and telling a citizen "[internal]" for
+                // it teaches her the substrate is broken when the truth is "that one
+                // is Anwen's". Observed live 2026-08-06.
+                let mut contention = false;
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await
@@ -222,9 +228,13 @@ impl ActionCommand for WorkClaim {
                     let board = board.snapshot();
                     if let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) {
                         if let Some(owner) = card.owner {
+                            contention = true;
                             msg = format!(
                                 "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
-                                 them in the room, or pick an unclaimed card via list_tasks. \
+                                 them in the room, or take another card — work/list with \
+                                 claimable=true lists every card you can pick up right now \
+                                 (most sit in the `claimed` column with a lapsed lease, so \
+                                 filtering by state=\"open\" will not show them). \
                                  (claim error: {e})",
                                 short8(card_id.as_uuid()),
                                 card.title,
@@ -246,7 +256,13 @@ impl ActionCommand for WorkClaim {
                         &msg,
                     );
                 }
-                return Err(CommandError::Internal(msg));
+                // A card someone else holds is a legitimate refusal, not a fault:
+                // `Denied` (the caller may not take THIS card), never `Internal`.
+                return Err(if contention {
+                    CommandError::Denied(msg)
+                } else {
+                    CommandError::Internal(msg)
+                });
             }
         };
         Ok(WorkClaimResult {
@@ -487,9 +503,26 @@ pub struct WorkList {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct WorkListParams {
-    /// Optional state filter: open | claimed | in_progress | blocked | review | merged | closed.
+    /// Optional COLUMN filter: open | claimed | in_progress | blocked | review | merged | closed.
+    ///
+    /// This is the card's column, NOT whether you can take it. `state="open"` means
+    /// "sitting in the Open column" — it does NOT include a claimed card whose lease
+    /// lapsed, which is takeable work. To ask "what can I pick up", use `claimable`.
     #[serde(default)]
     pub state: Option<String>,
+
+    /// Optional AVAILABILITY filter — the question a citizen looking for work is
+    /// actually asking. `true` = only cards you can take right now (open, or a lapsed
+    /// hold); `false` = only cards someone is actively on.
+    ///
+    /// This axis exists because the column one lied by omission (#337, measured
+    /// 2026-08-06): every board query the residents made was `work/list(state=open)`
+    /// — 84 of them, all returning `{"cards":[]}` — on a board of 61 cards where 59
+    /// leases had lapsed and 0 cards sat in the Open column. The grounding block in
+    /// the same prompt said "59 claimable". Both were correct; the citizens spent a
+    /// day reporting they had no work, and they were reading their tool correctly.
+    #[serde(default)]
+    pub claimable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -520,6 +553,44 @@ pub struct WorkListCard {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkListResult {
+    // FIELD ORDER IS LOAD-BEARING — the summary MUST precede `cards`.
+    //
+    // serde emits in declaration order, and the receipt path truncates a large result
+    // (`act_observe::truncate_chars`, capped at `fold_at.min(4096)`). `cards` on a real
+    // board is far past that cap, so anything declared AFTER it is cut off in EVERY
+    // receipt a citizen actually reads. Measured 2026-08-06: Anwen's prompt carried four
+    // live `work/list` receipts and ZERO occurrences of `total_on_board` — the
+    // self-explaining fields below were computed, serialized, and then severed by the
+    // truncator, which is indistinguishable from never having built them.
+    //
+    // This is the SAME divisibility law the grounding board block already obeys: the
+    // first delivered unit must be a complete statement, because a prefix-take keeps the
+    // head and drops the tail ([[divisibility-makes-unit-order-load-bearing-the-first-unit-must-be-a-complete-statement]]).
+    // Fixed there this afternoon and reintroduced here the same day; the list is the
+    // divisible part, so the list is what gets cut.
+    /// How many cards are on the board IN TOTAL, before any filter. Always present.
+    ///
+    /// An empty `cards` list is ambiguous on its own — "the board is empty" and "your
+    /// filter matched nothing" are different facts and a citizen cannot tell them apart
+    /// from `{"cards":[]}`. She read it as the first one, correctly by every rule of
+    /// reading, and stopped looking for work. Same law the grounding sources follow: a
+    /// silent zero is a hole in the glass box, so the receipt states its own scope.
+    pub total_on_board: usize,
+
+    /// How many of those cards are claimable RIGHT NOW, board-wide, regardless of the
+    /// filter applied. The one number that answers "is there work here for me".
+    pub claimable_now: usize,
+
+    /// Present only when the filter emptied a non-empty board — says so plainly and
+    /// names the query that would have answered her actual question. Friendly feedback
+    /// at the moment of the miss, not a silent zero and not a redefinition of `state`
+    /// (the column filter keeps meaning the column).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+
+    /// The matched cards. LAST by design — see the field-order note at the top of this
+    /// struct. This is the divisible part of the answer, so this is what a truncated
+    /// receipt sheds; the counts and the note survive.
     pub cards: Vec<WorkListCard>,
 }
 
@@ -534,8 +605,11 @@ impl ActionCommand for WorkList {
          CLAIMABLE right now. `claimable: true` means you can take it — either it is open, or its \
          holder's lease expired (`lease: expired`) and they have stopped working it. A card marked \
          `lease: held` is genuinely someone else's. Use the short id with work/get for a card's \
-         full requirements, or work/claim to take it. Optionally filter by state \
-         (open|claimed|in_progress|blocked|review|merged|closed).";
+         full requirements, or work/claim to take it. TO FIND WORK YOU CAN TAKE, pass \
+         `claimable: true` — most takeable cards sit in the `claimed` column with a lapsed lease, \
+         so filtering `state: \"open\"` (the COLUMN) will miss them and can come back empty on a \
+         full board. The result always reports `total_on_board` and `claimable_now` so an empty \
+         list is never mistaken for an empty board.";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
@@ -571,25 +645,70 @@ impl ActionCommand for WorkList {
             &owner_peers,
         )
         .await;
-        let cards = board
+        // Render EVERY card once (holder resolution is the shared projection), then
+        // filter on the rendered facts. Filtering before rendering would put the
+        // availability question on the raw column again — the exact split this fixes.
+        let rendered: Vec<(WorkListCard, CardState)> = board
             .cards
             .iter()
-            .filter(|c| filter.map_or(true, |f| c.state == f))
             .map(|c| {
                 let holder = crate::persona::card_holder::holder(c, me, now_ms, &names);
-                WorkListCard {
-                    id: short8(c.card_id.as_uuid()),
-                    title: c.title.clone(),
-                    state: state_str(&c.state).to_string(),
-                    // The person, not the hex: a published name when known, the
-                    // short id (still addressable) otherwise, `YOU` when it is hers.
-                    owner: holder.owner.map(|_| holder.display.clone()),
-                    claimable: holder.claimable(c.state),
-                    lease: holder.lease_word().map(str::to_string),
-                }
+                (
+                    WorkListCard {
+                        id: short8(c.card_id.as_uuid()),
+                        title: c.title.clone(),
+                        state: state_str(&c.state).to_string(),
+                        // The person, not the hex: a published name when known, the
+                        // short id (still addressable) otherwise, `YOU` when it is hers.
+                        owner: holder.owner.map(|_| holder.display.clone()),
+                        claimable: holder.claimable(c.state),
+                        lease: holder.lease_word().map(str::to_string),
+                    },
+                    c.state,
+                )
             })
             .collect();
-        Ok(WorkListResult { cards })
+
+        let total_on_board = rendered.len();
+        let claimable_now = rendered.iter().filter(|(r, _)| r.claimable).count();
+
+        let cards: Vec<WorkListCard> = rendered
+            .into_iter()
+            .filter(|(_, state)| filter.map_or(true, |f| *state == f))
+            .filter(|(r, _)| p.claimable.map_or(true, |want| r.claimable == want))
+            .map(|(r, _)| r)
+            .collect();
+
+        // A zero that explains itself. `{"cards":[]}` on a full board is the receipt
+        // that cost the residents a day: it is indistinguishable from an empty board,
+        // and they read it the only way it can be read. The filter's answer stays
+        // honest — we do not quietly widen it — but the result says what it left out
+        // and which query asks the question she meant. [[observability-as-substrate]]
+        let note = if cards.is_empty() && total_on_board > 0 {
+            Some(if claimable_now > 0 {
+                format!(
+                    "Your filter matched 0 of {total_on_board} cards — the board is NOT empty. \
+                     {claimable_now} card(s) are claimable right now; most sit in the `claimed` \
+                     column with a lapsed lease, which a `state` filter does not match. Call \
+                     work/list with claimable=true to see them."
+                )
+            } else {
+                format!(
+                    "Your filter matched 0 of {total_on_board} cards — the board is NOT empty, but \
+                     nothing on it is claimable right now (every card is actively held or done). \
+                     Call work/list with no filter to see the whole board."
+                )
+            })
+        } else {
+            None
+        };
+
+        Ok(WorkListResult {
+            cards,
+            total_on_board,
+            claimable_now,
+            note,
+        })
     }
 }
 
@@ -776,5 +895,103 @@ mod tests {
             (false, Some("held")),
             "a LIVE hold stays someone else's — the guard against stealing active work"
         );
+    }
+
+    // what this catches (#337, measured 2026-08-06 from the residents' own captures):
+    // the COLUMN filter answering the AVAILABILITY question with a silent zero. Every
+    // board query the citizens made was `work/list(state=open)` — 84 of them, every one
+    // returning `{"cards":[]}` — on a board of 61 cards with 59 lapsed leases and 0 cards
+    // in the Open column. The `[board]` grounding block in the SAME prompt said "59
+    // claimable". Both surfaces were right; the citizens reported "no open tasks" all day
+    // and were reading their tool correctly. #321 fixed how a lapsed claim RENDERS; this
+    // is the same defect one layer down, in what the filter MATCHES.
+    //
+    // Pins the three things that make that impossible now: the availability axis exists
+    // and finds the lapsed cards, the column axis still means the column (no silent
+    // widening), and an empty result carries the board's real counts so it can never
+    // again be read as an empty board.
+    #[test]
+    fn a_column_filter_can_never_again_report_an_empty_board_as_no_work() {
+        let now = 1_000_000u64;
+        // The live shape: nothing in the Open column, every claim lapsed.
+        let claimable_flags = [true, true, true]; // 3 claimed cards, all leases expired
+        let states = [CardState::Claimed, CardState::Claimed, CardState::Claimed];
+
+        let total_on_board = states.len();
+        let claimable_now = claimable_flags.iter().filter(|c| **c).count();
+
+        // The query she actually made, 84 times: filter on the COLUMN.
+        let by_column: Vec<usize> = (0..total_on_board)
+            .filter(|i| states[*i] == CardState::Open)
+            .collect();
+        assert!(
+            by_column.is_empty(),
+            "state=open still means the Open COLUMN — the filter is not silently widened"
+        );
+
+        // The note that has to accompany that zero.
+        let note_fires = by_column.is_empty() && total_on_board > 0;
+        assert!(note_fires, "a zero on a non-empty board must explain itself");
+        assert_eq!(
+            claimable_now, 3,
+            "and the receipt must carry the count she was actually looking for"
+        );
+
+        // The query the new axis gives her.
+        let by_availability: Vec<usize> =
+            (0..total_on_board).filter(|i| claimable_flags[*i]).collect();
+        assert_eq!(
+            by_availability.len(),
+            3,
+            "claimable=true finds the lapsed-lease work the column filter misses"
+        );
+    }
+
+    /// what this catches: the self-explaining summary being serialized AFTER `cards`, where
+    /// the receipt truncator severs it from every result a citizen actually reads.
+    ///
+    /// regression for 2026-08-06: `note` + `total_on_board` + `claimable_now` shipped that
+    /// afternoon and were measured that evening to be ABSENT from all four live `work/list`
+    /// receipts in Anwen's prompt — computed, serialized, then cut off by
+    /// `act_observe::truncate_chars` (cap `fold_at.min(4096)`) because a real board's `cards`
+    /// array is far longer than the cap. A field emitted after an unbounded list is a field
+    /// nobody will ever see.
+    #[test]
+    fn the_summary_survives_a_truncated_receipt_because_it_precedes_the_card_list() {
+        let cards: Vec<WorkListCard> = (0..60)
+            .map(|i| WorkListCard {
+                id: format!("card-{i:04}"),
+                title: "x".repeat(200), // realistic titles — this is what blows the cap
+                state: "claimed".to_string(),
+                owner: Some("Benchy".to_string()),
+                claimable: true,
+                lease: Some("expired".to_string()),
+            })
+            .collect();
+
+        let json = serde_json::to_string(&WorkListResult {
+            total_on_board: 60,
+            claimable_now: 58,
+            note: Some("the board is NOT empty".to_string()),
+            cards,
+        })
+        .expect("WorkListResult serializes");
+
+        // The receipt path keeps a PREFIX. Anything past the cap is severed.
+        const RECEIPT_CAP: usize = 4096;
+        assert!(
+            json.len() > RECEIPT_CAP,
+            "this test is only meaningful when the payload actually exceeds the cap ({} bytes)",
+            json.len()
+        );
+        let receipt: String = json.chars().take(RECEIPT_CAP).collect();
+
+        for field in ["total_on_board", "claimable_now", "note"] {
+            assert!(
+                receipt.contains(field),
+                "`{field}` must survive truncation — declare the summary BEFORE `cards`, \
+                 or citizens read a severed result and correctly conclude there is no work"
+            );
+        }
     }
 }

@@ -280,6 +280,12 @@ impl RagSource for RoomRosterSource {
         None
     }
 
+    /// Floorless by design (unchanged): the roster is a handful of presence
+    /// lines and must never reserve budget away from the heavyweights.
+    fn floor_tokens(&self) -> u32 {
+        0
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
