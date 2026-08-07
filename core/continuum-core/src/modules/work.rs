@@ -29,8 +29,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use airc_lib::{
-    Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard, HeartbeatWorkClaim,
-    Priority, ReleaseWorkClaim, RepoId, WorkCardId,
+    Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard,
+    HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCardId,
 };
 
 use crate::persona::PersonaAircRuntimeRegistry;
@@ -68,9 +68,9 @@ fn persona_airc(
                     .into(),
             )
         })?;
-    let rt = registry
-        .get(peer)
-        .ok_or_else(|| CommandError::NotFound(format!("no live airc runtime for persona {peer}")))?;
+    let rt = registry.get(peer).ok_or_else(|| {
+        CommandError::NotFound(format!("no live airc runtime for persona {peer}"))
+    })?;
     Ok(rt.airc().clone())
 }
 
@@ -186,14 +186,14 @@ impl ActionCommand for WorkClaim {
     const NAME: &'static str = "work/claim";
     const ALIASES: &'static [&'static str] = &["claim_task"];
     const NATIVE: bool = true; // core room workflow — claiming shared-board work as yourself
-    // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
-    // self-scoped cooperative act the shared board exists for. It was
-    // Privileged, so every persona claim all day was structurally impossible —
-    // narrated claims, then Atlas's honest real attempt bounced off the gate
-    // ("I don't have access to work/claim") while the board, the room, and the
-    // operators all urged them to claim. The lifecycle verbs (claim/release/
-    // state/heartbeat) act only on the caller's own identity + lease;
-    // work/create (board curation) stays Privileged.
+                               // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
+                               // self-scoped cooperative act the shared board exists for. It was
+                               // Privileged, so every persona claim all day was structurally impossible —
+                               // narrated claims, then Atlas's honest real attempt bounced off the gate
+                               // ("I don't have access to work/claim") while the board, the room, and the
+                               // operators all urged them to claim. The lifecycle verbs (claim/release/
+                               // state/heartbeat) act only on the caller's own identity + lease;
+                               // work/create (board curation) stays Privileged.
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Claim a work card on the shared airc board as yourself, so others see you own it. \
@@ -232,7 +232,30 @@ impl ActionCommand for WorkClaim {
                 {
                     let board = board.snapshot();
                     if let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) {
-                        if let Some(owner) = card.owner {
+                        // The hold must be LIVE. `card.owner` alone is not contention:
+                        // expiry never clears owner/claim_id (airc-work
+                        // projection/apply.rs clears them only on release or on a NEW
+                        // claim), so a card claimed once carries an owner forever. Keying
+                        // off the bare field relabelled EVERY refusal — settled work,
+                        // wrong-room, transport faults — as "held by peer X", and then
+                        // `claim_rejections::record` below burned that fabrication into
+                        // perception for ten minutes.
+                        //
+                        // Measured 2026-08-07: ~50 of 61 cards on #general and 4 of 12 on
+                        // #k3-serving carry a stale owner with a lease expired 134h+; three
+                        // of the latter are in Review, where the true refusal is "settled
+                        // work is not claimable". Two citizens spent the day quoting this
+                        // string back — "expired leases or the cards being held by others"
+                        // is THIS format string, both halves of it.
+                        //
+                        // `hold_of` is the same predicate `work/list` renders through
+                        // (card_holder::holder, below) — one rule for "is someone on this",
+                        // not two in one file.
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        if let Some(owner) = live_holder(card, now_ms) {
                             contention = true;
                             msg = format!(
                                 "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
@@ -317,8 +340,11 @@ impl ActionCommand for WorkCreate {
         let airc = persona_airc(&self.registry, ctx)?;
         let repo = RepoId::new(p.repo)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
-        let mut req =
-            CreateWorkCard::new(repo, p.title, parse_priority(p.priority.as_deref().unwrap_or("p2")));
+        let mut req = CreateWorkCard::new(
+            repo,
+            p.title,
+            parse_priority(p.priority.as_deref().unwrap_or("p2")),
+        );
         req.body = p.body;
         let card_id = airc
             .create_work_card(req)
@@ -367,7 +393,11 @@ impl ActionCommand for WorkRelease {
     type Params = WorkReleaseParams;
     type Output = WorkReleaseResult;
 
-    async fn run(&self, ctx: &Ctx, p: WorkReleaseParams) -> Result<WorkReleaseResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: WorkReleaseParams,
+    ) -> Result<WorkReleaseResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
@@ -472,7 +502,11 @@ impl ActionCommand for WorkHeartbeat {
     type Params = WorkHeartbeatParams;
     type Output = WorkHeartbeatResult;
 
-    async fn run(&self, ctx: &Ctx, p: WorkHeartbeatParams) -> Result<WorkHeartbeatResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: WorkHeartbeatParams,
+    ) -> Result<WorkHeartbeatResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
@@ -513,6 +547,34 @@ fn state_str(s: &CardState) -> &'static str {
 
 /// The board's displayed 8-char short form of an id — what every surface
 /// shows and what the lifecycle verbs accept back.
+/// The peer genuinely ON this card right now, or `None`.
+///
+/// The one question `work/claim`'s error path is allowed to ask before it tells
+/// a citizen someone else has her card. It is NOT `card.owner`: expiry never
+/// clears owner/claim_id (airc-work's projection clears them only on release or
+/// on a new claim), so a card claimed once carries an owner forever. Keying off
+/// the bare field relabelled EVERY refusal — settled work, wrong-room, transport
+/// faults — as "held by peer X", and `claim_rejections::record` then burned that
+/// fabrication into perception for ten minutes.
+///
+/// Named and separated from the call site so the rule can be tested without a
+/// board, an airc daemon, or a running persona — the call site is where this
+/// went wrong, and an inline `match` is not something a test can reach.
+///
+/// Delegates to [`card_holder::hold_of`], the SAME predicate `work/list` renders
+/// through. One rule for "is someone on this card", not two in one file.
+fn live_holder(
+    card: &airc_work::WorkCard,
+    now_ms: u64,
+) -> Option<airc_core::PeerId> {
+    match crate::persona::card_holder::hold_of(card, now_ms) {
+        crate::persona::card_holder::Hold::Held => card.owner,
+        // Lapsed or unclaimed: whatever refused the claim, it was not a person.
+        crate::persona::card_holder::Hold::Lapsed
+        | crate::persona::card_holder::Hold::Unclaimed => None,
+    }
+}
+
 fn short8(u: Uuid) -> String {
     u.simple().to_string().chars().take(8).collect()
 }
@@ -672,7 +734,11 @@ impl ActionCommand for WorkList {
         // Before this, three surfaces computed "who holds it / is the lease live"
         // separately and a teammate always came back as 8-hex, which Joel called out
         // directly: tell them WHO, or they cannot reach out.
-        let me = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()).unwrap_or_default();
+        let me = ctx
+            .caller
+            .as_ref()
+            .map(|c| c.peer_id.as_uuid())
+            .unwrap_or_default();
         let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
         for c in &board.cards {
             if let Some(o) = c.owner {
@@ -860,18 +926,34 @@ impl ServiceModule for WorkModule {
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         // All work commands are typed objects on the one registry (see `commands`).
-        Err(format!("work command '{command}' is a typed object, not prefix-routed"))
+        Err(format!(
+            "work command '{command}' is a typed object, not prefix-routed"
+        ))
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         vec![
-            Arc::new(WorkList { registry: self.registry.clone() }),
-            Arc::new(WorkGet { registry: self.registry.clone() }),
-            Arc::new(WorkClaim { registry: self.registry.clone() }),
-            Arc::new(WorkCreate { registry: self.registry.clone() }),
-            Arc::new(WorkRelease { registry: self.registry.clone() }),
-            Arc::new(WorkState { registry: self.registry.clone() }),
-            Arc::new(WorkHeartbeat { registry: self.registry.clone() }),
+            Arc::new(WorkList {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkGet {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkClaim {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkCreate {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkRelease {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkState {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(WorkHeartbeat {
+                registry: self.registry.clone(),
+            }),
         ]
     }
 
@@ -884,6 +966,81 @@ impl ServiceModule for WorkModule {
 mod tests {
     use super::*;
 
+    /// what this catches (#357): `work/claim` inventing a holder out of a stale
+    /// `owner` field, then `claim_rejections::record` burning that fabrication
+    /// into perception for ten minutes.
+    ///
+    /// Expiry NEVER clears owner/claim_id — airc-work's projection clears them
+    /// only on release or on a new claim — so a card claimed once carries an
+    /// owner forever. Keying contention off the bare field relabelled EVERY
+    /// refusal ("settled work is not claimable", wrong-room, transport faults)
+    /// as "is held by peer X".
+    ///
+    /// Measured on the live boards 2026-08-07: ~50 of 61 cards on #general and
+    /// 4 of 12 on #k3-serving carried a stale owner with a lease expired 134h+.
+    /// Two citizens spent the day quoting the resulting sentence back at us —
+    /// "expired leases or the cards being held by others" is BOTH HALVES of that
+    /// one format string.
+    #[test]
+    fn a_lapsed_lease_is_not_a_person_holding_the_card() {
+        use airc_core::PeerId;
+        use airc_work::{CardState, Priority, RepoId, WorkCard, WorkCardId};
+
+        let owner = PeerId::new();
+        let card = |claimed: bool, expires_ms: Option<u64>| WorkCard {
+            card_id: WorkCardId::new(),
+            repo: RepoId::new("CambrianTech/continuum").expect("valid repo id in fixture"),
+            title: "a card".to_string(),
+            body: None,
+            priority: Priority::P2,
+            lane_id: None,
+            state: CardState::Claimed,
+            owner: Some(owner),
+            claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
+            claim_expires_at_ms: expires_ms,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: PeerId::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            reviews: None,
+        };
+        // A realistic epoch-ms clock: the 134h subtraction below is a real
+        // observed lease age, and a toy `now` would underflow it.
+        let now = 1_786_000_000_000u64;
+
+        // A LIVE lease is a real person on a real card — still reported.
+        assert_eq!(
+            live_holder(&card(true, Some(now + 60_000)), now),
+            Some(owner),
+            "a live claim IS contention and must still name the holder"
+        );
+
+        // A lapsed lease: the owner field survives, the hold does not. Whatever
+        // refused the claim, it was not a person.
+        assert_eq!(
+            live_holder(&card(true, Some(now - 1)), now),
+            None,
+            "an expired lease must NOT be reported as someone holding the card"
+        );
+
+        // The exact live shape: owner set, claim long expired. This is the ~50
+        // of 61 cards on #general.
+        assert_eq!(
+            live_holder(&card(true, Some(now - 134 * 60 * 60 * 1000)), now),
+            None,
+            "a lease expired 134h ago is not a holder"
+        );
+
+        // Owner set with no claim at all — the shape a release leaves behind in
+        // some projections. Also not a hold.
+        assert_eq!(
+            live_holder(&card(false, None), now),
+            None,
+            "an owner with no claim is not a live hold"
+        );
+    }
+
     // what this catches: work/claim id resolution (#161) still rescues the exact
     // live corruptions after the prefix/near-miss logic moved to the shared
     // crate::id_resolve primitive (#164). Regression pin for the CARD side: the two
@@ -895,7 +1052,10 @@ mod tests {
     #[test]
     fn card_ids_rescue_mistyped_forms_via_shared_id_resolve() {
         use crate::id_resolve::{normalize, IdMatch};
-        assert!(matches!(normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"), IdMatch::Full(_)));
+        assert!(matches!(
+            normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"),
+            IdMatch::Full(_)
+        ));
         assert_eq!(
             normalize("d7cfe47e0-8e39-41f5-bb2a-4e5d36e558e1"),
             IdMatch::Prefix("d7cfe47e".to_string())
@@ -904,7 +1064,10 @@ mod tests {
             normalize("d7cfe47e08e3941f5bb2a4e5d36e558e1"), // 33 hex chars
             IdMatch::Prefix("d7cfe47e".to_string())
         );
-        assert_eq!(normalize("08ece9e8"), IdMatch::Prefix("08ece9e8".to_string()));
+        assert_eq!(
+            normalize("08ece9e8"),
+            IdMatch::Prefix("08ece9e8".to_string())
+        );
     }
 
     // what this catches (#321, measured live 2026-08-06): the board lying by OMISSION.
@@ -919,13 +1082,22 @@ mod tests {
     // (the one that was invisible); live hold → someone else's, leave it.
     #[test]
     fn an_expired_lease_reads_as_claimable_and_a_live_one_does_not() {
-        let now = 1_000_000u64;
+        // A realistic epoch-ms clock: the 134h subtraction below is a real
+        // observed lease age, and a toy `now` would underflow it.
+        let now = 1_786_000_000_000u64;
         let claimable_of = |state: CardState, expires: Option<u64>| {
             let expired = expires.is_some_and(|e| e <= now);
-            (state == CardState::Open || expired, expires.map(|_| if expired { "expired" } else { "held" }))
+            (
+                state == CardState::Open || expired,
+                expires.map(|_| if expired { "expired" } else { "held" }),
+            )
         };
 
-        assert_eq!(claimable_of(CardState::Open, None), (true, None), "an open card is takeable");
+        assert_eq!(
+            claimable_of(CardState::Open, None),
+            (true, None),
+            "an open card is takeable"
+        );
         assert_eq!(
             claimable_of(CardState::Claimed, Some(now - 1)),
             (true, Some("expired")),
@@ -953,7 +1125,9 @@ mod tests {
     // again be read as an empty board.
     #[test]
     fn a_column_filter_can_never_again_report_an_empty_board_as_no_work() {
-        let now = 1_000_000u64;
+        // A realistic epoch-ms clock: the 134h subtraction below is a real
+        // observed lease age, and a toy `now` would underflow it.
+        let now = 1_786_000_000_000u64;
         // The live shape: nothing in the Open column, every claim lapsed.
         let claimable_flags = [true, true, true]; // 3 claimed cards, all leases expired
         let states = [CardState::Claimed, CardState::Claimed, CardState::Claimed];
@@ -972,15 +1146,19 @@ mod tests {
 
         // The note that has to accompany that zero.
         let note_fires = by_column.is_empty() && total_on_board > 0;
-        assert!(note_fires, "a zero on a non-empty board must explain itself");
+        assert!(
+            note_fires,
+            "a zero on a non-empty board must explain itself"
+        );
         assert_eq!(
             claimable_now, 3,
             "and the receipt must carry the count she was actually looking for"
         );
 
         // The query the new axis gives her.
-        let by_availability: Vec<usize> =
-            (0..total_on_board).filter(|i| claimable_flags[*i]).collect();
+        let by_availability: Vec<usize> = (0..total_on_board)
+            .filter(|i| claimable_flags[*i])
+            .collect();
         assert_eq!(
             by_availability.len(),
             3,
