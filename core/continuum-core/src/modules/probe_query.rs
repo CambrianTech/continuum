@@ -74,7 +74,9 @@ const MAX_LIMIT: u32 = 2_000;
 
 // ─────────────────────────── debug/probes/query ──────────────────────────
 
-/// Query the historical probe ledger.
+/// Query the historical probe ledger. Stateless — it holds no deps, so it
+/// self-registers rather than being handed out by a host module's `commands()`.
+#[derive(Default)]
 pub struct ProbeQuery;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
@@ -356,7 +358,14 @@ fn summarize(scan: &Scan, limit: u32) -> String {
     )
 }
 
-crate::register_command!(ProbeQuery);
+// `register_command!` alone registers only the DESCRIPTOR — which is what the
+// suggester and the ACL read, and NOT what dispatch needs. Using it here produced
+// the perfect false signal: "Unknown command: 'debug/probes/query'. Did you mean:
+// debug/probes/query?" — the name was known to the suggester and unroutable by the
+// kernel. `register_stateless_command!` registers the descriptor AND the runtime
+// constructor, which is what actually makes the verb callable (#344's shape, self-
+// inflicted: a correct capability nothing could invoke).
+crate::register_stateless_command!(ProbeQuery);
 
 #[cfg(test)]
 mod tests {

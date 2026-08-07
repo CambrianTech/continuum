@@ -323,14 +323,14 @@ impl ServiceModule for ProbeStreamModule {
         }
     }
 
-    /// The typed half of this module's surface. `open`/`next`/`close` above are the
-    /// prefix-routed LIVE stream; `debug/probes/query` (#235) is the HISTORICAL read,
-    /// and it ships on the DynCommand registry per #62 rather than growing the match
-    /// arm. Same module because it is one probe concern; separate file because it is a
-    /// separate one (see `probe_query.rs`).
-    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        vec![Arc::new(crate::modules::probe_query::ProbeQuery)]
-    }
+    // NOTE (#235): `debug/probes/query` deliberately does NOT hang off this module.
+    // It is stateless, so it self-registers via `register_stateless_command!` at its
+    // own declaration site (`probe_query.rs`). Handing it out here would have been
+    // dead code twice over — this module is registered with the runtime NOWHERE, so
+    // its `commands()` is never collected. That is the actual reason the verb was
+    // unroutable, and it is worth leaving written down: a module's `commands()` only
+    // reaches dispatch if the MODULE itself was registered (cf. `RoomModule`, wired
+    // in both `runtime/registry.rs` and `ipc/mod.rs`).
 
     fn as_any(&self) -> &dyn Any {
         self
