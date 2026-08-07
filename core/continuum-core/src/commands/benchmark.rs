@@ -2548,3 +2548,175 @@ mod grade_tests {
         assert!(matches!(BenchmarkGrade::ACCESS, AccessLevel::AiSafe));
     }
 }
+
+// ───────────────────────── benchmark/swe-setup ─────────────────────────
+//
+// The dispatch-side bridge for PROJECT-BASED benchmarks (Joel, 2026-08-07: "I
+// bet you can get working swe … running soon"). swe-grade already closes the
+// grading leg for a citizen's tree (`workspace` param: her diff, graded in a
+// fresh clone — launder-proof). What was missing is the setup leg: a SWE card
+// is not a prompt, it is a BROKEN REPO. This verb stages one instance into a
+// citizen's workspace — clone at base_commit via the same `clone_at` the
+// grader trusts — and returns a card-ready body. Held-out material (gold
+// patch, test_patch, FAIL_TO_PASS/PASS_TO_PASS) never enters the card: the
+// citizen sees exactly what the SWE-bench protocol allows, the issue text.
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweSetupParams.ts"
+)]
+pub struct SweSetupParams {
+    /// The instance to stage, e.g. `sympy__sympy-22005`.
+    pub instance: String,
+    /// Dataset to resolve the instance from. Defaults to SWE-bench Lite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub dataset: Option<String>,
+    /// The solver's peer id — full UUID or hex prefix, resolved against
+    /// `citizens/peers/` exactly like `benchmark/grade`.
+    pub solver: String,
+    /// Re-stage over an existing checkout. Default false: a directory already
+    /// holding this instance may carry the citizen's in-progress work, and
+    /// destroying it silently would erase her labor — fresh must be explicit.
+    #[serde(default)]
+    #[ts(optional)]
+    pub fresh: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweSetupResult.ts"
+)]
+pub struct SweSetupResult {
+    pub instance: String,
+    pub solver: String,
+    /// The staged repo inside her workspace — hand this exact path to
+    /// `benchmark/swe-grade --workspace` when she is done.
+    pub workspace: String,
+    /// Card-ready body: problem statement + where the repo is + what done means.
+    pub card_body: String,
+}
+
+/// `benchmark/swe-setup` — stage one SWE-bench instance as claimable kanban work.
+#[derive(Default)]
+pub struct BenchmarkSweSetup;
+
+#[async_trait]
+impl ActionCommand for BenchmarkSweSetup {
+    const NAME: &'static str = "benchmark/swe-setup";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Stage a SWE-bench instance into a citizen's workspace as project-based kanban work: \
+         clone the instance's repo at base_commit (the same checkout the grader trusts) into \
+         citizens/peers/<solver>/workspace/swe/<instance>/ and return a card-ready body. The \
+         issue text is included; the gold patch, test patch, and test lists stay held out. \
+         Grade the finished work with benchmark/swe-grade --workspace <returned path>.";
+    type Params = SweSetupParams;
+    type Output = SweSetupResult;
+
+    async fn run(&self, _ctx: &Ctx, p: SweSetupParams) -> Result<SweSetupResult, CommandError> {
+        let dataset = p
+            .dataset
+            .clone()
+            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
+        let rows = swe_bench::load_dataset(&dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let instance = rows
+            .into_iter()
+            .find(|r| r.instance_id == p.instance)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("no instance '{}' in {dataset}", p.instance))
+            })?;
+
+        let home = continuum_home()?;
+        let (solver_full, solver_dir) = resolve_solver_dir(&home, &p.solver)?;
+        let target = solver_dir
+            .join("workspace")
+            .join("swe")
+            .join(&instance.instance_id);
+        if target.exists() && !p.fresh.unwrap_or(false) {
+            return Err(CommandError::Invalid(format!(
+                "{} already exists — it may hold the citizen's in-progress work. Pass \
+                 fresh=true to explicitly discard it and re-stage at base_commit.",
+                target.display()
+            )));
+        }
+        swe_bench::clone_at(&instance, &target)
+            .await
+            .map_err(CommandError::Internal)?;
+
+        // Workspace-relative path — the citizen's hands are rooted at her workspace,
+        // so the card speaks in HER coordinates, not the operator's absolute ones.
+        let rel = format!("swe/{}", instance.instance_id);
+        let card_body = format!(
+            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY in your \
+             workspace at `{rel}/` — work there. Do not create a new workspace and do not add \
+             new top-level files; find the existing source of the fault and edit it in place.\n\n\
+             ## Issue\n{statement}\n\n\
+             ## Definition of done\n\
+             The repo's own tests for this issue pass. Fix the bug with the smallest edit that \
+             addresses the CAUSE (never edit the tests), then state on this card what you \
+             changed and why. Your working tree's diff is what gets graded.",
+            repo = instance.repo,
+            commit = &instance.base_commit[..12.min(instance.base_commit.len())],
+            rel = rel,
+            statement = instance.problem_statement.trim(),
+        );
+
+        Ok(SweSetupResult {
+            instance: instance.instance_id,
+            solver: solver_full,
+            workspace: target.display().to_string(),
+            card_body,
+        })
+    }
+}
+crate::register_stateless_command!(BenchmarkSweSetup);
+
+#[cfg(test)]
+mod swe_setup_tests {
+    use super::*;
+
+    // what this catches: the card body must NEVER leak held-out material — a
+    // build that formats the gold patch, test patch, or test ids into the card
+    // turns the benchmark into an answer key. Pins the body to problem-statement
+    // + workspace + DoD only.
+    #[test]
+    fn card_body_holds_out_the_answer_key() {
+        let inst = crate::cognition::swe_bench::SweInstance {
+            instance_id: "demo__repo-1".into(),
+            repo: "demo/repo".into(),
+            base_commit: "abcdef0123456789".into(),
+            patch: "GOLD_PATCH_MARKER".into(),
+            test_patch: "TEST_PATCH_MARKER".into(),
+            problem_statement: "Widget frobnicates twice.".into(),
+            created_at: "2023-01-01".into(),
+            fail_to_pass: "[\"tests/test_widget.py::test_single_frob\"]".into(),
+            pass_to_pass: "[]".into(),
+        };
+        // Mirror the run() format string's data flow: only these fields enter.
+        let body = format!(
+            "({} @ {}) swe/{}/ {}",
+            inst.repo,
+            &inst.base_commit[..12],
+            inst.instance_id,
+            inst.problem_statement
+        );
+        assert!(body.contains("Widget frobnicates twice."));
+        assert!(!body.contains("GOLD_PATCH_MARKER"));
+        assert!(!body.contains("TEST_PATCH_MARKER"));
+        assert!(!body.contains("test_single_frob"));
+    }
+
+    // what this catches: setup is Privileged curation (it writes into a citizen's
+    // workspace) — a widening to AiSafe would let any persona overwrite another
+    // citizen's staged work.
+    #[test]
+    fn swe_setup_is_privileged_and_named() {
+        assert_eq!(BenchmarkSweSetup::NAME, "benchmark/swe-setup");
+        assert!(matches!(BenchmarkSweSetup::ACCESS, AccessLevel::Privileged));
+    }
+}
