@@ -1056,6 +1056,23 @@ pub fn start_server(
     // real foundry executor.
     runtime.register(Arc::new(ForgeModule::new()));
 
+    // GeneratorModule — hosts `generate/module` (scaffold a fresh ServiceModule).
+    //
+    // This was the ONE REAL ORPHAN the dispatch-parity audit had been reporting all
+    // along, invisible under two false positives until `dispatch_orphans` stopped
+    // counting adapter-served `Provided` commands (#325). Nothing was wrong with the
+    // command: `GenerateModule` is a correct dep-holding typed command and IS in
+    // `GeneratorModule::commands()`. The module itself was simply never registered —
+    // it appeared in the codebase only in doc comments — so `generate/module` was
+    // advertised in `commands/help`, did-you-mean suggestions, and the persona tool
+    // offer while nothing on the runtime could route it. Exactly the #309 class, still
+    // live, and the reason the audit exists.
+    //
+    // Background priority, no dedicated thread, `generate/` prefix — see its
+    // `ModuleConfig`. Privileged: it writes Rust source into the workspace tree, so it
+    // is not on the persona toolbelt.
+    runtime.register(Arc::new(crate::modules::generator::GeneratorModule::new()));
+
     // EventsModule (L1-1 — event-class declaration registry).
     // Spec: GRID-BUS-ARCHITECTURE §2.2 (continuum#1439).
     // Exposes events/declare-class, events/get-class, events/list-classes,
