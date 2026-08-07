@@ -449,7 +449,7 @@ impl ToolCallFormat for BbcodeCallFormat {
 
 /// `key="value"` / `key=value` pairs (comma-separated) and NOTHING else;
 /// empty input → empty args. Leftover junk → `None` (whole call stays inert).
-fn paren_call_args(s: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+pub(crate) fn paren_call_args(s: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
     let mut map = serde_json::Map::new();
     let s = s.trim();
     if s.is_empty() {

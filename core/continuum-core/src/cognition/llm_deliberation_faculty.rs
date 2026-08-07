@@ -1738,7 +1738,7 @@ impl Faculty for LlmDeliberationFaculty {
                 // authorization gate and the executor ever see them (the
                 // reverse half of the offer-side rename above).
                 for c in &mut calls {
-                    c.name = crate::cognition::tool_dialect::from_wire_name(&c.name).to_string();
+                    crate::cognition::tool_dialect::normalize_call(c);
                 }
                 if !calls.is_empty() {
                     return Some(self.act_verdict(calls, &resp));
@@ -1751,7 +1751,7 @@ impl Faculty for LlmDeliberationFaculty {
                 // not silently no-op as an unknown name. The text-lift path skipped
                 // this, so narrated snake_case verbs died while the SAME name in a
                 // native tool_call worked. One mapping, both paths.
-                call.name = crate::cognition::tool_dialect::from_wire_name(&call.name).to_string();
+                crate::cognition::tool_dialect::normalize_call(&mut call);
                 return Some(self.act_verdict(vec![call], &resp));
             }
             // #159 fail-loud: she emitted the native `[TOOL_CALLS]` marker but named no
@@ -1793,8 +1793,7 @@ impl Faculty for LlmDeliberationFaculty {
                             .into_iter()
                             .last()
                     {
-                        call.name =
-                            crate::cognition::tool_dialect::from_wire_name(&call.name).to_string();
+                        crate::cognition::tool_dialect::normalize_call(&mut call);
                         crate::probe!(
                             class = "persona.act.reasoning_lift",
                             persona = %self.persona_name,
