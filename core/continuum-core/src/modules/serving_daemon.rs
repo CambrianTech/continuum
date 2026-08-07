@@ -1644,6 +1644,13 @@ impl ServingDaemonModule {
             // then update the in-process watch view.
             Self::emit_serving(bus.as_ref(), &snapshot);
             let _ = serving_tx.send_replace(snapshot);
+            // #350: from here on, an empty snapshot means "we looked and nothing is
+            // serving" — a real fault. BEFORE this first publish it only meant "the
+            // daemon has not finished starting", and readers could not tell the two
+            // apart, so boot noise was indistinguishable from a broken lane. Marked
+            // AFTER the publish so a reader that sees `has_reconciled()` is guaranteed
+            // to also see the published snapshot, never a torn in-between.
+            crate::inference::llama_server::mark_first_reconcile();
             // `_gate` (GateClear) clears `reconciling` on drop here — and, crucially, also
             // on any panic/cancel above, which the explicit store used to miss.
         }))

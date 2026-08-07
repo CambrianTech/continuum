@@ -2401,6 +2401,27 @@ async fn run_self_cycle(
     // still `say`s once. Only message-driven turns (real conversation) stream live.
     // Idle self-tick: no citizen AND no rail tee (room/sender None) — an idle mind
     // musing isn't addressing anyone, so nothing streams to the browser (#170).
+    // #350: don't spend a whole deliberation on a turn the serving guard is CERTAIN to
+    // refuse. Until the daemon publishes its first reconcile, every reader borrows the
+    // boot placeholder and the single-resident guard rejects — so this tick can only end
+    // in a loud `inference_failed` naming a serving fault that does not exist. Measured
+    // 2026-08-07: 116 such failures in 38 bursts across 3 days, each burst followed by a
+    // real reconcile 10–20s later, while the daemon published `active=<none>` exactly
+    // ZERO times. The lane was healthy throughout; only the READER was uninitialised.
+    //
+    // Skipping is honest rather than a swallowed error: nothing has failed yet, the mind
+    // simply has no brain attached for another few seconds. Its own probe class keeps it
+    // visible and keeps it OUT of the failure counter, so a future spike in
+    // `selftick.inference_failed` means what it says.
+    if !crate::inference::llama_server::has_reconciled() {
+        crate::probe!(
+            class = "persona.selftick.awaiting_serving",
+            persona = %ctx.identity.agent_name,
+            "serving daemon has not reconciled yet — skipping this self-tick rather than \
+             deliberating into a guaranteed refusal (startup, not a fault)"
+        );
+        return;
+    }
     let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(

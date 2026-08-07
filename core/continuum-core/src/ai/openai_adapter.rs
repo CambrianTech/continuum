@@ -2024,6 +2024,23 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 && (snap.active_model.as_deref() == Some(model)
                     || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)));
             if !guaranteed {
+                // #350: say WHICH of the two situations this is. Before the daemon's
+                // first reconcile the snapshot is the boot placeholder — "we have not
+                // looked yet" — which is transient and self-heals in seconds. After it,
+                // an empty snapshot means the daemon looked and nothing is serving,
+                // which is a real fault. Both used to print the identical sentence, and
+                // the resulting 116 false alarms cost a night of investigation aimed at
+                // a serving layer that was healthy the whole time.
+                if !crate::inference::llama_server::has_reconciled() {
+                    return Err(format!(
+                        "{}: serving daemon has not completed its first reconcile yet \
+                         (core is still starting) — model '{}' cannot be guaranteed until \
+                         it does. This is STARTUP, not a serving fault: it clears on its \
+                         own, typically within seconds, and the caller should retry rather \
+                         than treat the lane as broken.",
+                        self.config.name, model
+                    ));
+                }
                 return Err(format!(
                     "{}: model '{}' is not the active served model (serving: {}, ready: {}); \
                      the serving daemon owns which single model is resident — refusing to \

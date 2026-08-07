@@ -750,6 +750,53 @@ pub fn vision_lane_ready(
 /// and free functions alike.
 static SERVING_STATE: OnceLock<watch::Receiver<ServingSnapshot>> = OnceLock::new();
 
+/// Has the serving daemon completed its FIRST reconcile in this process?
+///
+/// # Why this exists as its own signal (#350, measured 2026-08-07)
+///
+/// [`current_serving`] answers "what is live". It cannot answer "have we looked
+/// yet" — and those are different facts that produce an IDENTICAL snapshot.
+/// `install_serving_state` is called from the daemon's `initialize()`, BEFORE the
+/// first reconcile, so from process start until the first publish every reader
+/// borrows [`ServingSnapshot::empty`]: `active_model: None, ready: false`. That is
+/// indistinguishable from "the daemon looked and nothing is serving".
+///
+/// The cost of the confusion, measured rather than supposed: personas begin their
+/// self-tick immediately at boot, read the placeholder, and the adapter's
+/// single-resident guard correctly refuses — producing a LOUD
+/// `persona.selftick.inference_failed` naming a serving fault that does not exist.
+/// Across 3 days that was 116 failures in 38 bursts, every burst followed by a real
+/// reconcile 10–20s later. It self-heals in seconds and never indicated a broken
+/// lane; the daemon published `active=<none>` exactly ZERO times in 12 hours while
+/// readers saw `<none>` 61 times. An instrument crying wolf 116 times costs more
+/// than the fault it was pointing at — this one cost a full night of investigation
+/// aimed at the serving layer, which was healthy throughout.
+///
+/// Deliberately a separate `OnceLock` rather than a field on [`ServingSnapshot`]:
+/// that type is ts-rs-exported and read by the grid and positron, with 19
+/// construction sites. "Has the daemon started" is a PROCESS-LIFECYCLE fact, not a
+/// property of what is currently served, so it belongs beside `SERVING_STATE` (the
+/// other process-lifecycle OnceLock in this module) rather than inside the wire
+/// payload. If a remote reader ever needs it, promoting it to a snapshot field is
+/// mechanical.
+static FIRST_RECONCILE: OnceLock<()> = OnceLock::new();
+
+/// Called by the serving daemon the first time it publishes a reconcile. Idempotent.
+pub fn mark_first_reconcile() {
+    let _ = FIRST_RECONCILE.set(());
+}
+
+/// True once the daemon has published at least one reconcile in this process.
+///
+/// A reader seeing `active_model == None` MUST consult this before calling it a
+/// fault: `false` means "still starting, ask again shortly", `true` means "the
+/// daemon looked and there is genuinely nothing serving" — which IS a fault worth
+/// shouting about. Same distinction `ready_verified_at_ms` draws for `ready`: a
+/// claim has to carry whether it rests on evidence or on not-having-looked.
+pub fn has_reconciled() -> bool {
+    FIRST_RECONCILE.get().is_some()
+}
+
 /// Install the daemon's serving-state receiver as the process-wide readable
 /// seam. The daemon is a singleton so this is set-once; a second call (e.g. a
 /// re-init under test) is ignored. Returns `true` iff this call installed it.
@@ -2164,6 +2211,46 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    /// what this catches (#350): the two states an EMPTY serving snapshot can mean
+    /// collapsing back into one. `ServingSnapshot::empty()` is published from process
+    /// start (install_serving_state runs in the daemon's `initialize()`, before the first
+    /// reconcile), so "we have not looked yet" and "we looked and nothing is serving" are
+    /// byte-identical. Readers that cannot tell them apart shout about a serving fault
+    /// during every boot: measured 116 false alarms in 38 bursts over 3 days, while the
+    /// daemon published `active=<none>` ZERO times in 12 hours.
+    ///
+    /// The empty snapshot deliberately stays unchanged — it is still the honest "nothing
+    /// live" value. What must exist is a SEPARATE signal for whether anyone has looked.
+    #[test]
+    fn an_empty_snapshot_cannot_itself_distinguish_startup_from_a_serving_fault() {
+        let boot = super::ServingSnapshot::empty();
+        assert_eq!(boot.active_model, None);
+        assert!(!boot.ready);
+        // The point: this value is IDENTICAL whether the daemon has reconciled or not,
+        // which is exactly why `has_reconciled()` is a separate signal and not something
+        // a reader can infer from the snapshot. If someone later adds a field that makes
+        // the two distinguishable here, this assertion documents why they must ALSO keep
+        // `has_reconciled()` correct rather than silently replacing it.
+        assert_eq!(boot, super::ServingSnapshot::empty());
+    }
+
+    /// what this catches: `mark_first_reconcile` becoming non-idempotent or
+    /// `has_reconciled` reading the wrong cell. A OnceLock set twice must not panic —
+    /// the daemon calls it on EVERY reconcile, not just the first.
+    ///
+    /// NOTE this test can only observe the post-mark state: `FIRST_RECONCILE` is a
+    /// process-global OnceLock, so once any test in this binary marks it, it stays
+    /// marked. Asserting `!has_reconciled()` first would be order-dependent — the exact
+    /// flake shape that made tests pass locally and fail in CI
+    /// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
+    #[test]
+    fn marking_the_first_reconcile_is_idempotent_and_observable() {
+        super::mark_first_reconcile();
+        assert!(super::has_reconciled());
+        super::mark_first_reconcile(); // must not panic
+        assert!(super::has_reconciled());
+    }
 
     /// what this catches: the health heartbeat going back to probe-always. `decode_smoke_ok`
     /// is a REAL generation through the live slots, so on a saturated lane it cannot get one,
