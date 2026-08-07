@@ -346,6 +346,40 @@ impl Faculty for DeferredFaculty {
 /// output-puppeteering — it does not read the deliberator's generated words.
 pub(crate) fn reproject_to_now(found: &StampedFinding, now: &Workspace) -> Contribution {
     let mut c = found.contribution.clone();
+
+    // STANDING FRAMING IS NOT A MEMORY — DO NOT RE-ANCHOR IT.
+    //
+    // The rule above is stated for findings whose truth is topic-relative ("a
+    // still-on-topic memory keeps its salience, an off-topic stale finding decays").
+    // A `stable` contribution is the opposite kind of thing: session-stable structural
+    // context (the work board, the room roster, the workspace map) whose entire
+    // contract is to be present REGARDLESS of what this turn happens to be about.
+    // `STANDING_FRAMING_SALIENCE` says so in as many words — "high enough that the
+    // top-k arbiter never truncates it under attention pressure".
+    //
+    // Multiplying that floor by a lexical ratio silently repealed the contract, and
+    // the ratio is length-biased against exactly the sources that need it most: the
+    // denominator is the FINDING'S OWN token count, so the bigger a block is, the
+    // lower its ceiling. Measured live 2026-08-07 — room-kanban (median offer 5,364
+    // tokens) bid 0.9 x 0.133 = **0.12** and lost to recall at 0.77, so a citizen
+    // holding a live, renewing card could not see the board she held it on. Roster
+    // (small) survived at 0.62; workspace-map bid its full 0.90 for the sole reason
+    // that it is not `defer_tolerant` and therefore never passed through here. Three
+    // sources, three numbers, one cause.
+    //
+    // Deferrability is documented as ORTHOGONAL to salience policy
+    // ([`crate::cognition::persona_workspace`]). This is what made it not so.
+    // Ambient staleness still shows in the reasoning; the BID is left alone.
+    if c.stable {
+        let age = now.cycle.0.saturating_sub(c.cycle.0);
+        c.reasoning = format!(
+            "{} [reprojected: {age} cycles stale, standing framing — salience {:.2} held \
+             (topic-independent by contract)]",
+            c.reasoning, c.salience
+        );
+        return c;
+    }
+
     let relevance = lexical_relevance(&c.content, &now.world_state);
     let age = now.cycle.0.saturating_sub(c.cycle.0);
     let original = c.salience;

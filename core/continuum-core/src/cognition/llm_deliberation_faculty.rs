@@ -2604,15 +2604,36 @@ mod tests {
                     <= needed as usize,
                 "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
             );
-            // …and here is the part that matters, measured rather than assumed: 8192
-            // CLEARS that bound (8040) and she is STILL starved. The bound is NECESSARY,
-            // NOT SUFFICIENT — a real turn renders more framing than the bare floor and
-            // context is what yields. Anyone reading "window >= needed" as "this citizen
-            // can work" is reading it wrong, and this pins that.
+            // …and here is the part that matters, measured rather than assumed. This
+            // assertion USED to read `needed <= window` — "8192 clears the bound (8040)
+            // and she is STILL starved" — and it went red on its own terms: the message
+            // said "if it no longer does, the surface or framing grew and the story
+            // changed", and it did. The bound moved 8040 → 9348 (+1308) as framing
+            // accreted turn-fact by turn-fact (#151, #152, #144, #303 …), each one
+            // individually justified.
+            //
+            // So the story is now STRONGER, not broken: at 8192 an agentic citizen no
+            // longer fits AT ALL — the necessary condition itself fails, before we even
+            // get to "necessary but not sufficient". An 8k-window model cannot host this
+            // surface, full stop. That is #333 (the surface is paid twice) stated as a
+            // number instead of a complaint.
+            //
+            // Pinned as a CEILING rather than relaxed to pass: this is the ratchet that
+            // makes the next +1308 fail loudly instead of accruing silently. Lower it
+            // when the surface actually shrinks; never raise it to make a red go green
+            // without saying what grew and why.
+            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 9400;
             assert!(
-                needed <= window,
-                "8192 is expected to CLEAR the lower bound ({needed}) — if it no longer \
-                 does, the surface or framing grew and the story changed"
+                needed <= AGENTIC_SURFACE_BOUND_CEILING,
+                "the agentic surface now needs {needed} tokens (was 8040, ceiling \
+                 {AGENTIC_SURFACE_BOUND_CEILING}) — framing/tools grew again. Shrink the \
+                 surface (#333) or state plainly what was added and re-pin the ceiling"
+            );
+            assert!(
+                needed > window,
+                "8192 no longer hosts the agentic surface ({needed} needed) — if this \
+                 flips back the surface genuinely shrank, which is GOOD news: restore the \
+                 original `needed <= window` narrative and drop the ceiling"
             );
             // #327, PROVEN rather than asserted away: at 8192 the newest burst line does
             // NOT survive. The framing is intact and the hands are intact — the CONVERSATION
