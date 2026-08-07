@@ -157,6 +157,42 @@ if [ "$_mf_os" = windows ] && ! command -v cl.exe >/dev/null 2>&1; then
         echo "⚠ nvcc present but no complete CUDA import-lib dir found (cuda-*/**/{cuda,curand}.lib) — the CUDA core link WILL fail. Provisioning gap (#6)." >&2
       fi
     fi
+    # MULTI-MAJOR DETECTION. CUDA_PATH above names ONE tree, but it does not control which
+    # cublas.lib the linker actually opens — PATH order does, and the manifest runtime-PATH
+    # block prepends every provisioned cuda-* dir it finds. When trees of DIFFERENT majors are
+    # present, the declaration and the binding can silently disagree.
+    #
+    # MEASURED on this box: CUDA_PATH resolved to a CUDA 12 tree while `dumpbin //DEPENDENTS`
+    # on the linked binary reported cublas64_13.dll — CUDA 13. Nothing detected that, so the
+    # first symptom was a user-facing "cublas64_12.dll was not found" at launch, pointing at a
+    # major the binary does not even use. Announce the condition at the seam where it is created
+    # rather than letting it surface as a load failure on someone else's machine.
+    #
+    # This WARNS rather than choosing, deliberately: picking a different tree changes what the
+    # core links against and needs a full rebuild + serving validation to justify. Consolidating
+    # to one declared tree is #6; this makes #6's absence visible instead of silent.
+    if [ -n "$CUDA_PATH" ]; then
+      _cp_u="$(cygpath -u "$CUDA_PATH" 2>/dev/null || echo "$CUDA_PATH")"
+      _declared_major="$(find "$_cp_u" -maxdepth 3 -name 'cublas64_*.dll' 2>/dev/null | head -1 \
+                          | grep -oE '[0-9]+' | tail -1)"
+      _other=""
+      for _t in "${CONTINUUM_HOME:-$HOME/.continuum}"/cuda-*; do
+        [ -d "$_t" ] || continue
+        [ "$_t" = "$_cp_u" ] && continue
+        _m="$(find "$_t" -maxdepth 3 -name 'cublas64_*.dll' 2>/dev/null | head -1 \
+               | grep -oE '[0-9]+' | tail -1)"
+        [ -n "$_m" ] && [ -n "$_declared_major" ] && [ "$_m" != "$_declared_major" ] \
+          && _other="$_other $(basename "$_t")(cuda-$_m)"
+      done
+      if [ -n "$_other" ]; then
+        echo "⚠ CUDA MAJOR AMBIGUITY: declared tree $(basename "$_cp_u") is cuda-$_declared_major, but these are also provisioned:$_other" >&2
+        echo "  The linker binds whichever appears first on PATH, so the built binary's actual" >&2
+        echo "  major is decided by search order, not by CUDA_PATH. Verify with:" >&2
+        echo "    dumpbin //DEPENDENTS <binary> | grep cublas" >&2
+        echo "  Consolidating to ONE declared tree is #6." >&2
+      fi
+      unset _cp_u _declared_major _other _t _m
+    fi
     if command -v cl.exe >/dev/null 2>&1; then
       echo "▶ MSVC toolchain imported (cl.exe on PATH for ninja/nvcc/candle)"
     else
