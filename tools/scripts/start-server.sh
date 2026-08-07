@@ -340,9 +340,41 @@ if [ -n "${CONTINUUM_SKIP_SELF_BUILD:-}" ]; then
   echo "  continuum binary, which cannot replace its own image while executing."
   echo "  The CORE is still rebuilt below. To update the CLI itself: npm start"
 else
-  echo "▶ building continuum (Rust CLI client)"
-  cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
-    || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
+  # Build the CLI WITHOUT the GPU feature set. It is an IPC client: it opens the
+  # core's socket, sends a command, prints the reply. It never touches a GPU.
+  #
+  # Every bin in a crate shares one feature set, so building it alongside the core
+  # linked CUDA into it — and on Windows that made the CLI UNLAUNCHABLE. Measured:
+  # `continuum models/list` exited 127 with ZERO bytes of output, because Windows
+  # resolves an executable's imports at LOAD time, before main(). Nothing inside
+  # the program can report that, which is why it read as "there is no CLI on
+  # Windows" rather than as a link problem. `dumpbin //DEPENDENTS` showed it
+  # importing cublas64_13.dll — CUDA 13 — on a box whose CUDA_PATH pointed at a
+  # CUDA 12 tree, because with several trees present the linker binds whichever
+  # sits earliest on PATH (#6). Joel hit the GUI form of the same thing:
+  # "cublas64_12.dll was not found".
+  #
+  # Colocating the DLLs beside the binary was tried and rejected: the direct
+  # imports copy fine and the binary STILL will not load, because those DLLs have
+  # their own transitive imports. Chasing the closure ships a CUDA runtime with a
+  # socket client.
+  #
+  # Not linking CUDA into a program that does not use it removes the problem
+  # instead of packaging it — and it is what makes the CLI work for people who are
+  # not us: a repo user on a laptop with NO NVIDIA card can now run `continuum`
+  # to talk to a core over the grid. Before this they could not run it at all.
+  #
+  # Fall back loudly rather than silently: if the reduced build fails on some
+  # platform, the featured build still produces a working CLI on that platform,
+  # and the warning names exactly what the user gets instead.
+  echo "▶ building continuum (Rust CLI client — GPU-free: it is a socket client)"
+  if ! cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG --no-default-features; then
+    echo "⚠ GPU-free continuum build failed — retrying with the full feature set." >&2
+    echo "  The CLI will then carry GPU link deps and may fail to launch on a box" >&2
+    echo "  without a matching CUDA runtime on PATH. Please report this." >&2
+    cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
+      || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
+  fi
 fi
 
 # Put `continuum` on PATH so it works like any installed CLI — self-provisioning, the
