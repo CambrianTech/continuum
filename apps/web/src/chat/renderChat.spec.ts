@@ -15,9 +15,11 @@
  * faithfully carries what the seam produced, without a browser.
  */
 
-// Time-of-day rendering is VIEWER-LOCAL by design; pin TZ so the fixed
-// HH:MM assertions below are deterministic on any runner (PR #2057 review).
-process.env.TZ = 'UTC';
+// Time-of-day rendering is VIEWER-LOCAL by design, so the fixed HH:MM assertions
+// below need a pinned zone to be deterministic on any runner (PR #2057 review).
+// The pin lives in `vite.config.ts` under `test.env`, NOT here: `process` is a
+// node global, and this tier's tsconfig sets `"types": []` deliberately — it is
+// the browser tier, and admitting node globals would defeat that guard.
 
 import { describe, it, expect } from 'vitest';
 import { chatStateFromEnvelope, chatViewModel, roomsListingFromNav, CHAT_KIND } from '@continuum/chat-view';
