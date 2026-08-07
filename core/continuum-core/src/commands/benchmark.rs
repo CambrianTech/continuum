@@ -2230,3 +2230,321 @@ mod swe_solve_tests {
         assert!(matches!(BenchmarkDispatch::ACCESS, AccessLevel::Privileged));
     }
 }
+
+// ───────────────────────── benchmark/grade ─────────────────────────
+//
+// #346 slice 2 (Joel, 2026-08-07: "benchmarks are just kanban"): the verb that
+// CLOSES the kanban benchmark loop. Dispatch posts a task as a card; a citizen
+// claims it and writes the artifact with her own hands; THIS verb grades that
+// artifact against the benchmark's HELD-OUT check and returns an objective
+// PASS/FAIL with the real compiler/test output. The procedure was validated
+// live before it was code: Anwen's board-claimed `sum_evens.rs` (card aa876eae)
+// compiled against the held-out assertions and passed — the first citizen
+// solution ever graded through the kanban path.
+//
+// Deliberately STATELESS + explicit (`bench`,`task`,`solver`) rather than
+// card-resolving: the operator has no in-core airc identity (#27), so a verb
+// that needed a persona handle to read the board would be uncallable from the
+// curation surface today. The (future) grading sentinel resolves cards → this
+// triple and calls the same logic; the card path is its slice, not this one.
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkGradeParams.ts"
+)]
+pub struct BenchmarkGradeParams {
+    /// Benchmark name (a `benchmark/list` row with an eval_set), e.g. `coder-write-eval`.
+    pub bench: String,
+    /// Task id within the benchmark's gym, e.g. `sum_evens`.
+    pub task: String,
+    /// The solver's peer id — full UUID or unambiguous hex prefix (≥4 chars).
+    /// Resolved against `<continuum home>/citizens/peers/`, where her hands write.
+    pub solver: String,
+    /// Artifact filename inside the solver's workspace. Omit → the task's
+    /// `solution_file`, else `<task>.rs` (the dispatch-card convention).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file: Option<String>,
+    /// Append the result to the evidence ledger (`benchmark/record`) as a
+    /// `kanban`-harness row. Default false — grading is free, publishing is a choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub record: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkGradeResult.ts"
+)]
+pub struct BenchmarkGradeResult {
+    pub bench: String,
+    pub task: String,
+    /// The solver's full peer id (prefix resolved).
+    pub solver: String,
+    /// The artifact that was graded (workspace-relative).
+    pub file: String,
+    pub pass: bool,
+    /// The real check output (tail-bounded) — a FAIL hands back the actual
+    /// compiler/assertion error, coachable straight into the room.
+    pub detail: String,
+    /// True when the result was appended to the evidence ledger.
+    pub recorded: bool,
+}
+
+/// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
+/// resolution the dispatch workspace + progress ledger use.
+fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
+    std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
+        .ok_or_else(|| CommandError::Internal("no home dir".into()))
+}
+
+/// Resolve a solver peer-id (full UUID or hex prefix) to the ONE matching
+/// `citizens/peers/<uuid>/` directory. 0 or >1 matches fail loud with the
+/// candidates named — a grade against the wrong citizen's workspace is a
+/// falsified result, never a best-effort.
+fn resolve_solver_dir(
+    home: &std::path::Path,
+    solver: &str,
+) -> Result<(String, std::path::PathBuf), CommandError> {
+    let peers = home.join("citizens").join("peers");
+    let needle = solver.to_ascii_lowercase().replace('-', "");
+    if needle.len() < 4 {
+        return Err(CommandError::Invalid(format!(
+            "solver '{solver}' is too short — pass a full peer UUID or a hex prefix of ≥4 chars"
+        )));
+    }
+    let mut matches: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let entries = std::fs::read_dir(&peers).map_err(|e| {
+        CommandError::NotFound(format!("no citizen peers dir at {}: {e}", peers.display()))
+    })?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.to_ascii_lowercase().replace('-', "").starts_with(&needle) {
+            matches.push((name, entry.path()));
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(CommandError::NotFound(format!(
+            "no citizen workspace matches solver '{solver}' under {}",
+            peers.display()
+        ))),
+        _ => Err(CommandError::Invalid(format!(
+            "solver '{solver}' is ambiguous: {}",
+            matches
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// Run `cmd` with `cwd`, bounded by a hard timeout. Same contract as eval's
+/// `run_dod` (pass = exit 0, failure carries the tail-bounded real output) plus
+/// the cwd + timeout this caller needs; folding the two into one runner is the
+/// noted follow-up, not a blocker.
+async fn run_check_in(cwd: &std::path::Path, cmd: &str) -> (bool, String) {
+    let fut = tokio::process::Command::new("bash")
+        .arg("-lc")
+        .arg(cmd)
+        .current_dir(cwd)
+        .output();
+    match tokio::time::timeout(std::time::Duration::from_secs(60), fut).await {
+        Err(_) => (false, format!("check `{cmd}` timed out after 60s")),
+        Ok(Err(e)) => (false, format!("check `{cmd}` could not run: {e}")),
+        Ok(Ok(o)) => {
+            let ok = o.status.success();
+            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&o.stderr));
+            let s = s.trim();
+            let n = s.chars().count();
+            let tail = if n > 2000 {
+                format!("…{}", s.chars().skip(n - 2000).collect::<String>())
+            } else {
+                s.to_string()
+            };
+            (ok, tail)
+        }
+    }
+}
+
+/// `benchmark/grade` — grade one citizen's kanban-produced artifact against the
+/// benchmark's held-out check.
+#[derive(Default)]
+pub struct BenchmarkGrade;
+
+#[async_trait]
+impl ActionCommand for BenchmarkGrade {
+    const NAME: &'static str = "benchmark/grade";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Grade a citizen's benchmark artifact (written via the kanban loop) against the held-out \
+         check: her workspace file is compiled/run with the task's test assertions in a clean \
+         scratch dir. Returns objective PASS/FAIL with the real check output. `record` appends \
+         the result to the evidence ledger as a kanban-harness row.";
+    type Params = BenchmarkGradeParams;
+    type Output = BenchmarkGradeResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: BenchmarkGradeParams,
+    ) -> Result<BenchmarkGradeResult, CommandError> {
+        // 1) Resolve the benchmark + its gym task — same fail-loud path as dispatch.
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == p.bench)
+            .ok_or_else(|| {
+                CommandError::Invalid(format!("unknown benchmark '{}' — see benchmark/list", p.bench))
+            })?;
+        let reference = spec.eval_set.ok_or_else(|| {
+            CommandError::Invalid(format!("benchmark '{}' has no runnable eval_set", p.bench))
+        })?;
+        let (origin, text) =
+            crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
+        let task: crate::cognition::eval::EvalTask = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<crate::cognition::eval::EvalTask>(l).ok())
+            .find(|t| t.id == p.task)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("no task '{}' in {origin}", p.task))
+            })?;
+
+        // 2) Resolve the solver's workspace + artifact. A MISSING artifact is an
+        //    ABSENCE, not a zero — the error names the exact path so the coach can
+        //    say precisely what never got written.
+        let home = continuum_home()?;
+        let (solver_full, solver_dir) = resolve_solver_dir(&home, &p.solver)?;
+        let file = p
+            .file
+            .clone()
+            .or_else(|| task.solution_file.clone())
+            .unwrap_or_else(|| format!("{}.rs", task.id));
+        let artifact = solver_dir.join("workspace").join(&file);
+        let source = std::fs::read_to_string(&artifact).map_err(|e| {
+            CommandError::NotFound(format!(
+                "no artifact to grade: {} ({e}) — the solver never wrote it (absence, not a 0)",
+                artifact.display()
+            ))
+        })?;
+
+        // 3) Grade in a CLEAN scratch dir (never her live workspace): held-out
+        //    `test` assertions compiled around her source when present, else the
+        //    card's own dod_shell against a copy of her file. No check at all is
+        //    an error — an ungradable task must not return a vacuous PASS.
+        let scratch = home
+            .join("benchmarks")
+            .join("grades")
+            .join(format!("{}-{}-{}", spec.name, task.id, &solver_full[..8.min(solver_full.len())]));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch)
+            .map_err(|e| CommandError::Internal(format!("scratch dir: {e}")))?;
+        let (pass, detail) = match task.test.as_deref().filter(|t| !t.trim().is_empty()) {
+            Some(test) => {
+                let main_rs = format!(
+                    "{source}\nfn main() {{\n{test}\nprintln!(\"ALL ASSERTIONS PASSED\");\n}}\n"
+                );
+                std::fs::write(scratch.join("main.rs"), main_rs)
+                    .map_err(|e| CommandError::Internal(format!("write harness: {e}")))?;
+                run_check_in(
+                    &scratch,
+                    "rustc --edition 2021 -o solution main.rs && ./solution",
+                )
+                .await
+            }
+            None => match task.dod_shell.as_deref() {
+                Some(dod) => {
+                    std::fs::copy(&artifact, scratch.join(&file))
+                        .map_err(|e| CommandError::Internal(format!("copy artifact: {e}")))?;
+                    run_check_in(&scratch, dod).await
+                }
+                None => {
+                    return Err(CommandError::Invalid(format!(
+                        "task '{}' carries no held-out `test` and no `dod_shell` — nothing \
+                         objective to grade against (a vacuous PASS would be a lie)",
+                        task.id
+                    )))
+                }
+            },
+        };
+
+        // 4) Optionally publish to the evidence ledger through the ONE record verb.
+        let mut recorded = false;
+        if p.record.unwrap_or(false) {
+            BenchmarkRecord
+                .run(
+                    ctx,
+                    BenchmarkRecordParams {
+                        model: format!("persona:{}", &solver_full[..8.min(solver_full.len())]),
+                        harness: "kanban".into(),
+                        benchmark: spec.name.into(),
+                        resolved: if pass { 1 } else { 0 },
+                        total: 1,
+                        replication: format!(
+                            "cu benchmark/grade --bench {} --task {} --solver {}",
+                            spec.name, task.id, &solver_full[..8.min(solver_full.len())]
+                        ),
+                        hardware: "local".into(),
+                        gene: None,
+                        output_tokens: None,
+                        wall_seconds: None,
+                        notes: Some(format!("kanban card loop; artifact {}", file)),
+                    },
+                )
+                .await?;
+            recorded = true;
+        }
+
+        Ok(BenchmarkGradeResult {
+            bench: spec.name.to_string(),
+            task: task.id,
+            solver: solver_full,
+            file,
+            pass,
+            detail,
+            recorded,
+        })
+    }
+}
+crate::register_stateless_command!(BenchmarkGrade);
+
+#[cfg(test)]
+mod grade_tests {
+    use super::*;
+
+    // what this catches: the solver resolver's fail-loud contract — a too-short
+    // prefix, a no-match, and (via the tmpdir fixture) an ambiguous prefix all
+    // ERROR with names rather than silently grading the wrong citizen's work.
+    #[test]
+    fn solver_resolution_is_exact_or_loud() {
+        let tmp = std::env::temp_dir().join(format!("grade-resolve-{}", std::process::id()));
+        let peers = tmp.join("citizens").join("peers");
+        std::fs::create_dir_all(peers.join("aabbccdd-0000-4000-8000-000000000001")).unwrap();
+        std::fs::create_dir_all(peers.join("aabbccdd-0000-4000-8000-000000000002")).unwrap();
+        std::fs::create_dir_all(peers.join("ffee0011-0000-4000-8000-000000000003")).unwrap();
+
+        assert!(resolve_solver_dir(&tmp, "ab").is_err(), "too short must error");
+        assert!(resolve_solver_dir(&tmp, "aabbccdd").is_err(), "ambiguous must error");
+        assert!(resolve_solver_dir(&tmp, "12345678").is_err(), "no match must error");
+        let (full, dir) = resolve_solver_dir(&tmp, "ffee0011").expect("unique prefix resolves");
+        assert!(full.starts_with("ffee0011"));
+        assert!(dir.ends_with(&full));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // what this catches: the grade verb's registration + access shape — persona-
+    // callable (AiSafe: a citizen may grade her own artifact to check herself),
+    // stateless-registered so it routes without a module constructor.
+    #[test]
+    fn grade_is_ai_safe_and_named() {
+        assert_eq!(BenchmarkGrade::NAME, "benchmark/grade");
+        assert!(matches!(BenchmarkGrade::ACCESS, AccessLevel::AiSafe));
+    }
+}
