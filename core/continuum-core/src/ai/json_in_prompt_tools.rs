@@ -2763,6 +2763,11 @@ Please provide the output so I can review it.";
         }
     }
 
+    // what this catches: a persona's `[code/read path="x"]` bracket tag must EXECUTE, while
+    // provenance markers ([repetition], [unfulfilled], [action #1], [thought:…]), path
+    // citations and prose-wrapped tags must stay inert. Verbatim live receipts from Asha and
+    // Atlas. (Was missing #[test] and had never run — see the sibling test's note.)
+    #[test]
     fn bracket_tag_lifts_and_provenance_markers_stay_inert() {
         // Asha's exact live line.
         let asha = "For the Game of Life implementation - here's what we have so far:\n[code/read path=\"conway_game_of_life/src/main.rs\"]";
@@ -2795,6 +2800,19 @@ Please provide the output so I can review it.";
         }
     }
 
+    // what this catches: THE binding rule for a bare-args fence. A citizen that writes the
+    // arguments correctly but puts the tool's identity only in prose is one token short of a
+    // working call, so we bind a fence to a BACKTICKED SLASH-NAME in the surrounding narration
+    // — and to nothing else. The four negatives are load-bearing: a backticked VALUE with no
+    // slash, and peer coaching that merely SHOWS the shape, must never execute. Loosening this
+    // to bind plain-English intent ("I will release the card") would also fire on coaching and
+    // hypotheticals, and a fabricated result becomes room truth within two turns (#144).
+    //
+    // This test and its sibling above were missing #[test] and had NEVER RUN. The compiler said
+    // so — "function is never used" — and the warning was lost among 145 others. A test that
+    // does not run is indistinguishable from one that passes, right up until someone asks the
+    // question it was written to answer.
+    #[test]
     fn bare_args_fence_with_named_tool_lifts_and_coaching_stays_inert() {
         // Asha's live receipt:
         let stuck = "Let me call the `commands/list` tool directly:\n```json\n{\"filter\": null}\n```";
