@@ -54,6 +54,18 @@ pub struct ModelsPullParams {
     #[serde(default)]
     #[ts(optional)]
     pub quant: Option<String>,
+    /// Weight format to acquire: `gguf` (derived serving artifact), `safetensors` (the
+    /// unquantized SOURCE weights — tuning and quantization input), or `auto`.
+    ///
+    /// Default `auto` prefers GGUF whenever the repo publishes one, so this parameter never
+    /// changes what an existing call resolves to. It exists because GGUF is *derived*: you
+    /// cannot LoRA-tune it, cannot re-quantize to an unpublished tier, and cannot forge a
+    /// device-fit override from it. A repo that ships only safetensors used to be unacquirable
+    /// through the governed path at all, which forced hand-rolled downloads — no ledger, no
+    /// resume, no shared cache location.
+    #[serde(default)]
+    #[ts(optional)]
+    pub format: Option<String>,
     /// Fire-and-poll (mirrors `agent/solve --detach`, #86). A frontier GGUF is tens of
     /// GB and takes an HOUR — that MUST NOT hold the command socket. With `detach`, the
     /// call returns a handle NOW (`detached: true`, empty path/bytes) and the real report
@@ -421,14 +433,36 @@ impl ModelsPull {
         })?;
         let files: Vec<String> = info.siblings.into_iter().map(|s| s.rfilename).collect();
 
-        // 4. Choose the main GGUF (and, for vision, the projector).
-        let gguf_file = pick_gguf(&files, p.quant.as_deref())?;
-        let mmproj_file = if wants_vision { pick_mmproj(&files) } else { None };
+        // 4. Choose the weight format, then the entrypoint file (and, for vision GGUF, the
+        //    projector). `auto` prefers GGUF whenever the repo publishes one, so every repo that
+        //    resolved before this parameter existed resolves to the same file it always did.
+        let format = PullFormat::resolve(p.format.as_deref(), &files)?;
+        let (main_file, companions) = match format {
+            PullFormat::Gguf => (pick_gguf(&files, p.quant.as_deref())?, Vec::new()),
+            PullFormat::Safetensors => {
+                // A quant tier names a GGUF tier; there is no such thing in the source format.
+                // Silently ignoring it would hand back bf16 weights while the caller believed
+                // they had asked for Q4 — so refuse instead of quietly disregarding the ask.
+                if let Some(q) = p.quant.as_deref() {
+                    return Err(CommandError::Invalid(format!(
+                        "quant '{q}' is meaningless for format 'safetensors' — quant tiers name \
+                         GGUF tiers, and safetensors is the unquantized source format. Drop \
+                         --quant, or pull format 'gguf'."
+                    )));
+                }
+                (pick_safetensors(&files)?, source_companions(&files))
+            }
+        };
+        let mmproj_file = if wants_vision && format == PullFormat::Gguf {
+            pick_mmproj(&files)
+        } else {
+            None
+        };
 
         // 5. Download the FULL shard set (giants ship as N shards) with retry/backoff, into the
         //    HF cache (content-addressed → completed shards are skipped instantly on a retry, so
         //    a mid-set failure resumes from the dropped shard, not from zero).
-        let shard_set = expand_shard_set(&gguf_file, &files);
+        let shard_set = expand_shard_set(&main_file, &files);
         let shard_count = shard_set.len();
         let mut gguf_path = None;
         let mut bytes = 0u64;
@@ -469,9 +503,24 @@ impl ModelsPull {
             Some(f) => Some(download_with_retry(&repo, &repo_id, f, None).await?),
             None => None,
         };
+        // Config / tokenizer / index sidecars for a source checkout. Kilobytes next to a
+        // multi-hundred-GB weight set, but without them the checkout is not loadable by
+        // anything, so they are part of the artifact rather than an optional extra.
+        for companion in &companions {
+            let dl = download_with_retry(&repo, &repo_id, companion, None).await?;
+            bytes += std::fs::metadata(&dl).map(|m| m.len()).unwrap_or(0);
+        }
 
         // 6. Record the artifact onto the live universe — sets the path + flips Ready.
-        if !catalog.attach_local_artifact(&p.model_id, gguf_path.clone(), mmproj_path) {
+        //
+        // ONLY for GGUF. A safetensors checkout is the SOURCE format: the serving path loads
+        // GGUF, so attaching a `.safetensors` here would flip the model to Ready and every
+        // subsequent serve attempt would fail at load, with the catalog insisting the model
+        // was fine. Acquired-but-not-servable is the honest state, and the detail line below
+        // says so rather than leaving the caller to discover it at serve time.
+        if format == PullFormat::Gguf
+            && !catalog.attach_local_artifact(&p.model_id, gguf_path.clone(), mmproj_path)
+        {
             return Err(CommandError::Internal(format!(
                 "model '{}' vanished from the live catalog during pull",
                 p.model_id
@@ -483,16 +532,27 @@ impl ModelsPull {
         } else {
             String::new()
         };
-        let detail = match &mmproj_file {
-            Some(f) => format!("pulled {gguf_file}{shards_note} + projector {f} from {repo_id}"),
-            None if wants_vision => format!(
-                "pulled {gguf_file}{shards_note} from {repo_id}; WARNING: vision model but no mmproj-*.gguf found in repo — vision will be unservable"
+        let detail = match format {
+            PullFormat::Safetensors => format!(
+                "pulled {main_file}{shards_note} + {} companion file(s) from {repo_id} — SOURCE \
+                 format. NOT servable as-is: the serving path loads GGUF, so this checkout is \
+                 tuning/quantization input and the catalog entry stays not-downloaded until a \
+                 GGUF is forged from it.",
+                companions.len()
             ),
-            None => format!("pulled {gguf_file}{shards_note} from {repo_id}"),
+            PullFormat::Gguf => match &mmproj_file {
+                Some(f) => {
+                    format!("pulled {main_file}{shards_note} + projector {f} from {repo_id}")
+                }
+                None if wants_vision => format!(
+                    "pulled {main_file}{shards_note} from {repo_id}; WARNING: vision model but no mmproj-*.gguf found in repo — vision will be unservable"
+                ),
+                None => format!("pulled {main_file}{shards_note} from {repo_id}"),
+            },
         };
 
         let report = PullReport {
-            gguf_file,
+            gguf_file: main_file,
             gguf_path: gguf_path.to_string_lossy().into_owned(),
             mmproj_file,
             bytes,
@@ -550,6 +610,35 @@ fn hf_token() -> Option<String> {
 /// Q4_K_M is the standard "good enough, half the size" local default.
 const QUANT_PREFERENCE: &[&str] = &["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q8_0", "q6_k"];
 
+/// Weight-file extensions that participate in the `-<idx>-of-<total>` shard convention.
+/// Deliberately a SHORT allow-list rather than "any extension": a repo also ships
+/// `…-00001-of-00002.json` style sidecars, and treating an arbitrary extension as shardable
+/// would sweep those into the weight set.
+const SHARDABLE_EXTS: &[&str] = &[".gguf", ".safetensors"];
+
+/// Non-weight files a source-format (safetensors) checkout needs to be loadable at all:
+/// architecture config, tokenizer, chat template, and the weight index that maps tensor
+/// names to shards. Matched case-insensitively by exact name or suffix.
+///
+/// Why an explicit list and not "everything that isn't a weight": a source repo also carries
+/// READMEs, `.gitattributes`, preview images, and frequently a SECOND full copy of the weights
+/// in another format. Pulling "everything" turns a 60 GB acquisition into 200 GB.
+const SOURCE_COMPANIONS: &[&str] = &[
+    "config.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "tokenizer.model",
+    "special_tokens_map.json",
+    "vocab.json",
+    "merges.txt",
+    "chat_template.jinja",
+    "chat_template.json",
+    "model.safetensors.index.json",
+];
+
 /// A large GGUF is published SHARDED — `<base>-00001-of-000NN.gguf`, `…-00002-of-000NN.gguf`,
 /// … (GLM-5.2 UD-IQ1_M is 6 shards, Kimi-K2.7 is 8, K3 will be more). llama.cpp loads shard 1
 /// and finds the rest BY NAME in the same dir — but only if they were actually pulled. Given
@@ -557,7 +646,14 @@ const QUANT_PREFERENCE: &[&str] = &["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q8_
 /// model, `[chosen]`. Without this, `pull` fetches one shard of six and the model is silently
 /// unloadable — the exact failure mode that made me babysit a manual download.
 fn expand_shard_set(chosen: &str, all_files: &[String]) -> Vec<String> {
-    // Shard suffix: `-<idx>-of-<total>.gguf` with `<idx>` all-digits just before `-of-`.
+    // Shard suffix: `-<idx>-of-<total><ext>` with `<idx>` all-digits just before `-of-`.
+    //
+    // The extension is DERIVED from `chosen`, not hardcoded to `.gguf`. Safetensors publish
+    // with the identical `-00001-of-00021` convention (`model-00001-of-00021.safetensors`),
+    // so the whole shard walker — and with it the byte-level progress, the ledger, and the
+    // resume-from-the-shard-that-dropped property — already worked for source weights and was
+    // excluded by one string literal. Generalising the predicate is the entire change; GGUF
+    // behaviour is bit-identical because the derived extension IS `.gguf` for a GGUF.
     let Some(of_at) = chosen.rfind("-of-") else {
         return vec![chosen.to_string()];
     };
@@ -567,10 +663,17 @@ fn expand_shard_set(chosen: &str, all_files: &[String]) -> Vec<String> {
         .next()
         .map(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
         .unwrap_or(false);
-    if !idx_is_digits || !chosen.to_lowercase().ends_with(".gguf") {
+    // The artifact extension, lowercased, e.g. `.gguf` or `.safetensors`. A shard set is only
+    // a set if every member carries the SAME extension — mixing formats in one set would be
+    // a different artifact, not another shard.
+    let Some(dot_at) = chosen.rfind('.') else {
+        return vec![chosen.to_string()];
+    };
+    let ext = chosen[dot_at..].to_lowercase();
+    if !idx_is_digits || !SHARDABLE_EXTS.contains(&ext.as_str()) {
         return vec![chosen.to_string()];
     }
-    // base = everything up to (not incl.) the `-` before `<idx>`; total_suffix = `-of-<total>.gguf`.
+    // base = everything up to (not incl.) the `-` before `<idx>`; total_suffix = `-of-<total><ext>`.
     let Some(idx_dash) = before_of.rfind('-') else {
         return vec![chosen.to_string()];
     };
@@ -579,7 +682,7 @@ fn expand_shard_set(chosen: &str, all_files: &[String]) -> Vec<String> {
     let mut set: Vec<String> = all_files
         .iter()
         .filter(|f| {
-            f.starts_with(base) && f.ends_with(total_suffix) && f.to_lowercase().ends_with(".gguf")
+            f.starts_with(base) && f.ends_with(total_suffix) && f.to_lowercase().ends_with(&ext)
         })
         .cloned()
         .collect();
@@ -647,6 +750,68 @@ async fn download_with_retry(
     )))
 }
 
+/// Which weight format a pull acquires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PullFormat {
+    /// Derived serving artifact. What the serving path loads.
+    Gguf,
+    /// Source weights, as the model author published them. Tuning / quantization input.
+    Safetensors,
+}
+
+impl PullFormat {
+    /// Resolve the caller's `format` against what the repo actually publishes.
+    ///
+    /// `auto` (and absent) prefers GGUF whenever the repo has one — that is what makes this
+    /// parameter purely additive: every repo that resolved before it existed resolves to the
+    /// same file now. An explicit format that the repo does not publish fails loud NAMING what
+    /// the repo does carry, rather than falling back to the other format; a caller who asked
+    /// for source weights and silently received a Q4 GGUF would have unusable tuning input and
+    /// no indication why.
+    fn resolve(requested: Option<&str>, files: &[String]) -> Result<Self, CommandError> {
+        let has_gguf = files
+            .iter()
+            .any(|f| f.to_lowercase().ends_with(".gguf") && !is_mmproj(f));
+        let has_st = files.iter().any(|f| f.to_lowercase().ends_with(".safetensors"));
+        let available = || {
+            let mut which = Vec::new();
+            if has_gguf {
+                which.push("gguf");
+            }
+            if has_st {
+                which.push("safetensors");
+            }
+            if which.is_empty() {
+                "none (repo publishes no gguf or safetensors weights)".to_string()
+            } else {
+                which.join(", ")
+            }
+        };
+        match requested.map(str::trim).map(str::to_lowercase).as_deref() {
+            None | Some("") | Some("auto") => {
+                if has_gguf {
+                    Ok(Self::Gguf)
+                } else if has_st {
+                    Ok(Self::Safetensors)
+                } else {
+                    Err(CommandError::NotFound(
+                        "repo publishes no .gguf or .safetensors weight files to pull".to_string(),
+                    ))
+                }
+            }
+            Some("gguf") if has_gguf => Ok(Self::Gguf),
+            Some("safetensors") if has_st => Ok(Self::Safetensors),
+            Some(f @ ("gguf" | "safetensors")) => Err(CommandError::NotFound(format!(
+                "format '{f}' requested but the repo publishes: {}",
+                available()
+            ))),
+            Some(other) => Err(CommandError::Invalid(format!(
+                "unknown format '{other}' — expected 'gguf', 'safetensors', or 'auto'"
+            ))),
+        }
+    }
+}
+
 /// Choose the main model GGUF from a repo's file list. A projector (`mmproj-*`)
 /// is never the main file. With a requested quant, only a matching file is
 /// acceptable (fail loud otherwise — never silently substitute a different
@@ -687,6 +852,49 @@ fn pick_gguf(files: &[String], requested: Option<&str>) -> Result<String, Comman
         }
     }
     Ok(ggufs[0].clone())
+}
+
+/// Choose the entrypoint safetensors file — the SOURCE weight format, as published.
+///
+/// Why the source format is acquirable at all: GGUF is a *derived serving artifact*. You
+/// cannot LoRA-tune a GGUF, you cannot re-quantize to a tier nobody published, and you cannot
+/// forge a device-fit override from one. An acquisition layer that reaches only the derived
+/// form structurally blocks the foundry, so every model we might want to tune or re-quant had
+/// to be fetched by hand outside the governed path — which is exactly how an artifact lands in
+/// the wrong place with no ledger and no resume.
+///
+/// Sorting makes shard `-00001-of-000NN` the entrypoint deterministically, which is what
+/// [`expand_shard_set`] needs to recover the rest of the set; an unsharded repo yields its
+/// single `model.safetensors`. Consolidated/duplicate copies (`…consolidated…`) are excluded
+/// so a repo shipping both layouts doesn't get pulled twice.
+fn pick_safetensors(files: &[String]) -> Result<String, CommandError> {
+    let mut sts: Vec<&String> = files
+        .iter()
+        .filter(|f| f.to_lowercase().ends_with(".safetensors"))
+        .filter(|f| !f.to_lowercase().contains("consolidated"))
+        .collect();
+    sts.sort();
+    sts.first().map(|f| (*f).clone()).ok_or_else(|| {
+        CommandError::NotFound("repo has no .safetensors weight file to pull".to_string())
+    })
+}
+
+/// The config / tokenizer / index sidecars that make a safetensors checkout loadable.
+/// Derived from the repo's actual listing — never a hardcoded assumption about what a repo
+/// ships, so a repo missing `tokenizer.model` simply yields fewer companions rather than
+/// failing a download for a file that was never there.
+fn source_companions(files: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = files
+        .iter()
+        .filter(|f| {
+            let base = f.rsplit('/').next().unwrap_or(f).to_lowercase();
+            SOURCE_COMPANIONS.contains(&base.as_str()) || base.ends_with(".index.json")
+        })
+        .cloned()
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// The multimodal projector sibling, if present. Sharded GGUFs aside, a vision
@@ -733,6 +941,145 @@ mod tests {
         // "-of-" with no digit index before it is NOT a shard (don't false-positive).
         let not_shard = vec!["model-proof-of-concept.gguf".to_string()];
         assert_eq!(expand_shard_set(&not_shard[0], &not_shard), not_shard);
+    }
+
+    // what this catches: the shard walker's extension is DERIVED, not hardcoded to `.gguf`.
+    // Safetensors publish with the identical `-00001-of-000NN` convention, so a hardcoded
+    // `.gguf` predicate silently reduced a 21-shard source checkout to ONE shard — the same
+    // unloadable-model failure the test above pins for GGUF. Also pins that a shard set never
+    // mixes extensions and never sweeps in a same-named `.index.json` sidecar.
+    #[test]
+    fn shard_set_walks_safetensors_and_never_mixes_extensions() {
+        let files: Vec<String> = vec![
+            "model-00001-of-00003.safetensors",
+            "model-00002-of-00003.safetensors",
+            "model-00003-of-00003.safetensors",
+            "model-00001-of-00003.gguf", // a converted copy — a DIFFERENT artifact
+            "model.safetensors.index.json",
+            "config.json",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        let set = expand_shard_set(&files[0], &files);
+        assert_eq!(set.len(), 3, "all 3 safetensors shards: {set:?}");
+        assert!(
+            set.iter().all(|f| f.ends_with(".safetensors")),
+            "a shard set never mixes formats: {set:?}"
+        );
+
+        // The GGUF entrypoint in the SAME listing still resolves to only GGUF shards.
+        let gguf_set = expand_shard_set(&files[3], &files);
+        assert_eq!(gguf_set, vec!["model-00001-of-00003.gguf".to_string()]);
+    }
+
+    // what this catches: `auto` must resolve exactly the way it did before the `format`
+    // parameter existed — GGUF whenever the repo publishes one. If this regresses, every
+    // existing pull silently starts fetching unquantized source weights instead (hundreds of
+    // GB, and not servable). Also pins that an explicitly requested format the repo lacks
+    // fails loud NAMING what is there, instead of falling back to the other format.
+    #[test]
+    fn format_auto_prefers_gguf_and_explicit_misses_fail_loud() {
+        let both: Vec<String> = vec!["m-Q4_K_M.gguf", "model.safetensors", "config.json"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let st_only: Vec<String> = vec!["model.safetensors", "config.json"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        assert_eq!(PullFormat::resolve(None, &both).unwrap(), PullFormat::Gguf);
+        assert_eq!(
+            PullFormat::resolve(Some("auto"), &both).unwrap(),
+            PullFormat::Gguf
+        );
+        // Only safetensors published → auto reaches it rather than failing, which is the
+        // whole point: a source-only repo used to be unacquirable through the command at all.
+        assert_eq!(
+            PullFormat::resolve(None, &st_only).unwrap(),
+            PullFormat::Safetensors
+        );
+        assert_eq!(
+            PullFormat::resolve(Some("safetensors"), &both).unwrap(),
+            PullFormat::Safetensors
+        );
+
+        // Asked for GGUF, repo has none → refuse, and SAY what the repo actually has.
+        let err = PullFormat::resolve(Some("gguf"), &st_only).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("safetensors"), "names what IS available: {msg}");
+
+        // An unknown format is a caller error, not a silent default.
+        assert!(PullFormat::resolve(Some("onnx"), &both).is_err());
+
+        // A repo with neither is a hard miss.
+        assert!(PullFormat::resolve(None, &["README.md".to_string()]).is_err());
+    }
+
+    // what this catches: a source checkout is only loadable with its config/tokenizer/index
+    // sidecars, and pulling "everything that isn't a weight" would drag in READMEs, images,
+    // and frequently a second full copy of the weights — turning a 60 GB acquisition into
+    // 200 GB. Pins that the companion set is exactly the loadable-checkout files.
+    #[test]
+    fn source_companions_take_the_loadable_set_and_nothing_else() {
+        let files: Vec<String> = vec![
+            "model-00001-of-00002.safetensors",
+            "model.safetensors.index.json",
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "chat_template.jinja",
+            "README.md",
+            "preview.png",
+            ".gitattributes",
+            "original/consolidated.00.pth",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        let got = source_companions(&files);
+        assert_eq!(
+            got,
+            vec![
+                "chat_template.jinja".to_string(),
+                "config.json".to_string(),
+                "model.safetensors.index.json".to_string(),
+                "tokenizer.json".to_string(),
+                "tokenizer_config.json".to_string(),
+            ],
+            "exactly the loadable-checkout sidecars"
+        );
+        assert!(
+            !got.iter().any(|f| f.ends_with(".safetensors")),
+            "weights come from the shard walker, never from the companion set"
+        );
+    }
+
+    // what this catches: `pick_safetensors` must return shard 1 so the shard walker can
+    // recover the set, and must skip a `consolidated` duplicate copy — a repo shipping both
+    // layouts would otherwise be pulled twice.
+    #[test]
+    fn safetensors_pick_is_shard_one_and_skips_consolidated_copies() {
+        let files: Vec<String> = vec![
+            "model-00002-of-00002.safetensors",
+            "model-00001-of-00002.safetensors",
+            "consolidated/consolidated.safetensors",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            pick_safetensors(&files).unwrap(),
+            "model-00001-of-00002.safetensors"
+        );
+
+        assert!(
+            pick_safetensors(&["config.json".to_string()]).is_err(),
+            "no weights → fail loud, never return a config as the model"
+        );
     }
 
     // what this catches: the hint parser yields the owner/repo id hf-hub needs
