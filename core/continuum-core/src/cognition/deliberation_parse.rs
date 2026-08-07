@@ -29,6 +29,7 @@ pub fn decision_from_response(text: &str) -> Decision {
     // the "only thinking → don't speak" behavior.
     let cleaned = clean_response(text);
     let trimmed = cleaned.text.trim();
+    probe_label_stripped_into_silence(text, trimmed);
     if trimmed.is_empty()
         || looks_like_silence_token(trimmed)
         || starts_with_silence_token(trimmed)
@@ -41,6 +42,47 @@ pub fn decision_from_response(text: &str) -> Decision {
             text: trimmed.to_string(),
         }
     }
+}
+
+/// #349 DETECTOR — does the label-stripper actually cost us answers, or only in theory?
+///
+/// The mechanism is verified: `clean_response`'s speaker-name stripper is
+/// `^[A-Z][A-Za-z\s]+:\s*`, which eats a CONTENT LABEL (`Verdict: `, `Answer: `, `Result: `)
+/// exactly as if it were `Anwen: `. When the token sits right behind that label, the strip
+/// exposes it to [`starts_with_silence_token`] and a real answer becomes a silent `Pass` —
+/// the #220 shape, where an answer-graded benchmark scores 0 on a CORRECT response.
+///
+/// What I do NOT have is a single live sighting. `"Verdict: PASS for all six cases."` is a
+/// fixture I wrote, not something a citizen said. The correct fix (thread the real speaker
+/// names — `Turn::author` already carries them — so the pattern stops guessing at what a
+/// name is) changes cleaning on EVERY turn, and refactoring the universal speech path on a
+/// hypothesis is the same mistake as tuning a phrase list: confident motion on unmeasured
+/// ground ([[build-a-bisect-instrument-instead-of-another-theory]]).
+///
+/// So this fires the instrument instead. Pure observation, no behaviour change: it notices
+/// when a turn became silence ONLY because a prefix was stripped — the raw generation did
+/// not lead with the token, the cleaned text does. If this never fires, #349 is theoretical
+/// and the refactor is not worth its risk. If it fires, we have the verbatim answer we lost
+/// and the refactor is justified by data instead of by argument.
+fn probe_label_stripped_into_silence(raw: &str, cleaned: &str) {
+    if !label_strip_caused_silence(raw, cleaned) {
+        return;
+    }
+    crate::probe!(
+        class = "persona.parse.label_stripped_into_silence",
+        raw_head = %raw.trim().chars().take(120).collect::<String>(),
+        cleaned_head = %cleaned.chars().take(120).collect::<String>(),
+        "a prefix strip is what turned this turn into silence — #349: if the stripped prefix \
+         was a CONTENT LABEL (Verdict:/Answer:/Result:) rather than a speaker name, a real \
+         answer was just swallowed"
+    );
+}
+
+/// The detector's decision, split out from the probe so it is testable. True when the
+/// CLEANED text leads with the reserved token but the RAW generation did not — i.e. the
+/// prefix strip, not the model, is what produced the silence.
+fn label_strip_caused_silence(raw: &str, cleaned: &str) -> bool {
+    starts_with_silence_token(cleaned) && !starts_with_silence_token(raw.trim())
 }
 
 /// #271: a SPOKEN pass is not a pass. Glass-boxed live 2026-07-30: models
@@ -254,6 +296,38 @@ mod tests {
             decision_from_response("<think>I won't answer this</think>"),
             Decision::Pass
         );
+    }
+
+    // what this catches (#349): the DETECTOR itself. A probe that can only ever stay silent
+    // is worse than no probe ([[a-probe-that-can-only-fail-is-worse-than-none]]), so pin
+    // both directions — it must fire on the shape it exists to find, and must NOT fire on
+    // the ordinary ways a turn becomes silence. If the live counter reads zero later, this
+    // is what makes that zero mean "does not happen" rather than "instrument was broken".
+    #[test]
+    fn the_label_strip_detector_fires_only_when_stripping_caused_the_silence() {
+        // FIRES: raw led with a content label, cleaned leads with the token. The #220 shape.
+        assert!(label_strip_caused_silence(
+            "Verdict: PASS for all six cases.",
+            "PASS for all six cases."
+        ));
+        assert!(label_strip_caused_silence(
+            "Answer: PASS — the guard holds on every path.",
+            "PASS — the guard holds on every path."
+        ));
+        // DOES NOT FIRE: she genuinely led with the token (nothing was stripped).
+        assert!(!label_strip_caused_silence(
+            "PASS — nothing to add here",
+            "PASS — nothing to add here"
+        ));
+        // DOES NOT FIRE: silence arrived by any other route, so the strip is not implicated.
+        assert!(!label_strip_caused_silence("<think>hm</think>", ""));
+        assert!(!label_strip_caused_silence(
+            "Anwen: the bank offset math drifts under X.",
+            "the bank offset math drifts under X."
+        ));
+        // DOES NOT FIRE: a name prefix WAS stripped and the remainder is the bare token —
+        // that is a real, intended silence (looks_like_silence_token owns it), not a loss.
+        assert!(!label_strip_caused_silence("Anwen: hello there", "hello there"));
     }
 
     // what this catches (#271/#264): the RESERVED TOKEN used as a declaration of silence, in
