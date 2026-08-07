@@ -507,9 +507,26 @@ pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     let prior_home = std::env::var("HOME").ok();
     let prior_userprofile = std::env::var("USERPROFILE").ok();
     let prior_hf_home = std::env::var("HF_HOME").ok();
+    // PIN, NEVER REMOVE — removing a var does not isolate a test, it just moves the
+    // read one layer down onto the real machine.
+    //
+    // Found by BigMama 2026-08-07: three model_registry tests failed ONLY on boxes
+    // with cold storage. `remove_var("HF_HOME")` looks hermetic, but
+    // `huggingface_cache_root` falls back to `config_env::read("HF_HOME")` — a REAL
+    // FILE (`~/.continuum/config.env`) that the cold-storage installer writes with
+    // the 16TB path. So the fixture handed the test the operator's actual drive.
+    // Same shape for USERPROFILE: `config_env` resolves through `dirs::home_dir()`,
+    // which on Windows ignores HOME and uses USERPROFILE — removing it let the
+    // lookup escape to the real profile.
+    //
+    // Pinning both closes it on every platform: process env WINS the resolution
+    // chain, so config.env can no longer be consulted at all. HF_HOME is pinned to
+    // exactly what the default branch would compute from this home
+    // (`<home>/.cache/huggingface`), so behaviour is byte-identical to the intent —
+    // only the ambient dependency is gone.
     std::env::set_var("HOME", home);
-    std::env::remove_var("USERPROFILE");
-    std::env::remove_var("HF_HOME");
+    std::env::set_var("USERPROFILE", home);
+    std::env::set_var("HF_HOME", home.join(".cache").join("huggingface"));
     let result = f();
     if let Some(value) = prior_home {
         std::env::set_var("HOME", value);
