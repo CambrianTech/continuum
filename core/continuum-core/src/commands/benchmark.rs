@@ -1320,6 +1320,14 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
+    /// Citizen display names to direct the work at, round-robin. Each card gets
+    /// an addressed kickoff message in-room naming the assignee + card id — the
+    /// empirically proven activation path (an addressed imperative in its OWN
+    /// message block actuates; a card sitting silently on the board does not).
+    /// Omit for undirected dispatch (cards only, citizens self-select).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub assignees: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1340,6 +1348,15 @@ pub struct BenchmarkDispatchResult {
     /// full coverage is the lie this field exists to prevent.
     #[ts(type = "number")]
     pub skipped_needs_setup: u32,
+    /// Addressed kickoff messages actually delivered (0 when `assignees` was
+    /// omitted). A kickoff that failed to send is reported via `kickoff_errors`,
+    /// never silently counted as delivered.
+    #[ts(type = "number")]
+    pub kickoffs: u32,
+    /// Send failures for kickoff messages, card-id-prefixed. The cards are ON
+    /// the board regardless — a failed kickoff degrades to undirected dispatch,
+    /// it does not unwind the card.
+    pub kickoff_errors: Vec<String>,
 }
 
 /// Compose the card TITLE for one benchmark task. `[bench <name>]` is the
@@ -1469,9 +1486,19 @@ impl ActionCommand for BenchmarkDispatch {
         let repo = RepoId::new(repo_key)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
 
+        let assignees = p.assignees.unwrap_or_default();
+        if assignees.iter().any(|a| a.trim().is_empty()) {
+            return Err(CommandError::Invalid(
+                "assignees contains an empty name — every kickoff must address a real citizen"
+                    .to_string(),
+            ));
+        }
+
         let take = p.limit.map(|l| l as usize).unwrap_or(tasks.len());
         let mut card_ids = Vec::new();
         let mut skipped_needs_setup = 0u32;
+        let mut kickoffs = 0u32;
+        let mut kickoff_errors = Vec::new();
         for t in tasks.into_iter().take(take) {
             // A setup_shell task needs its workspace re-broken before work
             // starts — harness orchestration a claimed card can't provide yet.
@@ -1492,7 +1519,34 @@ impl ActionCommand for BenchmarkDispatch {
                 .await
                 .map_err(|e| CommandError::Internal(e.to_string()))?;
             let full = card_id.as_uuid().simple().to_string();
-            card_ids.push(full[..8].to_string());
+            let short = full[..8].to_string();
+
+            // Directed dispatch: round-robin an addressed kickoff per card.
+            // A card on the board is a fact; an addressed imperative in its
+            // own message block is what actually starts work (measured
+            // 2026-08-07: the same instruction actuated as its own block and
+            // was ignored when coalesced mid-burst). airc.say is one event =
+            // one block, so the structural condition holds by construction.
+            if !assignees.is_empty() {
+                let who = &assignees[card_ids.len() % assignees.len()];
+                let file = t
+                    .solution_file
+                    .clone()
+                    .unwrap_or_else(|| format!("{}.rs", t.id));
+                let kickoff = format!(
+                    "@{who} (to you): card {short} on this board is yours. Claim it \
+                     (claim_task {short}), read its body, write your solution to `{file}` \
+                     in your workspace, then mark it done (work/state {short} done). \
+                     Your artifact gets graded against held-out tests."
+                );
+                match airc.say(&kickoff).await {
+                    Ok(_) => kickoffs += 1,
+                    // The card stays — a lost kickoff degrades to undirected
+                    // dispatch and is REPORTED, never unwound or hidden.
+                    Err(e) => kickoff_errors.push(format!("{short}: {e}")),
+                }
+            }
+            card_ids.push(short);
         }
 
         Ok(BenchmarkDispatchResult {
@@ -1500,6 +1554,8 @@ impl ActionCommand for BenchmarkDispatch {
             dispatched: card_ids.len() as u32,
             card_ids,
             skipped_needs_setup,
+            kickoffs,
+            kickoff_errors,
         })
     }
 }
