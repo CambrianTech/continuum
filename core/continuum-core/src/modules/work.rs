@@ -959,6 +959,15 @@ impl ServiceModule for WorkModule {
             Arc::new(WorkHeartbeat {
                 registry: self.registry.clone(),
             }),
+            // benchmark/dispatch lives in commands/benchmark.rs (benchmark
+            // domain) but is CONSTRUCTED here because it writes the board and
+            // therefore needs this module's airc registry — the same reason
+            // every work/* verb above does. Registering it from a module that
+            // holds the dependency is what keeps it OUT of the
+            // registered-but-unroutable class (#344 audit / #362).
+            Arc::new(crate::commands::benchmark::BenchmarkDispatch {
+                registry: self.registry.clone(),
+            }),
         ]
     }
 
