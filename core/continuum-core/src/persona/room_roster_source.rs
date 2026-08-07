@@ -275,6 +275,11 @@ impl RagSource for RoomRosterSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        // the roster IS the whole membership; there is no longer form to fetch.
+        None
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

@@ -130,6 +130,11 @@ impl RagSource for ReplayRagSource {
         self.source_id
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        // a replay reproduces a recorded delivery verbatim; there is no live 'more'.
+        None
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

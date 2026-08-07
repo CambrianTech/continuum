@@ -215,6 +215,10 @@ impl RagSource for EngramSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("cognition/recall")
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
