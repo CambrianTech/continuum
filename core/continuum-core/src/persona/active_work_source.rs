@@ -110,6 +110,12 @@ impl RagSource for ActiveWorkSource {
         Some("work/list")
     }
 
+    /// One claimed-card line — id, title, state. Same shape and size as the
+    /// board's per-card line, which measured ~26 tokens live.
+    fn floor_tokens(&self) -> u32 {
+        32
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

@@ -330,6 +330,12 @@ impl RagSource for WorkspaceMapSource {
         Some("code/tree")
     }
 
+    /// MEASURED 32 tokens: the root line naming the workspace and its top-level
+    /// entry count — the unit that distinguishes "empty" from "I cannot see it".
+    fn floor_tokens(&self) -> u32 {
+        40
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

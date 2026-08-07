@@ -315,6 +315,11 @@ mod tests {
         // Test/stub source — nothing further to fetch.
         None
     }
+
+    /// Test/stub source — floorless, so it never encodes a production floor.
+    fn floor_tokens(&self) -> u32 {
+        0
+    }
         async fn deliver(
             &self,
             ctx: &RagContext,

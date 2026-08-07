@@ -265,6 +265,12 @@ impl RagSource for WallSource {
         Some("work/list")
     }
 
+    /// One wall post's title line. A pinned document's NAME is a complete
+    /// statement — she knows the plan exists and can fetch it.
+    fn floor_tokens(&self) -> u32 {
+        32
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

@@ -102,6 +102,12 @@ impl RagSource for MediaPerceptionSource {
         Some("perception/observe")
     }
 
+    /// One resolved perception cell — who is visible / what is shown. A single
+    /// cell is a complete visual fact.
+    fn floor_tokens(&self) -> u32 {
+        48
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

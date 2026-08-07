@@ -219,6 +219,13 @@ impl RagSource for EngramSource {
         Some("cognition/recall")
     }
 
+    /// MEASURED 40 tokens: one recalled engram line. The heavyweight's
+    /// *comfortable* size is far larger and it still gets that through `min` +
+    /// the grow pass — this is only what it needs to say ONE true thing.
+    fn floor_tokens(&self) -> u32 {
+        48
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
