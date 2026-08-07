@@ -589,6 +589,85 @@ impl PersonaAircRuntime {
                             "persona heartbeat emit failed — presence degraded this tick"
                         );
                     }
+
+                    // HER WORK STAYS HERS WHILE SHE BREATHES (2026-08-07).
+                    //
+                    // Claim leases are 30 min and `work/heartbeat` already existed —
+                    // as a VERB THE MODEL HAD TO REMEMBER TO CALL, which no citizen
+                    // ever did. Glass-boxed this night from live captures: citizens
+                    // claimed cards successfully (`work/claim` → real claim_id), every
+                    // lease then lapsed untouched, and their next briefing correctly
+                    // read `[board] you hold 0 card(s)` with the SAME card re-offered
+                    // under `[available work]`. So they reported "no open tasks" and
+                    // passed — accurately describing a board that had quietly taken
+                    // their work back. Six citizens, two machines, days of it.
+                    //
+                    // Presence and claim liveness were two channels answering one
+                    // question, and they contradicted each other: this pump was
+                    // emitting "I am alive" on the very ticks her holds were dying.
+                    // Binding them is the fix — the substrate observes that she is
+                    // working instead of asking her to announce it
+                    // ([[commands-are-agency]]; Joel: "you've turned convenience into
+                    // disability"). The verb stays for deliberate extension.
+                    //
+                    // Renewal is per-card WARN-and-continue: a failed renewal degrades
+                    // to exactly the old lapse, and never takes down presence.
+                    match hb_airc
+                        .work_roster_status(airc_lib::WorkRosterQuery::default())
+                        .await
+                    {
+                        Ok(status) => {
+                            let me = hb_airc.peer_id();
+                            let mine = status
+                                .rows
+                                .into_iter()
+                                .find(|r| r.peer == me)
+                                .map(|r| r.active_claims)
+                                .unwrap_or_default();
+                            let mut renewed = 0usize;
+                            for card in &mine {
+                                let Some(claim_id) = card.claim_id else { continue };
+                                if let Err(error) = hb_airc
+                                    .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
+                                        card_id: card.card_id,
+                                        claim_id,
+                                        ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        persona_id = %hb_persona,
+                                        agent_name = %hb_name,
+                                        card_id = %card.card_id.as_uuid(),
+                                        error = %error,
+                                        "claim renewal failed — this card can lapse out from \
+                                         under her while she is still working it"
+                                    );
+                                } else {
+                                    renewed += 1;
+                                }
+                            }
+                            if renewed > 0 {
+                                crate::probe!(
+                                    class = "persona.claim.renewed",
+                                    persona_id = %hb_persona,
+                                    agent_name = %hb_name,
+                                    renewed = renewed,
+                                    held = mine.len(),
+                                    ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    "held work-card claims renewed on the presence pulse"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            warn!(
+                                persona_id = %hb_persona,
+                                agent_name = %hb_name,
+                                error = %error,
+                                "claim-renewal roster read failed — holds may lapse this tick"
+                            );
+                        }
+                    }
                 }
             });
             info!(

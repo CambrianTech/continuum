@@ -39,7 +39,12 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynComma
 
 /// Default claim lease (ms) — 30 min — when the caller doesn't set one. The claim
 /// is heartbeat-extendable; this is just the initial TTL.
-const DEFAULT_CLAIM_TTL_MS: u64 = 30 * 60 * 1000;
+///
+/// Shared with the persona runtime's heartbeat pump
+/// ([`crate::persona::airc_runtime`]), which renews a citizen's live claims on the
+/// presence cadence. ONE lease length, one place — a renewal that used a different
+/// TTL than the claim would make "how long is my hold good for" answerable two ways.
+pub(crate) const DEFAULT_CLAIM_TTL_MS: u64 = 30 * 60 * 1000;
 
 /// Resolve the CALLING persona's own airc handle so work ops act as ITS key.
 /// The caller identity is the authenticated airc peer_id the gate already saw;
