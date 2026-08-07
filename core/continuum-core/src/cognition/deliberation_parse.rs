@@ -140,23 +140,42 @@ fn starts_with_silence_token(text: &str) -> bool {
 /// a STANDALONE word — never `PASSED`, `BYPASS`, `PASS_TOKEN`. Fence guard stands: fenced
 /// content is substance no matter what surrounds it.
 ///
-/// The three honored positions, each observed live:
+/// The two honored positions, each observed live:
 ///
 /// 1. **Final word** — `…please let me know! Otherwise, PASS.` (2026-08-06, two citizens).
-/// 2. **Clause-initial** — `…Otherwise, PASS for now as I don't have anything genuinely new
-///    to add.` This is what `starts_with_silence_token` already is, at offset 0; the general
-///    form is "first word of a clause", and clause boundaries are decidable punctuation.
-/// 3. **Object of a first-person declaration** — `Therefore, I will proceed with PASS to
+/// 2. **Object of a first-person declaration** — `Therefore, I will proceed with PASS to
 ///    avoid further unproductive actions.` / `Otherwise, I will PASS and continue to
 ///    monitor…` The citizen is not USING the token, she is DECLARING that she will; the
 ///    declaration is the pass.
 ///
-/// Position 3 is why this got built. It was left unfixed on 2026-08-06 at n=1 with the note
+/// Position 2 is why this got built. It was left unfixed on 2026-08-06 at n=1 with the note
 /// that it wanted "a second sighting or Joel's call, not extrapolation from n=1". The second
 /// sighting arrived 2026-08-07 as eight messages inside one monitor window, from THREE
 /// citizens in `#k3-serving` — `I will proceed with PASS`, `I will PASS and continue to
 /// monitor`, `I will proceed with PASS for now` — every one posted to the room as speech. The
 /// gap is measured, and the rule that covers it is a position, not a phrase.
+///
+/// # The position deliberately NOT honored, and why
+///
+/// A bare **clause-initial** rule ("the token is the first word after any `.,;:!?\n`") was
+/// written, tested green, and then removed before it shipped. It would have covered one more
+/// live variant — `…Otherwise, PASS for now as I don't have anything genuinely new to add.`
+/// — but that variant is still n=1, and unlike position 2 it *collides with real answers*:
+///
+/// ```text
+///   "Verdict: PASS for all six cases."     ← a VALUE REPORT, must speak
+///   "Otherwise, PASS for now as I…"        ← a TURN YIELD, should silence
+/// ```
+///
+/// Positionally identical, semantically opposite. Silencing the first is exactly the #220
+/// failure — the answer becomes `spoken: None` and an answer-graded benchmark scores 0 for a
+/// correct response. This file's own doctrine settles it: **fail open to Speak, because
+/// silencing real content is the worse error.** Position 2 has no such collision — `I will
+/// proceed with PASS` is unambiguously turn-taking and can never be a value report — which is
+/// why the evidence for it justifies shipping it and the evidence for clause-initial does not.
+///
+/// So that variant still speaks. That is the status quo it was already deliberately left in,
+/// and widening it wants its own sighting rather than a free ride on this one's.
 ///
 /// Accepted trade, stated so it is a choice and not an oversight: an uppercase `PASS` used as
 /// a transitive verb inside a first-person declaration (`I will PASS the config to the
@@ -182,7 +201,10 @@ fn declares_silence_token(text: &str) -> bool {
         if !text[end..].chars().any(|c| c.is_alphanumeric()) {
             return true;
         }
-        // The clause this occurrence sits in, for positions 2 and 3.
+        // The clause this occurrence sits in, for position 2. A bare clause-INITIAL rule is
+        // deliberately absent — see the "position deliberately NOT honored" section above:
+        // `Verdict: PASS for all six cases.` is positionally identical to a turn-yield and
+        // semantically its opposite, and silencing it is the #220 answer-swallowing failure.
         let before = &text[..start];
         let clause_start = before
             .rfind(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '\n'))
@@ -192,11 +214,7 @@ fn declares_silence_token(text: &str) -> bool {
             .trim()
             .to_lowercase()
             .replace('\u{2019}', "'");
-        // Position 2 — clause-initial.
-        if clause_prefix.is_empty() {
-            return true;
-        }
-        // Position 3 — the object of a first-person declaration of intent.
+        // Position 2 — the object of a first-person declaration of intent.
         const DECLARATION_LEADS: [&str; 10] = [
             "i will",
             "i'll",
@@ -293,12 +311,7 @@ mod tests {
              that need attention. If there are any particular areas where assistance is needed, \
              please let me know! Otherwise, PASS.",
             "I've been repeating myself without adding value. Otherwise, PASS",
-            // Position 2 — CLAUSE-INITIAL. The variant left unfixed at n=1 on 2026-08-06;
-            // Tier 2 was asserted to cover it and did not (every WEAK_CLOSURES entry needs
-            // the first-person "i'll pass" form, and this message has no "I'll").
-            "…please let me know! Otherwise, PASS for now as I don't have anything genuinely \
-             new to add.",
-            // Position 3 — OBJECT OF A FIRST-PERSON DECLARATION. Verbatim from the monitor
+            // Position 2 — OBJECT OF A FIRST-PERSON DECLARATION. Verbatim from the monitor
             // stream 2026-08-07: eight of these inside one window, three citizens, all posted
             // to #k3-serving as speech. This is the second sighting the n=1 note asked for.
             "Given these circumstances, continuing in this manner would only contribute \
@@ -314,10 +327,39 @@ mod tests {
         ] {
             assert_eq!(decision_from_response(live), Decision::Pass, "must silence: {live:?}");
         }
+        // THE LINE WE CHOSE NOT TO CROSS. A bare clause-initial rule would silence the first
+        // string below — one real live variant — but it is positionally IDENTICAL to the
+        // value-report answers under it, which must speak. Silencing those is the #220
+        // answer-swallowing failure (spoken: None → an answer-graded benchmark scores 0 on a
+        // correct response), so the whole position stays out and this variant keeps speaking.
+        // If a second sighting of the turn-yield form shows up, it needs a rule that can tell
+        // these apart — not a wider position. // what this catches: someone "completing" the
+        // position set later without noticing it swallows correct benchmark answers.
+        //
+        // NOTE, and it is a separate live defect found while writing this test: the obvious
+        // fixture `"Verdict: PASS for all six cases."` is silenced TODAY, and not by anything
+        // in this file. `clean_response`'s speaker-name stripper is `^[A-Z][A-Za-z\s]+:\s*`,
+        // which eats `Verdict: ` as if it were `Anwen: `, and the exposed leading `PASS` then
+        // trips `starts_with_silence_token`. Any answer opening with a capitalised label —
+        // `Answer:`, `Result:`, `Verdict:` — followed by the token is swallowed. That is
+        // #220's family and it predates this change; fixtures here avoid a leading label so
+        // this test measures THIS file's rule and not that one.
+        for still_speaks in [
+            "…please let me know! Otherwise, PASS for now as I don't have anything genuinely \
+             new to add.",
+            "The suite ran 6 cases, and the result was: PASS across the board.",
+            "Reviewed all 3 files, and my verdict is, PASS on every one.",
+        ] {
+            assert!(
+                matches!(decision_from_response(still_speaks), Decision::Speak { .. }),
+                "clause-initial must stay OPEN — silencing it swallows answers (#220): \
+                 {still_speaks:?}"
+            );
+        }
         // POSITIVE CONTROL. Without this the test could pass for the wrong reason — a phrase
         // creeping into STRONG_CLOSURES would silence these and the position rule could rot
-        // untested. Pin that the position-3 fixtures are covered by POSITION and nothing else:
-        // no closure phrase matches them, and the token is not the final word.
+        // untested. Pin that the declaration fixtures are covered by POSITION and nothing
+        // else: no closure phrase matches them, and the token is not the final word.
         for position_three in [
             "Therefore, I will proceed with PASS to avoid further unproductive actions.",
             "To break this cycle and avoid further redundancy, I will proceed with PASS for now.",
