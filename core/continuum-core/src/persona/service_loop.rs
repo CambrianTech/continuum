@@ -2429,7 +2429,7 @@ async fn run_self_cycle(
     // (CONCURRENCY-STYLE-GUIDE). `has_reconciled()` still earns its keep in the probe: it
     // separates a cold boot from a lane that HAS served and dropped, which the empty
     // snapshot itself cannot say (`ready_verified_at_ms` is erased by `empty()`).
-    if !crate::inference::llama_server::current_serving().ready {
+    if !crate::inference::llama_server::current_serving().is_live() {
         crate::probe!(
             class = "persona.selftick.awaiting_serving",
             persona = %ctx.identity.agent_name,

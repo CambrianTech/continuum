@@ -645,6 +645,23 @@ pub struct ServingSnapshot {
 }
 
 impl ServingSnapshot {
+    /// Is a lane ACTUALLY live right now — a model resident AND decode-ready?
+    ///
+    /// The canonical "there is a brain attached" predicate, in ONE place, because it has two
+    /// halves and every reader needs both. `ready` alone is not enough: it is a *cached
+    /// claim* (with `ready_verified_at_ms` as its expiry), and a snapshot carrying no
+    /// `active_model` has nothing for a request to be answered BY, whatever the flag says.
+    ///
+    /// Readers: [`await_ready_serving`] (what it waits for), the persona self-tick gate
+    /// (whether to spend a deliberation at all, #350), and the adapter's pre-flight guard
+    /// (whether a refusal is terminal or a transition worth waiting out). They had drifted
+    /// into two spellings of this — `ready` in one, `ready && active_model.is_some()` in the
+    /// other — which is exactly the kind of split that makes a gate look correct while it
+    /// passes the case it was written to stop.
+    pub fn is_live(&self) -> bool {
+        self.ready && self.active_model.is_some()
+    }
+
     /// The "nothing served" state — boot, or after a node drops its server.
     pub fn empty() -> Self {
         Self {
@@ -862,7 +879,7 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     {
         // Fast path: already ready, no await.
         let cur = rx.borrow_and_update();
-        if cur.ready && cur.active_model.is_some() {
+        if cur.is_live() {
             return Some(cur.clone());
         }
     }
@@ -870,7 +887,7 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     // drops before `rx` does (else the borrow outlives `rx` — E0597).
     let waited = tokio::time::timeout(
         timeout,
-        rx.wait_for(|s| s.ready && s.active_model.is_some()),
+        rx.wait_for(|s| s.is_live()),
     )
     .await;
     match waited {
@@ -911,7 +928,7 @@ pub async fn wait_for_serving_window_settle(
     let remaining = timeout.saturating_sub(start.elapsed());
     let waited = tokio::time::timeout(
         remaining,
-        rx.wait_for(|s| s.ready && s.active_model.is_some()),
+        rx.wait_for(|s| s.is_live()),
     )
     .await;
     match waited {

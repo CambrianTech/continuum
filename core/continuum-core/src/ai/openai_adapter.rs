@@ -273,6 +273,43 @@ fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
 /// the process-global `SERVING_STATE`/`FIRST_RECONCILE`, so all three branches are testable
 /// without a set-once global that would make test order load-bearing
 /// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
+/// Does `snap` GUARANTEE that the local single-resident gateway will answer as `model`?
+///
+/// The gateway serves ONE resident model and answers every request as that model whatever
+/// the request's `model` field says, so "guaranteed" means the daemon has PUBLISHED that
+/// this exact model is the live one — on the main lane, or on the verified #106 vision
+/// sidecar (whose `/props` the daemon checked before publishing `vision_ready`).
+///
+/// One predicate, two readers: the pre-flight guard below and the post-wait re-check. Written
+/// out once so the two can never drift into disagreeing about what "serving our model" means.
+fn snapshot_guarantees(snap: &crate::inference::llama_server::ServingSnapshot, model: &str) -> bool {
+    snap.ready
+        && (snap.active_model.as_deref() == Some(model)
+            || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)))
+}
+
+/// Is refusing POINTLESS to wait out — i.e. has the daemon SETTLED on a different model?
+///
+/// A failed guarantee is one of two very different situations, and only one of them is
+/// terminal:
+///
+/// - **Settled mismatch** — some other model is ready and active. The daemon has made its
+///   choice; waiting cannot change it, and residency arbitration is the serving layer's job
+///   (#109), never a generate's. Refuse immediately and loudly.
+/// - **Transition** — no model is resident (`empty()`, published on EVERY teardown: no
+///   servable plan, a re-home, a #175 wedge relaunch), or a lane is up but not yet decode-
+///   ready. Nothing has failed; the lane is simply mid-flight and comes back on its own.
+///
+/// Measured 2026-08-07: a wedge self-heal flipped the snapshot not-ready at +374s and the
+/// daemon republished ready at +436s — a 62-second window. Three citizens' turns landed
+/// inside it and were refused outright, 9 seconds before the lane came back. The self-tick
+/// readiness gate (#350) cannot cover this: it reads the snapshot BEFORE a deliberation that
+/// takes tens of seconds, so a teardown starting mid-deliberation always outruns it. The gate
+/// stops a turn that was doomed at its start; this stops one that was overtaken in flight.
+fn settled_on_another_model(snap: &crate::inference::llama_server::ServingSnapshot) -> bool {
+    snap.is_live()
+}
+
 fn unguaranteed_model_refusal(
     provider: &str,
     model: &str,
@@ -2072,10 +2109,41 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // sidecar's model is exactly as guaranteed as one for the active
             // model (the daemon verified its `/props` before publishing), and
             // `endpoints_for_model` routes it to `vision_base_url`.
-            let guaranteed = snap.ready
-                && (snap.active_model.as_deref() == Some(model)
-                    || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)));
-            if !guaranteed {
+            let mut snap = snap;
+            if !snapshot_guarantees(&snap, model) && !settled_on_another_model(&snap) {
+                // A TRANSITION, not a fault — wait it out instead of failing the turn.
+                // `await_ready_serving` is the daemon's own readiness signal (the same
+                // `watch` it publishes): a push, not a poll, so this returns the instant the
+                // relaunch lands and costs nothing while it waits. It is the mechanism the
+                // boot gate, the eval lane, the embedder and the genome teacher all already
+                // wait on; this seam was the one that refused instead.
+                //
+                // Budget is `DEFAULT_SERVING_WAIT` (= READY_TIMEOUT + 30s) on purpose: it is
+                // DERIVED from the spawner's own load budget, so this can never declare a
+                // failure before the daemon has exhausted its legitimate window to produce a
+                // lane. Fail LOUD, not FAST. Bounded, so a lane that never returns still ends
+                // as a named refusal rather than a hung generate.
+                let started = std::time::Instant::now();
+                let settled =
+                    crate::inference::llama_server::await_ready_serving(
+                        crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                    )
+                    .await;
+                if let Some(s) = settled {
+                    snap = s;
+                }
+                crate::probe!(
+                    class = "inference.awaiting_serving_transition",
+                    provider = self.config.provider_id.as_str(),
+                    wanted = model,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    served_before = crate::inference::llama_server::has_reconciled(),
+                    resolved = snapshot_guarantees(&snap, model),
+                    "no lane was resident at pre-flight (serving transition) — waited on the \
+                     daemon's readiness signal rather than failing the turn"
+                );
+            }
+            if !snapshot_guarantees(&snap, model) {
                 return Err(unguaranteed_model_refusal(
                     &self.config.name,
                     model,
@@ -2757,6 +2825,59 @@ mod tests {
                 ready: true,
                 ..ServingSnapshot::empty()
             }
+        }
+
+        // what this catches: the WAIT-vs-REFUSE split collapsing. This is the decision that
+        // separates a turn we can still save from one we cannot, and the two branches read
+        // almost identically at the call site — so the predicate itself is pinned here.
+        // Live 2026-08-07: the lane flipped not-ready at +374s and republished ready at
+        // +436s; three citizens' turns landed inside that 62s window and were refused 9
+        // seconds before the lane returned. Every case below except the last is waitable.
+        #[test]
+        fn only_a_resident_ready_other_model_is_worth_refusing_immediately() {
+            // boot / teardown — nothing resident: wait, the daemon is mid-flight
+            assert!(!settled_on_another_model(&ServingSnapshot::empty()));
+            // a lane is coming up (model named, decode not yet verified): wait
+            let warming = ServingSnapshot {
+                active_model: Some("m".into()),
+                ready: false,
+                ..ServingSnapshot::empty()
+            };
+            assert!(!settled_on_another_model(&warming));
+            // the daemon has SETTLED on something else — waiting cannot change that
+            assert!(settled_on_another_model(&serving("other")));
+        }
+
+        // what this catches: `snapshot_guarantees` drifting from the guard it replaced. The
+        // gateway answers every request as its ONE resident model whatever the request says,
+        // so a false positive here is a silently wrong brain — the failure this whole guard
+        // exists to prevent. The vision arm is a real guarantee (the daemon verifies the
+        // sidecar's /props before publishing `vision_ready`), so it must keep passing.
+        #[test]
+        fn a_guarantee_needs_ready_plus_this_exact_model_on_either_lane() {
+            assert!(snapshot_guarantees(&serving("m"), "m"));
+            assert!(!snapshot_guarantees(&serving("other"), "m"));
+            assert!(!snapshot_guarantees(&ServingSnapshot::empty(), "m"));
+            // named but not decode-ready is NOT a guarantee
+            let warming = ServingSnapshot {
+                active_model: Some("m".into()),
+                ready: false,
+                ..ServingSnapshot::empty()
+            };
+            assert!(!snapshot_guarantees(&warming, "m"));
+            // the #106 vision sidecar is its own verified residency
+            let with_vision = ServingSnapshot {
+                vision_ready: true,
+                vision_model: Some("vl".into()),
+                ..serving("m")
+            };
+            assert!(snapshot_guarantees(&with_vision, "vl"));
+            // ... but only when the daemon actually verified it
+            let unverified = ServingSnapshot {
+                vision_ready: false,
+                ..with_vision
+            };
+            assert!(!snapshot_guarantees(&unverified, "vl"));
         }
 
         // what this catches: the startup case regressing to the fault sentence. Before the
