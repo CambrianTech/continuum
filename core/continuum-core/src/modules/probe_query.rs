@@ -72,6 +72,39 @@ const DEFAULT_LIMIT: u32 = 50;
 /// Hard ceiling on rows in one response — a `limit` of 100k would blow the IPC frame.
 const MAX_LIMIT: u32 = 2_000;
 
+/// Accept `"a"`, `"a,b"`, or `["a","b"]` for a list-shaped param.
+///
+/// Found the hard way (#235, live): the typed param was `Option<Vec<String>>`, so the
+/// FIRST thing anyone types — `--class=persona.act.observed` — died with
+/// `invalid type: string ..., expected a sequence`. A verb whose natural form fails on
+/// first use is a broken verb no matter how correct its body is (#328, #160, #161 —
+/// the same PX class that cost citizens 38% and 28% failure rates on other tools).
+///
+/// Comma rather than a bare string only: `CONTINUUM_PROBE_CLASSES` is ALREADY
+/// comma-separated, so this reuses the convention the sink established instead of
+/// inventing a second one for the reader.
+fn comma_or_seq<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let parsed = Option::<OneOrMany>::deserialize(d)?.map(|v| match v {
+        OneOrMany::One(s) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(String::from)
+            .collect(),
+        OneOrMany::Many(v) => v,
+    });
+    Ok(parsed)
+}
+
 // ─────────────────────────── debug/probes/query ──────────────────────────
 
 /// Query the historical probe ledger. Stateless — it holds no deps, so it
@@ -85,7 +118,13 @@ pub struct ProbeQueryParams {
     /// Class filters. Exact match OR namespace prefix (`persona` matches
     /// `persona.turn.spoke` but NOT `personality.x`), `*` = every class. Same rule as
     /// `CONTINUUM_PROBE_CLASSES` and `tracing`'s `EnvFilter` — one convention, reused.
-    #[serde(default)]
+    ///
+    /// Accepts a comma-separated string OR a list: `--class=persona.act.observed`,
+    /// `--class=persona,serving`, `--class='["a","b"]'` are all the same query. The
+    /// bare and comma forms are what `CONTINUUM_PROBE_CLASSES` already uses, so the
+    /// filter reads identically whether you are configuring the sink or querying it
+    /// (#328 — the canonical form follows the standard that already exists).
+    #[serde(default, deserialize_with = "comma_or_seq")]
     pub class: Option<Vec<String>>,
     /// Only events captured at or after this epoch-ms watermark.
     #[serde(default)]
@@ -94,8 +133,9 @@ pub struct ProbeQueryParams {
     /// "I know a persona's name but not which class carries it" search.
     #[serde(default)]
     pub contains: Option<String>,
-    /// Project only these field keys. Omit for all fields.
-    #[serde(default)]
+    /// Project only these field keys. Omit for all fields. Same comma-or-list shape
+    /// as `class` — one input convention across this command, not two.
+    #[serde(default, deserialize_with = "comma_or_seq")]
     pub fields: Option<Vec<String>>,
     /// Max rows returned (newest kept). Default 50, capped at 2000.
     #[serde(default)]
@@ -462,6 +502,28 @@ mod tests {
         let s = scan(&dir, &["persona"], 50);
         assert_eq!(s.matched, 1, "personality.* must not match the persona filter");
         assert_eq!(s.events[0].class, "persona.turn.start");
+    }
+
+    /// what this catches (#235, caught LIVE not by tests): the first thing anyone types,
+    /// `--class=persona.act.observed`, dying with "invalid type: string, expected a
+    /// sequence". A verb whose natural form fails on first use is broken regardless of
+    /// how correct its body is. Comma form must match `CONTINUUM_PROBE_CLASSES`.
+    #[test]
+    fn class_accepts_the_bare_and_comma_forms_not_just_a_json_list() {
+        let bare: ProbeQueryParams =
+            serde_json::from_value(serde_json::json!({"class": "persona.act.observed"})).unwrap();
+        assert_eq!(bare.class.unwrap(), vec!["persona.act.observed"]);
+
+        let comma: ProbeQueryParams =
+            serde_json::from_value(serde_json::json!({"class": "persona, serving"})).unwrap();
+        assert_eq!(comma.class.unwrap(), vec!["persona", "serving"], "trimmed");
+
+        let list: ProbeQueryParams =
+            serde_json::from_value(serde_json::json!({"class": ["a", "b"]})).unwrap();
+        assert_eq!(list.class.unwrap(), vec!["a", "b"]);
+
+        let absent: ProbeQueryParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(absent.class.is_none(), "omitted stays None, not empty-vec");
     }
 
     /// what this catches: `contains` only searching the message. The thing an operator
