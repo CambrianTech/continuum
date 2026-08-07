@@ -57,16 +57,52 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
   fi
 fi
 
-# ── Windows: import the MSVC toolchain so cargo's CUDA (candle) build finds cl.exe ──────────
-# candle compiles CUDA kernels (affine.cu, ...) via nvcc, which needs cl.exe as its host
-# compiler plus INCLUDE/LIB. The cargo builds below run in THIS bash shell (unlike the
-# llama-server cmake build, which runs inside a vcvars .bat), so without this nvcc fails with
-# "Cannot find compiler 'cl.exe' in PATH" and the whole core build dies. Import it once: export
-# INCLUDE/LIB verbatim (only cl.exe reads them) and prepend the EXACT MSVC + Windows SDK bin
-# dirs (from vcvars, converted to unix) to PATH — nvcc finds cl.exe while bash's own PATH
-# resolution stays intact (we add unix dirs, never overwrite PATH with the Windows one). VS2022
-# (14.4x) is selected explicitly: nvcc 12.x rejects the newer 14.5x/VS18 toolset.
-if [ "$_mf_os" = windows ] && command -v nvcc >/dev/null 2>&1 && ! command -v cl.exe >/dev/null 2>&1; then
+# ── Windows: pin cmake + ninja + the generator ──────────────────────────────────────────────
+# UNCONDITIONAL on Windows, and deliberately so. This block used to live nested inside the
+# CUDA/MSVC import below, behind `command -v nvcc && ! command -v cl.exe`. cmake is a
+# core/llama concern, NOT a CUDA one: every cargo build that touches core/llama runs the cmake
+# crate, CUDA or not. So on a box where nvcc was not (yet) on PATH — or in a shell that had
+# already imported cl.exe — the whole block skipped, CMAKE/CMAKE_GENERATOR never got set, and
+# the build died TWELVE MINUTES LATER inside llama's build.rs with "is `cmake` not installed?"
+# Measured tonight: cmake IS installed; the guard for a different tool had silently disowned it.
+# A precondition for X must not be gated on the presence of Y.
+if [ "$_mf_os" = windows ]; then
+  # The cmake crate (core/llama build.rs) resolves cmake via the CMAKE env var or PATH, but a
+  # manifest-provisioned cmake lives at ~/.continuum/tools/cmake/bin and is not guaranteed on a
+  # clean shell's PATH (measured: absent in a clean subshell → "cmake not found"). Point CMAKE at
+  # the known install (same resolution as install-llama-server.sh) and put its dir on PATH for
+  # cmake's own sub-tools.
+  _ccmk="$(command -v cmake 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/cmake/bin/cmake.exe")"
+  if [ -x "$_ccmk" ]; then
+    export CMAKE="$(cygpath -w "$_ccmk" 2>/dev/null || echo "$_ccmk")"
+    case ":$PATH:" in *":$(dirname "$_ccmk"):"*) ;; *) PATH="$(dirname "$_ccmk"):$PATH"; export PATH ;; esac
+  fi
+  # Force a generator cmake actually knows. The cmake crate auto-picks the newest installed VS; on
+  # a VS18-2026 box that is "Visual Studio 18 2026" — a generator cmake 3.30.x does NOT define
+  # ("Could not create named generator"). Ninja is version-agnostic, uses the MSVC env imported
+  # below, and matches the llama-server build. [[windows-build-env-drift]]
+  _cninja="$(command -v ninja 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/ninja/ninja.exe")"
+  if [ -x "$_cninja" ]; then
+    export CMAKE_GENERATOR="Ninja"
+    # ninja must be ON PATH: the cmake crate ignores CMAKE_MAKE_PROGRAM env, so with -G Ninja it
+    # searches PATH ("unable to find Ninja / CMAKE_MAKE_PROGRAM is not set" otherwise).
+    case ":$PATH:" in *":$(dirname "$_cninja"):"*) ;; *) PATH="$(dirname "$_cninja"):$PATH"; export PATH ;; esac
+  fi
+fi
+
+# ── Windows: import the MSVC toolchain (cl.exe + INCLUDE/LIB) ───────────────────────────────
+# Needed by BOTH consumers, which is why the guard is presence-of-cl.exe and nothing else:
+#   - nvcc (candle's CUDA kernels) uses cl.exe as its host compiler;
+#   - the Ninja generator pinned above needs a C/C++ compiler on PATH for ANY llama build.
+# The guard used to also require `command -v nvcc`, which meant a Windows box without CUDA got
+# no cl.exe and its Ninja build had no compiler at all — CUDA's absence disabling the non-CUDA
+# path. The cargo builds run in THIS bash shell (unlike the llama-server cmake build, which runs
+# inside a vcvars .bat), so without this the build dies with "Cannot find compiler 'cl.exe'".
+# Import once: export INCLUDE/LIB verbatim (only cl.exe reads them) and prepend the EXACT MSVC +
+# Windows SDK bin dirs (from vcvars, converted to unix) to PATH — bash's own PATH resolution
+# stays intact (we add unix dirs, never overwrite PATH with the Windows one). VS2022 (14.4x) is
+# selected explicitly: nvcc 12.x rejects the newer 14.5x/VS18 toolset.
+if [ "$_mf_os" = windows ] && ! command -v cl.exe >/dev/null 2>&1; then
   _vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
   _vs=""
   [ -x "$_vswhere" ] && _vs="$("$_vswhere" -version "[17.0,18.0)" -products '*' \
@@ -92,27 +128,6 @@ if [ "$_mf_os" = windows ] && command -v nvcc >/dev/null 2>&1 && ! command -v cl
     if [ -n "$_vct" ]; then _clb="$(cygpath -u "${_vct}bin\\Hostx64\\x64" 2>/dev/null)"; [ -d "$_clb" ] && PATH="$_clb:$PATH"; fi
     if [ -n "$_sdkbin" ]; then _sdb="$(cygpath -u "${_sdkbin}x64" 2>/dev/null)"; [ -d "$_sdb" ] && PATH="$_sdb:$PATH"; fi
     export PATH
-    # Pin cmake explicitly: the cmake crate (core/llama build.rs) resolves cmake via the CMAKE env
-    # var or PATH, but a manifest-provisioned cmake lives at ~/.continuum/tools/cmake/bin and is not
-    # guaranteed on the build shell's PATH (measured: absent in a clean subshell -> "cmake not
-    # found"). Point CMAKE at the known install (same resolution as install-llama-server.sh) and put
-    # its dir on PATH for cmake's own sub-tools.
-    _ccmk="$(command -v cmake 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/cmake/bin/cmake.exe")"
-    if [ -x "$_ccmk" ]; then
-      export CMAKE="$(cygpath -w "$_ccmk" 2>/dev/null || echo "$_ccmk")"
-      PATH="$(dirname "$_ccmk"):$PATH"; export PATH
-    fi
-    # Force a generator cmake actually knows. The cmake crate auto-picks the newest installed VS; on a
-    # VS18-2026 box that is "Visual Studio 18 2026" - a generator cmake 3.30.x does NOT define ("Could
-    # not create named generator"). Ninja is version-agnostic, uses the MSVC env imported above, and
-    # matches the llama-server build. [[windows-build-env-drift]]
-    _cninja="$(command -v ninja 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/ninja/ninja.exe")"
-    if [ -x "$_cninja" ]; then
-      export CMAKE_GENERATOR="Ninja"
-      # ninja must be ON PATH: the cmake crate ignores CMAKE_MAKE_PROGRAM env, so with -G Ninja it
-      # searches PATH ("unable to find Ninja / CMAKE_MAKE_PROGRAM is not set" otherwise).
-      PATH="$(dirname "$_cninja"):$PATH"; export PATH
-    fi
     # CUDA_PATH must be set: cudarc/candle/pocket-tts read it to emit their link-search; without it the
     # link has NO CUDA search path (measured: LNK1181 cuda.lib). Point it at a cuda-* whose import-lib
     # dir actually has the libs (a provisioning split can leave the crate-detected dir EMPTY - cuda-env
@@ -136,14 +151,43 @@ if [ "$_mf_os" = windows ] && command -v nvcc >/dev/null 2>&1 && ! command -v cl
           fi
         done
       done
-      [ -z "$CUDA_PATH" ] && echo "⚠ no complete CUDA import-lib dir found (cuda-*/**/{cuda,curand}.lib) - core link WILL fail. Provisioning gap (#6)." >&2
+      # Only a CUDA build can be hurt by a missing CUDA_PATH. Warning unconditionally would cry
+      # wolf on every CPU-only Windows box now that this block is no longer behind an nvcc guard.
+      if [ -z "$CUDA_PATH" ] && command -v nvcc >/dev/null 2>&1; then
+        echo "⚠ nvcc present but no complete CUDA import-lib dir found (cuda-*/**/{cuda,curand}.lib) — the CUDA core link WILL fail. Provisioning gap (#6)." >&2
+      fi
     fi
     if command -v cl.exe >/dev/null 2>&1; then
-      echo "▶ MSVC toolchain imported for the CUDA cargo build (cl.exe on PATH for nvcc/candle)"
+      echo "▶ MSVC toolchain imported (cl.exe on PATH for ninja/nvcc/candle)"
     else
-      echo "⚠ MSVC import ran but cl.exe still unresolved — the CUDA cargo build will fail" >&2
+      echo "⚠ MSVC import ran but cl.exe still unresolved — the cargo build will fail" >&2
     fi
   else
-    echo "✗ Windows+CUDA needs VS2022 (14.4x) C++ x64 toolset for nvcc's host compiler; vswhere/vcvars not found — the core build will fail. Install via the 'msvc' module." >&2
+    echo "✗ Windows needs the VS2022 (14.4x) C++ x64 toolset — it is ninja's compiler and nvcc's host compiler; vswhere/vcvars not found, so the core build will fail. Install via the 'msvc' module." >&2
   fi
+fi
+
+# ── Postcondition: the environment either IS usable or says exactly why not ──────────────────
+# The whole point of this file is that `source it, then cargo` works. Until now it could complete
+# with cmake unresolvable and print nothing, so the first sign of trouble was a build.rs panic
+# twelve minutes and several hundred log lines downstream — "is `cmake` not installed?" when
+# cmake was installed the whole time. That is the silently-unwired shape: the work ran, the
+# outcome was never checked, and the failure surfaced somewhere that named the wrong cause.
+#
+# Verify what the next cargo invocation actually needs, name each missing piece at the seam, and
+# return non-zero so a caller that checks `$?` gets a signal. Sourced (the documented usage), a
+# bare `return` sets $? without killing the caller's shell; guard it so an accidental direct
+# execution still exits cleanly instead of erroring on `return` outside a function.
+if [ "$_mf_os" = windows ]; then
+  _wbe_missing=""
+  command -v cmake  >/dev/null 2>&1 || _wbe_missing="$_wbe_missing cmake"
+  command -v cl.exe >/dev/null 2>&1 || _wbe_missing="$_wbe_missing cl.exe"
+  [ -n "$CMAKE_GENERATOR" ]         || _wbe_missing="$_wbe_missing CMAKE_GENERATOR(ninja)"
+  if [ -n "$_wbe_missing" ]; then
+    echo "✗ windows-build-env: environment INCOMPLETE — missing:$_wbe_missing" >&2
+    echo "  cargo will fail later with a misleading error. Run the 'cmake'/'ninja'/'msvc' install modules." >&2
+    unset _wbe_missing
+    (return 0 2>/dev/null) && return 1 || exit 1
+  fi
+  unset _wbe_missing
 fi
