@@ -108,6 +108,17 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "coder-write-eval",
+            description: "Coder write gym — 30 single-function Rust tasks with held-out test \
+                          assertions, rustc compile+run graded. The KANBAN benchmark: dispatched \
+                          as work cards, solved by citizens with their own hands, graded from \
+                          their workspace artifacts (first citizen pass: sum_evens, 2026-08-07).",
+            grader: Grader::Rust,
+            tasks: 30,
+            eval_set: Some("coder-write-eval.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "coder-eval",
             description: "Continuum coder gym — 13 mixed practical Rust tasks, rustc compile+run \
                           graded (the original held-out genome-loop eval set).",
