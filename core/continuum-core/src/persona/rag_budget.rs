@@ -446,6 +446,34 @@ pub trait RagSource: Send + Sync {
     /// the same forcing function as [`super::room_board_source::RoomBoardReader::peer_names`].
     fn expand_command(&self) -> Option<&'static str>;
 
+    /// The cost, in tokens, of the SMALLEST COMPLETE STATEMENT this source can
+    /// make — its first atomic unit, not its comfortable size.
+    ///
+    /// This is the allocator's floor for the source, and the allocator's rule
+    /// for a floor that doesn't fit is to drop the source ENTIRELY. So this
+    /// number decides, alone, whether a citizen under budget pressure hears
+    /// anything at all from this source.
+    ///
+    /// ### The defect this exists to kill (measured 2026-08-06)
+    ///
+    /// Every source was assigned a hardcoded floor of **500** tokens by
+    /// `unified.rs`, a number unrelated to any of them. Their real first units,
+    /// measured off a live prompt: room 6, board 26, workspace-map 32,
+    /// recall 40 — about **104 tokens for one complete unit from all six**.
+    /// On a node whose grounding budget measured 0..214, every source was
+    /// dropped on 100% of turns (137 of 137 for one citizen, 132 of 132 for
+    /// another) while asking for 12-80x more than it needed to say something
+    /// true. That is what made grounding all-or-nothing instead of degrading:
+    /// a source that could have delivered a complete 26-token headline was
+    /// never asked for it.
+    ///
+    /// So: answer with what your FIRST unit actually costs. Not what you'd
+    /// like. `0` is legitimate and means "I have no floor — give me whatever is
+    /// left over" (the lightweight roster/doctrine shape). There is no default
+    /// impl on purpose: a default would let a new source silently inherit
+    /// someone else's appetite, which is exactly how the 500 got everywhere.
+    fn floor_tokens(&self) -> u32;
+
     /// Deliver as many complete atomic units as fit within `budget`.
     /// The source decides what counts as complete; allocator only
     /// trusts that `delivery.tokens_used <= budget`.
@@ -833,6 +861,12 @@ impl RagSource for StubRagSource {
     fn expand_command(&self) -> Option<&'static str> {
         // Test/stub source — nothing further to fetch.
         None
+    }
+
+    /// Test/stub source — floorless, so allocator tests exercise the grow pass
+    /// rather than accidentally encoding a production floor.
+    fn floor_tokens(&self) -> u32 {
+        0
     }
 
     async fn deliver(
@@ -1263,6 +1297,57 @@ mod tests {
         let delivery = pax_source.deliver(&maya_ctx, 100, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
+    }
+
+    // what this catches (#338, measured live 2026-08-06): a source being dropped
+    // WHOLE because its declared floor was its COMFORTABLE size rather than the
+    // cost of its first complete unit.
+    //
+    // Every grounding source declared floor=min=500 (a hardcoded number in
+    // unified.rs, unrelated to any of them) while their real first units measured
+    // 6..40 tokens — about 104 for one unit from all six. On a node whose
+    // grounding budget measured 0..214, that made the allocator drop EVERY source
+    // on 100% of turns (137/137 and 132/132 for two citizens), so a citizen who
+    // could have been told "you hold 0 cards; 59 claimable" in 26 tokens was told
+    // nothing and reported she had no work. Grounding was all-or-nothing when it
+    // should have degraded.
+    //
+    // The invariant: at a budget that fits the FLOORS but not the comfortable
+    // sizes, every source still speaks. Floor is survival; min is appetite.
+    #[test]
+    fn sources_survive_at_their_first_unit_when_budget_wont_fit_their_appetite() {
+        let adapter = FlexboxRagBudgetAdapter::new();
+        // Real measured first units; 500 is the comfortable target each would
+        // like. Total floors = 104, total appetites = 2000.
+        let sources = [
+            budget("room", 10, 6, 500, 2000, false),
+            budget("room-kanban", 10, 26, 500, 2000, false),
+            budget("workspace-map", 10, 32, 500, 2000, false),
+            budget("recall", 10, 40, 500, 2000, false),
+        ];
+        // 214 tokens — the live starved budget. Fits all four floors (104),
+        // fits not even ONE comfortable size.
+        let alloc = adapter.allocate(
+            &RagContext::for_persona(uuid::Uuid::nil(), 0),
+            214,
+            ReservedTokens { system: 0, completion: 0 },
+            &sources,
+        );
+        for (i, s) in sources.iter().enumerate() {
+            assert!(
+                alloc.allocations[i].allocated_tokens >= s.floor_tokens,
+                "`{}` must survive at its first unit ({} tokens) on a starved budget — \
+                 got {}. A source dropped here is a citizen told nothing at all.",
+                s.source_id,
+                s.floor_tokens,
+                alloc.allocations[i].allocated_tokens,
+            );
+            assert!(
+                !matches!(alloc.allocations[i].state, AllocationState::Dropped),
+                "`{}` was DROPPED at a budget that fits its floor — this is the #338 defect",
+                s.source_id,
+            );
+        }
     }
 }
 

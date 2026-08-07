@@ -245,6 +245,13 @@ impl RagSource for RoomBoardSource {
         Some("work/list")
     }
 
+    /// MEASURED 26 tokens: the `[board] you hold N card(s); M claimable.`
+    /// headline, which is deliberately the first unit precisely so a
+    /// prefix-take cannot halve it. 32 gives it headroom for larger counts.
+    fn floor_tokens(&self) -> u32 {
+        32
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

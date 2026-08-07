@@ -145,6 +145,12 @@ impl RagSource for RoomDoctrineSource {
         None
     }
 
+    /// Floorless by design (unchanged): doctrine is lightweight standing
+    /// framing that takes leftover room rather than reserving any.
+    fn floor_tokens(&self) -> u32 {
+        0
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

@@ -49,6 +49,15 @@ const ROSTER_WINDOW_FRACTION: u32 = 64;
 // context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
 const DOCTRINE_WINDOW_FRACTION: u32 = 16;
 
+/// What a heavyweight grounding source gets when there IS room — its comfortable
+/// size, not its survival minimum. Formerly this same number was ALSO used as the
+/// floor, which is the bug: the allocator drops a source whole when its floor
+/// doesn't fit, so every source demanded 500 tokens to say anything at all while
+/// its real first unit costs 6..40 (measured 2026-08-06). Floor now comes from
+/// `RagSource::floor_tokens`; this stays the target the grow pass aims at.
+// context-budget-exempt: a per-source TARGET, clamped by per_source_max which IS window-relative
+const COMFORTABLE_SOURCE_TOKENS: u32 = 500;
+
 /// All cognitive state for a single persona — single lock, cache-local.
 pub struct PersonaCognition {
     pub engine: PersonaCognitionEngine,
@@ -387,8 +396,25 @@ impl PersonaCognition {
                         (0, 0, (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max))
                     }
                     _ => {
-                        let f = 500_u32.min(per_source_max);
-                        (f, f, per_source_max)
+                        // FLOOR is what the source needs to say ONE true thing;
+                        // MIN is what it wants when there is room. Conflating them
+                        // (both were a hardcoded 500) is what made grounding
+                        // all-or-nothing: the allocator drops a source WHOLE when
+                        // its floor doesn't fit, so a source that could deliver a
+                        // complete 26-token headline was never asked for it.
+                        //
+                        // Measured 2026-08-06 — real first units are 6..40 tokens
+                        // (~104 for one unit from ALL six sources), against a 500
+                        // floor each. On a node whose grounding budget measured
+                        // 0..214, every source was dropped on 100% of turns (137/137
+                        // and 132/132 for two citizens) while asking 12-80x more than
+                        // it needed. Now the source answers for itself
+                        // (`floor_tokens`) and the comfortable size stays `min`, so
+                        // the heavyweights keep their allocation when budget allows
+                        // AND survive at their headline when it does not.
+                        let floor = s.floor_tokens().min(per_source_max);
+                        let min = COMFORTABLE_SOURCE_TOKENS.min(per_source_max).max(floor);
+                        (floor, min, per_source_max)
                     }
                 };
                 RagSourceBudget {
@@ -472,6 +498,12 @@ impl RagSource for ArcRagSource {
         // delegates to the inner source; expansion is that source's to declare.
         None
     }
+
+    /// Delegates to the inner source — the floor is that source's to declare.
+    fn floor_tokens(&self) -> u32 {
+        self.0.floor_tokens()
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -698,6 +730,11 @@ mod tests {
     fn expand_command(&self) -> Option<&'static str> {
         // Test/stub source — nothing further to fetch.
         None
+    }
+
+    /// Test/stub source — floorless, so it never encodes a production floor.
+    fn floor_tokens(&self) -> u32 {
+        0
     }
         async fn deliver(
             &self,
