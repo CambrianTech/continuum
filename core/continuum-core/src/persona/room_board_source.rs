@@ -348,15 +348,28 @@ impl RagSource for RoomBoardSource {
                 // allows takeover), and before 2026-08-03 lapsed cards appeared in
                 // NEITHER "available" nor honestly-held: invisible as work, sticky
                 // as an attractor.
-                let terminal = matches!(
-                    c.state,
-                    airc_work::CardState::Merged | airc_work::CardState::Closed
-                );
-                if terminal {
+                // ASK THE SINGLE AUTHORITY. `CardState::is_settled()` is airc's one
+                // definition of "can this state be claimed at all", and its doc says every
+                // surface that ADVERTISES claimability must ask it "or they drift — and when
+                // they drift, the board offers work that the claim path then refuses, which
+                // reads to the person picking a card as a broken substrate."
+                //
+                // This surface had drifted, in the direction that HIDES work: for an unowned
+                // card it required `state == Open`, so an unowned `Blocked` card was
+                // advertised nowhere — while airc deliberately treats Blocked as claimable
+                // ("a blocked card is live work waiting on something, and someone taking it
+                // over is exactly the move"). It got `Review` right only by accident, via a
+                // different predicate. Two definitions of claimable, agreeing by luck.
+                if c.state.is_settled() {
                     return false;
                 }
                 match c.owner {
-                    None => matches!(c.state, airc_work::CardState::Open),
+                    // Unowned and not settled IS claimable — that is the authority's rule,
+                    // not a second opinion about which states count.
+                    None => true,
+                    // A lapsed lease is genuinely available: claim-contention allows
+                    // takeover, and before 2026-08-03 lapsed cards appeared in NEITHER
+                    // "available" nor honestly-held — invisible as work, sticky as an attractor.
                     Some(_) => !claim_is_live(c, now_ms),
                 }
             })
@@ -436,7 +449,27 @@ impl RagSource for RoomBoardSource {
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
         if !open.is_empty() {
-            let titles = open
+            // NEWEST FIRST, not board order (#flywheel, measured 2026-08-07).
+            //
+            // Only five titles are ever shown. Taken in board order, a card dispatched
+            // MINUTES AGO lands at the end and is structurally unshowable: the citizen reads
+            // an honest "43 card(s) are claimable" above five titles that are all weeks old,
+            // and the work someone just handed her is not among them. Measured live — three
+            // freshly dispatched bench cards were in every citizen's board cache and in none
+            // of their prompt windows, while the count was correct the whole time. The count
+            // was never the lie; the sample was.
+            //
+            // Recency is the right key because a just-created card is the one most likely to
+            // be waiting on THIS citizen right now, and because it is the only ordering under
+            // which "someone dispatched you work" is reliably visible within one turn. Ties
+            // keep board order, so a static board renders exactly as before.
+            //
+            // This is the bounded-window eviction shape: a chatty writer pushes the signal out
+            // of a fixed-size view, and the diagnostic goes blind precisely when the board is
+            // busiest. The five-title cap is fine; taking the OLDEST five was not.
+            let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
+            newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+            let titles = newest
                 .iter()
                 .take(5)
                 .map(|c| {
@@ -611,6 +644,71 @@ mod tests {
             updated_at_ms: 1_000_000,
             reviews: None,
         }
+    }
+
+    /// Stamp a fixture card's creation time — the ordering key the available-work
+    /// lead samples by, so a test can express "this one was dispatched just now".
+    fn created_at(mut c: WorkCard, ms: u64) -> WorkCard {
+        c.created_at_ms = ms;
+        c
+    }
+
+    // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
+    // Only five titles are ever rendered; taken in board order, a fresh card lands at
+    // the end and never appears, so the citizen reads an honest "N claimable" above five
+    // titles that are all old. Measured live 2026-08-07: three freshly dispatched bench
+    // cards sat in every citizen's board cache and in NONE of their prompt windows while
+    // the count was correct throughout — the count was never the lie, the sample was.
+    // Bounded-window eviction: a chatty writer pushes the signal out of a fixed view.
+    #[tokio::test]
+    async fn freshly_dispatched_work_is_shown_not_merely_counted() {
+        let mut cards: Vec<WorkCard> = (0..8)
+            .map(|i| {
+                created_at(
+                    card(&format!("old backlog card {i}"), CardState::Open, None),
+                    1_000_000 + i as u64,
+                )
+            })
+            .collect();
+        // Dispatched just now, and LAST in board order — the exact live shape.
+        cards.push(created_at(
+            card("bench coder-write-eval: sum_evens", CardState::Open, None),
+            9_000_000_000,
+        ));
+
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let source = RoomBoardSource::new(persona(), reader);
+        let delivery = source.deliver(&ctx(), 4_000, ResolutionPreference::Raw).await;
+        let lead = delivery
+            .items
+            .iter()
+            .find(|i| i.metadata["kind"] == "available-work-lead")
+            .expect("available-work lead");
+
+        assert!(
+            lead.content.contains("bench coder-write-eval"),
+            "the just-dispatched card must be VISIBLE, not just counted:\n{}",
+            lead.content
+        );
+        // The count stays honest — it always was. This fix is about the sample.
+        assert_eq!(lead.metadata["open_count"], 9);
+        // And an unowned BLOCKED card is claimable per airc's single authority
+        // (`CardState::is_settled` — Blocked is deliberately NOT settled: "someone
+        // taking it over is exactly the move"). This surface used to require
+        // state == Open for unowned cards and hid such work entirely.
+        let with_blocked = Arc::new(StubReader::new(snapshot(vec![card(
+            "blocked but takeable",
+            CardState::Blocked,
+            None,
+        )])));
+        let src2 = RoomBoardSource::new(persona(), with_blocked);
+        let d2 = src2.deliver(&ctx(), 4_000, ResolutionPreference::Raw).await;
+        let lead2 = d2
+            .items
+            .iter()
+            .find(|i| i.metadata["kind"] == "available-work-lead")
+            .expect("a blocked unowned card is available work");
+        assert_eq!(lead2.metadata["open_count"], 1);
     }
 
     /// Turn an owned fixture card into the stale-lease shape: claim still on the
