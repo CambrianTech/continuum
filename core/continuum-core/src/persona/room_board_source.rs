@@ -342,24 +342,18 @@ impl RagSource for RoomBoardSource {
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
-            .filter(|c| {
-                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED —
-                // an expired lease is genuinely available work (claim-contention
-                // allows takeover), and before 2026-08-03 lapsed cards appeared in
-                // NEITHER "available" nor honestly-held: invisible as work, sticky
-                // as an attractor.
-                let terminal = matches!(
-                    c.state,
-                    airc_work::CardState::Merged | airc_work::CardState::Closed
-                );
-                if terminal {
-                    return false;
-                }
-                match c.owner {
-                    None => matches!(c.state, airc_work::CardState::Open),
-                    Some(_) => !claim_is_live(c, now_ms),
-                }
-            })
+            // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
+            // expired lease is genuinely available work (claim-contention allows
+            // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
+            // "available" nor honestly-held: invisible as work, sticky as an
+            // attractor.
+            //
+            // The predicate itself lives in `card_holder` and is shared with
+            // `work/list` — this filter used to re-derive it here and excluded only
+            // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
+            // advertised as available: 11 of the 58 offered on the live board
+            // 2026-08-07. One claimability decision, one place.
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
             .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
