@@ -202,6 +202,187 @@ impl ActionCommand for ActivitySpawn {
     }
 }
 
+// ─────────────────────────── standing ───────────────────────────
+
+/// The wall category carrying a room's STANDING — archived / protected.
+///
+/// Same shape and same reasoning as [`RECIPE_WALL_CATEGORY`]: standing is a fact
+/// every participant must agree on, so it rides the shared wall with last-wins
+/// `supersedes`, not per-peer state. It is a DECLARATION, never a deletion: the
+/// room, its transcript and its cards are untouched.
+pub const STANDING_WALL_CATEGORY: &str = "standing";
+
+/// A room's declared standing. Absent entirely on a room nobody has ever marked —
+/// which is the ordinary case and means "live, unprotected".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomStanding {
+    /// Concluded: still fully readable, but it should stop recruiting attention —
+    /// no longer offered as somewhere to pick up work. NOT deleted, NOT hidden.
+    #[serde(default)]
+    pub archived: bool,
+    /// Refuses deletion. Benchmark rooms and anything else whose record is
+    /// load-bearing get this, so a stray delete cannot take the evidence with it.
+    #[serde(default)]
+    pub protected: bool,
+    /// Why — free text from whoever set it. A standing change with no reason is a
+    /// mystery to the next reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
+}
+
+/// Read the current standing of the caller's current room, or the default
+/// (live, unprotected) when nobody has ever declared one.
+async fn current_standing(airc: &Airc) -> Result<RoomStanding, CommandError> {
+    let posts = airc
+        .wall_posts(Some(STANDING_WALL_CATEGORY))
+        .await
+        .map_err(|source| {
+            CommandError::Internal(format!("could not read room standing: {source}"))
+        })?;
+    // `wall_posts` already projects supersedes, so the surviving post is current.
+    match posts.last() {
+        Some(post) => serde_json::from_str(&post.body).map_err(|source| {
+            CommandError::Internal(format!(
+                "room standing is present but unreadable ({source}) — refusing to \
+                 overwrite a declaration this build cannot parse, because that would \
+                 silently drop whatever a newer client recorded"
+            ))
+        }),
+        None => Ok(RoomStanding::default()),
+    }
+}
+
+/// Publish a merged standing, preserving every field the caller did not set.
+async fn publish_standing(airc: &Airc, next: &RoomStanding) -> Result<String, CommandError> {
+    let body = serde_json::to_string(next)
+        .map_err(|source| CommandError::Internal(format!("encode standing: {source}")))?;
+    airc.publish_wall_post(STANDING_WALL_CATEGORY.to_string(), body, None)
+        .await
+        .map(|id| id.to_string())
+        .map_err(|source| {
+            CommandError::Internal(format!("could not publish room standing: {source}"))
+        })
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct StandingResult {
+    /// The standing now in effect.
+    pub archived: bool,
+    pub protected: bool,
+    /// The wall post that declared it.
+    pub post_id: String,
+}
+
+// ─────────────────────────── activity/archive ───────────────────────────
+
+/// Mark the current room concluded — or reopen it.
+pub struct ActivityArchive {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct ActivityArchiveParams {
+    /// `true` concludes the activity, `false` reopens it. Reversible on purpose —
+    /// concluding is a judgement, and judgements get revised.
+    #[serde(default = "default_true")]
+    pub archived: bool,
+    /// Why this activity is finished (or live again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[async_trait]
+impl ActionCommand for ActivityArchive {
+    const NAME: &'static str = "activity/archive";
+    const ALIASES: &'static [&'static str] = &["conclude_activity"];
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Mark this room's activity concluded (or reopen it with archived=false). The \
+         room stays completely readable — its transcript, cards and history are \
+         untouched. Archiving only says the work here is finished, so it stops being \
+         offered as somewhere to pick up new work.";
+    type Params = ActivityArchiveParams;
+    type Output = StandingResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: ActivityArchiveParams,
+    ) -> Result<StandingResult, CommandError> {
+        let airc = caller_airc(&self.registry, ctx)?;
+        let mut standing = current_standing(&airc).await?;
+        standing.archived = p.archived;
+        if p.note.is_some() {
+            standing.note = p.note;
+        }
+        let post_id = publish_standing(&airc, &standing).await?;
+        Ok(StandingResult {
+            archived: standing.archived,
+            protected: standing.protected,
+            post_id,
+        })
+    }
+}
+
+// ─────────────────────────── activity/protect ───────────────────────────
+
+/// Make the current room refuse deletion — or release that.
+pub struct ActivityProtect {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct ActivityProtectParams {
+    /// `true` protects, `false` releases protection.
+    #[serde(default = "default_true")]
+    pub protected: bool,
+    /// Why this record is load-bearing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
+}
+
+#[async_trait]
+impl ActionCommand for ActivityProtect {
+    const NAME: &'static str = "activity/protect";
+    const ALIASES: &'static [&'static str] = &[];
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Protect this room from deletion (or release it with protected=false). Use it \
+         on any room whose record is load-bearing — a benchmark run's room IS that \
+         run's evidence, and a stray delete would take the evidence with it.";
+    type Params = ActivityProtectParams;
+    type Output = StandingResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: ActivityProtectParams,
+    ) -> Result<StandingResult, CommandError> {
+        let airc = caller_airc(&self.registry, ctx)?;
+        let mut standing = current_standing(&airc).await?;
+        standing.protected = p.protected;
+        if p.note.is_some() {
+            standing.note = p.note;
+        }
+        let post_id = publish_standing(&airc, &standing).await?;
+        Ok(StandingResult {
+            archived: standing.archived,
+            protected: standing.protected,
+            post_id,
+        })
+    }
+}
+
 // ─────────────────────────── module ───────────────────────────
 
 /// Hosts the `activity/*` verbs.
@@ -245,9 +426,17 @@ impl ServiceModule for ActivityModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![Arc::new(ActivitySpawn {
-            registry: self.registry.clone(),
-        })]
+        vec![
+            Arc::new(ActivitySpawn {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(ActivityArchive {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(ActivityProtect {
+                registry: self.registry.clone(),
+            }),
+        ]
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -272,6 +461,40 @@ mod tests {
     // room for it is the ordinary act this whole model is built around; if this
     // ever regresses to Privileged, citizens go back to reusing whatever room they
     // are standing in, which is exactly the behaviour #274 exists to end.
+    // what this catches: a room nobody has ever marked reading as LIVE and
+    // UNPROTECTED. The default is load-bearing — if `archived` ever defaulted true,
+    // every ordinary room would silently stop offering its work; if `protected`
+    // defaulted true, nothing could ever be deleted and the verb would look broken.
+    #[test]
+    fn an_unmarked_room_is_live_and_unprotected() {
+        let s = RoomStanding::default();
+        assert!(!s.archived);
+        assert!(!s.protected);
+        assert!(s.note.is_none());
+    }
+
+    // what this catches: standing round-tripping through the wall body. These verbs
+    // MERGE — archiving must not clear protection and vice versa — so the encoded
+    // form has to carry both fields, not just the one the caller set.
+    #[test]
+    fn standing_round_trips_both_flags_so_the_verbs_can_merge() {
+        let s = RoomStanding {
+            archived: true,
+            protected: true,
+            note: Some("K3 bring-up finished; evidence".into()),
+        };
+        let encoded = serde_json::to_string(&s).expect("encode");
+        let back: RoomStanding = serde_json::from_str(&encoded).expect("decode");
+        assert!(back.archived && back.protected);
+        assert_eq!(back.note.as_deref(), Some("K3 bring-up finished; evidence"));
+
+        // and a body written by an older client that only knew one field still reads
+        // — a missing flag is `false`, never a parse failure that would strand the room.
+        let partial: RoomStanding =
+            serde_json::from_str(r#"{"archived":true}"#).expect("forward-compatible");
+        assert!(partial.archived && !partial.protected);
+    }
+
     #[test]
     fn spawning_a_room_is_an_ordinary_citizen_act() {
         assert!(matches!(ActivitySpawn::ACCESS, AccessLevel::AiSafe));
