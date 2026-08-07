@@ -33,13 +33,14 @@ use crate::cognition::act_observe::SettleOutcome;
 use crate::cognition::eval::EvalTask;
 use crate::cognition::workspace::Decision;
 use crate::memory::types::MemoryRecord;
+use serde::{Deserialize, Serialize};
 
 /// WHICH axis of the being's one experience an episode came from. The unification
 /// made literal: a lived chat turn, a graded exam, and a lesson another agent
 /// handed over are the SAME being's experience in different contexts — one stream,
 /// tagged by origin, not three separate pipelines. Detectors key on this to select
 /// what becomes curriculum. (See [[lived-and-eval-experience-are-one-stream-one-being]].)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExperienceSource {
     /// A graded exam episode — the eval-curriculum flywheel ([`ExperienceRecord::from_eval`]).
     /// Carries a ground-truth `test`; feeds objective remediation.
@@ -101,7 +102,7 @@ pub struct SalienceSignal {
 /// `test`), her untruncated answer, the final act→observe world-state, and the
 /// effort (`acts`). Sourced from an eval task now; the live `WorkspaceCaptureSink`
 /// stream is the next source (outlier B — expansion, not remediation).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperienceRecord {
     /// The stimulus + its ground truth. For an eval-sourced episode this IS the
     /// `EvalTask` — it carries the `test`, so a synthesizer can re-pose the task
@@ -193,13 +194,40 @@ impl ExperienceRecord {
             ok: clean,
             grade: match (&settled.inference_error, converged) {
                 (Some(cause), _) => format!("lived turn: inference fault — {cause}"),
-                (None, false) => "lived turn: did not converge (action budget exhausted mid-act)".to_string(),
+                (None, false) => {
+                    "lived turn: did not converge (action budget exhausted mid-act)".to_string()
+                }
                 (None, true) => "lived turn: settled".to_string(),
             },
             answer: settled.spoken.clone().unwrap_or_default(),
             world_state: settled.world_state.clone(),
             acts: settled.acts as u32,
             source: ExperienceSource::Lived,
+        }
+    }
+
+    /// Capture an objectively graded KANBAN artifact — a citizen wrote a file
+    /// through the work loop and `benchmark/grade` / `benchmark/swe-grade` judged
+    /// it against the held-out check (#319: restore learning on benchmark paths).
+    ///
+    /// Lesson-not-paper: the record retains HER artifact (`answer`) and the REAL
+    /// check output (`grade` — the compiler/assertion text is the lesson). No
+    /// gold answer exists at this site to leak; the task's held-out `test` rides
+    /// along only so the remediation loop can re-pose and objectively re-grade
+    /// (the same role it plays for [`Self::from_eval`] records).
+    ///
+    /// No trajectory exists at the grading site — grading is stateless over the
+    /// artifact — so `world_state` is empty and `acts` is 0: honest absence,
+    /// never a fabricated trace.
+    pub fn from_kanban_grade(task: &EvalTask, artifact: &str, pass: bool, detail: &str) -> Self {
+        Self {
+            task: task.clone(),
+            ok: pass,
+            grade: detail.to_string(),
+            answer: artifact.to_string(),
+            world_state: String::new(),
+            acts: 0,
+            source: ExperienceSource::Eval,
         }
     }
 
@@ -408,6 +436,69 @@ pub fn expansion_teach_set(
         .collect()
 }
 
+/// The persona's durable experience stream: `<citizen peer dir>/experience.jsonl`,
+/// one [`ExperienceRecord`] per line, append-only. This is the SPINE the
+/// salience→curriculum seam was missing (#319): producers (`benchmark/grade`,
+/// `benchmark/swe-grade`, the lived-turn settle site) append here; the curriculum
+/// drain loads from here. It lives INSIDE the citizen's peer dir, which is
+/// already an accounted disk class (`system_resources::disk_reporters::
+/// standard_tracked_dirs` → "citizens"), so it inherits that class's tracking +
+/// eviction story rather than minting a new unbounded cache dir.
+pub fn experience_stream_path(peer_dir: &std::path::Path) -> std::path::PathBuf {
+    peer_dir.join("experience.jsonl")
+}
+
+/// Append one record to the persona's durable experience stream. Errors surface
+/// to the caller — whether a failed append fails the whole operation is the
+/// CALLER's contract (a grade verb keeps its verdict primary and logs loud; a
+/// dedicated capture path may choose to hard-fail).
+pub fn append_experience(
+    peer_dir: &std::path::Path,
+    record: &ExperienceRecord,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let line = serde_json::to_string(record)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(experience_stream_path(peer_dir))?;
+    writeln!(f, "{line}")
+}
+
+/// Load the persona's experience stream. A missing file is an empty stream (a
+/// fresh mind has no history — not an error). Unparseable lines are counted and
+/// WARNED, never silently dropped: one corrupt line must not brick learning
+/// forever, but the loss is visible in the log, not swallowed.
+pub fn load_experiences(peer_dir: &std::path::Path) -> Vec<ExperienceRecord> {
+    let path = experience_stream_path(peer_dir);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut bad = 0usize;
+    let records: Vec<ExperienceRecord> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| match serde_json::from_str(l) {
+            Ok(r) => Some(r),
+            Err(_) => {
+                bad += 1;
+                None
+            }
+        })
+        .collect();
+    if bad > 0 {
+        tracing::warn!(
+            path = %path.display(),
+            unparseable = bad,
+            loaded = records.len(),
+            "experience stream carries unparseable lines — records lost to a \
+             schema drift or partial write (visible loss, not silent)"
+        );
+    }
+    records
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,31 +667,51 @@ mod tests {
         let long_answer = "y".repeat(500); // same anti-truncation guarantee as eval
         let settled = settled_speaking(&long_answer, 5, "answered in #general after code/search");
 
-        let lived = ExperienceRecord::from_lived_turn(
-            "what does build_workspace_cycle do?",
-            &settled,
-        );
+        let lived =
+            ExperienceRecord::from_lived_turn("what does build_workspace_cycle do?", &settled);
 
         // Same rich record shape as from_eval — the being is not stripped in either context.
-        assert_eq!(lived.answer.len(), 500, "lived answer survives whole, like eval");
+        assert_eq!(
+            lived.answer.len(),
+            500,
+            "lived answer survives whole, like eval"
+        );
         assert_eq!(lived.acts, 5, "lived effort is retained");
-        assert!(lived.world_state.contains("code/search"), "lived trajectory retained");
-        assert!(lived.ok, "a cleanly-settled lived turn is ok (no infra fault) — NOT a correctness claim");
+        assert!(
+            lived.world_state.contains("code/search"),
+            "lived trajectory retained"
+        );
+        assert!(
+            lived.ok,
+            "a cleanly-settled lived turn is ok (no infra fault) — NOT a correctness claim"
+        );
         assert_eq!(lived.task.prompt, "what does build_workspace_cycle do?");
-        assert!(lived.task.test.is_none(), "a lived turn has no objective grader");
+        assert!(
+            lived.task.test.is_none(),
+            "a lived turn has no objective grader"
+        );
 
         // A lived turn that died on a serving fault: ok=false, honest grade — but STILL untestable.
         let faulted = SettleOutcome::infra_failure("lane 58057 refused qwen3");
         let lived_fault = ExperienceRecord::from_lived_turn("ping", &faulted);
-        assert!(!lived_fault.ok, "an inference-faulted lived turn is not ok (same honesty as eval)");
-        assert!(lived_fault.grade.contains("inference fault"), "the fault cause is named in the grade");
+        assert!(
+            !lived_fault.ok,
+            "an inference-faulted lived turn is not ok (same honesty as eval)"
+        );
+        assert!(
+            lived_fault.grade.contains("inference fault"),
+            "the fault cause is named in the grade"
+        );
 
         // NON-CONVERGENCE: the drive-loop ran out its action budget mid-Act and never
         // reached a verdict — the lived analog of the eval's "did not finish". A
         // structural fact of the outcome (decision is still Act), not a threshold —
         // ok=false with NO magic-number struggle constant. ErrorSalience selects it.
         let unconverged = SettleOutcome {
-            decision: Decision::Act { calls: Vec::new(), intent: "re-run the failing test".into() },
+            decision: Decision::Act {
+                calls: Vec::new(),
+                intent: "re-run the failing test".into(),
+            },
             spoken: None,
             acts: 8,
             world_state: "budget exhausted after 8 acts".into(),
@@ -608,8 +719,14 @@ mod tests {
             inference_error: None,
         };
         let lived_stuck = ExperienceRecord::from_lived_turn("fix the build", &unconverged);
-        assert!(!lived_stuck.ok, "a lived turn that never converged is not ok — the honest struggle signal");
-        assert!(lived_stuck.grade.contains("did not converge"), "non-convergence is named, not faked as a threshold");
+        assert!(
+            !lived_stuck.ok,
+            "a lived turn that never converged is not ok — the honest struggle signal"
+        );
+        assert!(
+            lived_stuck.grade.contains("did not converge"),
+            "non-convergence is named, not faked as a threshold"
+        );
         assert!(
             ErrorSalience.assess(&lived_stuck).is_some(),
             "ErrorSalience selects the non-converged lived turn with NO new detector — one detector, honest data"
@@ -644,7 +761,8 @@ mod tests {
             layer: None,
             relevance_score: None,
             origin_node: None,
-            origin_seq: None,        }
+            origin_seq: None,
+        }
     }
 
     // What this catches: THE THIRD AXIS. A lesson another agent hands over (BigMama's
@@ -666,16 +784,33 @@ mod tests {
 
         // Same stream, tagged Received — the being learns from what it's told, not just what it does.
         assert_eq!(lesson.source, ExperienceSource::Received);
-        assert!(lesson.ok, "a received lesson is knowledge to integrate, not a failure");
-        assert_eq!(lesson.answer, record.content, "the lesson content is the teaching material");
-        assert!(lesson.grade.contains("BigMama"), "the teacher is named — received, not derived");
-        assert!(lesson.task.test.is_none(), "a received lesson has no ground-truth test");
+        assert!(
+            lesson.ok,
+            "a received lesson is knowledge to integrate, not a failure"
+        );
+        assert_eq!(
+            lesson.answer, record.content,
+            "the lesson content is the teaching material"
+        );
+        assert!(
+            lesson.grade.contains("BigMama"),
+            "the teacher is named — received, not derived"
+        );
+        assert!(
+            lesson.task.test.is_none(),
+            "a received lesson has no ground-truth test"
+        );
 
         // ReceivedSalience selects it (provenance IS the signal); ErrorSalience does NOT
         // (it isn't a gap — ok=true). Two complementary detectors, one stream.
-        let recv = ReceivedSalience.assess(&lesson).expect("a shared lesson is salient by provenance");
+        let recv = ReceivedSalience
+            .assess(&lesson)
+            .expect("a shared lesson is salient by provenance");
         assert_eq!(recv.kind, SalienceKind::Received);
-        assert!(ErrorSalience.assess(&lesson).is_none(), "a received lesson is not an error/gap");
+        assert!(
+            ErrorSalience.assess(&lesson).is_none(),
+            "a received lesson is not an error/gap"
+        );
 
         // A lived/eval failure is NOT received — ReceivedSalience must stay silent on it
         // (the axis tag is honest, not a catch-all).
@@ -688,11 +823,17 @@ mod tests {
             acts: 2,
             source: ExperienceSource::Eval,
         };
-        assert!(ReceivedSalience.assess(&failed_eval).is_none(), "ReceivedSalience fires ONLY on received provenance");
+        assert!(
+            ReceivedSalience.assess(&failed_eval).is_none(),
+            "ReceivedSalience fires ONLY on received provenance"
+        );
 
         // SAFETY GUARANTEE holds for the third axis too: no test → never remediation.
         let set = salient_teach_set(&[lesson], &ReceivedSalience);
-        assert!(set.is_empty(), "received lessons feed EXPANSION, never grade-driven remediation");
+        assert!(
+            set.is_empty(),
+            "received lessons feed EXPANSION, never grade-driven remediation"
+        );
     }
 
     // What this catches: the composite selects the whole being's curriculum from all
@@ -726,9 +867,18 @@ mod tests {
         };
 
         // Error wins the kind (priority), Received fires for the lesson, pass is dropped.
-        assert_eq!(detector.assess(&eval_failure).unwrap().kind, SalienceKind::Error);
-        assert_eq!(detector.assess(&received).unwrap().kind, SalienceKind::Received);
-        assert!(detector.assess(&passed_eval).is_none(), "a passed eval is nobody's gap and nobody's lesson");
+        assert_eq!(
+            detector.assess(&eval_failure).unwrap().kind,
+            SalienceKind::Error
+        );
+        assert_eq!(
+            detector.assess(&received).unwrap().kind,
+            SalienceKind::Received
+        );
+        assert!(
+            detector.assess(&passed_eval).is_none(),
+            "a passed eval is nobody's gap and nobody's lesson"
+        );
 
         // Empty composite is never salient (honest degenerate case).
         assert!(AnySalience::of(vec![]).assess(&eval_failure).is_none());
@@ -755,7 +905,10 @@ mod tests {
             source: ExperienceSource::Eval,
         };
         let stuck = SettleOutcome {
-            decision: Decision::Act { calls: Vec::new(), intent: "keep trying".into() },
+            decision: Decision::Act {
+                calls: Vec::new(),
+                intent: "keep trying".into(),
+            },
             spoken: None,
             acts: 8,
             world_state: String::new(),
@@ -764,7 +917,9 @@ mod tests {
         };
         let lived = ExperienceRecord::from_lived_turn("a hard live question", &stuck);
         let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
-            "BigMama", "continuum", "the being learns from what it's told",
+            "BigMama",
+            "continuum",
+            "the being learns from what it's told",
         ));
         let passed = ExperienceRecord {
             ok: true,
@@ -776,16 +931,110 @@ mod tests {
 
         // Remediation: ONLY the testable failure (objective grader can validate the fix).
         let remediation = salient_teach_set(&batch, &any);
-        assert_eq!(remediation.len(), 1, "only the testable failure is remediation-eligible");
+        assert_eq!(
+            remediation.len(),
+            1,
+            "only the testable failure is remediation-eligible"
+        );
         assert_eq!(remediation[0].id, "exam-fail");
 
         // Expansion: the untestable-but-salient lived + received (benchmark-validated).
         let expansion = expansion_teach_set(&batch, &any);
-        assert_eq!(expansion.len(), 2, "the lived turn and the received lesson are expansion-eligible");
-        assert!(expansion.iter().any(|r| r.source == ExperienceSource::Lived));
-        assert!(expansion.iter().any(|r| r.source == ExperienceSource::Received));
+        assert_eq!(
+            expansion.len(),
+            2,
+            "the lived turn and the received lesson are expansion-eligible"
+        );
+        assert!(expansion
+            .iter()
+            .any(|r| r.source == ExperienceSource::Lived));
+        assert!(expansion
+            .iter()
+            .any(|r| r.source == ExperienceSource::Received));
 
         // Exhaustive + disjoint over the salient set: 1 + 2 = 3 salient, the pass in neither.
-        assert_eq!(remediation.len() + expansion.len(), 3, "every salient episode is routed exactly once; the pass is dropped");
+        assert_eq!(
+            remediation.len() + expansion.len(),
+            3,
+            "every salient episode is routed exactly once; the pass is dropped"
+        );
+    }
+
+    mod durable_stream {
+        use super::*;
+
+        // what this catches: the #319 spine — a kanban-graded outcome appended to
+        // the per-persona stream must survive a write→load roundtrip INTACT (her
+        // artifact, the real check output, the verdict, the source tag), and a
+        // corrupt line must cost exactly itself, never the rest of the stream.
+        #[test]
+        fn append_load_roundtrip_survives_a_corrupt_line() {
+            let dir = std::env::temp_dir().join(format!("exp-stream-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let task = EvalTask {
+                id: "sum_evens".into(),
+                prompt: "Write fn sum_evens…".into(),
+                test: Some("assert_eq!(sum_evens(&[2,3]), 2);".into()),
+                ..EvalTask::default()
+            };
+            let fail = ExperienceRecord::from_kanban_grade(
+                &task,
+                "fn sum_evens(n:&[i32])->i32{0}",
+                false,
+                "assertion failed: left 0, right 2",
+            );
+            let pass =
+                ExperienceRecord::from_kanban_grade(&task, "fn sum_evens…correct", true, "ALL ASSERTIONS PASSED");
+            append_experience(&dir, &fail).unwrap();
+            // A partial write / schema drift in the middle of the stream:
+            {
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(experience_stream_path(&dir))
+                    .unwrap();
+                writeln!(f, "{{\"not\": \"an experience record\"").unwrap();
+            }
+            append_experience(&dir, &pass).unwrap();
+
+            let loaded = load_experiences(&dir);
+            assert_eq!(loaded.len(), 2, "both real records load; the corrupt line costs only itself");
+            assert!(!loaded[0].ok && loaded[0].grade.contains("assertion failed"));
+            assert_eq!(loaded[0].answer, "fn sum_evens(n:&[i32])->i32{0}");
+            assert!(matches!(loaded[0].source, ExperienceSource::Eval));
+            assert!(loaded[1].ok);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        // what this catches: a kanban-grade record must be REMEDIATION-ELIGIBLE —
+        // its task keeps the held-out test (so the teacher can re-pose + objectively
+        // re-grade), and a FAILED grade is selected by the error detector while a
+        // PASS is not. This is the exact contract that lets graded board work feed
+        // the existing salience→curriculum seam with zero changes to it.
+        #[test]
+        fn kanban_grade_failure_enters_the_teach_set() {
+            let task = EvalTask {
+                id: "fib".into(),
+                prompt: "Write fn fib…".into(),
+                test: Some("assert_eq!(fib(10), 55);".into()),
+                ..EvalTask::default()
+            };
+            let fail = ExperienceRecord::from_kanban_grade(&task, "fn fib(n:u32)->u64{n as u64}", false, "left 10, right 55");
+            let pass = ExperienceRecord::from_kanban_grade(&task, "fn fib…", true, "ALL ASSERTIONS PASSED");
+            let teach = salient_teach_set(&[fail, pass], &ErrorSalience);
+            assert_eq!(teach.len(), 1, "the failure is remediable; the pass teaches nothing");
+            assert_eq!(teach[0].id, "fib");
+        }
+
+        // what this catches: a missing stream is an EMPTY stream (a fresh mind),
+        // never an error — the drain must not fail a persona who has no history.
+        #[test]
+        fn missing_stream_is_empty_not_an_error() {
+            let dir = std::env::temp_dir().join(format!("exp-none-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(load_experiences(&dir).is_empty());
+        }
     }
 }

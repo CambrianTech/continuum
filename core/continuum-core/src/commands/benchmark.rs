@@ -1809,8 +1809,70 @@ impl ActionCommand for BenchmarkSweGrade {
             )));
         }
         let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+
+        // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
+        // append it to her experience stream. Only her: the gold/raw-patch arms are
+        // harness plumbing, not experience. And only a REAL verdict: an errored run
+        // is an ABSENCE (harness fault), and teaching from a harness failure would
+        // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
+        if verdict.error.is_none() {
+            if let Some(peer_dir) = p
+                .workspace
+                .as_ref()
+                .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
+            {
+                let task = crate::cognition::eval::EvalTask {
+                    id: instance.instance_id.clone(),
+                    prompt: instance.problem_statement.clone(),
+                    ..Default::default()
+                };
+                let detail = format!(
+                    "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}",
+                    instance.instance_id,
+                    verdict.resolved,
+                    verdict.f2p_passed,
+                    verdict.f2p_total,
+                    verdict.p2p_passed,
+                    verdict.p2p_total
+                );
+                let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
+                    &task,
+                    candidate.as_deref().unwrap_or(""),
+                    verdict.resolved,
+                    &detail,
+                );
+                if let Err(e) =
+                    crate::cognition::experience::append_experience(&peer_dir, &episode)
+                {
+                    tracing::warn!(
+                        workspace = ?p.workspace,
+                        error = %e,
+                        "swe-grade outcome could not be appended to the experience \
+                         stream — the verdict stands, but this lesson was LOST"
+                    );
+                }
+            }
+        }
+
         Ok(SweGradeResult::from((verdict, patch_bytes)))
     }
+}
+
+/// The citizen peer dir owning a workspace path: the `<...>/citizens/peers/<uuid>`
+/// prefix of `path`, or `None` when the path is not inside a citizen's home (an
+/// operator scratch tree, the gold arm's cache clone). Path shape is the SAME one
+/// `resolve_solver_dir` resolves into — this is its inverse, not a second layout.
+fn citizen_peer_dir_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let comps: Vec<&std::ffi::OsStr> = path.iter().collect();
+    let peers_at = comps
+        .windows(2)
+        .position(|w| w[0] == "citizens" && w[1] == "peers")?;
+    // citizens/peers/<uuid> — need the uuid component after the pair.
+    let uuid_at = peers_at + 2;
+    if uuid_at >= comps.len() {
+        return None;
+    }
+    Some(comps[..=uuid_at].iter().collect())
 }
 
 #[cfg(test)]
@@ -1840,6 +1902,26 @@ mod swe_grade_tests {
         assert_eq!(
             r.fail_to_pass_total, 0,
             "no tests ran, so nothing was attempted"
+        );
+    }
+
+    // what this catches: the experience-stream producer must attribute a graded
+    // workspace to the RIGHT citizen and stay silent for non-citizen paths — a
+    // wrong peer dir would file her lesson into someone else's mind (#319).
+    #[test]
+    fn citizen_peer_dir_resolves_from_workspace_path_or_not_at_all() {
+        let p = std::path::Path::new(
+            "/Users/x/.continuum/citizens/peers/fe4dac17-aaaa-4bbb-8ccc-000000000001/workspace/swe/pallets__flask-4992",
+        );
+        let d = citizen_peer_dir_of(p).expect("workspace path resolves");
+        assert!(d.ends_with("citizens/peers/fe4dac17-aaaa-4bbb-8ccc-000000000001"));
+        assert!(
+            citizen_peer_dir_of(std::path::Path::new("/tmp/swe-work/repo")).is_none(),
+            "an operator scratch tree is nobody's experience"
+        );
+        assert!(
+            citizen_peer_dir_of(std::path::Path::new("/x/citizens/peers")).is_none(),
+            "the pair with no uuid after it must not resolve"
         );
     }
 
@@ -2542,7 +2624,24 @@ impl ActionCommand for BenchmarkGrade {
             },
         };
 
-        // 4) Optionally publish to the evidence ledger through the ONE record verb.
+        // 4) The graded outcome enters her ONE experience stream (#319): the
+        //    objective reward signal the curriculum drains. Her artifact + the
+        //    real check output are the lesson; the verdict stays this command's
+        //    primary contract, so an append fault is LOUD in the log but never
+        //    voids the grade.
+        let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
+            &task, &source, pass, &detail,
+        );
+        if let Err(e) = crate::cognition::experience::append_experience(&solver_dir, &episode) {
+            tracing::warn!(
+                solver = %solver_full,
+                error = %e,
+                "graded outcome could not be appended to the experience stream — \
+                 the grade stands, but this lesson was LOST to the curriculum"
+            );
+        }
+
+        // 5) Optionally publish to the evidence ledger through the ONE record verb.
         let mut recorded = false;
         if p.record.unwrap_or(false) {
             BenchmarkRecord
