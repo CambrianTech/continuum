@@ -106,6 +106,10 @@ impl RagSource for ActiveWorkSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("work/list")
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

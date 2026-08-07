@@ -75,7 +75,11 @@ const PORT_SCAN_WINDOW: u16 = 64;
 /// before declaring the launch degraded. Model load (mmap + Metal warm) can take
 /// many seconds for a large GGUF; this is generous but bounded so a wedged
 /// launch can't hang the daemon's reconcile forever.
-const READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long a lane may take to come ready after spawn. Also the anchor for the
+/// serving daemon's sustained-delta re-home window: you must never relaunch more
+/// often than a relaunch can finish, so the observation window that justifies one
+/// is derived from THIS ([`crate::modules::serving_daemon`]).
+pub const READY_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Readiness budget for an EPHEMERAL lane ([`EphemeralServingLane`]) — the eval /
 /// teacher measurement lanes. These cold-load a SECOND large GGUF (a 24B Devstral)

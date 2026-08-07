@@ -293,6 +293,10 @@ impl RagSource for AircRagSource {
         SOURCE_ID
     }
 
+    fn expand_command(&self) -> Option<&'static str> {
+        Some("collaboration/chat/export")
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

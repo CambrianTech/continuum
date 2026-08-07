@@ -90,6 +90,7 @@ pub mod should_respond_module;
 pub mod threat_detector;
 pub mod throughput_lease;
 pub mod token_budget;
+pub mod working_set;
 pub mod tool_embedding;
 pub mod tool_relevance;
 pub mod tool_executor;

@@ -296,13 +296,32 @@ impl PersonaCognition {
     /// `now_ms` is passed in (not read from `SystemTime`) so the
     /// brain's composition is replay-deterministic per
     /// [[persona-record-replay-is-a-product-requirement]].
+    /// `room` is the WHERE axis — the context this turn is happening inside.
+    /// Room-scoped sources (`room-kanban`, `room-roster`, `room-doctrine`,
+    /// `room-board`) compare it against their own bound room and ABSTAIN when it
+    /// is absent, so passing `None` here makes the persona blind to the board,
+    /// the roster, the room's doctrine and its wall — all four at once.
+    ///
+    /// That is not hypothetical: this parameter did not exist until 2026-08-06,
+    /// and the probe (`rag.room_gate.abstain`) recorded 504 abstains with
+    /// `turn_room = NIL` — 89% of live turns — while six citizens across two
+    /// machines spent a night correctly reporting "there are no open tasks
+    /// available" from a window that had no room content in it. `#127` built the
+    /// gate, the constructor, and the probe; this caller was never switched over.
+    ///
+    /// `None` remains legitimate for genuinely room-less work (background
+    /// consolidation, dreams) — it means "no room context claimed", not "unknown".
     pub async fn compose_for_turn(
         &self,
         profile: &PersonaInferenceProfile,
         now_ms: u64,
+        room: Option<uuid::Uuid>,
     ) -> ComposedTurn {
         let persona_id = self.engine.persona_id();
-        let rag_ctx = RagContext::for_persona(persona_id, now_ms);
+        let rag_ctx = match room {
+            Some(r) => RagContext::for_persona_in_room(persona_id, now_ms, r),
+            None => RagContext::for_persona(persona_id, now_ms),
+        };
 
         // Reserved tokens scale with context window. See doctrine
         // comment on the constants — these are FALLBACK shapes, NOT
@@ -447,6 +466,11 @@ impl ArcRagSource {
 impl RagSource for ArcRagSource {
     fn source_id(&self) -> &'static str {
         self.0.source_id()
+    }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // delegates to the inner source; expansion is that source's to declare.
+        None
     }
     async fn deliver(
         &self,
@@ -670,6 +694,11 @@ mod tests {
         fn source_id(&self) -> &'static str {
             self.id
         }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
+    }
         async fn deliver(
             &self,
             _ctx: &RagContext,
@@ -737,7 +766,7 @@ mod tests {
         let rag = Arc::new(RagEngine::new());
         let pc = PersonaCognition::new(id, "TestBot".into(), rag);
 
-        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
         assert_eq!(composed.deliveries.len(), 1);
         assert_eq!(composed.deliveries[0].source_id, "engrams");
     }
@@ -758,7 +787,7 @@ mod tests {
         });
         pc.set_airc_source(airc);
 
-        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
         assert_eq!(composed.deliveries.len(), 2);
         assert_eq!(composed.deliveries[0].source_id, "engrams");
         assert_eq!(composed.deliveries[1].source_id, "airc");
@@ -805,7 +834,7 @@ mod tests {
         });
         pc.set_airc_source(airc);
 
-        let _composed = pc.compose_for_turn(&lcd_profile(), 1_000_000).await;
+        let _composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
 
         let events = sink.events();
         let kinds: Vec<&str> = events

@@ -430,6 +430,22 @@ pub struct RagDelivery {
 pub trait RagSource: Send + Sync {
     fn source_id(&self) -> &'static str;
 
+    /// The verb that yields THIS source's content in full, for when the prompt
+    /// budget could only fit part of it.
+    ///
+    /// A truncated grounding block has to tell the reader two things: that it is
+    /// truncated, and **exactly how to see the rest**. "The full list is available
+    /// from the matching command" fails the second half — a citizen cannot run a
+    /// description. It has to be the real verb, spelled the way she would type it,
+    /// because a name she has to guess is a name she gets wrong
+    /// ([[command-names-must-be-accurate]]).
+    ///
+    /// `None` is a legitimate answer for a source with genuinely nothing more to
+    /// show (a one-shot fact, a stub). It is NOT the answer for "I didn't think
+    /// about it" — which is why there is no default impl: every source decides,
+    /// the same forcing function as [`super::room_board_source::RoomBoardReader::peer_names`].
+    fn expand_command(&self) -> Option<&'static str>;
+
     /// Deliver as many complete atomic units as fit within `budget`.
     /// The source decides what counts as complete; allocator only
     /// trusts that `delivery.tokens_used <= budget`.
@@ -701,6 +717,30 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
                 .remove(&src.source_id)
                 .expect("every source must appear in the working alloc");
             total_allocated = total_allocated.saturating_add(tokens);
+            // The allocator decided how much of her mind each source gets, and
+            // until now said NOTHING. So when a grounding block failed to
+            // appear, "the source abstained" and "the source was granted zero"
+            // were indistinguishable from outside — which is exactly the
+            // ambiguity that survived the #331 room fix: gate passing, board
+            // non-empty, block still absent, no way to tell why.
+            //
+            // Emitted per source per allocation: what it ASKED for and what it
+            // GOT. A source at allocated=0 (or below its own floor) is a
+            // faculty the persona cannot hear this turn, and that must be a
+            // readable fact, not an inference. [[observability-as-substrate]]
+            if tokens == 0 || tokens < src.floor_tokens {
+                tracing::info!(
+                    probe_class = "rag.budget.starved",
+                    source = %src.source_id,
+                    granted = tokens,
+                    floor = src.floor_tokens,
+                    min = src.min_tokens,
+                    max = src.max_tokens,
+                    state = ?st,
+                    context_window,
+                    "source granted less than its own floor — this faculty is silent this turn"
+                );
+            }
             allocations.push(SourceAllocation {
                 source_id: src.source_id.to_string(),
                 allocated_tokens: tokens,
@@ -788,6 +828,11 @@ impl StubRagSource {
 impl RagSource for StubRagSource {
     fn source_id(&self) -> &'static str {
         self.source_id
+    }
+
+    fn expand_command(&self) -> Option<&'static str> {
+        // Test/stub source — nothing further to fetch.
+        None
     }
 
     async fn deliver(
