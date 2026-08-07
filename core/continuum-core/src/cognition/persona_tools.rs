@@ -28,9 +28,9 @@
 
 use crate::ai::types::{NativeToolSpec, ToolInputSchema};
 use crate::cognition::tool_embedding::extract_category;
+use crate::commands::help::CommandsHelp;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::modules::grid::node::TrustLevel;
-use crate::commands::help::CommandsHelp;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandDescriptor};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -215,7 +215,11 @@ pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> St
         let cat = extract_category(&t.name);
         // The verb is everything after the first `/` (so `persona/instances/list`
         // shows as `instances/list`); a name with no `/` lists under itself.
-        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        let verb = t
+            .name
+            .strip_prefix(cat)
+            .and_then(|r| r.strip_prefix('/'))
+            .unwrap_or(&t.name);
         by_cat
             .entry(cat)
             .or_default()
@@ -314,7 +318,11 @@ pub fn render_tool_menu(
     let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for t in tools {
         let cat = extract_category(&t.name);
-        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        let verb = t
+            .name
+            .strip_prefix(cat)
+            .and_then(|r| r.strip_prefix('/'))
+            .unwrap_or(&t.name);
         by_cat.entry(cat).or_default().push(verb.to_string());
     }
     let mut out = String::new();
@@ -336,7 +344,11 @@ pub fn render_tool_menu(
             // A singleton category isn't worth collapsing — its one verb IS the name.
             let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);
         } else {
-            let _ = writeln!(out, "{cat} ({} — commands/list --filter {cat})", verbs.len());
+            let _ = writeln!(
+                out,
+                "{cat} ({} — commands/list --filter {cat})",
+                verbs.len()
+            );
         }
     }
     out
@@ -353,7 +365,11 @@ pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
     let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for t in tools {
         let cat = extract_category(&t.name);
-        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        let verb = t
+            .name
+            .strip_prefix(cat)
+            .and_then(|r| r.strip_prefix('/'))
+            .unwrap_or(&t.name);
         by_cat.entry(cat).or_default().push(verb);
     }
     by_cat.into_iter().collect()
@@ -580,9 +596,9 @@ fn sanitize_schema_booleans(v: serde_json::Value) -> serde_json::Value {
                 let nv = if SCHEMA_VALUED_KEYS.contains(&k.as_str()) {
                     match val {
                         // draft-04 tuple form: `items: [schema, schema, …]`
-                        Value::Array(items) => Value::Array(
-                            items.into_iter().map(sanitize_schema_booleans).collect(),
-                        ),
+                        Value::Array(items) => {
+                            Value::Array(items.into_iter().map(sanitize_schema_booleans).collect())
+                        }
                         other => sanitize_schema_booleans(other),
                     }
                 } else if SCHEMA_MAP_KEYS.contains(&k.as_str()) {
@@ -597,9 +613,9 @@ fn sanitize_schema_booleans(v: serde_json::Value) -> serde_json::Value {
                     }
                 } else if SCHEMA_ARRAY_KEYS.contains(&k.as_str()) {
                     match val {
-                        Value::Array(items) => Value::Array(
-                            items.into_iter().map(sanitize_schema_booleans).collect(),
-                        ),
+                        Value::Array(items) => {
+                            Value::Array(items.into_iter().map(sanitize_schema_booleans).collect())
+                        }
                         other => other,
                     }
                 } else {
@@ -685,7 +701,13 @@ mod tests {
         for alias in VERDICT_YIELD_ALIASES {
             assert!(is_yield_turn(alias), "alias must resolve: {alias}");
         }
-        for other in ["work/list", "code/write", "yield", "passing", "pass_the_config"] {
+        for other in [
+            "work/list",
+            "code/write",
+            "yield",
+            "passing",
+            "pass_the_config",
+        ] {
             assert!(!is_yield_turn(other), "must NOT read as a yield: {other}");
         }
     }
@@ -717,8 +739,15 @@ mod tests {
             "perception/observe",
             "perception/look",
             "work/claim",
+            // #358: the social sense. Pinned here because #339 proved a correct verb
+            // that never declares NATIVE is invisible to every citizen — this list is
+            // the reachability contract, not a nicety.
+            "room/members",
         ] {
-            assert!(names.contains(expected), "native surface must include declared-native {expected}");
+            assert!(
+                names.contains(expected),
+                "native surface must include declared-native {expected}"
+            );
         }
 
         // A sibling AiSafe command that did NOT opt in is EXCLUDED — proving this is a
@@ -762,16 +791,26 @@ mod tests {
             spec("gpu/stats"),
             spec("gpu/pressure"),
         ];
-        let expanded: std::collections::BTreeSet<String> = ["code".to_string()].into_iter().collect();
+        let expanded: std::collections::BTreeSet<String> =
+            ["code".to_string()].into_iter().collect();
         let out = render_tool_menu(&tools, &expanded);
 
         // Spine: both categories present every turn.
         assert!(out.contains("code"), "code header missing: {out}");
-        assert!(out.contains("gpu"), "gpu header missing (spine broken): {out}");
+        assert!(
+            out.contains("gpu"),
+            "gpu header missing (spine broken): {out}"
+        );
         // Expanded code lists its verbs inline.
-        assert!(out.contains("code: edit, read, run"), "code not expanded: {out}");
+        assert!(
+            out.contains("code: edit, read, run"),
+            "code not expanded: {out}"
+        );
         // Collapsed gpu shows depth + how to open, NOT its verbs.
-        assert!(out.contains("gpu (2 — commands/list --filter gpu)"), "gpu not collapsed: {out}");
+        assert!(
+            out.contains("gpu (2 — commands/list --filter gpu)"),
+            "gpu not collapsed: {out}"
+        );
         assert!(!out.contains("stats"), "collapsed gpu leaked verbs: {out}");
     }
 
@@ -809,11 +848,23 @@ mod tests {
         ];
         let out = render_tool_catalog(&tools, 0);
         // Required bare, optional suffixed `?`; required keeps declared order.
-        assert!(out.contains("run(lang, code, timeout_secs?)"), "run params wrong: {out}");
-        assert!(out.contains("search(pattern, path?)"), "search params wrong: {out}");
+        assert!(
+            out.contains("run(lang, code, timeout_secs?)"),
+            "run params wrong: {out}"
+        );
+        assert!(
+            out.contains("search(pattern, path?)"),
+            "search params wrong: {out}"
+        );
         // A no-param verb renders bare — no empty `()`.
-        assert!(out.contains("list,") || out.trim_end().ends_with("list"), "list should be bare: {out}");
-        assert!(!out.contains("list()"), "no-param verb must not render empty parens: {out}");
+        assert!(
+            out.contains("list,") || out.trim_end().ends_with("list"),
+            "list should be bare: {out}"
+        );
+        assert!(
+            !out.contains("list()"),
+            "no-param verb must not render empty parens: {out}"
+        );
     }
 
     // what this catches: the tool surface is DYNAMIC and consistent — it is
@@ -832,7 +883,11 @@ mod tests {
             .iter()
             .filter(|d| d.access_level == AccessLevel::AiSafe)
             .count();
-        assert_eq!(specs.len(), registry_ai_safe, "surface == registry AiSafe count");
+        assert_eq!(
+            specs.len(),
+            registry_ai_safe,
+            "surface == registry AiSafe count"
+        );
         assert_eq!(report.included.len(), registry_ai_safe);
 
         // Included and excluded partition the WHOLE registry — every command is
@@ -871,7 +926,10 @@ mod tests {
         let spec = descriptor_to_tool_spec(d);
         assert_eq!(spec.name, d.name, "tool name is the command name verbatim");
         assert_eq!(spec.input_schema.schema_type, "object");
-        assert!(!spec.description.is_empty(), "tool carries a description handle");
+        assert!(
+            !spec.description.is_empty(),
+            "tool carries a description handle"
+        );
     }
 
     // what this catches: a nested-param command (schemars emits `$ref:
@@ -896,10 +954,19 @@ mod tests {
             .input_schema
             .definitions
             .as_ref()
-            .unwrap_or_else(|| panic!("command {} has nested definitions that were dropped", d.name))
+            .unwrap_or_else(|| {
+                panic!(
+                    "command {} has nested definitions that were dropped",
+                    d.name
+                )
+            })
             .as_object()
             .expect("definitions is a JSON object map");
-        assert!(!defs.is_empty(), "definitions map for {} must not be empty", d.name);
+        assert!(
+            !defs.is_empty(),
+            "definitions map for {} must not be empty",
+            d.name
+        );
 
         // Every `#/definitions/<Name>` referenced in the serialized properties has
         // a matching key in the carried map — no dangling ref a backend can't
@@ -944,17 +1011,38 @@ mod tests {
 
         // schema positions rewritten to objects
         assert_eq!(out["properties"]["payload"], json!({}), "true → {{}}");
-        assert_eq!(out["properties"]["blocked"], json!({ "not": {} }), "false → not-any");
-        assert_eq!(out["properties"]["tags"]["items"], json!({}), "items: true → {{}}");
-        assert_eq!(out["additionalProperties"], json!({}), "additionalProperties: true → {{}}");
-        assert_eq!(out["definitions"]["Open"], json!({}), "definition true → {{}}");
+        assert_eq!(
+            out["properties"]["blocked"],
+            json!({ "not": {} }),
+            "false → not-any"
+        );
+        assert_eq!(
+            out["properties"]["tags"]["items"],
+            json!({}),
+            "items: true → {{}}"
+        );
+        assert_eq!(
+            out["additionalProperties"],
+            json!({}),
+            "additionalProperties: true → {{}}"
+        );
+        assert_eq!(
+            out["definitions"]["Open"],
+            json!({}),
+            "definition true → {{}}"
+        );
 
         // keyword boolean is NOT a schema position — left exactly as-is
-        assert_eq!(out["properties"]["name"]["nullable"], json!(true), "nullable untouched");
+        assert_eq!(
+            out["properties"]["name"]["nullable"],
+            json!(true),
+            "nullable untouched"
+        );
 
         // and there is no bare `true`/`false` left anywhere in the serialized schema
         assert!(
-            !out.to_string().contains("true") || out["properties"]["name"]["nullable"] == json!(true),
+            !out.to_string().contains("true")
+                || out["properties"]["name"]["nullable"] == json!(true),
             "the only surviving `true` is the keyword boolean"
         );
     }

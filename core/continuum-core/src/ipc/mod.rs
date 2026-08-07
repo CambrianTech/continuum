@@ -1880,6 +1880,7 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
             registry.clone(),
         )));
+        runtime.register(Arc::new(crate::modules::room::RoomModule::new(registry.clone(),)));
         // activity/* (#274) — the verb that turns a recipe into a room. Same
         // registry: creating a room acts as the CALLER's own airc identity, so the
         // creator is a real peer rather than the substrate acting anonymously.

@@ -49,9 +49,14 @@ pub(crate) const DEFAULT_CLAIM_TTL_MS: u64 = 30 * 60 * 1000;
 /// Resolve the CALLING persona's own airc handle so work ops act as ITS key.
 /// The caller identity is the authenticated airc peer_id the gate already saw;
 /// `None` (substrate-local owner) has no persona runtime → a typed refusal.
-fn persona_airc(
+pub(crate) fn persona_airc(
     registry: &PersonaAircRuntimeRegistry,
     ctx: &Ctx,
+    // What the CALLER actually invoked. Was hardcoded to "work commands", which
+    // #358 caught live the moment room/members reused this helper: a citizen asking
+    // who is here was told "work commands act as ..." and pointed at `airc work`.
+    // A refusal that misnames the thing you called teaches the wrong lesson.
+    family: &str,
 ) -> Result<Arc<Airc>, CommandError> {
     let peer = ctx
         .caller
@@ -59,13 +64,13 @@ fn persona_airc(
         .map(|c| c.peer_id.as_uuid())
         .ok_or_else(|| {
             CommandError::Denied(
-                "work commands act as the caller's own airc identity, and the \
-                 substrate-local operator has none in-core (yet — the self-peer gap, \
-                 task #27). Until the core carries a machine-scope airc runtime, use \
-                 `airc work <verb> ...` for operator-identity board writes; personas \
-                 calling through their toolbelt act as themselves and need nothing \
-                 special."
-                    .into(),
+                format!(
+                    "{family} acts as the caller's own airc identity, and the \
+                     substrate-local operator has none in-core (yet — the self-peer gap, \
+                     task #27). Personas calling through their toolbelt act as themselves \
+                     and need nothing special; for operator-identity board writes use \
+                     `airc work <verb> ...`."
+                ),
             )
         })?;
     let rt = registry.get(peer).ok_or_else(|| {
@@ -202,7 +207,7 @@ impl ActionCommand for WorkClaim {
     type Output = WorkClaimResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkClaimParams) -> Result<WorkClaimResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx)?;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_attempt = airc
             .claim_work_card(ClaimWorkCard {
@@ -337,7 +342,7 @@ impl ActionCommand for WorkCreate {
     type Output = WorkCreateResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx)?;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let repo = RepoId::new(p.repo)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
         let mut req = CreateWorkCard::new(
@@ -398,7 +403,7 @@ impl ActionCommand for WorkRelease {
         ctx: &Ctx,
         p: WorkReleaseParams,
     ) -> Result<WorkReleaseResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx)?;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
         airc.release_work_claim(ReleaseWorkClaim {
@@ -451,7 +456,7 @@ impl ActionCommand for WorkState {
     type Output = WorkStateResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkStateParams) -> Result<WorkStateResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx)?;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
         airc.change_work_card_state(ChangeWorkCardState { card_id, state })
@@ -507,7 +512,7 @@ impl ActionCommand for WorkHeartbeat {
         ctx: &Ctx,
         p: WorkHeartbeatParams,
     ) -> Result<WorkHeartbeatResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx)?;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = resolve_claim_id(&airc, &p.claim_id).await?;
         airc.heartbeat_work_claim(HeartbeatWorkClaim {
@@ -717,7 +722,7 @@ impl ActionCommand for WorkList {
     type Output = WorkListResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkListParams) -> Result<WorkListResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx)?;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let filter = p.state.as_deref().map(parse_state).transpose()?;
         let board = airc
             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
@@ -856,7 +861,7 @@ impl ActionCommand for WorkGet {
     type Output = WorkGetResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkGetParams) -> Result<WorkGetResult, CommandError> {
-        let airc = persona_airc(&self.registry, ctx)?;
+        let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let board = airc
             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)

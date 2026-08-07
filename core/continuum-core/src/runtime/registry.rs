@@ -188,10 +188,7 @@ impl ModuleRegistry {
     /// registered (the typed path). O(1) lock-free read of an after-boot-immutable
     /// map — the executor consults this BEFORE the prefix table so a migrated
     /// command wins over its module's legacy `handle_command` arm.
-    pub fn route_object(
-        &self,
-        command: &str,
-    ) -> Option<Arc<dyn crate::sdk_codegen::DynCommand>> {
+    pub fn route_object(&self, command: &str) -> Option<Arc<dyn crate::sdk_codegen::DynCommand>> {
         self.command_objects.get(command).map(|e| e.value().clone())
     }
 
@@ -267,10 +264,7 @@ impl ModuleRegistry {
     /// the deleted `GLOBAL_EXECUTOR` + `executor()` panic accessor pattern
     /// (task #224). Pure dependency injection — no global state, no boot-
     /// order racing.
-    pub fn install_executor_on_all(
-        &self,
-        executor: Arc<super::command_executor::CommandExecutor>,
-    ) {
+    pub fn install_executor_on_all(&self, executor: Arc<super::command_executor::CommandExecutor>) {
         for entry in self.modules.iter() {
             entry.value().install_executor(Arc::clone(&executor));
         }
@@ -472,6 +466,7 @@ mod tests {
         registry.register(std::sync::Arc::new(crate::modules::work::WorkModule::new(
             crate::persona::PersonaAircRuntimeRegistry::new(),
         )));
+        registry.register(std::sync::Arc::new(crate::modules::room::RoomModule::new(crate::persona::PersonaAircRuntimeRegistry::new(),)));
         let after = registry.dispatch_orphans();
         for name in work_names {
             assert!(
