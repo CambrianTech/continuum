@@ -476,4 +476,266 @@ mod tests {
             );
         }
     }
+
+    // ─── Module-wiring audit (#344) ────────────────────────────────────
+    //
+    // `dispatch_orphans()` above audits DESCRIPTOR → dispatch. It cannot see
+    // the layer under it: a module that ships NO descriptors at all. `impl
+    // ServiceModule for X` registers NOTHING — the MODULE itself must be
+    // handed to `register()` at a boot site (`runtime/registry.rs` +
+    // `ipc/mod.rs`, cf. `RoomModule`). Nothing in the trait says so, and
+    // `ProbeStreamModule` — 675 lines, a handle store, a broadcast
+    // subscriber, its own green test mod, `command_prefixes:
+    // &["debug/probes/"]` — has been unreachable since the day it landed
+    // (#362). Compile, unit tests, and the task list all said done.
+    //
+    // The predicate here is deliberately NOT "is the name mentioned
+    // anywhere". That version passes `ProbeStreamModule`, because the only
+    // mention outside its own file is a DOC COMMENT in `probe_query.rs`.
+    // Prose made a dead module look wired — the precise failure this audit
+    // exists to catch. Comments are stripped before the search.
+
+    /// A module that is intentionally not registered, with the reason. An
+    /// entry here is a DECLARATION, not a mute: unregistered-and-undeclared
+    /// fails the test, and a declared entry that becomes registered ALSO
+    /// fails, so the list cannot rot into a graveyard.
+    struct Unwired {
+        module: &'static str,
+        why: &'static str,
+    }
+
+    /// Categories, in the order they were derived from the live tree:
+    ///
+    /// - **fixture** — exists only to drive a test. Production binaries
+    ///   never construct it.
+    /// - **staging** — a real module deliberately landed before its wiring
+    ///   slice. MUST name the task that wires it. This is the category the
+    ///   audit was worth building for: staging is indistinguishable from a
+    ///   defect unless it is *declared*.
+    /// - **shadowed** — superseded by another module that serves the same
+    ///   surface; dead code, not a live break.
+    /// - **defect** — known-broken, with the task tracking the fix. Loud on
+    ///   purpose: the guard refuses to let it be forgotten.
+    const UNWIRED: &[Unwired] = &[
+        Unwired { module: "BarrierModule", why: "fixture: barrier for the command-executor concurrency test" },
+        Unwired { module: "DefaultsModule", why: "fixture: exercises ModuleConfig trait defaults" },
+        Unwired { module: "FaultRecorder", why: "fixture: records genome page-faults in residency tests" },
+        Unwired { module: "GreeterModule", why: "fixture: the module_harness worked example" },
+        Unwired { module: "InferenceRecorder", why: "fixture: captures llm_module_service calls" },
+        Unwired { module: "OptedInModule", why: "fixture: sibling of DefaultsModule, opts into every hook" },
+        Unwired { module: "PageFaultOnly", why: "fixture: genome bus subscriber asserting fault-only delivery" },
+        Unwired { module: "ReadyModule", why: "fixture: runtime readiness-gate test" },
+        Unwired { module: "RecorderModule", why: "fixture: genome local_manager call recorder" },
+        Unwired { module: "StubAircModule", why: "fixture: ChatModule's airc stand-in" },
+        Unwired { module: "StubDataModule", why: "fixture: ChatModule's data stand-in" },
+        Unwired { module: "TestModule", why: "fixture: this file's own routing tests" },
+        Unwired {
+            module: "HippocampusModule",
+            why: "staging: BrainRegion skeleton, command_prefixes is empty by \
+                  design until slice L0-3a.1b migrates memory/* over from \
+                  MemoryModule. Registering it today would add a tick that \
+                  does nothing.",
+        },
+        Unwired {
+            module: "PersonaServiceModule",
+            why: "shadowed: claims command_prefixes \"persona/\", but \
+                  PersonaAllocatorModule claims the SAME prefix and IS \
+                  registered (ipc/mod.rs). The surface is served; this is \
+                  dead code, not a live break.",
+        },
+        Unwired {
+            module: "ProbeStreamModule",
+            why: "DEFECT #362: debug/probes/{open,next,close} is unroutable \
+                  — confirmed by live dispatch with room/members as positive \
+                  control. Not a one-line registration: ProbeRouterLayer is \
+                  itself never installed at boot, so registering the module \
+                  against a fresh layer would stream silence forever.",
+        },
+    ];
+
+    fn crate_src_files() -> Vec<(std::path::PathBuf, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        out.push((path, text));
+                    }
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        walk(&root, &mut out);
+        out
+    }
+
+    /// Drop `//`-prefixed content so a doc comment can never stand in for
+    /// real wiring. Crude on purpose — a `//` inside a string literal only
+    /// ever costs us a false "wired" reading, never a false alarm.
+    fn code_only(src: &str) -> String {
+        src.lines()
+            .map(|line| match line.find("//") {
+                Some(idx) => &line[..idx],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn mentions_ident(haystack: &str, ident: &str) -> bool {
+        let bytes = haystack.as_bytes();
+        haystack.match_indices(ident).any(|(idx, _)| {
+            let before_ok = idx == 0 || {
+                let c = bytes[idx - 1] as char;
+                !c.is_alphanumeric() && c != '_'
+            };
+            let end = idx + ident.len();
+            let after_ok = end >= bytes.len() || {
+                let c = bytes[end] as char;
+                !c.is_alphanumeric() && c != '_'
+            };
+            before_ok && after_ok
+        })
+    }
+
+    #[test]
+    // what this catches: a ServiceModule that is implemented, tested and
+    // green but handed to `register()` nowhere — so its handle_command,
+    // commands() and tick never reach the runtime. Regression for #362
+    // (ProbeStreamModule) and #325 (GeneratorModule, which shipped
+    // unregistered and was found only by live dispatch).
+    fn every_service_module_is_registered_or_declares_why_not() {
+        let files = crate_src_files();
+        assert!(
+            files.len() > 100,
+            "source scan found only {} files — the walk is broken, and a \
+             guard that cannot see the tree would pass vacuously",
+            files.len()
+        );
+
+        let code: Vec<(std::path::PathBuf, String)> = files
+            .iter()
+            .map(|(p, t)| (p.clone(), code_only(t)))
+            .collect();
+
+        // (module name, defining file) for every `impl ServiceModule for X`.
+        const NEEDLE: &str = "impl ServiceModule for ";
+        let mut impls: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for (path, text) in &code {
+            for (idx, _) in text.match_indices(NEEDLE) {
+                let rest = &text[idx + NEEDLE.len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    impls.push((name, path.clone()));
+                }
+            }
+        }
+        assert!(
+            impls.len() > 50,
+            "found only {} ServiceModule impls — the scan regressed",
+            impls.len()
+        );
+
+        // THIS file is excluded from the haystack. The UNWIRED table below
+        // names every declared module as a string literal, and a literal is
+        // code, not a comment — so without this exclusion each declaration
+        // would read as a reference, every entry would look wired, and the
+        // staleness check would fire on the whole list. The guard would have
+        // been its own first false positive.
+        let this_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("runtime")
+            .join("registry.rs");
+
+        let unwired: Vec<String> = impls
+            .iter()
+            .filter(|(name, home)| {
+                !code
+                    .iter()
+                    .any(|(p, c)| p != home && *p != this_file && mentions_ident(c, name))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let declared: std::collections::HashSet<&str> =
+            UNWIRED.iter().map(|u| u.module).collect();
+
+        let undeclared: Vec<&String> =
+            unwired.iter().filter(|n| !declared.contains(n.as_str())).collect();
+        assert!(
+            undeclared.is_empty(),
+            "these ServiceModules are implemented but never registered, and \
+             nothing declares why:\n  {}\n\nA module reaches dispatch ONLY if \
+             the MODULE is handed to register() at a boot site (ipc/mod.rs, \
+             cf. RoomModule) — `impl ServiceModule` registers nothing. Either \
+             wire it, or add an UNWIRED entry in this file naming the \
+             category and the task.",
+            undeclared
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        );
+
+        let stale: Vec<&str> = UNWIRED
+            .iter()
+            .map(|u| u.module)
+            .filter(|m| !unwired.iter().any(|n| n == m))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "these modules are declared unwired but ARE now referenced \
+             outside their own file — delete their UNWIRED entry so the list \
+             stays honest:\n  {}",
+            stale.join("\n  ")
+        );
+    }
+
+    #[test]
+    // what this catches: an UNWIRED entry added as a silent mute. Every
+    // exemption must carry a reason, and the two categories that are not
+    // self-evidently harmless (staging, defect) must name the task that
+    // resolves them — the requirement the #344 audit found most valuable.
+    fn every_unwired_declaration_carries_a_reason() {
+        for entry in UNWIRED {
+            assert!(
+                entry.why.len() > 20,
+                "{}: UNWIRED entries need a real reason, not a placeholder",
+                entry.module
+            );
+            let category = entry
+                .why
+                .split(':')
+                .next()
+                .expect("split always yields one element")
+                .trim()
+                .to_ascii_lowercase();
+            assert!(
+                ["fixture", "staging", "shadowed", "defect"]
+                    .iter()
+                    .any(|c| category.starts_with(c)),
+                "{}: reason must start with one of fixture/staging/shadowed/\
+                 defect — got {category:?}",
+                entry.module
+            );
+            if category.starts_with("staging") || category.starts_with("defect") {
+                assert!(
+                    entry.why.contains('#') || entry.why.contains("slice"),
+                    "{}: a {category} entry must name the task or slice that \
+                     resolves it — otherwise it is indistinguishable from a \
+                     forgotten defect",
+                    entry.module
+                );
+            }
+        }
+    }
 }
