@@ -252,6 +252,58 @@ fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
     CTX.get_or_init(dashmap::DashMap::new)
 }
 
+/// Why a generation was refused when the requested model is not guaranteed resident, said
+/// in the words the caller needs to act on. THREE distinct situations reach this point and
+/// only one of them is a fault:
+///
+/// | snapshot | meaning | caller should |
+/// |---|---|---|
+/// | never reconciled | core is still starting; nobody has looked yet | retry |
+/// | reconciled, `active_model == None` | a lane is being torn down / rebuilt | retry |
+/// | `active_model == Some(other)` | a DIFFERENT model is resident | NOT retry |
+///
+/// Both retry-able cases used to print the fault sentence. The cost is measured twice:
+/// 116 false alarms over three days from the startup case (#350), and then — after that
+/// split shipped — three citizens taking the same fault sentence 59 seconds into a #175
+/// wedge self-heal that completed normally. `ServingSnapshot::empty()` is published by the
+/// daemon on EVERY teardown (no servable plan, a re-home, a wedge relaunch), so `<none>` is
+/// the ordinary appearance of a lane in transition, not evidence of breakage.
+///
+/// Pure by construction: takes the snapshot and the latch as arguments rather than reading
+/// the process-global `SERVING_STATE`/`FIRST_RECONCILE`, so all three branches are testable
+/// without a set-once global that would make test order load-bearing
+/// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
+fn unguaranteed_model_refusal(
+    provider: &str,
+    model: &str,
+    snap: &crate::inference::llama_server::ServingSnapshot,
+    served_before: bool,
+) -> String {
+    if !served_before {
+        return format!(
+            "{provider}: serving daemon has not completed its first reconcile yet (core is \
+             still starting) — model '{model}' cannot be guaranteed until it does. This is \
+             STARTUP, not a serving fault: it clears on its own, typically within seconds, \
+             and the caller should retry rather than treat the lane as broken."
+        );
+    }
+    let Some(active) = snap.active_model.as_deref() else {
+        return format!(
+            "{provider}: no model is resident right now (the serving daemon is between \
+             lanes — a re-home or a self-healing relaunch), so model '{model}' cannot be \
+             guaranteed. This is a serving TRANSITION, not a fault: it clears when the next \
+             reconcile publishes a ready lane, and the caller should retry rather than \
+             treat the lane as broken."
+        );
+    };
+    format!(
+        "{provider}: model '{model}' is not the active served model (serving: {active}, \
+         ready: {}); the serving daemon owns which single model is resident — refusing to \
+         generate against an unguaranteed model",
+        snap.ready
+    )
+}
+
 /// #175 overflow backstop: does this request body's PROMPT ALONE meet/exceed the served
 /// per-slot window? Returns `Some(estimated_prompt_tokens)` when it does — the
 /// unambiguous overflow that (with context-shift off) 500s AND poisons the slot for
@@ -2024,31 +2076,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 && (snap.active_model.as_deref() == Some(model)
                     || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)));
             if !guaranteed {
-                // #350: say WHICH of the two situations this is. Before the daemon's
-                // first reconcile the snapshot is the boot placeholder — "we have not
-                // looked yet" — which is transient and self-heals in seconds. After it,
-                // an empty snapshot means the daemon looked and nothing is serving,
-                // which is a real fault. Both used to print the identical sentence, and
-                // the resulting 116 false alarms cost a night of investigation aimed at
-                // a serving layer that was healthy the whole time.
-                if !crate::inference::llama_server::has_reconciled() {
-                    return Err(format!(
-                        "{}: serving daemon has not completed its first reconcile yet \
-                         (core is still starting) — model '{}' cannot be guaranteed until \
-                         it does. This is STARTUP, not a serving fault: it clears on its \
-                         own, typically within seconds, and the caller should retry rather \
-                         than treat the lane as broken.",
-                        self.config.name, model
-                    ));
-                }
-                return Err(format!(
-                    "{}: model '{}' is not the active served model (serving: {}, ready: {}); \
-                     the serving daemon owns which single model is resident — refusing to \
-                     generate against an unguaranteed model",
-                    self.config.name,
+                return Err(unguaranteed_model_refusal(
+                    &self.config.name,
                     model,
-                    snap.active_model.as_deref().unwrap_or("<none>"),
-                    snap.ready
+                    &snap,
+                    crate::inference::llama_server::has_reconciled(),
                 ));
             }
             // #175 universal overflow backstop: REFUSE (never send) a prompt that alone
@@ -2672,6 +2704,65 @@ mod tests {
     use super::*;
 
     use crate::ai::types::ImageInput;
+
+    mod unguaranteed_model_refusal_says_which_situation {
+        use super::*;
+        use crate::inference::llama_server::ServingSnapshot;
+
+        fn serving(active: &str) -> ServingSnapshot {
+            ServingSnapshot {
+                active_model: Some(active.to_string()),
+                ready: true,
+                ..ServingSnapshot::empty()
+            }
+        }
+
+        // what this catches: the startup case regressing to the fault sentence. Before the
+        // daemon's first reconcile every reader borrows the boot placeholder, so a refusal
+        // here says nothing about the lane's health — 116 false alarms over 3 days came
+        // from printing the fault wording during ordinary core startup (#350).
+        #[test]
+        fn before_the_first_reconcile_it_names_startup_and_invites_a_retry() {
+            let msg = unguaranteed_model_refusal("gw", "m", &ServingSnapshot::empty(), false);
+            assert!(msg.contains("STARTUP"), "{msg}");
+            assert!(msg.contains("retry"), "{msg}");
+            assert!(
+                !msg.contains("is not the active served model"),
+                "startup must not borrow the mismatch wording: {msg}"
+            );
+        }
+
+        // what this catches: THE REGRESSION THIS TEST EXISTS FOR. An empty snapshot AFTER
+        // the first reconcile is still usually a transition, not a fault: the daemon
+        // republishes `empty()` on every teardown (no plan, re-home, #175 wedge self-heal).
+        // Live 2026-08-07 three citizens took the fault sentence 59s into a wedge-triggered
+        // relaunch that completed normally — the latch said "reconciled", so the earlier
+        // two-way split routed a healthy transition into the fault branch.
+        #[test]
+        fn a_reconciled_but_empty_snapshot_reads_as_a_transition_not_a_fault() {
+            let msg = unguaranteed_model_refusal("gw", "m", &ServingSnapshot::empty(), true);
+            assert!(msg.contains("TRANSITION"), "{msg}");
+            assert!(msg.contains("retry"), "{msg}");
+            assert!(
+                !msg.contains("is not the active served model"),
+                "a lane between relaunches is not a model mismatch: {msg}"
+            );
+        }
+
+        // what this catches: the genuine mismatch losing its loudness. A DIFFERENT model
+        // being resident is the one case retrying cannot fix, so it must keep naming both
+        // models — softening this back into "just retry" would hide a real misroute.
+        #[test]
+        fn a_different_resident_model_stays_a_named_mismatch() {
+            let msg = unguaranteed_model_refusal("gw", "wanted", &serving("resident"), true);
+            assert!(msg.contains("is not the active served model"), "{msg}");
+            assert!(msg.contains("wanted") && msg.contains("resident"), "{msg}");
+            assert!(
+                !msg.contains("TRANSITION") && !msg.contains("STARTUP"),
+                "a real mismatch must not be excused as a transition: {msg}"
+            );
+        }
+    }
 
     // what this catches: the `{"_raw": …}` fallback returning. Unparseable tool
     // arguments used to be wrapped as a params object with a key NOTHING in the tree

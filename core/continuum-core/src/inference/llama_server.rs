@@ -2217,8 +2217,16 @@ mod tests {
     /// start (install_serving_state runs in the daemon's `initialize()`, before the first
     /// reconcile), so "we have not looked yet" and "we looked and nothing is serving" are
     /// byte-identical. Readers that cannot tell them apart shout about a serving fault
-    /// during every boot: measured 116 false alarms in 38 bursts over 3 days, while the
-    /// daemon published `active=<none>` ZERO times in 12 hours.
+    /// during every boot: measured 116 false alarms in 38 bursts over 3 days.
+    ///
+    /// CORRECTION (2026-08-07) to what this comment first claimed. It said the daemon
+    /// "published `active=<none>` ZERO times in 12 hours", which read as: empty means boot,
+    /// full stop. It does not. `serving_daemon` publishes `empty()` on EVERY lane teardown
+    /// — no servable plan, a re-home, and `declare_lane_wedged` (#175 self-heal) — the
+    /// original count simply had no probe on those publish sites to see them. Live receipts
+    /// the same day: three personas read `serving: <none>` 59s into a wedge relaunch, 350s
+    /// after this latch was set. So `has_reconciled()` answers "has a lane EVER come up",
+    /// never "is one up now" — for the latter, read `ServingSnapshot::ready` live.
     ///
     /// The empty snapshot deliberately stays unchanged — it is still the honest "nothing
     /// live" value. What must exist is a SEPARATE signal for whether anyone has looked.
