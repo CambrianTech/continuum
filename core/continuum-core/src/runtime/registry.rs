@@ -137,9 +137,30 @@ impl ModuleRegistry {
     /// a did-you-mean listing the refused name ITSELF — the two registries
     /// disagreeing in one sentence. Returns the orphan names; the boot path logs
     /// them as ERRORs so the gap is loud on the very first startup that ships it.
+    /// `Provided` commands are EXCLUDED, and that is not a loophole — it is what the
+    /// shape means. [`WireShape::Provided`](crate::sdk_codegen::WireShape::Provided): "the
+    /// substrate CANNOT execute it; it routes the call OUT to a client adapter... a
+    /// different *server* (adapter, not ServiceModule)". Such a command has no module, so
+    /// it can be in neither `command_objects` nor a prefix route, and the remedy this audit
+    /// advertises — "add it to its module's `commands()` vec" — is IMPOSSIBLE to apply
+    /// (`interface/mod.rs` has no `commands()` at all). Their routability is the
+    /// [`ProviderRegistry`](crate::runtime::ProviderRegistry)'s concern, checked at call
+    /// time by `Runtime::route_command`, whose no-provider path already fails LOUD naming
+    /// the command AND the missing adapter (pinned by
+    /// `provided_command_fails_loud_without_a_provider`).
+    ///
+    /// Counting them was a false positive by construction, and an expensive one: this ERROR
+    /// fired on EVERY boot listing three "orphans" of which two — `perception/observe`,
+    /// `interface/screenshot` — were healthy adapter-served commands. An alarm that mostly
+    /// cries wolf trains its readers to skip it, which is how the ONE real orphan in that
+    /// list went unnoticed. Worse, the stated hardening above ("promote to a boot refusal
+    /// once the count holds at zero") could never ship while a structurally-unroutable
+    /// class was counted — and promoting it anyway would have refused boot on a legitimate
+    /// Provided command.
     pub fn dispatch_orphans(&self) -> Vec<&'static str> {
         crate::sdk_codegen::command_registry()
             .into_iter()
+            .filter(|d| d.wire != crate::sdk_codegen::WireShape::Provided)
             .map(|d| d.name)
             .filter(|name| {
                 !self.command_objects.contains_key(name) && self.route_command(name).is_none()
@@ -391,6 +412,43 @@ mod tests {
     // exempt by construction); registering the work module clears ALL SEVEN work
     // verbs (proves objects clear orphans — and pins that commands() carries every
     // verb the descriptors advertise, the exact two-line gap that shipped).
+    // what this catches: the audit counting a `Provided` command as undispatchable. Such a
+    // command has NO ServiceModule by construction — an adapter is its server — so it can
+    // never appear in `command_objects` or a prefix route, and no amount of module
+    // registration will ever clear it. Counting it made the boot ERROR permanently noisy
+    // (3 orphans, 2 of them healthy adapter-served commands) AND made the documented
+    // promotion to a boot refusal unreachable, since the count could not reach zero.
+    //
+    // Asserted on a registry with NOTHING registered — the worst case for the audit, where
+    // every module-served command IS an orphan. If a Provided name survives even there, the
+    // filter is gone. Reverting the `wire != Provided` filter puts interface/screenshot back
+    // in the list and this goes red.
+    #[test]
+    fn a_provided_command_is_never_an_orphan_because_it_has_no_module_to_be_missing_from() {
+        let registry = ModuleRegistry::new();
+        let orphans = registry.dispatch_orphans();
+
+        // Every Provided descriptor in the registry, by shape — not a hand-kept name list,
+        // so a newly-added adapter command inherits the guarantee.
+        let provided: Vec<&'static str> = crate::sdk_codegen::command_registry()
+            .into_iter()
+            .filter(|d| d.wire == crate::sdk_codegen::WireShape::Provided)
+            .map(|d| d.name)
+            .collect();
+        assert!(
+            !provided.is_empty(),
+            "positive control: the registry must contain at least one Provided command \
+             (interface/screenshot), or this test proves nothing"
+        );
+        for name in provided {
+            assert!(
+                !orphans.contains(&name),
+                "{name} is adapter-served (WireShape::Provided) — it has no module to be \
+                 missing from, so the dispatch audit must not report it. orphans: {orphans:?}"
+            );
+        }
+    }
+
     #[test]
     fn dispatch_orphans_reads_descriptors_and_clears_on_module_registration() {
         let registry = ModuleRegistry::new();
