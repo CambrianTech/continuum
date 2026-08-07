@@ -1287,7 +1287,8 @@ pub fn start_server(
                     volume_total,
                     cold_root.clone(),
                     crate::system_resources::serving_active_artifacts(),
-                )) as Arc<dyn crate::paging::pool::ResourcePool>);
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
                 log_info!(
                     "ipc",
                     "server",
@@ -1773,8 +1774,12 @@ pub fn start_server(
         // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
         // boot on every airc-configured host.
         rt_handle.spawn(async move {
-            match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
-                .await
+            match airc_lib::Airc::attach_as(
+                root,
+                "continuum-airc-interceptor",
+                interceptor_daemon_socket,
+            )
+            .await
             {
                 Ok(airc) => {
                     // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
@@ -1849,10 +1854,12 @@ pub fn start_server(
         // the grid on the module tick and hears every peer's offers (its own echo
         // included — the loopback proof) via inbound_attach → gossip::global_ledger.
         // Rides the DISCOVERED default room, same dep the citizens attach to.
-        runtime.register(Arc::new(crate::modules::grid_capacity::GridCapacityModule::new(
-            resource_daemon.clone(),
-            default_room,
-        )));
+        runtime.register(Arc::new(
+            crate::modules::grid_capacity::GridCapacityModule::new(
+                resource_daemon.clone(),
+                default_room,
+            ),
+        ));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -1871,6 +1878,12 @@ pub fn start_server(
         // resolve the calling persona's live airc runtime. Registered before the
         // executor is built so its typed commands land on the one registry.
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
+            registry.clone(),
+        )));
+        // activity/* (#274) — the verb that turns a recipe into a room. Same
+        // registry: creating a room acts as the CALLER's own airc identity, so the
+        // creator is a real peer rather than the substrate acting anonymously.
+        runtime.register(Arc::new(crate::modules::activity::ActivityModule::new(
             registry.clone(),
         )));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.

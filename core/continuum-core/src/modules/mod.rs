@@ -23,6 +23,7 @@ pub mod airc_bridge_dispatch;
 // production v5 migration can ship without that scope.
 // #[cfg(test)]
 // mod airc_runtime_e2e_tests;
+pub mod activity;
 pub mod auth;
 pub mod avatar;
 pub mod bevy_consumer;
@@ -57,8 +58,8 @@ pub mod mcp;
 pub mod mcp_protocol;
 pub mod mcp_transport;
 pub mod memory;
-pub mod nav;
 pub mod models;
+pub mod nav;
 pub mod perception_consumer;
 pub mod persona_allocator;
 pub mod persona_instance_manager;
