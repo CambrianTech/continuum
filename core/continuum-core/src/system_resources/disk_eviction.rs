@@ -389,7 +389,19 @@ fn copy_entry_durable(src: &Path, dst: &Path) -> std::io::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::copy(src, dst)?;
-        std::fs::File::open(dst)?.sync_all()?;
+        // Reopen for WRITE to fsync. `File::open` yields a read-only
+        // handle, and on Windows `FlushFileBuffers` against one fails
+        // with ERROR_ACCESS_DENIED — so every real migration errored
+        // here, the caller deleted the partial cold copy, kept the hot
+        // copy, and logged "failed verification". Net effect on Windows:
+        // the serving tier could only ever evict an artifact that ALREADY
+        // had a verified twin on cold (the pure-drop path, which never
+        // calls this function). Under genuine disk pressure the pool
+        // freed nothing while reporting that it tried. POSIX permits
+        // fsync on a read-only fd, which is why this survived on
+        // macOS/Linux — [[dir-opened-as-file-windows-only]] is the same
+        // family: a file-API assumption that only one platform enforces.
+        std::fs::OpenOptions::new().write(true).open(dst)?.sync_all()?;
     }
     Ok(())
 }
@@ -645,7 +657,14 @@ mod tests {
         // NvmeServingTierPool is exactly the "reference-aware, never
         // blind-delete a served model" owner the deferred entry demanded —
         // active-set aware, migrate-to-cold, verified-copy-before-delete.
-        let owned = ["cargo-target", "genome-models"];
+        // logs + probes graduated straight to OWNED on registration
+        // (2026-08-06) rather than through the deferred list: their
+        // contents are rotation generations the writer has already
+        // moved past, so `RotationLogPool` can drop the oldest with no
+        // in-flight-set hazard to reason about. Deferring is for
+        // classes where blind deletion is UNSAFE (a grading instance,
+        // a served model); there is nothing unsafe here to defer for.
+        let owned = ["cargo-target", "genome-models", "logs", "probes"];
         let deferred = [
             ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
             ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
@@ -679,6 +698,39 @@ mod tests {
     mod serving_tier {
         use super::*;
 
+        /// Set an mtime on a path that may be a FILE or a DIRECTORY.
+        ///
+        /// Windows will not hand you a handle to a directory through a
+        /// plain `File::open` — it returns `PermissionDenied` (code 5)
+        /// — so you must ask for `FILE_WRITE_ATTRIBUTES` access with
+        /// `FILE_FLAG_BACKUP_SEMANTICS`, the documented way to open a
+        /// directory handle. Both work for regular files too, so one
+        /// helper covers both shapes on both platforms.
+        ///
+        /// what this fixes: these three `serving_tier` tests were RED on
+        /// Windows and green everywhere else, because the helper opened
+        /// `stale-model/` (a directory) as a file. Exactly the defect
+        /// that also refused the probe sink's boot the same day — a
+        /// directory opened as a file is invisible on macOS/Linux and
+        /// fatal on Windows, so it survives review on the platform the
+        /// author is using.
+        fn set_mtime(path: &Path, t: std::time::SystemTime) {
+            #[cfg(windows)]
+            let f = {
+                use std::os::windows::fs::OpenOptionsExt;
+                const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+                const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+                std::fs::OpenOptions::new()
+                    .access_mode(FILE_WRITE_ATTRIBUTES)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                    .open(path)
+                    .expect("open for mtime")
+            };
+            #[cfg(not(windows))]
+            let f = std::fs::File::open(path).expect("open for mtime");
+            f.set_modified(t).expect("mtime");
+        }
+
         /// A hot-tier tree with two frozen model artifacts (one dir-shaped,
         /// one file-shaped) and one actively-served dir. mtimes are staged so
         /// `stale-model/` is coldest, then `old.gguf`, then the active dir.
@@ -692,13 +744,8 @@ mod tests {
             // set_modified (std, stable since 1.75).
             let t0 = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
             let t1 = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000);
-            let f = std::fs::File::open(hot.join("stale-model")).expect("open");
-            f.set_modified(t0).expect("mtime");
-            let f = std::fs::OpenOptions::new()
-                .append(true)
-                .open(hot.join("old.gguf"))
-                .expect("open");
-            f.set_modified(t1).expect("mtime");
+            set_mtime(&hot.join("stale-model"), t0);
+            set_mtime(&hot.join("old.gguf"), t1);
             let tracked = TrackedDir::new("genome-models", hot.to_path_buf());
             tracked.set_bytes(dir_size_bytes(hot));
             tracked

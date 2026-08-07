@@ -1577,6 +1577,10 @@ fn push_work_board_anchor(
         );
         return;
     }
+    // `perception`, not `opaque` — hers supersedes the version I cherry-picked.
+    // The anchor IS a perception fact about the board, and typing it as one is
+    // what lets the parroted-perception gate recognise it as system-authored
+    // rather than the citizen's own words.
     turns.push(crate::cognition::workspace::BurstTurn::perception(anchor));
 }
 

@@ -57,6 +57,22 @@ pub const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 /// the unbounded daily scheme had already accumulated, with no ceiling above it.
 pub const KEEP: usize = 8;
 
+/// The rotation ceiling for ONE such directory, in bytes — the same
+/// `MAX_LOG_BYTES * (KEEP + 1)` arithmetic the docs above describe,
+/// derived rather than restated so the two can't drift.
+///
+/// This is what [`RotationLogPool`](crate::system_resources::RotationLogPool)
+/// registers as its default budget with the `PressureBroker`. Rotation
+/// enforcing this locally is NOT the same as the substrate governing
+/// it: the writer's cap is a ceiling it maintains for itself, while the
+/// pool's budget is a number an authority can LOWER, at which point the
+/// broker actually reclaims generations. Same number at rest, different
+/// powers under pressure — which is the whole reason the class needed an
+/// owner instead of a constant.
+pub fn rotation_budget_bytes() -> u64 {
+    MAX_LOG_BYTES * (KEEP as u64 + 1)
+}
+
 /// An `io::Write` that rotates its file whenever the next write would cross the cap.
 ///
 /// Designed to sit inside `tracing_appender::non_blocking`, which takes any

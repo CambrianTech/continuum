@@ -15,4 +15,19 @@ model_id: string,
  * such tier rather than silently substituting another. When absent, a
  * balanced default ordering picks the tier.
  */
-quant?: string, };
+quant?: string, 
+/**
+ * Fire-and-poll (mirrors `agent/solve --detach`, #86). A frontier GGUF is tens of
+ * GB and takes an HOUR — that MUST NOT hold the command socket. With `detach`, the
+ * call returns a handle NOW (`detached: true`, empty path/bytes) and the real report
+ * lands in `~/.continuum/progress/models-pull-<run_id>.json`. Progress is published
+ * on the bus as `models:pull:progress` per shard so the UI / a persona / Positron can
+ * watch it. Re-running the SAME pull is idempotent: the HF cache is content-addressed,
+ * so completed shards skip instantly and an interrupted pull resumes where it stopped.
+ */
+detach?: boolean, 
+/**
+ * Correlation id for a detached pull (echoed in the ack, the progress events and the
+ * result file). Omit → minted. Pass the SAME id to resume-and-watch one logical pull.
+ */
+run_id?: string, };
