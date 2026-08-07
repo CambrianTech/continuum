@@ -140,47 +140,38 @@ fn starts_with_silence_token(text: &str) -> bool {
 /// a STANDALONE word — never `PASSED`, `BYPASS`, `PASS_TOKEN`. Fence guard stands: fenced
 /// content is substance no matter what surrounds it.
 ///
-/// The two honored positions, each observed live:
+/// # Scope: exactly one position, and why it stopped growing
 ///
-/// 1. **Final word** — `…please let me know! Otherwise, PASS.` (2026-08-06, two citizens).
-/// 2. **Object of a first-person declaration** — `Therefore, I will proceed with PASS to
-///    avoid further unproductive actions.` / `Otherwise, I will PASS and continue to
-///    monitor…` The citizen is not USING the token, she is DECLARING that she will; the
-///    declaration is the pass.
+/// The token is honored when it is the LAST word — `…please let me know! Otherwise, PASS.`
+/// (live 2026-08-06, two citizens). The leading form is
+/// [`starts_with_silence_token`]'s job. Together those are "the token IS her message",
+/// which is protocol decoding of a word we taught her.
 ///
-/// Position 2 is why this got built. It was left unfixed on 2026-08-06 at n=1 with the note
-/// that it wanted "a second sighting or Joel's call, not extrapolation from n=1". The second
-/// sighting arrived 2026-08-07 as eight messages inside one monitor window, from THREE
-/// citizens in `#k3-serving` — `I will proceed with PASS`, `I will PASS and continue to
-/// monitor`, `I will proceed with PASS for now` — every one posted to the room as speech. The
-/// gap is measured, and the rule that covers it is a position, not a phrase.
+/// Two further positions were built and then deleted the same night, and the reasoning is
+/// the load-bearing part of this file:
 ///
-/// # The position deliberately NOT honored, and why
+/// - **Clause-initial** (`…Otherwise, PASS for now as I…`) collides head-on with real
+///   answers. `Verdict: PASS for all six cases.` is positionally identical and semantically
+///   opposite; silencing it is the #220 failure — `spoken: None`, and an answer-graded
+///   benchmark scores 0 on a correct response. Fail open to Speak: silencing real content
+///   is the worse error.
+/// - **First-person declaration** (`Therefore, I will proceed with PASS…`) was covered by a
+///   phrase list of leads — `i will`, `i'll`, `i am going to`. It shipped, and Joel killed
+///   it the same night with the right objection: *"Regex ideas and string matches for
+///   semantic understanding is not good for reliability."* He is correct. Deciding whether a
+///   SENTENCE yields the turn is a semantic judgement, and a phrase list is the wrong
+///   instrument for one — this file's own history is the proof (the length cap went 500 →
+///   beaten by 11 chars → 700 → beaten by 14, and the lead list would have been beaten by
+///   `my choice is PASS` next week).
 ///
-/// A bare **clause-initial** rule ("the token is the first word after any `.,;:!?\n`") was
-/// written, tested green, and then removed before it shipped. It would have covered one more
-/// live variant — `…Otherwise, PASS for now as I don't have anything genuinely new to add.`
-/// — but that variant is still n=1, and unlike position 2 it *collides with real answers*:
+/// **The replacement is a channel, not a better matcher.** `Pass` now has a structured verb
+/// — [`yield_turn`](super::persona_tools::VERDICT_YIELD_TURN) — offered on the same native
+/// tool channel the citizens already use correctly. Recognising a verb we defined is
+/// protocol; recognising an intention in prose is not. The missing channel was the actual
+/// defect, and every string-matching fix before this one was scar tissue around it.
 ///
-/// ```text
-///   "Verdict: PASS for all six cases."     ← a VALUE REPORT, must speak
-///   "Otherwise, PASS for now as I…"        ← a TURN YIELD, should silence
-/// ```
-///
-/// Positionally identical, semantically opposite. Silencing the first is exactly the #220
-/// failure — the answer becomes `spoken: None` and an answer-graded benchmark scores 0 for a
-/// correct response. This file's own doctrine settles it: **fail open to Speak, because
-/// silencing real content is the worse error.** Position 2 has no such collision — `I will
-/// proceed with PASS` is unambiguously turn-taking and can never be a value report — which is
-/// why the evidence for it justifies shipping it and the evidence for clause-initial does not.
-///
-/// So that variant still speaks. That is the status quo it was already deliberately left in,
-/// and widening it wants its own sighting rather than a free ride on this one's.
-///
-/// Accepted trade, stated so it is a choice and not an oversight: an uppercase `PASS` used as
-/// a transitive verb inside a first-person declaration (`I will PASS the config to the
-/// builder`) is silenced. Nobody writes the verb in caps; the reserved spelling in a
-/// first-person declaration is the token every time we have seen it.
+/// What stays here is only the compatibility path for a model that emits the bare token
+/// without using the tool channel at all.
 fn declares_silence_token(text: &str) -> bool {
     if text.contains("```") {
         return false;
@@ -197,40 +188,8 @@ fn declares_silence_token(text: &str) -> bool {
         if !(free_before && free_after) {
             continue;
         }
-        // Position 1 — the final word (only punctuation may follow).
+        // The token is her whole closing move: only punctuation may follow.
         if !text[end..].chars().any(|c| c.is_alphanumeric()) {
-            return true;
-        }
-        // The clause this occurrence sits in, for position 2. A bare clause-INITIAL rule is
-        // deliberately absent — see the "position deliberately NOT honored" section above:
-        // `Verdict: PASS for all six cases.` is positionally identical to a turn-yield and
-        // semantically its opposite, and silencing it is the #220 answer-swallowing failure.
-        let before = &text[..start];
-        let clause_start = before
-            .rfind(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | '\n'))
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let clause_prefix = before[clause_start..]
-            .trim()
-            .to_lowercase()
-            .replace('\u{2019}', "'");
-        // Position 2 — the object of a first-person declaration of intent.
-        const DECLARATION_LEADS: [&str; 10] = [
-            "i will",
-            "i'll",
-            "i am going to",
-            "i'm going to",
-            "i will proceed with",
-            "i'll proceed with",
-            "i will now",
-            "i'll now",
-            "i will go with",
-            "i'll go with",
-        ];
-        if DECLARATION_LEADS
-            .iter()
-            .any(|lead| clause_prefix.ends_with(lead))
-        {
             return true;
         }
     }
@@ -311,70 +270,45 @@ mod tests {
              that need attention. If there are any particular areas where assistance is needed, \
              please let me know! Otherwise, PASS.",
             "I've been repeating myself without adding value. Otherwise, PASS",
-            // Position 2 — OBJECT OF A FIRST-PERSON DECLARATION. Verbatim from the monitor
-            // stream 2026-08-07: eight of these inside one window, three citizens, all posted
-            // to #k3-serving as speech. This is the second sighting the n=1 note asked for.
-            "Given these circumstances, continuing in this manner would only contribute \
-             redundant information. Therefore, I will proceed with PASS to avoid further \
-             redundancy.",
-            "Therefore, I will proceed with PASS to avoid further unproductive actions.",
-            "I see that I've been repeating similar actions and thoughts without making much \
-             progress or adding new information to the conversation. Given this situation, it \
-             seems best for me to step back and observe the room dynamics.\n\nIf anyone has \
-             specific questions or needs assistance with something, please let me know! \
-             Otherwise, I will PASS and continue to monitor any new developments that arise.",
-            "To break this cycle and avoid further redundancy, I will proceed with PASS for now.",
         ] {
             assert_eq!(decision_from_response(live), Decision::Pass, "must silence: {live:?}");
         }
-        // THE LINE WE CHOSE NOT TO CROSS. A bare clause-initial rule would silence the first
-        // string below — one real live variant — but it is positionally IDENTICAL to the
-        // value-report answers under it, which must speak. Silencing those is the #220
-        // answer-swallowing failure (spoken: None → an answer-graded benchmark scores 0 on a
-        // correct response), so the whole position stays out and this variant keeps speaking.
-        // If a second sighting of the turn-yield form shows up, it needs a rule that can tell
-        // these apart — not a wider position. // what this catches: someone "completing" the
-        // position set later without noticing it swallows correct benchmark answers.
+        // THE LINES WE CHOSE NOT TO CROSS — two positions built and deleted the same night.
+        // Every string below reaches the room as speech, and that is the accepted cost of
+        // not guessing at what a sentence means.
         //
-        // NOTE, and it is a separate live defect found while writing this test: the obvious
-        // fixture `"Verdict: PASS for all six cases."` is silenced TODAY, and not by anything
-        // in this file. `clean_response`'s speaker-name stripper is `^[A-Z][A-Za-z\s]+:\s*`,
-        // which eats `Verdict: ` as if it were `Anwen: `, and the exposed leading `PASS` then
-        // trips `starts_with_silence_token`. Any answer opening with a capitalised label —
-        // `Answer:`, `Result:`, `Verdict:` — followed by the token is swallowed. That is
-        // #220's family and it predates this change; fixtures here avoid a leading label so
+        // 1. CLAUSE-INITIAL. Positionally identical to a value report ("…the result was:
+        //    PASS across the board"), semantically its opposite. Silencing it is the #220
+        //    answer-swallowing failure — spoken: None, and an answer-graded benchmark scores
+        //    0 on a correct response.
+        // 2. FIRST-PERSON DECLARATION. A phrase list of leads (`i will`, `i'll`, …) covered
+        //    this for exactly one commit before Joel killed it: string matching is the wrong
+        //    instrument for a semantic judgement, and this file's own history proves it (the
+        //    length cap went 500 → beaten by 11 chars → 700 → beaten by 14). Its replacement
+        //    is the structured `yield_turn` verb, not a cleverer matcher.
+        //
+        // what this catches: someone "completing" the position set later. Every shape here
+        // is one a REAL ANSWER can also take, which is precisely why they stay speakable.
+        //
+        // NOTE, a SEPARATE live defect (#349) found while writing this block, NOT caused by
+        // anything in this file: `"Verdict: PASS for all six cases."` IS silenced today,
+        // because `clean_response`'s speaker-name stripper `^[A-Z][A-Za-z\s]+:\s*` eats
+        // `Verdict: ` as though it were `Anwen: `, exposing the token to
+        // `starts_with_silence_token`. Fixtures below avoid a leading capitalised label so
         // this test measures THIS file's rule and not that one.
         for still_speaks in [
             "…please let me know! Otherwise, PASS for now as I don't have anything genuinely \
              new to add.",
             "The suite ran 6 cases, and the result was: PASS across the board.",
             "Reviewed all 3 files, and my verdict is, PASS on every one.",
+            "Therefore, I will proceed with PASS to avoid further unproductive actions.",
+            "To break this cycle and avoid further redundancy, I will proceed with PASS for now.",
+            "Otherwise, I will PASS and continue to monitor any new developments that arise.",
         ] {
             assert!(
                 matches!(decision_from_response(still_speaks), Decision::Speak { .. }),
-                "clause-initial must stay OPEN — silencing it swallows answers (#220): \
-                 {still_speaks:?}"
-            );
-        }
-        // POSITIVE CONTROL. Without this the test could pass for the wrong reason — a phrase
-        // creeping into STRONG_CLOSURES would silence these and the position rule could rot
-        // untested. Pin that the declaration fixtures are covered by POSITION and nothing
-        // else: no closure phrase matches them, and the token is not the final word.
-        for position_three in [
-            "Therefore, I will proceed with PASS to avoid further unproductive actions.",
-            "To break this cycle and avoid further redundancy, I will proceed with PASS for now.",
-        ] {
-            assert!(
-                !is_narrated_pass(position_three),
-                "phrase list must NOT be what covers this: {position_three:?}"
-            );
-            assert!(
-                position_three.split_whitespace().next_back() != Some(SILENCE_TOKEN),
-                "final-word rule must NOT be what covers this: {position_three:?}"
-            );
-            assert!(
-                declares_silence_token(position_three),
-                "the position rule is what must cover this: {position_three:?}"
+                "must stay speech — reading intent out of a sentence is the verb's job now, \
+                 not this parser's: {still_speaks:?}"
             );
         }
         for speak in [

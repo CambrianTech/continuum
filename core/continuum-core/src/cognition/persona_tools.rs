@@ -384,7 +384,80 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
         .iter()
         .filter(|d| d.native)
         .map(descriptor_to_tool_spec)
+        .chain(verdict_tool_specs())
         .collect()
+}
+
+/// The canonical name of the verdict verb that yields the turn.
+///
+/// Kept as a constant because it is load-bearing in TWO places that must never drift —
+/// the offered schema below and the interception in
+/// [`super::llm_deliberation_faculty`] — and a name that only agrees by coincidence is
+/// the defect class this whole verb exists to end
+/// ([[command-names-must-be-accurate-and-a-constant-nobody-references-is-worse-than-none]]).
+pub const VERDICT_YIELD_TURN: &str = "yield_turn";
+
+/// Names a model may reach for meaning the same thing. Matched, like every other
+/// dialect mapping, on the NAME of a verb we defined — never on prose.
+pub const VERDICT_YIELD_ALIASES: &[&str] = &["pass_turn", "pass", "stay_silent", "skip_turn"];
+
+/// VERDICT verbs — the participation decisions that are NOT actions on the world.
+///
+/// # Why these are faculty-owned and not commands (Joel's call, 2026-08-07)
+///
+/// [`Decision`](super::workspace::Decision) has four variants, and until now the tool
+/// channel could express exactly one of them. `Act` gets its vocabulary from the command
+/// registry because acts ARE commands. `Speak` is expressed as prose. `Pass` had **no
+/// structured expression at all** — the only way a citizen could decline a turn was to
+/// emit a magic word into her prose and hope the parser recognised the sentence she
+/// wrapped it in.
+///
+/// That asymmetry is the actual bug behind #271/#264. Instruction-tuned models naturally
+/// wrap a token in a sentence ("Therefore, I will proceed with PASS to avoid further
+/// redundancy" — eight of those in one monitor window, three citizens, 2026-08-07), fall
+/// off the protocol, and every previous fix compensated with cleverer string matching:
+/// a phrase list, then a length cap of 500, then 700, each one beaten by the next
+/// message. **The regex was never the disease; it was scar tissue around a missing
+/// channel.** Joel, 2026-08-07: "Regex ideas and string matches for semantic
+/// understanding is not good for reliability."
+///
+/// So `Pass` gets a verb. Recognising `yield_turn` in a tool call is protocol decoding —
+/// the same category as `write_file` or a JSON fence — not inference about what a
+/// sentence means. Evidence it works: the citizens already emit correct native calls
+/// (`claim_task`, `update_task`, `list_tasks` in one turn, live 2026-08-07). They use the
+/// structured channel fine when we give them one; we simply never gave them this one.
+///
+/// These live here, next to the action specs, so there is still exactly ONE offered tool
+/// surface ([`native_tool_specs`]) rather than a parallel one — but they carry no
+/// `CommandSpec`, no ACL entry and no executor arm, because they have no world-effect to
+/// authorize. The faculty that turns a generation into a `Decision` owns the vocabulary
+/// for the decisions it can reach; it intercepts these before dispatch and they never
+/// reach the registry.
+pub fn verdict_tool_specs() -> Vec<NativeToolSpec> {
+    vec![NativeToolSpec {
+        name: VERDICT_YIELD_TURN.to_string(),
+        description: "Yield this turn and say nothing. Use this when you have nothing to add \
+                      — silence is a real, first-class choice and costs the room nothing. \
+                      Prefer it over posting a message that announces you have nothing to \
+                      say: that announcement IS noise, and it wakes every peer into posting \
+                      their own. Calling this ends your turn silently."
+            .to_string(),
+        input_schema: ToolInputSchema {
+            schema_type: "object".to_string(),
+            // Deliberately ARGUMENT-FREE. A `reason` field would invite her to compose
+            // the very closure paragraph this verb exists to stop her broadcasting, and
+            // #334 already measured what happens to a field a model must fill with
+            // nothing: it degenerates. Her reasoning is already captured as thinking.
+            properties: serde_json::json!({}),
+            required: None,
+            definitions: None,
+        },
+    }]
+}
+
+/// True if `name` is the yield verb under any name a model reaches for.
+pub fn is_yield_turn(name: &str) -> bool {
+    name == VERDICT_YIELD_TURN || VERDICT_YIELD_ALIASES.contains(&name)
 }
 
 /// Look up one command by name and project it to a full tool spec — the on-demand
@@ -570,6 +643,52 @@ pub struct ToolSurfaceReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the yield verb must be REACHABLE — offered on the same surface
+    // the citizens actually use. It exists precisely because `Pass` had no structured
+    // channel and we compensated with prose matching for months; a verb that is built,
+    // correct, and absent from the offer list would be that same bug wearing a new hat
+    // ([[green-by-every-check-is-not-evidence-of-reachability]]). So this asserts
+    // PRESENCE IN THE OFFERED LIST, not merely that the constructor returns something.
+    #[test]
+    fn the_yield_verb_is_actually_offered_to_the_model() {
+        let offered = native_tool_specs();
+        let yielded = offered
+            .iter()
+            .find(|s| s.name == VERDICT_YIELD_TURN)
+            .unwrap_or_else(|| {
+                panic!(
+                    "yield_turn missing from the offered surface ({} tools): {:?}",
+                    offered.len(),
+                    offered.iter().map(|s| &s.name).collect::<Vec<_>>()
+                )
+            });
+        // Argument-free on purpose: a `reason` field would invite the very closure
+        // paragraph the verb exists to stop her broadcasting (#334's degeneration shape).
+        assert_eq!(yielded.input_schema.schema_type, "object");
+        assert_eq!(yielded.input_schema.properties, serde_json::json!({}));
+        assert!(yielded.input_schema.required.is_none());
+        // And the ACTION tools are still all there — the verdict verb is appended to the
+        // one derived surface, never a replacement for it.
+        assert!(
+            offered.len() > 1,
+            "verdict verb must ADD to the registry-derived tools, not replace them"
+        );
+    }
+
+    // what this catches: the name→verb mapping is a NAME match on a verb we defined
+    // (protocol), which is the whole reason this replaced a prose phrase-list. Aliases
+    // resolve; an unrelated command must never be mistaken for a yield.
+    #[test]
+    fn yield_recognition_is_a_name_match_and_nothing_broader() {
+        assert!(is_yield_turn(VERDICT_YIELD_TURN));
+        for alias in VERDICT_YIELD_ALIASES {
+            assert!(is_yield_turn(alias), "alias must resolve: {alias}");
+        }
+        for other in ["work/list", "code/write", "yield", "passing", "pass_the_config"] {
+            assert!(!is_yield_turn(other), "must NOT read as a yield: {other}");
+        }
+    }
 
     // what this catches: the native surface is DERIVED from each command's declared
     // `NATIVE` flag, not a hand-kept list — a command that declares `native: true` is

@@ -652,6 +652,48 @@ impl LlmDeliberationFaculty {
         Decision::Pass
     }
 
+    /// She called the yield verb — settle the turn as the silence it names.
+    ///
+    /// The STRUCTURED half of #271/#264. A citizen with nothing to add has, until now,
+    /// had no way to say so except to write a paragraph announcing it — which is itself
+    /// a room message that wakes the next peer into announcing theirs. Now silence is a
+    /// verb, and recognising it is a NAME match on a verb we defined (protocol), not a
+    /// phrase match on prose (semantics). See
+    /// [`super::persona_tools::verdict_tool_specs`] for why this is not a command.
+    ///
+    /// Checked BEFORE `act_verdict` on both lift paths, so a yield never reaches the
+    /// authorization gate or the executor: there is no world-effect to authorize, and
+    /// routing it as an `Act` would burn an act from the budget and re-enter the settle
+    /// loop — the opposite of ending the turn.
+    ///
+    /// If she calls the yield ALONGSIDE real work, the work wins: a turn that both did
+    /// something and declined to speak is an act with nothing to say, and dropping the
+    /// act to honour the yield would silently discard work she actually did.
+    fn yield_verdict(&self, calls: &[crate::ai::types::ToolCall]) -> Option<Contribution> {
+        if !calls
+            .iter()
+            .any(|c| super::persona_tools::is_yield_turn(&c.name))
+        {
+            return None;
+        }
+        if calls
+            .iter()
+            .any(|c| !super::persona_tools::is_yield_turn(&c.name))
+        {
+            return None;
+        }
+        crate::probe!(
+            class = "persona.verdict.yield_turn",
+            persona = %self.persona_name,
+            "she yielded the turn through the structured verb — silent Pass, no room message"
+        );
+        Some(Contribution::verdict(
+            Decision::Pass,
+            0.9,
+            format!("{} yielded the turn (yield_turn)", self.persona_name),
+        ))
+    }
+
     /// Turn the model's final text into a participation verdict. `salience` is
     /// the faculty's own confidence in its verdict — a placeholder for a model-
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
@@ -1740,11 +1782,17 @@ impl Faculty for LlmDeliberationFaculty {
                 for c in &mut calls {
                     crate::cognition::tool_dialect::normalize_call(c);
                 }
+                if let Some(v) = self.yield_verdict(&calls) {
+                    return Some(v);
+                }
                 if !calls.is_empty() {
                     return Some(self.act_verdict(calls, &resp));
                 }
             }
             if let Some(mut call) = crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text) {
+                if let Some(v) = self.yield_verdict(std::slice::from_ref(&call)) {
+                    return Some(v);
+                }
                 // Same wire-dialect mapping as the native path above (#159): a model
                 // that narrates `write_file(…)` / `list_files(…)` — its trained
                 // OpenHands vocabulary — must resolve to `code/write` / `code/list`,
@@ -2622,7 +2670,21 @@ mod tests {
             // makes the next +1308 fail loudly instead of accruing silently. Lower it
             // when the surface actually shrinks; never raise it to make a red go green
             // without saying what grew and why.
-            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 9400;
+            //
+            // 9400 → 9600, and what grew, stated plainly as the ratchet demands: the
+            // `yield_turn` VERDICT VERB (+144 tokens, 9348 → 9544). It is the structured
+            // channel for choosing silence, which `Decision::Pass` never had — the
+            // absence is what forced months of prose phrase-matching, and Joel killed the
+            // last of that on 2026-08-07 ("string matches for semantic understanding is
+            // not good for reliability"). Its schema is argument-free; the 144 tokens are
+            // almost entirely the DESCRIPTION, which is the part that teaches her the
+            // silence is free and the announcement is the noise.
+            //
+            // Judged worth it against #333 rather than waved through: a single avoided
+            // pass-cascade costs the room more than 144 tokens (the 2026-08-01 one ran
+            // ~30 minutes across every peer), and this replaces matcher code that could
+            // only ever be beaten by the next phrasing.
+            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 9600;
             assert!(
                 needed <= AGENTIC_SURFACE_BOUND_CEILING,
                 "the agentic surface now needs {needed} tokens (was 8040, ceiling \
