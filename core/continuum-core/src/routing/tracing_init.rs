@@ -198,6 +198,33 @@ pub struct ProbeInstall {
     pub fmt_writer_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
+/// The [`ProbeRouterLayer`] handle that the FIRST successful
+/// [`install_probe_tracing`] wired into the global subscriber stack.
+///
+/// Why a process global: `tracing` itself has exactly ONE global default
+/// subscriber per process (`try_init` — second install no-ops), so the
+/// router inside it is inherently a process singleton; this cell just
+/// makes the handle reachable. Before this existed, the layer was
+/// constructed INLINE at the `.with(...)` site and its handle discarded —
+/// installed, running, and unreachable, so `ProbeStreamModule` could only
+/// ever be built against a FRESH router that shares no state with the one
+/// receiving events: a stream that stays silent forever (#362, the
+/// nastier cousin of "registered nowhere").
+///
+/// First-install-wins mirrors `try_init` exactly: if a second install
+/// races, its router is NOT the one in the live subscriber, so it must
+/// not win this cell either.
+static INSTALLED_PROBE_ROUTER: std::sync::OnceLock<ProbeRouterLayer> = std::sync::OnceLock::new();
+
+/// The live [`ProbeRouterLayer`] — the one actually receiving `probe!`
+/// fanout — or `None` if [`install_probe_tracing`] never ran (bare test
+/// binaries). Callers building subscription surfaces
+/// (`ProbeStreamModule`) MUST use this handle; constructing a fresh
+/// router yields a permanently-silent stream.
+pub fn installed_probe_router() -> Option<ProbeRouterLayer> {
+    INSTALLED_PROBE_ROUTER.get().cloned()
+}
+
 /// Install the substrate's canonical tracing stack on the GLOBAL
 /// default subscriber, given a typed [`ProbeTracingConfig`].
 /// Idempotent — calling it from multiple init sites is safe; the
@@ -266,6 +293,14 @@ pub fn install_probe_tracing(
     // boots should always have `log_dir = Some(...)` set so the
     // substrate manages its own log persistence and any operator
     // shell redirect captures an empty stream.
+    // ONE router, constructed here and installed into the subscriber
+    // stack below — its handle survives in INSTALLED_PROBE_ROUTER so
+    // subscription surfaces (ProbeStreamModule) attach to the SAME
+    // instance that receives the fanout. Inline `ProbeRouterLayer::new()`
+    // at the `.with(...)` site is the #362 bug: installed but
+    // unreachable.
+    let probe_router = ProbeRouterLayer::new();
+
     let (log_dir_out, fmt_writer_guard) = match config.log_dir.as_ref() {
         Some(dir) => {
             // Refuse to silently fall back if the configured dir
@@ -276,18 +311,21 @@ pub fn install_probe_tracing(
                 path: dir.clone(),
                 source: e,
             })?;
-            let file_appender =
-                crate::routing::capped_appender::CappedAppender::new(dir, "continuum-core-server.log")
-                    .map_err(|source| ProbeFileSinkError::OpenFailed {
-                        path: dir.clone(),
-                        source,
-                    })?;
+            let file_appender = crate::routing::capped_appender::CappedAppender::new(
+                dir,
+                "continuum-core-server.log",
+            )
+            .map_err(|source| ProbeFileSinkError::OpenFailed {
+                path: dir.clone(),
+                source,
+            })?;
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
             let fmt_layer = tracing_subscriber::fmt::layer().with_writer(non_blocking);
-            let probe_file_sink = build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
+            let probe_file_sink =
+                build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
             let registry = tracing_subscriber::registry()
                 .with(UriCaptureLayer::new())
-                .with(ProbeRouterLayer::new())
+                .with(probe_router.clone())
                 .with(probe_file_sink)
                 .with(fmt_layer.with_filter(env_filter));
             let _ = registry.try_init();
@@ -295,10 +333,11 @@ pub fn install_probe_tracing(
         }
         None => {
             let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-            let probe_file_sink = build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
+            let probe_file_sink =
+                build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
             let registry = tracing_subscriber::registry()
                 .with(UriCaptureLayer::new())
-                .with(ProbeRouterLayer::new())
+                .with(probe_router.clone())
                 .with(probe_file_sink)
                 .with(fmt_layer.with_filter(env_filter));
             let _ = registry.try_init();
@@ -307,6 +346,11 @@ pub fn install_probe_tracing(
     };
 
     let probe_log_path = config.probe_dir;
+
+    // First install wins, mirroring `try_init` above: if the cell is
+    // already set, a previous call's router is the one in the live
+    // subscriber stack, and this call's router went nowhere.
+    let _ = INSTALLED_PROBE_ROUTER.set(probe_router);
 
     Ok(ProbeInstall {
         probe_log_path,
@@ -353,7 +397,10 @@ fn build_probe_file_sink(
 /// gets `create_dir_all` failing with a bare `NotADirectory`, which says nothing about
 /// what to change. Fail loud AND legible: the substrate refuses to start rather than drop
 /// probes ([[fallbacks-are-illegal-fail-loud]]), so the message must carry the remedy.
-fn explain_if_dir_is_actually_a_file(err: ProbeFileSinkError, dir: &std::path::Path) -> ProbeFileSinkError {
+fn explain_if_dir_is_actually_a_file(
+    err: ProbeFileSinkError,
+    dir: &std::path::Path,
+) -> ProbeFileSinkError {
     if dir.is_file() {
         if let Some(parent) = dir.parent() {
             tracing::error!(
@@ -409,19 +456,18 @@ mod tests {
     #[test]
     fn disk_capture_lands_on_the_ROTATING_sink_not_the_unbounded_one() {
         let dir = tempfile::tempdir().expect("tmpdir");
-        let sink = build_probe_file_sink(
-            &Some(dir.path().to_path_buf()),
-            HashSet::new(),
-        )
-        .expect("rolling sink builds")
-        .expect("a dir was supplied, so a sink must exist");
+        let sink = build_probe_file_sink(&Some(dir.path().to_path_buf()), HashSet::new())
+            .expect("rolling sink builds")
+            .expect("a dir was supplied, so a sink must exist");
         drop(sink);
         let rolling_file = dir.path().join("continuum-probes.jsonl");
         assert!(
             rolling_file.exists(),
             "rolling sink must own the file name so it can rotate; found {:?}",
-            std::fs::read_dir(dir.path())
-                .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())
+            std::fs::read_dir(dir.path()).map(|d| d
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>())
         );
     }
 

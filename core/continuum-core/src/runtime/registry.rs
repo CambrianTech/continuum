@@ -543,14 +543,10 @@ mod tests {
                   registered (ipc/mod.rs). The surface is served; this is \
                   dead code, not a live break.",
         },
-        Unwired {
-            module: "ProbeStreamModule",
-            why: "DEFECT #362: debug/probes/{open,next,close} is unroutable \
-                  — confirmed by live dispatch with room/members as positive \
-                  control. Not a one-line registration: ProbeRouterLayer is \
-                  itself never installed at boot, so registering the module \
-                  against a fresh layer would stream silence forever.",
-        },
+        // ProbeStreamModule's DEFECT entry (#362) lived here for exactly one
+        // commit — the fix registers it in ipc/mod.rs against the router
+        // installed by install_probe_tracing, and this audit's staleness
+        // check is what forced the entry's removal in the same change.
     ];
 
     fn crate_src_files() -> Vec<(std::path::PathBuf, String)> {

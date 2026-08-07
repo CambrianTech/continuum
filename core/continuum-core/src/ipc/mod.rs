@@ -1641,6 +1641,33 @@ pub fn start_server(
     // Provides log/write, log/ping via main socket
     runtime.register(Arc::new(LoggerModule::new()));
 
+    // ProbeStreamModule: the LIVE glass-box stream — debug/probes/{open,next,close}
+    // over the ProbeRouterLayer fanout (the historical on-disk ledger is
+    // debug/probes/query, stateless, self-registered). #362: this module shipped
+    // 2026-07 and was registered NOWHERE — and the second half of the trap is that
+    // it MUST be built against the router installed in the global subscriber
+    // stack. `ProbeRouterLayer::new()` here would compile, register, route, and
+    // stream silence forever (per-instance Arc<RwLock<..>> state). The handle
+    // comes from install_probe_tracing via installed_probe_router(). Fail LOUD,
+    // not silent, when tracing was never installed — the stream API being absent
+    // is then a stated fact, not a mystery "Unknown command".
+    match crate::routing::installed_probe_router() {
+        Some(router) => {
+            runtime.register(Arc::new(
+                crate::modules::probe_stream::ProbeStreamModule::new(router),
+            ));
+        }
+        None => {
+            tracing::error!(
+                "debug/probes live stream UNAVAILABLE: install_probe_tracing never ran \
+                 in this process, so there is no ProbeRouterLayer to subscribe to — \
+                 debug/probes/{{open,next,close}} will not route. Production boots \
+                 install tracing in main.rs before start_server; only bare test \
+                 harnesses should ever see this."
+            );
+        }
+    }
+
     // search/* migrated to the DynCommand registry (commands/search/*) — the four
     // verbs self-register via inventory, no module registration needed here.
 

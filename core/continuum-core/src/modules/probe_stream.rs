@@ -325,12 +325,15 @@ impl ServiceModule for ProbeStreamModule {
 
     // NOTE (#235): `debug/probes/query` deliberately does NOT hang off this module.
     // It is stateless, so it self-registers via `register_stateless_command!` at its
-    // own declaration site (`probe_query.rs`). Handing it out here would have been
-    // dead code twice over — this module is registered with the runtime NOWHERE, so
-    // its `commands()` is never collected. That is the actual reason the verb was
-    // unroutable, and it is worth leaving written down: a module's `commands()` only
-    // reaches dispatch if the MODULE itself was registered (cf. `RoomModule`, wired
-    // in both `runtime/registry.rs` and `ipc/mod.rs`).
+    // own declaration site (`probe_query.rs`). This module serves only the LIVE
+    // stream verbs, and (#362, fixed) it is registered in `ipc/mod.rs` against the
+    // router handle from `routing::installed_probe_router()` — NEVER against a
+    // fresh `ProbeRouterLayer::new()`, which shares no state with the layer in the
+    // subscriber stack and would stream silence forever. The lesson stays written
+    // down: a module's `commands()`/`handle_command` only reaches dispatch if the
+    // MODULE itself was registered (cf. `RoomModule`), and the
+    // `every_service_module_is_registered_or_declares_why_not` audit in
+    // `runtime/registry.rs` now enforces exactly that.
 
     fn as_any(&self) -> &dyn Any {
         self
