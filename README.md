@@ -882,7 +882,14 @@ If you're excited about distributed AI that doesn't require a datacenter, come b
 Branch policy, everywhere: **development lands on `canary` (where the repo has one); `main` is released.** PRs target canary.
 
 **How to start:**
-1. Clone continuum, run `./setup.sh` — one command brings up the whole stack.
+1. Clone continuum **on `canary`** and run `./setup.sh` — one command brings up the whole stack:
+   ```bash
+   git clone -b canary https://github.com/CambrianTech/continuum.git
+   cd continuum && ./setup.sh
+   ```
+   The `-b canary` matters and is easy to miss: a plain clone lands on `main`, which is
+   ~1,500 commits behind and is a structurally different tree (`src/` exists there and
+   not on canary). Step 5 asks you to PR against canary — this is how you get there.
 2. **[Join the Discord](https://discord.gg/arfbCV2H)** — setup help, architecture discussion, and AI personas that talk back
 3. Read the **[Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md)** to see what's in flight
 4. Browse **[open issues](https://github.com/CambrianTech/continuum/issues)** — good first issues are labeled

@@ -35,13 +35,22 @@ members = [
     # tools/ — build-time codegen (not substrate, not shipped in the binary)
     "tools/manifest-gen",
 ]
-# Citizen project dirs are STANDALONE crates, never substrate-workspace members:
-# `cargo new` inside the checkout auto-adds members (rewriting THIS file
-# non-atomically — a persona's git_diff caught a torn 2-line read of it live,
-# 2026-07-11), and membership makes OUR builds compile THEIR projects. Exclude
-# keeps their in-dir cargo builds working while the substrate manifest stays
-# substrate-only. The real fix is workspace isolation (#49); this is the fence.
-exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"]
+# `members` is an explicit list — NOT a glob — so a stray crate elsewhere in the
+# tree is already not a member and needs no `exclude` entry to stay out.
+#
+# There used to be one here, for citizen project dirs that a persona's `cargo new`
+# had created at the REPO ROOT (her file engine roots at the process cwd until
+# #49 lands, and `cargo new` rewrites THIS file non-atomically — a persona's
+# git_diff caught a torn 2-line read of it live, 2026-07-11). It claimed to keep
+# their in-dir cargo builds working. It never did: those crates declare
+# `edition.workspace = true`, and an EXCLUDED package cannot inherit from the
+# workspace root, so `cargo` inside them failed with "failed to find a workspace
+# root" the whole time. The entries were decoration.
+#
+# They are now quarantined under legacy/persona-exercises/ (see the README
+# there). The real fix remains workspace isolation (#49): give a persona a real
+# workspace of her own, so what she writes is deliberate and reviewable like any
+# other contributor's — never something the substrate manifest has to fence off.
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]
 # airc substrate — git-pinned to a stable SHA for efficient-passthrough
@@ -51,6 +60,11 @@ exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"
 # when adopting an airc change; all crates resolve from the same
 # checkout so the IPC ABI version (IPC_PROTOCOL_VERSION) stays
 # consistent across the dependency graph.
+#
+# 2026-08-07 bump cf6e2c6 → 8dcfa76: project_room_work_board is now pub and
+# room_by_channel resolves a Room from the RoomId a caller already holds,
+# so a room-scoped caller passes the SAME room its gate checks instead of
+# letting the read resolve "my default subscription" independently (#345).
 #
 # 2026-05-31 bump 428f9281 → 5f6e25f: adopts airc v5 owner-core
 # rewrite (continuum task #82, headless break #3) AND the SDK-side
@@ -152,18 +166,18 @@ exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"
 # personas load their stored peer_id unchanged. This SHA is on the
 # feat/persona-peer-id-mint branch, not canary — reconcile to the canary SHA
 # when the airc PR lands. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "490dc76" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "490dc76" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "490dc76" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "490dc76" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "490dc76" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "cf6e2c6" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "490dc76" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

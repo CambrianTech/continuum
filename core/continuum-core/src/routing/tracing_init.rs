@@ -19,10 +19,11 @@
 //! 2. [`ProbeRouterLayer`] — fans every `probe!` event to per-class
 //!    broadcast subscribers. The substrate's `debug/probes/*` URI
 //!    consumers read from this.
-//! 3. [`JsonlProbeFileSink`] — append-only JSONL log on disk, gated
-//!    by `CONTINUUM_PROBE_DIR` env var. Optional — if the env var
-//!    is unset the sink is silently skipped (the operator
-//!    intentionally didn't ask). Path-open failures are LOUD per
+//! 3. [`JsonlProbeFileSink`] — SIZE-ROTATED JSONL capture on disk,
+//!    gated by the `CONTINUUM_PROBE_DIR` env var (a DIRECTORY: the
+//!    sink owns the file name so it can rotate). Optional — if the
+//!    env var is unset the sink is silently skipped (the operator
+//!    intentionally didn't ask). Open failures are LOUD per
 //!    `[[no-fallbacks-ever]]` — caller decides whether to surface or
 //!    swallow the error.
 //! 4. A `fmt` layer reading [`tracing_subscriber::EnvFilter`] from
@@ -58,8 +59,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use super::probe_file_sink::{
-    JsonlProbeFileSink, ProbeFileSinkError, DEFAULT_MAX_LOG_FILES, ENV_PROBE_CLASSES,
-    ENV_PROBE_DIR,
+    JsonlProbeFileSink, ProbeFileSinkError, DEFAULT_MAX_LOG_FILES, ENV_PROBE_CLASSES, ENV_PROBE_DIR,
 };
 use super::probe_router::ProbeRouterLayer;
 use super::uri_layer::UriCaptureLayer;
@@ -79,26 +79,19 @@ use super::uri_layer::UriCaptureLayer;
 /// coupling at exactly one seam.
 #[derive(Debug, Clone, Default)]
 pub struct ProbeTracingConfig {
-    /// DIRECTORY the size-rotated JSONL probe stream drains to.
+    /// DIRECTORY the rotating JSONL probe capture writes into.
     /// `None` = no disk capture this run.
     ///
-    /// A directory, not a file: the sink runs in rolling mode
-    /// ([`JsonlProbeFileSink::new_rolling`]) and owns the file names
-    /// inside it. This field used to be `probe_file` and fed the
-    /// single-file [`JsonlProbeFileSink::new`], which meant the ONE
-    /// env var `CONTINUUM_PROBE_DIR` had two contradictory readings:
-    /// [`JsonlProbeFileSink::from_env`] took it as a directory and
-    /// documented itself as "the ONLY env-based entry point —
-    /// bounded disk usage", while THIS path — the one every server
-    /// actually boots through — took it as a file and wrote
-    /// unbounded. `from_env`/`new_rolling` had zero callers; the
-    /// bounded path was built and never wired. Symptom: a peer's
-    /// `probes.jsonl` at 86 MB and climbing, under a retention
-    /// policy that was never in the boot path. Same failure the fmt
-    /// layer above already learned the hard way — see the 172 GB
-    /// note — one function further down the same file.
+    /// A DIRECTORY, not a file — the sink owns the file name
+    /// (`continuum-probes.jsonl`, with `.1`, `.2`, … generations
+    /// beside it) precisely so it can rotate. This was `probe_file`
+    /// and carried a file path, which is how the highest-volume
+    /// writer in the substrate ended up on the unbounded
+    /// single-file constructor while the fmt log two lines away was
+    /// capped (#341 — 133 MB and climbing at ~32 MB/day, the same
+    /// class as the log that once took this host to zero bytes).
     pub probe_dir: Option<PathBuf>,
-    /// Class filter passed to the sink. Empty
+    /// Class filter passed to [`JsonlProbeFileSink::new_rolling`]. Empty
     /// set = "no filter, every class passes" per the sink's
     /// [`class_passes_filter`](super::probe_file_sink) rules.
     pub probe_classes: HashSet<String>,
@@ -205,6 +198,33 @@ pub struct ProbeInstall {
     pub fmt_writer_guard: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
+/// The [`ProbeRouterLayer`] handle that the FIRST successful
+/// [`install_probe_tracing`] wired into the global subscriber stack.
+///
+/// Why a process global: `tracing` itself has exactly ONE global default
+/// subscriber per process (`try_init` — second install no-ops), so the
+/// router inside it is inherently a process singleton; this cell just
+/// makes the handle reachable. Before this existed, the layer was
+/// constructed INLINE at the `.with(...)` site and its handle discarded —
+/// installed, running, and unreachable, so `ProbeStreamModule` could only
+/// ever be built against a FRESH router that shares no state with the one
+/// receiving events: a stream that stays silent forever (#362, the
+/// nastier cousin of "registered nowhere").
+///
+/// First-install-wins mirrors `try_init` exactly: if a second install
+/// races, its router is NOT the one in the live subscriber, so it must
+/// not win this cell either.
+static INSTALLED_PROBE_ROUTER: std::sync::OnceLock<ProbeRouterLayer> = std::sync::OnceLock::new();
+
+/// The live [`ProbeRouterLayer`] — the one actually receiving `probe!`
+/// fanout — or `None` if [`install_probe_tracing`] never ran (bare test
+/// binaries). Callers building subscription surfaces
+/// (`ProbeStreamModule`) MUST use this handle; constructing a fresh
+/// router yields a permanently-silent stream.
+pub fn installed_probe_router() -> Option<ProbeRouterLayer> {
+    INSTALLED_PROBE_ROUTER.get().cloned()
+}
+
 /// Install the substrate's canonical tracing stack on the GLOBAL
 /// default subscriber, given a typed [`ProbeTracingConfig`].
 /// Idempotent — calling it from multiple init sites is safe; the
@@ -225,7 +245,7 @@ pub struct ProbeInstall {
 /// ## Errors
 ///
 /// Returns `Err(ProbeFileSinkError::OpenFailed)` if
-/// `config.probe_dir` was supplied but the path could not be
+/// `config.probe_dir` was supplied but the directory could not be
 /// opened (directory missing, permission denied, etc). Per
 /// `[[no-fallbacks-ever]]` the substrate refuses to silently drop
 /// probes — the caller can choose to surface the error
@@ -273,6 +293,14 @@ pub fn install_probe_tracing(
     // boots should always have `log_dir = Some(...)` set so the
     // substrate manages its own log persistence and any operator
     // shell redirect captures an empty stream.
+    // ONE router, constructed here and installed into the subscriber
+    // stack below — its handle survives in INSTALLED_PROBE_ROUTER so
+    // subscription surfaces (ProbeStreamModule) attach to the SAME
+    // instance that receives the fanout. Inline `ProbeRouterLayer::new()`
+    // at the `.with(...)` site is the #362 bug: installed but
+    // unreachable.
+    let probe_router = ProbeRouterLayer::new();
+
     let (log_dir_out, fmt_writer_guard) = match config.log_dir.as_ref() {
         Some(dir) => {
             // Refuse to silently fall back if the configured dir
@@ -283,18 +311,21 @@ pub fn install_probe_tracing(
                 path: dir.clone(),
                 source: e,
             })?;
-            let file_appender =
-                crate::routing::capped_appender::CappedAppender::new(dir, "continuum-core-server.log")
-                    .map_err(|source| ProbeFileSinkError::OpenFailed {
-                        path: dir.clone(),
-                        source,
-                    })?;
+            let file_appender = crate::routing::capped_appender::CappedAppender::new(
+                dir,
+                "continuum-core-server.log",
+            )
+            .map_err(|source| ProbeFileSinkError::OpenFailed {
+                path: dir.clone(),
+                source,
+            })?;
             let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
             let fmt_layer = tracing_subscriber::fmt::layer().with_writer(non_blocking);
-            let probe_file_sink = build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
+            let probe_file_sink =
+                build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
             let registry = tracing_subscriber::registry()
                 .with(UriCaptureLayer::new())
-                .with(ProbeRouterLayer::new())
+                .with(probe_router.clone())
                 .with(probe_file_sink)
                 .with(fmt_layer.with_filter(env_filter));
             let _ = registry.try_init();
@@ -302,10 +333,11 @@ pub fn install_probe_tracing(
         }
         None => {
             let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-            let probe_file_sink = build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
+            let probe_file_sink =
+                build_probe_file_sink(&config.probe_dir, config.probe_classes.clone())?;
             let registry = tracing_subscriber::registry()
                 .with(UriCaptureLayer::new())
-                .with(ProbeRouterLayer::new())
+                .with(probe_router.clone())
                 .with(probe_file_sink)
                 .with(fmt_layer.with_filter(env_filter));
             let _ = registry.try_init();
@@ -314,6 +346,11 @@ pub fn install_probe_tracing(
     };
 
     let probe_log_path = config.probe_dir;
+
+    // First install wins, mirroring `try_init` above: if the cell is
+    // already set, a previous call's router is the one in the live
+    // subscriber stack, and this call's router went nowhere.
+    let _ = INSTALLED_PROBE_ROUTER.set(probe_router);
 
     Ok(ProbeInstall {
         probe_log_path,
@@ -332,17 +369,50 @@ fn build_probe_file_sink(
 ) -> Result<Option<JsonlProbeFileSink>, ProbeFileSinkError> {
     match probe_dir.as_ref() {
         Some(dir) => {
-            // ROLLING, not single-file. The probe stream is this
-            // file's own words the "HIGHEST-volume writer in the
-            // substrate"; it gets the size-rotated appender for the
-            // same reason the fmt log above does. `new()` (unbounded,
-            // single file) survives only as the in-code forensic /
-            // test constructor its own docs claim it is.
-            let sink = JsonlProbeFileSink::new_rolling(dir, probe_classes, DEFAULT_MAX_LOG_FILES)?;
+            // ROLLING, not single-file. `JsonlProbeFileSink::new` is append-only and grows
+            // without bound; its own docs say "use `new_rolling` for production captures",
+            // and `from_env` on the sink is documented as "the ONLY env-based entry point —
+            // rolling mode, bounded disk usage". That entry point had ZERO production
+            // callers: boot came through here, and here called `new`. So the bounded path
+            // was built, correct, tested, and reached by nothing (#341, the [[green-by-
+            // every-check-is-not-evidence-of-reachability]] shape) while the probe stream —
+            // one JSON line per load-bearing decision across every tokio task, the highest-
+            // volume writer in the substrate — accumulated 133 MB at ~32 MB/day. The fmt
+            // log built ten lines above this already used `CappedAppender`; the two writers
+            // sat side by side with opposite bounding.
+            let sink = JsonlProbeFileSink::new_rolling(dir, probe_classes, DEFAULT_MAX_LOG_FILES)
+                .map_err(|e| explain_if_dir_is_actually_a_file(e, dir))?;
             Ok(Some(sink))
         }
         None => Ok(None),
     }
+}
+
+/// Turn the raw OS error from pointing `CONTINUUM_PROBE_DIR` at an existing FILE into one
+/// that names the fix.
+///
+/// The var has always been called `..._DIR`, but it held a file path on this host for
+/// months (`~/.continuum/probes/probes.jsonl`) because the old single-file constructor
+/// accepted one. Anyone upgrading past this commit with that value still in `config.env`
+/// gets `create_dir_all` failing with a bare `NotADirectory`, which says nothing about
+/// what to change. Fail loud AND legible: the substrate refuses to start rather than drop
+/// probes ([[fallbacks-are-illegal-fail-loud]]), so the message must carry the remedy.
+fn explain_if_dir_is_actually_a_file(
+    err: ProbeFileSinkError,
+    dir: &std::path::Path,
+) -> ProbeFileSinkError {
+    if dir.is_file() {
+        if let Some(parent) = dir.parent() {
+            tracing::error!(
+                configured = %dir.display(),
+                should_be = %parent.display(),
+                "CONTINUUM_PROBE_DIR points at a FILE, but it names a DIRECTORY the rotating \
+                 probe sink writes continuum-probes.jsonl into. Set it to the containing \
+                 directory; the existing file can stay where it is as a historical capture."
+            );
+        }
+    }
+    err
 }
 
 #[cfg(test)]
@@ -370,6 +440,37 @@ mod tests {
         assert!(second.unwrap().probe_log_path.is_none());
     }
 
+    /// what this catches: THE REGRESSION THIS TEST EXISTS FOR — boot silently taking the
+    /// UNBOUNDED single-file constructor. `JsonlProbeFileSink::from_env` is documented as
+    /// "the ONLY env-based entry point — rolling mode, bounded disk usage" and had zero
+    /// production callers; boot came through `build_probe_file_sink`, which called `new`.
+    /// The result was 133 MB of probes at ~32 MB/day, growing beside an fmt log that WAS
+    /// capped (#341, the 172 GB class).
+    ///
+    /// Asserted at the CONSUMER's boundary — the name that appears on disk — not by
+    /// checking which constructor was called. `continuum-probes.jsonl` is produced only by
+    /// the rolling path (`new` writes to the literal path it is handed), so the file name
+    /// IS the proof of which branch ran
+    /// ([[a-test-that-asserts-a-field-fires-does-not-assert-it-arrives]]). Reverting this
+    /// to `new` puts the file at `<dir>` itself and the assert goes red.
+    #[test]
+    fn disk_capture_lands_on_the_ROTATING_sink_not_the_unbounded_one() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let sink = build_probe_file_sink(&Some(dir.path().to_path_buf()), HashSet::new())
+            .expect("rolling sink builds")
+            .expect("a dir was supplied, so a sink must exist");
+        drop(sink);
+        let rolling_file = dir.path().join("continuum-probes.jsonl");
+        assert!(
+            rolling_file.exists(),
+            "rolling sink must own the file name so it can rotate; found {:?}",
+            std::fs::read_dir(dir.path()).map(|d| d
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>())
+        );
+    }
+
     /// Typed-error contract: an unwritable `probe_dir` path must
     /// surface `ProbeFileSinkError::OpenFailed` per
     /// `[[no-fallbacks-ever]]`. Operators must see the
@@ -379,22 +480,12 @@ mod tests {
     /// Parallel-safe because the bad path is passed via typed
     /// config — no env-var mutation, no racing on
     /// `CONTINUUM_PROBE_DIR`.
-    ///
-    /// The bad path is "a directory whose PARENT is an existing
-    /// regular file" — `create_dir_all` refuses that on every
-    /// platform. The previous literal `/this/path/definitely/does/
-    /// not/exist/probes.jsonl` stopped being a negative the moment
-    /// rolling mode started creating its directory: on Windows a
-    /// leading-slash path is just `C:\this\path\...` and
-    /// `create_dir_all` cheerfully succeeds, so the assertion would
-    /// have passed on macOS/Linux and failed only on Joel's box.
     #[test]
     fn install_surfaces_open_failed_for_unwritable_path() {
-        // A real file — any dir path underneath it is uncreatable.
-        let blocker = std::env::temp_dir().join("continuum-probe-dir-blocker.tmp");
-        std::fs::write(&blocker, b"not a directory").expect("temp file must be writable");
         let config = ProbeTracingConfig {
-            probe_dir: Some(blocker.join("probes")),
+            probe_dir: Some(PathBuf::from(
+                "/this/path/definitely/does/not/exist/probes.jsonl",
+            )),
             probe_classes: HashSet::new(),
             default_filter: "warn".to_string(),
             log_dir: None,
@@ -409,46 +500,6 @@ mod tests {
             Err(other) => panic!("expected OpenFailed, got error {other:?}"),
             Ok(_) => panic!("expected Err, got Ok(_)"),
         }
-    }
-
-    /// what this catches: the boot path taking `CONTINUUM_PROBE_DIR`
-    /// as a FILE. Regression for 2026-08-06 — arming probes on
-    /// BigMama with a directory (the name, and
-    /// `JsonlProbeFileSink::from_env`, both say directory) refused
-    /// the whole server boot with
-    /// `OpenFailed { code: 5, PermissionDenied }`, because Windows
-    /// returns access-denied when you open a directory as a file.
-    /// The same defect on a peer's Mac was silent and simply wrote
-    /// an unbounded 86 MB `probes.jsonl` under a retention policy
-    /// that lived in a constructor with zero callers.
-    ///
-    /// An EXISTING directory must be accepted, and the rolling
-    /// appender must own naming inside it.
-    #[test]
-    fn install_accepts_an_existing_directory_and_rolls_inside_it() {
-        let dir = std::env::temp_dir().join("continuum-probe-rolling-accepts");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir must be creatable");
-
-        let config = ProbeTracingConfig {
-            probe_dir: Some(dir.clone()),
-            probe_classes: HashSet::new(),
-            default_filter: "warn".to_string(),
-            log_dir: None,
-        };
-        match install_probe_tracing(config) {
-            Ok(install) => assert_eq!(
-                install.probe_log_path.as_deref(),
-                Some(dir.as_path()),
-                "rolling mode reports the DIRECTORY as its target"
-            ),
-            Err(e) => panic!("an existing directory must be accepted, got {e:?}"),
-        }
-        // The target stayed a directory — proof we did not go down
-        // the single-file path that would have tried to open it.
-        assert!(dir.is_dir(), "probe target must remain a directory");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The env-coupling seam. `from_env` is the ONE function that

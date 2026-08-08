@@ -69,13 +69,13 @@ const SOURCE_ID: &str = "room-roster";
 /// How far back a heartbeat counts as "present". Matches the airc
 /// agent-liveness convention of a short recency window — a peer that
 /// hasn't beaten within this window is treated as gone.
-const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
+pub(crate) const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
 
 /// How many recent transcript events airc scans to build the roster.
 /// The presence reduction keeps one entry per peer, so this only needs
 /// to span the heartbeat cadence across all present peers — not the
 /// full scrollback. Passed straight to `Airc::room_roster`.
-const ROSTER_SCAN: usize = 200;
+pub(crate) const ROSTER_SCAN: usize = 200;
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
@@ -280,6 +280,12 @@ impl RagSource for RoomRosterSource {
         None
     }
 
+    /// Floorless by design (unchanged): the roster is a handful of presence
+    /// lines and must never reserve budget away from the heavyweights.
+    fn floor_tokens(&self) -> u32 {
+        0
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -336,9 +342,7 @@ impl RagSource for RoomRosterSource {
         // the FULL roster (self included — a persona is never a human, so this
         // is equivalent, but scanning all members keeps the fact independent
         // of the self-exclusion policy below) for any human-facing client.
-        let human_present = members
-            .iter()
-            .any(|m| Self::is_human_runtime(&m.runtime));
+        let human_present = members.iter().any(|m| Self::is_human_runtime(&m.runtime));
 
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
@@ -486,11 +490,15 @@ mod tests {
             vec![member(agent, "persona", Some("Anwen"))],
         ));
         let source = RoomRosterSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 2);
         assert_eq!(delivery.items[0].metadata["fact"], "no_human_present");
         assert!(
-            delivery.items[0].content.contains("work board is the authority"),
+            delivery.items[0]
+                .content
+                .contains("work board is the authority"),
             "the fact teaches the authority structure, not an instruction to be quiet"
         );
 
@@ -503,10 +511,15 @@ mod tests {
             ],
         ));
         let source = RoomRosterSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 2, "two peers, zero facts");
         assert!(
-            delivery.items.iter().all(|i| i.metadata.get("fact").is_none()),
+            delivery
+                .items
+                .iter()
+                .all(|i| i.metadata.get("fact").is_none()),
             "a room with a human present carries no authority fact"
         );
     }
@@ -518,9 +531,10 @@ mod tests {
     async fn present_peer_surfaces_with_alias_and_origin() {
         let me = PeerId::new();
         let other = PeerId::new();
-        let reader = Arc::new(
-            StubReader::new(me, vec![member(other, "claude", Some("win-claude"))]),
-        );
+        let reader = Arc::new(StubReader::new(
+            me,
+            vec![member(other, "claude", Some("win-claude"))],
+        ));
         let source = RoomRosterSource::new(persona(), reader);
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
@@ -588,7 +602,11 @@ mod tests {
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
-        assert_eq!(delivery.items.len(), 2, "the fact + only the other peer, not self");
+        assert_eq!(
+            delivery.items.len(),
+            2,
+            "the fact + only the other peer, not self"
+        );
         assert_eq!(
             delivery.items[1].metadata["peer_id"],
             other.as_uuid().to_string()
@@ -609,7 +627,11 @@ mod tests {
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
-        assert_eq!(delivery.items.len(), 2, "the no-human fact + the unnamed peer");
+        assert_eq!(
+            delivery.items.len(),
+            2,
+            "the no-human fact + the unnamed peer"
+        );
         let simple = other.as_uuid().simple().to_string();
         let expected_label = format!("peer-{}", &simple[..8]);
         assert_eq!(

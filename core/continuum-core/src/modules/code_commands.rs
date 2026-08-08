@@ -377,9 +377,36 @@ impl ActionCommand for CodeWrite {
 
     async fn run(&self, ctx: &Ctx, p: CodeWriteParams) -> Result<WriteResult, CommandError> {
         let engine = engine!(self, ctx);
-        engine
+        // THE WRITE PATH IS WHERE SOLVED WORK DIES (#: flask-4045 was solved and then
+        // destroyed TWICE, and both times we diagnosed it from PROSE — the persona's own
+        // account of what she did — rather than from what actually hit disk. This probe
+        // is the receipt: sizes before/after and whether the file already existed, so a
+        // patch that lands wrong is visible AT THE MOMENT IT LANDS.
+        //
+        // `existed` + `before_bytes` are the load-bearing pair: an overwrite of a large
+        // existing file with a tiny body is the exact shape of "solved, then destroyed"
+        // (the model re-emits a stub or a fragment over a working file). A count alone
+        // could never show that.
+        let before = std::fs::metadata(
+            engine.workspace_root().join(&p.file_path),
+        )
+        .ok()
+        .map(|m| m.len());
+        let out = engine
             .write(&p.file_path, &p.content, p.description.as_deref())
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(|e| CommandError::Internal(e.to_string()));
+        crate::probe!(
+            class = "code.write.landed",
+            path = %p.file_path,
+            existed = before.is_some(),
+            before_bytes = before.unwrap_or(0),
+            after_bytes = p.content.len() as u64,
+            shrank = before.is_some_and(|b| (p.content.len() as u64) < b / 2),
+            ok = out.is_ok(),
+            "a file write reached disk — before/after sizes so a destructive overwrite is \
+             visible without reconstructing it from the persona's account"
+        );
+        out
     }
 }
 

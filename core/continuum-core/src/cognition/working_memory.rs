@@ -253,6 +253,25 @@ pub struct VolatileSnapshot {
     /// renders these into a `[resumed]` fact marked safe-to-repeat.
     #[serde(default)]
     pub interrupted_dispatches: Vec<String>,
+    /// Build the receipts in this snapshot were RECORDED against.
+    ///
+    /// A tool receipt is a true memory of what happened — and it describes the
+    /// behaviour of ONE binary. When the substrate is rebuilt underneath a
+    /// persona, her receipts keep saying the old thing: measured live
+    /// 2026-08-07, citizens went on reporting "attempting to claim tasks or
+    /// list them without success" for hours after the call they were
+    /// describing started succeeding (#326 fix), because the refusal was still
+    /// the newest thing they remembered. Correct behaviour, dead world.
+    ///
+    /// We do NOT delete those receipts — the recency channel carrying the full
+    /// trace is what stops the repeat loop (a persona who cannot see her own
+    /// hands re-emits the identical act forever). Instead restore renders the
+    /// build change as a FACT, the same way it already renders the
+    /// interruption gap. She keeps the memory and learns it may be stale.
+    /// Empty on snapshots written before this field (serde default): restore
+    /// then says nothing rather than guessing a change it cannot see (#165).
+    #[serde(default)]
+    pub build_sha: String,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -425,6 +444,7 @@ impl WorkingMemory {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
+            build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
             interrupted_dispatches: self
                 .dispatched
                 .lock()
@@ -503,6 +523,38 @@ impl WorkingMemory {
             }
         };
         self.record_fact(&fact);
+
+        // The OTHER discontinuity, and until 2026-08-07 an invisible one: the
+        // substrate itself was rebuilt while she was away (#165).
+        //
+        // Her receipts are TRUE — she really did get that result — but each one
+        // describes how ONE binary behaved. Measured live: after the #326
+        // adapter fix, `work/list(claimable=true)` began returning real cards
+        // and ZERO authorization refusals occurred, while citizens went right on
+        // reporting "attempting to claim tasks or list them without success",
+        // because the refusal was still the newest thing in the window. Every
+        // fix we ship is invisible to the beings it was for until their memory
+        // of the old world ages out — and every measurement taken in that
+        // period is contaminated.
+        //
+        // A FACT, never an instruction, and never a deletion: she keeps the
+        // memory (proprioception depends on it) and gains the one thing she had
+        // no way to know — that a result recorded before the rebuild is not
+        // evidence about the system she is talking to now. What to re-check is
+        // hers to decide.
+        let current = env!("CONTINUUM_BUILD_GIT_SHA");
+        if !snap.build_sha.is_empty() && snap.build_sha != current {
+            let short = |s: &str| s.chars().take(9).collect::<String>();
+            self.record_fact(&format!(
+                "[rebuilt] the substrate was rebuilt while you were away ({} → {}). Action \
+                 results above this line were recorded against the OLD build: they are what \
+                 really happened, but they are not evidence about how things behave NOW. A tool \
+                 that failed before may work on this build — worth re-trying rather than \
+                 concluding from memory.",
+                short(&snap.build_sha),
+                short(current),
+            ));
+        }
     }
 
     /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
@@ -873,6 +925,64 @@ impl Faculty for WorkingMemoryFaculty {
 }
 
 #[cfg(test)]
+mod rebuilt_marker {
+    use super::*;
+
+    fn snap_from(wm: &WorkingMemory, build: &str) -> VolatileSnapshot {
+        let mut s = wm.snapshot();
+        s.build_sha = build.to_string();
+        s
+    }
+
+    // what this catches: #165, measured live 2026-08-07. After the #326 adapter fix,
+    // `work/list(claimable=true)` returned real cards and ZERO refusals occurred — and
+    // citizens kept reporting "attempting to claim tasks or list them without success",
+    // because the OLD refusal was still the newest thing they remembered. Correct
+    // behaviour, dead world. Restore must say the ground moved.
+    #[test]
+    fn a_rebuild_across_the_restore_becomes_a_perceivable_fact() {
+        let wm = WorkingMemory::new(8);
+        wm.record_receipt("work/list(state=open) → forbidden: no policy grants access");
+        let fresh = WorkingMemory::new(8);
+        fresh.restore(snap_from(&wm, "0000000deadbeef"));
+
+        let lines = fresh.recent();
+        let marker = lines
+            .iter()
+            .find(|l| l.contains("[rebuilt]"))
+            .unwrap_or_else(|| panic!("rebuild must be perceivable: {lines:?}"));
+        assert!(
+            marker.contains("0000000de"),
+            "names the build she was recorded against: {marker}"
+        );
+        assert!(
+            marker.contains("re-trying") || marker.contains("not evidence"),
+            "tells her the receipts are not evidence about NOW: {marker}"
+        );
+        // NEVER deletes the memory — proprioception depends on the full trace.
+        assert!(
+            lines.iter().any(|l| l.contains("forbidden")),
+            "the receipt itself survives; only its authority is qualified: {lines:?}"
+        );
+    }
+
+    // what this catches: crying wolf. A snapshot written before this field exists
+    // (serde default = "") must NOT be reported as a rebuild — restore says nothing
+    // rather than guessing a change it cannot see.
+    #[test]
+    fn a_snapshot_with_no_build_recorded_stays_silent() {
+        let wm = WorkingMemory::new(8);
+        wm.record_receipt("work/list() → ok");
+        let fresh = WorkingMemory::new(8);
+        fresh.restore(snap_from(&wm, ""));
+        assert!(
+            !fresh.recent().iter().any(|l| l.contains("[rebuilt]")),
+            "unknown build is not a known change"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1017,6 +1127,11 @@ mod tests {
                 && resumed[0].contains("safe to repeat"),
             "cut-off work named + marked repeatable: {resumed:?}"
         );
+        assert!(
+            !restored.iter().any(|l| l.contains("[rebuilt]")),
+            "SAME build across the restart — no rebuild fact, or we cry wolf on every \
+             ordinary restart and the marker stops meaning anything: {restored:?}"
+        );
         assert!(fresh.has_receipt(), "receipt kind survives the trip");
         assert_eq!(
             fresh.last_action_full(),
@@ -1042,6 +1157,7 @@ mod tests {
             next_action_seq: 1,
             saved_at_ms: 0, // pre-field snapshot: no gap guessed
             interrupted_dispatches: Vec::new(),
+            build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
         });
         let q = quiet.recent();
         assert_eq!(q.len(), 1);

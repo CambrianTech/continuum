@@ -170,6 +170,25 @@ pub fn ai_safe_aliases() -> &'static [&'static str] {
 /// `classify(canonical) == (canonical, Canonical)`, so it's safe to apply at
 /// every dispatch seam without changing an already-resolved name.
 fn classify(wire: &str) -> (String, Outcome) {
+    // A name carrying its OWN ARGUMENTS — `work/list(state=open)`, `read_file(path=x)`.
+    // Models produce this constantly: the prose tool menu renders `work/list(claimable?,
+    // state?)`, so copying that shape into the name slot is the trained-reflex thing to
+    // do, not a malfunction. Before 2026-08-07 it fell through as a MISS and was
+    // dispatched AS A URI, where the ACL correctly refused `work/list(state=open)`
+    // because no policy can grant a path with args welded on. The gate was right; the
+    // adapter was asleep. Two citizens read that refusal, reported "no open tasks", and
+    // it read as a cognition defect for a week (#326).
+    //
+    // Meet it: resolve the HEAD. Args are recovered separately by [`normalize_call`],
+    // which is what the ToolCall seams use — this function only owns the NAME.
+    if let (head, Some(_)) = split_signature(wire) {
+        if head != wire {
+            let (name, outcome) = classify(head);
+            // A resolved head is a real hit; an unresolved one stays a miss (so the
+            // usage tally still reports the vocabulary gap honestly).
+            return (name, outcome);
+        }
+    }
     if let Some(&cmd) = alias_to_command().get(wire) {
         return (cmd.to_string(), Outcome::Alias);
     }
@@ -209,9 +228,164 @@ pub fn from_wire_name(wire: &str) -> String {
     name
 }
 
+/// Split a wire name that carries its own call signature — `work/list(state=open)`
+/// → `("work/list", Some("state=open"))`. Returns `(wire, None)` for an ordinary
+/// name, so callers can apply it unconditionally.
+///
+/// Deliberately conservative: requires a `(` with a matching final `)`, and refuses
+/// an empty head (`(foo)` is not a call). `name()` yields `Some("")`, which parses
+/// to an empty arg map — a real no-arg call, not a miss.
+pub fn split_signature(wire: &str) -> (&str, Option<&str>) {
+    let w = wire.trim();
+    if !w.ends_with(')') {
+        return (wire, None);
+    }
+    let Some(open) = w.find('(') else {
+        return (wire, None);
+    };
+    let head = w[..open].trim();
+    if head.is_empty() {
+        return (wire, None);
+    }
+    (head, Some(w[open + 1..w.len() - 1].trim()))
+}
+
+/// Repair a tool call whose NAME carries its arguments, and say what changed.
+///
+/// This is the adapter half that [`classify`] cannot do alone: `classify` owns the
+/// name, but the arguments welded into that name are real intent and must not be
+/// dropped. Merges them into `input` — **explicit `input` fields always win**, so a
+/// well-formed call is never overwritten by a stray echo in the name.
+///
+/// Returns `Some(note)` when something was repaired, so the caller can tell the
+/// citizen what we accepted and what the canonical form is (Joel's rule: aliases
+/// resolve AND say so, #328). Returns `None` when the call was already clean —
+/// idempotent, safe to apply at every seam.
+pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
+    let (head, args) = split_signature(&call.name);
+    let head = head.to_string();
+    let Some(args) = args else {
+        // Ordinary name: resolve + tally exactly as before. ONE call at each seam.
+        call.name = from_wire_name(&head);
+        return None;
+    };
+
+    let parsed = crate::ai::json_in_prompt_tools::paren_call_args(args);
+    let canonical = from_wire_name(&head);
+
+    // Merge: keep every explicit input field, fill only what's missing from the name.
+    let mut merged = 0usize;
+    if let Some(from_name) = parsed {
+        if !from_name.is_empty() {
+            let obj = match call.input.as_object_mut() {
+                Some(o) => o,
+                None => {
+                    call.input = serde_json::Value::Object(serde_json::Map::new());
+                    call.input.as_object_mut().expect("just set to an object")
+                }
+            };
+            for (k, v) in from_name {
+                if !obj.contains_key(&k) {
+                    obj.insert(k, v);
+                    merged += 1;
+                }
+            }
+        }
+    }
+
+    let spoken = call.name.clone();
+    call.name = canonical.clone();
+    Some(if merged > 0 {
+        format!(
+            "accepted `{spoken}` — the arguments were part of the name, so I read them as \
+             parameters ({merged} recovered). The canonical form is `{canonical}` with its \
+             arguments passed separately."
+        )
+    } else {
+        format!(
+            "accepted `{spoken}` — the canonical form is `{canonical}` with arguments passed \
+             separately."
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Signature-carrying names (#326). A model copies the prose menu's
+    /// `work/list(claimable?, state?)` shape into the NAME slot; the adapter must meet
+    /// it rather than let a URI-with-args reach the ACL, which correctly refuses it.
+    mod signature_names {
+        use super::*;
+
+        fn call(name: &str, input: serde_json::Value) -> crate::ai::types::ToolCall {
+            crate::ai::types::ToolCall { id: "t1".into(), name: name.into(), input }
+        }
+
+        // what this catches: THE live #326 defect. Before the adapter handled this,
+        // `work/list(state=open)` classified as a MISS, passed through untouched, and was
+        // dispatched as a URI — "forbidden: no policy grants access to URI:
+        // work/list(state=open)". Two citizens read that as "no open tasks".
+        #[test]
+        fn a_name_carrying_its_arguments_resolves_and_keeps_the_arguments() {
+            let mut c = call("work/list(state=open)", serde_json::json!({}));
+            let note = normalize_call(&mut c).expect("repaired, so it must explain itself");
+            assert_eq!(c.name, "work/list", "the head must resolve to the real command");
+            assert_eq!(
+                c.input.get("state").and_then(|v| v.as_str()),
+                Some("open"),
+                "arguments welded into the name are real intent — they must survive"
+            );
+            assert!(note.contains("work/list"), "the note names the canonical form: {note}");
+        }
+
+        // what this catches: silently clobbering a well-formed call. Explicit input is
+        // authoritative; the name is only a fallback source.
+        #[test]
+        fn explicit_input_always_wins_over_arguments_echoed_in_the_name() {
+            let mut c = call("work/list(state=open)", serde_json::json!({"state": "claimed"}));
+            normalize_call(&mut c);
+            assert_eq!(c.input.get("state").and_then(|v| v.as_str()), Some("claimed"));
+        }
+
+        // what this catches: an alias that ALSO carries args — both halves of the adapter
+        // have to compose, or `list_tasks(state=open)` still dies.
+        #[test]
+        fn an_alias_carrying_arguments_resolves_through_both_halves() {
+            let mut c = call("list_tasks(state=open)", serde_json::json!({}));
+            normalize_call(&mut c);
+            assert_eq!(c.name, "work/list");
+            assert_eq!(c.input.get("state").and_then(|v| v.as_str()), Some("open"));
+        }
+
+        // what this catches: idempotence. normalize_call runs at every seam; a clean call
+        // must pass through untouched and report NO repair (or the citizen gets told we
+        // fixed something we didn't).
+        #[test]
+        fn an_ordinary_call_is_untouched_and_reports_no_repair() {
+            let mut c = call("work/list", serde_json::json!({"state": "open"}));
+            assert!(normalize_call(&mut c).is_none(), "nothing was repaired");
+            assert_eq!(c.name, "work/list");
+            assert_eq!(c.input.get("state").and_then(|v| v.as_str()), Some("open"));
+        }
+
+        // what this catches: `name()` is a real no-arg call, not a parse failure.
+        #[test]
+        fn an_empty_signature_is_a_no_arg_call() {
+            let mut c = call("work/list()", serde_json::json!({}));
+            normalize_call(&mut c);
+            assert_eq!(c.name, "work/list");
+        }
+
+        // what this catches: over-eager splitting. A head-less parenthetical is not a
+        // call, and must not be mangled into one.
+        #[test]
+        fn a_headless_parenthetical_is_not_a_call() {
+            assert_eq!(split_signature("(whatever)"), ("(whatever)", None));
+            assert_eq!(split_signature("work/list"), ("work/list", None));
+        }
+    }
 
     fn spec(n: &str) -> NativeToolSpec {
         NativeToolSpec {

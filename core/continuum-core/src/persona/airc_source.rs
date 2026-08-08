@@ -297,6 +297,13 @@ impl RagSource for AircRagSource {
         Some("collaboration/chat/export")
     }
 
+    /// One conversation turn — a speaker and what they said. The recent-history
+    /// appetite is much larger and is expressed as `min`, not as this floor;
+    /// conflating the two is what made every source all-or-nothing.
+    fn floor_tokens(&self) -> u32 {
+        64
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

@@ -135,6 +135,11 @@ impl RagSource for ReplayRagSource {
         None
     }
 
+    /// A replay reproduces a recorded delivery; it reserves nothing.
+    fn floor_tokens(&self) -> u32 {
+        0
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

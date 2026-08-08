@@ -2405,6 +2405,44 @@ async fn run_self_cycle(
     // still `say`s once. Only message-driven turns (real conversation) stream live.
     // Idle self-tick: no citizen AND no rail tee (room/sender None) — an idle mind
     // musing isn't addressing anyone, so nothing streams to the browser (#170).
+    // #350: don't spend a whole deliberation on a turn the serving guard is CERTAIN to
+    // refuse. When no lane is live, the single-resident guard rejects every generation —
+    // so the tick can only end in a loud `inference_failed` naming a serving fault that
+    // the persona did not cause and cannot fix.
+    //
+    // Gate on the LIVE snapshot, not on "has the daemon ever reconciled". The first cut of
+    // this gate used a lifetime latch and caught only the first-ever warmup: measured
+    // 2026-08-07, three citizens still failed together at +432s of a boot whose latch had
+    // been set at +76s. The daemon deliberately republishes `ServingSnapshot::empty()`
+    // whenever it tears a lane down — no plan, a re-home, or a #175 wedge self-heal
+    // (`declare_lane_wedged`) — so `serving: <none>` is a RECURRING transition, not a
+    // boot-only state. That burst sat inside a 59s window opened by a decode-heartbeat
+    // wedge at +382s and closed by the reconcile at +441s. Boot is merely the longest
+    // such window, which is what made a boot-shaped fix look sufficient.
+    //
+    // This is the same live signal the presence pump already derives per tick
+    // (`persona/airc_runtime.rs` → `Ready`/`Away`); a mind that presence has just marked
+    // Away must not simultaneously be spending a deliberation into a guaranteed refusal.
+    //
+    // Skipping is honest rather than a swallowed error: nothing has failed yet, the mind
+    // simply has no brain attached for a few more seconds, and it could not have thought
+    // either way. Deliberately NOT re-derived here: how long the lane has been down and
+    // whether that is now an outage. The serving daemon already owns that judgement and
+    // emits it loudly (`serving.health` action=relaunch); a second severity clock in the
+    // persona hot path would be a parallel monitor of a fact its owner already publishes
+    // (CONCURRENCY-STYLE-GUIDE). `has_reconciled()` still earns its keep in the probe: it
+    // separates a cold boot from a lane that HAS served and dropped, which the empty
+    // snapshot itself cannot say (`ready_verified_at_ms` is erased by `empty()`).
+    if !crate::inference::llama_server::current_serving().is_live() {
+        crate::probe!(
+            class = "persona.selftick.awaiting_serving",
+            persona = %ctx.identity.agent_name,
+            served_before = crate::inference::llama_server::has_reconciled(),
+            "no lane is live — skipping this self-tick rather than deliberating into a \
+             guaranteed refusal (serving transition, not a persona fault)"
+        );
+        return;
+    }
     let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(

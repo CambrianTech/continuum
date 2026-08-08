@@ -79,8 +79,24 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 /// pushed its creation event out of a transcript window); tests stub it.
 #[async_trait]
 pub trait RoomBoardReader: Send + Sync {
-    /// The current room's work board, folded by airc into a [`BoardSnapshot`].
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError>;
+    /// The work board of `room` — folded by airc into a [`BoardSnapshot`].
+    ///
+    /// `room` is the id this source is BOUND to (`for_room`), i.e. the same
+    /// value [`crate::persona::rag_budget::room_scope_allows`] gates on. Passing
+    /// it is what makes gate and read one decision instead of two that merely
+    /// coincide: before 2026-08-07 the read resolved airc's `current_room()`
+    /// independently ("whatever my default subscription happens to be") while the
+    /// gate checked a bound id the read never consulted. They agreed only because
+    /// both were seeded from the same call at bootstrap — nothing prevented a gate
+    /// that passed for room A while the board came from room B, and no probe would
+    /// have fired.
+    ///
+    /// `None` means the caller genuinely has no binding and accepts the scope's
+    /// current room (the CLI's intent). A `Some(id)` that the scope is not
+    /// subscribed to is an ERROR, never a silent fall back to the default: handing
+    /// a citizen a different room's board is the failure this parameter exists to
+    /// make impossible.
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError>;
 
     /// Published display names for the given peers — the DURABLE alias store,
     /// not the room roster.
@@ -108,10 +124,35 @@ pub trait RoomBoardReader: Send + Sync {
 /// makes; the shared truth is airc's fold, not a shared continuum trait.
 #[async_trait]
 impl RoomBoardReader for airc_lib::Airc {
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
-        let projection =
-            airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                .await?;
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
+        let projection = match room {
+            // BOUND: read exactly the room the gate approved. A miss is loud —
+            // `NotSubscribed` — never a quiet slide to the default room, because
+            // a citizen handed the wrong room's board cannot tell that from a
+            // board that is genuinely empty. That indistinguishability is the
+            // whole bug class ([[fail-loud-never-swallow]]).
+            Some(id) => {
+                let channel = airc_core::RoomId::from_uuid(id);
+                let Some(resolved) = airc_lib::Airc::room_by_channel(self, channel).await? else {
+                    return Err(AircError::NotSubscribed(format!(
+                        "work board requested for room {id}, which this scope is not \
+                         subscribed to — refusing to substitute the default room's board"
+                    )));
+                };
+                airc_lib::Airc::project_room_work_board(
+                    self,
+                    &resolved,
+                    airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE,
+                )
+                .await?
+            }
+            // UNBOUND: the caller genuinely means "my current room" (the CLI's
+            // intent). Same behaviour as before this parameter existed.
+            None => {
+                airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                    .await?
+            }
+        };
         Ok(projection.snapshot())
     }
 
@@ -245,6 +286,13 @@ impl RagSource for RoomBoardSource {
         Some("work/list")
     }
 
+    /// MEASURED 26 tokens: the `[board] you hold N card(s); M claimable.`
+    /// headline, which is deliberately the first unit precisely so a
+    /// prefix-take cannot halve it. 32 gives it headroom for larger counts.
+    fn floor_tokens(&self) -> u32 {
+        32
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -268,7 +316,7 @@ impl RagSource for RoomBoardSource {
 
         // One airc call (the current room's complete board). Failure is
         // non-fatal — empty delivery, cognition stays up (good-citizen doctrine).
-        let board = match self.reader.work_board().await {
+        let board = match self.reader.work_board(self.room_id).await {
             Ok(b) => b,
             Err(err) => {
                 tracing::warn!(
@@ -335,24 +383,18 @@ impl RagSource for RoomBoardSource {
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
-            .filter(|c| {
-                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED —
-                // an expired lease is genuinely available work (claim-contention
-                // allows takeover), and before 2026-08-03 lapsed cards appeared in
-                // NEITHER "available" nor honestly-held: invisible as work, sticky
-                // as an attractor.
-                let terminal = matches!(
-                    c.state,
-                    airc_work::CardState::Merged | airc_work::CardState::Closed
-                );
-                if terminal {
-                    return false;
-                }
-                match c.owner {
-                    None => matches!(c.state, airc_work::CardState::Open),
-                    Some(_) => !claim_is_live(c, now_ms),
-                }
-            })
+            // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
+            // expired lease is genuinely available work (claim-contention allows
+            // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
+            // "available" nor honestly-held: invisible as work, sticky as an
+            // attractor.
+            //
+            // The predicate itself lives in `card_holder` and is shared with
+            // `work/list` — this filter used to re-derive it here and excluded only
+            // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
+            // advertised as available: 11 of the 58 offered on the live board
+            // 2026-08-07. One claimability decision, one place.
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
             .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
@@ -655,7 +697,10 @@ mod tests {
 
     #[async_trait]
     impl RoomBoardReader for StubReader {
-        async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
+        async fn work_board(
+            &self,
+            _room: Option<uuid::Uuid>,
+        ) -> Result<BoardSnapshot, AircError> {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }

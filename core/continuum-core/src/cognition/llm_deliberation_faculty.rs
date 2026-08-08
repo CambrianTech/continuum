@@ -652,6 +652,48 @@ impl LlmDeliberationFaculty {
         Decision::Pass
     }
 
+    /// She called the yield verb — settle the turn as the silence it names.
+    ///
+    /// The STRUCTURED half of #271/#264. A citizen with nothing to add has, until now,
+    /// had no way to say so except to write a paragraph announcing it — which is itself
+    /// a room message that wakes the next peer into announcing theirs. Now silence is a
+    /// verb, and recognising it is a NAME match on a verb we defined (protocol), not a
+    /// phrase match on prose (semantics). See
+    /// [`super::persona_tools::verdict_tool_specs`] for why this is not a command.
+    ///
+    /// Checked BEFORE `act_verdict` on both lift paths, so a yield never reaches the
+    /// authorization gate or the executor: there is no world-effect to authorize, and
+    /// routing it as an `Act` would burn an act from the budget and re-enter the settle
+    /// loop — the opposite of ending the turn.
+    ///
+    /// If she calls the yield ALONGSIDE real work, the work wins: a turn that both did
+    /// something and declined to speak is an act with nothing to say, and dropping the
+    /// act to honour the yield would silently discard work she actually did.
+    fn yield_verdict(&self, calls: &[crate::ai::types::ToolCall]) -> Option<Contribution> {
+        if !calls
+            .iter()
+            .any(|c| super::persona_tools::is_yield_turn(&c.name))
+        {
+            return None;
+        }
+        if calls
+            .iter()
+            .any(|c| !super::persona_tools::is_yield_turn(&c.name))
+        {
+            return None;
+        }
+        crate::probe!(
+            class = "persona.verdict.yield_turn",
+            persona = %self.persona_name,
+            "she yielded the turn through the structured verb — silent Pass, no room message"
+        );
+        Some(Contribution::verdict(
+            Decision::Pass,
+            0.9,
+            format!("{} yielded the turn (yield_turn)", self.persona_name),
+        ))
+    }
+
     /// Turn the model's final text into a participation verdict. `salience` is
     /// the faculty's own confidence in its verdict — a placeholder for a model-
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
@@ -1738,20 +1780,26 @@ impl Faculty for LlmDeliberationFaculty {
                 // authorization gate and the executor ever see them (the
                 // reverse half of the offer-side rename above).
                 for c in &mut calls {
-                    c.name = crate::cognition::tool_dialect::from_wire_name(&c.name).to_string();
+                    crate::cognition::tool_dialect::normalize_call(c);
+                }
+                if let Some(v) = self.yield_verdict(&calls) {
+                    return Some(v);
                 }
                 if !calls.is_empty() {
                     return Some(self.act_verdict(calls, &resp));
                 }
             }
             if let Some(mut call) = crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text) {
+                if let Some(v) = self.yield_verdict(std::slice::from_ref(&call)) {
+                    return Some(v);
+                }
                 // Same wire-dialect mapping as the native path above (#159): a model
                 // that narrates `write_file(…)` / `list_files(…)` — its trained
                 // OpenHands vocabulary — must resolve to `code/write` / `code/list`,
                 // not silently no-op as an unknown name. The text-lift path skipped
                 // this, so narrated snake_case verbs died while the SAME name in a
                 // native tool_call worked. One mapping, both paths.
-                call.name = crate::cognition::tool_dialect::from_wire_name(&call.name).to_string();
+                crate::cognition::tool_dialect::normalize_call(&mut call);
                 return Some(self.act_verdict(vec![call], &resp));
             }
             // #159 fail-loud: she emitted the native `[TOOL_CALLS]` marker but named no
@@ -1793,8 +1841,7 @@ impl Faculty for LlmDeliberationFaculty {
                             .into_iter()
                             .last()
                     {
-                        call.name =
-                            crate::cognition::tool_dialect::from_wire_name(&call.name).to_string();
+                        crate::cognition::tool_dialect::normalize_call(&mut call);
                         crate::probe!(
                             class = "persona.act.reasoning_lift",
                             persona = %self.persona_name,
@@ -2605,15 +2652,50 @@ mod tests {
                     <= needed as usize,
                 "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
             );
-            // …and here is the part that matters, measured rather than assumed: 8192
-            // CLEARS that bound (8040) and she is STILL starved. The bound is NECESSARY,
-            // NOT SUFFICIENT — a real turn renders more framing than the bare floor and
-            // context is what yields. Anyone reading "window >= needed" as "this citizen
-            // can work" is reading it wrong, and this pins that.
+            // …and here is the part that matters, measured rather than assumed. This
+            // assertion USED to read `needed <= window` — "8192 clears the bound (8040)
+            // and she is STILL starved" — and it went red on its own terms: the message
+            // said "if it no longer does, the surface or framing grew and the story
+            // changed", and it did. The bound moved 8040 → 9348 (+1308) as framing
+            // accreted turn-fact by turn-fact (#151, #152, #144, #303 …), each one
+            // individually justified.
+            //
+            // So the story is now STRONGER, not broken: at 8192 an agentic citizen no
+            // longer fits AT ALL — the necessary condition itself fails, before we even
+            // get to "necessary but not sufficient". An 8k-window model cannot host this
+            // surface, full stop. That is #333 (the surface is paid twice) stated as a
+            // number instead of a complaint.
+            //
+            // Pinned as a CEILING rather than relaxed to pass: this is the ratchet that
+            // makes the next +1308 fail loudly instead of accruing silently. Lower it
+            // when the surface actually shrinks; never raise it to make a red go green
+            // without saying what grew and why.
+            //
+            // 9400 → 9600, and what grew, stated plainly as the ratchet demands: the
+            // `yield_turn` VERDICT VERB (+144 tokens, 9348 → 9544). It is the structured
+            // channel for choosing silence, which `Decision::Pass` never had — the
+            // absence is what forced months of prose phrase-matching, and Joel killed the
+            // last of that on 2026-08-07 ("string matches for semantic understanding is
+            // not good for reliability"). Its schema is argument-free; the 144 tokens are
+            // almost entirely the DESCRIPTION, which is the part that teaches her the
+            // silence is free and the announcement is the noise.
+            //
+            // Judged worth it against #333 rather than waved through: a single avoided
+            // pass-cascade costs the room more than 144 tokens (the 2026-08-01 one ran
+            // ~30 minutes across every peer), and this replaces matcher code that could
+            // only ever be beaten by the next phrasing.
+            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 9600;
             assert!(
-                needed <= window,
-                "8192 is expected to CLEAR the lower bound ({needed}) — if it no longer \
-                 does, the surface or framing grew and the story changed"
+                needed <= AGENTIC_SURFACE_BOUND_CEILING,
+                "the agentic surface now needs {needed} tokens (was 8040, ceiling \
+                 {AGENTIC_SURFACE_BOUND_CEILING}) — framing/tools grew again. Shrink the \
+                 surface (#333) or state plainly what was added and re-pin the ceiling"
+            );
+            assert!(
+                needed > window,
+                "8192 no longer hosts the agentic surface ({needed} needed) — if this \
+                 flips back the surface genuinely shrank, which is GOOD news: restore the \
+                 original `needed <= window` narrative and drop the ceiling"
             );
             // #327, PROVEN rather than asserted away: at 8192 the newest burst line does
             // NOT survive. The framing is intact and the hands are intact — the CONVERSATION

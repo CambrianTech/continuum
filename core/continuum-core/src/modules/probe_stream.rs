@@ -208,10 +208,7 @@ impl ProbeStreamModule {
         .into_command_result()
     }
 
-    async fn handle_next(
-        &self,
-        req: CommandRequest<NextParams>,
-    ) -> Result<CommandResult, String> {
+    async fn handle_next(&self, req: CommandRequest<NextParams>) -> Result<CommandResult, String> {
         let handle = req.handle.as_ref().ok_or_else(|| {
             "debug/probes/next: missing handle envelope — \
              pass the handle returned from debug/probes/open"
@@ -222,9 +219,10 @@ impl ProbeStreamModule {
             .map_err(|e| format!("debug/probes/next: {e}"))?;
 
         let state = {
-            let entry = self.streams.get(&uuid).ok_or_else(|| {
-                format!("debug/probes/next: no open stream for handle {uuid}")
-            })?;
+            let entry = self
+                .streams
+                .get(&uuid)
+                .ok_or_else(|| format!("debug/probes/next: no open stream for handle {uuid}"))?;
             entry.clone()
         };
 
@@ -306,11 +304,7 @@ impl ServiceModule for ProbeStreamModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "debug/probes/open" => {
                 let parsed: OpenParams = serde_json::from_value(params)
@@ -328,6 +322,18 @@ impl ServiceModule for ProbeStreamModule {
             other => Err(format!("Unknown debug/probes command: {other}")),
         }
     }
+
+    // NOTE (#235): `debug/probes/query` deliberately does NOT hang off this module.
+    // It is stateless, so it self-registers via `register_stateless_command!` at its
+    // own declaration site (`probe_query.rs`). This module serves only the LIVE
+    // stream verbs, and (#362, fixed) it is registered in `ipc/mod.rs` against the
+    // router handle from `routing::installed_probe_router()` — NEVER against a
+    // fresh `ProbeRouterLayer::new()`, which shares no state with the layer in the
+    // subscriber stack and would stream silence forever. The lesson stays written
+    // down: a module's `commands()`/`handle_command` only reaches dispatch if the
+    // MODULE itself was registered (cf. `RoomModule`), and the
+    // `every_service_module_is_registered_or_declares_why_not` audit in
+    // `runtime/registry.rs` now enforces exactly that.
 
     fn as_any(&self) -> &dyn Any {
         self
@@ -453,10 +459,12 @@ mod tests {
         install(|module| {
             let rt = tokio::runtime::Handle::current();
             let open = rt
-                .block_on(module.handle_command(
-                    "debug/probes/open",
-                    serde_json::json!({ "class": "quiet" }),
-                ))
+                .block_on(
+                    module.handle_command(
+                        "debug/probes/open",
+                        serde_json::json!({ "class": "quiet" }),
+                    ),
+                )
                 .expect("open");
             let handle = handle_from_open(open);
 
@@ -488,17 +496,19 @@ mod tests {
             // Spawn an emitter that fires after a short delay,
             // then poll with a longer timeout. The poll must see
             // the event.
-            let next_result = rt.block_on(async {
-                // Emit synchronously BEFORE the poll begins (the
-                // event lands in the broadcast buffer immediately).
-                crate::probe!(class = "latency", duration_ms = 99i64);
-                module
-                    .handle_command(
-                        "debug/probes/next",
-                        serde_json::json!({ "handle": handle, "timeoutMs": 100 }),
-                    )
-                    .await
-            }).expect("next");
+            let next_result = rt
+                .block_on(async {
+                    // Emit synchronously BEFORE the poll begins (the
+                    // event lands in the broadcast buffer immediately).
+                    crate::probe!(class = "latency", duration_ms = 99i64);
+                    module
+                        .handle_command(
+                            "debug/probes/next",
+                            serde_json::json!({ "handle": handle, "timeoutMs": 100 }),
+                        )
+                        .await
+                })
+                .expect("next");
 
             let data = data_from_response(next_result);
             let events = data["events"].as_array().expect("events");
@@ -512,10 +522,7 @@ mod tests {
         install(|module| {
             let rt = tokio::runtime::Handle::current();
             let err = rt
-                .block_on(module.handle_command(
-                    "debug/probes/next",
-                    serde_json::json!({}),
-                ))
+                .block_on(module.handle_command("debug/probes/next", serde_json::json!({})))
                 .expect_err("next without handle must error");
             assert!(
                 err.contains("missing handle"),
@@ -531,10 +538,12 @@ mod tests {
             // Mint a handle whose owner is something else entirely.
             let wrong = HandleRef::with_id("data", Uuid::new_v4(), "data::QueryCursor");
             let err = rt
-                .block_on(module.handle_command(
-                    "debug/probes/next",
-                    serde_json::json!({ "handle": wrong }),
-                ))
+                .block_on(
+                    module.handle_command(
+                        "debug/probes/next",
+                        serde_json::json!({ "handle": wrong }),
+                    ),
+                )
                 .expect_err("wrong-owner handle must error");
             assert!(
                 err.contains("owner mismatch"),
@@ -549,16 +558,15 @@ mod tests {
             let rt = tokio::runtime::Handle::current();
             // Mint a handle with the RIGHT owner/type but a UUID
             // that was never registered.
-            let stale = HandleRef::with_id(
-                PROBE_STREAM_OWNER,
-                Uuid::new_v4(),
-                PROBE_STREAM_TYPE_TAG,
-            );
+            let stale =
+                HandleRef::with_id(PROBE_STREAM_OWNER, Uuid::new_v4(), PROBE_STREAM_TYPE_TAG);
             let err = rt
-                .block_on(module.handle_command(
-                    "debug/probes/next",
-                    serde_json::json!({ "handle": stale }),
-                ))
+                .block_on(
+                    module.handle_command(
+                        "debug/probes/next",
+                        serde_json::json!({ "handle": stale }),
+                    ),
+                )
                 .expect_err("unknown stream handle must error");
             assert!(
                 err.contains("no open stream"),
@@ -623,16 +631,14 @@ mod tests {
 
             // Both streams see the event
             let r1 = rt
-                .block_on(module.handle_command(
-                    "debug/probes/next",
-                    serde_json::json!({ "handle": h1 }),
-                ))
+                .block_on(
+                    module.handle_command("debug/probes/next", serde_json::json!({ "handle": h1 })),
+                )
                 .expect("next 1");
             let r2 = rt
-                .block_on(module.handle_command(
-                    "debug/probes/next",
-                    serde_json::json!({ "handle": h2 }),
-                ))
+                .block_on(
+                    module.handle_command("debug/probes/next", serde_json::json!({ "handle": h2 })),
+                )
                 .expect("next 2");
             let e1 = data_from_response(r1);
             let e2 = data_from_response(r2);
@@ -649,13 +655,14 @@ mod tests {
         // grid depend on this.
         install(|module| {
             let rt = tokio::runtime::Handle::current();
-            let open = handle_from_open(
-                rt.block_on(module.handle_command(
-                    "debug/probes/open",
-                    serde_json::json!({ "class": "audit" }),
-                ))
-                .expect("open"),
-            );
+            let open =
+                handle_from_open(
+                    rt.block_on(module.handle_command(
+                        "debug/probes/open",
+                        serde_json::json!({ "class": "audit" }),
+                    ))
+                    .expect("open"),
+                );
 
             {
                 let span = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
@@ -664,10 +671,10 @@ mod tests {
             }
 
             let result = rt
-                .block_on(module.handle_command(
-                    "debug/probes/next",
-                    serde_json::json!({ "handle": open }),
-                ))
+                .block_on(
+                    module
+                        .handle_command("debug/probes/next", serde_json::json!({ "handle": open })),
+                )
                 .expect("next");
             let data = data_from_response(result);
             let events = data["events"].as_array().expect("events");

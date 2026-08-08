@@ -17,21 +17,19 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use uuid::Uuid;
 
 use crate::experience::source::SharedExperienceSource;
 use crate::experience::{project_membership, Experience, Standing};
 use crate::persona::room_roster_source::AircRosterReader;
+use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 
 /// A peer is "present" if it beat within this window — matches the airc
 /// agent-liveness convention (same value the RoomRosterSource uses).
-const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
 
 /// How many recent transcript events airc scans to build the roster (one entry per
 /// peer after presence reduction) — the same scan depth as the RoomRosterSource.
-const ROSTER_SCAN: usize = 200;
 
 /// Composes a room's manifest from recipe DATA + the live airc roster. The roster
 /// reader is room-scoped (it reads its handle's current room); callers use this in
@@ -83,6 +81,7 @@ impl LiveExperienceResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use crate::experience::RecipeExperienceSource;
     use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
     use airc_core::PeerId;
@@ -139,7 +138,10 @@ mod tests {
         let source: SharedExperienceSource = Arc::new(RecipeExperienceSource::builtins(purpose));
         let roster = Arc::new(StubRoster {
             me: PeerId(asha),
-            members: vec![room_member(joel, "interactive"), room_member(asha, "persona")],
+            members: vec![
+                room_member(joel, "interactive"),
+                room_member(asha, "persona"),
+            ],
         });
         let resolver = LiveExperienceResolver::new(source, roster);
 

@@ -13,6 +13,7 @@
  *     A packaged deployment serves the same path from its own static tier.
  */
 
+/// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -55,4 +56,14 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
   plugins: [avatarStore()],
+  test: {
+    // Time-of-day rendering is VIEWER-LOCAL by design, so the fixed HH:MM
+    // assertions in renderChat.spec.ts need a pinned zone to be deterministic on
+    // any runner (PR #2057 review). This lives HERE, not in the spec: the spec
+    // used `process.env.TZ = 'UTC'`, but `process` is a node global and
+    // tsconfig.json sets `"types": []` on purpose — this is the browser tier,
+    // and letting node globals in would defeat that guard. The runner config is
+    // node context, so the pin belongs here.
+    env: { TZ: 'UTC' },
+  },
 });
