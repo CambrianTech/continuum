@@ -490,7 +490,7 @@ impl ActionCommand for AgentSolve {
                                              Reading and searching cannot score; only an edit can. This attempt, go \
                                              straight to the file you already identified and apply your best-guess fix \
                                              with code/edit — a wrong edit earns failing-test feedback to iterate on; \
-                                             no edit earns nothing. Do not re-read what you have already read.",
+                                             no edit earns nothing. Do not re-read what you have already read.{output}",
                                         )
                                     } else {
                                         let edited = if r.files_changed.is_empty() {
