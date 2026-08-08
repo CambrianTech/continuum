@@ -1763,6 +1763,15 @@ impl ActionCommand for BenchmarkSweGrade {
     type Output = SweGradeResult;
 
     async fn run(&self, _ctx: &Ctx, p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
+        grade_swe(p).await
+    }
+}
+
+/// The `benchmark/swe-grade` body, callable without a command context — the
+/// hands-free autograde on `agent/solve` completion invokes the SAME grader
+/// (fresh clone at base_commit, held-out tests, experience-stream write) as
+/// the operator verb. One grader, never two.
+pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
         let dataset = p
             .dataset
             .clone()
@@ -1856,7 +1865,6 @@ impl ActionCommand for BenchmarkSweGrade {
 
         Ok(SweGradeResult::from((verdict, patch_bytes)))
     }
-}
 
 /// The citizen peer dir owning a workspace path: the `<...>/citizens/peers/<uuid>`
 /// prefix of `path`, or `None` when the path is not inside a citizen's home (an
