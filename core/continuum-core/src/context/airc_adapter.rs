@@ -143,11 +143,11 @@ impl AircCitizen for AircHandleAdapter {
         self.inner.peer_id().as_uuid()
     }
 
-    async fn subscribe(&self) -> Result<airc_lib::EventStream, AircError> {
-        self.inner.subscribe().await
+    async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
+        crate::persona::airc_citizen::subscribe_every_room(&self.inner).await
     }
 
-    async fn say(&self, text: &str) -> Result<EventId, AircError> {
-        self.inner.say(text).await
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
+        crate::persona::airc_citizen::publish_text_in_room(&self.inner, room_id, text).await
     }
 }
