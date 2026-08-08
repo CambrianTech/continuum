@@ -547,6 +547,7 @@ mod tests {
             world_state: world_state.to_string(),
             metrics: TurnMetrics::default(),
             inference_error: None,
+            touched_paths: Vec::new(),
         }
     }
 
@@ -746,6 +747,7 @@ mod tests {
             world_state: "budget exhausted after 8 acts".into(),
             metrics: TurnMetrics::default(),
             inference_error: None,
+            touched_paths: Vec::new(),
         };
         let lived_stuck = ExperienceRecord::from_lived_turn("fix the build", &unconverged);
         assert!(
@@ -943,6 +945,7 @@ mod tests {
             world_state: String::new(),
             metrics: TurnMetrics::default(),
             inference_error: None,
+            touched_paths: Vec::new(),
         };
         let lived = ExperienceRecord::from_lived_turn("a hard live question", &stuck);
         let received = ExperienceRecord::from_shared_lesson(&shared_lesson(
