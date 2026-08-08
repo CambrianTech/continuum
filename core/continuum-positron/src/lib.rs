@@ -125,6 +125,7 @@ pub mod connection;
 pub mod dispatch;
 pub mod foundry;
 pub mod kanban;
+pub mod live;
 pub mod nav;
 pub mod observer;
 pub mod revisions;

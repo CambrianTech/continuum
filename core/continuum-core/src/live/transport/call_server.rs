@@ -352,6 +352,30 @@ pub struct CallManager {
 }
 
 impl CallManager {
+    /// Every LIVE call and how many participants are in it — the read side the live-call
+    /// projection needs (#58).
+    ///
+    /// There was no reader here either, and that absence is load-bearing: nothing could
+    /// compare "calls the CallServer is actually running" against "sessions the
+    /// orchestrator thinks are registered". That comparison IS the defect made visible.
+    /// A live call with no matching registration is precisely the state where a persona
+    /// sits in the room, present and silent, `isInCall()` returns false, and her responses
+    /// are dropped with nothing anywhere saying why.
+    ///
+    /// Returns a snapshot rather than a guard: the caller is a periodic projection, and
+    /// holding these locks across an await would put a rendering concern in the audio path.
+    pub async fn live_calls(&self) -> Vec<(String, usize)> {
+        let calls = self.calls.read().await;
+        let participants = self.participant_calls.read().await;
+        calls
+            .keys()
+            .map(|call_id| {
+                let n = participants.values().filter(|c| *c == call_id).count();
+                (call_id.clone(), n)
+            })
+            .collect()
+    }
+
     pub fn new() -> Self {
         Self {
             calls: RwLock::new(HashMap::new()),

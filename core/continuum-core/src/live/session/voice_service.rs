@@ -24,6 +24,18 @@ impl VoiceService {
         }
     }
 
+    /// Sessions the orchestrator currently holds — the read side the live-call
+    /// projection folds against `CallManager::live_calls()` (#58). The divergence
+    /// between the two IS the defect: a live call with no session here is why a
+    /// persona sits in a room, present, while `isInCall()` returns false and her
+    /// responses are dropped.
+    pub fn registered_sessions(&self) -> Vec<(Uuid, Vec<VoiceParticipant>)> {
+        self.orchestrator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .registered_sessions()
+    }
+
     /// Register a voice session with participants
     pub fn register_session(
         &self,

@@ -57,6 +57,27 @@ impl VoiceOrchestrator {
         );
     }
 
+    /// Every registered session and its participants — the read side the live-call
+    /// projection needs (#58).
+    ///
+    /// There was no reader at all until now, which is part of why registration being
+    /// client-driven went unnoticed for so long: nothing could ask "which sessions does
+    /// the core actually think are live?" and compare that to the calls the CallServer is
+    /// running. That comparison IS the defect made visible — a call with no registration
+    /// is why a persona sits in a room, present and silent, while `isInCall()` returns
+    /// false and her responses are dropped.
+    ///
+    /// Returns a snapshot, not a guard: the caller is a periodic projection, and holding
+    /// this lock across an await would put a rendering concern in the audio path.
+    pub fn registered_sessions(&self) -> Vec<(Uuid, Vec<VoiceParticipant>)> {
+        self.session_participants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, ps)| (*id, ps.clone()))
+            .collect()
+    }
+
     pub fn unregister_session(&self, session_id: Uuid) {
         self.session_participants
             .lock()

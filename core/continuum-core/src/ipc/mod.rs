@@ -120,6 +120,7 @@ pub mod positron_kanban_source;
 pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
+pub mod positron_live_source;
 pub mod positron_serving_source;
 pub mod positron_source;
 pub mod positron_wall_source;
@@ -1626,6 +1627,10 @@ pub fn start_server(
 
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
     let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
+    // Handle for the live-call projection (#58). Taken HERE because the original is
+    // moved into the module registry below, and the emitter is a READER — it must not
+    // change who owns the service.
+    let voice_service_for_view = voice_service.clone();
     let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
     let voice_state = Arc::new(VoiceState::new(
         voice_service.clone(),
@@ -3038,6 +3043,20 @@ pub fn start_server(
                 positron_serving_source::spawn_serving_emitter(
                     &state.rt_handle,
                     ws_substrate.clone(),
+                );
+
+                // Live-call glass box (#58): folds the TRANSPORT's calls against
+                // the ORCHESTRATOR's registered sessions. Their disagreement is
+                // the defect — a live call with no registration is why a persona
+                // sits present and silent while isInCall() returns false and her
+                // responses are dropped. Rendering it makes that a visible fact on
+                // web + iOS + Android + TUI at once, instead of a mystery each
+                // client rediscovers.
+                positron_live_source::spawn_live_call_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                    call_manager.clone(),
+                    voice_service_for_view.clone(),
                 );
 
                 // Producer half of the same stream: attach a node-level
