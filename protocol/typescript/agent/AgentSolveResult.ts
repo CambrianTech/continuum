@@ -20,6 +20,16 @@ patch: string,
  */
 files_changed: Array<string>, 
 /**
+ * Paths her acts NAMED (reads, searches, edit attempts — any `file_path`/`path`
+ * arg on an executed call), first-touch order. The investigation trail as STATE:
+ * a failed edit or a read appears here and nowhere else. The N-chances retry
+ * threads these into the next attempt's task, because a retry is a FRESH turn
+ * with fresh working memory — without this, "the file you already identified"
+ * names knowledge the next attempt does not have (glass-boxed 2026-08-08,
+ * benchy-sympy-22840-n4 attempt 2: 10 of 12 acts re-deriving cse_main.py).
+ */
+files_examined: Array<string>, 
+/**
  * True when this is the immediate ACK of a detached run (`acts`/`patch` empty — poll the
  * result file `agent-solve-<run_id>.json` for the real outcome).
  */
