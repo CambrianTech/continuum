@@ -282,7 +282,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() >= 2 {
         match args[1].as_str() {
             "-V" | "--version" | "version" => {
-                println!("continuum-core-server {}", env!("CARGO_PKG_VERSION"));
+                // Number + sha together, always (Joel 2026-08-08): the number
+                // orders two builds at a glance, the sha names the source.
+                println!(
+                    "continuum-core-server {} build {} ({}) built {}",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("CONTINUUM_BUILD_NUMBER"),
+                    env!("CONTINUUM_BUILD_GIT_SHA"),
+                    env!("CONTINUUM_BUILD_AT"),
+                );
                 std::process::exit(0);
             }
             "-h" | "--help" | "help" => {
