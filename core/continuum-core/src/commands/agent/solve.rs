@@ -211,6 +211,15 @@ impl ActionCommand for AgentSolve {
             let mut inner = p;
             inner.detach = Some(false);
             inner.run_id = Some(run_id.clone());
+            // HANDS-FREE GRADE eligibility, captured before `inner` moves: a SCORED,
+            // workspace-deliverable run inside a citizen's staged SWE checkout
+            // (`citizens/peers/<uuid>/workspace/swe/<instance>`) grades itself the
+            // moment it settles — #346 slice 2's first cut. The instance id is the
+            // checkout's own directory name (the shape `benchmark/swe-setup` stages).
+            let autograde_workspace = (inner.scored.unwrap_or(false)
+                && matches!(inner.deliverable, Some(Deliverable::Workspace))
+                && inner.workspace.contains("/workspace/swe/"))
+            .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
                 match AgentSolve::solve_body(inner).await {
@@ -226,6 +235,57 @@ impl ActionCommand for AgentSolve {
                             }
                         }
                         tracing::info!(run_id = %run_id, acts = r.acts, "agent/solve detached run complete");
+                        // The claim ran to a diff; now the diff runs to a VERDICT with
+                        // no human in the loop. Same grader as `benchmark/swe-grade`
+                        // (fresh clone, held-out tests) — its verdict path also writes
+                        // the citizen's experience stream, so solve→grade→lesson is one
+                        // unbroken chain. The verdict lands on the poll surface beside
+                        // the result (`...<run_id>.grade.json`) + the probe stream.
+                        if let Some(ws) = autograde_workspace {
+                            let instance = std::path::Path::new(&ws)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let grade = crate::commands::benchmark::grade_swe(
+                                crate::commands::benchmark::SweGradeParams {
+                                    instance: instance.clone(),
+                                    dataset: None,
+                                    gold: None,
+                                    patch: None,
+                                    workspace: Some(ws),
+                                },
+                            )
+                            .await;
+                            match grade {
+                                Ok(g) => {
+                                    crate::probe!(
+                                        class = "benchmark.autograde",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        resolved = g.resolved,
+                                        gate_ok = g.gate_ok,
+                                        "solve completion auto-graded"
+                                    );
+                                    if let Some(p) = agent_solve_ledger_path(&run_id) {
+                                        let gp = p.with_extension("grade.json");
+                                        if let Ok(j) = serde_json::to_string_pretty(&g) {
+                                            let _ = std::fs::write(gp, j);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    // A failed GRADE is not a failed solve — surface it
+                                    // loud on its own channel; the solve result stands.
+                                    crate::probe!(
+                                        class = "benchmark.autograde",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        error = %e.to_string(),
+                                        "auto-grade FAILED — solve result stands, verdict missing"
+                                    );
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         // Fail LOUD on the poll surface too — a detached run that dies must leave a
