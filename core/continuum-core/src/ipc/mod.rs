@@ -44,7 +44,7 @@ use crate::persona::{ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
-use crate::{log_debug, log_error, log_info, log_warn};
+use crate::{log_debug, log_error, log_info};
 use dashmap::DashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -993,13 +993,27 @@ pub fn start_server(
             // artifact now, so the only way an operator learns their model is unusable is
             // if we say it — once per model, with the parser's own words, at the seam that
             // decided it. Silence here would trade a loud crash for a quiet lie.
+            // NOT log_warn! — this line fires BEFORE any ServiceModule exists (see the
+            // comment above: the registry loads first on purpose), and every file-logging
+            // path is dead at that instant. Measured, three silent drops deep:
+            //   1. `log_*` needs LOGGER, whose only production initializer is ffi/mod.rs
+            //      (the legacy Node-embedding entry) — never called on the native server.
+            //   2. `clog_*`/`write_log_direct` needs GLOBAL_LOG_SENDER, set by
+            //      LoggerModule::new() — which has not been constructed yet here.
+            //   3. even once set, `queue_log` try_sends into a bounded channel and drops
+            //      silently when full.
+            // I wrote this warning with log_warn!, could not find it anywhere, and only
+            // then learned the whole chain was dark. A degradation nobody can see is
+            // exactly the bug this fix exists to kill, so it uses the sink that needs no
+            // initialization and demonstrably reaches the log file at boot.
             for (id, why) in reg.unhydratable() {
-                log_warn!(
-                    "ipc",
-                    "server",
-                    "model `{id}` is UNAVAILABLE — its artifact did not hydrate: {why}. \
-                     The core is up and every other model is usable; this one cannot be \
-                     served or planned against until the artifact or the reader is fixed."
+                tracing::warn!(
+                    model_id = %id,
+                    reason = %why,
+                    probe_class = "registry.model.unhydratable",
+                    "model is UNAVAILABLE — its artifact did not hydrate. The core is up \
+                     and every other model is usable; this one cannot be served or planned \
+                     against until the artifact or the reader is fixed."
                 );
             }
         }
