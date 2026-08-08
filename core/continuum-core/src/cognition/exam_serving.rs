@@ -154,7 +154,7 @@ impl ExamServingContext {
             settled = settled.is_some(),
             "exam lane grown to Ludicrous (Performance) and settled before pinning"
         );
-        let steady = ServingSteadyHold::acquire();
+        let steady = ServingSteadyHold::acquire("eval");
         ExamHold {
             _ludicrous: ludicrous,
             _steady: steady,

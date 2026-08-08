@@ -277,7 +277,8 @@ impl ActionCommand for AgentSolve {
                 // error" when the post-boot window grow bounced the lane). A scored run is
                 // exactly the demand the hold exists for; a real pressure emergency still
                 // preempts (the hold only suppresses the optional grow, never a shrink).
-                let _steady = crate::modules::serving_daemon::ServingSteadyHold::acquire();
+                let _steady =
+                    crate::modules::serving_daemon::ServingSteadyHold::acquire(run_id.clone());
                 // N CHANCES: attempts loop. Each attempt is a full solve; a non-resolved
                 // auto-grade re-enters the SAME workspace with the verdict appended to the
                 // task (named failing tests — the teachable half of the grade). The loop
@@ -391,6 +392,28 @@ impl ActionCommand for AgentSolve {
                             .await;
                             match grade {
                                 Ok(g) => {
+                                    // attempt.end — the FULL verdict on the wire, the
+                                    // bookend of benchmark.attempt.start (Joel 2026-08-08:
+                                    // "emit events for everything — need to know"). Grades
+                                    // were file-only; every wire consumer (probe router →
+                                    // rooms, exam-room widgets, the pulse monitors) had to
+                                    // scrape the ledger to learn an attempt's outcome.
+                                    crate::probe!(
+                                        class = "benchmark.attempt.end",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        attempt,
+                                        max_attempts,
+                                        resolved = g.resolved,
+                                        gate_ok = g.gate_ok,
+                                        f2p_passed = g.fail_to_pass_passed,
+                                        f2p_total = g.fail_to_pass_total,
+                                        p2p_passed = g.pass_to_pass_passed,
+                                        p2p_total = g.pass_to_pass_total,
+                                        patch_bytes = g.patch_bytes,
+                                        failed_tests = %g.failed_tests.join(","),
+                                        "solve attempt graded — the verdict, on the wire"
+                                    );
                                     crate::probe!(
                                         class = "benchmark.autograde",
                                         run_id = %run_id,
