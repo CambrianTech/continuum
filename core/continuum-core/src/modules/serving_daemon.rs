@@ -44,7 +44,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -279,6 +279,17 @@ pub struct ServingDaemonModule {
     /// failure is wedge evidence that OUTRANKS a passing smoke probe — the undersized-slot
     /// wedge class rejects the fleet's real prompts while a tiny probe still succeeds.
     real_fails: RealFailsSource,
+    /// The last HEALTHY lane's (window, lanes) — the #363 prevention half. The #175
+    /// sticky floor reads the live snapshot, but declaring a wedge EMPTIES that snapshot
+    /// first, so every wedge-heal relaunch bypassed the floor by construction and spawned
+    /// at whatever the teardown-transient plan said (the dying predecessor still holds
+    /// its memory when the successor's budget samples free RAM — 2026-08-07: plan dipped
+    /// to 9984 mid-teardown, successor spawned undersized, every 12k prompt rejected).
+    /// These survive the empty snapshot; 0 = no healthy lane observed yet. Memory-safe:
+    /// the predecessor's window IS the memory the successor inherits, and the existing
+    /// overflow protection remains the backstop if it genuinely no longer fits.
+    last_healthy_window: Arc<AtomicU32>,
+    last_healthy_lanes: Arc<AtomicU32>,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
     /// command surface mutates. The daemon plans off this snapshot, NOT the
     /// immutable seed registry, so a model acquired at runtime (`models/pull`
@@ -441,6 +452,8 @@ impl ServingDaemonModule {
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_decode),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
+            last_healthy_window: Arc::new(AtomicU32::new(0)),
+            last_healthy_lanes: Arc::new(AtomicU32::new(0)),
             catalog,
             suppressed,
             pinned,
@@ -1418,6 +1431,31 @@ impl ServingDaemonModule {
         // the personas pinned to the earlier, larger slot — keep the incumbent window
         // when lanes are unchanged (memory-safe; a lane change legitimately resizes KV).
         let served_ctx = sticky_served_window(served_ctx, lanes, &self.serving_tx.borrow());
+        // #363 prevention: the WEDGE-HEAL floor. The sticky floor above reads the live
+        // snapshot, but declaring a wedge EMPTIES that snapshot first — so the very
+        // relaunch the detector triggers used to spawn at whatever the teardown-transient
+        // plan said (the dying predecessor still holds its memory when the successor's
+        // budget samples free RAM). Floor the successor to the last HEALTHY lane's window
+        // when the lane count is unchanged; the predecessor's window is exactly the
+        // memory being freed, so the successor inherits it, and the existing overflow
+        // protection stays the backstop if the world genuinely shrank.
+        let floor_w = self.last_healthy_window.load(Ordering::Relaxed);
+        let floor_l = self.last_healthy_lanes.load(Ordering::Relaxed);
+        let live_ready = self.serving_tx.borrow().ready;
+        let floored = wedge_heal_floor(served_ctx, lanes, live_ready, floor_w, floor_l);
+        if floored != served_ctx {
+            crate::probe!(
+                class = "serving.reconcile.window",
+                decision = "wedge-heal-floor",
+                live_window = 0u32,
+                plan_window = served_ctx,
+                floored_to = floored,
+                plan_lanes = lanes,
+                "spawn-at-transient guarded: successor floored to the last healthy \
+                 lane's window instead of a teardown-dip plan (#363)",
+            );
+        }
+        let served_ctx = floored;
 
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
@@ -1482,6 +1520,8 @@ impl ServingDaemonModule {
         let bus = self.bus.get().cloned();
         let sidecar_slot = self.vision_sidecar.clone();
         let system = self.system.clone();
+        let last_healthy_window = self.last_healthy_window.clone();
+        let last_healthy_lanes = self.last_healthy_lanes.clone();
         // RAII gate-clear (#214): the `reconciling` flag was set `true` at the top of this
         // reconcile and MUST clear even if the relaunch task panics or is cancelled
         // mid-await — otherwise ONE failed relaunch (an OOM spawn under a memory squeeze, a
@@ -1672,6 +1712,12 @@ impl ServingDaemonModule {
                 served_window = snapshot.served_context_window,
                 "serving reconcile complete",
             );
+            // #363: remember the last HEALTHY lane's shape in a record that SURVIVES
+            // the wedge-empty — the wedge-heal floor in the next reconcile reads it.
+            if snapshot.ready && snapshot.served_context_window > 0 {
+                last_healthy_window.store(snapshot.served_context_window, Ordering::Relaxed);
+                last_healthy_lanes.store(snapshot.lanes, Ordering::Relaxed);
+            }
             // Emit on the bus first (fan-out to every subscriber + the grid),
             // then update the in-process watch view.
             Self::emit_serving(bus.as_ref(), &snapshot);
@@ -2472,6 +2518,28 @@ pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'stati
 fn sticky_served_window(plan_window: u32, plan_lanes: u32, live: &ServingSnapshot) -> u32 {
     if live.ready && live.lanes == plan_lanes && live.served_context_window > plan_window {
         live.served_context_window
+    } else {
+        plan_window
+    }
+}
+
+/// The #363 wedge-heal floor — [`sticky_served_window`]'s sibling for the case sticky
+/// cannot see: the live snapshot was EMPTIED by a wedge declaration (or a cold boot after
+/// a crash), so `live.ready` is false and sticky passes the plan through untouched. If a
+/// healthy lane with the SAME lane count was observed before, the successor spawns at
+/// least that big — the plan's momentary dip is the dying predecessor's memory not yet
+/// freed, and that memory is precisely what the successor inherits. Applies ONLY when
+/// live is not ready (when it is, sticky already owns the decision) and only same-lanes
+/// (a lane-count change legitimately resizes KV).
+fn wedge_heal_floor(
+    plan_window: u32,
+    plan_lanes: u32,
+    live_ready: bool,
+    last_healthy_window: u32,
+    last_healthy_lanes: u32,
+) -> u32 {
+    if !live_ready && last_healthy_lanes == plan_lanes && last_healthy_window > plan_window {
+        last_healthy_window
     } else {
         plan_window
     }
@@ -3457,6 +3525,28 @@ mod tests {
             60_000
         );
         assert_eq!(sticky_served_window(31_744, 2, &live(false, 0, 0)), 31_744);
+    }
+
+    // what this catches (#363 wedge-heal floor): a wedge declaration EMPTIES the live
+    // snapshot, which disarms the sticky floor above — so the very relaunch the wedge
+    // detector triggers used to spawn at a teardown-transient plan (measured live: plan
+    // dipped to 9,984 while the dying 34,048 predecessor still held its memory; every
+    // subsequent 12k prompt was rejected). The successor must inherit the last HEALTHY
+    // window when lanes are unchanged; a live-ready lane defers to sticky; a lane-count
+    // change resizes legitimately; and no-history (cold first boot) passes the plan.
+    #[test]
+    fn wedge_heal_floor_holds_the_last_healthy_window_across_the_empty_snapshot() {
+        // The measured blackout shape: not ready (wedge emptied it), same lanes,
+        // transient plan far below the last healthy window → floored.
+        assert_eq!(wedge_heal_floor(9_984, 2, false, 34_048, 2), 34_048);
+        // Live lane still ready → sticky owns the decision; floor stands down.
+        assert_eq!(wedge_heal_floor(9_984, 2, true, 34_048, 2), 9_984);
+        // Lane-count change legitimately resizes KV → plan through.
+        assert_eq!(wedge_heal_floor(9_984, 4, false, 34_048, 2), 9_984);
+        // Plan already >= last healthy → never held down.
+        assert_eq!(wedge_heal_floor(41_216, 2, false, 34_048, 2), 41_216);
+        // No healthy lane ever observed (cold boot) → plan through.
+        assert_eq!(wedge_heal_floor(9_984, 2, false, 0, 0), 9_984);
     }
 
     // what this catches: a published plan drives a reconcile that brings the
