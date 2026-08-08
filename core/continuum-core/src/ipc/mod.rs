@@ -44,7 +44,7 @@ use crate::persona::{ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
-use crate::{log_debug, log_error, log_info};
+use crate::{log_debug, log_error, log_info, log_warn};
 use dashmap::DashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -981,13 +981,28 @@ pub fn start_server(
     // and a missing config is a boot-order / packaging bug, not a runtime
     // condition we can recover from.
     match crate::model_registry::init_global() {
-        Ok(reg) => log_info!(
-            "ipc",
-            "server",
-            "model_registry loaded: {} models across {} providers",
-            reg.models().count(),
-            reg.providers().count()
-        ),
+        Ok(reg) => {
+            log_info!(
+                "ipc",
+                "server",
+                "model_registry loaded: {} models across {} providers",
+                reg.models().count(),
+                reg.providers().count()
+            );
+            // A degraded model is REPORTED, never silent (#63). Boot survives a bad
+            // artifact now, so the only way an operator learns their model is unusable is
+            // if we say it — once per model, with the parser's own words, at the seam that
+            // decided it. Silence here would trade a loud crash for a quiet lie.
+            for (id, why) in reg.unhydratable() {
+                log_warn!(
+                    "ipc",
+                    "server",
+                    "model `{id}` is UNAVAILABLE — its artifact did not hydrate: {why}. \
+                     The core is up and every other model is usable; this one cannot be \
+                     served or planned against until the artifact or the reader is fixed."
+                );
+            }
+        }
         Err(e) => panic!("failed to load model_registry: {e}"),
     }
 
