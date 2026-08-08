@@ -251,7 +251,12 @@ fn humanize_result_content(raw: &str) -> String {
         return raw.to_string();
     };
     match parsed {
-        serde_json::Value::String(s) => s,
+        // A bare JSON string is an ENCODING LAYER, not content — live-verified on
+        // Benchy's r2 run: the executor hands back `"{\"error\":null,...}"` (the
+        // command's JSON wrapped in a JSON string), so unwrapping once still left
+        // raw JSON in her window. Recurse: each pass strips one string layer;
+        // a plain-text payload stops the recursion at the parse guard above.
+        serde_json::Value::String(s) => humanize_result_content(&s),
         serde_json::Value::Object(map) => {
             let mut out = String::new();
             for (key, value) in &map {
@@ -1662,6 +1667,20 @@ mod tests {
         assert_eq!(
             humanize_result_content("\"line1\\nline2\""),
             "line1\nline2"
+        );
+
+        // The DOUBLE-ENCODED shape, live-verified on Benchy's r2 run: the executor
+        // wraps the command's JSON doc in a JSON string, so one unwrap still left
+        // `{"error":null,...}` in her window. Every string layer must strip.
+        let double = serde_json::Value::String(read_result.clone()).to_string();
+        let rendered2 = humanize_result_content(&double);
+        assert_eq!(
+            rendered2, rendered,
+            "a double-encoded result must humanize identically to the single-encoded one"
+        );
+        assert!(
+            !rendered2.contains("\"error\":null"),
+            "the inner JSON layer must not survive raw: {rendered2}"
         );
     }
 
