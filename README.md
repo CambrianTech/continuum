@@ -52,21 +52,21 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 ---
 
-## Grid compute that scales on misfit hardware
+## The Grid: intelligence scales onto misfit hardware
 
-The industry fits the **model** to the machine: shrink it until it runs, or rent a datacenter that never has to care. Continuum fits the **machine** to the model.
+The industry fits the model to the machine — shrink it until it runs, or rent a datacenter that never has to care. Continuum fits the machine to the model.
 
-A mixture-of-experts model touches only a fraction of its weights per token. So those weights don't need to be *resident* — they need to be *there in time*. Continuum pages experts the way an operating system pages memory: a cache that keeps the last K tokens' expert **sets** as units, a 4KiB-aligned container that stores each expert at multiple precisions, and a governed budget that decides how much residency to buy. The consequence is the whole thesis in one line:
+A mixture-of-experts model touches a sliver of its weights per token. Those weights don't need to be *resident*. They need to be *there in time*. So we page experts the way an OS pages memory: a 4KiB-aligned container holding each expert at multiple precisions, a cache that keeps the last K tokens' expert **sets** as units, a governed budget that decides how much residency to buy. Kimi-Linear-48B generates at ~57 tok/s on a Mac through our llama.cpp [fork](core/vendor/llama.cpp). Expert gather is zero-copy — 4.0x measured on Metal; on CUDA the kernels are bit-identical, and that's a correctness claim, not a speed claim.
 
 > **A model that doesn't fit still serves.**
 
-**The same algorithms run on every machine you own.** Not a big path and a small path — one path. Local training goes through MLX on Apple silicon and Candle on NVIDIA ([`genome/fine_tuning/`](core/continuum-core/src/genome/fine_tuning/) — 89 tests); expert paging runs on Metal and CUDA from the same [fork](core/vendor/llama.cpp) (4.0× zero-copy gather measured on Metal A/B, bit-identical CUDA kernels). A MacBook Air, a 3090 and a 5090 differ in how much they can hold, not in what they can do. **Kimi-Linear-48B generates at ~57 tok/s on a Mac.**
+One code path, every machine you own. Training runs through MLX on Apple silicon and Candle on NVIDIA — same [`genome/`](core/continuum-core/src/genome/) (171 tests), same [`genome/fine_tuning/`](core/continuum-core/src/genome/fine_tuning/) (89 tests). The dusty 3090 and the work MacBook differ in how much they can hold, not in what they can do.
 
-**The work is the training data.** Personas don't just run — they're graded, and graded work becomes training signal. The experience stream records what a citizen actually did, the curriculum selects her real failures over a static set, and adapters train locally against them ([`genome/`](core/continuum-core/src/genome/) — 171 tests). Skills are LoRA adapters paged in and out like memory, so a persona's capability is composed at runtime instead of baked at download.
+The work is the training data. A persona's graded work lands in her experience stream; curriculum picks her *real* failures over a static set; adapters train locally and page in like memory. Skills are pages too.
 
-**Joining is peer-to-peer.** No coordinator to run, no account to create. Every citizen — human or persona — is an Ed25519 keypair; machines find each other and the grid becomes the sum of what you own. Two nodes today, and the mechanism doesn't change shape at twenty: residency under a budget is a Lagrangian, and its multiplier is a **price per byte** — the same number that decides which expert stays in your VRAM is the one two machines compare to decide which of them runs the work. Pager control law and grid protocol are the same equation at two scales ([design](docs/architecture/GRID-MARKET-CLEARING.md)).
+Every citizen — human or persona — is an Ed25519 keypair. Peer-to-peer join. No coordinator, no account. And here's the part we find beautiful: residency under a budget is a Lagrangian, and its multiplier is a price per byte. The number that decides which expert stays in your VRAM is the number two machines compare to decide who runs the work ([design](docs/architecture/GRID-MARKET-CLEARING.md)). The pager's control law and the grid's protocol are the same equation at two scales.
 
-**What's proven, and what isn't.** Everything above is code in tree or a number we measured, and the [claims ledger](benchmarks/RESULTS.jsonl) says which is which. Two proofs are still on deck and we won't claim them until they land: **live learned paging** end-to-end on one box, and the **two-machine expert-serve** — one node generating coherent tokens from experts that exist only on its peer's disk. When those land it's a status flip, not a rewrite.
+What we haven't earned yet — and say so in the [claims ledger](benchmarks/RESULTS.jsonl): live learned paging end-to-end on one box, and one node generating coherent tokens from experts that exist only on its peer's disk. Both are next. Watch.
 
 ---
 
