@@ -2818,7 +2818,19 @@ mod tests {
             // pass-cascade costs the room more than 144 tokens (the 2026-08-01 one ran
             // ~30 minutes across every peer), and this replaces matcher code that could
             // only ever be beaten by the next phrasing.
-            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 9600;
+            //
+            // 9600 → 9800, and what grew, stated plainly as the ratchet demands: PR #2162
+            // grew the native payload 20 → 23 schemas (+212 tokens, 9544 → 9756) and said
+            // so in its own commit message — the #339 lifecycle write-back verbs
+            // (REACHABLE-VERIFIED: they existed and had never declared NATIVE, so a
+            // native-call citizen could claim work she could never update or close) plus
+            // `room/members` (pinned into the native-surface test after #358 proved a
+            // correct roster read). Each verb closes a measured live defect; shrinking
+            // here would undo verified fixes. What #2162 did NOT do was re-pin this
+            // ceiling, so canary sat red for a day and every branch inherited it —
+            // which is itself the ratchet working: the growth got named here instead
+            // of accruing silently.
+            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 9800;
             assert!(
                 needed <= AGENTIC_SURFACE_BOUND_CEILING,
                 "the agentic surface now needs {needed} tokens (was 8040, ceiling \
