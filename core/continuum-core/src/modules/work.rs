@@ -319,6 +319,10 @@ impl ActionCommand for WorkClaim {
     }
 }
 
+/// How many graded chances a claim-dispatched SWE run gets (`AgentSolveParams::attempts`).
+/// This is the SWE adapter's N, not a global — each benchmark adapter owns its own.
+const SWE_CLAIM_ATTEMPTS: u32 = 3;
+
 /// The #346 claim→solve dispatch. Fires a detached [`crate::commands::agent::solve::AgentSolve`]
 /// for the claimer when the claimed card matches a checkout `benchmark/swe-setup` staged
 /// into HER workspace: one staged instance directory whose name appears in the card
@@ -398,6 +402,11 @@ async fn dispatch_staged_swe_solve(
         max_acts: None,
         path_prepend: None,
         suppress_recall: None,
+        // The SWE claim adapter's N (Joel, 2026-08-08): a failed grade re-enters the
+        // same workspace with the named failing tests — learning to investigate your
+        // own failure is part of the exam. Three chances: first attempt, one informed
+        // retry, one consolidation — beyond that the failures repeat, not teach.
+        attempts: Some(SWE_CLAIM_ATTEMPTS),
     };
     match crate::commands::agent::solve::AgentSolve
         .run(ctx, params)

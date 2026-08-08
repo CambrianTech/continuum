@@ -2122,6 +2122,10 @@ impl BenchmarkSweSolve {
                 max_acts: p.max_acts.or(Some(30)),
                 detach: Some(false),
                 run_id: None,
+                // This inline arm IS the grader loop's inner body (swe-solve grades right
+                // below) — retries here would nest N chances inside N chances. The
+                // claim-dispatch adapter owns its own N (`SWE_CLAIM_ATTEMPTS`).
+                attempts: None,
                 // learn=FALSE on a SCORED, HELD-OUT instance (#312). `agent/solve` defaults
                 // learn ON and that default is right — a being learns from her work. But this
                 // command's input is a held-out benchmark dataset, and what learn mode admits
