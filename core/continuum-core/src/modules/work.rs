@@ -298,10 +298,136 @@ impl ActionCommand for WorkClaim {
                 });
             }
         };
+        // CLAIM → WORK SESSION (#346 front half): claiming a staged SWE card IS the
+        // start of the work, never an announcement of intent. The gate-conflation
+        // arc (2026-08-08, BigMama + M5) proved these minds act reliably inside a
+        // work session and stall on room ticks — so the claim fires the session.
+        // Eligibility is structural, decoded from our own staging shape: the
+        // CLAIMER's own `citizens/peers/<her>/workspace/swe/<instance>` checkout
+        // whose directory name appears in the card title (`benchmark/swe-setup`
+        // staged it for exactly her). Detached + scored + workspace-deliverable,
+        // so the #2167 autograde carries settle → verdict → experience stream with
+        // nobody in the loop. Best-effort: a dispatch failure never voids the
+        // claim — the claim is hers either way, and the probe says what happened.
+        if let Some(caller) = ctx.caller.as_ref() {
+            dispatch_staged_swe_solve(ctx, &airc, caller.peer_id.as_uuid(), card_id).await;
+        }
         Ok(WorkClaimResult {
             card_id: p.card_id,
             claim_id: claim_id.as_uuid().to_string(),
         })
+    }
+}
+
+/// How many graded chances a claim-dispatched SWE run gets (`AgentSolveParams::attempts`).
+/// This is the SWE adapter's N, not a global — each benchmark adapter owns its own.
+const SWE_CLAIM_ATTEMPTS: u32 = 3;
+
+/// The #346 claim→solve dispatch. Fires a detached [`crate::commands::agent::solve::AgentSolve`]
+/// for the claimer when the claimed card matches a checkout `benchmark/swe-setup` staged
+/// into HER workspace: one staged instance directory whose name appears in the card
+/// title. Task text = the card body (the real issue, gold held out). Model = the live
+/// served base (dynamic — never a hardcoded id). All outcomes on the
+/// `benchmark.dispatch` probe; silence is not an outcome.
+async fn dispatch_staged_swe_solve(
+    ctx: &Ctx,
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    claimer: uuid::Uuid,
+    card_id: airc_work::WorkCardId,
+) {
+    let Ok(board) = airc
+        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .await
+    else {
+        return;
+    };
+    let board = board.snapshot();
+    let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
+        return;
+    };
+    // Her staged SWE checkouts — the exact layout swe-setup writes.
+    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+        return;
+    };
+    let swe_root = home
+        .join("citizens/peers")
+        .join(claimer.to_string())
+        .join("workspace/swe");
+    let Ok(entries) = std::fs::read_dir(&swe_root) else {
+        return; // no staged work for her — an ordinary (non-SWE) claim.
+    };
+    let staged: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| card.title.contains(name.as_str()))
+        .collect();
+    let [instance] = staged.as_slice() else {
+        if staged.len() > 1 {
+            crate::probe!(
+                class = "benchmark.dispatch",
+                card_id = %card_id.as_uuid(),
+                claimer = %claimer,
+                matches = staged.len(),
+                "claim matched MULTIPLE staged instances — refusing to guess, no dispatch"
+            );
+        }
+        return;
+    };
+    let model = crate::inference::llama_server::current_serving()
+        .active_model
+        .unwrap_or_default();
+    if model.is_empty() {
+        crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            instance = %instance,
+            "no served model — dispatch skipped; claim stands, re-claim after serving is up"
+        );
+        return;
+    }
+    let workspace = swe_root.join(instance).to_string_lossy().to_string();
+    let params = crate::commands::agent::solve::AgentSolveParams {
+        persona_id: claimer.to_string(),
+        base_model_id: model,
+        workspace,
+        task: card.body.clone().unwrap_or_else(|| card.title.clone()),
+        deliverable: Some(crate::commands::agent::solve::Deliverable::Workspace),
+        scored: Some(true),
+        detach: Some(true),
+        run_id: Some(format!("claim-{}", card_id.as_uuid())),
+        capture_dir: None,
+        learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
+        max_acts: None,
+        path_prepend: None,
+        suppress_recall: None,
+        // The SWE claim adapter's N (Joel, 2026-08-08): a failed grade re-enters the
+        // same workspace with the named failing tests — learning to investigate your
+        // own failure is part of the exam. Three chances: first attempt, one informed
+        // retry, one consolidation — beyond that the failures repeat, not teach.
+        attempts: Some(SWE_CLAIM_ATTEMPTS),
+    };
+    match crate::commands::agent::solve::AgentSolve
+        .run(ctx, params)
+        .await
+    {
+        Ok(ack) => crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            instance = %instance,
+            run_id = %ack.run_id.unwrap_or_default(),
+            "claim dispatched a detached work session"
+        ),
+        Err(e) => crate::probe!(
+            class = "benchmark.dispatch",
+            card_id = %card_id.as_uuid(),
+            claimer = %claimer,
+            instance = %instance,
+            error = %e.to_string(),
+            "claim→solve dispatch FAILED — claim stands, session missing"
+        ),
     }
 }
 

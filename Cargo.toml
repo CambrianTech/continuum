@@ -163,21 +163,27 @@ members = [
 # Purely additive: the existing `attach_as` / `open_as` still mint a random
 # peer_id (`generate_and_save_as` delegates with `PeerId::new()`), and a
 # RESUMED identity ignores a supplied id (never a rotation) — so the 8 living
-# personas load their stored peer_id unchanged. This SHA is on the
-# feat/persona-peer-id-mint branch, not canary — reconcile to the canary SHA
-# when the airc PR lands. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "a08f3d3" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "a08f3d3" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "a08f3d3" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "a08f3d3" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "a08f3d3" }
+# personas load their stored peer_id unchanged. Re-validate persona attach on bump.
+#
+# 2026-08-08 → dd34f68 (canary): the peer-id-mint work this comment describes has
+# LANDED — the note that used to sit here, "this SHA is on the
+# feat/persona-peer-id-mint branch, not canary, reconcile when the airc PR lands",
+# was still telling readers to reconcile something already reconciled. dd34f68 is
+# on canary and contains a08f3d3 (verified by ancestry, not assumed), and adds
+# `current_room_landing_in` — caller-chosen fresh-scope landing room, which is what
+# lets a fresh citizen land in #academy instead of airc's generic lobby.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "a08f3d3" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

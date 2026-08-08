@@ -128,6 +128,17 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub path_prepend: Option<Vec<String>>,
+    /// N CHANCES (Joel, 2026-08-08: "they too need to learn how to investigate and fix
+    /// their code"): how many graded attempts this detached run may take. After a
+    /// non-resolved auto-grade, the NEXT attempt re-enters the SAME workspace (her
+    /// previous edits intact) with the grader's verdict — named failing tests — appended
+    /// to the task, so investigating her own failure IS the work. Only meaningful on a
+    /// detached, auto-graded run; a resolved grade, an ungradeable tree, or a harness
+    /// fault ends the run early. Default 1 (one shot, exactly the old behavior) — the
+    /// per-benchmark adapter that dispatches the run owns its N, not this abstraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub attempts: Option<u32>,
 }
 
 /// What the caller grades when the solve returns. Two genuinely different contracts,
@@ -211,33 +222,138 @@ impl ActionCommand for AgentSolve {
             let mut inner = p;
             inner.detach = Some(false);
             inner.run_id = Some(run_id.clone());
+            // HANDS-FREE GRADE eligibility, captured before `inner` moves: a SCORED,
+            // workspace-deliverable run inside a citizen's staged SWE checkout
+            // (`citizens/peers/<uuid>/workspace/swe/<instance>`) grades itself the
+            // moment it settles — #346 slice 2's first cut. The instance id is the
+            // checkout's own directory name (the shape `benchmark/swe-setup` stages).
+            let autograde_workspace = (inner.scored.unwrap_or(false)
+                && matches!(inner.deliverable, Some(Deliverable::Workspace))
+                && inner.workspace.contains("/workspace/swe/"))
+            .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
-                match AgentSolve::solve_body(inner).await {
-                    Ok(r) => {
-                        if let (Some(path), Ok(json)) =
-                            (path.as_ref(), serde_json::to_string_pretty(&r))
-                        {
-                            let _ = std::fs::write(path, json);
-                        }
-                        if let Some(bus) = crate::runtime::MessageBus::global() {
-                            if let Ok(v) = serde_json::to_value(&r) {
-                                bus.publish_async_only("agent:solve:complete", v);
+                // N CHANCES: attempts loop. Each attempt is a full solve; a non-resolved
+                // auto-grade re-enters the SAME workspace with the verdict appended to the
+                // task (named failing tests — the teachable half of the grade). The loop
+                // ends on: resolved, attempts exhausted, an ungradeable tree (gate/error —
+                // a harness fault must never burn her chances), a non-graded run (nothing
+                // to iterate against), or a solve failure. Result/grade files are OVERWRITTEN
+                // per attempt — the poll surface shows the LATEST state; history lives on
+                // the `benchmark.autograde` probe (attempt field) and the capture sink.
+                let max_attempts = inner.attempts.unwrap_or(1).max(1);
+                let base_task = inner.task.clone();
+                let mut next_task = base_task.clone();
+                for attempt in 1..=max_attempts {
+                    let mut this_attempt = inner.clone();
+                    this_attempt.task = next_task.clone();
+                    match AgentSolve::solve_body(this_attempt).await {
+                        Ok(r) => {
+                            if let (Some(path), Ok(json)) =
+                                (path.as_ref(), serde_json::to_string_pretty(&r))
+                            {
+                                let _ = std::fs::write(path, json);
+                            }
+                            if let Some(bus) = crate::runtime::MessageBus::global() {
+                                if let Ok(v) = serde_json::to_value(&r) {
+                                    bus.publish_async_only("agent:solve:complete", v);
+                                }
+                            }
+                            tracing::info!(run_id = %run_id, acts = r.acts, attempt, "agent/solve detached run complete");
+                            // The claim ran to a diff; now the diff runs to a VERDICT with
+                            // no human in the loop. Same grader as `benchmark/swe-grade`
+                            // (fresh clone, held-out tests) — its verdict path also writes
+                            // the citizen's experience stream, so solve→grade→lesson is one
+                            // unbroken chain. The verdict lands on the poll surface beside
+                            // the result (`...<run_id>.grade.json`) + the probe stream.
+                            let Some(ws) = autograde_workspace.clone() else {
+                                break; // ungraded run — nothing to iterate against
+                            };
+                            let instance = std::path::Path::new(&ws)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let grade = crate::commands::benchmark::grade_swe(
+                                crate::commands::benchmark::SweGradeParams {
+                                    instance: instance.clone(),
+                                    dataset: None,
+                                    gold: None,
+                                    patch: None,
+                                    workspace: Some(ws),
+                                },
+                            )
+                            .await;
+                            match grade {
+                                Ok(g) => {
+                                    crate::probe!(
+                                        class = "benchmark.autograde",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        resolved = g.resolved,
+                                        gate_ok = g.gate_ok,
+                                        attempt,
+                                        max_attempts,
+                                        "solve completion auto-graded"
+                                    );
+                                    if let Some(p) = agent_solve_ledger_path(&run_id) {
+                                        let gp = p.with_extension("grade.json");
+                                        if let Ok(j) = serde_json::to_string_pretty(&g) {
+                                            let _ = std::fs::write(gp, j);
+                                        }
+                                    }
+                                    if g.resolved || !g.gate_ok || g.error.is_some() {
+                                        break;
+                                    }
+                                    if attempt == max_attempts {
+                                        break;
+                                    }
+                                    // The next chance carries the verdict — what a human
+                                    // reviewer would hand back. Built from the BASE task
+                                    // each round so feedback never stacks into a scroll.
+                                    let failing = if g.failed_tests.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" Failing tests: {}.", g.failed_tests.join(", "))
+                                    };
+                                    next_task = format!(
+                                        "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve] \
+                                         FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
+                                         Your previous edits are still in this workspace. Investigate why these \
+                                         tests fail — run them — then fix in place without breaking what passes.",
+                                        g.fail_to_pass_passed,
+                                        g.fail_to_pass_total,
+                                        g.pass_to_pass_passed,
+                                        g.pass_to_pass_total,
+                                    );
+                                }
+                                Err(e) => {
+                                    // A failed GRADE is not a failed solve — surface it
+                                    // loud on its own channel; the solve result stands.
+                                    crate::probe!(
+                                        class = "benchmark.autograde",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        error = %e.to_string(),
+                                        attempt,
+                                        "auto-grade FAILED — solve result stands, verdict missing"
+                                    );
+                                    break;
+                                }
                             }
                         }
-                        tracing::info!(run_id = %run_id, acts = r.acts, "agent/solve detached run complete");
-                    }
-                    Err(e) => {
-                        // Fail LOUD on the poll surface too — a detached run that dies must leave a
-                        // diagnosable marker, never an empty file forever.
-                        if let Some(path) = path {
-                            let _ = std::fs::write(
-                                &path,
-                                serde_json::json!({"failed": true, "run_id": run_id, "error": e.to_string()})
-                                    .to_string(),
-                            );
+                        Err(e) => {
+                            // Fail LOUD on the poll surface too — a detached run that dies must leave a
+                            // diagnosable marker, never an empty file forever.
+                            if let Some(path) = path.as_ref() {
+                                let _ = std::fs::write(
+                                    path,
+                                    serde_json::json!({"failed": true, "run_id": run_id, "error": e.to_string()})
+                                        .to_string(),
+                                );
+                            }
+                            tracing::error!(run_id = %run_id, error = %e, attempt, "agent/solve detached run failed");
+                            break;
                         }
-                        tracing::error!(run_id = %run_id, error = %e, "agent/solve detached run failed");
                     }
                 }
             });

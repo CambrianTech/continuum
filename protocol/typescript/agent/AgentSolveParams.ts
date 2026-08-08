@@ -104,4 +104,15 @@ scored?: boolean,
  * on sympy-21379: a correct reproduction script met `bash: python: command not
  * found`, and the run scored as a capability failure.
  */
-path_prepend?: Array<string>, };
+path_prepend?: Array<string>, 
+/**
+ * N CHANCES (Joel, 2026-08-08: "they too need to learn how to investigate and fix
+ * their code"): how many graded attempts this detached run may take. After a
+ * non-resolved auto-grade, the NEXT attempt re-enters the SAME workspace (her
+ * previous edits intact) with the grader's verdict — named failing tests — appended
+ * to the task, so investigating her own failure IS the work. Only meaningful on a
+ * detached, auto-graded run; a resolved grade, an ungradeable tree, or a harness
+ * fault ends the run early. Default 1 (one shot, exactly the old behavior) — the
+ * per-benchmark adapter that dispatches the run owns its N, not this abstraction.
+ */
+attempts?: number, };
