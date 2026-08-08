@@ -227,9 +227,36 @@ impl ActionCommand for AgentSolve {
             // (`citizens/peers/<uuid>/workspace/swe/<instance>`) grades itself the
             // moment it settles — #346 slice 2's first cut. The instance id is the
             // checkout's own directory name (the shape `benchmark/swe-setup` stages).
+            // #365: a scored run inside a staged SWE checkout that left `deliverable`
+            // unset used to slip past this gate and burn its chances as ONE ungraded
+            // attempt with no warning (live 2026-08-08: two sympy runs ended patchless
+            // and silent). Unspecified is not a choice — infer the workspace
+            // deliverable and say so. An EXPLICIT Deliverable::Answer is respected,
+            // loudly, because it disarms grading on a run that asked to be scored.
+            let swe_checkout = inner.workspace.contains("/workspace/swe/");
+            if inner.scored.unwrap_or(false) && swe_checkout {
+                match inner.deliverable {
+                    None => {
+                        inner.deliverable = Some(Deliverable::Workspace);
+                        tracing::warn!(
+                            run_id = %run_id,
+                            "agent/solve: scored SWE-checkout run without `deliverable` — \
+                             inferring deliverable=workspace so autograde + attempts arm (#365)"
+                        );
+                    }
+                    Some(Deliverable::Answer) => {
+                        tracing::warn!(
+                            run_id = %run_id,
+                            "agent/solve: scored SWE-checkout run with EXPLICIT deliverable=answer — \
+                             autograde disarmed; attempts collapse to one ungraded run (#365)"
+                        );
+                    }
+                    Some(Deliverable::Workspace) => {}
+                }
+            }
             let autograde_workspace = (inner.scored.unwrap_or(false)
                 && matches!(inner.deliverable, Some(Deliverable::Workspace))
-                && inner.workspace.contains("/workspace/swe/"))
+                && swe_checkout)
             .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
@@ -310,21 +337,43 @@ impl ActionCommand for AgentSolve {
                                     // The next chance carries the verdict — what a human
                                     // reviewer would hand back. Built from the BASE task
                                     // each round so feedback never stacks into a scroll.
+                                    //
+                                    // The contract FORKS on whether the graded attempt
+                                    // produced a diff. The investigate-and-fix wording is
+                                    // only true when edits exist; handed to a zero-diff
+                                    // attempt it re-authorizes another discovery loop
+                                    // ("investigate… run them…") — glass-boxed live
+                                    // 2026-08-08: three graded attempts, 224 acts, zero
+                                    // code/write|code/edit calls, each retry re-entering
+                                    // the same read/search spiral. A retry's objective is
+                                    // STATE, so the zero-diff arm changes the objective:
+                                    // an edit is the only move that earns feedback.
                                     let failing = if g.failed_tests.is_empty() {
                                         String::new()
                                     } else {
                                         format!(" Failing tests: {}.", g.failed_tests.join(", "))
                                     };
-                                    next_task = format!(
-                                        "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve] \
-                                         FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
-                                         Your previous edits are still in this workspace. Investigate why these \
-                                         tests fail — run them — then fix in place without breaking what passes.",
-                                        g.fail_to_pass_passed,
-                                        g.fail_to_pass_total,
-                                        g.pass_to_pass_passed,
-                                        g.pass_to_pass_total,
-                                    );
+                                    next_task = if g.patch_bytes == 0 {
+                                        format!(
+                                            "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} produced NO EDIT] \
+                                             You changed no files, so the grader had nothing to run.{failing} \
+                                             Reading and searching cannot score; only an edit can. This attempt, go \
+                                             straight to the file you already identified and apply your best-guess fix \
+                                             with code/edit — a wrong edit earns failing-test feedback to iterate on; \
+                                             no edit earns nothing. Do not re-read what you have already read.",
+                                        )
+                                    } else {
+                                        format!(
+                                            "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve] \
+                                             FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
+                                             Your previous edits are still in this workspace. Investigate why these \
+                                             tests fail — run them — then fix in place without breaking what passes.",
+                                            g.fail_to_pass_passed,
+                                            g.fail_to_pass_total,
+                                            g.pass_to_pass_passed,
+                                            g.pass_to_pass_total,
+                                        )
+                                    };
                                 }
                                 Err(e) => {
                                     // A failed GRADE is not a failed solve — surface it
