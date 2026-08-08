@@ -423,6 +423,19 @@ impl ActionCommand for AgentSolve {
                                     } else {
                                         format!(" Failing tests: {}.", g.failed_tests.join(", "))
                                     };
+                                    // The OUTPUT half of the verdict (atlas-sympy-24066-n4,
+                                    // 2026-08-08): she rebuilt ~90% of the gold patch and
+                                    // missed on one predicate; the verdict named the failing
+                                    // test but not what it PRINTED. The assertion diff — the
+                                    // leftover `Dimension(impedance*capacitance/time)` — is
+                                    // the fact a next attempt reasons from. What a human
+                                    // reviewer would paste, so the grader pastes it.
+                                    let output = match g.failure_excerpt.as_deref() {
+                                        Some(x) if !x.trim().is_empty() => format!(
+                                            "\n\nFailing test output (what the test run printed):\n{x}\n"
+                                        ),
+                                        _ => String::new(),
+                                    };
                                     // A retry is a FRESH turn with fresh working memory, so
                                     // "the file you already identified" names knowledge the
                                     // next attempt does not have (glass-boxed 2026-08-08,
@@ -458,7 +471,7 @@ impl ActionCommand for AgentSolve {
                                              FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
                                              Your previous edits are still in this workspace.{edited}{trail} \
                                              Investigate why these tests fail — run them — then fix in place without \
-                                             breaking what passes.",
+                                             breaking what passes.{output}",
                                             g.fail_to_pass_passed,
                                             g.fail_to_pass_total,
                                             g.pass_to_pass_passed,

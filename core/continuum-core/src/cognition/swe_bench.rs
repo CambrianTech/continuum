@@ -109,6 +109,16 @@ pub struct SweVerdict {
     /// This is what the experience stream and the room verdict carry forward.
     #[serde(default)]
     pub failed_tests: Vec<String>,
+    /// The failing FAIL_TO_PASS run's OUTPUT tail (capped) — the assertion diff a
+    /// human reviewer would paste. Glass-boxed on atlas-sympy-24066-n4 (2026-08-08):
+    /// she synthesized ~90% of the gold patch and missed on one predicate
+    /// (`== Dimension(1)` vs `is_dimensionless`); the retry verdict named the
+    /// failing TEST but not what it PRINTED — the leftover
+    /// `Dimension(impedance*capacitance/time)` in the assertion output is the fact
+    /// that teaches equality isn't enough. Format-agnostic (a report TAIL, not a
+    /// parsed section) so sympy's own runner and pytest both carry it.
+    #[serde(default)]
+    pub failure_excerpt: Option<String>,
 }
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
@@ -548,9 +558,9 @@ pub async fn run_tests(
     venv_py: &Path,
     ids: &[String],
     test_files: &[String],
-) -> HashMap<String, bool> {
+) -> (HashMap<String, bool>, String) {
     if test_files.is_empty() || ids.is_empty() {
-        return ids.iter().map(|i| (i.clone(), false)).collect();
+        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
     }
     let mut args: Vec<&str> = vec!["-m", "pytest"];
     for f in test_files {
@@ -558,7 +568,7 @@ pub async fn run_tests(
     }
     args.extend(["-v", "--no-header", "-rN", "-p", "no:cacheprovider"]);
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
-        return ids.iter().map(|i| (i.clone(), false)).collect();
+        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
     };
     let report = format!(
         "{}{}",
@@ -566,9 +576,32 @@ pub async fn run_tests(
         String::from_utf8_lossy(&out.stderr)
     );
     let (by_node, by_func) = parse_pytest_report(&report);
-    ids.iter()
+    let verdicts = ids
+        .iter()
         .map(|id| (id.clone(), verdict_for(id, &by_node, &by_func).unwrap_or(false)))
-        .collect()
+        .collect();
+    // The report rides back so the grader can excerpt the FAILURE OUTPUT into the
+    // verdict — the assertion diff is the teaching half a bare test name lacks.
+    (verdicts, report)
+}
+
+/// Cap on the failure-output excerpt a verdict carries. Failures and the short
+/// summary sit at the END of a test run's output (pytest and sympy's own runner
+/// alike), so the TAIL is the format-agnostic excerpt. Bounded so a pathological
+/// run (a runaway traceback, a print loop) can't flood the retry prompt.
+const FAILURE_EXCERPT_MAX: usize = 2000;
+
+/// Tail of a test report, char-capped on a char boundary.
+fn report_tail(report: &str) -> String {
+    let trimmed = report.trim_end();
+    if trimmed.len() <= FAILURE_EXCERPT_MAX {
+        return trimmed.to_string();
+    }
+    let mut start = trimmed.len() - FAILURE_EXCERPT_MAX;
+    while !trimmed.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &trimmed[start..])
 }
 
 /// How many PASS_TO_PASS tests to sample. The full set runs to hundreds on some instances and
@@ -610,7 +643,7 @@ pub async fn grade(
         verdict.error = Some(e);
         return verdict;
     }
-    let pre = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
+    let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
     let already: Vec<&String> = pre.iter().filter(|(_, ok)| **ok).map(|(id, _)| id).collect();
     verdict.gate_ok = already.is_empty();
     if !verdict.gate_ok {
@@ -634,8 +667,8 @@ pub async fn grade(
         return verdict;
     }
 
-    let f2p_res = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
-    let p2p_res = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
+    let (f2p_res, f2p_report) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
+    let (p2p_res, _) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
     verdict.failed_tests = f2p_res
@@ -645,6 +678,12 @@ pub async fn grade(
         .map(|(id, _)| id.clone())
         .collect();
     verdict.failed_tests.sort();
+    // Only when the target tests still fail: the run's output TAIL, where every
+    // runner puts its failures + summary. This is what turns "test_issue_24062
+    // failed" into "AssertionError: Dimension(impedance*capacitance/time) != 1".
+    if verdict.f2p_passed < verdict.f2p_total && !f2p_report.trim().is_empty() {
+        verdict.failure_excerpt = Some(report_tail(&f2p_report));
+    }
     verdict.resolved = verdict.f2p_passed == verdict.f2p_total
         && verdict.p2p_passed == verdict.p2p_total
         && verdict.f2p_total > 0;

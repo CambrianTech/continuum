@@ -1727,6 +1727,12 @@ pub struct SweGradeResult {
     /// next attempt) can actually chase.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_tests: Vec<String>,
+    /// The failing FAIL_TO_PASS run's output tail (capped) — the assertion diff.
+    /// Names say WHICH test failed; this says WHAT it printed, which is the half
+    /// a next attempt (or a human reviewer) actually reasons from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure_excerpt: Option<String>,
 }
 
 impl From<(SweVerdict, usize)> for SweGradeResult {
@@ -1742,6 +1748,7 @@ impl From<(SweVerdict, usize)> for SweGradeResult {
             error: v.error,
             patch_bytes: patch_bytes as u32,
             failed_tests: v.failed_tests,
+            failure_excerpt: v.failure_excerpt,
         }
     }
 }
