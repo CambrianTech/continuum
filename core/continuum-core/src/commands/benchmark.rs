@@ -2443,8 +2443,10 @@ pub struct BenchmarkGradeResult {
 }
 
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
-/// resolution the dispatch workspace + progress ledger use.
-fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
+/// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
+/// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
+/// layout as the grader that wrote the stream — one layout, never two.
+pub(crate) fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
     std::env::var("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .ok()
@@ -2456,7 +2458,7 @@ fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
 /// `citizens/peers/<uuid>/` directory. 0 or >1 matches fail loud with the
 /// candidates named — a grade against the wrong citizen's workspace is a
 /// falsified result, never a best-effort.
-fn resolve_solver_dir(
+pub(crate) fn resolve_solver_dir(
     home: &std::path::Path,
     solver: &str,
 ) -> Result<(String, std::path::PathBuf), CommandError> {
