@@ -28,4 +28,10 @@ patchBytes: number,
  * teaches nothing; a named test is what a human reviewer (or the citizen herself,
  * next attempt) can actually chase.
  */
-failedTests?: Array<string>, };
+failedTests?: Array<string>, 
+/**
+ * The failing FAIL_TO_PASS run's output tail (capped) — the assertion diff.
+ * Names say WHICH test failed; this says WHAT it printed, which is the half
+ * a next attempt (or a human reviewer) actually reasons from.
+ */
+failureExcerpt?: string, };

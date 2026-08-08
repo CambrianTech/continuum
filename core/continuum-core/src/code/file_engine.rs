@@ -321,6 +321,27 @@ impl FileEngine {
                 path = %relative_path,
                 "edit refused — it would break the file's parse; file unchanged on disk"
             );
+            // SCALE fact (glass-boxed on sympy-22840 n7b, 2026-08-08): Benchy twice proposed
+            // replacing ~700 lines of cse_main.py with a 16-line rewrite of `cse()` that
+            // referenced helpers the file doesn't have — the gate refused (correctly), but
+            // nothing told her the SHAPE was wrong, so she tried the same wholesale rewrite
+            // again. The tool can PROVE the removal size, so state it: a bug fix is rarely
+            // a mass deletion. A fact about the edit, not a steer — same doctrine as the
+            // repair hint below.
+            let removed = old_content
+                .lines()
+                .count()
+                .saturating_sub(new_content.lines().count());
+            let scale_note = if removed >= 50 {
+                format!(
+                    "\nSCALE: this edit REMOVES ~{removed} lines of {relative_path}. Bug fixes \
+                     are usually a few lines — replace only the exact function or lines at \
+                     fault (read them first, then use a search_replace on that block), not a \
+                     large region.\n"
+                )
+            } else {
+                String::new()
+            };
             return Ok(WriteResult {
                 success: false,
                 change_id: None,
@@ -329,7 +350,8 @@ impl FileEngine {
                 error: Some(format!(
                     "EDIT REFUSED — it would have made {relative_path} unparseable. The file \
                      is UNCHANGED on disk; nothing was written and there is nothing to undo.\n\
-                     {}\n{}",
+                     {}{}\n{}",
+                    scale_note,
                     syntax_error_detail(&abs_path, &new_content).unwrap_or_default(),
                     // Don't just diagnose — AIM HER. The refusal used to say "widen the range",
                     // which is advice she has to act on blind. The same parser that proved the
