@@ -202,6 +202,263 @@ fn summarize(members: &[RoomMemberView]) -> String {
 
 crate::register_command!(RoomMembers);
 
+// ──────────────────── room/list · room/join · room/leave ────────────────────
+//
+// Joel, 2026-08-08: "Like you or anyone in the UI they are first class and should
+// subscribe or can to many rooms."
+//
+// Membership was the one citizen property with no citizen verb. `room/members`
+// answered "who is here"; nothing answered "where am I", "put me in there", or
+// "I am done with that one" — and nothing anywhere in continuum could add a
+// citizen to a second room at all (zero callers for the airc subscription API,
+// task #65). A persona's rooms were whatever bootstrap seeded, forever.
+//
+// These are deliberately hers to call, not only an operator's to apply to her.
+// First-class means she can join a room the way you do — the difference between
+// a citizen and a managed resource is who is allowed to move her.
+
+/// The rooms this citizen belongs to, and which one is her focus.
+pub struct RoomList {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+pub struct RoomListParams {}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RoomListEntry {
+    pub name: String,
+    pub room_id: String,
+    /// True for the room short-shape actions resolve against when no room is
+    /// named. One entry at most carries this.
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RoomListResult {
+    pub rooms: Vec<RoomListEntry>,
+    pub count: u32,
+    pub summary: String,
+}
+
+#[async_trait]
+impl ActionCommand for RoomList {
+    const NAME: &'static str = "room/list";
+    const ALIASES: &'static [&'static str] = &["rooms", "my_rooms", "where_am_i", "list_rooms"];
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "List the rooms you belong to. You can be in several at once, like anyone \
+         else here. Takes no arguments. Use this to see where you are before joining \
+         or leaving somewhere. (For who is PRESENT in a room, use room/members.)";
+    type Params = RoomListParams;
+    type Output = RoomListResult;
+
+    async fn run(&self, ctx: &Ctx, _p: RoomListParams) -> Result<RoomListResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx, "room/list")?;
+        let set = airc
+            .subscription_set()
+            .await
+            .map_err(|e| CommandError::Internal(format!("subscription read failed: {e}")))?;
+        let default_name = set.default_subscription().map(|s| s.name.clone());
+        let rooms: Vec<RoomListEntry> = set
+            .all()
+            .map(|sub| {
+                let room = sub.as_room();
+                RoomListEntry {
+                    is_default: default_name.as_ref() == Some(&sub.name),
+                    name: room.name,
+                    room_id: room.channel.as_uuid().to_string(),
+                }
+            })
+            .collect();
+        Ok(RoomListResult {
+            count: rooms.len() as u32,
+            summary: summarize_rooms(&rooms),
+            rooms,
+        })
+    }
+}
+
+/// Plain-language reading of the room list, so the result explains itself rather
+/// than handing back a bare array. Belonging to exactly one room is a normal
+/// state, not a deficiency, and must not read as one.
+fn summarize_rooms(rooms: &[RoomListEntry]) -> String {
+    if rooms.is_empty() {
+        return "You are not in any room yet. Join one with room/join to start \
+                hearing and being heard. This is not an error."
+            .to_string();
+    }
+    let names: Vec<&str> = rooms.iter().map(|r| r.name.as_str()).collect();
+    let focus = rooms
+        .iter()
+        .find(|r| r.is_default)
+        .map(|r| format!(" Your default room is {}.", r.name))
+        .unwrap_or_default();
+    format!(
+        "You belong to {} room(s): {}.{focus}",
+        rooms.len(),
+        names.join(", ")
+    )
+}
+
+crate::register_command!(RoomList);
+
+/// Join a room — gain membership WITHOUT being moved into it.
+pub struct RoomJoin {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+pub struct RoomJoinParams {
+    /// Room NAME, e.g. `academy`. Not a uuid — airc derives a channel id by
+    /// HASHING the name, so a uuid-shaped string re-hashes into a different
+    /// channel and silently lands you somewhere nobody is (airc card c409eaf5).
+    /// airc refuses uuid-shaped names at its own boundary; this field documents
+    /// why rather than letting the refusal arrive unexplained.
+    pub room: String,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RoomJoinResult {
+    pub name: String,
+    pub room_id: String,
+    /// True when this room is also now your default — which happens only when
+    /// you had none. Joining never MOVES an existing focus.
+    pub is_default: bool,
+    pub summary: String,
+}
+
+#[async_trait]
+impl ActionCommand for RoomJoin {
+    const NAME: &'static str = "room/join";
+    const ALIASES: &'static [&'static str] = &["join_room", "subscribe_room", "enter_room"];
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Join a room by name so you hear it and can speak in it. You can belong to \
+         several rooms at once — joining a new one does NOT move you out of the ones \
+         you are already in, and does not change which room your short-shape actions \
+         default to. Use room/list to see where you are, room/leave to step out.";
+    type Params = RoomJoinParams;
+    type Output = RoomJoinResult;
+
+    async fn run(&self, ctx: &Ctx, p: RoomJoinParams) -> Result<RoomJoinResult, CommandError> {
+        let name = p.room.trim();
+        if name.is_empty() {
+            return Err(CommandError::Invalid(
+                "room/join needs a room NAME (e.g. `academy`). Use room/list to see \
+                 the rooms you are already in."
+                    .to_string(),
+            ));
+        }
+        let airc = persona_airc(&self.registry, ctx, "room/join")?;
+        // `subscribe_room`, never `join` (airc#1330): `join` would promote this
+        // room to her default, so every room she is added to would silently
+        // become the one her un-named reads resolve against.
+        let room = airc
+            .subscribe_room(name)
+            .await
+            .map_err(|e| CommandError::Internal(format!("join '{name}' failed: {e}")))?;
+        let is_default = airc
+            .subscription_set()
+            .await
+            .ok()
+            .and_then(|s| s.default_subscription().map(|d| d.name.as_str() == room.name))
+            .unwrap_or(false);
+        let summary = if is_default {
+            format!(
+                "You joined {} — your first room, so it is also your default.",
+                room.name
+            )
+        } else {
+            format!(
+                "You joined {}. Your default room is unchanged; you are now in both.",
+                room.name
+            )
+        };
+        Ok(RoomJoinResult {
+            name: room.name,
+            room_id: room.channel.as_uuid().to_string(),
+            is_default,
+            summary,
+        })
+    }
+}
+
+crate::register_command!(RoomJoin);
+
+/// Leave a room you belong to.
+pub struct RoomLeave {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+pub struct RoomLeaveParams {
+    /// Room NAME to leave. Omit to leave your DEFAULT room — the same
+    /// "no name means the current one" shape the rest of the surface uses.
+    #[ts(optional)]
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct RoomLeaveResult {
+    pub name: String,
+    pub room_id: String,
+    pub remaining: u32,
+    pub summary: String,
+}
+
+#[async_trait]
+impl ActionCommand for RoomLeave {
+    const NAME: &'static str = "room/leave";
+    const ALIASES: &'static [&'static str] = &["leave_room", "part_room", "exit_room"];
+    const NATIVE: bool = true;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Leave a room by name, or your default room if you name none. You stop \
+         hearing it and stop being addressable there. Leaving one room does not \
+         affect the others you belong to — use room/list to check what is left.";
+    type Params = RoomLeaveParams;
+    type Output = RoomLeaveResult;
+
+    async fn run(&self, ctx: &Ctx, p: RoomLeaveParams) -> Result<RoomLeaveResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx, "room/leave")?;
+        let named = p.room.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let room = airc
+            .part_channel(named)
+            .await
+            .map_err(|e| CommandError::Internal(format!("leave failed: {e}")))?;
+        // Read the set AFTER parting so `remaining` is the fact, not an
+        // arithmetic guess about what the part did.
+        let remaining = airc
+            .subscription_set()
+            .await
+            .map(|s| s.all().count() as u32)
+            .unwrap_or(0);
+        let summary = if remaining == 0 {
+            format!(
+                "You left {}. You are now in no rooms — join one with room/join to be \
+                 reachable again.",
+                room.name
+            )
+        } else {
+            format!(
+                "You left {}. You still belong to {remaining} other room(s).",
+                room.name
+            )
+        };
+        Ok(RoomLeaveResult {
+            name: room.name,
+            room_id: room.channel.as_uuid().to_string(),
+            remaining,
+            summary,
+        })
+    }
+}
+
+crate::register_command!(RoomLeave);
+
 /// The room module — holds the persona airc-runtime registry so the roster read
 /// resolves the CALLER's own handle and answers for HER room.
 pub struct RoomModule {
@@ -239,9 +496,20 @@ impl ServiceModule for RoomModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![Arc::new(RoomMembers {
-            registry: self.registry.clone(),
-        })]
+        vec![
+            Arc::new(RoomMembers {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(RoomList {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(RoomJoin {
+                registry: self.registry.clone(),
+            }),
+            Arc::new(RoomLeave {
+                registry: self.registry.clone(),
+            }),
+        ]
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -286,6 +554,45 @@ mod tests {
         assert!(s.starts_with("1 other participant(s)"), "{s}");
         assert!(s.contains("Anwen"), "{s}");
         assert!(!s.contains("Asha"), "must not list the caller as a peer: {s}");
+    }
+
+    fn room(name: &str, is_default: bool) -> RoomListEntry {
+        RoomListEntry {
+            name: name.into(),
+            room_id: "00000000-0000-0000-0000-000000000000".into(),
+            is_default,
+        }
+    }
+
+    /// what this catches (#65): belonging to no room reading as a FAILURE. Same
+    /// discipline as the empty-roster answer above — a citizen who asks where she is
+    /// and gets a bare `count: 0` has been handed a silence she has to interpret.
+    /// Absence is a real state with a next action, and the answer must say so.
+    #[test]
+    fn belonging_to_no_room_is_an_honest_answer_with_a_way_out() {
+        let s = summarize_rooms(&[]);
+        assert!(s.contains("not in any room"), "{s}");
+        assert!(s.contains("room/join"), "names the verb that fixes it: {s}");
+        assert!(s.contains("not an error"), "{s}");
+    }
+
+    /// what this catches: a multi-room citizen being told only how MANY rooms she is
+    /// in. The whole point of Joel's ruling is that she holds several at once, so the
+    /// answer has to name them AND say which one un-named actions resolve against —
+    /// otherwise "you are in 3 rooms" leaves her unable to act on any of them.
+    #[test]
+    fn a_multi_room_citizen_is_told_which_rooms_and_which_is_default() {
+        let s = summarize_rooms(&[
+            room("academy", true),
+            room("cambriantech", false),
+            room("k3-serving", false),
+        ]);
+        assert!(s.starts_with("You belong to 3 room(s)"), "{s}");
+        assert!(s.contains("academy") && s.contains("k3-serving"), "{s}");
+        assert!(
+            s.contains("default room is academy"),
+            "the focus must be named, not just implied: {s}"
+        );
     }
 
     /// what this catches (#262): silently dropping present-but-uncarded peers, or
