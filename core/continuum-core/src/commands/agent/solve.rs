@@ -170,6 +170,15 @@ pub struct AgentSolveResult {
     pub patch: String,
     /// Paths she touched (from `git diff --name-only`).
     pub files_changed: Vec<String>,
+    /// Paths her acts NAMED (reads, searches, edit attempts — any `file_path`/`path`
+    /// arg on an executed call), first-touch order. The investigation trail as STATE:
+    /// a failed edit or a read appears here and nowhere else. The N-chances retry
+    /// threads these into the next attempt's task, because a retry is a FRESH turn
+    /// with fresh working memory — without this, "the file you already identified"
+    /// names knowledge the next attempt does not have (glass-boxed 2026-08-08,
+    /// benchy-sympy-22840-n4 attempt 2: 10 of 12 acts re-deriving cse_main.py).
+    #[serde(default)]
+    pub files_examined: Vec<String>,
     /// True when this is the immediate ACK of a detached run (`acts`/`patch` empty — poll the
     /// result file `agent-solve-<run_id>.json` for the real outcome).
     pub detached: bool,
@@ -353,21 +362,42 @@ impl ActionCommand for AgentSolve {
                                     } else {
                                         format!(" Failing tests: {}.", g.failed_tests.join(", "))
                                     };
+                                    // A retry is a FRESH turn with fresh working memory, so
+                                    // "the file you already identified" names knowledge the
+                                    // next attempt does not have (glass-boxed 2026-08-08,
+                                    // 22840-n4 attempt 2: her recall carried only a generic
+                                    // "I worked a coding task" reflection, and she spent 10
+                                    // of 12 acts re-deriving cse_main.py). The trail is
+                                    // STATE the substrate holds — hand it back explicitly.
+                                    let trail = if r.files_examined.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(
+                                            " Files your previous attempt examined (in order): {}.",
+                                            r.files_examined.join(", ")
+                                        )
+                                    };
                                     next_task = if g.patch_bytes == 0 {
                                         format!(
                                             "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} produced NO EDIT] \
-                                             You changed no files, so the grader had nothing to run.{failing} \
+                                             You changed no files, so the grader had nothing to run.{failing}{trail} \
                                              Reading and searching cannot score; only an edit can. This attempt, go \
                                              straight to the file you already identified and apply your best-guess fix \
                                              with code/edit — a wrong edit earns failing-test feedback to iterate on; \
                                              no edit earns nothing. Do not re-read what you have already read.",
                                         )
                                     } else {
+                                        let edited = if r.files_changed.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" Your edits are in: {}.", r.files_changed.join(", "))
+                                        };
                                         format!(
                                             "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve] \
                                              FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
-                                             Your previous edits are still in this workspace. Investigate why these \
-                                             tests fail — run them — then fix in place without breaking what passes.",
+                                             Your previous edits are still in this workspace.{edited}{trail} \
+                                             Investigate why these tests fail — run them — then fix in place without \
+                                             breaking what passes.",
                                             g.fail_to_pass_passed,
                                             g.fail_to_pass_total,
                                             g.pass_to_pass_passed,
@@ -413,6 +443,7 @@ impl ActionCommand for AgentSolve {
                 spoken: String::new(),
                 patch: String::new(),
                 files_changed: Vec::new(),
+                files_examined: Vec::new(),
                 detached: true,
                 run_id: Some(run_id_ack),
                 infra_error: None,
@@ -650,6 +681,7 @@ impl AgentSolve {
             spoken: settled.spoken.unwrap_or_default(),
             patch,
             files_changed,
+            files_examined: settled.touched_paths.clone(),
             detached: false,
             run_id,
             infra_error: settled.inference_error,

@@ -65,6 +65,15 @@ pub struct SettleOutcome {
     /// corrupts the accuracy metric ([[self-improvement-is-a-control-loop]]: the
     /// reward is only as trustworthy as the metric). `None` on every settled turn.
     pub inference_error: Option<String>,
+    /// File paths her acts NAMED (any `file_path`/`path` string arg on an executed
+    /// call), in first-touch order, deduped. This is the turn's investigation trail
+    /// as STATE — distinct from `files_changed` (what git saw): a failed edit or a
+    /// read appears here and nowhere else. Exists because an N-chances retry is a
+    /// FRESH turn with fresh working memory (glass-boxed 2026-08-08,
+    /// benchy-sympy-22840-n4 attempt 2: the verdict said "the file you already
+    /// identified" and she had no memory of identifying it — 10 acts re-deriving
+    /// cse_main.py). The retry caller threads these into the next attempt's task.
+    pub touched_paths: Vec<String>,
 }
 
 impl SettleOutcome {
@@ -82,6 +91,23 @@ impl SettleOutcome {
             world_state: String::new(),
             metrics: TurnMetrics::default(),
             inference_error: Some(cause.into()),
+            touched_paths: Vec::new(),
+        }
+    }
+}
+
+/// Collect the file paths a tool batch NAMES: any string under a `file_path` or
+/// `path` key in a call's input, appended to `touched` in first-touch order,
+/// deduped. Mechanical extraction from HER OWN calls — never inferred, never a
+/// steer; this is the investigation-trail STATE an N-chances retry hands back.
+fn collect_touched_paths(touched: &mut Vec<String>, calls: &[ToolCall]) {
+    for call in calls {
+        for key in ["file_path", "path"] {
+            if let Some(p) = call.input.get(key).and_then(|v| v.as_str()) {
+                if !touched.iter().any(|t| t == p) {
+                    touched.push(p.to_string());
+                }
+            }
         }
     }
 }
@@ -896,6 +922,8 @@ pub async fn drive_to_settle(
 ) -> SettleOutcome {
     let burst: Burst = burst.into();
     let mut acts = 0usize;
+    // The turn's investigation trail (see `SettleOutcome::touched_paths`).
+    let mut touched: Vec<String> = Vec::new();
     // Fold each tick's deliberation cost in, so the settled outcome reports the
     // task's TOTAL speed/latency (a multi-act task pays for every generation).
     let mut metrics = TurnMetrics::default();
@@ -1015,10 +1043,12 @@ pub async fn drive_to_settle(
                     world_state: burst.rendered.clone(),
                     metrics,
                     inference_error: None,
+                    touched_paths: touched,
                 };
             }
             SettleStep::Acted { calls, .. } => {
                 acts += 1;
+                collect_touched_paths(&mut touched, &calls);
                 // THE DELIVERABLE FACT BELONGS ON THE ACT PATH, NOT ONLY ON SETTLE.
                 //
                 // It used to live exclusively in the Spoke arm, so it could only reach a
@@ -1096,6 +1126,7 @@ pub async fn drive_to_settle(
                     world_state: burst.rendered.clone(),
                     metrics,
                     inference_error: None,
+                    touched_paths: touched,
                 };
             }
             SettleStep::Passed => {
@@ -1106,6 +1137,7 @@ pub async fn drive_to_settle(
                     world_state: burst.rendered.clone(),
                     metrics,
                     inference_error: None,
+                    touched_paths: touched,
                 };
             }
             // The model call FAILED — no verdict this task. Return LOUD: carry the
@@ -1121,6 +1153,7 @@ pub async fn drive_to_settle(
                     world_state: burst.rendered.clone(),
                     metrics,
                     inference_error: Some(error),
+                    touched_paths: touched,
                 };
             }
         }
@@ -2874,6 +2907,7 @@ mod tests {
             world_state: String::new(),
             metrics: TurnMetrics::default(),
             inference_error,
+            touched_paths: Vec::new(),
         }
     }
 
