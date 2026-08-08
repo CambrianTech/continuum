@@ -26,7 +26,15 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// Max act→observe cycles she may take on one task before it counts as unfinished. Agentic
 /// SWE tasks (read → edit → compile → fix) need several; default generously.
-const DEFAULT_MAX_ACTS: u32 = 12;
+// 32, up from 12 (glass-boxed 2026-08-08, benchy-sympy-22840-n9 attempt 1): the
+// 12-act cap — not the clock — was the binding constraint. She was cut off
+// mid-recovery (edit failed NOT-FOUND → the error taught verbatim-copy → she was
+// re-reading the target region when the budget expired) with 2.5 of the 3
+// deadline hours unused. Field SWE agents routinely take 30–80 steps; a count
+// cap that binds before the deadline is the hardcoded-LCD-clamp shape the
+// cognition pipeline doc forbids. The deadline stays derived from this budget
+// (× PER_ACT_ALLOWANCE_SECS), so the wedge watchdog scales with it.
+const DEFAULT_MAX_ACTS: u32 = 32;
 /// How long to wait for the forked cognition template (post-spawn `register_from_cfg` race).
 const FORK_WAIT_TRIES: u32 = 20;
 
@@ -300,7 +308,11 @@ impl ActionCommand for AgentSolve {
                 // headroom over the measured ~5.5 min/act. On expiry: loud probe +
                 // loud marker on the poll surface, and the run ENDS — a retry into
                 // the same wedge would be a loop, and detection is the job here.
-                const PER_ACT_ALLOWANCE_SECS: u64 = 15 * 60;
+                // 8 min/act: still ~1.5× the measured ~5.5 min/act worst case (and
+                // 3× the ~2.4 min/act measured on the n9/n6 rounds), while keeping
+                // the full-budget deadline at 32 × 8min ≈ 4.3h — comparable wedge
+                // detection to the old 12 × 15min = 3h, at 2.7× the act budget.
+                const PER_ACT_ALLOWANCE_SECS: u64 = 8 * 60;
                 let attempt_deadline = std::time::Duration::from_secs(
                     inner.max_acts.unwrap_or(DEFAULT_MAX_ACTS).max(1) as u64
                         * PER_ACT_ALLOWANCE_SECS,
@@ -777,24 +789,110 @@ impl AgentSolve {
                 None,
             ),
         );
-        let settled = crate::cognition::act_observe::drive_to_settle(
-            &cycle,
-            burst,
-            room,
-            max_acts,
-            {
-                let f = crate::cognition::workspace::TurnFraming::directed();
-                match p.deliverable.unwrap_or_default() {
-                    Deliverable::Workspace => f.on_workspace(),
-                    Deliverable::Answer => f,
-                }
-            },
-        )
-        .await;
+        let workspace_deliverable =
+            matches!(p.deliverable.unwrap_or_default(), Deliverable::Workspace);
+        let framing = {
+            let f = crate::cognition::workspace::TurnFraming::directed();
+            if workspace_deliverable {
+                f.on_workspace()
+            } else {
+                f
+            }
+        };
+        let mut settled =
+            crate::cognition::act_observe::drive_to_settle(&cycle, burst, room, max_acts, framing)
+                .await;
 
         // 4) Collect the HANDS artifact: everything she changed in the workspace as a unified diff
         //    (new files included), plus the touched paths. This is what SWE/Terminal-Bench apply.
-        let (patch, files_changed) = workspace_patch(&workspace).await;
+        let (mut patch, mut files_changed) = workspace_patch(&workspace).await;
+
+        // EMPTY-DIFF RE-DRIVE — the two-gates doctrine made mechanism (glass-boxed
+        // 2026-08-08, atlas-sympy-24066-n6 attempts 2+3): on a Workspace-deliverable
+        // task she settled by SPEAKING after ONE act — a generic file summary, zero
+        // edits — leaving 11 of 12 acts unused, twice, near-verbatim. Working is not
+        // speaking: when the deliverable is the workspace diff, a Speak with an EMPTY
+        // diff and real remaining budget must not end the attempt. ONE bounded
+        // re-drive (a retry, never a nag loop): state the structural fact, hand back
+        // the remaining budget. If she speaks to an empty diff again, THAT settles —
+        // honestly graded, with the fact on the record. Not fired on budget
+        // exhaustion (spoken=None un-driven Act) or infra failure — those already
+        // grade honestly.
+        if workspace_deliverable
+            && patch.is_empty()
+            && settled.inference_error.is_none()
+            && settled.spoken.is_some()
+            && settled.acts + 1 < max_acts
+        {
+            let remaining = max_acts - settled.acts;
+            crate::probe!(
+                class = "benchmark.empty_diff_redrive",
+                run_id = %run_id.as_deref().unwrap_or("-"),
+                acts_used = settled.acts,
+                acts_remaining = remaining,
+                "Speak settled a workspace-deliverable attempt with an EMPTY diff and \
+                 remaining act budget — one bounded re-drive with the structural fact"
+            );
+            let fact = format!(
+                "Status check from the grading harness (a structural fact, not a person): \
+                 your workspace diff is EMPTY — no file here differs from where you \
+                 started, so as of now there is NOTHING to grade. Speaking does not \
+                 submit work: this task is graded ONLY on the changes your tools make \
+                 to the files in this workspace. You have {remaining} actions left. \
+                 Use them now: reproduce the problem with the example in the task \
+                 description, find the faulty code, and change it in place with \
+                 code/edit."
+            );
+            let redelivery = crate::persona::rag_budget::RagDelivery {
+                source_id: "airc".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: fact,
+                    tokens: 0,
+                    metadata: serde_json::json!({
+                        "peer_id": "peer",
+                        "occurred_at_ms": crate::persona::trace::now_ms(),
+                    }),
+                }],
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            };
+            let reburst = crate::cognition::workspace::Burst::from_turns(
+                room,
+                crate::persona::service_loop::build_workspace_turns(
+                    std::slice::from_ref(&redelivery),
+                    "",
+                    "",
+                    None,
+                ),
+            );
+            let redriven = crate::cognition::act_observe::drive_to_settle(
+                &cycle, reburst, room, remaining, framing,
+            )
+            .await;
+            // Fold the re-drive into the attempt's outcome: totals sum, the final
+            // verdict/world-state are the re-drive's (it is the attempt's true end),
+            // the spoken text falls back to the first settle's if the re-drive
+            // ended un-spoken (budget-exhausted Act grades as did-not-finish).
+            settled.acts += redriven.acts;
+            settled.decision = redriven.decision;
+            settled.spoken = redriven.spoken.or(settled.spoken.take());
+            settled.world_state = redriven.world_state;
+            settled.inference_error = redriven.inference_error;
+            for path in redriven.touched_paths {
+                if !settled.touched_paths.contains(&path) {
+                    settled.touched_paths.push(path);
+                }
+            }
+            settled.metrics.input_tokens += redriven.metrics.input_tokens;
+            settled.metrics.output_tokens += redriven.metrics.output_tokens;
+            settled.metrics.latency_ms += redriven.metrics.latency_ms;
+            settled.metrics.cached_tokens += redriven.metrics.cached_tokens;
+            settled.metrics.prefill_tokens += redriven.metrics.prefill_tokens;
+            settled.metrics.prefill_ms += redriven.metrics.prefill_ms;
+            settled.metrics.decode_ms += redriven.metrics.decode_ms;
+            (patch, files_changed) = workspace_patch(&workspace).await;
+        }
 
         // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
         //    the same one-way bridge cognition/eval's learn mode uses. The lesson is
