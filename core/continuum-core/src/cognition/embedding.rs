@@ -677,6 +677,29 @@ async fn try_neural_embedder(
         null_std = std,
         "measured unrelated-cosine null for the embedding space"
     );
+    // This node embeds — claim the embed lane's standing FLOOR on the resource
+    // board (#225, Joel 2026-08-08: "the budgeter just has all its parts figure
+    // it out"). The floor makes the ledger's `available_for` math hold the lane's
+    // working VRAM against every OTHER consumer, so the serving plan can no
+    // longer grow its window into the slice cognition needs every turn (measured
+    // the day this landed: 604 MiB governed-available vs the 1792 MiB need —
+    // embedding fully dead, every recall degraded to no-relevance). Reserved
+    // HERE, at successful resolve, so a node with no embed model wastes nothing.
+    // Idempotent: re-resolve re-states the same floor.
+    if let Some(daemon) = crate::resources::ResourceDaemon::global() {
+        use crate::inference::llamacpp_adapter::{EMBED_LANE_CONSUMER_ID, EMBED_LANE_VRAM_BYTES};
+        daemon.reserve(
+            EMBED_LANE_CONSUMER_ID,
+            crate::resources::ResourceKind::Vram,
+            EMBED_LANE_VRAM_BYTES,
+        );
+        crate::probe!(
+            class = "embed.vram.reserved",
+            consumer = EMBED_LANE_CONSUMER_ID,
+            bytes = EMBED_LANE_VRAM_BYTES,
+            "embed lane reserved its standing VRAM floor — serving's budget now plans around it"
+        );
+    }
     Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
 }
 

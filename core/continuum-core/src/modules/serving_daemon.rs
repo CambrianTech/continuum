@@ -2288,12 +2288,21 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
 /// serving refuses rather than over-committing blind). A lock-free `watch`
 /// snapshot read, never the governor's accounting lock — safe on the hot tick.
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
+    // Serving budgets from ITS OWN view of the board — global available minus
+    // every OTHER consumer's unmet reservation floor (`available_for`, the same
+    // math `acquire` enforces) — never the reservation-blind global number.
+    // #225 (Joel 2026-08-08: "the budgeter just has all its parts figure it
+    // out"): budgeting from the global figure let the serving window grow over
+    // the embed lane's 1792 MiB floor, leaving 604 MiB governed-available for a
+    // faculty cognition needs every turn — embedding fully dead while serving
+    // sat comfortable. The board row's existence still gates None ("governor
+    // hasn't reported" stays distinct from "zero bytes free").
     resource_daemon
         .board()
         .kinds
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
-        .map(|k| k.available_bytes)
+        .map(|_| resource_daemon.available_for(SERVING_CONSUMER_ID, ResourceKind::Vram))
 }
 
 /// The governed VRAM ceiling for a planner that has no way to represent "unknown",
@@ -4543,5 +4552,45 @@ mod tests {
             downshift_gate(&plan_for("qwen-0.5b"), None, &both),
             DownshiftVerdict::NotADownshift,
         );
+    }
+
+    // what this catches (#225, Joel 2026-08-08 "the budgeter just has all its
+    // parts figure it out"): serving's plan budget (`governed_vram_ceiling`)
+    // reads serving's OWN view of the board — global available minus every
+    // OTHER consumer's unmet reservation floor — so the plan can no longer size
+    // the window into the embed lane's slice and starve a faculty cognition
+    // needs every turn. Regression: reading the reservation-blind global
+    // `available_bytes` again would make this budget ignore the floor.
+    #[tokio::test]
+    async fn serving_budget_plans_around_other_consumers_floors() {
+        use crate::resources::{
+            DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon,
+        };
+        let src = Arc::new(MockCapacitySource::new(
+            crate::resources::ResourceKind::Vram,
+            10_000,
+        ));
+        let daemon = ResourceDaemon::start(
+            vec![src],
+            vec![],
+            DaemonConfig {
+                tick_interval: std::time::Duration::from_millis(20),
+                min_reclaim_budget: std::time::Duration::from_millis(100),
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
+            },
+        );
+        // No floors → serving sees the whole board.
+        assert_eq!(governed_vram_ceiling(&daemon), Some(10_000));
+        // The embed lane claims its standing floor → serving's plannable view
+        // shrinks by exactly that slice; the board's Vram row still exists so
+        // the None ("governor hasn't reported") semantics are untouched.
+        daemon.reserve("embed", crate::resources::ResourceKind::Vram, 1_800);
+        assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
+        // Serving's own hypothetical floor would NOT count against itself.
+        daemon.reserve(SERVING_CONSUMER_ID, crate::resources::ResourceKind::Vram, 3_000);
+        assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
     }
 }
