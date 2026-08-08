@@ -28,6 +28,7 @@ pub mod consumer;
 pub mod device_fit;
 pub mod expert_container;
 pub mod expert_decay_policy;
+pub mod expert_depot;
 pub mod expert_ecache;
 pub mod expert_observer;
 pub mod expert_pager;
