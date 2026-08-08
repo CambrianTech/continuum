@@ -16,30 +16,21 @@ set -u
 LABEL="${1:-drill}"
 OUT="${TMPDIR:-/tmp}/airc-blackout-drill-${LABEL}-$(date +%s).log"
 
-# POSITIVE-CONTROL VERIFIED probe (2026-08-08, third attempt — the first two
-# were blind and the story is the lesson):
-#   1. `airc status` reads local state: UP a second after `airc stop`. Blind.
+# POSITIVE-CONTROL VERIFIED probe (2026-08-08, fourth iteration — the history
+# IS the lesson, keep it):
+#   1. `airc status` is not a stale read, it is an instrument that CHANGES what
+#      it measures: run_status calls ensure_daemon_running first, which SPAWNS
+#      a daemon if none answers (BigMama, from commands.rs:2183). Asking
+#      creates the answer — status cannot report down, and running it during
+#      an update window respawns the OLD binary mid-update. Never probe with it.
 #   2. `airc peers` reads the address book: 13ms with NO daemon. Blind.
-#      (And `timeout` does not exist on macOS, so the "sensitivity test" that
-#      blessed it was measuring exit-127, not the daemon.)
-# NO airc CLI read verb is a liveness probe. The only honest probe is the
-# daemon's own unix socket: connect fails when the daemon is down, verified
-# two-sided against a real stop AND a real running daemon. Never change this
-# probe without re-running BOTH sides of that control.
-probe() {
-  SOCK=$(find "$HOME/.airc/runtime" -name '*.sock' 2>/dev/null | head -1)
-  [ -z "$SOCK" ] && { echo down; return; }
-  python3 - "$SOCK" <<'PYEOF'
-import socket, sys
-s = socket.socket(socket.AF_UNIX)
-s.settimeout(2)
-try:
-    s.connect(sys.argv[1])
-    print("up")
-except Exception:
-    print("down")
-PYEOF
-}
+#   3. `timeout` does not exist on macOS; the test that blessed peers measured
+#      exit-127, not the daemon.
+# `airc ping` is the honest verb: run_ping goes straight to DaemonClient with
+# no ensure/spawn. Two-sided control passed 2026-08-08: exit 0 on a live
+# daemon, non-zero within ~2s on a stopped one. Never change this probe
+# without re-running BOTH sides of that control.
+probe() { airc ping >/dev/null 2>&1 && echo up || echo down; }
 
 echo "drill '$LABEL' starting $(date -u +%FT%TZ) — probing every 500ms, log: $OUT"
 STATE=$(probe)
