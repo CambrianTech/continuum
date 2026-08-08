@@ -73,6 +73,27 @@ pub trait AircTranscriptReader: Send + Sync {
     /// lifecycle ride their own sources; this page is the room's
     /// conversation, never its firehose.
     async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError>;
+
+    /// Room-scoped page (#367): return the same conversational page, but for
+    /// the given room when `Some` — the TURN's room, not the reader's
+    /// current-room pointer. `page_recent` follows the persona's landing-room
+    /// pointer, so a turn happening anywhere else (a bench room, a project
+    /// room she is subscribed to but not "in") paged the DEFAULT room's
+    /// transcript — and everything downstream (digest, derived-room fallback,
+    /// the recall query built from this window) followed the wrong room.
+    ///
+    /// Default impl ignores `room` and delegates — correct ONLY for test
+    /// stubs whose canned events have no room dimension. Every production
+    /// reader overrides this (the #262 lesson in `AircHandleAdapter`: a
+    /// silently-inherited default is how regressions ship).
+    async fn page_recent_in(
+        &self,
+        room: Option<airc_core::RoomId>,
+        limit: usize,
+    ) -> Result<Vec<TranscriptEvent>, AircError> {
+        let _ = room;
+        self.page_recent(limit).await
+    }
 }
 
 /// The kinds a perception page means: the room's conversation. ONE place
@@ -85,6 +106,16 @@ pub fn perception_page_filter() -> airc_lib::EventFilter {
     filter
 }
 
+/// The same conversational-kinds filter, pinned to a specific room (#367).
+/// `None` leaves the channel unset, which `page_recent_filtered` scopes to
+/// the current room — the pre-#367 behavior, still right for genuinely
+/// room-less work.
+pub fn perception_page_filter_in(room: Option<airc_core::RoomId>) -> airc_lib::EventFilter {
+    let mut filter = perception_page_filter();
+    filter.channel = room;
+    filter
+}
+
 /// `airc_lib::Airc` satisfies the reader contract via the kinds-filtered
 /// page (daemon-side newest-N-of-kind since airc PR #1314). Orphan rule OK —
 /// the trait is ours.
@@ -92,6 +123,14 @@ pub fn perception_page_filter() -> airc_lib::EventFilter {
 impl AircTranscriptReader for airc_lib::Airc {
     async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
         airc_lib::Airc::page_recent_filtered(self, perception_page_filter(), limit).await
+    }
+
+    async fn page_recent_in(
+        &self,
+        room: Option<airc_core::RoomId>,
+        limit: usize,
+    ) -> Result<Vec<TranscriptEvent>, AircError> {
+        airc_lib::Airc::page_recent_filtered(self, perception_page_filter_in(room), limit).await
     }
 }
 
@@ -314,12 +353,20 @@ impl RagSource for AircRagSource {
         if ctx.persona_id != self.persona_id {
             return Self::empty(ResolutionPreference::Placeholder);
         }
-        // Page the transcript FIRST, so we can DERIVE the room when the turn's
-        // RagContext didn't carry it (compose_for_turn builds it with airc_room=None).
-        // page_recent is scoped to the persona's current room, so the events' own
-        // room IS the channel — deriving it is correct, not a fallback, and is what
-        // keeps the persona from going deaf to the live conversation.
-        let events = match self.reader.page_recent(self.fetch_limit).await {
+        // Page the TURN's room when the RagContext carries it (#367). Before this,
+        // page_recent always followed the persona's current-room POINTER (her
+        // landing room), so a turn happening in any other room — a bench room, a
+        // project room she's subscribed to — delivered the DEFAULT room's
+        // transcript, and everything downstream (digest, derived-room fallback,
+        // the recall query built from this window) followed the wrong room.
+        // When airc_room is None (room-less work: consolidation, dreams), the
+        // pointer-scoped page remains correct and the events' own room is
+        // DERIVED below — that fallback is legitimate, not a shim.
+        let events = match self
+            .reader
+            .page_recent_in(ctx.airc_room, self.fetch_limit)
+            .await
+        {
             Ok(e) => e,
             Err(err) => {
                 tracing::warn!(
@@ -509,6 +556,54 @@ mod tests {
             }
             Ok(self.events.iter().take(limit).cloned().collect())
         }
+    }
+
+    /// Reader that records the room scope it was paged with (#367).
+    struct RoomRecordingReader {
+        events: Vec<TranscriptEvent>,
+        paged_room: Mutex<Option<Option<RoomId>>>,
+    }
+    #[async_trait]
+    impl AircTranscriptReader for RoomRecordingReader {
+        async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
+            Ok(self.events.iter().take(limit).cloned().collect())
+        }
+        async fn page_recent_in(
+            &self,
+            room: Option<RoomId>,
+            limit: usize,
+        ) -> Result<Vec<TranscriptEvent>, AircError> {
+            *self.paged_room.lock().unwrap() = Some(room);
+            self.page_recent(limit).await
+        }
+    }
+
+    // what this catches: #367 — the perception page must be scoped to the TURN's
+    // room, not the reader's current-room pointer. BigMama's find: a turn in any
+    // room other than the persona's landing room paged the DEFAULT room's
+    // transcript, so the digest AND the recall query built from it followed the
+    // wrong conversation. deliver() must hand ctx.airc_room to the reader
+    // (Some → that room; None → pointer-scoped page, the room-less fallback).
+    #[tokio::test]
+    async fn deliver_pages_the_turn_room_not_the_pointer() {
+        let room = RoomId::new();
+        let reader = Arc::new(RoomRecordingReader {
+            events: vec![event_in(room, Some("hello"), 1)],
+            paged_room: Mutex::new(None),
+        });
+        let (source, _, _) = isolated_source(reader.clone());
+        source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
+        assert_eq!(
+            *reader.paged_room.lock().unwrap(),
+            Some(Some(room)),
+            "turn room must reach the reader's page scope"
+        );
+
+        // Room-less work (consolidation, dreams): the page is explicitly
+        // pointer-scoped, not accidentally room-pinned.
+        let ctx_no_room = RagContext::for_persona(persona(), 1_000_000);
+        source.deliver(&ctx_no_room, 1_000, ResolutionPreference::Raw).await;
+        assert_eq!(*reader.paged_room.lock().unwrap(), Some(None));
     }
 
     /// Source over an ISOLATED digest substrate (own cache/bookmarks/buffer) so

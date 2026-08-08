@@ -45,6 +45,21 @@ impl AircTranscriptReader for AircHandleAdapter {
         // (persona/airc_source.rs, #297) — never the raw inherent page.
         crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.inner, limit).await
     }
+
+    async fn page_recent_in(
+        &self,
+        room: Option<airc_core::RoomId>,
+        limit: usize,
+    ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+        // Explicit forward (#367) — the #262 lesson lives in this file:
+        // a silently-inherited trait default is how regressions ship.
+        crate::persona::airc_source::AircTranscriptReader::page_recent_in(
+            &*self.inner,
+            room,
+            limit,
+        )
+        .await
+    }
 }
 
 #[async_trait]

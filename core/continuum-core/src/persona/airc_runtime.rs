@@ -982,6 +982,17 @@ impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
         // (persona/airc_source.rs, #297) — never the raw inherent page.
         crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.airc, limit).await
     }
+
+    async fn page_recent_in(
+        &self,
+        room: Option<airc_core::RoomId>,
+        limit: usize,
+    ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+        // Explicit forward (#367) — inheriting the trait default here would
+        // silently drop the turn-room scope (#262-class regression).
+        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.airc, room, limit)
+            .await
+    }
 }
 
 #[async_trait::async_trait]
