@@ -499,6 +499,35 @@ pub fn load_experiences(peer_dir: &std::path::Path) -> Vec<ExperienceRecord> {
     records
 }
 
+/// Collapse a stream to the LATEST record per task id, in first-seen task order.
+/// The cursor-free dedup for the curriculum drain (#319): a later PASS on the same
+/// task RETIRES its earlier failures (the lesson was learned — re-teaching it wastes
+/// the teacher and risks overfitting a solved gap), and a later failure supersedes
+/// an earlier one (teach the CURRENT miss, not the stale one). Records with an empty
+/// task id (lived turns pose the stimulus as the prompt with no id) pass through
+/// untouched — they are distinct experiences, not retries of one task.
+pub fn latest_per_task(records: &[ExperienceRecord]) -> Vec<ExperienceRecord> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut latest: std::collections::HashMap<&str, &ExperienceRecord> =
+        std::collections::HashMap::new();
+    let mut untasked: Vec<&ExperienceRecord> = Vec::new();
+    for r in records {
+        if r.task.id.is_empty() {
+            untasked.push(r);
+            continue;
+        }
+        if !latest.contains_key(r.task.id.as_str()) {
+            order.push(r.task.id.as_str());
+        }
+        latest.insert(r.task.id.as_str(), r);
+    }
+    order
+        .into_iter()
+        .map(|id| latest[id].clone())
+        .chain(untasked.into_iter().cloned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1026,6 +1055,31 @@ mod tests {
             let teach = salient_teach_set(&[fail, pass], &ErrorSalience);
             assert_eq!(teach.len(), 1, "the failure is remediable; the pass teaches nothing");
             assert_eq!(teach[0].id, "fib");
+        }
+
+        // what this catches: the drain's dedup contract — a later PASS retires the
+        // task's earlier failure (no re-teaching solved gaps), a later failure
+        // supersedes an earlier one, and only the LATEST-failed tasks survive into
+        // the teach set. Without this, every historical failure re-enters training
+        // forever, even after the citizen learned it.
+        #[test]
+        fn a_later_pass_retires_the_failure_from_the_teach_set() {
+            let t = |id: &str| EvalTask {
+                id: id.into(),
+                prompt: format!("do {id}"),
+                test: Some("assert!(true);".into()),
+                ..EvalTask::default()
+            };
+            let records = vec![
+                ExperienceRecord::from_kanban_grade(&t("fib"), "v1", false, "wrong"),
+                ExperienceRecord::from_kanban_grade(&t("sum"), "v1", false, "wrong"),
+                ExperienceRecord::from_kanban_grade(&t("fib"), "v2", true, "ALL PASSED"),
+            ];
+            let latest = latest_per_task(&records);
+            assert_eq!(latest.len(), 2, "one record per task survives");
+            let teach = salient_teach_set(&latest, &ErrorSalience);
+            assert_eq!(teach.len(), 1, "fib was learned; only sum still teaches");
+            assert_eq!(teach[0].id, "sum");
         }
 
         // what this catches: a missing stream is an EMPTY stream (a fresh mind),
