@@ -103,6 +103,18 @@ const REHOME_MIN_GAIN_PCT: u32 = 15;
 /// re-running that measurement against fresher receipts.
 const REHOME_SUSTAINED_TICKS: u32 = 3;
 
+/// Consecutive plan ticks a base-model DOWNSHIFT must persist before it is
+/// adopted. #368 (2nd occurrence, 2026-08-08): a ~6-second RAM transient at
+/// agent/solve launch collapsed the planner's budget to zero for ONE tick, the
+/// plan flipped to the 0.5B, reconcile actuated the flip (tore down Devstral,
+/// re-homed every citizen), and the civilization lost 47 minutes to a phantom
+/// model. The tear-down/spin-up/re-home cycle costs minutes, so reacting to a
+/// squeeze shorter than [`TICK`]×this is ALWAYS a net loss — the highest-value
+/// activity in the system must never be evicted by its own setup ripple (Joel:
+/// "system working against rather than for the best activity work").
+/// [[never-thrash-sticky-hysteresis-on-every-lane]]
+const DOWNSHIFT_SUSTAINED_TICKS: u32 = 3;
+
 /// Ticks a re-home must wait before another may fire, enforced INDEPENDENTLY of
 /// the sustained-delta test above.
 ///
@@ -364,6 +376,13 @@ pub struct ServingDaemonModule {
     /// what separates a real capacity change from memory jitter — see
     /// [`REHOME_SUSTAINED_TICKS`].
     rehome_streak: Arc<std::sync::atomic::AtomicU32>,
+    /// Consecutive ticks the fresh plan has wanted a LESS capable base model
+    /// than the incumbent (a DOWNSHIFT). Reset the moment it stops. See
+    /// [`DOWNSHIFT_SUSTAINED_TICKS`] — #368's second occurrence: a ~6-second
+    /// RAM transient at solve launch read as usable_gb 17→0, one depressed tick
+    /// flipped the PLAN to the 0.5B, and from then on hysteresis defended the
+    /// WRONG incumbent. A brain flip must outlast jitter to be believed.
+    downshift_streak: Arc<std::sync::atomic::AtomicU32>,
     /// Ticks remaining before another window re-home may fire. Charged to
     /// [`REHOME_COOLDOWN_TICKS`] when one fires, decremented every reconcile.
     /// Counted in ticks rather than wall-clock deliberately: the rate limit is on
@@ -460,6 +479,7 @@ impl ServingDaemonModule {
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            downshift_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             working_set: crate::cognition::working_set::global(),
             moe_serving: std::sync::Mutex::new(None),
             active_artifact: std::sync::Mutex::new(None),
@@ -1942,6 +1962,45 @@ impl ServingDaemonModule {
         let demand = self.serving_demand();
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
+                // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
+                // only shields the incumbent from its OWN residency — an external
+                // squeeze deep enough that even the credited budget can't hold it
+                // forces `fresh` through, and `fresh` at a zeroed budget picks the
+                // smallest model on disk. That is correct for a REAL eviction and
+                // catastrophic for a transient (one depressed tick re-brained the
+                // whole citizenry onto the 0.5B, then hysteresis defended the wrong
+                // incumbent). So a downshift only takes effect after it has been
+                // wanted for [`DOWNSHIFT_SUSTAINED_TICKS`] consecutive ticks; until
+                // then the previous plan simply stands. Same shape as the rehome
+                // streak guard above — sustained-ness separates capacity change
+                // from jitter. Upshifts and same-model replans are never held.
+                match downshift_gate(&plan, incumbent.as_deref(), candidates) {
+                    DownshiftVerdict::NotADownshift => {
+                        self.downshift_streak.store(0, Ordering::Relaxed);
+                    }
+                    DownshiftVerdict::Downshift => {
+                        let streak = self
+                            .downshift_streak
+                            .fetch_add(1, Ordering::Relaxed)
+                            .saturating_add(1);
+                        if streak < DOWNSHIFT_SUSTAINED_TICKS {
+                            crate::probe!(
+                                class = "serving.plan",
+                                decision = "downshift-held",
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                wanted = plan.base_model_id.as_str(),
+                                streak,
+                                needs_streak = DOWNSHIFT_SUSTAINED_TICKS,
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                "fresh plan wants a LESS capable base — holding the \
+                                 incumbent plan until the squeeze proves sustained (#368)",
+                            );
+                            return;
+                        }
+                        // Sustained: a real squeeze. Adopt, and re-arm the gate.
+                        self.downshift_streak.store(0, Ordering::Relaxed);
+                    }
+                }
                 crate::probe!(
                     class = "serving.plan",
                     base_model = plan.base_model_id.as_str(),
@@ -1997,6 +2056,47 @@ impl ServingDaemonModule {
                 let _ = self.plan_tx.send_replace(None);
             }
         }
+    }
+}
+
+/// Verdict of [`downshift_gate`]: does adopting this plan REDUCE the served
+/// base model's capability while the incumbent is still on disk?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DownshiftVerdict {
+    /// Same model, an upshift, no incumbent, or incumbent gone from disk —
+    /// adopt immediately, nothing to debounce.
+    NotADownshift,
+    /// The fresh plan wants a LESS capable base than a still-present incumbent.
+    /// Only a sustained run of these justifies acting (#368).
+    Downshift,
+}
+
+/// Pure classification — split from [`ServingDaemonModule::publish_plan`] so the
+/// debounce decision is unit-testable without a daemon. A downshift requires the
+/// incumbent to still be a candidate (still on disk): if its weights vanished,
+/// holding a plan that names them would be serving a ghost, so that case adopts
+/// `fresh` immediately (mirrors `plan_serving_stable`'s own disk check).
+fn downshift_gate(
+    plan: &ServingPlan,
+    incumbent: Option<&str>,
+    candidates: &[ModelFootprint],
+) -> DownshiftVerdict {
+    let Some(inc_id) = incumbent else {
+        return DownshiftVerdict::NotADownshift;
+    };
+    if plan.base_model_id == inc_id {
+        return DownshiftVerdict::NotADownshift;
+    }
+    let (Some(inc), Some(new)) = (
+        candidates.iter().find(|m| m.model_id == inc_id),
+        candidates.iter().find(|m| m.model_id == plan.base_model_id),
+    ) else {
+        return DownshiftVerdict::NotADownshift;
+    };
+    if new.capability_rank < inc.capability_rank {
+        DownshiftVerdict::Downshift
+    } else {
+        DownshiftVerdict::NotADownshift
     }
 }
 
@@ -4385,6 +4485,63 @@ mod tests {
                 .consumer_ids()
                 .contains(&SERVING_CONSUMER_ID.to_string()),
             "serving must register itself as a measured consumer with the authority"
+        );
+    }
+
+    // what this catches (#368, 2nd occurrence): a ONE-tick budget collapse must
+    // classify as a Downshift (so publish_plan HOLDS the incumbent plan until
+    // the squeeze proves sustained) — while same-model, upshift, and
+    // incumbent-gone cases adopt immediately. The live failure: usable_gb hit 0
+    // for ~6 seconds at solve launch, the fresh plan named the 0.5B, and the
+    // reconcile re-brained every citizen onto it before the dip had even passed.
+    #[test]
+    fn downshift_gate_classifies_the_transient_lobotomy() {
+        let footprint = |id: &str, weights_gb: u64, rank: u8| ModelFootprint {
+            model_id: id.into(),
+            weights_bytes: weights_gb * GB,
+            kv_per_token: 100_000,
+            context_window: 32768,
+            capability_rank: rank,
+        };
+        let devstral = footprint("devstral-24b", 14, 8);
+        let tiny = footprint("qwen-0.5b", 1, 1);
+        let plan_for = |id: &str| ServingPlan {
+            base_model_id: id.into(),
+            served_context_window: 2048,
+            lanes: 1,
+            grid_overflow_lanes: 0,
+            resident_models: 1,
+            fits_on_gpu: true,
+            rationale: String::new(),
+        };
+        let both = vec![devstral.clone(), tiny.clone()];
+
+        // The incident shape: incumbent Devstral, fresh wants the 0.5B → HOLD.
+        assert_eq!(
+            downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &both),
+            DownshiftVerdict::Downshift,
+        );
+        // Same model → nothing to debounce.
+        assert_eq!(
+            downshift_gate(&plan_for("devstral-24b"), Some("devstral-24b"), &both),
+            DownshiftVerdict::NotADownshift,
+        );
+        // UPSHIFT (0.5B incumbent, fresh wants Devstral) must adopt immediately —
+        // holding it would have kept the citizens lobotomized on purpose.
+        assert_eq!(
+            downshift_gate(&plan_for("devstral-24b"), Some("qwen-0.5b"), &both),
+            DownshiftVerdict::NotADownshift,
+        );
+        // Incumbent vanished from disk → holding a plan naming a ghost is worse
+        // than any downshift; adopt what is actually present.
+        assert_eq!(
+            downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &[tiny]),
+            DownshiftVerdict::NotADownshift,
+        );
+        // No incumbent (boot) → plain adoption.
+        assert_eq!(
+            downshift_gate(&plan_for("qwen-0.5b"), None, &both),
+            DownshiftVerdict::NotADownshift,
         );
     }
 }
