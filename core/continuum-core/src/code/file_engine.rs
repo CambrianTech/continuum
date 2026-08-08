@@ -1175,6 +1175,113 @@ fn search_miss_report(content: &str, search: &str) -> String {
     )
 }
 
+/// Indentation-tolerant `search_replace` fallback. `Ok(Some(new_content))` when the search
+/// block matches exactly one contiguous run of file lines with per-line leading whitespace
+/// ignored — the replacement is applied there, re-based onto the file's real indentation
+/// (the replacement block's own common leading prefix is treated as its baseline, so its
+/// RELATIVE indentation survives the shift). `Ok(None)` when nothing matches (caller falls
+/// through to the miss report). `Err` when the normalized match is ambiguous: applying a
+/// whitespace-blind edit to one of several candidate sites would be a silent guess.
+fn indent_tolerant_replace(
+    content: &str,
+    search: &str,
+    replace: &str,
+) -> Result<Option<String>, FileEngineError> {
+    let search_trimmed: Vec<&str> = search.lines().map(str::trim).collect();
+    // A whitespace-only search has no content identity to match on.
+    if search_trimmed.is_empty() || search_trimmed.iter().all(|l| l.is_empty()) {
+        return Ok(None);
+    }
+    let file_lines: Vec<&str> = content.lines().collect();
+    let k = search_trimmed.len();
+    if file_lines.len() < k {
+        return Ok(None);
+    }
+
+    let mut matches: Vec<usize> = Vec::new();
+    for start in 0..=(file_lines.len() - k) {
+        if (0..k).all(|j| file_lines[start + j].trim() == search_trimmed[j]) {
+            matches.push(start);
+        }
+    }
+    match matches.len() {
+        0 => Ok(None),
+        1 => {
+            let start = matches[0];
+            let file_indent: String = file_lines[start]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
+
+            // The replacement block's own baseline: the longest whitespace prefix shared
+            // by every non-empty line. Stripping it before prepending the file's indent
+            // preserves the block's relative structure.
+            let replace_lines: Vec<&str> = replace.lines().collect();
+            let baseline: String = replace_lines
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| {
+                    l.chars()
+                        .take_while(|c| c.is_whitespace())
+                        .collect::<String>()
+                })
+                .min_by_key(String::len)
+                .unwrap_or_default();
+            // A baseline only counts if every non-empty line actually starts with it
+            // (mixed tab/space prefixes can produce a "shortest prefix" nothing shares).
+            // An EMPTY baseline is fine: stripping it is a no-op and each line's own
+            // indent IS its relative indent.
+            let has_common = replace_lines
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .all(|l| l.starts_with(baseline.as_str()));
+
+            let mut result = String::new();
+            for line in &file_lines[..start] {
+                result.push_str(line);
+                result.push('\n');
+            }
+            for line in &replace_lines {
+                if line.trim().is_empty() {
+                    // Blank replacement lines stay blank — trailing indent is noise.
+                } else if has_common {
+                    result.push_str(&file_indent);
+                    result.push_str(line.strip_prefix(baseline.as_str()).unwrap_or(line));
+                } else {
+                    // No shared prefix — flatten to the file indent. Cruder (relative
+                    // structure is lost) but never ambiguous about WHERE.
+                    result.push_str(&file_indent);
+                    result.push_str(line.trim_start());
+                }
+                result.push('\n');
+            }
+            for line in &file_lines[start + k..] {
+                result.push_str(line);
+                result.push('\n');
+            }
+            if !content.ends_with('\n') && result.ends_with('\n') {
+                result.pop();
+            }
+            Ok(Some(result))
+        }
+        n => {
+            let sites: Vec<String> = matches
+                .iter()
+                .take(5)
+                .map(|s| (s + 1).to_string())
+                .collect();
+            Err(FileEngineError::EditFailed(format!(
+                "SEARCH TEXT NOT FOUND verbatim, and it matches {n} locations once leading \
+                 whitespace is ignored (starting at lines {}). Applying to one of them would \
+                 be a guess. Copy the exact text of the site you mean — including its \
+                 indentation — from a fresh `code/read`, or address it by number with a \
+                 line_range edit.",
+                sites.join(", ")
+            )))
+        }
+    }
+}
+
 /// The line most similar to `needle`, by shared-word overlap. Deliberately crude: its only job
 /// is to point at something she can LOOK at, and a wrong-but-close pointer still orients her
 /// better than "not found". `None` when nothing shares meaningful content.
@@ -1699,6 +1806,21 @@ fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineE
             all,
         } => {
             if !content.contains(search.as_str()) {
+                // Indentation-tolerant fallback: the dominant miss cause is a model
+                // reproducing lines from a numbered read with the indent dropped or
+                // normalised (see `search_miss_report`). When the search block matches
+                // exactly ONE contiguous run of file lines once per-line leading
+                // whitespace is ignored, the intent is unambiguous — apply it, carrying
+                // the FILE's real indentation onto the replacement. Glass-boxed live
+                // 2026-08-08 (benchy-sympy-22840-n4): a citizen found the exact fix
+                // site, wrote the right 3-line anchor with 0-indent, and the edit died
+                // "nothing resembles it" — she then burned her act budget recovering.
+                // Safety: ambiguous (2+) normalized matches still refuse with line
+                // numbers, and the parse-refusal gate downstream still rejects an edit
+                // that would break a parsing file.
+                if let Some(result) = indent_tolerant_replace(content, search, replace)? {
+                    return Ok(result);
+                }
                 return Err(FileEngineError::EditFailed(search_miss_report(
                     content, search,
                 )));
@@ -2066,6 +2188,86 @@ mod tests {
         assert!(
             unrelated.contains("Nothing in this file resembles it"),
             "a bogus 'closest' is worse than admitting no match, got:\n{unrelated}"
+        );
+    }
+
+    // what this catches: the WHITESPACE-EXACT DEATH of a correct multi-line edit — the
+    // live shape from benchy-sympy-22840-n4 (2026-08-08). She anchored the exact fix site
+    // (3 lines, cse_main.py 674-676) but reproduced them with the indent dropped; the edit
+    // died "Nothing in this file resembles it" and she burned her act budget recovering.
+    // A UNIQUE trimmed-lines match is unambiguous intent: apply it, re-based onto the
+    // file's real indentation, preserving the replacement's relative structure.
+    #[test]
+    fn a_unique_whitespace_normalized_multiline_match_applies_with_the_files_indent() {
+        let content = "def tree_cse():\n\
+                       \x20   for expr in exprs:\n\
+                       \x20       if isinstance(orig_expr, MatrixExpr):\n\
+                       \x20           sym = MatrixSymbol(sym.name, orig_expr.rows,\n\
+                       \x20               orig_expr.cols)\n\
+                       \x20       return sym\n";
+        let edit = EditMode::SearchReplace {
+            // Her live idiom: right text, no indent.
+            search: "if isinstance(orig_expr, MatrixExpr):\n\
+                     sym = MatrixSymbol(sym.name, orig_expr.rows,\n\
+                     orig_expr.cols)"
+                .to_string(),
+            replace: "if isinstance(orig_expr, MatrixExpr):\n\
+                      \x20   sym = sym"
+                .to_string(),
+            all: false,
+        };
+        let out = apply_edit(content, &edit).expect("unique normalized match must apply");
+        assert!(
+            out.contains("        if isinstance(orig_expr, MatrixExpr):\n            sym = sym\n"),
+            "replacement must carry the FILE's indent (8) and its own relative +4, got:\n{out}"
+        );
+        assert!(
+            !out.contains("MatrixSymbol"),
+            "the matched block must be gone, got:\n{out}"
+        );
+        assert!(
+            out.contains("        return sym"),
+            "surrounding lines must survive untouched, got:\n{out}"
+        );
+    }
+
+    // what this catches: the fallback must never GUESS between sites. Two normalized
+    // matches → refuse with the line numbers, file untouched — a whitespace-blind edit
+    // applied to the wrong one of two candidates is strictly worse than the old dead end.
+    #[test]
+    fn an_ambiguous_whitespace_normalized_match_refuses_with_line_numbers() {
+        // Two same-shaped blocks at DIFFERENT indents — the multi-line search is not a
+        // verbatim substring of either (so the exact path misses), and trimmed-lines
+        // matching finds both.
+        let content = "class A:\n    def f(self):\n        return 1\n\
+                       class B:\n        def f(self):\n            return 1\n";
+        let edit = EditMode::SearchReplace {
+            search: "def f(self):\nreturn 1".to_string(),
+            replace: "def f(self):\nreturn 2".to_string(),
+            all: false,
+        };
+        let err = apply_edit(content, &edit).expect_err("two candidate sites must refuse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("2 locations") && msg.contains("lines 2, 5"),
+            "must count and locate the candidates, got:\n{msg}"
+        );
+    }
+
+    // what this catches: the fallback must not swallow the genuinely-absent case — the
+    // teaching miss report (nearest line / nothing resembles) is still the answer there.
+    #[test]
+    fn no_normalized_match_still_falls_through_to_the_miss_report() {
+        let content = "def solve():\n    return 1\n";
+        let edit = EditMode::SearchReplace {
+            search: "completely unrelated banana text".to_string(),
+            replace: "x".to_string(),
+            all: false,
+        };
+        let err = apply_edit(content, &edit).expect_err("absent anchor still fails");
+        assert!(
+            format!("{err}").contains("SEARCH TEXT NOT FOUND"),
+            "the miss report remains the terminal answer, got:\n{err}"
         );
     }
 
