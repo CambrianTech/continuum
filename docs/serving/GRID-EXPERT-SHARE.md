@@ -51,6 +51,10 @@ The depot can DEGRADE serving; it can never break it.
 resident-expert manifest (ExpertIds + artifact hashes + tier) on airc,
 refreshed on the recency cadence. No consumer yet. Validates: manifest size,
 churn rate, airc fit. *Exit: two nodes see each other's manifests.*
+**STATUS 2026-08-08: manifest derivation SHIPPED** (`capacity/expert_depot.rs`,
+PR #2195) — resident banks ONLY (a partial-shard node advertises exactly what
+it holds), container tier table passed through verbatim; `depot.manifest`
+probe emits on derivation. The airc publication *cadence* is the open tail.
 
 **Slice 1 — depot outlier A: localhost serve.** `expert_depot` module serves
 expert bytes by key over localhost HTTP from its own artifacts (mmap/container
@@ -58,6 +62,15 @@ readers already exist). Fork gains `GridFetcher` (`GGML_MOE_DEPOT_URL`):
 `fetch` = one GET, `fetch_many` = parallel GETs. Single machine, zero network
 unknowns. *Exit: `[MOE-PAGER]` parity (hit-rate, coherence, tok/s within
 noise) vs the mmap fetcher on OLMoE — proves the seam.*
+**STATUS 2026-08-08: depot side SHIPPED** (PR #2195) — `GET /manifest` +
+`GET /expert/{layer}/{expert}?tier=N` with `x-expert-sha256` per record (the
+slice-2 verify seam, priced in from the first localhost byte); miss semantics
+locked (absent shard / out-of-range → 404 fork-falls-back; geometry/identity
+violation → 500 loud); 4 socket-level tests. The fork-side `GridFetcher`
+adapter + the `[MOE-PAGER]` parity A/B are the open tail. Pricing addendum
+(same-day design, [GRID-MARKET-CLEARING](../architecture/GRID-MARKET-CLEARING.md)):
+the manifest grows an `advertised_cost` field (λ + transport class) in market
+slice S2 so slice-4 placement clears against a real price.
 
 **Slice 2 — grid resolve outlier B: the two-machine proof.** Depot resolves
 misses from peer depots (manifest lookup → direct GET → BLAKE3/SHA-256 verify
