@@ -817,9 +817,21 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && !c.trailing)
             .collect();
         ctx.sort_by(|a, b| {
-            b.salience
-                .partial_cmp(&a.salience)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            // ACTIVE-WORK sorts first, then salience. The ctx_floor reservation above
+            // is sized to her held card's content — but a reservation only holds if
+            // the reserved claimant is also FIRST in line: selection is greedy, so a
+            // higher-salience recall (divisible — it takes a prefix of any budget)
+            // would otherwise spend the reservation before active-work is considered.
+            // At generous budgets everything renders regardless and this only puts
+            // her own thread at the top of the grounding block, which is the wake
+            // briefing's order too (#125 slice 1).
+            let a_held = a.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
+            let b_held = b.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
+            b_held.cmp(&a_held).then(
+                b.salience
+                    .partial_cmp(&a.salience)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
         });
         let received = ctx.len();
         // SELECTION (by salience): walk highest-salience-first and keep what fits.
@@ -1095,12 +1107,36 @@ impl LlmDeliberationFaculty {
         // grounding does not use still flows back: `ctx_budget` below is computed
         // from what the conversation ACTUALLY consumed, not from this reservation.
         let after_framing = budget.saturating_sub(framing_tokens);
-        let ctx_floor = ws
-            .broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && !c.trailing)
-            .map(|c| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2)
-            .min()
+        // Which contribution the floor reserves is a PRIORITY ordering, not a size
+        // contest. "Smallest offered" guaranteed *a* fact reached her — but on a
+        // squeezed window the smallest fact is a ~50-token status brick, and what
+        // dropped instead was ACTIVE-WORK: the card content of the claim she is
+        // actually holding. Live specimen 2026-08-07: Benchy held a staged SWE card,
+        // her render dropped recall/roster/active-work/workspace-map/kanban
+        // (ctx_floor=49 kept one perception brick), her whole knowledge of the work
+        // was a bare claim receipt, and she reasonably yielded — 98s of prefill for
+        // 7 tokens of yield_turn, own_repetition firing. A held claim is HER THREAD
+        // (the wake briefing already leads with it — #125 slice 1); the mid-session
+        // floor must agree. So: reserve the active-work contribution when one is
+        // offered this turn, else the smallest, bounded at half the post-framing
+        // pool exactly as before (the fairness cap between grounding and
+        // conversation is unchanged — only which claimant holds the reservation).
+        let contribution_cost =
+            |c: &Contribution| est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2;
+        let offered = || {
+            ws.broadcast
+                .iter()
+                .filter(|c| c.decision.is_none() && !c.trailing)
+        };
+        let ctx_floor = offered()
+            .find(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
+            .map(&contribution_cost)
+            .or_else(|| offered().map(&contribution_cost).min())
+            // The `ctx_budget` computation below charges the working-context wrapper
+            // header against this reservation before any contribution renders, so a
+            // floor sized to the contribution ALONE under-reserves by exactly the
+            // header and delivers nothing. Reserve the delivered shape: header + item.
+            .map(|cost| cost + est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER))
             .unwrap_or(0)
             .min(after_framing / 2);
         let msg_budget = after_framing.saturating_sub(ctx_floor);
@@ -2072,6 +2108,62 @@ mod tests {
             assert!(
                 view.system.contains("Taking your turn"),
                 "the how-to-participate framing must never be dropped"
+            );
+        }
+
+        // what this catches: the starved-claimant regression (card f6a9fe5c, live
+        // specimen 2026-08-07) — under a squeezed window the grounding floor reserved
+        // only the SMALLEST offered contribution, so a citizen HOLDING a work card got
+        // a ~50-token status note while active-work (the card content itself) dropped;
+        // her whole knowledge of her claim was a bare receipt and she yielded. The fix
+        // is a priority ordering: the floor reserves the active-work contribution when
+        // one is offered AND selection considers it first, so her held card survives
+        // budget pressure that drops everything else.
+        #[test]
+        fn a_held_work_card_survives_budget_pressure_that_drops_everything_else() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let window: u32 = 1024;
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar, a thoughtful engineer on the grid.",
+                adapter,
+            )
+            .with_context_window(window);
+
+            // A conversation big enough to absorb every token the floor doesn't hold.
+            let mut burst = "old chatter line\n".repeat(2000);
+            burst.push_str("LATEST: how is the card going?");
+            let mut ws = Workspace::new(&burst);
+            // A recall bid that outranks active-work on salience and dwarfs the budget —
+            // without reserved-first selection it would spend the floor's reservation.
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                &"deploy pipeline observation; ".repeat(2000),
+                1.0,
+                "recalled",
+            ));
+            // The tiny note the OLD floor would have sized the reservation to.
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Custom("session-note".into()),
+                "note: room quiet",
+                0.95,
+                "noted",
+            ));
+            // Her held card — what a claim-holding citizen must never lose sight of.
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Custom(crate::persona::active_work_source::SOURCE_ID.into()),
+                "[your work] psf__requests-2148 staged in workspace/swe — fix in place, tests are the grade",
+                0.9,
+                "held claims",
+            ));
+
+            let view = faculty.prompt_view(&ws);
+            assert!(
+                view.system.contains("psf__requests-2148"),
+                "the held card's content must survive budget pressure; system was:\n{}",
+                view.system
             );
         }
 

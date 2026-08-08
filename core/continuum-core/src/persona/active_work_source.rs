@@ -27,7 +27,10 @@ use crate::persona::rag_budget::{
 
 /// Source identifier — used by budget presets, telemetry, and the projection that
 /// routes this delivery into system-prompt grounding (standing framing).
-const SOURCE_ID: &str = "active-work";
+/// `pub(crate)` because the deliberation faculty's grounding floor keys on the SAME
+/// name to give a held claim's card content first call on the reservation — one
+/// constant, never a second literal that can drift.
+pub(crate) const SOURCE_ID: &str = "active-work";
 
 /// Reads THIS persona's currently-claimed work cards from airc. A supertrait of
 /// `AircCitizen` (like `AircRosterReader`): the persona's runtime implements it
