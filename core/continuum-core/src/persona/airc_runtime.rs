@@ -56,6 +56,16 @@ use std::sync::Arc;
 use airc_core::{EventId, PeerId, RoomId};
 use airc_lib::{Airc, AircError, DEFAULT_HEARTBEAT_INTERVAL};
 
+/// The room a FRESH citizen scope lands in (room-consolidation master
+/// card daa01102, Joel: academy is THE default room — training,
+/// benchmarks, and the commons all root there; `#general` was airc's
+/// generic lobby, and citizens landing in it is the "disorganized
+/// non-academy room stuff" the consolidation kills). Passed to
+/// `Airc::current_room_landing_in` at bootstrap; an ESTABLISHED
+/// persona's durable membership always wins, so changing this never
+/// migrates a living citizen.
+pub const CITIZEN_COMMONS_ROOM: &str = "academy";
+
 /// Abort-on-drop guard for the continuum-owned heartbeat pump (#260): keeps
 /// the airc `HeartbeatTask` teardown contract — dropping the runtime aborts
 /// the pump so a torn-down persona ages out of the roster within the
@@ -112,8 +122,8 @@ pub enum PersonaAircRuntimeError {
     #[error(
         "failed to resolve persona {agent_name:?}'s home room from her durable \
          subscription state: {source} — a persona's rooms come from HER OWN airc \
-         home (fresh scopes land in #general), never from the operator's current \
-         room (#298)"
+         home (fresh scopes land in the citizen commons, #academy — daa01102), \
+         never from the operator's current room (#298)"
     )]
     HomeRoom {
         agent_name: String,
@@ -261,11 +271,13 @@ impl PersonaAircRuntime {
     ///    (generate or load Ed25519 keypair, write `identity.key`,
     ///    record the local_identity row) and attaches a daemon
     ///    client for live publish + subscribe. No shelling out.
-    /// 3. Resolve her HOME room via `Airc::current_room()` — her OWN
-    ///    durable subscription default; a fresh scope lands in
-    ///    `#general` per airc's canonical fresh-scope semantics. This
-    ///    makes the persona appear on `airc peers` as an enrolled
-    ///    participant of HER room — never the operator's (#298).
+    /// 3. Resolve her HOME room via
+    ///    `Airc::current_room_landing_in(CITIZEN_COMMONS_ROOM)` — her
+    ///    OWN durable subscription default; a fresh scope lands in the
+    ///    citizen commons `#academy` (daa01102) instead of airc's
+    ///    generic `#general` lobby. This makes the persona appear on
+    ///    `airc peers` as an enrolled participant of HER room — never
+    ///    the operator's (#298).
     /// 4. Install the per-persona command inbound pump
     ///    ([`PersonaCommandInboundPump`](crate::persona::command_inbound_pump))
     ///    so this persona's airc handle starts receiving cross-grid
@@ -400,20 +412,22 @@ impl PersonaAircRuntime {
         // parking citizens in one whose activity ended is how a fleet
         // ends up with nothing to do and no way to say why.)
         // A persona is her own airc peer with her own home dir;
-        // `current_room()` loads HER durable subscription set (the same
-        // state `Airc::join` writes), returns her established default,
-        // and on a FRESH scope applies airc's canonical landing-room
-        // semantics: subscribe to `#general`, set it default, publish
-        // presence + identity card. Resumed personas keep their real
-        // membership; new minds land in the commons. The operator's
-        // current-room pointer no longer exists on this path.
-        let room =
-            airc.current_room()
-                .await
-                .map_err(|source| PersonaAircRuntimeError::HomeRoom {
-                    agent_name: agent_name.clone(),
-                    source,
-                })?;
+        // `current_room_landing_in` loads HER durable subscription set
+        // (the same state `Airc::join` writes), returns her established
+        // default, and on a FRESH scope lands her in the citizen
+        // commons `#academy` (CITIZEN_COMMONS_ROOM, card daa01102 —
+        // airc's own `current_room` lobby stays `#general`; continuum's
+        // citizens root in the academy tree): subscribe, set default,
+        // publish presence + identity card. Resumed personas keep their
+        // real membership; only new minds land in the commons. The
+        // operator's current-room pointer no longer exists on this path.
+        let room = airc
+            .current_room_landing_in(CITIZEN_COMMONS_ROOM)
+            .await
+            .map_err(|source| PersonaAircRuntimeError::HomeRoom {
+                agent_name: agent_name.clone(),
+                source,
+            })?;
 
         info!(
             persona_id = %persona_id,
