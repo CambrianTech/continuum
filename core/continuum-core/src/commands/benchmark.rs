@@ -3164,8 +3164,14 @@ impl ActionCommand for BenchmarkRuns {
                 .strip_prefix("agent-solve-")
                 .and_then(|r| r.strip_suffix(".json"))
             else {
-                continue; // grade files are read as siblings, not enumerated
+                continue;
             };
+            // Grade files are read as SIBLINGS of their run below, never
+            // enumerated as runs (live first use showed `X.grade` phantoms:
+            // `agent-solve-X.grade.json` survives the prefix/suffix strip).
+            if run_id.ends_with(".grade") {
+                continue;
+            }
             if let Some(want) = p.run_id.as_deref() {
                 if want != run_id {
                     continue;
