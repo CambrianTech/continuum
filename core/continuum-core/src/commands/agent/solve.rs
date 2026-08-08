@@ -269,6 +269,15 @@ impl ActionCommand for AgentSolve {
             .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
+                // HOLD THE LANE STEADY for the run's whole lifetime — the same RAII pin a
+                // living-persona eval binds ([[benchmark-is-a-governor-preemption-lease]]).
+                // Without it, the OPTIONAL grow-back re-home relaunches the lane under the
+                // solve's first in-flight generation: measured THREE times on 2026-08-08
+                // (benchy-22840-n7 and atlas-24066-n5 both died at act 0 to "stream read
+                // error" when the post-boot window grow bounced the lane). A scored run is
+                // exactly the demand the hold exists for; a real pressure emergency still
+                // preempts (the hold only suppresses the optional grow, never a shrink).
+                let _steady = crate::modules::serving_daemon::ServingSteadyHold::acquire();
                 // N CHANCES: attempts loop. Each attempt is a full solve; a non-resolved
                 // auto-grade re-enters the SAME workspace with the verdict appended to the
                 // task (named failing tests — the teachable half of the grade). The loop
