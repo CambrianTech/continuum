@@ -57,6 +57,47 @@ impl VoiceOrchestrator {
         );
     }
 
+    /// Add ONE participant to a session, creating the session if this is the first
+    /// (#58 — the core-driven registration path).
+    ///
+    /// Distinct from [`Self::register_session`] on purpose: that one takes the WHOLE
+    /// participant list and REPLACES it, which is the right shape for a client handing
+    /// over a fully-formed call. But people join one at a time, so driving that method
+    /// per-join would clobber everyone already in the room — each arrival erasing the
+    /// last. Joining is an append; only a client snapshotting the whole call is a replace.
+    ///
+    /// Idempotent per user: re-joining (a reconnect, a duplicate event) updates the
+    /// existing entry rather than duplicating her, so a flaky client cannot inflate the
+    /// roster.
+    pub fn add_participant(&self, session_id: Uuid, room_id: Uuid, participant: VoiceParticipant) {
+        {
+            let mut sessions = self
+                .session_participants
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let entry = sessions.entry(session_id).or_default();
+            match entry.iter_mut().find(|p| p.user_id == participant.user_id) {
+                Some(existing) => *existing = participant.clone(),
+                None => entry.push(participant.clone()),
+            }
+        }
+        {
+            let mut contexts = self
+                .session_contexts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            contexts
+                .entry(session_id)
+                .or_insert_with(|| ConversationContext::new(session_id, room_id));
+        }
+        clog_info!(
+            "Session {} += {} ({:?})",
+            &session_id.to_string()[..8],
+            participant.display_name,
+            participant.participant_type
+        );
+    }
+
     /// Every registered session and its participants — the read side the live-call
     /// projection needs (#58).
     ///
