@@ -102,6 +102,13 @@ pub struct SweVerdict {
     /// A verdict with `error` set is NOT a zero — it is an absence, and must never be
     /// tallied as a failed attempt.
     pub error: Option<String>,
+    /// The NAMES of the tests that failed, sorted, so a verdict can teach.
+    /// "PASS_TO_PASS 6/11" is a count with nothing to act on; "your patch broke
+    /// test_arguments and test_unit" is what a human reviewer would say (Joel,
+    /// 2026-08-08: "you or any human could tell him what's wrong — or the grader").
+    /// This is what the experience stream and the room verdict carry forward.
+    #[serde(default)]
+    pub failed_tests: Vec<String>,
 }
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
@@ -631,6 +638,13 @@ pub async fn grade(
     let p2p_res = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
+    verdict.failed_tests = f2p_res
+        .iter()
+        .chain(p2p_res.iter())
+        .filter(|(_, ok)| !**ok)
+        .map(|(id, _)| id.clone())
+        .collect();
+    verdict.failed_tests.sort();
     verdict.resolved = verdict.f2p_passed == verdict.f2p_total
         && verdict.p2p_passed == verdict.p2p_total
         && verdict.f2p_total > 0;

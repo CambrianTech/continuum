@@ -1722,6 +1722,11 @@ pub struct SweGradeResult {
     /// How many bytes of candidate patch were graded — 0 means the solver changed nothing,
     /// which is a harness signal, not a model score.
     pub patch_bytes: u32,
+    /// The NAMES of the failing tests — the actionable half of the verdict. A count
+    /// teaches nothing; a named test is what a human reviewer (or the citizen herself,
+    /// next attempt) can actually chase.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_tests: Vec<String>,
 }
 
 impl From<(SweVerdict, usize)> for SweGradeResult {
@@ -1736,6 +1741,7 @@ impl From<(SweVerdict, usize)> for SweGradeResult {
             gate_ok: v.gate_ok,
             error: v.error,
             patch_bytes: patch_bytes as u32,
+            failed_tests: v.failed_tests,
         }
     }
 }
@@ -1791,8 +1797,13 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
         let candidate: Option<String> = if p.gold.unwrap_or(false) {
             Some(instance.patch.clone())
         } else if let Some(ws) = p.workspace.as_ref() {
+            // `diff HEAD` (not bare `diff`) so STAGED edits count as her work too, and
+            // `:(exclude).airc` because the substrate stages its own coordination files
+            // into her workspace (card b34f7eb5): Atlas's first grade carried 91KB of
+            // staged `.airc` blobs, and the fresh clone refused the WHOLE candidate —
+            // a real fix voided by files no solver wrote.
             let out = std::process::Command::new("git")
-                .args(["diff"])
+                .args(["diff", "HEAD", "--", ".", ":(exclude).airc"])
                 .current_dir(ws)
                 .output()
                 .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
@@ -1835,14 +1846,23 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
                     prompt: instance.problem_statement.clone(),
                     ..Default::default()
                 };
+                // Name the failures — a count is a score, a name is a lesson (Joel,
+                // 2026-08-08). "PASS_TO_PASS 6/11" told Atlas nothing; "your change
+                // broke test_arguments" is what a human reviewer would have said.
+                let broke = if verdict.failed_tests.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — failing: {}", verdict.failed_tests.join(", "))
+                };
                 let detail = format!(
-                    "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}",
+                    "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}{}",
                     instance.instance_id,
                     verdict.resolved,
                     verdict.f2p_passed,
                     verdict.f2p_total,
                     verdict.p2p_passed,
-                    verdict.p2p_total
+                    verdict.p2p_total,
+                    broke
                 );
                 let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
                     &task,
