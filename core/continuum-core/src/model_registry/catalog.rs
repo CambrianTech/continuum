@@ -575,6 +575,14 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &[],
             persona_serving_eligible: false,
+            // ACQUIRABLE. Serving stays ds4's business (see arch/provider above) — this only says
+            // where the artifact comes FROM, which is a separate question from who runs it. Without
+            // it `models/pull` refuses the model entirely, so every V4-Flash tier had to be fetched
+            // by hand and landed outside the catalog: the 84.68 GiB UD-IQ2_M currently on this box
+            // was hand-pulled and the catalog still believes the model is `not_downloaded`.
+            // Verified 2026-08-04: the repo carries 49 GGUFs across UD-IQ1_S … UD-Q8_K_XL, so the
+            // IQ1_S tier the residency work needs is actually satisfiable from here.
+            gguf_hint: Some("huggingface.co/unsloth/DeepSeek-V4-Flash-GGUF"),
             ..ModelSpec::default()
         }),
         // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──

@@ -78,35 +78,15 @@ fi
 # manifest is consumed by BOTH the installer (accept-check) and here (launch), so a fresh
 # install is runnable by construction. We source the bash projection (the PS manifest is the
 # installer's; both derive from the toml) and glob-expand each version-agnostic path.
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) _mf_os=windows ;;
-  Darwin)               _mf_os=macos ;;
-  *)                    _mf_os=linux ;;
-esac
-_mf_runtime="$SCRIPT_DIR/generated/manifest.${_mf_os}.sh"
-# The generated manifest uses bash-4 associative arrays (`declare -A`). macOS ships bash 3.2,
-# where those are a hard `invalid option` error — and under this script's `set -e` a mid-file
-# failure ABORTS the whole boot (regression from #2046 "serve on Windows", which regenerated
-# manifest.macos.sh with `declare -A`; it silently broke every macOS reboot until the last
-# long-running core died). Only source it on bash 4+. The manifest solely feeds the
-# runtime-PATH augmentation below (a Windows/CUDA concern), whose own guard already tolerates
-# absence — so skipping it on bash 3.2 costs macOS nothing and the boot proceeds to the build.
-if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
-  # shellcheck source=/dev/null
-  source "$_mf_runtime"
-  if declare -p MOD_RUNTIME_PATH >/dev/null 2>&1; then
-    for _mid in "${!MOD_RUNTIME_PATH[@]}"; do
-      IFS=':' read -ra _rp_dirs <<<"${MOD_RUNTIME_PATH[$_mid]}"
-      for _rp in "${_rp_dirs[@]}"; do
-        # eval expands ~ and the version glob (cuda-*); prepend each existing match once.
-        for _rp_hit in $(eval echo "$_rp"); do
-          [ -d "$_rp_hit" ] || continue
-          case ":$PATH:" in *":$_rp_hit:"*) ;; *) export PATH="$_rp_hit:$PATH" ;; esac
-        done
-      done
-    done
-  fi
-fi
+# ── Build/runtime environment (ONE entry point) ──────────────────────────────
+# Sets $_mf_os, prepends every manifest-declared runtime PATH dir (CUDA DLLs,
+# etc), then imports the Windows MSVC/CUDA toolchain for the cargo build.
+# These two were separate inline blocks ~200 lines apart until 2026-08-06, and
+# the second SILENTLY depended on the first: its guard is `command -v nvcc`, and
+# nvcc only reaches PATH via the manifest block. Extracting one without the
+# other produced a shell where cargo built nothing and blamed a missing nvcc.
+# shellcheck source=lib/windows-build-env.sh
+source "$SCRIPT_DIR/lib/windows-build-env.sh"
 
 # ── Per-platform feature flags ───────────────────────────────────────
 # Mac Intel can't use Metal (task #131 — ggml_metal_device_init hangs on
@@ -295,96 +275,6 @@ if [ -n "$CONTINUUM_RELEASE" ]; then
   PROFILE_LABEL="release"
 fi
 
-# ── Windows: import the MSVC toolchain so cargo's CUDA (candle) build finds cl.exe ──────────
-# candle compiles CUDA kernels (affine.cu, ...) via nvcc, which needs cl.exe as its host
-# compiler plus INCLUDE/LIB. The cargo builds below run in THIS bash shell (unlike the
-# llama-server cmake build, which runs inside a vcvars .bat), so without this nvcc fails with
-# "Cannot find compiler 'cl.exe' in PATH" and the whole core build dies. Import it once: export
-# INCLUDE/LIB verbatim (only cl.exe reads them) and prepend the EXACT MSVC + Windows SDK bin
-# dirs (from vcvars, converted to unix) to PATH — nvcc finds cl.exe while bash's own PATH
-# resolution stays intact (we add unix dirs, never overwrite PATH with the Windows one). VS2022
-# (14.4x) is selected explicitly: nvcc 12.x rejects the newer 14.5x/VS18 toolset.
-if [ "$_mf_os" = windows ] && command -v nvcc >/dev/null 2>&1 && ! command -v cl.exe >/dev/null 2>&1; then
-  _vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
-  _vs=""
-  [ -x "$_vswhere" ] && _vs="$("$_vswhere" -version "[17.0,18.0)" -products '*' \
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
-        -property installationPath 2>/dev/null | head -1)"
-  _vcvars_u=""
-  [ -n "$_vs" ] && _vcvars_u="$(cygpath -u "$_vs\\VC\\Auxiliary\\Build\\vcvars64.bat" 2>/dev/null)"
-  if [ -n "$_vcvars_u" ] && [ -f "$_vcvars_u" ]; then
-    # Capture vcvars' env via a .bat FILE, not inline `cmd //c "call … && set"`: the vcvars path
-    # has spaces AND parens, and escaping nested quotes through bash->cmd corrupts it (the same
-    # reason install-llama-server.sh emits a .bat). The .bat calls vcvars then dumps `set`.
-    _msbat="$(mktemp --suffix=.bat 2>/dev/null || echo "${TEMP:-/tmp}/_cc_vcvars_$$.bat")"
-    printf '@echo off\r\ncall "%s" >nul 2>&1\r\nset\r\n' "$(cygpath -w "$_vcvars_u")" > "$_msbat"
-    _msenv="$(cmd //c "$(cygpath -w "$_msbat")" 2>/dev/null | tr -d '\r')"
-    rm -f "$_msbat"
-    export INCLUDE="$(printf '%s\n' "$_msenv" | sed -n 's/^INCLUDE=//Ip' | head -1)"
-    export LIB="$(printf '%s\n' "$_msenv" | sed -n 's/^LIB=//Ip' | head -1)"
-    _vct="$(printf '%s\n' "$_msenv" | sed -n 's/^VCToolsInstallDir=//Ip' | head -1)"
-    _sdkbin="$(printf '%s\n' "$_msenv" | sed -n 's/^WindowsSdkVerBinPath=//Ip' | head -1)"
-    # Guard each conversion: only prepend a REAL existing directory. An empty/failed cygpath would
-    # otherwise inject a bogus relative entry that corrupts the Windows-format PATH the cargo build
-    # subprocess inherits, which silently breaks other tools' resolution (e.g. cmake "program not found").
-    if [ -n "$_vct" ]; then _clb="$(cygpath -u "${_vct}bin\\Hostx64\\x64" 2>/dev/null)"; [ -d "$_clb" ] && PATH="$_clb:$PATH"; fi
-    if [ -n "$_sdkbin" ]; then _sdb="$(cygpath -u "${_sdkbin}x64" 2>/dev/null)"; [ -d "$_sdb" ] && PATH="$_sdb:$PATH"; fi
-    export PATH
-    # Pin cmake explicitly: the cmake crate (core/llama build.rs) resolves cmake via the CMAKE env
-    # var or PATH, but a manifest-provisioned cmake lives at ~/.continuum/tools/cmake/bin and is not
-    # guaranteed on the build shell's PATH (measured: absent in a clean subshell -> "cmake not
-    # found"). Point CMAKE at the known install (same resolution as install-llama-server.sh) and put
-    # its dir on PATH for cmake's own sub-tools.
-    _ccmk="$(command -v cmake 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/cmake/bin/cmake.exe")"
-    if [ -x "$_ccmk" ]; then
-      export CMAKE="$(cygpath -w "$_ccmk" 2>/dev/null || echo "$_ccmk")"
-      PATH="$(dirname "$_ccmk"):$PATH"; export PATH
-    fi
-    # Force a generator cmake actually knows. The cmake crate auto-picks the newest installed VS; on a
-    # VS18-2026 box that is "Visual Studio 18 2026" - a generator cmake 3.30.x does NOT define ("Could
-    # not create named generator"). Ninja is version-agnostic, uses the MSVC env imported above, and
-    # matches the llama-server build. [[windows-build-env-drift]]
-    _cninja="$(command -v ninja 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/ninja/ninja.exe")"
-    if [ -x "$_cninja" ]; then
-      export CMAKE_GENERATOR="Ninja"
-      # ninja must be ON PATH: the cmake crate ignores CMAKE_MAKE_PROGRAM env, so with -G Ninja it
-      # searches PATH ("unable to find Ninja / CMAKE_MAKE_PROGRAM is not set" otherwise).
-      PATH="$(dirname "$_cninja"):$PATH"; export PATH
-    fi
-    # CUDA_PATH must be set: cudarc/candle/pocket-tts read it to emit their link-search; without it the
-    # link has NO CUDA search path (measured: LNK1181 cuda.lib). Point it at a cuda-* whose import-lib
-    # dir actually has the libs (a provisioning split can leave the crate-detected dir EMPTY - cuda-env
-    # /Library/lib/x64=0 vs cuda-13.2=12; the #6 provisioning fix unifies them, and this node's cuda-env
-    # was completed by copying the sibling's libs in). candle finds nvcc via PATH independently, so a
-    # libs-only CUDA_PATH is fine (build proven). Real fix: provision ONE complete toolkit (#6).
-    if [ -z "$CUDA_PATH" ]; then
-      for _cand in "${CONTINUUM_HOME:-$HOME/.continuum}"/cuda-env "${CONTINUUM_HOME:-$HOME/.continuum}"/cuda-*; do
-        for _sub in Library/lib/x64 lib/x64; do
-          if [ -f "$_cand/$_sub/curand.lib" ] && [ -f "$_cand/$_sub/cuda.lib" ]; then
-            export CUDA_PATH="$(cygpath -w "$_cand" 2>/dev/null || echo "$_cand")"
-            _culibw="$(cygpath -w "$_cand/$_sub" 2>/dev/null || echo "$_cand/$_sub")"
-            # pocket-tts links cuda.lib but (unlike cudarc) emits no rustc-link-search, relying on the
-            # linker's own search. rustc links with the newest VS's linker + ITS OWN LIB (not ours), so
-            # the dir must reach link.exe via RUSTFLAGS -L. RUSTFLAGS env REPLACES (not merges) the
-            # .cargo/config target rustflags, so re-include +crt-static (the task-#4 /MT fix) or the whole
-            # GPU stack mislinks LNK2038 MT-vs-MD.
-            case " $RUSTFLAGS " in *"-L native=${_culibw} "*) : ;; *) export RUSTFLAGS="-C target-feature=+crt-static -L native=${_culibw} ${RUSTFLAGS}" ;; esac
-            echo "▶ CUDA_PATH=$CUDA_PATH + RUSTFLAGS -L $_culibw (import libs in $_sub)"
-            break 2
-          fi
-        done
-      done
-      [ -z "$CUDA_PATH" ] && echo "⚠ no complete CUDA import-lib dir found (cuda-*/**/{cuda,curand}.lib) - core link WILL fail. Provisioning gap (#6)." >&2
-    fi
-    if command -v cl.exe >/dev/null 2>&1; then
-      echo "▶ MSVC toolchain imported for the CUDA cargo build (cl.exe on PATH for nvcc/candle)"
-    else
-      echo "⚠ MSVC import ran but cl.exe still unresolved — the CUDA cargo build will fail" >&2
-    fi
-  else
-    echo "✗ Windows+CUDA needs VS2022 (14.4x) C++ x64 toolset for nvcc's host compiler; vswhere/vcvars not found — the core build will fail. Install via the 'msvc' module." >&2
-  fi
-fi
 
 # ── #296 swept-artifact guard ────────────────────────────────────────
 # Cache eviction is a SUPPORTED event (CLAUDE.md disk doctrine): the shared
@@ -427,9 +317,33 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $
 # `continuum` is the pure-Rust CLI client (replaces the Node `./jtag`): `continuum ping`,
 # `continuum <command> [json]` over the core IPC socket via the uniform Connection.
 # Built here so the headless start produces the client on disk too.
-echo "▶ building continuum (Rust CLI client)"
-cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
-  || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
+# SELF-BUILD GUARD. `continuum reboot` runs THIS script from inside the running
+# `continuum` binary. On Windows a running .exe cannot be replaced — the image is
+# locked — so this build fails with
+#
+#   error: failed to remove file `...\cargo-target\debug\continuum.exe`
+#
+# and cargo returns non-zero for the WHOLE invocation. Every later build in this
+# script is skipped, continuum-core-server is never rebuilt, and `continuum reboot`
+# dies after its full timeout with "the start script exited (exit code: 1) without
+# the core coming up". Measured on BIGMAMA 2026-08-05: 772s to that failure. This
+# is why reboot has never worked on Windows — the verb was trying to overwrite
+# itself mid-run. (On Unix it silently works: unlink leaves the running inode.)
+#
+# The caller sets CONTINUUM_SKIP_SELF_BUILD when it IS the continuum binary.
+# reboot's contract is "rebuild + relaunch the CORE"; the CLI on PATH is installed
+# by `npm start` / install.sh, which do not run from inside it. Skipping is stated
+# out loud, never silent — a skipped build that looks like a completed one is how
+# stale binaries survive a "successful" deploy.
+if [ -n "${CONTINUUM_SKIP_SELF_BUILD:-}" ]; then
+  echo "▶ skipping continuum CLI build — this script was invoked BY the running"
+  echo "  continuum binary, which cannot replace its own image while executing."
+  echo "  The CORE is still rebuilt below. To update the CLI itself: npm start"
+else
+  echo "▶ building continuum (Rust CLI client)"
+  cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_FEATURES \
+    || echo "⚠ continuum build failed — CLI client unavailable (core still launches)" >&2
+fi
 
 # Put `continuum` on PATH so it works like any installed CLI — self-provisioning, the
 # managed-product principle ([[managed-product-everything-self-provisions-no-operator-steps]]).
@@ -502,8 +416,53 @@ if ! ensure_unswept_bin "$CARGO_TARGET_DIR/$PROFILE_LABEL/forge-custodian" forge
   echo "⚠ forge-custodian still missing after swept-cache rebuild — genome gene-conversion unavailable (core still launches)" >&2
 fi
 
+# WINDOWS: stop the old core BEFORE building it.
+#
+# The build-first ordering below is Unix-shaped. Only there can you replace the
+# FILE of a running executable — unlink leaves the running inode, so the old core
+# keeps serving out of memory while cargo writes the new binary. Windows LOCKS a
+# running image, so building over a live core fails with
+#
+#   error: failed to remove file `...\continuum-core-server.exe`
+#   Caused by: Access is denied. (os error 5)
+#
+# and the FATAL below aborts the whole start. This is not a `continuum reboot`
+# bug — it is in the shared build path, so `npm start` has it too: on Windows the
+# core could never be rebuilt while a core was running. That is the real scope of
+# "start/reboot/pull never worked on Windows". Measured on BIGMAMA 2026-08-05,
+# reproduced both from `continuum reboot` AND from a standalone run of this
+# script, which is what proved it was not reboot-specific.
+#
+# So on Windows: stop first, then build, then launch. Zero downtime is an explicit
+# NON-goal here — restarts are commonplace, stop-build-launch is the model, and
+# the grid absorbs the churn. Unix keeps the overlapping build for its free ~0
+# downtime. Loud either way: a silent stop would look like a hang during a long
+# compile.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null | grep -qi continuum-core-server; then
+      echo "▶ Windows: stopping the running core before rebuilding it — a running .exe is"
+      echo "  locked, so build-then-swap cannot work here (downtime is expected, not a fault)"
+      taskkill //F //T //IM continuum-core-server.exe >/dev/null 2>&1 || true
+      # A dead pid is not a closed handle. Poll until the image is actually
+      # released; building one tick early reproduces the exact os error 5.
+      for _ in $(seq 1 60); do
+        tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null \
+          | grep -qi continuum-core-server || break
+        sleep 0.5
+      done
+      if tasklist //FI "IMAGENAME eq continuum-core-server.exe" 2>/dev/null | grep -qi continuum-core-server; then
+        echo "✗ FATAL: core still running after 30s — refusing to build over a locked image" >&2
+        echo "  (that path fails with os error 5 and silently leaves you on the OLD binary)" >&2
+        exit 1
+      fi
+    fi
+    ;;
+esac
+
 # Build the server binary BEFORE stopping the old core, so the running core keeps
-# serving through the (cached, fast) compile and downtime is ~0.
+# serving through the (cached, fast) compile and downtime is ~0. (Unix ordering —
+# see the Windows stop-first block above.)
 echo "▶ building continuum-core-server"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
   || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }

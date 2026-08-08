@@ -151,8 +151,15 @@ function Set-ColdStorageEnv {
         '# Cold artifacts (models, genome, build cache) live on a large drive.',
         '# Reconfigure by editing CONTINUUM_STORAGE_PATH below; re-running install',
         '# respects an existing valid path.',
-        "CONTINUUM_STORAGE_PATH=$ColdRoot",
-        "HF_HOME=$hf"
+        # SINGLE-QUOTED, and on Windows that is load-bearing rather than cosmetic. config.env is
+        # `source`d by bash (start-server.sh launches the core), and bash treats a backslash in an
+        # unquoted value as an escape character, so the path does not survive the round trip:
+        #   HF_HOME=D:\continuum-cold\huggingface   sources as   D:continuum-coldhuggingface
+        # Windows resolves that drive-relative string into a SEPARATE cache root. MEASURED: a 76 GB
+        # model download landed in D:\continuum-coldhuggingface\ while every resolver looked under
+        # D:\continuum-cold\huggingface\. The Rust reader strips these quotes (config_env::unquote).
+        "CONTINUUM_STORAGE_PATH='$ColdRoot'",
+        "HF_HOME='$hf'"
     )
     foreach ($kv in @(@('CONTINUUM_STORAGE_PATH', $ColdRoot), @('HF_HOME', $hf), @('CARGO_TARGET_DIR', $cargo))) {
         [Environment]::SetEnvironmentVariable($kv[0], $kv[1], 'User')   # persist for future sessions
