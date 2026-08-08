@@ -371,7 +371,7 @@ mod tests {
 
         // and it did not cost the built-ins: the floor still stands under it.
         let purposes: Vec<&str> = source.purposes().collect();
-        for shipped in ["chat", "benchmark", "video-chat", "profile"] {
+        for shipped in ["chat", "benchmark/hard-rs", "video-chat", "profile"] {
             assert!(
                 purposes.contains(&shipped),
                 "overlay replaced the embedded floor instead of layering on it: {purposes:?}"
