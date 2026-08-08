@@ -450,10 +450,26 @@ impl ActionCommand for AgentSolve {
                                     // the same read/search spiral. A retry's objective is
                                     // STATE, so the zero-diff arm changes the objective:
                                     // an edit is the only move that earns feedback.
+                                    // HELD-OUT honesty (due-diligence find, 2026-08-08): the
+                                    // named failing tests come from the grader's fresh clone
+                                    // + the instance's held-out test_patch — they DO NOT
+                                    // EXIST in her workspace. The old wording ("Failing
+                                    // tests: X … run them") was an unfollowable instruction:
+                                    // atlas-24066-n5 was told to run test_issue_24062, which
+                                    // no grep of her tree can find. Name them as the
+                                    // grader's, and point her at the reproduction she CAN
+                                    // run — the example in the task's own issue text.
                                     let failing = if g.failed_tests.is_empty() {
                                         String::new()
                                     } else {
-                                        format!(" Failing tests: {}.", g.failed_tests.join(", "))
+                                        format!(
+                                            " The grader's held-out tests still failing: {} \
+                                             (these are NOT in your workspace — do not search \
+                                             for them; reproduce the problem with the example \
+                                             from the task description instead, and verify \
+                                             your fix against that).",
+                                            g.failed_tests.join(", ")
+                                        )
                                     };
                                     // The OUTPUT half of the verdict (atlas-sympy-24066-n4,
                                     // 2026-08-08): she rebuilt ~90% of the gold patch and
@@ -475,22 +491,49 @@ impl ActionCommand for AgentSolve {
                                     // "I worked a coding task" reflection, and she spent 10
                                     // of 12 acts re-deriving cse_main.py). The trail is
                                     // STATE the substrate holds — hand it back explicitly.
-                                    let trail = if r.files_examined.is_empty() {
+                                    // DEAD-ATTEMPT honesty (due-diligence find, 2026-08-08):
+                                    // an attempt that died before acting (infra fault, acts
+                                    // 0) leaves a junk trail — atlas-24066-n5 attempt 2 was
+                                    // told "go straight to the file you already identified.
+                                    // Files examined: sympy/physics" after attempt 1 died at
+                                    // act 0. The verdict asserted history that never
+                                    // happened. A trail only rides when the attempt actually
+                                    // worked, and directory fragments are filtered — only
+                                    // entries that look like FILES teach.
+                                    let attempt_worked = r.acts > 0;
+                                    let file_entries: Vec<&String> = r
+                                        .files_examined
+                                        .iter()
+                                        .filter(|p| p.rsplit('/').next().is_some_and(|s| s.contains('.')))
+                                        .collect();
+                                    let trail = if !attempt_worked || file_entries.is_empty() {
                                         String::new()
                                     } else {
                                         format!(
                                             " Files your previous attempt examined (in order): {}.",
-                                            r.files_examined.join(", ")
+                                            file_entries
+                                                .iter()
+                                                .map(|s| s.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(", ")
                                         )
                                     };
                                     next_task = if g.patch_bytes == 0 {
+                                        // "the file you already identified" is only true when
+                                        // the trail actually names one; a dead or fileless
+                                        // attempt gets a fresh-start objective instead of a
+                                        // reference to history that never happened.
+                                        let go = if trail.is_empty() {
+                                            "Find the file at fault and apply your best-guess fix"
+                                        } else {
+                                            "Go straight to the file you already identified and apply your best-guess fix"
+                                        };
                                         format!(
                                             "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} produced NO EDIT] \
                                              You changed no files, so the grader had nothing to run.{failing}{trail} \
-                                             Reading and searching cannot score; only an edit can. This attempt, go \
-                                             straight to the file you already identified and apply your best-guess fix \
+                                             Reading and searching cannot score; only an edit can. This attempt: {go} \
                                              with code/edit — a wrong edit earns failing-test feedback to iterate on; \
-                                             no edit earns nothing. Do not re-read what you have already read.{output}",
+                                             no edit earns nothing.{output}",
                                         )
                                     } else {
                                         let edited = if r.files_changed.is_empty() {
@@ -502,8 +545,8 @@ impl ActionCommand for AgentSolve {
                                             "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve] \
                                              FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
                                              Your previous edits are still in this workspace.{edited}{trail} \
-                                             Investigate why these tests fail — run them — then fix in place without \
-                                             breaking what passes.{output}",
+                                             Reproduce the problem with the task's own example, fix in place, and \
+                                             verify against that example without breaking what passes.{output}",
                                             g.fail_to_pass_passed,
                                             g.fail_to_pass_total,
                                             g.pass_to_pass_passed,
