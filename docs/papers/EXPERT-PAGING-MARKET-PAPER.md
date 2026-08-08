@@ -118,7 +118,23 @@ artifact + pinned config in, receipt JSON out, appended to the run ledger. The
 same harness re-runs on any qualifying machine; a claim's ledger row cites the
 command line that regenerates it. Distribution rule: results reported over ≥3
 runs (nondeterminism discipline above), the harness emitting all runs, never a
-survivor number. Sim-provable claims (market clearing invariants, placement)
+survivor number.
+
+**Noise-floor gate (BigMama's rule, 2026-08-08, from a C3-class near-miss):**
+distributions are necessary but not sufficient — the runner must establish the
+RIG'S OWN noise floor before any delta is reportable (her measured example:
+llama-bench 5-rep stddev ±28% on one workload; a CUDA "slowdown" that looked
+real sat entirely inside run-to-run variance). Every receipt JSON carries
+`{n, mean, stddev, measured_floor}`, and a row is **REFUSED rather than
+rendered** when the delta does not clear the floor — the cliff-law refusal
+applied to measurement instead of budget. A 4.0× on Metal clears by a mile; a
+1.3× anywhere would not, and still prints as a distribution. Corollary: C3 is
+structurally TWO claims with different evidence classes — the Metal speedup
+(a delta vs its floor) and the CUDA numerical-identity claim (an exactness
+check) — and a runner emitting both from one entrypoint labels them
+separately, never merges them in prose.
+
+Sim-provable claims (market clearing invariants, placement)
 get deterministic `capacity/sim` scenarios promoted into tier 1 as they land —
 a market decision replayable without hardware is a unit test, and gets written
 as one.
