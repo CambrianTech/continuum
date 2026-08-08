@@ -29,10 +29,11 @@ pub fn decision_from_response(text: &str) -> Decision {
     // the "only thinking → don't speak" behavior.
     let cleaned = clean_response(text);
     let trimmed = cleaned.text.trim();
+    probe_label_stripped_into_silence(text, trimmed);
     if trimmed.is_empty()
         || looks_like_silence_token(trimmed)
         || starts_with_silence_token(trimmed)
-        || ends_with_silence_token(trimmed)
+        || declares_silence_token(trimmed)
         || is_narrated_pass(trimmed)
     {
         Decision::Pass
@@ -41,6 +42,47 @@ pub fn decision_from_response(text: &str) -> Decision {
             text: trimmed.to_string(),
         }
     }
+}
+
+/// #349 DETECTOR — does the label-stripper actually cost us answers, or only in theory?
+///
+/// The mechanism is verified: `clean_response`'s speaker-name stripper is
+/// `^[A-Z][A-Za-z\s]+:\s*`, which eats a CONTENT LABEL (`Verdict: `, `Answer: `, `Result: `)
+/// exactly as if it were `Anwen: `. When the token sits right behind that label, the strip
+/// exposes it to [`starts_with_silence_token`] and a real answer becomes a silent `Pass` —
+/// the #220 shape, where an answer-graded benchmark scores 0 on a CORRECT response.
+///
+/// What I do NOT have is a single live sighting. `"Verdict: PASS for all six cases."` is a
+/// fixture I wrote, not something a citizen said. The correct fix (thread the real speaker
+/// names — `Turn::author` already carries them — so the pattern stops guessing at what a
+/// name is) changes cleaning on EVERY turn, and refactoring the universal speech path on a
+/// hypothesis is the same mistake as tuning a phrase list: confident motion on unmeasured
+/// ground ([[build-a-bisect-instrument-instead-of-another-theory]]).
+///
+/// So this fires the instrument instead. Pure observation, no behaviour change: it notices
+/// when a turn became silence ONLY because a prefix was stripped — the raw generation did
+/// not lead with the token, the cleaned text does. If this never fires, #349 is theoretical
+/// and the refactor is not worth its risk. If it fires, we have the verbatim answer we lost
+/// and the refactor is justified by data instead of by argument.
+fn probe_label_stripped_into_silence(raw: &str, cleaned: &str) {
+    if !label_strip_caused_silence(raw, cleaned) {
+        return;
+    }
+    crate::probe!(
+        class = "persona.parse.label_stripped_into_silence",
+        raw_head = %raw.trim().chars().take(120).collect::<String>(),
+        cleaned_head = %cleaned.chars().take(120).collect::<String>(),
+        "a prefix strip is what turned this turn into silence — #349: if the stripped prefix \
+         was a CONTENT LABEL (Verdict:/Answer:/Result:) rather than a speaker name, a real \
+         answer was just swallowed"
+    );
+}
+
+/// The detector's decision, split out from the probe so it is testable. True when the
+/// CLEANED text leads with the reserved token but the RAW generation did not — i.e. the
+/// prefix strip, not the model, is what produced the silence.
+fn label_strip_caused_silence(raw: &str, cleaned: &str) -> bool {
+    starts_with_silence_token(cleaned) && !starts_with_silence_token(raw.trim())
 }
 
 /// #271: a SPOKEN pass is not a pass. Glass-boxed live 2026-07-30: models
@@ -121,47 +163,84 @@ fn starts_with_silence_token(text: &str) -> bool {
     core.eq_ignore_ascii_case(SILENCE_TOKEN)
 }
 
-/// The TAIL form of the same leak. `starts_with_silence_token` has always honored
-/// `PASS — nothing to add here`: the reserved token means silence and the prose around it
-/// is leakage. Observed live 2026-08-06 (#264 cascade, two citizens): the leakage arrives on
-/// the OTHER side — a paragraph of filler ending `…please let me know! Otherwise, PASS.` She
-/// reached for the reserved vocabulary we taught her, put it where the sentence wanted it,
-/// and the parser did not honor it — so the announcement went to the room and re-woke every
-/// peer into announcing THEIR pass. That is the exact cascade #271 exists to end, arriving
-/// through a position the collocation list cannot cover
+/// The RESERVED TOKEN used as a declaration of silence, in any of the three positions a
+/// citizen actually puts it. `starts_with_silence_token` has always honored `PASS — nothing
+/// to add here`: the token means silence and the prose around it is leakage. The leakage
+/// arrives from the other directions too, and each one that goes unhonored posts an
+/// announcement to the room that re-wakes every peer into announcing THEIR pass — the exact
+/// cascade #271 exists to end, arriving through positions a collocation list cannot cover
 /// ([[check-the-parser-before-blaming-the-model-key-spelling-has-now-cost-us-twice]]).
 ///
-/// Deliberately NOT another phrase in `STRONG_CLOSURES`: this is the TOKEN, not an idiom, so
-/// it needs no length cap and no calibration — the file's own history says phrase/length
-/// tuning is an arms race that the next filler message wins.
+/// Deliberately NOT more phrases in `STRONG_CLOSURES`: this is the TOKEN, not an idiom, so it
+/// needs no length cap and no calibration — the file's own history says phrase/length tuning
+/// is an arms race that the next filler message wins. A POSITION rule is decidable; a phrase
+/// list is a treadmill.
 ///
-/// The one discriminator is SPELLING, and it is case-SENSITIVE on purpose. `PASS` is the
-/// reserved form we taught; `…and otherwise pass.` in ordinary lowercase English is a person
-/// talking about passing a value or declining an option, and must stay Speak. Fence guard
-/// stands: fenced content is substance no matter what surrounds it.
+/// The discriminator is SPELLING, and it is case-SENSITIVE on purpose. `PASS` is the reserved
+/// form we taught; `…and otherwise pass.` in ordinary lowercase English is a person talking
+/// about passing a value or declining an option, and must stay Speak. The token must also be
+/// a STANDALONE word — never `PASSED`, `BYPASS`, `PASS_TOKEN`. Fence guard stands: fenced
+/// content is substance no matter what surrounds it.
 ///
-/// KNOWN GAP, measured not guessed. A THIRD live variant the same day puts the token
-/// mid-sentence: `…please let me know! Otherwise, PASS for now as I don't have anything
-/// genuinely new to add.` This guard cannot see it (not the final word), and Tier 2 does not
-/// catch it either — every `WEAK_CLOSURES` entry requires the FIRST-PERSON form (`i'll pass
-/// for now`) and this message has no `I'll`. I asserted Tier 2 would cover it, wrote the test,
-/// and the test said otherwise; the assertion was wrong.
+/// # Scope: exactly one position, and why it stopped growing
 ///
-/// Left UNFIXED on purpose. The principled generalization is "reserved token in CLAUSE-INITIAL
-/// position anywhere" (which is what `starts_with_silence_token` already is, at offset 0) — a
-/// decidable rule rather than another phrase. But it is a real widening of when a citizen is
-/// silenced, and one observation is not enough to justify it at the same moment the file's own
-/// history warns that per-variant tuning is the arms race. Wants a second sighting or Joel's
-/// call, not extrapolation from n=1.
-fn ends_with_silence_token(text: &str) -> bool {
+/// The token is honored when it is the LAST word — `…please let me know! Otherwise, PASS.`
+/// (live 2026-08-06, two citizens). The leading form is
+/// [`starts_with_silence_token`]'s job. Together those are "the token IS her message",
+/// which is protocol decoding of a word we taught her.
+///
+/// Two further positions were built and then deleted the same night, and the reasoning is
+/// the load-bearing part of this file:
+///
+/// - **Clause-initial** (`…Otherwise, PASS for now as I…`) collides head-on with real
+///   answers. `Verdict: PASS for all six cases.` is positionally identical and semantically
+///   opposite; silencing it is the #220 failure — `spoken: None`, and an answer-graded
+///   benchmark scores 0 on a correct response. Fail open to Speak: silencing real content
+///   is the worse error.
+/// - **First-person declaration** (`Therefore, I will proceed with PASS…`) was covered by a
+///   phrase list of leads — `i will`, `i'll`, `i am going to`. It shipped, and Joel killed
+///   it the same night with the right objection: *"Regex ideas and string matches for
+///   semantic understanding is not good for reliability."* He is correct. Deciding whether a
+///   SENTENCE yields the turn is a semantic judgement, and a phrase list is the wrong
+///   instrument for one — this file's own history is the proof (the length cap went 500 →
+///   beaten by 11 chars → 700 → beaten by 14, and the lead list would have been beaten by
+///   `my choice is PASS` next week).
+///
+/// **The replacement is a channel, not a better matcher.** `Pass` now has a structured verb
+/// — [`yield_turn`](super::persona_tools::VERDICT_YIELD_TURN) — offered on the same native
+/// tool channel the citizens already use correctly. Recognising a verb we defined is
+/// protocol; recognising an intention in prose is not. The missing channel was the actual
+/// defect, and every string-matching fix before this one was scar tissue around it.
+///
+/// What stays here is only the compatibility path for a model that emits the bare token
+/// without using the tool channel at all.
+fn declares_silence_token(text: &str) -> bool {
     if text.contains("```") {
         return false;
     }
-    let Some(last) = text.split_whitespace().next_back() else {
-        return false;
-    };
-    let core = last.trim_matches(|c: char| !c.is_alphanumeric());
-    core == SILENCE_TOKEN
+    let bytes = text.as_bytes();
+    let mut cursor = 0usize;
+    while let Some(offset) = text[cursor..].find(SILENCE_TOKEN) {
+        let start = cursor + offset;
+        let end = start + SILENCE_TOKEN.len();
+        cursor = end;
+        // Standalone word only.
+        let free_before = start == 0 || !is_word_byte(bytes[start - 1]);
+        let free_after = end == text.len() || !is_word_byte(bytes[end]);
+        if !(free_before && free_after) {
+            continue;
+        }
+        // The token is her whole closing move: only punctuation may follow.
+        if !text[end..].chars().any(|c| c.is_alphanumeric()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Word-constituent byte, so the reserved token is only honored as a standalone word.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 #[cfg(test)]
@@ -219,22 +298,92 @@ mod tests {
         );
     }
 
-    // what this catches (#271, tail form — observed live 2026-08-06 in the #264 cascade):
-    // she reaches for the RESERVED TOKEN and puts it where the sentence wants it, at the end.
-    // Two citizens, verbatim: "…please let me know! Otherwise, PASS." The leading form
-    // ("PASS — nothing to add") has always lifted; this position did not, so the announcement
-    // went to the room and re-woke every peer into announcing THEIR pass. The discriminator is
-    // SPELLING, not phrasing: uppercase `PASS` is the reserved form we taught her, while
-    // lowercase "pass" in ordinary English (passing a value, tests that pass) must stay Speak.
+    // what this catches (#349): the DETECTOR itself. A probe that can only ever stay silent
+    // is worse than no probe ([[a-probe-that-can-only-fail-is-worse-than-none]]), so pin
+    // both directions — it must fire on the shape it exists to find, and must NOT fire on
+    // the ordinary ways a turn becomes silence. If the live counter reads zero later, this
+    // is what makes that zero mean "does not happen" rather than "instrument was broken".
     #[test]
-    fn a_trailing_reserved_pass_token_is_silence_but_the_english_word_is_not() {
+    fn the_label_strip_detector_fires_only_when_stripping_caused_the_silence() {
+        // FIRES: raw led with a content label, cleaned leads with the token. The #220 shape.
+        assert!(label_strip_caused_silence(
+            "Verdict: PASS for all six cases.",
+            "PASS for all six cases."
+        ));
+        assert!(label_strip_caused_silence(
+            "Answer: PASS — the guard holds on every path.",
+            "PASS — the guard holds on every path."
+        ));
+        // DOES NOT FIRE: she genuinely led with the token (nothing was stripped).
+        assert!(!label_strip_caused_silence(
+            "PASS — nothing to add here",
+            "PASS — nothing to add here"
+        ));
+        // DOES NOT FIRE: silence arrived by any other route, so the strip is not implicated.
+        assert!(!label_strip_caused_silence("<think>hm</think>", ""));
+        assert!(!label_strip_caused_silence(
+            "Anwen: the bank offset math drifts under X.",
+            "the bank offset math drifts under X."
+        ));
+        // DOES NOT FIRE: a name prefix WAS stripped and the remainder is the bare token —
+        // that is a real, intended silence (looks_like_silence_token owns it), not a loss.
+        assert!(!label_strip_caused_silence("Anwen: hello there", "hello there"));
+    }
+
+    // what this catches (#271/#264): the RESERVED TOKEN used as a declaration of silence, in
+    // every position a citizen actually puts it. The leading form ("PASS — nothing to add")
+    // has always lifted; the other three did not, so each announcement went to the room and
+    // re-woke every peer into announcing THEIR pass. The discriminator is SPELLING, not
+    // phrasing: uppercase `PASS` is the reserved form we taught her, while lowercase "pass"
+    // in ordinary English (passing a value, tests that pass) must stay Speak.
+    #[test]
+    fn a_declared_reserved_pass_token_is_silence_but_the_english_word_is_not() {
         for live in [
+            // Position 1 — FINAL WORD. Verbatim, two citizens, 2026-08-06.
             "To move forward productively, I'll focus on finding specific tasks or questions \
              that need attention. If there are any particular areas where assistance is needed, \
              please let me know! Otherwise, PASS.",
             "I've been repeating myself without adding value. Otherwise, PASS",
         ] {
             assert_eq!(decision_from_response(live), Decision::Pass, "must silence: {live:?}");
+        }
+        // THE LINES WE CHOSE NOT TO CROSS — two positions built and deleted the same night.
+        // Every string below reaches the room as speech, and that is the accepted cost of
+        // not guessing at what a sentence means.
+        //
+        // 1. CLAUSE-INITIAL. Positionally identical to a value report ("…the result was:
+        //    PASS across the board"), semantically its opposite. Silencing it is the #220
+        //    answer-swallowing failure — spoken: None, and an answer-graded benchmark scores
+        //    0 on a correct response.
+        // 2. FIRST-PERSON DECLARATION. A phrase list of leads (`i will`, `i'll`, …) covered
+        //    this for exactly one commit before Joel killed it: string matching is the wrong
+        //    instrument for a semantic judgement, and this file's own history proves it (the
+        //    length cap went 500 → beaten by 11 chars → 700 → beaten by 14). Its replacement
+        //    is the structured `yield_turn` verb, not a cleverer matcher.
+        //
+        // what this catches: someone "completing" the position set later. Every shape here
+        // is one a REAL ANSWER can also take, which is precisely why they stay speakable.
+        //
+        // NOTE, a SEPARATE live defect (#349) found while writing this block, NOT caused by
+        // anything in this file: `"Verdict: PASS for all six cases."` IS silenced today,
+        // because `clean_response`'s speaker-name stripper `^[A-Z][A-Za-z\s]+:\s*` eats
+        // `Verdict: ` as though it were `Anwen: `, exposing the token to
+        // `starts_with_silence_token`. Fixtures below avoid a leading capitalised label so
+        // this test measures THIS file's rule and not that one.
+        for still_speaks in [
+            "…please let me know! Otherwise, PASS for now as I don't have anything genuinely \
+             new to add.",
+            "The suite ran 6 cases, and the result was: PASS across the board.",
+            "Reviewed all 3 files, and my verdict is, PASS on every one.",
+            "Therefore, I will proceed with PASS to avoid further unproductive actions.",
+            "To break this cycle and avoid further redundancy, I will proceed with PASS for now.",
+            "Otherwise, I will PASS and continue to monitor any new developments that arise.",
+        ] {
+            assert!(
+                matches!(decision_from_response(still_speaks), Decision::Speak { .. }),
+                "must stay speech — reading intent out of a sentence is the verb's job now, \
+                 not this parser's: {still_speaks:?}"
+            );
         }
         for speak in [
             // Lowercase: ordinary English, never the reserved token.
@@ -245,8 +394,16 @@ mod tests {
             // line is silence by an older rule — `looks_like_silence_token` scans lines — which
             // this guard neither extends nor overrides.)
             "Here's the fix:\n```rust\nlet x = 1;\n```\nThat should do it. PASS.",
-            // Uppercase but not the final word — this is prose ABOUT the token.
+            // Uppercase, mid-clause, no first-person declaration governing it — prose ABOUT
+            // the token, which is exactly what the position rule must not swallow.
             "The PASS token is what the silence contract keys on, so keep it reserved.",
+            "Run the suite and report PASS or FAIL for each case in the table.",
+            "We should PASS on the refactor until the governor lands.",
+            // Not a standalone word — the word-boundary guard, without which every one of
+            // these would silence a real answer.
+            "All 34 cases PASSED after the fix, so the branch is green.",
+            "The BYPASS flag is still wired to the old gate.",
+            "Grep for PASS_TOKEN if you want the constant's call sites.",
         ] {
             assert!(
                 matches!(decision_from_response(speak), Decision::Speak { .. }),

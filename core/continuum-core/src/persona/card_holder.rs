@@ -116,6 +116,41 @@ pub fn hold_of(card: &WorkCard, now_ms: u64) -> Hold {
     }
 }
 
+/// The states `work/claim` refuses outright, mirroring airc-lib's guard
+/// (`work.rs` → `AircError::WorkCardNotClaimable`). Duplicated rather than
+/// imported because continuum deps airc-protocol/-core, not airc-lib — the same
+/// drift-guard arrangement as [`hold_of`], and this doc-link is the guard.
+///
+/// A card in one of these states is DONE or under review; offering it as
+/// available work can only produce a refusal the citizen cannot distinguish
+/// from her own failure.
+pub fn refused_by_claim(state: airc_work::model::CardState) -> bool {
+    matches!(
+        state,
+        airc_work::model::CardState::Review
+            | airc_work::model::CardState::Merged
+            | airc_work::model::CardState::Closed
+    )
+}
+
+/// Is this card takeable by anyone right now? The ONE claimability decision,
+/// composing the lease ([`hold_of`]) with the column ([`refused_by_claim`]).
+///
+/// Every read surface that advertises available work must call THIS rather than
+/// re-deriving it: before 2026-08-07 `room_board_source` and `CardHolder` each
+/// filtered terminal states by hand, both missed `Review`, and the board offered
+/// 11 unclaimable cards to citizens who had no way to know.
+pub fn claimable_now(card: &WorkCard, now_ms: u64) -> bool {
+    if refused_by_claim(card.state) {
+        return false;
+    }
+    match hold_of(card, now_ms) {
+        Hold::Held => false,
+        Hold::Lapsed => true,
+        Hold::Unclaimed => card.state == airc_work::model::CardState::Open,
+    }
+}
+
 /// The 8-char short id every surface in the system uses to name a uuid.
 fn short8(id: &uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
@@ -152,7 +187,19 @@ impl CardHolder {
     /// Can the reader take this card right now? A lapsed hold is takeable —
     /// including (especially) her own. The card's column decides the rest:
     /// an `Open` card is claimable even with no claim ever made.
+    ///
+    /// Mirrors the WRITE side exactly. `work/claim` refuses `Review | Merged |
+    /// Closed` outright (`airc-lib` `work.rs` → `WorkCardNotClaimable`), so a
+    /// read surface that advertised them was handing a citizen a guaranteed
+    /// bounce: measured 2026-08-07 on the live `#general` board, **11 of the 58
+    /// cards offered as claimable were `Review`** — a citizen who picked one
+    /// could only fail, and had no way to tell that from her own incapacity.
+    /// Read and write must answer "can I take this" the same way, or the board
+    /// is lying about what is available ([[the-compression-principle]]).
     pub fn claimable(&self, state: airc_work::model::CardState) -> bool {
+        if refused_by_claim(state) {
+            return false;
+        }
         matches!(self.hold, Hold::Lapsed) || state == airc_work::model::CardState::Open
     }
 
@@ -246,6 +293,50 @@ mod tests {
             updated_at_ms: 0,
             reviews: None,
         }
+    }
+
+    // what this catches: a card the WRITE side refuses being advertised by a READ
+    // surface as available work. `work/claim` rejects Review|Merged|Closed outright
+    // (airc-lib WorkCardNotClaimable); before this, `claimable()` asked only
+    // "lapsed-or-Open" and a Review card with a lapsed lease answered YES —
+    // 11 of the 58 cards offered on the live #general board 2026-08-07. A citizen
+    // who picked one got a refusal she could not tell from her own incapacity.
+    // Regression for the claim/advertise split (see `refused_by_claim`).
+    #[test]
+    fn a_card_the_claim_verb_refuses_is_never_advertised_as_claimable() {
+        let owner = PeerId::new();
+        let lapsed = 1_000u64; // expiry in the past relative to `now`
+        let now = 10_000u64;
+
+        for state in [CardState::Review, CardState::Merged, CardState::Closed] {
+            let mut c = card(Some(owner), true, Some(lapsed));
+            c.state = state;
+            let h = holder(&c, uuid::Uuid::new_v4(), now, &NoNames);
+            assert_eq!(
+                h.hold,
+                Hold::Lapsed,
+                "{state:?}: fixture must have a genuinely lapsed lease, or this \
+                 test proves nothing"
+            );
+            assert!(
+                !h.claimable(state),
+                "{state:?} is refused by work/claim but was advertised as claimable"
+            );
+            assert!(
+                !claimable_now(&c, now),
+                "{state:?} must not appear in the board's [available work] lead"
+            );
+        }
+
+        // Positive control: the SAME lapsed lease on a working card stays takeable,
+        // so the guard above is excluding by state and not by lease.
+        let mut live = card(Some(owner), true, Some(lapsed));
+        live.state = CardState::InProgress;
+        assert!(
+            claimable_now(&live, now),
+            "a lapsed claim on non-terminal work must remain takeable — that is the \
+             whole reclaim path (#321)"
+        );
     }
 
     fn named(peer: PeerId, name: &str) -> std::collections::HashMap<PeerId, String> {

@@ -108,6 +108,17 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "coder-write-eval",
+            description: "Coder write gym — 30 single-function Rust tasks with held-out test \
+                          assertions, rustc compile+run graded. The KANBAN benchmark: dispatched \
+                          as work cards, solved by citizens with their own hands, graded from \
+                          their workspace artifacts (first citizen pass: sum_evens, 2026-08-07).",
+            grader: Grader::Rust,
+            tasks: 30,
+            eval_set: Some("coder-write-eval.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "coder-eval",
             description: "Continuum coder gym — 13 mixed practical Rust tasks, rustc compile+run \
                           graded (the original held-out genome-loop eval set).",
@@ -294,11 +305,17 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
 // ---- benchmark/list ------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkListParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkListParams.ts"
+)]
 pub struct BenchmarkListParams {}
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRow.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRow.ts"
+)]
 pub struct BenchmarkRow {
     pub name: String,
     pub description: String,
@@ -310,7 +327,10 @@ pub struct BenchmarkRow {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkListResult.ts"
+)]
 pub struct BenchmarkListResult {
     pub benchmarks: Vec<BenchmarkRow>,
 }
@@ -329,7 +349,11 @@ impl ActionCommand for BenchmarkList {
     type Params = BenchmarkListParams;
     type Output = BenchmarkListResult;
 
-    async fn run(&self, _ctx: &Ctx, _p: BenchmarkListParams) -> Result<BenchmarkListResult, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: BenchmarkListParams,
+    ) -> Result<BenchmarkListResult, CommandError> {
         Ok(BenchmarkListResult {
             benchmarks: known_benchmarks()
                 .iter()
@@ -349,7 +373,10 @@ crate::register_stateless_command!(BenchmarkList);
 // ---- benchmark/run -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunParams.ts"
+)]
 pub struct BenchmarkRunParams {
     /// The persona (UUID) to put through the benchmark — her real cognition competes.
     pub persona_id: String,
@@ -382,7 +409,10 @@ pub struct BenchmarkRunParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunResult.ts"
+)]
 pub struct BenchmarkRunResult {
     pub benchmark: String,
     /// The run handle. Present on a DETACHED run (the eval spawned; its real result
@@ -436,7 +466,11 @@ impl ActionCommand for BenchmarkRun {
     type Params = BenchmarkRunParams;
     type Output = BenchmarkRunResult;
 
-    async fn run(&self, ctx: &Ctx, p: BenchmarkRunParams) -> Result<BenchmarkRunResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: BenchmarkRunParams,
+    ) -> Result<BenchmarkRunResult, CommandError> {
         let limit = p.limit.unwrap_or(20) as usize;
 
         // Resolve `(label, tasks)` from EITHER the static catalog OR the BenchmarkAdapter
@@ -454,7 +488,12 @@ impl ActionCommand for BenchmarkRun {
                          (needs its dataset pulled + a {:?} grader). Runnable today: {}.",
                         spec.name,
                         spec.grader,
-                        known_benchmarks().iter().filter(|b| b.eval_set.is_some()).map(|b| b.name).collect::<Vec<_>>().join(", "),
+                        known_benchmarks()
+                            .iter()
+                            .filter(|b| b.eval_set.is_some())
+                            .map(|b| b.name)
+                            .collect::<Vec<_>>()
+                            .join(", "),
                     ))
                 })?;
                 let (gym_name, content) =
@@ -487,19 +526,22 @@ impl ActionCommand for BenchmarkRun {
                         p.name, ds.source, ds.kind,
                     )));
                 }
-                let tasks = adapter
-                    .tasks(None, Some(limit))
-                    .await
-                    .map_err(|e| CommandError::Invalid(format!(
+                let tasks = adapter.tasks(None, Some(limit)).await.map_err(|e| {
+                    CommandError::Invalid(format!(
                         "benchmark adapter '{}' failed to load tasks: {e}",
                         p.name
-                    )))?;
+                    ))
+                })?;
                 (adapter.name().to_string(), tasks)
             } else {
                 return Err(CommandError::NotFound(format!(
                     "unknown benchmark '{}'. Catalog: {}. Adapters: {}. Call benchmark/list.",
                     p.name,
-                    known_benchmarks().iter().map(|b| b.name).collect::<Vec<_>>().join(", "),
+                    known_benchmarks()
+                        .iter()
+                        .map(|b| b.name)
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     crate::cognition::benchmark::names().join(", "),
                 )));
             };
@@ -611,7 +653,10 @@ fn benchmark_ledger_path() -> std::path::PathBuf {
 /// One comparative result — a cell contribution in the models × harness matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRecordParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRecordParams.ts"
+)]
 pub struct BenchmarkRecordParams {
     /// Model identity for the row — the served id (e.g. `unsloth/Devstral-Small-2507-GGUF`),
     /// with any gene noted in `gene`, never folded into this string.
@@ -651,7 +696,10 @@ pub struct BenchmarkRecordParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRecordResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRecordResult.ts"
+)]
 pub struct BenchmarkRecordResult {
     /// Ledger rows now on file (this row included).
     #[ts(type = "number")]
@@ -674,9 +722,15 @@ impl ActionCommand for BenchmarkRecord {
     type Params = BenchmarkRecordParams;
     type Output = BenchmarkRecordResult;
 
-    async fn run(&self, _ctx: &Ctx, p: BenchmarkRecordParams) -> Result<BenchmarkRecordResult, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkRecordParams,
+    ) -> Result<BenchmarkRecordResult, CommandError> {
         if p.total == 0 {
-            return Err(CommandError::Invalid("total must be > 0 — an empty run is not a result".into()));
+            return Err(CommandError::Invalid(
+                "total must be > 0 — an empty run is not a result".into(),
+            ));
         }
         if p.resolved > p.total {
             return Err(CommandError::Invalid(format!(
@@ -686,7 +740,8 @@ impl ActionCommand for BenchmarkRecord {
         }
         if p.replication.trim().is_empty() {
             return Err(CommandError::Invalid(
-                "replication is required — a result nobody can re-run is a claim, not evidence".into(),
+                "replication is required — a result nobody can re-run is a claim, not evidence"
+                    .into(),
             ));
         }
         let path = benchmark_ledger_path();
@@ -709,14 +764,20 @@ impl ActionCommand for BenchmarkRecord {
         let rows = std::fs::read_to_string(&path)
             .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count() as u32)
             .unwrap_or(0);
-        Ok(BenchmarkRecordResult { rows, ledger: path.display().to_string() })
+        Ok(BenchmarkRecordResult {
+            rows,
+            ledger: path.display().to_string(),
+        })
     }
 }
 crate::register_stateless_command!(BenchmarkRecord);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkMatrixParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkMatrixParams.ts"
+)]
 pub struct BenchmarkMatrixParams {
     /// Only render rows for this benchmark. Omit for all benchmarks (one table each).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -725,7 +786,10 @@ pub struct BenchmarkMatrixParams {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkMatrixResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkMatrixResult.ts"
+)]
 pub struct BenchmarkMatrixResult {
     /// The rendered comparison — GitHub-flavored markdown, ready to paste anywhere.
     pub markdown: String,
@@ -749,7 +813,11 @@ impl ActionCommand for BenchmarkMatrix {
     type Params = BenchmarkMatrixParams;
     type Output = BenchmarkMatrixResult;
 
-    async fn run(&self, _ctx: &Ctx, p: BenchmarkMatrixParams) -> Result<BenchmarkMatrixResult, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkMatrixParams,
+    ) -> Result<BenchmarkMatrixResult, CommandError> {
         let path = benchmark_ledger_path();
         let raw = std::fs::read_to_string(&path).map_err(|_| {
             CommandError::NotFound(format!(
@@ -771,7 +839,10 @@ impl ActionCommand for BenchmarkMatrix {
                 None => "the evidence ledger is empty".into(),
             }));
         }
-        Ok(BenchmarkMatrixResult { markdown: render_matrix(&rows), rows: rows.len() as u32 })
+        Ok(BenchmarkMatrixResult {
+            markdown: render_matrix(&rows),
+            rows: rows.len() as u32,
+        })
     }
 }
 crate::register_stateless_command!(BenchmarkMatrix);
@@ -779,7 +850,10 @@ crate::register_stateless_command!(BenchmarkMatrix);
 // ── benchmark/competition — the product-vs-product scoreboard ────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkCompetitionParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkCompetitionParams.ts"
+)]
 pub struct BenchmarkCompetitionParams {
     /// Benchmark name (see `benchmark/list`). Its tasks are posed IDENTICALLY to every arm.
     pub name: String,
@@ -821,7 +895,10 @@ pub struct BenchmarkCompetitionParams {
 
 /// One arm's cell on the competition scoreboard.
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/CompetitionCell.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/CompetitionCell.ts"
+)]
 pub struct CompetitionCell {
     pub arm: String,
     /// `agent` (a full being — Continuum, Hermes) or `floor` (bare weights, no self). A
@@ -849,7 +926,10 @@ pub struct CompetitionCell {
 
 /// The scoreboard: every arm, same benchmark tasks, same grader, on one model.
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkCompetitionResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkCompetitionResult.ts"
+)]
 pub struct BenchmarkCompetitionResult {
     pub benchmark: String,
     pub model: String,
@@ -900,7 +980,10 @@ impl ActionCommand for BenchmarkCompetition {
         // spawns the body on the runtime, writes the finished scoreboard to a result file
         // + emits a terminal event, and returns a run_id NOW.
         if p.detach.unwrap_or(false) {
-            let run_id = p.run_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let run_id_ack = run_id.clone();
             let endpoint_ack = p
                 .endpoint
@@ -973,13 +1056,20 @@ impl BenchmarkCompetition {
         p: BenchmarkCompetitionParams,
     ) -> Result<BenchmarkCompetitionResult, CommandError> {
         // 1) Resolve the benchmark and slice its tasks — posed identically to every arm.
-        let spec = known_benchmarks().iter().find(|b| b.name == p.name).ok_or_else(|| {
-            CommandError::NotFound(format!(
-                "unknown benchmark '{}'. Known: {}. Call benchmark/list.",
-                p.name,
-                known_benchmarks().iter().map(|b| b.name).collect::<Vec<_>>().join(", "),
-            ))
-        })?;
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == p.name)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!(
+                    "unknown benchmark '{}'. Known: {}. Call benchmark/list.",
+                    p.name,
+                    known_benchmarks()
+                        .iter()
+                        .map(|b| b.name)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ))
+            })?;
         let eval_set = spec.eval_set.ok_or_else(|| {
             CommandError::Invalid(format!(
                 "benchmark '{}' is catalogued but not yet runnable through the grader.",
@@ -1076,15 +1166,26 @@ impl BenchmarkCompetition {
                 if !external.iter().any(|a| a.name() == n) {
                     return Err(CommandError::Invalid(format!(
                         "unknown arm '{n}'. Available: {}.",
-                        external.iter().map(|a| a.name()).collect::<Vec<_>>().join(", "),
+                        external
+                            .iter()
+                            .map(|a| a.name())
+                            .collect::<Vec<_>>()
+                            .join(", "),
                     )));
                 }
             }
             external.retain(|a| names.iter().any(|n| n == a.name()));
         }
-        let board = run_competition(&p.base_model_id, p.endpoint.as_deref(), &tasks, external).await;
+        let board =
+            run_competition(&p.base_model_id, p.endpoint.as_deref(), &tasks, external).await;
         for a in &board.arms {
-            cells.push(cell(&a.arm, a.kind.label(), a.score as u32, a.total as u32, &a.class));
+            cells.push(cell(
+                &a.arm,
+                a.kind.label(),
+                a.score as u32,
+                a.total as u32,
+                &a.class,
+            ));
         }
 
         // Second pass: an AGENT's honest number is its LIFT OVER FLOOR — what its self+loop adds
@@ -1119,9 +1220,9 @@ impl BenchmarkCompetition {
 fn cell(arm: &str, kind: &str, score: u32, total: u32, class: &ArmClass) -> CompetitionCell {
     let detail = match class {
         ArmClass::Clean => None,
-        ArmClass::Suspect { noisy } => {
-            Some(format!("{noisy} declined/errored task(s) — not a capability number"))
-        }
+        ArmClass::Suspect { noisy } => Some(format!(
+            "{noisy} declined/errored task(s) — not a capability number"
+        )),
         ArmClass::Void { reason } => Some(reason.clone()),
     };
     CompetitionCell {
@@ -1154,14 +1255,21 @@ fn render_matrix(rows: &[BenchmarkRecordParams]) -> String {
             Some(g) => format!("{} + {}", r.model, g),
             None => r.model.clone(),
         };
-        let cell = cells.entry(model_key).or_default().entry(&r.harness).or_insert((0, 0));
+        let cell = cells
+            .entry(model_key)
+            .or_default()
+            .entry(&r.harness)
+            .or_insert((0, 0));
         cell.0 += r.resolved;
         cell.1 += r.total;
     }
     let mut md = String::new();
     for (bench, (arms, cells)) in &by_bench {
-        md.push_str(&format!("## {bench}\n\n| model | {} |\n|---|{}\n", arms.join(" | "),
-            "---|".repeat(arms.len())));
+        md.push_str(&format!(
+            "## {bench}\n\n| model | {} |\n|---|{}\n",
+            arms.join(" | "),
+            "---|".repeat(arms.len())
+        ));
         for (model, per_arm) in cells {
             let row_cells: Vec<String> = arms
                 .iter()
@@ -1185,11 +1293,289 @@ fn render_matrix(rows: &[BenchmarkRecordParams]) -> String {
             r.benchmark,
             r.hardware,
             r.replication,
-            r.notes.as_deref().map(|n| format!(" — {n}")).unwrap_or_default(),
+            r.notes
+                .as_deref()
+                .map(|n| format!(" — {n}"))
+                .unwrap_or_default(),
         ));
     }
     md
 }
+
+
+// ───────────────────────── benchmark/dispatch ─────────────────────
+//
+// #346 (Joel, 2026-08-07): benchmarks delivered as WORK CARDS — measured for
+// what citizens DO through the ordinary kanban loop, not what a harness drives
+// them through. The empirical trigger: the live board's cards are substrate
+// diagnosis narratives (cross-grid network debugging) a coding citizen cannot
+// act on — Anwen held one, accurately reported "no progress", and paid 15,816
+// prefill tokens to conclude it. Coders code when the board contains coding
+// work sized to them; THIS is the verb that puts it there.
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkDispatchParams.ts"
+)]
+pub struct BenchmarkDispatchParams {
+    /// The benchmark name (see `benchmark/list`), e.g. `tool-bugfix-rs`.
+    pub name: String,
+    /// How many tasks (from the top) to post as cards. Omit for all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub limit: Option<u32>,
+    /// Board repo key the cards land under, e.g. `CambrianTech/continuum`.
+    /// Omit to reuse the repo of the cards already on the board — data-driven,
+    /// no baked-in default. Required only when the board is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub repo: Option<String>,
+    /// Citizen display names to direct the work at, round-robin. Each card gets
+    /// an addressed kickoff message in-room naming the assignee + card id — the
+    /// empirically proven activation path (an addressed imperative in its OWN
+    /// message block actuates; a card sitting silently on the board does not).
+    /// Omit for undirected dispatch (cards only, citizens self-select).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub assignees: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkDispatchResult.ts"
+)]
+pub struct BenchmarkDispatchResult {
+    pub benchmark: String,
+    /// Cards actually posted to the board.
+    #[ts(type = "number")]
+    pub dispatched: u32,
+    /// Short ids of the posted cards, in task order.
+    pub card_ids: Vec<String>,
+    /// Tasks NOT dispatched because they need harness-side orchestration a
+    /// claimed card cannot provide yet (setup_shell workspace restoration).
+    /// Reported, never silently dropped — a partial dispatch that reads as
+    /// full coverage is the lie this field exists to prevent.
+    #[ts(type = "number")]
+    pub skipped_needs_setup: u32,
+    /// Addressed kickoff messages actually delivered (0 when `assignees` was
+    /// omitted). A kickoff that failed to send is reported via `kickoff_errors`,
+    /// never silently counted as delivered.
+    #[ts(type = "number")]
+    pub kickoffs: u32,
+    /// Send failures for kickoff messages, card-id-prefixed. The cards are ON
+    /// the board regardless — a failed kickoff degrades to undirected dispatch,
+    /// it does not unwind the card.
+    pub kickoff_errors: Vec<String>,
+}
+
+/// Compose the card TITLE for one benchmark task. `[bench <name>]` is the
+/// machine-findable marker the (future) grading sentinel keys on; the rest is
+/// for the citizen scanning the board.
+pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> String {
+    let gist: String = prompt.chars().take(60).collect();
+    let ellipsis = if prompt.chars().count() > 60 { "…" } else { "" };
+    format!("[bench {bench}] {task_id}: {gist}{ellipsis}")
+}
+
+/// Compose the card BODY: the full prompt plus a definition of done a citizen
+/// can act on with her own hands. Grading inputs that must stay held out
+/// (`expect`, the harness `test`) are deliberately NOT written to the card —
+/// the DoD names the artifact, not the answer key. `solution_file` and
+/// `dod_shell` are legitimately visible: real work has a visible definition
+/// of done.
+pub(crate) fn dispatch_card_body(bench: &str, t: &crate::cognition::eval::EvalTask) -> String {
+    let mut body = format!("benchmark: {bench}\ntask: {}\n\n{}\n", t.id, t.prompt.trim());
+    if let Some(f) = &t.solution_file {
+        body.push_str(&format!(
+            "\nWrite your solution to `{f}` in your workspace (code/write)."
+        ));
+    }
+    if let Some(dod) = &t.dod_shell {
+        body.push_str(&format!(
+            "\nDefinition of done: `{dod}` exits 0 in your workspace — run it \
+             yourself (code/shell) and iterate until green."
+        ));
+    }
+    body.push_str(
+        "\n\nWhen your artifact is in place, mark the card done (work/state). \
+         Your work is graded from what you actually wrote and ran.",
+    );
+    body
+}
+
+/// `benchmark/dispatch` — post a benchmark's tasks as claimable work cards on
+/// the shared board. Citizens claim and work them through the SAME kanban loop
+/// as any other work; nothing about the turn is exam-shaped.
+pub struct BenchmarkDispatch {
+    pub registry: crate::persona::PersonaAircRuntimeRegistry,
+}
+
+#[async_trait]
+impl ActionCommand for BenchmarkDispatch {
+    const NAME: &'static str = "benchmark/dispatch";
+    // Operator/curator surface, like work/create: seeding the board is
+    // curation, not a citizen verb.
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Post a benchmark's tasks onto the work board as claimable cards (one card per task, \
+         title marked `[bench <name>]`). Citizens claim and solve them through the normal \
+         kanban loop with their own hands; scoring reads the artifacts they produce. \
+         `limit` caps how many tasks are posted; `repo` defaults to the board's existing repo.";
+    type Params = BenchmarkDispatchParams;
+    type Output = BenchmarkDispatchResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: BenchmarkDispatchParams,
+    ) -> Result<BenchmarkDispatchResult, CommandError> {
+        use crate::cognition::eval::EvalTask;
+        use crate::modules::work::persona_airc;
+        use airc_lib::{CreateWorkCard, Priority, RepoId};
+
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == p.name)
+            .ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "unknown benchmark '{}' — see benchmark/list",
+                    p.name
+                ))
+            })?;
+        let reference = spec.eval_set.ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "benchmark '{}' has no runnable eval_set yet — it is catalogued but its \
+                 task collection hasn't been pulled/committed (see benchmark/list `runnable`)",
+                p.name
+            ))
+        })?;
+
+        // Same fail-loud task loading as cognition/eval: the committed gym
+        // resolves from the embedded registry, a malformed line names itself.
+        let (origin, text) =
+            crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
+        let tasks: Vec<EvalTask> = text
+            .lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.trim()))
+            .filter(|(_, l)| !l.is_empty())
+            .map(|(n, l)| {
+                serde_json::from_str::<EvalTask>(l).map_err(|e| {
+                    CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let airc = persona_airc(&self.registry, ctx, "benchmark/dispatch")?;
+
+        // Repo: caller-supplied, else the repo the board already uses. No
+        // baked-in default — an empty board with no repo argument is a real
+        // question only the operator can answer.
+        let repo_key = match p.repo {
+            Some(r) => r,
+            None => {
+                let board = airc
+                    .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                    .await
+                    .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+                    .snapshot();
+                board
+                    .cards
+                    .first()
+                    .map(|c| c.repo.as_str().to_string())
+                    .ok_or_else(|| {
+                        CommandError::Invalid(
+                            "board is empty and no `repo` was given — pass repo=<owner/name> \
+                             so the cards land under a real board key"
+                                .to_string(),
+                        )
+                    })?
+            }
+        };
+        let repo = RepoId::new(repo_key)
+            .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
+
+        let assignees = p.assignees.unwrap_or_default();
+        if assignees.iter().any(|a| a.trim().is_empty()) {
+            return Err(CommandError::Invalid(
+                "assignees contains an empty name — every kickoff must address a real citizen"
+                    .to_string(),
+            ));
+        }
+
+        let take = p.limit.map(|l| l as usize).unwrap_or(tasks.len());
+        let mut card_ids = Vec::new();
+        let mut skipped_needs_setup = 0u32;
+        let mut kickoffs = 0u32;
+        let mut kickoff_errors = Vec::new();
+        for t in tasks.into_iter().take(take) {
+            // A setup_shell task needs its workspace re-broken before work
+            // starts — harness orchestration a claimed card can't provide yet.
+            // Skipping SILENTLY would report "dispatched" over fewer tasks
+            // than the benchmark holds; the count rides on the result instead.
+            if t.setup_shell.is_some() {
+                skipped_needs_setup += 1;
+                continue;
+            }
+            let mut req = CreateWorkCard::new(
+                repo.clone(),
+                dispatch_card_title(spec.name, &t.id, &t.prompt),
+                Priority::P2,
+            );
+            req.body = Some(dispatch_card_body(spec.name, &t));
+            let card_id = airc
+                .create_work_card(req)
+                .await
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            let full = card_id.as_uuid().simple().to_string();
+            let short = full[..8].to_string();
+
+            // Directed dispatch: round-robin an addressed kickoff per card.
+            // A card on the board is a fact; an addressed imperative in its
+            // own message block is what actually starts work (measured
+            // 2026-08-07: the same instruction actuated as its own block and
+            // was ignored when coalesced mid-burst). airc.say is one event =
+            // one block, so the structural condition holds by construction.
+            if !assignees.is_empty() {
+                let who = &assignees[card_ids.len() % assignees.len()];
+                let file = t
+                    .solution_file
+                    .clone()
+                    .unwrap_or_else(|| format!("{}.rs", t.id));
+                let kickoff = format!(
+                    "@{who} (to you): card {short} on this board is yours. Claim it \
+                     (claim_task {short}), read its body, write your solution to `{file}` \
+                     in your workspace, then mark it done (work/state {short} done). \
+                     Your artifact gets graded against held-out tests."
+                );
+                match airc.say(&kickoff).await {
+                    Ok(_) => kickoffs += 1,
+                    // The card stays — a lost kickoff degrades to undirected
+                    // dispatch and is REPORTED, never unwound or hidden.
+                    Err(e) => kickoff_errors.push(format!("{short}: {e}")),
+                }
+            }
+            card_ids.push(short);
+        }
+
+        Ok(BenchmarkDispatchResult {
+            benchmark: spec.name.to_string(),
+            dispatched: card_ids.len() as u32,
+            card_ids,
+            skipped_needs_setup,
+            kickoffs,
+            kickoff_errors,
+        })
+    }
+}
+
+// Descriptor only — the CONSTRUCTOR comes from WorkModule::commands(), which
+// holds the airc registry this command needs. This is the dep-holding half of
+// the descriptor/constructor pair (`register_stateless_command!` is for
+// Default-constructible commands; this one is not).
+crate::register_command!(BenchmarkDispatch);
 
 #[cfg(test)]
 mod tests {
@@ -1202,13 +1588,17 @@ mod tests {
     fn catalog_has_a_runnable_committed_benchmark() {
         let ks = known_benchmarks();
         assert!(!ks.is_empty(), "the benchmark catalog must not be empty");
-        let hr = ks.iter().find(|b| b.name == "humaneval-rs").expect("humaneval-rs catalogued");
+        let hr = ks
+            .iter()
+            .find(|b| b.name == "humaneval-rs")
+            .expect("humaneval-rs catalogued");
         assert!(hr.eval_set.is_some(), "humaneval-rs must be runnable");
         assert!(matches!(hr.grader, Grader::Rust));
         // Every runnable benchmark's eval_set must resolve through the gym resolver.
         for b in ks.iter().filter(|b| b.eval_set.is_some()) {
-            crate::cognition::gym::resolve_gym(b.eval_set.unwrap())
-                .unwrap_or_else(|e| panic!("benchmark '{}' eval_set does not resolve: {e}", b.name));
+            crate::cognition::gym::resolve_gym(b.eval_set.unwrap()).unwrap_or_else(|e| {
+                panic!("benchmark '{}' eval_set does not resolve: {e}", b.name)
+            });
         }
     }
 
@@ -1219,19 +1609,20 @@ mod tests {
     // the appendix. A matrix that drops or invents a cell publishes a false claim.
     #[test]
     fn matrix_renders_cells_and_replication_from_rows() {
-        let row = |model: &str, harness: &str, gene: Option<&str>, res, tot| BenchmarkRecordParams {
-            model: model.into(),
-            harness: harness.into(),
-            benchmark: "swe-bench-lite".into(),
-            resolved: res,
-            total: tot,
-            replication: format!("cu benchmark/run --name swe-bench-lite --arm {harness}"),
-            hardware: "macbook-m4-pro-64gb".into(),
-            gene: gene.map(Into::into),
-            output_tokens: None,
-            wall_seconds: None,
-            notes: None,
-        };
+        let row =
+            |model: &str, harness: &str, gene: Option<&str>, res, tot| BenchmarkRecordParams {
+                model: model.into(),
+                harness: harness.into(),
+                benchmark: "swe-bench-lite".into(),
+                resolved: res,
+                total: tot,
+                replication: format!("cu benchmark/run --name swe-bench-lite --arm {harness}"),
+                hardware: "macbook-m4-pro-64gb".into(),
+                gene: gene.map(Into::into),
+                output_tokens: None,
+                wall_seconds: None,
+                notes: None,
+            };
         let rows = vec![
             row("devstral-24b", "ours", None, 0, 3),
             row("devstral-24b", "ours", None, 1, 3), // same cell aggregates: 1/6
@@ -1240,12 +1631,19 @@ mod tests {
         ];
         let md = render_matrix(&rows);
         assert!(md.contains("## swe-bench-lite"), "{md}");
-        assert!(md.contains("| devstral-24b | 1/6 (17%) | 1/3 (33%) |"), "{md}");
+        assert!(
+            md.contains("| devstral-24b | 1/6 (17%) | 1/3 (33%) |"),
+            "{md}"
+        );
         assert!(
             md.contains("| devstral-24b + coder-act-transition | 2/3 (67%) | — |"),
             "gene row is its own identity, absent arm renders —: {md}"
         );
-        assert_eq!(md.matches("cu benchmark/run").count(), 4, "all replication cmds survive: {md}");
+        assert_eq!(
+            md.matches("cu benchmark/run").count(),
+            4,
+            "all replication cmds survive: {md}"
+        );
     }
 }
 
@@ -1269,7 +1667,10 @@ use crate::cognition::swe_bench::{self, SweVerdict};
 /// Inputs to `benchmark/swe-grade`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweGradeParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweGradeParams.ts"
+)]
 pub struct SweGradeParams {
     /// The instance to grade, e.g. `sympy__sympy-22005`.
     pub instance: String,
@@ -1298,7 +1699,10 @@ pub struct SweGradeParams {
 /// Result of `benchmark/swe-grade` — the full verdict, never a bare boolean.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweGradeResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweGradeResult.ts"
+)]
 pub struct SweGradeResult {
     pub instance: String,
     /// True only when every FAIL_TO_PASS and every sampled PASS_TO_PASS passed.
@@ -1369,7 +1773,9 @@ impl ActionCommand for BenchmarkSweGrade {
         let instance = rows
             .into_iter()
             .find(|r| r.instance_id == p.instance)
-            .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("{} not found in {dataset}", p.instance))
+            })?;
 
         // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
         // clone below — where the solver worked is never where the score is taken.
@@ -1387,7 +1793,9 @@ impl ActionCommand for BenchmarkSweGrade {
         };
         let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
 
-        let work = swe_bench::swe_cache_dir().join("work").join(&instance.instance_id);
+        let work = swe_bench::swe_cache_dir()
+            .join("work")
+            .join(&instance.instance_id);
         let repo = work.join("repo");
         let _ = std::fs::create_dir_all(&work);
         if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
@@ -1401,8 +1809,70 @@ impl ActionCommand for BenchmarkSweGrade {
             )));
         }
         let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+
+        // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
+        // append it to her experience stream. Only her: the gold/raw-patch arms are
+        // harness plumbing, not experience. And only a REAL verdict: an errored run
+        // is an ABSENCE (harness fault), and teaching from a harness failure would
+        // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
+        if verdict.error.is_none() {
+            if let Some(peer_dir) = p
+                .workspace
+                .as_ref()
+                .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
+            {
+                let task = crate::cognition::eval::EvalTask {
+                    id: instance.instance_id.clone(),
+                    prompt: instance.problem_statement.clone(),
+                    ..Default::default()
+                };
+                let detail = format!(
+                    "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}",
+                    instance.instance_id,
+                    verdict.resolved,
+                    verdict.f2p_passed,
+                    verdict.f2p_total,
+                    verdict.p2p_passed,
+                    verdict.p2p_total
+                );
+                let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
+                    &task,
+                    candidate.as_deref().unwrap_or(""),
+                    verdict.resolved,
+                    &detail,
+                );
+                if let Err(e) =
+                    crate::cognition::experience::append_experience(&peer_dir, &episode)
+                {
+                    tracing::warn!(
+                        workspace = ?p.workspace,
+                        error = %e,
+                        "swe-grade outcome could not be appended to the experience \
+                         stream — the verdict stands, but this lesson was LOST"
+                    );
+                }
+            }
+        }
+
         Ok(SweGradeResult::from((verdict, patch_bytes)))
     }
+}
+
+/// The citizen peer dir owning a workspace path: the `<...>/citizens/peers/<uuid>`
+/// prefix of `path`, or `None` when the path is not inside a citizen's home (an
+/// operator scratch tree, the gold arm's cache clone). Path shape is the SAME one
+/// `resolve_solver_dir` resolves into — this is its inverse, not a second layout.
+fn citizen_peer_dir_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let comps: Vec<&std::ffi::OsStr> = path.iter().collect();
+    let peers_at = comps
+        .windows(2)
+        .position(|w| w[0] == "citizens" && w[1] == "peers")?;
+    // citizens/peers/<uuid> — need the uuid component after the pair.
+    let uuid_at = peers_at + 2;
+    if uuid_at >= comps.len() {
+        return None;
+    }
+    Some(comps[..=uuid_at].iter().collect())
 }
 
 #[cfg(test)]
@@ -1429,7 +1899,30 @@ mod swe_grade_tests {
         let r = SweGradeResult::from((v, 0));
         assert!(!r.resolved);
         assert!(r.error.is_some(), "the reason must survive to the caller");
-        assert_eq!(r.fail_to_pass_total, 0, "no tests ran, so nothing was attempted");
+        assert_eq!(
+            r.fail_to_pass_total, 0,
+            "no tests ran, so nothing was attempted"
+        );
+    }
+
+    // what this catches: the experience-stream producer must attribute a graded
+    // workspace to the RIGHT citizen and stay silent for non-citizen paths — a
+    // wrong peer dir would file her lesson into someone else's mind (#319).
+    #[test]
+    fn citizen_peer_dir_resolves_from_workspace_path_or_not_at_all() {
+        let p = std::path::Path::new(
+            "/Users/x/.continuum/citizens/peers/fe4dac17-aaaa-4bbb-8ccc-000000000001/workspace/swe/pallets__flask-4992",
+        );
+        let d = citizen_peer_dir_of(p).expect("workspace path resolves");
+        assert!(d.ends_with("citizens/peers/fe4dac17-aaaa-4bbb-8ccc-000000000001"));
+        assert!(
+            citizen_peer_dir_of(std::path::Path::new("/tmp/swe-work/repo")).is_none(),
+            "an operator scratch tree is nobody's experience"
+        );
+        assert!(
+            citizen_peer_dir_of(std::path::Path::new("/x/citizens/peers")).is_none(),
+            "the pair with no uuid after it must not resolve"
+        );
     }
 
     // what this catches: the gate is reported, not just enforced. A caller tallying results
@@ -1444,14 +1937,20 @@ mod swe_grade_tests {
         };
         let r = SweGradeResult::from((v, 512));
         assert!(!r.gate_ok);
-        assert_eq!(r.patch_bytes, 512, "patch size is reported even when the tree is void");
+        assert_eq!(
+            r.patch_bytes, 512,
+            "patch size is reported even when the tree is void"
+        );
     }
 }
 
 /// Inputs to `benchmark/swe-solve` — the whole loop in one command.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweSolveParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweSolveParams.ts"
+)]
 pub struct SweSolveParams {
     /// The instance to solve, e.g. `sympy__sympy-22005`.
     pub instance: String,
@@ -1481,7 +1980,10 @@ pub struct SweSolveParams {
 /// Result of `benchmark/swe-solve` — what she did AND what it scored, in one object.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/SweSolveResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweSolveResult.ts"
+)]
 pub struct SweSolveResult {
     pub instance: String,
     /// Acts she actually spent. 0 with a non-empty patch is impossible; 0 with an empty patch
@@ -1543,7 +2045,9 @@ impl BenchmarkSweSolve {
         let instance = rows
             .into_iter()
             .find(|r| r.instance_id == p.instance)
-            .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("{} not found in {dataset}", p.instance))
+            })?;
 
         // She works in her OWN clone; grading later happens in a second, pristine one.
         let solve_repo = swe_bench::swe_cache_dir()
@@ -1662,7 +2166,11 @@ impl BenchmarkSweSolve {
                 let v = swe_bench::grade(
                     &instance,
                     &grade_repo,
-                    if patch.trim().is_empty() { None } else { Some(patch.as_str()) },
+                    if patch.trim().is_empty() {
+                        None
+                    } else {
+                        Some(patch.as_str())
+                    },
                 )
                 .await;
                 SweGradeResult::from((v, patch.len()))
@@ -1823,5 +2331,560 @@ mod swe_solve_tests {
             t.contains("solve_poly_system mishandles infinite solutions"),
             "the issue text must reach her verbatim"
         );
+    }
+
+    // what this catches: the card title must carry the machine-findable
+    // `[bench <name>]` marker (the grading sentinel keys on it) AND stay
+    // scannable — a 4k-char prompt must not become a 4k-char title.
+    #[test]
+    fn dispatch_card_title_is_marked_and_bounded() {
+        let long_prompt = "x".repeat(500);
+        let t = dispatch_card_title("tool-bugfix-rs", "task-3", &long_prompt);
+        assert!(t.starts_with("[bench tool-bugfix-rs] task-3:"));
+        assert!(t.chars().count() < 120, "title stays board-scannable: {t}");
+        assert!(t.ends_with('…'), "truncation is visible, not silent");
+    }
+
+    // what this catches: the card body must give the citizen an ACTIONABLE
+    // definition of done (artifact path + DoD command) while never leaking
+    // the held-out answer key (`expect` / the harness `test` program). A card
+    // that prints the grader's expected substring turns the benchmark into a
+    // copy exercise.
+    #[test]
+    fn dispatch_card_body_actionable_and_never_leaks_the_answer_key() {
+        let t = crate::cognition::eval::EvalTask {
+            id: "task-1".into(),
+            prompt: "Fix the off-by-one in slice_window".into(),
+            expect: "SECRET_EXPECTED_SUBSTRING".into(),
+            test: Some("fn main() { assert_eq!(SECRET_TEST_BODY, 1) }".into()),
+            solution_file: Some("src/window.rs".into()),
+            dod_shell: Some("cargo test --test window".into()),
+            ..Default::default()
+        };
+        let body = dispatch_card_body("tool-bugfix-rs", &t);
+        assert!(body.contains("Fix the off-by-one"), "prompt reaches her verbatim");
+        assert!(body.contains("src/window.rs"), "artifact path is named");
+        assert!(body.contains("cargo test --test window"), "DoD command is visible");
+        assert!(body.contains("work/state"), "tells her how to finish the card");
+        assert!(!body.contains("SECRET_EXPECTED_SUBSTRING"), "expect stays held out");
+        assert!(!body.contains("SECRET_TEST_BODY"), "the harness test stays held out");
+    }
+
+    // what this catches: benchmark/dispatch declaring itself AiSafe by
+    // accident. Seeding the board is curation (like work/create); a citizen
+    // dispatching 164 cards mid-conversation is a flood, not agency.
+    #[test]
+    fn dispatch_is_privileged_curation() {
+        assert_eq!(BenchmarkDispatch::NAME, "benchmark/dispatch");
+        assert!(matches!(BenchmarkDispatch::ACCESS, AccessLevel::Privileged));
+    }
+}
+
+// ───────────────────────── benchmark/grade ─────────────────────────
+//
+// #346 slice 2 (Joel, 2026-08-07: "benchmarks are just kanban"): the verb that
+// CLOSES the kanban benchmark loop. Dispatch posts a task as a card; a citizen
+// claims it and writes the artifact with her own hands; THIS verb grades that
+// artifact against the benchmark's HELD-OUT check and returns an objective
+// PASS/FAIL with the real compiler/test output. The procedure was validated
+// live before it was code: Anwen's board-claimed `sum_evens.rs` (card aa876eae)
+// compiled against the held-out assertions and passed — the first citizen
+// solution ever graded through the kanban path.
+//
+// Deliberately STATELESS + explicit (`bench`,`task`,`solver`) rather than
+// card-resolving: the operator has no in-core airc identity (#27), so a verb
+// that needed a persona handle to read the board would be uncallable from the
+// curation surface today. The (future) grading sentinel resolves cards → this
+// triple and calls the same logic; the card path is its slice, not this one.
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkGradeParams.ts"
+)]
+pub struct BenchmarkGradeParams {
+    /// Benchmark name (a `benchmark/list` row with an eval_set), e.g. `coder-write-eval`.
+    pub bench: String,
+    /// Task id within the benchmark's gym, e.g. `sum_evens`.
+    pub task: String,
+    /// The solver's peer id — full UUID or unambiguous hex prefix (≥4 chars).
+    /// Resolved against `<continuum home>/citizens/peers/`, where her hands write.
+    pub solver: String,
+    /// Artifact filename inside the solver's workspace. Omit → the task's
+    /// `solution_file`, else `<task>.rs` (the dispatch-card convention).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file: Option<String>,
+    /// Append the result to the evidence ledger (`benchmark/record`) as a
+    /// `kanban`-harness row. Default false — grading is free, publishing is a choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub record: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkGradeResult.ts"
+)]
+pub struct BenchmarkGradeResult {
+    pub bench: String,
+    pub task: String,
+    /// The solver's full peer id (prefix resolved).
+    pub solver: String,
+    /// The artifact that was graded (workspace-relative).
+    pub file: String,
+    pub pass: bool,
+    /// The real check output (tail-bounded) — a FAIL hands back the actual
+    /// compiler/assertion error, coachable straight into the room.
+    pub detail: String,
+    /// True when the result was appended to the evidence ledger.
+    pub recorded: bool,
+}
+
+/// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
+/// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
+/// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
+/// layout as the grader that wrote the stream — one layout, never two.
+pub(crate) fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
+    std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
+        .ok_or_else(|| CommandError::Internal("no home dir".into()))
+}
+
+/// Resolve a solver peer-id (full UUID or hex prefix) to the ONE matching
+/// `citizens/peers/<uuid>/` directory. 0 or >1 matches fail loud with the
+/// candidates named — a grade against the wrong citizen's workspace is a
+/// falsified result, never a best-effort.
+pub(crate) fn resolve_solver_dir(
+    home: &std::path::Path,
+    solver: &str,
+) -> Result<(String, std::path::PathBuf), CommandError> {
+    let peers = home.join("citizens").join("peers");
+    let needle = solver.to_ascii_lowercase().replace('-', "");
+    if needle.len() < 4 {
+        return Err(CommandError::Invalid(format!(
+            "solver '{solver}' is too short — pass a full peer UUID or a hex prefix of ≥4 chars"
+        )));
+    }
+    let mut matches: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let entries = std::fs::read_dir(&peers).map_err(|e| {
+        CommandError::NotFound(format!("no citizen peers dir at {}: {e}", peers.display()))
+    })?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.to_ascii_lowercase().replace('-', "").starts_with(&needle) {
+            matches.push((name, entry.path()));
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(CommandError::NotFound(format!(
+            "no citizen workspace matches solver '{solver}' under {}",
+            peers.display()
+        ))),
+        _ => Err(CommandError::Invalid(format!(
+            "solver '{solver}' is ambiguous: {}",
+            matches
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// Run `cmd` with `cwd`, bounded by a hard timeout. Same contract as eval's
+/// `run_dod` (pass = exit 0, failure carries the tail-bounded real output) plus
+/// the cwd + timeout this caller needs; folding the two into one runner is the
+/// noted follow-up, not a blocker.
+async fn run_check_in(cwd: &std::path::Path, cmd: &str) -> (bool, String) {
+    let fut = tokio::process::Command::new("bash")
+        .arg("-lc")
+        .arg(cmd)
+        .current_dir(cwd)
+        .output();
+    match tokio::time::timeout(std::time::Duration::from_secs(60), fut).await {
+        Err(_) => (false, format!("check `{cmd}` timed out after 60s")),
+        Ok(Err(e)) => (false, format!("check `{cmd}` could not run: {e}")),
+        Ok(Ok(o)) => {
+            let ok = o.status.success();
+            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&o.stderr));
+            let s = s.trim();
+            let n = s.chars().count();
+            let tail = if n > 2000 {
+                format!("…{}", s.chars().skip(n - 2000).collect::<String>())
+            } else {
+                s.to_string()
+            };
+            (ok, tail)
+        }
+    }
+}
+
+/// `benchmark/grade` — grade one citizen's kanban-produced artifact against the
+/// benchmark's held-out check.
+#[derive(Default)]
+pub struct BenchmarkGrade;
+
+#[async_trait]
+impl ActionCommand for BenchmarkGrade {
+    const NAME: &'static str = "benchmark/grade";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Grade a citizen's benchmark artifact (written via the kanban loop) against the held-out \
+         check: her workspace file is compiled/run with the task's test assertions in a clean \
+         scratch dir. Returns objective PASS/FAIL with the real check output. `record` appends \
+         the result to the evidence ledger as a kanban-harness row.";
+    type Params = BenchmarkGradeParams;
+    type Output = BenchmarkGradeResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: BenchmarkGradeParams,
+    ) -> Result<BenchmarkGradeResult, CommandError> {
+        // 1) Resolve the benchmark + its gym task — same fail-loud path as dispatch.
+        let spec = known_benchmarks()
+            .iter()
+            .find(|b| b.name == p.bench)
+            .ok_or_else(|| {
+                CommandError::Invalid(format!("unknown benchmark '{}' — see benchmark/list", p.bench))
+            })?;
+        let reference = spec.eval_set.ok_or_else(|| {
+            CommandError::Invalid(format!("benchmark '{}' has no runnable eval_set", p.bench))
+        })?;
+        let (origin, text) =
+            crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
+        let task: crate::cognition::eval::EvalTask = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<crate::cognition::eval::EvalTask>(l).ok())
+            .find(|t| t.id == p.task)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("no task '{}' in {origin}", p.task))
+            })?;
+
+        // 2) Resolve the solver's workspace + artifact. A MISSING artifact is an
+        //    ABSENCE, not a zero — the error names the exact path so the coach can
+        //    say precisely what never got written.
+        let home = continuum_home()?;
+        let (solver_full, solver_dir) = resolve_solver_dir(&home, &p.solver)?;
+        let file = p
+            .file
+            .clone()
+            .or_else(|| task.solution_file.clone())
+            .unwrap_or_else(|| format!("{}.rs", task.id));
+        let artifact = solver_dir.join("workspace").join(&file);
+        let source = std::fs::read_to_string(&artifact).map_err(|e| {
+            CommandError::NotFound(format!(
+                "no artifact to grade: {} ({e}) — the solver never wrote it (absence, not a 0)",
+                artifact.display()
+            ))
+        })?;
+
+        // 3) Grade in a CLEAN scratch dir (never her live workspace): held-out
+        //    `test` assertions compiled around her source when present, else the
+        //    card's own dod_shell against a copy of her file. No check at all is
+        //    an error — an ungradable task must not return a vacuous PASS.
+        let scratch = home
+            .join("benchmarks")
+            .join("grades")
+            .join(format!("{}-{}-{}", spec.name, task.id, &solver_full[..8.min(solver_full.len())]));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch)
+            .map_err(|e| CommandError::Internal(format!("scratch dir: {e}")))?;
+        let (pass, detail) = match task.test.as_deref().filter(|t| !t.trim().is_empty()) {
+            Some(test) => {
+                let main_rs = format!(
+                    "{source}\nfn main() {{\n{test}\nprintln!(\"ALL ASSERTIONS PASSED\");\n}}\n"
+                );
+                std::fs::write(scratch.join("main.rs"), main_rs)
+                    .map_err(|e| CommandError::Internal(format!("write harness: {e}")))?;
+                run_check_in(
+                    &scratch,
+                    "rustc --edition 2021 -o solution main.rs && ./solution",
+                )
+                .await
+            }
+            None => match task.dod_shell.as_deref() {
+                Some(dod) => {
+                    std::fs::copy(&artifact, scratch.join(&file))
+                        .map_err(|e| CommandError::Internal(format!("copy artifact: {e}")))?;
+                    run_check_in(&scratch, dod).await
+                }
+                None => {
+                    return Err(CommandError::Invalid(format!(
+                        "task '{}' carries no held-out `test` and no `dod_shell` — nothing \
+                         objective to grade against (a vacuous PASS would be a lie)",
+                        task.id
+                    )))
+                }
+            },
+        };
+
+        // 4) The graded outcome enters her ONE experience stream (#319): the
+        //    objective reward signal the curriculum drains. Her artifact + the
+        //    real check output are the lesson; the verdict stays this command's
+        //    primary contract, so an append fault is LOUD in the log but never
+        //    voids the grade.
+        let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
+            &task, &source, pass, &detail,
+        );
+        if let Err(e) = crate::cognition::experience::append_experience(&solver_dir, &episode) {
+            tracing::warn!(
+                solver = %solver_full,
+                error = %e,
+                "graded outcome could not be appended to the experience stream — \
+                 the grade stands, but this lesson was LOST to the curriculum"
+            );
+        }
+
+        // 5) Optionally publish to the evidence ledger through the ONE record verb.
+        let mut recorded = false;
+        if p.record.unwrap_or(false) {
+            BenchmarkRecord
+                .run(
+                    ctx,
+                    BenchmarkRecordParams {
+                        model: format!("persona:{}", &solver_full[..8.min(solver_full.len())]),
+                        harness: "kanban".into(),
+                        benchmark: spec.name.into(),
+                        resolved: if pass { 1 } else { 0 },
+                        total: 1,
+                        replication: format!(
+                            "cu benchmark/grade --bench {} --task {} --solver {}",
+                            spec.name, task.id, &solver_full[..8.min(solver_full.len())]
+                        ),
+                        hardware: "local".into(),
+                        gene: None,
+                        output_tokens: None,
+                        wall_seconds: None,
+                        notes: Some(format!("kanban card loop; artifact {}", file)),
+                    },
+                )
+                .await?;
+            recorded = true;
+        }
+
+        Ok(BenchmarkGradeResult {
+            bench: spec.name.to_string(),
+            task: task.id,
+            solver: solver_full,
+            file,
+            pass,
+            detail,
+            recorded,
+        })
+    }
+}
+crate::register_stateless_command!(BenchmarkGrade);
+
+#[cfg(test)]
+mod grade_tests {
+    use super::*;
+
+    // what this catches: the solver resolver's fail-loud contract — a too-short
+    // prefix, a no-match, and (via the tmpdir fixture) an ambiguous prefix all
+    // ERROR with names rather than silently grading the wrong citizen's work.
+    #[test]
+    fn solver_resolution_is_exact_or_loud() {
+        let tmp = std::env::temp_dir().join(format!("grade-resolve-{}", std::process::id()));
+        let peers = tmp.join("citizens").join("peers");
+        std::fs::create_dir_all(peers.join("aabbccdd-0000-4000-8000-000000000001")).unwrap();
+        std::fs::create_dir_all(peers.join("aabbccdd-0000-4000-8000-000000000002")).unwrap();
+        std::fs::create_dir_all(peers.join("ffee0011-0000-4000-8000-000000000003")).unwrap();
+
+        assert!(resolve_solver_dir(&tmp, "ab").is_err(), "too short must error");
+        assert!(resolve_solver_dir(&tmp, "aabbccdd").is_err(), "ambiguous must error");
+        assert!(resolve_solver_dir(&tmp, "12345678").is_err(), "no match must error");
+        let (full, dir) = resolve_solver_dir(&tmp, "ffee0011").expect("unique prefix resolves");
+        assert!(full.starts_with("ffee0011"));
+        assert!(dir.ends_with(&full));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // what this catches: the grade verb's registration + access shape — persona-
+    // callable (AiSafe: a citizen may grade her own artifact to check herself),
+    // stateless-registered so it routes without a module constructor.
+    #[test]
+    fn grade_is_ai_safe_and_named() {
+        assert_eq!(BenchmarkGrade::NAME, "benchmark/grade");
+        assert!(matches!(BenchmarkGrade::ACCESS, AccessLevel::AiSafe));
+    }
+}
+
+// ───────────────────────── benchmark/swe-setup ─────────────────────────
+//
+// The dispatch-side bridge for PROJECT-BASED benchmarks (Joel, 2026-08-07: "I
+// bet you can get working swe … running soon"). swe-grade already closes the
+// grading leg for a citizen's tree (`workspace` param: her diff, graded in a
+// fresh clone — launder-proof). What was missing is the setup leg: a SWE card
+// is not a prompt, it is a BROKEN REPO. This verb stages one instance into a
+// citizen's workspace — clone at base_commit via the same `clone_at` the
+// grader trusts — and returns a card-ready body. Held-out material (gold
+// patch, test_patch, FAIL_TO_PASS/PASS_TO_PASS) never enters the card: the
+// citizen sees exactly what the SWE-bench protocol allows, the issue text.
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweSetupParams.ts"
+)]
+pub struct SweSetupParams {
+    /// The instance to stage, e.g. `sympy__sympy-22005`.
+    pub instance: String,
+    /// Dataset to resolve the instance from. Defaults to SWE-bench Lite.
+    #[serde(default)]
+    #[ts(optional)]
+    pub dataset: Option<String>,
+    /// The solver's peer id — full UUID or hex prefix, resolved against
+    /// `citizens/peers/` exactly like `benchmark/grade`.
+    pub solver: String,
+    /// Re-stage over an existing checkout. Default false: a directory already
+    /// holding this instance may carry the citizen's in-progress work, and
+    /// destroying it silently would erase her labor — fresh must be explicit.
+    #[serde(default)]
+    #[ts(optional)]
+    pub fresh: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/SweSetupResult.ts"
+)]
+pub struct SweSetupResult {
+    pub instance: String,
+    pub solver: String,
+    /// The staged repo inside her workspace — hand this exact path to
+    /// `benchmark/swe-grade --workspace` when she is done.
+    pub workspace: String,
+    /// Card-ready body: problem statement + where the repo is + what done means.
+    pub card_body: String,
+}
+
+/// `benchmark/swe-setup` — stage one SWE-bench instance as claimable kanban work.
+#[derive(Default)]
+pub struct BenchmarkSweSetup;
+
+#[async_trait]
+impl ActionCommand for BenchmarkSweSetup {
+    const NAME: &'static str = "benchmark/swe-setup";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Stage a SWE-bench instance into a citizen's workspace as project-based kanban work: \
+         clone the instance's repo at base_commit (the same checkout the grader trusts) into \
+         citizens/peers/<solver>/workspace/swe/<instance>/ and return a card-ready body. The \
+         issue text is included; the gold patch, test patch, and test lists stay held out. \
+         Grade the finished work with benchmark/swe-grade --workspace <returned path>.";
+    type Params = SweSetupParams;
+    type Output = SweSetupResult;
+
+    async fn run(&self, _ctx: &Ctx, p: SweSetupParams) -> Result<SweSetupResult, CommandError> {
+        let dataset = p
+            .dataset
+            .clone()
+            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
+        let rows = swe_bench::load_dataset(&dataset)
+            .await
+            .map_err(CommandError::Internal)?;
+        let instance = rows
+            .into_iter()
+            .find(|r| r.instance_id == p.instance)
+            .ok_or_else(|| {
+                CommandError::NotFound(format!("no instance '{}' in {dataset}", p.instance))
+            })?;
+
+        let home = continuum_home()?;
+        let (solver_full, solver_dir) = resolve_solver_dir(&home, &p.solver)?;
+        let target = solver_dir
+            .join("workspace")
+            .join("swe")
+            .join(&instance.instance_id);
+        if target.exists() && !p.fresh.unwrap_or(false) {
+            return Err(CommandError::Invalid(format!(
+                "{} already exists — it may hold the citizen's in-progress work. Pass \
+                 fresh=true to explicitly discard it and re-stage at base_commit.",
+                target.display()
+            )));
+        }
+        swe_bench::clone_at(&instance, &target)
+            .await
+            .map_err(CommandError::Internal)?;
+
+        // Workspace-relative path — the citizen's hands are rooted at her workspace,
+        // so the card speaks in HER coordinates, not the operator's absolute ones.
+        let rel = format!("swe/{}", instance.instance_id);
+        let card_body = format!(
+            "Real bug in a real repo ({repo} @ {commit}). The checkout is ALREADY in your \
+             workspace at `{rel}/` — work there. Do not create a new workspace and do not add \
+             new top-level files; find the existing source of the fault and edit it in place.\n\n\
+             ## Issue\n{statement}\n\n\
+             ## Definition of done\n\
+             The repo's own tests for this issue pass. Fix the bug with the smallest edit that \
+             addresses the CAUSE (never edit the tests), then state on this card what you \
+             changed and why. Your working tree's diff is what gets graded.",
+            repo = instance.repo,
+            commit = &instance.base_commit[..12.min(instance.base_commit.len())],
+            rel = rel,
+            statement = instance.problem_statement.trim(),
+        );
+
+        Ok(SweSetupResult {
+            instance: instance.instance_id,
+            solver: solver_full,
+            workspace: target.display().to_string(),
+            card_body,
+        })
+    }
+}
+crate::register_stateless_command!(BenchmarkSweSetup);
+
+#[cfg(test)]
+mod swe_setup_tests {
+    use super::*;
+
+    // what this catches: the card body must NEVER leak held-out material — a
+    // build that formats the gold patch, test patch, or test ids into the card
+    // turns the benchmark into an answer key. Pins the body to problem-statement
+    // + workspace + DoD only.
+    #[test]
+    fn card_body_holds_out_the_answer_key() {
+        let inst = crate::cognition::swe_bench::SweInstance {
+            instance_id: "demo__repo-1".into(),
+            repo: "demo/repo".into(),
+            base_commit: "abcdef0123456789".into(),
+            patch: "GOLD_PATCH_MARKER".into(),
+            test_patch: "TEST_PATCH_MARKER".into(),
+            problem_statement: "Widget frobnicates twice.".into(),
+            created_at: "2023-01-01".into(),
+            fail_to_pass: "[\"tests/test_widget.py::test_single_frob\"]".into(),
+            pass_to_pass: "[]".into(),
+        };
+        // Mirror the run() format string's data flow: only these fields enter.
+        let body = format!(
+            "({} @ {}) swe/{}/ {}",
+            inst.repo,
+            &inst.base_commit[..12],
+            inst.instance_id,
+            inst.problem_statement
+        );
+        assert!(body.contains("Widget frobnicates twice."));
+        assert!(!body.contains("GOLD_PATCH_MARKER"));
+        assert!(!body.contains("TEST_PATCH_MARKER"));
+        assert!(!body.contains("test_single_frob"));
+    }
+
+    // what this catches: setup is Privileged curation (it writes into a citizen's
+    // workspace) — a widening to AiSafe would let any persona overwrite another
+    // citizen's staged work.
+    #[test]
+    fn swe_setup_is_privileged_and_named() {
+        assert_eq!(BenchmarkSweSetup::NAME, "benchmark/swe-setup");
+        assert!(matches!(BenchmarkSweSetup::ACCESS, AccessLevel::Privileged));
     }
 }

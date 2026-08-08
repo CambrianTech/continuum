@@ -1086,6 +1086,23 @@ pub fn start_server(
     // real foundry executor.
     runtime.register(Arc::new(ForgeModule::new()));
 
+    // GeneratorModule — hosts `generate/module` (scaffold a fresh ServiceModule).
+    //
+    // This was the ONE REAL ORPHAN the dispatch-parity audit had been reporting all
+    // along, invisible under two false positives until `dispatch_orphans` stopped
+    // counting adapter-served `Provided` commands (#325). Nothing was wrong with the
+    // command: `GenerateModule` is a correct dep-holding typed command and IS in
+    // `GeneratorModule::commands()`. The module itself was simply never registered —
+    // it appeared in the codebase only in doc comments — so `generate/module` was
+    // advertised in `commands/help`, did-you-mean suggestions, and the persona tool
+    // offer while nothing on the runtime could route it. Exactly the #309 class, still
+    // live, and the reason the audit exists.
+    //
+    // Background priority, no dedicated thread, `generate/` prefix — see its
+    // `ModuleConfig`. Privileged: it writes Rust source into the workspace tree, so it
+    // is not on the persona toolbelt.
+    runtime.register(Arc::new(crate::modules::generator::GeneratorModule::new()));
+
     // EventsModule (L1-1 — event-class declaration registry).
     // Spec: GRID-BUS-ARCHITECTURE §2.2 (continuum#1439).
     // Exposes events/declare-class, events/get-class, events/list-classes,
@@ -1326,7 +1343,8 @@ pub fn start_server(
                     volume_total,
                     cold_root.clone(),
                     crate::system_resources::serving_active_artifacts(),
-                )) as Arc<dyn crate::paging::pool::ResourcePool>);
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
                 log_info!(
                     "ipc",
                     "server",
@@ -1679,6 +1697,33 @@ pub fn start_server(
     // Provides log/write, log/ping via main socket
     runtime.register(Arc::new(LoggerModule::new()));
 
+    // ProbeStreamModule: the LIVE glass-box stream — debug/probes/{open,next,close}
+    // over the ProbeRouterLayer fanout (the historical on-disk ledger is
+    // debug/probes/query, stateless, self-registered). #362: this module shipped
+    // 2026-07 and was registered NOWHERE — and the second half of the trap is that
+    // it MUST be built against the router installed in the global subscriber
+    // stack. `ProbeRouterLayer::new()` here would compile, register, route, and
+    // stream silence forever (per-instance Arc<RwLock<..>> state). The handle
+    // comes from install_probe_tracing via installed_probe_router(). Fail LOUD,
+    // not silent, when tracing was never installed — the stream API being absent
+    // is then a stated fact, not a mystery "Unknown command".
+    match crate::routing::installed_probe_router() {
+        Some(router) => {
+            runtime.register(Arc::new(
+                crate::modules::probe_stream::ProbeStreamModule::new(router),
+            ));
+        }
+        None => {
+            tracing::error!(
+                "debug/probes live stream UNAVAILABLE: install_probe_tracing never ran \
+                 in this process, so there is no ProbeRouterLayer to subscribe to — \
+                 debug/probes/{{open,next,close}} will not route. Production boots \
+                 install tracing in main.rs before start_server; only bare test \
+                 harnesses should ever see this."
+            );
+        }
+    }
+
     // search/* migrated to the DynCommand registry (commands/search/*) — the four
     // verbs self-register via inventory, no module registration needed here.
 
@@ -1812,8 +1857,12 @@ pub fn start_server(
         // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
         // boot on every airc-configured host.
         rt_handle.spawn(async move {
-            match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
-                .await
+            match airc_lib::Airc::attach_as(
+                root,
+                "continuum-airc-interceptor",
+                interceptor_daemon_socket,
+            )
+            .await
             {
                 Ok(airc) => {
                     // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
@@ -1888,10 +1937,12 @@ pub fn start_server(
         // the grid on the module tick and hears every peer's offers (its own echo
         // included — the loopback proof) via inbound_attach → gossip::global_ledger.
         // Rides the DISCOVERED default room, same dep the citizens attach to.
-        runtime.register(Arc::new(crate::modules::grid_capacity::GridCapacityModule::new(
-            resource_daemon.clone(),
-            default_room,
-        )));
+        runtime.register(Arc::new(
+            crate::modules::grid_capacity::GridCapacityModule::new(
+                resource_daemon.clone(),
+                default_room,
+            ),
+        ));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -1910,6 +1961,13 @@ pub fn start_server(
         // resolve the calling persona's live airc runtime. Registered before the
         // executor is built so its typed commands land on the one registry.
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
+            registry.clone(),
+        )));
+        runtime.register(Arc::new(crate::modules::room::RoomModule::new(registry.clone(),)));
+        // activity/* (#274) — the verb that turns a recipe into a room. Same
+        // registry: creating a room acts as the CALLER's own airc identity, so the
+        // creator is a real peer rather than the substrate acting anonymously.
+        runtime.register(Arc::new(crate::modules::activity::ActivityModule::new(
             registry.clone(),
         )));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.

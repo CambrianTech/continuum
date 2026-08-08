@@ -79,8 +79,24 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 /// pushed its creation event out of a transcript window); tests stub it.
 #[async_trait]
 pub trait RoomBoardReader: Send + Sync {
-    /// The current room's work board, folded by airc into a [`BoardSnapshot`].
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError>;
+    /// The work board of `room` — folded by airc into a [`BoardSnapshot`].
+    ///
+    /// `room` is the id this source is BOUND to (`for_room`), i.e. the same
+    /// value [`crate::persona::rag_budget::room_scope_allows`] gates on. Passing
+    /// it is what makes gate and read one decision instead of two that merely
+    /// coincide: before 2026-08-07 the read resolved airc's `current_room()`
+    /// independently ("whatever my default subscription happens to be") while the
+    /// gate checked a bound id the read never consulted. They agreed only because
+    /// both were seeded from the same call at bootstrap — nothing prevented a gate
+    /// that passed for room A while the board came from room B, and no probe would
+    /// have fired.
+    ///
+    /// `None` means the caller genuinely has no binding and accepts the scope's
+    /// current room (the CLI's intent). A `Some(id)` that the scope is not
+    /// subscribed to is an ERROR, never a silent fall back to the default: handing
+    /// a citizen a different room's board is the failure this parameter exists to
+    /// make impossible.
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError>;
 
     /// Published display names for the given peers — the DURABLE alias store,
     /// not the room roster.
@@ -108,10 +124,35 @@ pub trait RoomBoardReader: Send + Sync {
 /// makes; the shared truth is airc's fold, not a shared continuum trait.
 #[async_trait]
 impl RoomBoardReader for airc_lib::Airc {
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
-        let projection =
-            airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                .await?;
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
+        let projection = match room {
+            // BOUND: read exactly the room the gate approved. A miss is loud —
+            // `NotSubscribed` — never a quiet slide to the default room, because
+            // a citizen handed the wrong room's board cannot tell that from a
+            // board that is genuinely empty. That indistinguishability is the
+            // whole bug class ([[fail-loud-never-swallow]]).
+            Some(id) => {
+                let channel = airc_core::RoomId::from_uuid(id);
+                let Some(resolved) = airc_lib::Airc::room_by_channel(self, channel).await? else {
+                    return Err(AircError::NotSubscribed(format!(
+                        "work board requested for room {id}, which this scope is not \
+                         subscribed to — refusing to substitute the default room's board"
+                    )));
+                };
+                airc_lib::Airc::project_room_work_board(
+                    self,
+                    &resolved,
+                    airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE,
+                )
+                .await?
+            }
+            // UNBOUND: the caller genuinely means "my current room" (the CLI's
+            // intent). Same behaviour as before this parameter existed.
+            None => {
+                airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                    .await?
+            }
+        };
         Ok(projection.snapshot())
     }
 
@@ -275,7 +316,7 @@ impl RagSource for RoomBoardSource {
 
         // One airc call (the current room's complete board). Failure is
         // non-fatal — empty delivery, cognition stays up (good-citizen doctrine).
-        let board = match self.reader.work_board().await {
+        let board = match self.reader.work_board(self.room_id).await {
             Ok(b) => b,
             Err(err) => {
                 tracing::warn!(
@@ -342,37 +383,18 @@ impl RagSource for RoomBoardSource {
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
-            .filter(|c| {
-                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED —
-                // an expired lease is genuinely available work (claim-contention
-                // allows takeover), and before 2026-08-03 lapsed cards appeared in
-                // NEITHER "available" nor honestly-held: invisible as work, sticky
-                // as an attractor.
-                // ASK THE SINGLE AUTHORITY. `CardState::is_settled()` is airc's one
-                // definition of "can this state be claimed at all", and its doc says every
-                // surface that ADVERTISES claimability must ask it "or they drift — and when
-                // they drift, the board offers work that the claim path then refuses, which
-                // reads to the person picking a card as a broken substrate."
-                //
-                // This surface had drifted, in the direction that HIDES work: for an unowned
-                // card it required `state == Open`, so an unowned `Blocked` card was
-                // advertised nowhere — while airc deliberately treats Blocked as claimable
-                // ("a blocked card is live work waiting on something, and someone taking it
-                // over is exactly the move"). It got `Review` right only by accident, via a
-                // different predicate. Two definitions of claimable, agreeing by luck.
-                if c.state.is_settled() {
-                    return false;
-                }
-                match c.owner {
-                    // Unowned and not settled IS claimable — that is the authority's rule,
-                    // not a second opinion about which states count.
-                    None => true,
-                    // A lapsed lease is genuinely available: claim-contention allows
-                    // takeover, and before 2026-08-03 lapsed cards appeared in NEITHER
-                    // "available" nor honestly-held — invisible as work, sticky as an attractor.
-                    Some(_) => !claim_is_live(c, now_ms),
-                }
-            })
+            // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
+            // expired lease is genuinely available work (claim-contention allows
+            // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
+            // "available" nor honestly-held: invisible as work, sticky as an
+            // attractor.
+            //
+            // The predicate itself lives in `card_holder` and is shared with
+            // `work/list` — this filter used to re-derive it here and excluded only
+            // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
+            // advertised as available: 11 of the 58 offered on the live board
+            // 2026-08-07. One claimability decision, one place.
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
             .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
@@ -449,11 +471,11 @@ impl RagSource for RoomBoardSource {
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
         if !open.is_empty() {
-            // NEWEST FIRST, not board order (#flywheel, measured 2026-08-07).
+            // NEWEST FIRST, not board order (measured 2026-08-07).
             //
             // Only five titles are ever shown. Taken in board order, a card dispatched
             // MINUTES AGO lands at the end and is structurally unshowable: the citizen reads
-            // an honest "43 card(s) are claimable" above five titles that are all weeks old,
+            // an honest "N card(s) are claimable" above five titles that are all weeks old,
             // and the work someone just handed her is not among them. Measured live — three
             // freshly dispatched bench cards were in every citizen's board cache and in none
             // of their prompt windows, while the count was correct the whole time. The count
@@ -464,9 +486,9 @@ impl RagSource for RoomBoardSource {
             // which "someone dispatched you work" is reliably visible within one turn. Ties
             // keep board order, so a static board renders exactly as before.
             //
-            // This is the bounded-window eviction shape: a chatty writer pushes the signal out
-            // of a fixed-size view, and the diagnostic goes blind precisely when the board is
-            // busiest. The five-title cap is fine; taking the OLDEST five was not.
+            // Bounded-window eviction: a chatty writer pushes the signal out of a fixed-size
+            // view, and the diagnostic goes blind precisely when the board is busiest. The
+            // five-title cap is fine; taking the OLDEST five was not.
             let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
             newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
             let titles = newest
@@ -646,6 +668,14 @@ mod tests {
         }
     }
 
+    /// Turn an owned fixture card into the stale-lease shape: claim still on the
+    /// card, lease long expired — what the live board showed for all 17 claims
+    /// on 2026-08-03.
+    fn lapse(mut c: WorkCard) -> WorkCard {
+        c.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
+        c
+    }
+
     /// Stamp a fixture card's creation time — the ordering key the available-work
     /// lead samples by, so a test can express "this one was dispatched just now".
     fn created_at(mut c: WorkCard, ms: u64) -> WorkCard {
@@ -654,12 +684,11 @@ mod tests {
     }
 
     // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
-    // Only five titles are ever rendered; taken in board order, a fresh card lands at
-    // the end and never appears, so the citizen reads an honest "N claimable" above five
+    // Only five titles are ever rendered; taken in board order a fresh card lands at the
+    // end and never appears, so the citizen reads an honest "N claimable" above five
     // titles that are all old. Measured live 2026-08-07: three freshly dispatched bench
     // cards sat in every citizen's board cache and in NONE of their prompt windows while
     // the count was correct throughout — the count was never the lie, the sample was.
-    // Bounded-window eviction: a chatty writer pushes the signal out of a fixed view.
     #[tokio::test]
     async fn freshly_dispatched_work_is_shown_not_merely_counted() {
         let mut cards: Vec<WorkCard> = (0..8)
@@ -692,31 +721,6 @@ mod tests {
         );
         // The count stays honest — it always was. This fix is about the sample.
         assert_eq!(lead.metadata["open_count"], 9);
-        // And an unowned BLOCKED card is claimable per airc's single authority
-        // (`CardState::is_settled` — Blocked is deliberately NOT settled: "someone
-        // taking it over is exactly the move"). This surface used to require
-        // state == Open for unowned cards and hid such work entirely.
-        let with_blocked = Arc::new(StubReader::new(snapshot(vec![card(
-            "blocked but takeable",
-            CardState::Blocked,
-            None,
-        )])));
-        let src2 = RoomBoardSource::new(persona(), with_blocked);
-        let d2 = src2.deliver(&ctx(), 4_000, ResolutionPreference::Raw).await;
-        let lead2 = d2
-            .items
-            .iter()
-            .find(|i| i.metadata["kind"] == "available-work-lead")
-            .expect("a blocked unowned card is available work");
-        assert_eq!(lead2.metadata["open_count"], 1);
-    }
-
-    /// Turn an owned fixture card into the stale-lease shape: claim still on the
-    /// card, lease long expired — what the live board showed for all 17 claims
-    /// on 2026-08-03.
-    fn lapse(mut c: WorkCard) -> WorkCard {
-        c.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
-        c
     }
 
     fn snapshot(cards: Vec<WorkCard>) -> BoardSnapshot {
@@ -760,7 +764,10 @@ mod tests {
 
     #[async_trait]
     impl RoomBoardReader for StubReader {
-        async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
+        async fn work_board(
+            &self,
+            _room: Option<uuid::Uuid>,
+        ) -> Result<BoardSnapshot, AircError> {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }

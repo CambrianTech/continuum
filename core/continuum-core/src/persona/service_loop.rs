@@ -1121,6 +1121,96 @@ async fn serve_persona_loop_inner(
                             reason = "workspace-pass",
                             "persona chose silence"
                         );
+                        // THE SECOND QUESTION (BigMama's gate-conflation diagnosis,
+                        // verified in-file 2026-08-08; the root under Joel's "missing
+                        // something"): speak and act shared ONE terminal gate, so
+                        // "nothing to say" — the CORRECT answer on a quiet room —
+                        // also silently answered "nothing to do" for a citizen
+                        // holding claimed work. The ledger's falsifiable signature:
+                        // every completion followed a direct address; zero happened
+                        // ambiently. Working is not speaking. A Pass settles the
+                        // speak-question; when she holds an in-progress claim, the
+                        // ACT-question is asked as its OWN turn — a separate
+                        // drive_to_settle whose burst IS her card, under the
+                        // workspace-deliverable contract. Her answer stays hers:
+                        // Pass here too and the turn simply ends. This adds a
+                        // question, never an instruction — the card is not made
+                        // louder and nothing nags inside the speak turn
+                        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+                        if !directed {
+                            if let Some(citizen) = conversation.stream_citizen() {
+                                if let Ok(claims) = citizen.active_claims().await {
+                                    let held: Vec<&airc_lib::WorkCard> = claims
+                                        .iter()
+                                        .filter(|c| {
+                                            matches!(c.state, airc_work::CardState::InProgress)
+                                        })
+                                        .collect();
+                                    if !held.is_empty() {
+                                        let burst = held_work_burst(&held);
+                                        let work_framing =
+                                            crate::cognition::workspace::TurnFraming::self_thread(
+                                                false,
+                                            )
+                                            .on_workspace();
+                                        let work = crate::cognition::act_observe::drive_to_settle(
+                                            &cycle,
+                                            burst,
+                                            turn_room,
+                                            LIVE_MAX_ACTS,
+                                            work_framing,
+                                        )
+                                        .await;
+                                        let (work_step, _) =
+                                            crate::cognition::act_observe::SettleStep::from_settled(
+                                                work,
+                                            );
+                                        match work_step {
+                                            crate::cognition::act_observe::SettleStep::Spoke(
+                                                text,
+                                            ) => {
+                                                // She worked and has something to report —
+                                                // that report earned its send.
+                                                crate::probe!(
+                                                    class = "persona.turn.work",
+                                                    persona = %ctx.identity.agent_name,
+                                                    lamport = msg.lamport,
+                                                    decision = "spoke",
+                                                    "work-turn settled with a report"
+                                                );
+                                                if let Err(e) = conversation.say(&text).await {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "work-turn report failed to send"
+                                                    );
+                                                }
+                                            }
+                                            crate::cognition::act_observe::SettleStep::Passed => {
+                                                crate::probe!(
+                                                    class = "persona.turn.work",
+                                                    persona = %ctx.identity.agent_name,
+                                                    lamport = msg.lamport,
+                                                    decision = "passed",
+                                                    "work-turn passed — her choice, honored"
+                                                );
+                                            }
+                                            other => {
+                                                // Acted (results already in her working
+                                                // memory) or an inference failure — either
+                                                // way the receipt says which.
+                                                crate::probe!(
+                                                    class = "persona.turn.work",
+                                                    persona = %ctx.identity.agent_name,
+                                                    lamport = msg.lamport,
+                                                    decision = ?std::mem::discriminant(&other),
+                                                    "work-turn settled without a spoken report"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         outcome.turns_skipped += 1;
                         continue;
                     }
@@ -1599,6 +1689,32 @@ fn push_work_board_anchor(
 /// a fabricated card ([[fallbacks-are-illegal-fail-loud]]). Perception, not
 /// steering: it names what exists NOW; she still chooses
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
+
+/// The WORK-question burst — the input of the second gate a claim-holder's
+/// quiet turn asks (see the `SettleStep::Passed` arm). The burst IS the
+/// question: her held in-progress cards, stated once, with the contract that
+/// passing remains hers. Deliberately NOT the room transcript — the subject of
+/// this turn is the work, and the card details/workspace root arrive through
+/// her own grounding exactly as on any turn.
+fn held_work_burst(held: &[&airc_lib::WorkCard]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from(
+        "[work turn] The room is quiet and your speak-turn is settled. This \
+         turn is for your claimed work:\n",
+    );
+    for card in held {
+        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let _ = writeln!(s, "- card {id8} \"{}\"", card.title);
+    }
+    s.push_str(
+        "Your workspace holds the staged checkout (see [workspace-map] and \
+         [active-work]). Continue the work with your tools — read, run, edit, \
+         test. Speak only if you have a result or a blocker to report; passing \
+         is yours to choose if you are genuinely blocked.",
+    );
+    s
+}
+
 fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> String {
     // Did the board source SPEAK this turn? "The board is empty" and "I never read the
     // board" are different facts about the world, and only one of them is knowable from an
@@ -2405,6 +2521,44 @@ async fn run_self_cycle(
     // still `say`s once. Only message-driven turns (real conversation) stream live.
     // Idle self-tick: no citizen AND no rail tee (room/sender None) — an idle mind
     // musing isn't addressing anyone, so nothing streams to the browser (#170).
+    // #350: don't spend a whole deliberation on a turn the serving guard is CERTAIN to
+    // refuse. When no lane is live, the single-resident guard rejects every generation —
+    // so the tick can only end in a loud `inference_failed` naming a serving fault that
+    // the persona did not cause and cannot fix.
+    //
+    // Gate on the LIVE snapshot, not on "has the daemon ever reconciled". The first cut of
+    // this gate used a lifetime latch and caught only the first-ever warmup: measured
+    // 2026-08-07, three citizens still failed together at +432s of a boot whose latch had
+    // been set at +76s. The daemon deliberately republishes `ServingSnapshot::empty()`
+    // whenever it tears a lane down — no plan, a re-home, or a #175 wedge self-heal
+    // (`declare_lane_wedged`) — so `serving: <none>` is a RECURRING transition, not a
+    // boot-only state. That burst sat inside a 59s window opened by a decode-heartbeat
+    // wedge at +382s and closed by the reconcile at +441s. Boot is merely the longest
+    // such window, which is what made a boot-shaped fix look sufficient.
+    //
+    // This is the same live signal the presence pump already derives per tick
+    // (`persona/airc_runtime.rs` → `Ready`/`Away`); a mind that presence has just marked
+    // Away must not simultaneously be spending a deliberation into a guaranteed refusal.
+    //
+    // Skipping is honest rather than a swallowed error: nothing has failed yet, the mind
+    // simply has no brain attached for a few more seconds, and it could not have thought
+    // either way. Deliberately NOT re-derived here: how long the lane has been down and
+    // whether that is now an outage. The serving daemon already owns that judgement and
+    // emits it loudly (`serving.health` action=relaunch); a second severity clock in the
+    // persona hot path would be a parallel monitor of a fact its owner already publishes
+    // (CONCURRENCY-STYLE-GUIDE). `has_reconciled()` still earns its keep in the probe: it
+    // separates a cold boot from a lane that HAS served and dropped, which the empty
+    // snapshot itself cannot say (`ready_verified_at_ms` is erased by `empty()`).
+    if !crate::inference::llama_server::current_serving().is_live() {
+        crate::probe!(
+            class = "persona.selftick.awaiting_serving",
+            persona = %ctx.identity.agent_name,
+            served_before = crate::inference::llama_server::has_reconciled(),
+            "no lane is live — skipping this self-tick rather than deliberating into a \
+             guaranteed refusal (serving transition, not a persona fault)"
+        );
+        return;
+    }
     let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
@@ -2502,6 +2656,42 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the WORK-question burst drifting from its contract — it must
+    // name each held card (short id + title) and pose the act-question with passing
+    // explicitly hers, because this text IS the second gate of a claim-holder's quiet
+    // turn (BigMama's gate-conflation fix, 2026-08-08). A burst that loses the card
+    // names starves the question; one that loses the pass-clause becomes a command.
+    #[test]
+    fn held_work_burst_names_cards_and_keeps_the_choice_hers() {
+        use airc_work::{CardState, Priority, RepoId, WorkCardId};
+        let card = airc_lib::WorkCard {
+            card_id: WorkCardId::new(),
+            repo: RepoId::new("acme/continuum").expect("valid repo id in fixture"),
+            title: "PROJECT [swe] psf__requests-2148".to_string(),
+            body: None,
+            priority: Priority::P1,
+            lane_id: None,
+            state: CardState::InProgress,
+            owner: None,
+            claim_id: None,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1_000_000,
+            updated_at_ms: 1_000_000,
+            reviews: None,
+        };
+        let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+        let burst = held_work_burst(&[&card]);
+        assert!(burst.contains(&id8), "short id must appear: {burst}");
+        assert!(burst.contains("psf__requests-2148"), "title must appear: {burst}");
+        assert!(
+            burst.contains("passing is yours"),
+            "the choice stays hers: {burst}"
+        );
+    }
 
     // what this catches: a turn composed WITHOUT its room — the defect that made every
     // room-scoped grounding source (room-kanban, room-roster, room-doctrine, room-board)

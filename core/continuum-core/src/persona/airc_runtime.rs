@@ -236,7 +236,10 @@ fn persona_identity_card(
         pronouns: card.pronouns().short(),
         // `RoleId` serializes snake_case ("helper"); empty when the seed predates
         // role threading — the persona is still named, just role-less on the wire.
-        role: card.role.map(|r| r.as_str().to_string()).unwrap_or_default(),
+        role: card
+            .role
+            .map(|r| r.as_str().to_string())
+            .unwrap_or_default(),
         // The self-authored bio lives in the OPEN profile map; empty when unset.
         bio: card.profile.get("bio").cloned().unwrap_or_default(),
         integrations,
@@ -391,8 +394,11 @@ impl PersonaAircRuntime {
         // to have current (`airc room` discovery), so every persona born
         // on a machine was dumped into whatever coordination room the
         // human/agent CLI last focused — live-found with the whole
-        // resident population squatting in `k3-serving`, an MoE-serving
-        // coordination room, because the operator scope was parked there.
+        // resident population squatting in a FINISHED ACTIVITY room,
+        // because the operator scope happened to be parked there. (A room
+        // is an activity with a done-condition, not a standing channel;
+        // parking citizens in one whose activity ended is how a fleet
+        // ends up with nothing to do and no way to say why.)
         // A persona is her own airc peer with her own home dir;
         // `current_room()` loads HER durable subscription set (the same
         // state `Airc::join` writes), returns her established default,
@@ -401,13 +407,13 @@ impl PersonaAircRuntime {
         // presence + identity card. Resumed personas keep their real
         // membership; new minds land in the commons. The operator's
         // current-room pointer no longer exists on this path.
-        let room = airc
-            .current_room()
-            .await
-            .map_err(|source| PersonaAircRuntimeError::HomeRoom {
-                agent_name: agent_name.clone(),
-                source,
-            })?;
+        let room =
+            airc.current_room()
+                .await
+                .map_err(|source| PersonaAircRuntimeError::HomeRoom {
+                    agent_name: agent_name.clone(),
+                    source,
+                })?;
 
         info!(
             persona_id = %persona_id,
@@ -431,18 +437,17 @@ impl PersonaAircRuntime {
                     agent_name: agent_name.clone(),
                     source,
                 })?;
-        let command_pump =
-            crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
-                persona_id,
-                Arc::clone(&airc_arc),
-                executor,
-                grant_authorizer,
-            )
-            .await
-            .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
-                agent_name: agent_name.clone(),
-                source,
-            })?;
+        let command_pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
+            persona_id,
+            Arc::clone(&airc_arc),
+            executor,
+            grant_authorizer,
+        )
+        .await
+        .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
+            agent_name: agent_name.clone(),
+            source,
+        })?;
 
         info!(
             persona_id = %persona_id,
@@ -588,6 +593,87 @@ impl PersonaAircRuntime {
                             error = %error,
                             "persona heartbeat emit failed — presence degraded this tick"
                         );
+                    }
+
+                    // HER WORK STAYS HERS WHILE SHE BREATHES (2026-08-07).
+                    //
+                    // Claim leases are 30 min and `work/heartbeat` already existed —
+                    // as a VERB THE MODEL HAD TO REMEMBER TO CALL, which no citizen
+                    // ever did. Glass-boxed this night from live captures: citizens
+                    // claimed cards successfully (`work/claim` → real claim_id), every
+                    // lease then lapsed untouched, and their next briefing correctly
+                    // read `[board] you hold 0 card(s)` with the SAME card re-offered
+                    // under `[available work]`. So they reported "no open tasks" and
+                    // passed — accurately describing a board that had quietly taken
+                    // their work back. Six citizens, two machines, days of it.
+                    //
+                    // Presence and claim liveness were two channels answering one
+                    // question, and they contradicted each other: this pump was
+                    // emitting "I am alive" on the very ticks her holds were dying.
+                    // Binding them is the fix — the substrate observes that she is
+                    // working instead of asking her to announce it
+                    // ([[commands-are-agency]]; Joel: "you've turned convenience into
+                    // disability"). The verb stays for deliberate extension.
+                    //
+                    // Renewal is per-card WARN-and-continue: a failed renewal degrades
+                    // to exactly the old lapse, and never takes down presence.
+                    match hb_airc
+                        .work_roster_status(airc_lib::WorkRosterQuery::default())
+                        .await
+                    {
+                        Ok(status) => {
+                            let me = hb_airc.peer_id();
+                            let mine = status
+                                .rows
+                                .into_iter()
+                                .find(|r| r.peer == me)
+                                .map(|r| r.active_claims)
+                                .unwrap_or_default();
+                            let mut renewed = 0usize;
+                            for card in &mine {
+                                let Some(claim_id) = card.claim_id else {
+                                    continue;
+                                };
+                                if let Err(error) = hb_airc
+                                    .heartbeat_work_claim(airc_lib::HeartbeatWorkClaim {
+                                        card_id: card.card_id,
+                                        claim_id,
+                                        ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        persona_id = %hb_persona,
+                                        agent_name = %hb_name,
+                                        card_id = %card.card_id.as_uuid(),
+                                        error = %error,
+                                        "claim renewal failed — this card can lapse out from \
+                                         under her while she is still working it"
+                                    );
+                                } else {
+                                    renewed += 1;
+                                }
+                            }
+                            if renewed > 0 {
+                                crate::probe!(
+                                    class = "persona.claim.renewed",
+                                    persona_id = %hb_persona,
+                                    agent_name = %hb_name,
+                                    renewed = renewed,
+                                    held = mine.len(),
+                                    ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    "held work-card claims renewed on the presence pulse"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            warn!(
+                                persona_id = %hb_persona,
+                                agent_name = %hb_name,
+                                error = %error,
+                                "claim-renewal roster read failed — holds may lapse this tick"
+                            );
+                        }
                     }
                 }
             });
@@ -877,10 +963,7 @@ impl PersonaAircRuntime {
 // trait definition + rationale.
 #[async_trait::async_trait]
 impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
-    async fn page_recent(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+    async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
         // (persona/airc_source.rs, #297) — never the raw inherent page.
         crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.airc, limit).await
@@ -913,9 +996,7 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRun
 
 #[async_trait::async_trait]
 impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // Whole board (all categories); the source filters/labels per post.
         self.airc.wall_posts(None).await
     }
@@ -945,8 +1026,12 @@ impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
     /// The current room's WHOLE work board — every card/column/owner. Delegates
     /// to the inner airc handle's single board fold (`work_board_complete` →
     /// snapshot), the same read the desktop-app kanban projector makes.
-    async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
-        crate::persona::room_board_source::RoomBoardReader::work_board(self.airc.as_ref()).await
+    async fn work_board(
+        &self,
+        room: Option<uuid::Uuid>,
+    ) -> Result<airc_work::BoardSnapshot, AircError> {
+        crate::persona::room_board_source::RoomBoardReader::work_board(self.airc.as_ref(), room)
+            .await
     }
 
     /// Published display names for card owners — delegates to the inner airc
@@ -977,10 +1062,7 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     }
 
     /// #170: delegate to airc-lib's ephemeral stream-chunk publish.
-    async fn publish_stream_chunk(
-        &self,
-        chunk: &airc_lib::StreamChunk,
-    ) -> Result<(), AircError> {
+    async fn publish_stream_chunk(&self, chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         self.airc.publish_stream_chunk(chunk).await.map(|_| ())
     }
 }
@@ -1072,8 +1154,7 @@ mod tests {
         // running daemon.
         // Dummy executor — bootstrap fires the legacy-path detection
         // BEFORE pump install, so the executor is never touched.
-        let dummy_registry =
-            std::sync::Arc::new(crate::runtime::ModuleRegistry::new());
+        let dummy_registry = std::sync::Arc::new(crate::runtime::ModuleRegistry::new());
         let dummy_executor = std::sync::Arc::new(
             crate::runtime::command_executor::CommandExecutor::new(dummy_registry),
         );
@@ -1099,7 +1180,10 @@ mod tests {
                 assert_eq!(l, legacy);
                 assert_eq!(
                     new,
-                    root.join("citizens").join("personas").join("maya").join("airc")
+                    root.join("citizens")
+                        .join("personas")
+                        .join("maya")
+                        .join("airc")
                 );
                 assert_eq!(
                     new_parent,

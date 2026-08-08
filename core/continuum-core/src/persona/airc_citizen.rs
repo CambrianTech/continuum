@@ -213,7 +213,10 @@ impl crate::persona::wall_source::WallReader for StubAircCitizen {
 
 #[async_trait]
 impl crate::persona::room_board_source::RoomBoardReader for StubAircCitizen {
-    async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
+    async fn work_board(
+        &self,
+        _room: Option<uuid::Uuid>,
+    ) -> Result<airc_work::BoardSnapshot, AircError> {
         // No daemon in tests → an empty board. Cognition runs through cleanly
         // with no [room-kanban] grounding block.
         Ok(airc_work::BoardSnapshot {

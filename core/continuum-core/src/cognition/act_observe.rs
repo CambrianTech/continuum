@@ -777,11 +777,28 @@ pub async fn apply_act(
         body.working_memory.record_fact(f);
     }
 
+    // WHICH verbs ran — not just how many. Measured 2026-08-06: this probe carried
+    // `tools=1` and a char count and NOTHING ELSE, so the substrate could not answer
+    // "are the citizens writing files or only looking around?" from its own telemetry.
+    // Answering it required reconstructing verbs from prose receipts in prompt-captures
+    // — and only 5 of 84 live captures carried a receipt at all, so the reconstruction
+    // was unfalsifiable. A count tells you an act happened; the NAME tells you whether
+    // it was work. Same class as the ACL gate that logged nothing (routing.acl.refused).
+    //
+    // `wrote` is the question we actually keep asking, precomputed so it is a filter and
+    // not a substring guess at query time: did anything in this batch reach DISK?
+    let verbs: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+    let wrote = verbs.iter().any(|n| {
+        let n = n.replace('_', "/");
+        n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit")
+    });
     crate::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
         room_id = %room_id,
         tools = calls.len(),
+        verbs = %verbs.join(","),
+        wrote,
         chars = observation.len(),
         "acted and observed the result"
     );
