@@ -146,9 +146,42 @@ const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 /// [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
 static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Consecutive REAL generations that FAILED on the served lane since the last success —
+/// the other half of "delivery beats probing" (#363). The 2026-08-07 blackout proved a
+/// wedge class the 1-token smoke probe cannot see: an UNDERSIZED slot rejects the
+/// fleet's real 12k-token prompts (every citizen turn dies mid-stream) while a tiny
+/// synthetic probe still passes — "can generate" is not "can serve the actual working
+/// set". Sustained real-turn failure is the honest wedge evidence, symmetric with real
+/// tokens being the honest liveness evidence above.
+static REAL_DECODE_FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record that a real generation FAILED terminally on the served lane (stream read
+/// error, mid-stream silence, transport death). Called from the adapter's error paths —
+/// gated by the caller on the request actually targeting the LOCAL serving lane, so a
+/// cloud provider's 529 can never smear the local lane's record.
+pub fn note_real_decode_failure() {
+    REAL_DECODE_FAILS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Consecutive real-generation failures since the last success. The serving daemon's
+/// heartbeat treats `>= HEALTH_FAILS_TO_RELAUNCH` as wedge evidence that OUTRANKS both
+/// the recent-decode trust window and a passing smoke probe.
+pub fn consecutive_real_decode_failures() -> u64 {
+    REAL_DECODE_FAILS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the failure streak — called when the lane is declared wedged (so the freshly
+/// relaunched lane starts clean instead of being instantly re-condemned by its
+/// predecessor's record) and implicitly by every successful decode.
+pub fn reset_real_decode_failures() {
+    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Record that a real generation produced tokens on the served lane. Called from the adapter's
 /// success path — the one place that knows tokens actually came out.
 pub fn note_real_decode() {
+    // A success ends the failure streak regardless of clock readability below.
+    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
@@ -159,7 +192,10 @@ pub fn note_real_decode() {
         );
         return;
     };
-    LAST_REAL_DECODE_MS.store(since_epoch.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    LAST_REAL_DECODE_MS.store(
+        since_epoch.as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// Milliseconds since the last real token-producing generation, or `None` if none has been
@@ -885,11 +921,7 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     }
     // Bind the timeout result before matching so its `watch::Ref` temporary
     // drops before `rx` does (else the borrow outlives `rx` — E0597).
-    let waited = tokio::time::timeout(
-        timeout,
-        rx.wait_for(|s| s.is_live()),
-    )
-    .await;
+    let waited = tokio::time::timeout(timeout, rx.wait_for(|s| s.is_live())).await;
     match waited {
         Ok(Ok(guard)) => Some(guard.clone()),
         _ => None,
@@ -926,11 +958,7 @@ pub async fn wait_for_serving_window_settle(
     // Phase 2: wait for the relaunched lane to come back decode-ready. Bind the timeout result
     // before matching so its `watch::Ref` temporary drops before `rx` does (else E0597).
     let remaining = timeout.saturating_sub(start.elapsed());
-    let waited = tokio::time::timeout(
-        remaining,
-        rx.wait_for(|s| s.is_live()),
-    )
-    .await;
+    let waited = tokio::time::timeout(remaining, rx.wait_for(|s| s.is_live())).await;
     match waited {
         Ok(Ok(guard)) => Some(guard.served_context_window),
         _ => None,

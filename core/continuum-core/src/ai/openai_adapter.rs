@@ -282,7 +282,10 @@ fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
 ///
 /// One predicate, two readers: the pre-flight guard below and the post-wait re-check. Written
 /// out once so the two can never drift into disagreeing about what "serving our model" means.
-fn snapshot_guarantees(snap: &crate::inference::llama_server::ServingSnapshot, model: &str) -> bool {
+fn snapshot_guarantees(
+    snap: &crate::inference::llama_server::ServingSnapshot,
+    model: &str,
+) -> bool {
     snap.ready
         && (snap.active_model.as_deref() == Some(model)
             || (snap.vision_ready && snap.vision_model.as_deref() == Some(model)))
@@ -544,6 +547,29 @@ impl OpenAICompatibleAdapter {
         OpenAiBase::new(raw)
     }
 
+    /// Does this adapter's effective base URL target the LOCAL llama-server lane
+    /// published in the serving snapshot? Data-driven attribution for the
+    /// real-decode success/failure counters (#363): only requests that actually
+    /// ride the local lane may stamp its record — a cloud provider's outage must
+    /// never smear it, and a local success must never launder a cloud failure.
+    /// URL equality against the ONE published snapshot, never a name sniff (#70).
+    fn targets_local_serving_lane(&self) -> bool {
+        let snap = crate::inference::llama_server::current_serving();
+        if snap.base_url.is_empty() {
+            return false;
+        }
+        fn norm(s: &str) -> &str {
+            s.trim_end_matches('/')
+                .trim_end_matches("/v1")
+                .trim_end_matches('/')
+        }
+        let raw = self
+            .runtime_base_url
+            .as_deref()
+            .unwrap_or(self.config.base_url.as_str());
+        norm(raw) == norm(&snap.base_url)
+    }
+
     /// The endpoint base for a SPECIFIC requested model. Same as [`Self::endpoints`]
     /// except for the local serving gateway when the requested model is the
     /// serving snapshot's VISION model but not its main-lane model: that is the
@@ -753,7 +779,10 @@ impl OpenAICompatibleAdapter {
         {
             served_ctx_by_root().insert(root.clone(), n_ctx as u32);
         }
-        let n_slots = body.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let n_slots = body
+            .get("total_slots")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
         if n_slots <= 1 {
             slot_tables().insert(root, SlotAffinity::Unsupported);
             return None;
@@ -2124,11 +2153,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // lane. Fail LOUD, not FAST. Bounded, so a lane that never returns still ends
                 // as a named refusal rather than a hung generate.
                 let started = std::time::Instant::now();
-                let settled =
-                    crate::inference::llama_server::await_ready_serving(
-                        crate::inference::llama_server::DEFAULT_SERVING_WAIT,
-                    )
-                    .await;
+                let settled = crate::inference::llama_server::await_ready_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
+                .await;
                 if let Some(s) = settled {
                     snap = s;
                 }
@@ -2319,6 +2347,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         use futures::StreamExt;
         let mut byte_stream = response.bytes_stream();
         let idle = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
+        // #363: real-delivery accounting for the LOCAL lane only. A terminal stream
+        // death on the local lane is wedge evidence the smoke probe cannot see (an
+        // undersized slot passes a tiny probe while rejecting real prompts); a
+        // completed stream is proof of life. Both stamps are gated on this request
+        // actually targeting the published serving lane.
+        let local_lane = self.targets_local_serving_lane();
 
         let mut sse_buf: Vec<u8> = Vec::new();
         let mut acc_content = String::new();
@@ -2333,6 +2367,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             let next = tokio::time::timeout(idle, byte_stream.next())
                 .await
                 .map_err(|_| {
+                    if local_lane {
+                        crate::inference::llama_server::note_real_decode_failure();
+                    }
                     format!(
                         "{}: inference lane went silent for {}s mid-stream (no token \
                          produced) — backend stuck or dead; refusing to wait on a dead \
@@ -2343,8 +2380,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             let Some(chunk) = next else {
                 break; // server closed the stream (EOF) — generation complete
             };
-            let bytes =
-                chunk.map_err(|e| format!("{}: stream read error: {e}", self.config.name))?;
+            let bytes = chunk.map_err(|e| {
+                if local_lane {
+                    crate::inference::llama_server::note_real_decode_failure();
+                }
+                format!("{}: stream read error: {e}", self.config.name)
+            })?;
 
             // Strip CR (0x0D) so event boundaries normalize to `\n\n`. CR never
             // appears inside a UTF-8 multibyte sequence, so this is decode-safe; we
@@ -2411,6 +2452,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
         // `<think>…</think>` (or a server `reasoning_content`) is captured for the
+        // #363: a stream that reached EOF with real output is proof of life for the
+        // local lane — this is the streaming sibling of the blocking path's
+        // `note_real_decode` (which streaming never stamped, leaving the citizens'
+        // primary path invisible to the liveness record). It also ends any failure
+        // streak. Gated on the local lane like the failure stamps above.
+        if local_lane
+            && (!acc_content.is_empty() || !acc_reasoning.is_empty() || !acc_tools.is_empty())
+        {
+            crate::inference::llama_server::note_real_decode();
+        }
+
         // harness/memory and stripped from `text` so it can NEVER reach the room.
         let raw_content = acc_content;
         let (text, reasoning) = extract_reasoning(
@@ -2780,7 +2832,10 @@ fn parse_embedding_response(body: &Value) -> Result<Vec<Vec<f32>>, String> {
             .get("embedding")
             .and_then(|v| v.as_array())
             .ok_or_else(|| format!("embeddings response item {i} missing `embedding`"))?;
-        let vec: Vec<f32> = emb.iter().map(|n| n.as_f64().unwrap_or(0.0) as f32).collect();
+        let vec: Vec<f32> = emb
+            .iter()
+            .map(|n| n.as_f64().unwrap_or(0.0) as f32)
+            .collect();
         indexed.push((idx, vec));
     }
     indexed.sort_by_key(|(i, _)| *i);
@@ -2937,7 +2992,10 @@ mod tests {
     // [[fallbacks-are-illegal-fail-loud]] (#334)
     #[test]
     fn unparseable_tool_arguments_are_marked_malformed_never_silently_wrapped() {
-        let runaway = format!("{{\"content\":\"x\",\"file_path\":\"/a{}", "e072".repeat(50));
+        let runaway = format!(
+            "{{\"content\":\"x\",\"file_path\":\"/a{}",
+            "e072".repeat(50)
+        );
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&runaway);
         let err = parsed.expect_err("fixture must actually be invalid JSON");
 
@@ -2951,7 +3009,9 @@ mod tests {
             .get("__malformed_tool_arguments")
             .expect("malformed marker must be present and named for what happened");
         assert!(
-            m.get("error").and_then(|e| e.as_str()).is_some_and(|e| !e.is_empty()),
+            m.get("error")
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| !e.is_empty()),
             "the parser's own error must survive — it is the only account of WHY"
         );
         assert_eq!(
@@ -2961,7 +3021,10 @@ mod tests {
         );
         // The dead escape hatch must not come back: `_raw` had zero consumers, so a
         // params object carrying it reads as valid to every caller and is not.
-        assert!(input.get("_raw").is_none(), "the silent `_raw` wrapper must stay gone");
+        assert!(
+            input.get("_raw").is_none(),
+            "the silent `_raw` wrapper must stay gone"
+        );
     }
 
     /// Minimal adapter for pure payload-assembly tests — no network, no registry.
@@ -3111,9 +3174,7 @@ mod tests {
     // snapshot can't wrongly block cognition.
     #[test]
     fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
-        let body = |chars: usize| {
-            serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] })
-        };
+        let body = |chars: usize| serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] });
         // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
         assert_eq!(
             prompt_alone_overflows_served(&body(48_000), 8_000),
@@ -3125,7 +3186,10 @@ mod tests {
         // Window unknown (mid-relaunch) → never block, whatever the prompt size.
         assert_eq!(prompt_alone_overflows_served(&body(48_000), 0), None);
         // No messages array → nothing to overflow.
-        assert_eq!(prompt_alone_overflows_served(&serde_json::json!({}), 8_000), None);
+        assert_eq!(
+            prompt_alone_overflows_served(&serde_json::json!({}), 8_000),
+            None
+        );
     }
 
     // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
@@ -3140,7 +3204,10 @@ mod tests {
             reasoning.as_deref(),
             Some("The capital is Paris. Keep it to one sentence.")
         );
-        assert!(!text.contains("<think>"), "answer must be free of reasoning tags");
+        assert!(
+            !text.contains("<think>"),
+            "answer must be free of reasoning tags"
+        );
     }
 
     // what this catches: THE runaway loop — an UNCLOSED <think> (model ran out of
@@ -3150,7 +3217,10 @@ mod tests {
     fn extract_reasoning_unclosed_think_yields_empty_answer() {
         let raw = "<think>\nWait, the recall section... wait, no... wait, the recall section";
         let (text, reasoning) = extract_reasoning(raw, None);
-        assert_eq!(text, "", "a truncated think block produces no postable answer");
+        assert_eq!(
+            text, "",
+            "a truncated think block produces no postable answer"
+        );
         assert!(reasoning.unwrap().contains("recall section"));
     }
 
@@ -3174,7 +3244,10 @@ mod tests {
 
         let (text, reasoning) = extract_reasoning("<think></think>\n\n{\"ok\":true}", None);
         assert_eq!(text, "{\"ok\":true}");
-        assert!(reasoning.is_none(), "empty think block confers no reasoning");
+        assert!(
+            reasoning.is_none(),
+            "empty think block confers no reasoning"
+        );
     }
 
     // what this catches: a thread ending with an assistant turn must be closed with
@@ -3202,11 +3275,18 @@ mod tests {
         assert_ne!(a, b, "two personas take two distinct slots");
         // WARM reuse: a persona that already holds a slot gets the SAME slot back
         // (the whole point — its prefilled KV stays put).
-        assert_eq!(table.lease("persona-a").unwrap(), a, "warm reuse, same slot");
+        assert_eq!(
+            table.lease("persona-a").unwrap(),
+            a,
+            "warm reuse, same slot"
+        );
         // Now a='a' is the most-recently-active, b='b' the least. A THIRD persona
         // must evict the LRU holder (b), not a.
         let c = table.lease("persona-c").unwrap();
-        assert_eq!(c, b, "new persona evicts the least-recently-active holder (b)");
+        assert_eq!(
+            c, b,
+            "new persona evicts the least-recently-active holder (b)"
+        );
         assert_eq!(table.lease("persona-a").unwrap(), a, "a kept its warm slot");
         // b was evicted → coming back, b takes the now-LRU slot (a is fresher).
         let b2 = table.lease("persona-b").unwrap();
@@ -3226,7 +3306,10 @@ mod tests {
         assert_eq!(msgs.len(), 4, "continuation appended");
         assert_eq!(msgs[3]["role"], json!("user"));
         assert!(
-            msgs[3]["content"].as_str().unwrap().contains("[continuation]"),
+            msgs[3]["content"]
+                .as_str()
+                .unwrap()
+                .contains("[continuation]"),
             "closure is the structural continuation fact"
         );
 
@@ -3271,7 +3354,11 @@ mod tests {
     fn apply_no_think_switch_noop_without_user() {
         let mut msgs = vec![json!({"role": "system", "content": "be helpful"})];
         apply_no_think_switch(&mut msgs);
-        assert_eq!(msgs[0]["content"], json!("be helpful"), "no user turn → unchanged");
+        assert_eq!(
+            msgs[0]["content"],
+            json!("be helpful"),
+            "no user turn → unchanged"
+        );
     }
 
     // what this catches: the ROBUST thinking-suppression lever — under
@@ -3292,7 +3379,10 @@ mod tests {
         );
         // second apply is a no-op on the value (overwrites identically)
         apply_enable_thinking_false(&mut body);
-        assert_eq!(body["chat_template_kwargs"], json!({ "enable_thinking": false }));
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({ "enable_thinking": false })
+        );
     }
 
     // what this catches: a single string input serializes as a JSON string (not
@@ -3381,8 +3471,7 @@ mod tests {
         // stores the full path" case still resolves via substring on name.
         #[test]
         fn short_name_resolves_via_substring() {
-            let id =
-                OpenAICompatibleAdapter::match_lora_index(&catalog(), "coder-4b-keystone", "");
+            let id = OpenAICompatibleAdapter::match_lora_index(&catalog(), "coder-4b-keystone", "");
             assert_eq!(id, Some(0));
         }
 
@@ -3391,8 +3480,7 @@ mod tests {
         // drop. (Silent drop was the original LIFT=0 no-op.)
         #[test]
         fn unregistered_adapter_is_a_miss() {
-            let id =
-                OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
+            let id = OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
             assert_eq!(id, None);
         }
 
