@@ -89,6 +89,40 @@ precision, resident where.
   local disk-tier then consumed — streaming-consume-during-decode is a later
   refinement, and the ledger will say which one a row measured).
 
+## Repeatability — every claim is a regression test (Joel's rule, 2026-08-08)
+
+*"We will need to regression test all claims and make it repeatable."* A ledger
+row is only as durable as its re-run path. Two tiers:
+
+**Tier 1 — CI-enforced (runs on every push, `cargo test capacity::`).** These
+claims cannot silently regress; a break is a red build, not a stale ledger:
+
+| Claim | Guarding tests (continuum-core) |
+|---|---|
+| C2 cliff refusal + reuse above cliff | `expert_ecache::budget_below_one_token_working_set_is_refused_loudly`, `recurring_working_set_reuses_above_the_cliff`, `ecache_over_container_skips_disk_on_a_recurring_working_set` |
+| LFRU > LRU at small fractions (C5's floor) | `expert_ecache::lfru_beats_lru_at_small_cache_fractions` |
+| Keying/tier identity (C3/C4 substrate) | `expert_ecache::packed_key_is_stable_and_unique`, `expert_container::tiered_fetch_round_trips_every_expert_at_every_tier`, `tier_range_and_id_order_violations_refuse` |
+| Container geometry laws | `expert_container::fetch_round_trips_every_expert_in_one_read`, `geometry_violations_fail_loud_at_open_not_at_read`, `record_identity_mismatch_is_an_error_not_a_wrong_answer`, `v1_manifest_without_tiers_field_reads_as_single_tier`, `unknown_manifest_version_is_refused` |
+| Sharp/cruft byte-packing (C4 mechanism) | `expert_ecache::tier_mix_packs_by_bytes_and_sharp_admit_evicts_enough_cruft` |
+| Depot degrade-never-break (C7 seam) | `expert_depot::manifest_lists_only_resident_banks`, `http_serves_expert_bytes_with_verifiable_hash`, `tier_query_selects_the_tiers_bank_and_bytes`, `miss_is_404_and_corruption_is_500` |
+| Warm-start (cold-ramp kill) | `expert_ecache::warm_start_from_persisted_usage_kills_the_cold_ramp` |
+
+Fork-side tier-1 (ResidencyCache generation fence, gather numerical identity)
+runs in the fork's own test suite on `k3-adopt`.
+
+**Tier 2 — hardware-required, command-invocable (the claims runner, task #373).**
+Measured claims (C1 tok/s, C3 speedup, C4/C5 A/Bs, C6–C8) get one repeatable
+entrypoint each under a native `bench/claims` command family
+(benchmarks-are-substrate doctrine — never a bash script): pinned model
+artifact + pinned config in, receipt JSON out, appended to the run ledger. The
+same harness re-runs on any qualifying machine; a claim's ledger row cites the
+command line that regenerates it. Distribution rule: results reported over ≥3
+runs (nondeterminism discipline above), the harness emitting all runs, never a
+survivor number. Sim-provable claims (market clearing invariants, placement)
+get deterministic `capacity/sim` scenarios promoted into tier 1 as they land —
+a market decision replayable without hardware is a unit test, and gets written
+as one.
+
 ## Venue / framing (later)
 
 Systems venue shape (MLSys / OSDI-adjacent): the contribution is the
