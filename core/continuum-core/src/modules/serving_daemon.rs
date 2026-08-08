@@ -2213,18 +2213,40 @@ static SERVING_STEADY_HOLDS: AtomicUsize = AtomicUsize::new(0);
 /// "pin the lane for the demand's duration" clause ([[benchmark-is-a-governor-preemption-lease]],
 /// the co-tenant/steady case: no second weight copy, just don't bounce the lane).
 #[must_use = "the hold releases the instant this guard drops — bind it for the eval's lifetime"]
-pub struct ServingSteadyHold(());
+pub struct ServingSteadyHold {
+    /// WHO pinned the lane — a run id, "eval", etc. Carried so the acquire and
+    /// release EVENTS name the holder (Joel 2026-08-08: "emit events for
+    /// everything — need to know"): a suppressed relaunch with no event is
+    /// indistinguishable from a planner that never wanted one, and a leaked
+    /// hold with no holder name is unattributable.
+    holder: String,
+}
 
 impl ServingSteadyHold {
-    pub fn acquire() -> Self {
-        SERVING_STEADY_HOLDS.fetch_add(1, Ordering::AcqRel);
-        Self(())
+    pub fn acquire(holder: impl Into<String>) -> Self {
+        let holder = holder.into();
+        let holds = SERVING_STEADY_HOLDS.fetch_add(1, Ordering::AcqRel) + 1;
+        crate::probe!(
+            class = "serving.lane.hold",
+            action = "acquired",
+            holder = %holder,
+            holds,
+            "serving lane pinned STEADY (optional grow-back re-home suppressed while held)"
+        );
+        Self { holder }
     }
 }
 
 impl Drop for ServingSteadyHold {
     fn drop(&mut self) {
-        SERVING_STEADY_HOLDS.fetch_sub(1, Ordering::AcqRel);
+        let holds = SERVING_STEADY_HOLDS.fetch_sub(1, Ordering::AcqRel) - 1;
+        crate::probe!(
+            class = "serving.lane.hold",
+            action = "released",
+            holder = %self.holder,
+            holds,
+            "serving lane steady-hold released"
+        );
     }
 }
 
@@ -2971,10 +2993,10 @@ mod tests {
     fn serving_steady_hold_is_refcounted_and_raii() {
         assert!(!serving_held_steady(), "no hold at rest");
         {
-            let _h1 = ServingSteadyHold::acquire();
+            let _h1 = ServingSteadyHold::acquire("test");
             assert!(serving_held_steady(), "one hold ⇒ steady");
             {
-                let _h2 = ServingSteadyHold::acquire();
+                let _h2 = ServingSteadyHold::acquire("test");
                 assert!(serving_held_steady(), "two holds ⇒ still steady");
             }
             assert!(
