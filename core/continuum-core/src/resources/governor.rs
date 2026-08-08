@@ -175,6 +175,17 @@ impl ResourceGovernor {
         self.ledger.reserve(consumer_id, kind, min_bytes);
     }
 
+    /// Headroom THIS consumer may plan against — the ledger's
+    /// [`available_for`](super::ledger::LeaseLedger::available_for): global
+    /// available minus every OTHER consumer's unmet reservation floor. The
+    /// budget-side twin of the guard `acquire` already enforces: a consumer that
+    /// PLANS from this number never sizes itself into bytes it would then be
+    /// refused (#225 — serving planned from reservation-blind `available`, grew
+    /// its window over the embed lane's floor, and embedding went dead).
+    pub fn available_for(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.ledger.available_for(consumer_id, kind)
+    }
+
     // ---- the tick ----------------------------------------------------------
 
     /// The per-tick decision. For each kind, compute how many bytes must come
