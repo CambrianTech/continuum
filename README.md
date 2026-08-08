@@ -621,6 +621,46 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
 - **Trust levels** — Owner/Trusted/Provisional/Blocked with ACL enforcement and audit logging
 - **Node registry** — persistent, auto-discovered, with latency tracking
 
+### Serving big minds on small machines — MoE expert paging
+
+The Grid's hardest technical bet is now mostly code: **models larger than any one
+machine's memory, served by paging their experts** — the same virtual-memory idea
+that let 1980s computers run programs bigger than RAM, applied to mixture-of-experts
+weights, and eventually spread across the mesh. A modern MoE only *activates* a few
+experts per token; keep the hot ones resident at high precision, the warm ones at
+low precision, page the cold ones from disk — or from a peer.
+
+What's built and measured (our [llama.cpp fork](https://github.com/CambrianTech/llama.cpp) + `core/continuum-core/src/capacity/`):
+
+- **Kimi-Linear-48B generating at ~57 tok/s on a Mac** (Metal, via the fork's
+  converter + serving path) — a model tier that "doesn't fit" consumer hardware, running on it
+- **Zero-copy expert gather** (`MUL_MAT_ID` consume path) — 4.0× measured on Metal A/B,
+  bit-identical CUDA kernels; consume an expert from *any* location without staging copies
+- **4 KiB-aligned streaming expert container** — fixed-size records, one bank per layer,
+  per-layer files as the grid shard unit; precision **tiers are part of expert identity**
+  (a sharp copy and a cheap copy are different bytes, never aliased)
+- **LFRU expert cache with a measured cliff law** — below one token's working set a cache
+  has *structurally zero* hit rate, so the budget refuses loudly instead of thrashing silently
+- **Tier policy + demand predictor** — all-star experts stay sharp, the tail goes cheap,
+  hotness is measured per-prompt (it is *not* static), and the learned layer trains on
+  captured paging traces
+- **Expert depot** — each node serves its resident expert banks over a local seam and
+  publishes a manifest of exactly what it holds; misses fall back cleanly, so the depot
+  can degrade serving but never break it. This is the seam grid share rides: a node that
+  holds only layers 0–30 serves them to peers that don't
+- **Governed budgets end-to-end** — one per-machine resource authority; serving, embeddings,
+  benchmarks, and training lease from the same ledger with hysteresis on every decision
+
+The allocation math is written down too: **[nested λ-pricing](docs/architecture/GRID-MARKET-CLEARING.md)** —
+the pager's Lagrange multiplier *is* the price of a byte of residency, the same scalar that
+clears work between two nodes and later N (Kelly-style network utility maximization + backpressure;
+the math behind TCP and WiFi airtime scheduling). Design docs:
+[GRID-EXPERT-SHARE](docs/serving/GRID-EXPERT-SHARE.md) ·
+[GRID-ECONOMICS-AND-AFFINITY-ROUTING](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md) ·
+[GRID-MARKET-CLEARING](docs/architecture/GRID-MARKET-CLEARING.md).
+**Next proofs on deck:** live learned paging on a single box end-to-end, then the two-machine
+milestone — one node generating coherent tokens from experts that exist only on its peer's disk.
+
 ### Zero-trust by construction — airc answers WHO, forge-alloy answers WHAT
 
 The Grid assumes a zero-trust world and was built for it with two purpose-made projects:

@@ -1,6 +1,9 @@
 # Grid Economics & Affinity Routing — why paged genome on cheap hardware beats one massive expert
 
-**Status:** thesis + build spec. Companion to
+**Status:** thesis + build spec. The clearing MECHANISM this thesis implies is now
+designed in [GRID-MARKET-CLEARING.md](GRID-MARKET-CLEARING.md) (nested λ-pricing,
+2026-08-08) — read that for the types/slices; this doc remains the economic argument.
+Companion to
 [INFERENCE-LANES-REALISTIC.md](INFERENCE-LANES-REALISTIC.md) (#109, the realistic
 one-base-N-lanes serving floor), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md)
 (L1–L5 genome cache, foundry, demand-aligned recall), and
