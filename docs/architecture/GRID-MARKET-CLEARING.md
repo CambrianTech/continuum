@@ -109,6 +109,17 @@ that proves clearing policies deterministically before any live node runs them.
 6. **Every clearing decision is a probe.** Price, winner, loser, and the
    counterfactual margin — the RL layer trains on these receipts, and the
    operator console renders the market like the SCADA face it is.
+7. **Unpriced is never free** (BigMama, found at S0 implementation depth,
+   2026-08-08). λ = 0 means *no price published*, not *zero cost* — the wire
+   type carries a `priced()` distinction, and clearing must treat unpriced
+   capacity as unknown, never as a bargain. The failure this kills: a stale
+   pre-λ binary in a mixed grid reads as free and every peer stampedes it.
+   Corollary of the same ship: an actuator seam may land with its policy
+   deliberately stubbed (her `select_tier` returns 0 **with a test asserting
+   it**) — the price flows, tier choice waits for the learned policy under
+   its quality guard, and the assertion is the tripwire if a policy ever
+   arrives without one. A hand-tuned rule there would be a heuristic that
+   *looks counted* — worse than the honest stub.
 
 ## 5. Slices (outlier method)
 
