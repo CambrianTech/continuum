@@ -1492,11 +1492,23 @@ impl ActionCommand for CodeCreateWorkspace {
                 let inherited = std::env::var("PATH").unwrap_or_default();
                 let prepend = p.path_prepend.join(":");
                 shell.set_env("PATH".to_string(), format!("{prepend}:{inherited}"));
+                // HER TREE MUST WIN THE IMPORT (due-diligence find, 2026-08-08,
+                // gold-through-her-hands on sympy-24066): the era venv's package is
+                // `pip install -e` bound to the GRADER'S work repo, so `import sympy`
+                // from her python loaded the pristine grader tree and HER EDITS WERE
+                // INVISIBLE TO HER OWN TEST RUNS — anti-verification: a perfect fix
+                // still "failed" when she checked it. Positive-control proven both
+                // ways: with PYTHONPATH at her workspace the issue repro fails
+                // pre-fix and passes post-fix through her exact edit semantics.
+                // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
+                shell.set_env("PYTHONPATH".to_string(), p.workspace_root.clone());
                 crate::probe!(
                     class = "code.workspace.path_prepend",
                     caller = who.as_str(),
                     prepend = prepend.as_str(),
-                    "granted the caller's shell an explicit PATH prefix (era-matched interpreter)"
+                    pythonpath = p.workspace_root.as_str(),
+                    "granted the caller's shell an era PATH prefix + PYTHONPATH at her \
+                     workspace so her edits are what her interpreter imports"
                 );
             }
         }
