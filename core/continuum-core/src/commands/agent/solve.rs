@@ -280,10 +280,71 @@ impl ActionCommand for AgentSolve {
                 let max_attempts = inner.attempts.unwrap_or(1).max(1);
                 let base_task = inner.task.clone();
                 let mut next_task = base_task.clone();
+                // Per-attempt DEADLINE (harnesses-first, Joel 2026-08-08): a wedged
+                // fork/lane used to stall this loop SILENTLY FOREVER — glass-boxed
+                // live: both graded runs froze after attempt 2 for 2.5h with zero
+                // ticks, zero markers, and the operator found out by ASKING. Silence
+                // must never be ambiguous with progress. Derived from the act budget,
+                // never flat (eval's 600s bounds ONE small task; a 12-act SWE attempt
+                // legitimately runs ~1h): budget × per-act allowance, generous 3×
+                // headroom over the measured ~5.5 min/act. On expiry: loud probe +
+                // loud marker on the poll surface, and the run ENDS — a retry into
+                // the same wedge would be a loop, and detection is the job here.
+                const PER_ACT_ALLOWANCE_SECS: u64 = 15 * 60;
+                let attempt_deadline = std::time::Duration::from_secs(
+                    inner.max_acts.unwrap_or(DEFAULT_MAX_ACTS).max(1) as u64
+                        * PER_ACT_ALLOWANCE_SECS,
+                );
                 for attempt in 1..=max_attempts {
                     let mut this_attempt = inner.clone();
                     this_attempt.task = next_task.clone();
-                    match AgentSolve::solve_body(this_attempt).await {
+                    crate::probe!(
+                        class = "benchmark.attempt.start",
+                        run_id = %run_id,
+                        attempt,
+                        max_attempts,
+                        deadline_s = attempt_deadline.as_secs(),
+                        "solve attempt starting — pulse anchor for run-liveness watchers"
+                    );
+                    let body = match tokio::time::timeout(
+                        attempt_deadline,
+                        AgentSolve::solve_body(this_attempt),
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(_) => {
+                            let msg = format!(
+                                "attempt {attempt} of {max_attempts} exceeded its deadline \
+                                 ({}s = max_acts × {}s) with no settlement — fork/lane wedge, \
+                                 an INFRA fault, never a capability verdict",
+                                attempt_deadline.as_secs(),
+                                PER_ACT_ALLOWANCE_SECS,
+                            );
+                            crate::probe!(
+                                class = "benchmark.stall",
+                                run_id = %run_id,
+                                attempt,
+                                deadline_s = attempt_deadline.as_secs(),
+                                "solve attempt DEADLINE EXCEEDED — ending the run loudly"
+                            );
+                            if let Some(path) = path.as_ref() {
+                                let _ = std::fs::write(
+                                    path,
+                                    serde_json::json!({
+                                        "failed": true,
+                                        "infra_error": msg,
+                                        "run_id": run_id,
+                                        "attempt": attempt,
+                                    })
+                                    .to_string(),
+                                );
+                            }
+                            tracing::error!(run_id = %run_id, attempt, "agent/solve detached attempt stalled past deadline");
+                            break;
+                        }
+                    };
+                    match body {
                         Ok(r) => {
                             if let (Some(path), Ok(json)) =
                                 (path.as_ref(), serde_json::to_string_pretty(&r))
