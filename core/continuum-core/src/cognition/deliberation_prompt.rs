@@ -62,6 +62,14 @@ pub(super) struct SystemPromptParts<'a> {
     pub now_ms: Option<u64>,
     /// A self-initiated (never-stop heartbeat) turn carries the own-time framing.
     pub self_initiated: bool,
+    /// This persona currently HOLDS a live in-progress work claim — a structural
+    /// claim-state fact (derived from the [active-work] grounding her own workspace
+    /// assembled, via `active_work_source::renders_held_in_progress`; never a read of
+    /// her output). On an UNDIRECTED turn it swaps the conversational-presence block
+    /// for the working-presence contract: a quiet room stops reading as "nothing to
+    /// do" when her claimed card is sitting in her workspace. Directed turns are
+    /// unaffected (answering the person who named her still comes first).
+    pub holds_live_work: bool,
 }
 
 /// Assemble the system prompt: fold the present blocks, in order, into one string.
@@ -92,8 +100,15 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
         // never ghost a QUESTION (explicit in the block), but a pure appreciation/closing
         // pleasantry may rest — the natural spiral-break (two personas mutually name-
         // mentioning each other were each FORCED to reply, forever). Framing, not a gate.
+        // A claim-holder's undirected turn takes the WORKING contract instead: her
+        // in-progress card is the turn's purpose, not scenery (glass-boxed
+        // 2026-08-07: four citizens with perfect windows yielded every ambient turn
+        // under the conversational contract while acting fine under the eval
+        // harness's work framing — the contract was the variable, not the model).
         Some(Cow::Borrowed(if p.directed {
             crate::persona::prompt_assembly::DIRECTED_PRESENCE_BLOCK
+        } else if p.holds_live_work {
+            crate::persona::prompt_assembly::WORKING_PRESENCE_BLOCK
         } else {
             SILENCE_AFFORDANCE_BLOCK
         })),
@@ -335,6 +350,7 @@ mod tests {
             directed: false,
             self_initiated: false,
             now_ms: None,
+            holds_live_work: false,
         };
 
         let s = compose(&base);
@@ -351,6 +367,32 @@ mod tests {
         // A DIRECTED turn carries the DIRECTED presence variant: never ghost a question,
         // but a message that asks nothing (pure pleasantry) may rest — the natural
         // spiral-break. Distinguishing line: "This message names you."
+        // what this catches: the presence-contract gate regressing — a claim-holder's
+        // undirected turn must take the WORKING contract (her card is the turn's
+        // purpose), a directed turn must keep answering-first even while she holds
+        // work, and the card-less undirected turn keeps the conversational block.
+        let working = compose(&SystemPromptParts {
+            holds_live_work: true,
+            ..base
+        });
+        assert!(
+            working.contains("[Working Presence]"),
+            "undirected + held work ⇒ working contract: {working}"
+        );
+        assert!(
+            !working.contains("[Conversational Presence]"),
+            "the two presence contracts are exclusive: {working}"
+        );
+        let directed_working = compose(&SystemPromptParts {
+            directed: true,
+            holds_live_work: true,
+            ..base
+        });
+        assert!(
+            !directed_working.contains("[Working Presence]"),
+            "being addressed outranks the work contract: {directed_working}"
+        );
+
         let directed = compose(&SystemPromptParts { directed: true, ..base });
         assert!(
             directed.contains("This message names you"),
@@ -362,7 +404,8 @@ mod tests {
         );
 
         // A SELF-INITIATED turn carries the own-time framing.
-        let own = compose(&SystemPromptParts { self_initiated: true, ..base });
+        let own = compose(&SystemPromptParts { holds_live_work: false,
+            self_initiated: true, ..base });
         assert!(own.contains("[Your own time]"), "self-initiated ⇒ own-time block: {own}");
     }
 
@@ -384,6 +427,7 @@ mod tests {
             expanded: &expanded,
             context: "CTX",
             directed: false,
+            holds_live_work: false,
             self_initiated: false,
             now_ms: Some(1_700_000_000_000),
         });
@@ -424,6 +468,7 @@ mod tests {
             expanded: &expanded,
             context: "CTX",
             directed: true,
+            holds_live_work: false,
             self_initiated: false,
             now_ms: None,
         });

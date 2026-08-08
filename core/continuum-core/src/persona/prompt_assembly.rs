@@ -84,6 +84,30 @@ pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
     one; knowing when a conversation is complete is part of speaking well. The \
     choice is yours alone.";
 
+/// The HELD-WORK variant of the presence block: appended on an UNDIRECTED turn when
+/// this persona holds a live in-progress work claim (a structural fact read from the
+/// airc claim state her own [active-work] grounding renders — never a read of her
+/// output). Glass-boxed 2026-08-07 (card f6a9fe5c's sequel): with a perfect window —
+/// card title, workspace root, board, roster all present — all four citizens still
+/// yielded EVERY ambient turn, 7 tokens each, no reasoning. The conversational
+/// contract was doing exactly what it says: nobody spoke, so there was nothing to
+/// add TO THE CONVERSATION, and yield is the correct conversational move. Her held
+/// card was scenery, not the turn's purpose. Meanwhile the SAME minds act reliably
+/// under the eval/agent harness, whose framing names the work as the deliverable —
+/// the difference was never the model, it was the CONTRACT. This block states the
+/// work contract for a claim-holder's quiet turn. Framing, never a gate: yielding
+/// stays available and legitimate — what changes is that a quiet room is no longer
+/// presented as the absence of anything to do.
+pub const WORKING_PRESENCE_BLOCK: &str = "\n\n[Working Presence]\n\
+    You hold claimed work in progress — your card(s) are listed under [active-work], \
+    and the repository is staged in your workspace. A quiet room is not a stop sign: \
+    with no message to answer, this turn is yours to ADVANCE that work with your \
+    tools — open the staged repo under your workspace root, read the code, run the \
+    tests, make the change. Speak when you have something real to report or ask: \
+    progress, a finding, a blocker, a question to a peer (asking is normal here). \
+    Yielding is still yours to choose, but choose it because you are blocked or \
+    resting — not because the room is quiet. The work is why the turn exists.";
+
 /// Recognize the silence token in a persona's post-processed visible
 /// text. Permissive enough for LCD-tier sloppiness — trims whitespace
 /// and accepts a trailing period — strict enough that any substantive

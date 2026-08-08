@@ -256,12 +256,38 @@ impl RagSource for ActiveWorkSource {
     }
 }
 
+/// True when an [active-work] contribution's rendered content names a card this
+/// persona currently HOLDS in progress. Colocated with the `deliver` renderer above
+/// (which writes `card <id8> [{state:?}] "<title>" …` for HELD cards only — the
+/// lost-claim and rejection facts carry no state tag) so the wire format and its one
+/// reader cannot drift apart. Matching our OWN emitted format is protocol decoding,
+/// not inference about prose. Consumed by the deliberation prompt to choose the
+/// working-presence contract on undirected turns — a structural claim-state fact.
+pub(crate) fn renders_held_in_progress(active_work_content: &str) -> bool {
+    active_work_content.contains("[InProgress]")
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use airc_work::{CardState, Priority, RepoId, WorkCardId};
     use std::sync::Mutex;
     use uuid::Uuid;
+
+    // what this catches: the held-card wire format and its one reader drifting
+    // apart — `renders_held_in_progress` keys the working-presence contract, so a
+    // renderer that stops writing `[InProgress]` (or a fact line that starts
+    // matching) silently flips ambient turns back to the conversational contract.
+    #[test]
+    fn held_card_line_matches_and_fact_lines_do_not() {
+        assert!(renders_held_in_progress(
+            "card feadd5dc [InProgress] \"PROJECT [swe] psf__requests-2148\" (priority P1)"
+        ));
+        let lost = ActiveWorkSource::lost_claim_item(&Uuid::new_v4(), "some card");
+        assert!(!renders_held_in_progress(&lost.content));
+        assert!(!renders_held_in_progress(""));
+    }
 
     struct StubWork {
         /// Each deliver pops the front result; `Err` = degraded read.

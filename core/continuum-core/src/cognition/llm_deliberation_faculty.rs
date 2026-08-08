@@ -1001,6 +1001,23 @@ impl LlmDeliberationFaculty {
         self_initiated: bool,
         now_ms: Option<u64>,
     ) -> String {
+        self.compose_system_holding(context, expanded, directed, self_initiated, now_ms, false)
+    }
+
+    /// [`Self::compose_system`] with the held-work contract flag. The plain form
+    /// defaults it false so the many framing-shape tests (which have no workspace)
+    /// keep their signature; the live prompt path derives it from `ws` and calls
+    /// this directly.
+    #[allow(clippy::too_many_arguments)]
+    fn compose_system_holding(
+        &self,
+        context: &str,
+        expanded: &BTreeSet<String>,
+        directed: bool,
+        self_initiated: bool,
+        now_ms: Option<u64>,
+        holds_live_work: bool,
+    ) -> String {
         deliberation_prompt::compose(&deliberation_prompt::SystemPromptParts {
             system_prompt: &self.system_prompt,
             persona_name: &self.persona_name,
@@ -1010,7 +1027,24 @@ impl LlmDeliberationFaculty {
             directed,
             now_ms,
             self_initiated,
+            holds_live_work,
         })
+    }
+
+    /// Does this workspace carry an [active-work] grounding contribution naming a
+    /// card she currently holds IN PROGRESS? Structural claim-state (the source read
+    /// it from airc this turn), decoded from our own wire format at the one predicate
+    /// colocated with its renderer. Drives the working-presence contract on
+    /// undirected turns; derived ONCE per prompt so the framing-token estimate and
+    /// the final render agree byte-for-byte (the budget-math invariant).
+    fn holds_live_work(ws: &Workspace) -> bool {
+        ws.broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .filter(|c| {
+                c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID
+            })
+            .any(|c| crate::persona::active_work_source::renders_held_in_progress(&c.content))
     }
 
     /// The EXACT prompt this faculty sends the model this tick — the system
@@ -1080,8 +1114,15 @@ impl LlmDeliberationFaculty {
         // compose below so the framing-token estimate matches the prompt actually sent
         // (both the silence block and the [Your own time] block are gated and add a
         // few dozen tokens each).
-        let framing_tokens =
-            est_tokens(&self.compose_system("", &expanded, ws.directed_at_self, ws.self_initiated, ws.now_ms));
+        let holds_live_work = Self::holds_live_work(ws);
+        let framing_tokens = est_tokens(&self.compose_system_holding(
+            "",
+            &expanded,
+            ws.directed_at_self,
+            ws.self_initiated,
+            ws.now_ms,
+            holds_live_work,
+        ));
 
         // The conversation — role-attributed turns built from `ws.turns` (own posts
         // → assistant, peers → user), kept to the most-recent tail when it would
@@ -1214,12 +1255,13 @@ impl LlmDeliberationFaculty {
         );
 
         DeliberationPromptView {
-            system: self.compose_system(
+            system: self.compose_system_holding(
                 &context,
                 &expanded,
                 ws.directed_at_self,
                 ws.self_initiated,
                 ws.now_ms,
+                holds_live_work,
             ),
             messages,
         }
