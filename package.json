@@ -1,7 +1,7 @@
 {
   "name": "continuum",
   "private": true,
-  "description": "Continuum \u2014 a headless persona substrate. The Rust core is the server; every UI is an equal, dependent client over the same Commands/Events SDK. `npm start` boots ONLY the headless core (Rust, no desktop). Clients live under apps/ (web, desktop, cli[Rust], mobile, vr, ar, mcp) and attach on demand.",
+  "description": "Continuum — a headless persona substrate. The Rust core is the server; every UI is an equal, dependent client over the same Commands/Events SDK. `npm start` boots ONLY the headless core (Rust, no desktop). Clients live under apps/ (web, desktop, cli[Rust], mobile, vr, ar, mcp) and attach on demand.",
   "workspaces": [
     "sdk/typescript",
     "packages/patterns",
@@ -36,7 +36,14 @@
     "ship": "node scripts/ship.mjs",
     "shot": "node scripts/shot.mjs",
     "preview:shot": "node scripts/preview-shot.mjs",
-    "preview:rec": "node scripts/preview-record.mjs"
+    "preview:rec": "node scripts/preview-record.mjs",
+    "deps:ensure": "bash tools/scripts/ensure-node-deps.sh",
+    "predev:web": "npm run deps:ensure",
+    "predev:desktop": "npm run deps:ensure",
+    "prebuild:clients": "npm run deps:ensure",
+    "prelint:clients": "npm run deps:ensure",
+    "pretypecheck:clients": "npm run deps:ensure",
+    "pretest:clients": "npm run deps:ensure"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.214",
