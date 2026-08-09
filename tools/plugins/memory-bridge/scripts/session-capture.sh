@@ -30,7 +30,7 @@ CONTINUUM="$(resolve_continuum)" || {
   exit 0
 }
 PERSONA="$(resolve_agent_persona)" || {
-  bridge_receipt session-capture failed "persona id unresolved (airc down AND no cached id)"
+  bridge_receipt session-capture failed "persona id unresolved and no cached id — $(persona_failure_reason)"
   exit 0
 }
 [ -n "${PERSONA:-}" ] || { bridge_receipt session-capture failed "persona id empty"; exit 0; }

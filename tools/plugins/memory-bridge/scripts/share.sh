@@ -40,9 +40,12 @@ resolve_recipient() {
     printf '%s' "$raw"; return 0
   fi
   # Name → peer id via airc, best-effort (whois first, then a peers-table scan).
-  local id
-  id="$(airc whois "$raw" 2>/dev/null | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)"
-  [ -z "$id" ] && id="$(airc peers 2>/dev/null | grep -iF "$raw" | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)"
+  # Through resolve_airc, not bare `airc`: this runs from a skill whose PATH is the
+  # runtime's, not the operator's, and ~/.local/bin is routinely missing from it.
+  local id airc_bin
+  airc_bin="$(resolve_airc)" || return 1
+  id="$("$airc_bin" whois "$raw" 2>/dev/null | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)"
+  [ -z "$id" ] && id="$("$airc_bin" peers 2>/dev/null | grep -iF "$raw" | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)"
   printf '%s' "$id"
 }
 
