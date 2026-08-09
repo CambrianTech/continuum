@@ -271,7 +271,7 @@ fn urlencoding_encode(s: &str) -> String {
 /// HOURS, detected by the operator's cooling fan, not by any instrument).
 const SUBPROCESS_CEILING: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
-async fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
+pub(crate) async fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args);
     if let Some(dir) = cwd {
