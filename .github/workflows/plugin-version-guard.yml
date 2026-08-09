@@ -1,0 +1,58 @@
+# Plugin version-bump guard.
+#
+# Why this exists: Claude Code plugin updates are VERSION-based, not
+# content-based. A marketplace install copies the plugin to
+# ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/ and pins it. `claude
+# plugin update` compares the DECLARED version in plugin.json against the
+# installed one and never looks at the files. So if scripts change and the
+# version does not, every installed copy answers "already at the latest version"
+# forever and the fix reaches nobody. `git pull` does not update a plugin.
+#
+# The failure this guards, measured 2026-08-09: memory-bridge sat at 0.1.0 since
+# 2026-07-25 while its scripts gained a persona-id cache and an entire
+# session-capture.sh. The installed copy on BigMama had NEITHER — automatic
+# per-turn memory capture had never run once on that machine — while the repo
+# held working code and the plugin README said the bridge was live. Bumping
+# 0.1.0 -> 0.2.0 propagated two weeks of fixes in one command.
+#
+# Same class as the install-manifest projection guard and the ts-rs binding
+# guard: a consumed artifact and its source must not drift apart in silence.
+# Here the "artifact" is every developer's installed copy.
+#
+# NOTE: this runs in CI, not pre-commit. `.githooks/pre-commit` currently invokes
+# tests deleted with the Node monolith and is not installed as the active hook
+# (core.hooksPath does not point at it), so wiring a gate there would look
+# enforced while running never.
+name: Plugin Version Guard
+
+on:
+  pull_request:
+    paths:
+      - 'tools/plugins/**'
+      - '.github/workflows/plugin-version-guard.yml'
+  push:
+    branches: [canary, main]
+
+concurrency:
+  group: plugin-version-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  plugin-version:
+    name: plugin content changed => version bumped
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the base commit to diff against, not just the tip.
+          fetch-depth: 0
+
+      - name: Check every touched plugin bumped its version
+        run: |
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "no usable base ref (first push / new branch) — nothing to compare"
+            exit 0
+          fi
+          tools/scripts/check-plugin-version.sh "$BASE"
