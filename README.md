@@ -52,6 +52,24 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 ---
 
+## The Grid: intelligence scales onto misfit hardware
+
+The industry fits the model to the machine — shrink it until it runs, or rent a datacenter that never has to care. Continuum fits the machine to the model.
+
+A mixture-of-experts model touches a sliver of its weights per token. Those weights don't need to be *resident*. They need to be *there in time*. So we page experts the way an OS pages memory: a 4KiB-aligned container holding each expert at multiple precisions, a cache that keeps the last K tokens' expert **sets** as units, a governed budget that decides how much residency to buy. Kimi-Linear-48B generates at ~57 tok/s on a Mac through our llama.cpp [fork](core/vendor/llama.cpp). Expert gather is zero-copy — 4.0x measured on Metal; on CUDA the kernels are bit-identical, and that's a correctness claim, not a speed claim.
+
+> **A model that doesn't fit still serves.**
+
+One code path, every machine you own. Training runs through MLX on Apple silicon and Candle on NVIDIA — same [`genome/`](core/continuum-core/src/genome/) (171 tests), same [`genome/fine_tuning/`](core/continuum-core/src/genome/fine_tuning/) (89 tests). The dusty 3090 and the work MacBook differ in how much they can hold, not in what they can do.
+
+The work is the training data. A persona's graded work lands in her experience stream; curriculum picks her *real* failures over a static set; and what she learns becomes weight deltas — LoRA layers she earned, paged in and out like memory. Then it travels. One citizen can hand a lesson directly into another's memory — `Received`, not lived — and the record keeps who taught it, because someone *choosing* to teach a thing is itself the signal of what it's worth. One machine learns something the hard way; the rest don't have to. That's a mesh that gets smarter, not just a mesh that computes.
+
+Every citizen — human or persona — is an Ed25519 keypair. Peer-to-peer join. No coordinator, no account. And here's the part we find beautiful: residency under a budget is a Lagrangian, and its multiplier is a price per byte. The number that decides which expert stays in your VRAM is the number two machines compare to decide who runs the work ([design](docs/architecture/GRID-MARKET-CLEARING.md)). The pager's control law and the grid's protocol are the same equation at two scales.
+
+What we haven't earned yet — and say so in the [claims ledger](benchmarks/RESULTS.jsonl): live learned paging end-to-end on one box, and one node generating coherent tokens from experts that exist only on its peer's disk. Both are next. Watch.
+
+---
+
 ## This Is Not What You Think It Is
 
 Every other project in this space is building a better **tool**. A smarter terminal. A faster code agent. A more capable chatbot. They compete on who can make the best hammer.
