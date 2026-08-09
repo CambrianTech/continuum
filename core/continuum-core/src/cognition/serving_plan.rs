@@ -73,7 +73,7 @@
 /// only bounds a pathological roster and llama.cpp `--parallel` practicality. Kept modest
 /// (4, not the 6 that OOM'd) pending a LARGE-prompt 4-lane live-GPU burst — the doc's
 /// acceptance gate. [[verify-real-device-numbers-not-a-clamp-premise]] [[capacity-fabric-live-never-block-sim-as-gym]]
-pub const MAX_LANES: u32 = 2;
+pub const MAX_LANES: u32 = 8;
 // ⚠️ 2026-07-17 REVERTED 4 → 2. Raising to 4 (warm slot per persona) was OOM-SAFE
 // (the window-scaled fit shrank -c to fit) but STARVED CONTEXT: splitting the budget 4
 // ways dropped the per-slot window to ~6k, and a live persona's assembled prompt is ~9k
@@ -85,6 +85,25 @@ pub const MAX_LANES: u32 = 2;
 // 2 lanes at ~19.8k each beats 4 warm lanes at 6k. Cross-turn clobber (the reason for the
 // raise) is the lesser evil vs a starved window; solve it with idle-warmth/duty-cycling,
 // NOT by cutting everyone's context. [[no-hardcoded-context-numbers-derive-from-the-live-window]]
+//
+// ✅ 2026-08-09 RAISED 2 → 8 (#266). The 2026-07-17 revert diagnosed the failure correctly
+// (a starved per-slot window) but fixed it in the WRONG place: it clamped the lane CEILING,
+// when the real defect was that the lane-COUNT gate below sheds against `MIN_SERVE_CTX`
+// (2048, the "runnable at all" floor) — far below the ~9k a live turn needs — so a raised
+// ceiling let 4 slots @ 6k through. That is now fixed at the true seam: the shed in
+// `plan_serving` requires each slot to clear `BOOTSTRAP_WORKING_SET` (16384 ≈ a full
+// assembled turn + generation headroom), the SAME "one full turn" figure the demand cap
+// uses. With that usable-window floor as the binding constraint, a slot per resident persona
+// is safe BY CONSTRUCTION — the plan only grows lanes toward the resident population while
+// each still gets a full turn, and sheds (surfacing `grid_overflow_lanes` + a probe) the
+// moment the floor would be breached, never below it. The 2026-07-17 "solve clobber with
+// duty-cycling, not lanes" stance was itself the bug this leaves on the table: cross-turn
+// KV clobber IS #266's whole latency story (measured: 96.3% of persona compute is prefill;
+// two of four citizens at 0.0% cache reuse across 10 turns — the LRU eviction of a warm
+// slot the resident count outnumbered). Giving each resident mind its own slot is what
+// keeps its prefilled prefix warm. This constant is once again a pure SANITY backstop
+// (pathological roster + llama.cpp `--parallel` practicality); the binding constraint is
+// the window floor, exactly as the earlier doc always claimed it should be.
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is
@@ -466,10 +485,45 @@ pub fn plan_serving(
         .min(host.perf_cores.max(1))
         .min(MAX_LANES)
         .max(1);
+    // Each RESIDENT persona wants its OWN warm slot so its prefilled KV survives across turns
+    // (no LRU clobber → no ~10k cold re-prefill every turn — #266's whole latency story: 96%
+    // prefill, two of four citizens at 0% cache reuse when 4 minds shared 2 slots). Grow the
+    // lane count toward the resident population (`demand_lanes`, set from the persona floor),
+    // but ONLY while each slot still clears the full-turn usable floor: adding a slot that
+    // drops the per-slot window below one assembled turn trades a warm-but-blind mind for a
+    // warm one that can't see — the exact 4-lanes-@-6k starvation the 2026-07-17 revert caught
+    // (it clamped the CEILING; the real fix is gating the COUNT on this floor). So pick the
+    // LARGEST lane count whose per-slot window ≥ the floor; if even one slot can't clear it (a
+    // genuinely tiny host), fall back to 1 — honest starvation, surfaced downstream — never
+    // below. The floor is `BOOTSTRAP_WORKING_SET` (≈ a ~9k prompt + generation headroom), the
+    // SAME "one full turn" constant the demand cap uses (§`BOOTSTRAP_WORKING_SET`), deliberately
+    // the STABLE bootstrap value and NOT the moving measured p95: coupling the lane COUNT to a
+    // jittering demand signal is the 718-replan lane-flap that wedged three benchmark runs. The
+    // served WINDOW still refines with measurement (below); the slot COUNT rests on a fixed
+    // floor. THIS floor — not the `MAX_LANES` backstop — is the binding constraint (#266).
     let lanes = (1..=lane_cap)
         .rev()
-        .find(|&l| window_for(l as u64) > MIN_SERVE_CTX)
+        .find(|&l| window_for(l as u64) >= BOOTSTRAP_WORKING_SET)
         .unwrap_or(1);
+    // Over-subscription: more resident personas than warm slots the window floor permits. The
+    // remainder can't get a persistent slot — with N minds on M<N slots the llama.cpp per-slot
+    // LRU eviction re-prefills a cold ~10k prefix every time an evicted mind speaks (#266). The
+    // honest node ceiling is "how many minds fit warmly at a full-turn window", and exceeding it
+    // is a real condition to make VISIBLE, never silently absorb: `grid_overflow_lanes` (below)
+    // carries the same count to the governor for off-box placement, and this probe names it at
+    // the decision so "two of four citizens sat at 0% cache reuse" can't go unseen for weeks.
+    if lanes < demand_lanes {
+        crate::probe!(
+            class = "serving.plan",
+            decision = "warm-slot-oversubscribed",
+            resident_personas = demand_lanes,
+            warm_slots = lanes,
+            without_warm_slot = demand_lanes - lanes,
+            per_slot_floor = BOOTSTRAP_WORKING_SET,
+            "node cannot warmly host all resident personas at the full-turn window floor — the \
+             unslotted minds re-prefill cold every turn until tiered off or grid-placed (#266)",
+        );
+    }
     // DEMAND cap (M5+BigMama 2026-07-26): provision for what personas USE, not for
     // what RAM allows. `window_for` maximizes the window to fill the budget (94k on a
     // roomy host) → ~33GB pre-allocated KV × lanes → swap/wedge. Cap DOWN to demand.
@@ -745,12 +799,13 @@ mod tests {
     fn served_window_footprint_fits_effective_budget_including_window_scaled_compute() {
         let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3); // ~112 KiB/token KV
-        // Demand = 4 personas, but MAX_LANES caps it (reverted to 2 after 4 lanes starved
-        // the window to ~6k < a ~9k persona prompt). The window is derived to fit whatever
-        // lane count is served — the invariant below holds at any cap.
+        // Demand = 4 personas. This roomy 48GB host clears the full-turn window floor at 4
+        // slots (#266: a warm slot per resident persona), so all 4 are served — the window is
+        // derived to fit whatever lane count is served, and the fit invariant below holds at
+        // any count.
         let plan = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
         assert!(plan.fits_on_gpu, "{}", plan.rationale);
-        assert_eq!(plan.lanes, MAX_LANES, "demand above the cap clamps to MAX_LANES");
+        assert_eq!(plan.lanes, 4, "roomy host gives each of the 4 resident personas its own warm slot");
         let c = plan.served_context_window as u64;
         let lanes = plan.lanes as u64;
         let compute_floor = devstral.compute_buffer_per_lane();
@@ -778,20 +833,61 @@ mod tests {
     // #234/#56 — the good governor recognizing its own overload, never a silent clamp.
     #[test]
     fn demand_over_local_capacity_surfaces_grid_overflow_not_silent_cram() {
-        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        // 26GB: enough for the 14GB weights + 2 warm slots at a full-turn window, but NOT 4 —
+        // the window floor (#266) caps warm slots at 2, so 2 of the 4 resident personas can't
+        // get a persistent slot locally. That excess is the honest overflow, surfaced (not
+        // crammed onto shared slots to thrash) for the governor to place off-box.
+        let host = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
-        // 4 personas demand a lane; only MAX_LANES fit locally → the rest is overflow.
         let over = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
-        assert_eq!(over.lanes, MAX_LANES, "precondition: local lanes clamp to MAX_LANES");
+        assert_eq!(over.lanes, 2, "precondition: the full-turn window floor caps warm slots at 2 here");
         assert_eq!(
             over.grid_overflow_lanes,
             4 - over.lanes,
-            "demand the local lanes couldn't absorb must be surfaced for grid placement, not crammed"
+            "demand the local warm slots couldn't absorb must be surfaced for grid placement, not crammed"
         );
         // Demand within local capacity → zero overflow (nothing to place off-box).
         let fits = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(1, None)).unwrap();
         assert_eq!(fits.lanes, 1, "precondition: single demand fits one local lane");
-        assert_eq!(fits.grid_overflow_lanes, 0, "demand ≤ local lanes → no overflow");
+        assert_eq!(fits.grid_overflow_lanes, 0, "demand ≤ local warm slots → no overflow");
+    }
+
+    // what this catches: #266 — the slot count sizes to the RESIDENT PERSONA POPULATION so
+    // each mind keeps a persistent warm slot (its prefilled KV survives across turns), clamped
+    // by the full-turn window floor. The pre-fix `MAX_LANES = 2` clamp forced 4 resident minds
+    // onto 2 slots, and the per-slot LRU eviction re-prefilled a cold ~10k prefix every turn
+    // (measured: 96% prefill, two of four citizens at 0% cache reuse). Two branches, both pinned:
+    //   (a) a budget that clears the floor at 4 slots → all 4 resident minds get a warm slot;
+    //   (b) a budget that clears it at only 2 → 2 warm slots + the excess VISIBLE as overflow,
+    //       never silently 4-crammed-onto-2 and never shrunk below the floor to fit more.
+    #[test]
+    fn slots_size_to_resident_population_capped_by_the_full_turn_window_floor() {
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+
+        // (a) Roomy: 48GB clears the full-turn floor at 4 slots → a warm slot per resident mind,
+        // zero overflow, no thrash. This is the win the `MAX_LANES = 2` clamp used to forbid.
+        let roomy = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let warm = plan_serving(roomy, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
+        assert_eq!(warm.lanes, 4, "roomy host: one warm slot per resident persona");
+        assert_eq!(warm.grid_overflow_lanes, 0, "all 4 minds hosted locally → nothing over-subscribed");
+
+        // (b) Floor-limited: 26GB clears the floor at only 2 slots. The plan yields 2 (never 4
+        // crammed onto 2), surfaces the 2 unslotted minds as overflow (the non-silent
+        // over-subscription signal a probe also names at the decision), and — critically — does
+        // NOT drop the per-slot window below the floor to squeeze 4 in.
+        let tight = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
+        let capped = plan_serving(tight, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
+        assert_eq!(capped.lanes, 2, "window floor caps warm slots at 2 — the honest ceiling, not a silent cram");
+        assert_eq!(
+            capped.grid_overflow_lanes, 2,
+            "the 2 minds that couldn't get a warm slot are SURFACED (probe + grid_overflow), never absorbed"
+        );
+        assert!(
+            capped.served_context_window >= BOOTSTRAP_WORKING_SET,
+            "each served slot keeps a full-turn window ({}) — the floor is never breached to fit more, got {}",
+            BOOTSTRAP_WORKING_SET,
+            capped.served_context_window,
+        );
     }
 
     // what this catches: the cap that outlived its own TODO. `BOOTSTRAP_WORKING_SET`
@@ -946,11 +1042,14 @@ mod tests {
     // budget, demand honored → each mind's window roughly doubles.
     #[test]
     fn lanes_track_demand_and_every_unneeded_lane_stops_costing_window() {
-        // A pressured budget (benchmark servers breathing next door).
+        // A pressured budget (benchmark servers breathing next door). Demand a budget-bound
+        // window (Some(u32::MAX)) so the "unneeded lane costs window" invariant is visible:
+        // under the default demand cap both counts would hit the same cap and the window
+        // difference would be masked — the invariant lives in the budget-bound regime.
         let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
-        let greedy = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
-        let demand2 = plan_serving(host, &candidates(), ServingDemand::new(2, None)).unwrap();
-        assert_eq!(demand2.lanes, 2, "2 minds → 2 lanes, not the ceiling");
+        let greedy = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, Some(u32::MAX))).unwrap();
+        let demand2 = plan_serving(host, &candidates(), ServingDemand::new(2, Some(u32::MAX))).unwrap();
+        assert_eq!(demand2.lanes, 2, "2 minds → 2 lanes, never the MAX_LANES ceiling");
         if greedy.lanes > 2 {
             assert!(
                 demand2.served_context_window > greedy.served_context_window,
@@ -1050,37 +1149,40 @@ mod tests {
     // sized at the MIN window; a fatter floor lane fits fewer times).
     #[test]
     fn fatter_kv_means_fewer_lanes() {
-        // Budget chosen so KV (not the MAX_LANES cap or perf cores) is the binding
-        // constraint, ABOVE the per-lane compute-buffer floor now in the fit math:
-        // 4GB total, 2GB weights → 2GB for (KV + compute buffer) per lane.
-        // lean floor ≈ 307MB KV + 256MB compute ≈ 563MB → 3 lanes;
-        // fat floor  ≈ 921MB KV + 256MB compute ≈ 1.18GB → 1 lane.
-        let host = HostBudget { usable_bytes: 4 * GB, perf_cores: 8 };
+        // Budget chosen so KV (not the MAX_LANES backstop or perf cores) is the binding
+        // constraint: each warm slot must clear the full-turn window floor (16384, #266), so a
+        // fatter per-token KV rate makes fewer slots clear it. 16GB total, 2GB weights → ~11.6GB
+        // (after co-consumer headroom) for (KV + compute buffer) across lanes at a full-turn
+        // window: lean (150k/tok) clears the floor at 3 slots; fat (450k/tok, 3× the KV) clears
+        // it at only 1. (A 4GB host would floor BOTH to 1 lane — too small to show the effect.)
+        let host = HostBudget { usable_bytes: 16 * GB, perf_cores: 8 };
         let lean = plan_serving(host, &[fp("lean", 2, 150_000, 32_768, 5)], ServingDemand::new(MAX_LANES, None)).unwrap();
         let fat = plan_serving(host, &[fp("fat", 2, 450_000, 32_768, 5)], ServingDemand::new(MAX_LANES, None)).unwrap();
         assert!(lean.lanes > fat.lanes, "lean {} should beat fat {}", lean.lanes, fat.lanes);
     }
 
-    // what this catches: the plan CAPS lane count at the MAX_LANES safety ceiling AND
-    // reserves the concurrent compute buffers, so resident KV + those buffers fit the
-    // budget (no OOM by construction). MAX_LANES was raised to 6 on 2026-07-16 to give
-    // each persona a warm slot, then REVERTED to 2 same-day after it re-OOM'd at large
-    // windows — the transient prefill compute buffer scales with n_ctx, not weights, so a
+    // what this catches: the plan CAPS lane count at the binding constraint — the full-turn
+    // window floor (#266), not the raised MAX_LANES backstop — AND reserves the concurrent
+    // compute buffers, so resident KV + those buffers fit the budget (no OOM by construction).
+    // The transient prefill compute buffer scales with n_ctx, not weights, so a
     // window-independent reserve under-provisions and 4 concurrent large-window prefills
-    // overflow. Whatever the ceiling, the fit invariant below must hold.
+    // overflow. Whatever the cap, the fit invariant below must hold.
     #[test]
-    fn lane_count_respects_the_safety_ceiling_and_reserves_compute_buffers() {
+    fn lane_count_respects_the_window_floor_and_reserves_compute_buffers() {
         // 24B-class: 13.6GB weights, kv_per_token ~156KB/token (measured), ~26GB usable.
         let m = fp("devstral-24b", 13, 156_000, 131_072, 9);
         let host = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
 
-        // 4 personas demand 4 lanes, but the MAX_LANES safety ceiling caps it.
+        // 4 personas demand 4 lanes, but only 2 slots clear the full-turn window floor on this
+        // budget — the window floor (below MAX_LANES=8) is the binding cap. The other 2 minds
+        // surface as grid_overflow rather than thrashing 4 minds across 2 clobbering slots.
         let plan = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, None)).unwrap();
         assert_eq!(
-            plan.lanes, MAX_LANES,
-            "demand is capped to the MAX_LANES safety ceiling: {}",
+            plan.lanes, 2,
+            "the full-turn window floor (not the MAX_LANES backstop) caps warm slots here: {}",
             plan.rationale
         );
+        assert_eq!(plan.grid_overflow_lanes, 2, "the 2 unslotted minds are surfaced for grid placement");
 
         // The plan FITS: weights + lanes×KV@window + lanes×compute buffer ≤ budget — the
         // invariant the KV-only math violated (it left no room for the buffers).
