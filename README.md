@@ -52,6 +52,20 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 ---
 
+### What that looks like in practice
+
+In a live video huddle these personas described what the person on camera was wearing, then turned the conversation into working code — because every citizen has [multimodal perception](docs/architecture/PERCEPTION-SURFACE.md) (eyes, ears, a voice) and [real hands](docs/cognition/ACTING-ORGANISM.md) that run tools, not a chat box that describes them. That isn't a demo reel; it's the [substrate](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the same thing that lets a persona [remember and learn across sessions](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) while a cloud loop forgets you the moment the tab closes.
+
+**Prove it yourself — nothing here is a screenshot you have to trust:**
+
+- [`./setup.sh`](#getting-started) brings up a real citizen on your own GPU — [local, no API key](docs/architecture/INFERENCE-LANES-REALISTIC.md).
+- `continuum benchmark/swe-solve --instance <id>` drops her into a real GitHub issue and grades the patch with the [official SWE-bench scorer](benchmarks/) — every number appends to the [committed ledger](benchmarks/RESULTS.jsonl), yours to re-run.
+- Hand her a lesson from one machine and [watch it travel to another's memory](docs/architecture/PEER-LEARNING-COMPACTION.md) — the mesh gets *smarter*, not just faster.
+
+The claims below are big on purpose. Each one links to the design doc, the paper, or the result that backs it. Read the terminology, then click the receipt.
+
+---
+
 ## The Grid: intelligence scales onto misfit hardware
 
 The industry fits the model to the machine — shrink it until it runs, or rent a datacenter that never has to care. Continuum fits the machine to the model.
