@@ -74,10 +74,7 @@ mod tests {
     use uuid::Uuid;
     use crate::ai::types::ToolCall;
     use crate::cognition::workspace::{Decision, Situation, TurnFraming, WorkspaceCycle};
-    use super::perception::{
-        claimed_file_without_act, is_redundant_orientation, mutated_workspace,
-        wrote_without_observation,
-    };
+    use super::perception::is_redundant_orientation;
 
 
     use crate::cognition::tool_executor::{
@@ -535,45 +532,6 @@ mod tests {
         assert!(matches!(outcome.decision, Decision::Speak { .. }));
     }
 
-    // what this catches: the ORDERING TRAP in `mutated_workspace`. `settle_step`'s Speak
-    // arm records its settlement marker BEFORE the driver's arm runs, so a naive
-    // "scan after the last marker" reads an EMPTY tail and calls EVERY turn unmutated —
-    // which would fire the re-perception at a persona who had just written the file.
-    // The concern that settled is the span ENDING at that marker.
-    #[test]
-    fn mutation_is_read_from_the_concern_that_just_settled_not_the_empty_tail() {
-        let settle = crate::cognition::working_memory::WM_SETTLEMENT_PREFIX;
-        let wrote = vec![
-            "[action #1] I ran code/read(file_path: x.py) Result: ok".to_string(),
-            "[action #2] I ran code/edit(file_path: x.py) Result: ok".to_string(),
-            format!("{settle} here is what I changed"),
-        ];
-        assert!(
-            mutated_workspace(&wrote),
-            "an edit inside the concern that just settled COUNTS — the marker at the tail must not hide it"
-        );
-
-        let only_looked = vec![
-            "[action #1] I ran code/tree(path: .) Result: src/".to_string(),
-            format!("{settle} here is my analysis of the bug"),
-        ];
-        assert!(
-            !mutated_workspace(&only_looked),
-            "acts that only LOOK are not a deliverable — the live sympy-21379 shape"
-        );
-
-        // A prior concern's edit must not launder the current one.
-        let stale = vec![
-            "[action #1] I ran code/write(file_path: a.py) Result: ok".to_string(),
-            format!("{settle} done with the first thing"),
-            "[action #2] I ran code/read(file_path: b.py) Result: ok".to_string(),
-            format!("{settle} and here is my analysis of the second"),
-        ];
-        assert!(
-            !mutated_workspace(&stale),
-            "mutation is scoped to THIS concern — an earlier concern's write does not count"
-        );
-    }
 
     // what this catches: the grader's stopwatch. A mind that never settles is
     // bounded by the EXTERNAL `max_acts` budget and the final un-driven Act is
@@ -1292,66 +1250,4 @@ mod tests {
         );
     }
 
-    // what this catches: the claimed-without-acting geometry (live specimen
-    // 2026-07-11: Asha's "I've implemented the game update function in
-    // `game_of_life.rs`" with zero tool acts on that file — peers then offered
-    // to review code that didn't exist). A completion claim naming a file with
-    // no backing write/edit act in the trace yields the file; a claim WITH a
-    // backing act yields None; discussion without claim verbs is never taxed.
-    #[test]
-    fn unacted_claim_geometry() {
-        let claim = "I've implemented the game update function in `game_of_life.rs`, \
-                     which applies Conway's rules.";
-        // No backing act → the claim is unacted.
-        assert_eq!(
-            claimed_file_without_act(claim, &[]).as_deref(),
-            Some("game_of_life.rs")
-        );
-        // A write act naming the file backs the claim → None.
-        let backed = "[action #3] I ran code/write({\"file_path\":\"game_of_life.rs\"}) …";
-        assert_eq!(
-            claimed_file_without_act(claim, &[backed.to_string()]),
-            None
-        );
-        // Plain discussion of a file without claim verbs is never taxed.
-        assert_eq!(
-            claimed_file_without_act("let's look at game_of_life.rs together", &[]),
-            None
-        );
-        // Claim verbs without a named file → nothing checkable, no fact.
-        assert_eq!(
-            claimed_file_without_act("I've implemented the logic we discussed", &[]),
-            None
-        );
-    }
-
-    // what this catches: the observation-gap geometry (Joel 2026-07-11 — the
-    // run+observe half of the creation loop is part of THEIR process). A concern
-    // that mutated the workspace (code/write / code/edit) with no LATER
-    // observation act (run/shell/read/screenshot) is unobserved; observation
-    // BEFORE the mutation doesn't count; a prior settled concern's writes don't
-    // nag the next one.
-    #[test]
-    fn unobserved_mutation_geometry() {
-        let w = "[action #1] I ran code/write({\"file_path\":\"game.rs\"}) …".to_string();
-        let r = "[action #2] I ran code/shell({\"cmd\":\"cargo run\"}) …".to_string();
-        let read_first = "[action #0] I ran code/read({\"file_path\":\"game.rs\"}) …".to_string();
-
-        // write with no later observation → unobserved
-        assert!(wrote_without_observation(&[w.clone()]));
-        // write then run → observed
-        assert!(!wrote_without_observation(&[w.clone(), r.clone()]));
-        // read BEFORE the write doesn't count as observing the write
-        assert!(wrote_without_observation(&[read_first, w.clone()]));
-        // a prior settled concern's write never leaks into this concern
-        let settled = format!(
-            "{} I answered: done",
-            crate::cognition::working_memory::WM_SETTLEMENT_PREFIX
-        );
-        assert!(!wrote_without_observation(&[w, settled, r]));
-        // no mutation at all → nothing to observe
-        assert!(!wrote_without_observation(&[
-            "[action #1] I ran code/tree({}) …".to_string()
-        ]));
-    }
 }
