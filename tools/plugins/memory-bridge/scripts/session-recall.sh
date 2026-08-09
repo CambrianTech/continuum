@@ -88,6 +88,15 @@ fi
 bridge_receipt session-recall ok "source=${SOURCE:-startup} max=$MAX bytes=${#OUT}"
 printf '%s\n' "$OUT"
 
+# Staleness is orthogonal to whether recall WORKED: a frozen copy can recall
+# perfectly and still be missing every fix committed since it was installed. So
+# this runs on the success path too, and says so where the agent will read it.
+STALE="$(stale_install_notice "$SCRIPT_DIR")"
+if [ -n "$STALE" ]; then
+  bridge_receipt session-recall stale "$STALE"
+  emit_notice "$STALE"
+fi
+
 # The Stop hook (capture) has no channel to the agent — its failures would be
 # invisible forever. Surface the last capture receipt here, where the agent reads.
 LAST_CAPTURE="$(grep -a '"hook":"session-capture"' "$BRIDGE_STATE_DIR/receipts.jsonl" 2>/dev/null | tail -1)"

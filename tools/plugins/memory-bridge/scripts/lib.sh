@@ -133,6 +133,52 @@ persona_failure_reason() {
   printf 'airc answers now (transient failure during the earlier probe)'
 }
 
+# stale_install_notice <script_dir> — warn when the RUNNING plugin is a frozen
+# copy that has drifted from this repo's source. Prints the notice, or nothing.
+#
+# There are two install paths with very different freshness semantics, and
+# nothing told you which one you were on:
+#
+#   * `claude --plugin-dir tools/plugins/memory-bridge` runs LIVE from the repo —
+#     always current, a `git pull` is the update.
+#   * a marketplace install COPIES the plugin to
+#     ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/ and pins it to a
+#     git sha. Nothing re-syncs it. A `git pull` changes nothing.
+#
+# Measured 2026-08-09 on BigMama: the installed copy was pinned to 60fa0dbf from
+# 2026-07-25 — two weeks stale. Its lib.sh had no persona-id cache, and it had no
+# session-capture.sh AT ALL, so automatic per-turn capture (the whole "volitional
+# memory isn't memory" point) had never run once on that machine. Meanwhile this
+# README said "Status: Live. Both hooks installed and verified end-to-end" — true
+# of the repo, false of the running install, and indistinguishable from outside.
+#
+# That is the plugin's own founding defect one level up. It already refuses to let
+# "installed" and "working" be indistinguishable; "current" and "stale" deserve the
+# same treatment, because a fix that never reaches the executing copy is identical
+# to a fix that was never written.
+stale_install_notice() {
+  local script_dir="${1:-}" repo src f drifted=0
+  # Only a cached COPY can be stale. Running from the repo is current by construction.
+  case "$script_dir" in
+    */plugins/cache/*) : ;;
+    *) return 0 ;;
+  esac
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+  src="$repo/tools/plugins/memory-bridge/scripts"
+  # Not the continuum checkout (an agent working in some other repo) — nothing to
+  # compare against, so say nothing rather than guess.
+  [ -d "$src" ] || return 0
+  # A file MISSING from the install counts as drift: that is exactly how
+  # session-capture.sh was silently absent for two weeks.
+  for f in lib.sh session-recall.sh session-capture.sh share.sh; do
+    [ -f "$src/$f" ] || continue
+    cmp -s "$src/$f" "$script_dir/$f" 2>/dev/null || drifted=$((drifted + 1))
+  done
+  [ "$drifted" -gt 0 ] || return 0
+  printf '⚠️ MEMORY BRIDGE STALE — the plugin actually running is a frozen copy at %s, and %s of its scripts differ from this repo (%s). Fixes committed here are NOT live: a git pull does not update a marketplace-installed plugin. Reinstall the plugin, or run it live with `claude --plugin-dir tools/plugins/memory-bridge`.' \
+    "$script_dir" "$drifted" "$src"
+}
+
 # bridge_receipt <hook> <status> [detail] — durable one-line JSONL receipt.
 #
 # The bridge's hooks MUST never break a session, so every failure path exits 0.
