@@ -5,7 +5,6 @@
 //! re-survey. No steering, no side effects: proprioception, not policy.
 
 use crate::ai::types::ToolCall;
-use crate::cognition::working_memory::WM_SETTLEMENT_PREFIX;
 
 use super::recency::summarize_args_for_recency;
 
@@ -124,4 +123,135 @@ pub(super) fn is_redundant_orientation(recent: &[String], calls: &[ToolCall]) ->
             || trace.contains("commands/help(")
             || trace.contains("code/tree(")
     })
+}
+
+/// True only for a REAL receipt line — `[action #<digit>`. The proprioception
+/// TEACHING texts mention the literal placeholder `[action #n]` ("real
+/// executions leave [action #n] receipts"), and a bare `contains("[action #")`
+/// matches the mention: the medicine suppressed the diagnosis (glass-boxed
+/// 2026-07-12 — the [actions] zero-fact vanished from every prompt the moment
+/// any backstop fact rendered, and the confab backstop went blind after its
+/// own first firing). Receipts are numbered; placeholders are not.
+/// …and numbering alone is not enough: `record_action` numbers EVERY working-
+/// memory entry, so the proprioception facts themselves render as
+/// `[action #4] [unfulfilled] …` — the facts wore receipt numbering and
+/// suppressed the zero-fact all afternoon (glass-boxed 16:50 2026-07-12,
+/// second layer of the same onion). A real receipt's body is prose
+/// ("I ran code/shell(…) Result: …"); a fact's body opens with another
+/// bracket tag. Digit + non-bracket body = receipt.
+pub(crate) fn has_real_action_receipt(text: &str) -> bool {
+    text.match_indices("[action #").any(|(i, _)| {
+        let rest = &text[i + "[action #".len()..];
+        let mut chars = rest.chars();
+        if !chars.next().is_some_and(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        // Body after "N] " must not open with a bracket tag (a fact), and
+        // must exist at all (a bare numbered line is not a receipt).
+        rest.split_once(']')
+            .map(|(_, body)| {
+                let body = body.trim_start();
+                !body.is_empty() && !body.starts_with('[')
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Did this Speak CLAIM completed work on a named file that no tool act backs?
+///
+/// Returns the first file name (a backtick-quoted or bare `name.ext` token) that
+/// appears in the same text as a completion-claim verb (created / implemented /
+/// wrote / added / finished / ready) when the working-memory snapshot contains
+/// NO `code/write`/`code/edit` act mentioning that file. Pure geometry: text
+/// tokens × trace lines. Deliberately conservative — no claim verbs → None, so
+/// ordinary discussion of files is never taxed; and the recorded fact says only
+/// "my memory shows no act", because a finite trace can't disprove past-session
+/// work.
+pub(super) fn claimed_file_without_act(text: &str, recent: &[String]) -> Option<String> {
+    let lower = text.to_lowercase();
+    const CLAIM_VERBS: &[&str] = &[
+        "i've created",
+        "i have created",
+        "i created",
+        "i've implemented",
+        "i have implemented",
+        "i implemented",
+        "i've written",
+        "i have written",
+        "i wrote",
+        "i've added",
+        "i've finished",
+        "is ready in",
+        "is written and ready",
+    ];
+    if !CLAIM_VERBS.iter().any(|v| lower.contains(v)) {
+        return None;
+    }
+    // File tokens: word.ext where ext is a short alpha extension (rs, py, css,
+    // html, ts, md, …). Scan the original text so the recorded name keeps case.
+    let mut candidates = Vec::new();
+    for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-')) {
+        if let Some((stem, ext)) = raw.rsplit_once('.') {
+            if !stem.is_empty()
+                && (1..=4).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphabetic())
+            {
+                candidates.push(raw.to_string());
+            }
+        }
+    }
+    candidates.into_iter().find(|f| {
+        !recent.iter().any(|l| {
+            (l.contains("I ran code/write(") || l.contains("I ran code/edit(")) && l.contains(f.as_str())
+        })
+    })
+}
+
+/// Did the CURRENT concern mutate the workspace without a later observation act?
+///
+/// Scans a working-memory snapshot (oldest → newest, taken BEFORE the settlement
+/// marker lands) from the last `[settled]` boundary: true when a `code/write` or
+/// `code/edit` act appears with NO subsequent run/read/screenshot-class act after
+/// the LAST mutation. Pure geometry over the trace — no judgment about whether
+/// the artifact needed observing; the recorded fact leaves that to her.
+pub(super) fn wrote_without_observation(recent: &[String]) -> bool {
+    let start = recent
+        .iter()
+        .rposition(|l| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX))
+        .map_or(0, |i| i + 1);
+    let concern = &recent[start..];
+    let last_mutation = concern
+        .iter()
+        .rposition(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("));
+    let Some(m) = last_mutation else { return false };
+    !concern[m + 1..].iter().any(|l| {
+        l.contains("I ran code/run(")
+            || l.contains("I ran code/shell(")
+            || l.contains("I ran code/read(")
+            || l.contains("I ran interface/screenshot(")
+    })
+}
+
+/// Did THIS concern actually change the workspace? True iff a `code/write` /
+/// `code/edit` receipt sits after the last settlement marker — the same
+/// concern-scoping and the same receipt vocabulary [`wrote_without_observation`]
+/// uses, so the two agree by construction about what a mutation is.
+///
+/// Deliberately receipt-based, not act-count-based: a turn can spend acts on
+/// `code/tree` + `code/read` and still have produced nothing a diff-grader will
+/// see (the live sympy-21379 shape — one act, zero bytes). Only a receipt of a
+/// mutation that really executed counts.
+/// CRITICAL ordering detail: `settle_step`'s Speak arm records its settlement
+/// marker BEFORE returning (which is why that arm snapshots `pre_settle` first).
+/// So by the time this runs the marker is already the tail, and scanning "after
+/// the last marker" would read an EMPTY span and call every turn unmutated. The
+/// concern that just settled is the span ENDING at that marker.
+pub(super) fn mutated_workspace(recent: &[String]) -> bool {
+    let is_settle =
+        |l: &String| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX);
+    let end = recent.iter().rposition(is_settle).unwrap_or(recent.len());
+    let start = recent[..end].iter().rposition(is_settle).map_or(0, |i| i + 1);
+    recent[start..end]
+        .iter()
+        .any(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("))
 }
