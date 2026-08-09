@@ -9,7 +9,7 @@ use crate::ai::types::ToolCall;
 use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
-use super::now_ms;
+use super::settle::now_ms;
 use super::perception::{all_calls_already_satisfied, is_redundant_orientation};
 use super::recency::{
     bound_recency_result, humanize_result_content, render_act_for_recall,
