@@ -243,7 +243,13 @@ where
         return Ok(existing);
     }
     // Slow path: serialize cold-spawns so bringups never fight for the GPU.
+    // The gate wait is PROBED on both sides (n8/n11 stall, 2026-08-08): a fork
+    // queued behind a wedged bringup was indistinguishable from one that never
+    // asked — gate_wait with no matching gate_held IS the "parked on the mutex"
+    // receipt.
+    crate::probe!(class = "eval.lane.acquire", step = "gate_wait", key = %key, "cold-spawn gate: waiting");
     let _gate = EVAL_LANE_SPAWN_GATE.lock().await;
+    crate::probe!(class = "eval.lane.acquire", step = "gate_held", key = %key, "cold-spawn gate: held");
     // Re-check under the gate — a racer for the same key may have spawned it while we
     // waited, in which case we share theirs and skip a redundant cold-load.
     if let Some(existing) = lookup_warm_eval_lane(key) {
@@ -949,7 +955,26 @@ async fn share_live_serving_lane(
     let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
         .with_runtime_base_url(snap.base_url.clone())
         .with_default_model(base.id.clone());
-    adapter.initialize().await.ok()?;
+    // BOUNDED: this initialize is an HTTP round-trip against the LIVE lane, and this
+    // server is documented (the /lora-adapters lesson above) to block non-completion
+    // endpoints while generating. A share CHECK must never park acquisition — if the
+    // busy lane can't answer briefly, fall through to the cold path LOUDLY instead of
+    // hanging the solve prelude (n8/n11, 2026-08-08: 2h+ parked with three candidate
+    // parks and this round-trip among them).
+    const SHARE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+    match tokio::time::timeout(SHARE_CHECK_TIMEOUT, adapter.initialize()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => return None,
+        Err(_) => {
+            crate::probe!(
+                class = "eval.lane.acquire",
+                step = "share_check_timeout",
+                model = %base.id,
+                "live-lane share check blocked past its bound (busy lane) — falling to cold path"
+            );
+            return None;
+        }
+    }
 
     emit_eval_phase(
         "loading_lane",

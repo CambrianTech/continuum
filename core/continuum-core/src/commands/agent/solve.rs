@@ -651,7 +651,54 @@ impl AgentSolve {
 
         // 1) Stand up a dedicated measurement lane for the model (her genome pages in on top),
         //    exactly as cognition/eval does — held for the whole drive, dropped after.
-        let lane = crate::cognition::eval::spawn_base_eval_lane(&p.base_model_id).await?;
+        //
+        //    BOUNDED, loudly (glass-boxed 2026-08-08, n8/n11: both forks sat 2h+ with
+        //    ZERO generations, parked somewhere inside lane acquisition — three
+        //    candidate parks (warm-pool spawn gate held by a wedged cold-load; the
+        //    share-check's adapter.initialize() HTTP round-trip against a saturated
+        //    lane, whose sibling endpoint is DOCUMENTED to block mid-generation;
+        //    pressure defer) and no receipt discriminated them because the whole
+        //    acquisition was one silent await. The timeout converts any park into a
+        //    loud named error; the bracket probes make the NEXT stall name its line.
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "lane_acquire.start",
+            base_model = %p.base_model_id,
+            "solve prelude: acquiring measurement lane"
+        );
+        const LANE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+        let lane = match tokio::time::timeout(
+            LANE_ACQUIRE_TIMEOUT,
+            crate::cognition::eval::spawn_base_eval_lane(&p.base_model_id),
+        )
+        .await
+        {
+            Ok(lane) => lane?,
+            Err(_) => {
+                crate::probe!(
+                    class = "benchmark.solve.phase",
+                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    phase = "lane_acquire.timeout",
+                    base_model = %p.base_model_id,
+                    "lane acquisition exceeded its bound — INFRA fault, run ends loudly"
+                );
+                return Err(CommandError::Internal(format!(
+                    "measurement-lane acquisition for '{}' exceeded {}s — an infra \
+                     stall (spawn gate, share-check HTTP, or pressure defer), never a \
+                     capability verdict. See eval.lane.* / benchmark.solve.phase probes \
+                     for the parked step.",
+                    p.base_model_id,
+                    LANE_ACQUIRE_TIMEOUT.as_secs()
+                )));
+            }
+        };
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "lane_acquire.done",
+            "solve prelude: lane acquired"
+        );
 
         // 2) Fork her WHOLE cognition onto that lane, rooted at the workspace: tools ON, recall ON.
         //    A brief wait covers the post-spawn template race (same as the eval fork-waiter).
