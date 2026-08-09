@@ -109,6 +109,16 @@ pub struct SweVerdict {
     /// This is what the experience stream and the room verdict carry forward.
     #[serde(default)]
     pub failed_tests: Vec<String>,
+    /// The failing FAIL_TO_PASS run's OUTPUT tail (capped) — the assertion diff a
+    /// human reviewer would paste. Glass-boxed on atlas-sympy-24066-n4 (2026-08-08):
+    /// she synthesized ~90% of the gold patch and missed on one predicate
+    /// (`== Dimension(1)` vs `is_dimensionless`); the retry verdict named the
+    /// failing TEST but not what it PRINTED — the leftover
+    /// `Dimension(impedance*capacitance/time)` in the assertion output is the fact
+    /// that teaches equality isn't enough. Format-agnostic (a report TAIL, not a
+    /// parsed section) so sympy's own runner and pytest both carry it.
+    #[serde(default)]
+    pub failure_excerpt: Option<String>,
 }
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
@@ -548,9 +558,9 @@ pub async fn run_tests(
     venv_py: &Path,
     ids: &[String],
     test_files: &[String],
-) -> HashMap<String, bool> {
+) -> (HashMap<String, bool>, String) {
     if test_files.is_empty() || ids.is_empty() {
-        return ids.iter().map(|i| (i.clone(), false)).collect();
+        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
     }
     let mut args: Vec<&str> = vec!["-m", "pytest"];
     for f in test_files {
@@ -558,7 +568,7 @@ pub async fn run_tests(
     }
     args.extend(["-v", "--no-header", "-rN", "-p", "no:cacheprovider"]);
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
-        return ids.iter().map(|i| (i.clone(), false)).collect();
+        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
     };
     let report = format!(
         "{}{}",
@@ -566,9 +576,32 @@ pub async fn run_tests(
         String::from_utf8_lossy(&out.stderr)
     );
     let (by_node, by_func) = parse_pytest_report(&report);
-    ids.iter()
+    let verdicts = ids
+        .iter()
         .map(|id| (id.clone(), verdict_for(id, &by_node, &by_func).unwrap_or(false)))
-        .collect()
+        .collect();
+    // The report rides back so the grader can excerpt the FAILURE OUTPUT into the
+    // verdict — the assertion diff is the teaching half a bare test name lacks.
+    (verdicts, report)
+}
+
+/// Cap on the failure-output excerpt a verdict carries. Failures and the short
+/// summary sit at the END of a test run's output (pytest and sympy's own runner
+/// alike), so the TAIL is the format-agnostic excerpt. Bounded so a pathological
+/// run (a runaway traceback, a print loop) can't flood the retry prompt.
+const FAILURE_EXCERPT_MAX: usize = 2000;
+
+/// Tail of a test report, char-capped on a char boundary.
+fn report_tail(report: &str) -> String {
+    let trimmed = report.trim_end();
+    if trimmed.len() <= FAILURE_EXCERPT_MAX {
+        return trimmed.to_string();
+    }
+    let mut start = trimmed.len() - FAILURE_EXCERPT_MAX;
+    while !trimmed.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &trimmed[start..])
 }
 
 /// How many PASS_TO_PASS tests to sample. The full set runs to hundreds on some instances and
@@ -580,6 +613,56 @@ pub const P2P_SAMPLE: usize = 40;
 ///
 /// `model_patch` empty means "grade the tree as the solver left it" — the caller has already
 /// edited `repo_dir` in place and the diff is implicit.
+/// The retry loop's feedback text, composed from BOTH grading reports. The
+/// REGRESSION section leads and is unmissable — glass-boxed 2026-08-08
+/// (atlas-sympy-24066-n7): her attempt-1 edit broke all 30 pass-to-pass tests,
+/// but the old excerpt was built from the fail-to-pass report alone, so the
+/// retries never showed her the breakage — she resubmitted a byte-identical
+/// broken patch twice. A verdict that hides the collateral damage teaches
+/// "my patch just doesn't fix it yet" when the truth is "my patch destroyed
+/// the tree". Pure so the composition is unit-testable without a venv.
+fn compose_failure_excerpt(
+    p2p_broken: &[String],
+    p2p_report: &str,
+    f2p_still_failing: bool,
+    f2p_report: &str,
+) -> Option<String> {
+    let mut sections: Vec<String> = Vec::new();
+    if !p2p_broken.is_empty() {
+        const NAME_CAP: usize = 10;
+        let shown: Vec<&str> = p2p_broken.iter().take(NAME_CAP).map(|s| s.as_str()).collect();
+        let more = p2p_broken.len().saturating_sub(NAME_CAP);
+        let more_note = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+        let tail = if p2p_report.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" Broken-test output tail:\n{}", report_tail(p2p_report))
+        };
+        sections.push(format!(
+            "REGRESSION — your changes BROKE {} test(s) that PASSED before you touched the \
+             tree: {}{}. Fix or revert that breakage FIRST: a patch that destroys working \
+             behavior grades as a failure no matter what else it does. A wrong symbol name or \
+             a deleted line in code you didn't mean to change is the usual cause — re-read \
+             your own diff.{}",
+            p2p_broken.len(),
+            shown.join(", "),
+            more_note,
+            tail
+        ));
+    }
+    // The target-test tail, where every runner puts its failures + summary.
+    // This is what turns "test_issue_24062 failed" into
+    // "AssertionError: Dimension(impedance*capacitance/time) != 1".
+    if f2p_still_failing && !f2p_report.trim().is_empty() {
+        sections.push(report_tail(f2p_report));
+    }
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
+}
+
 pub async fn grade(
     instance: &SweInstance,
     repo_dir: &Path,
@@ -610,7 +693,7 @@ pub async fn grade(
         verdict.error = Some(e);
         return verdict;
     }
-    let pre = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
+    let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
     let already: Vec<&String> = pre.iter().filter(|(_, ok)| **ok).map(|(id, _)| id).collect();
     verdict.gate_ok = already.is_empty();
     if !verdict.gate_ok {
@@ -634,8 +717,8 @@ pub async fn grade(
         return verdict;
     }
 
-    let f2p_res = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
-    let p2p_res = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
+    let (f2p_res, f2p_report) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
+    let (p2p_res, p2p_report) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
     verdict.failed_tests = f2p_res
@@ -645,6 +728,18 @@ pub async fn grade(
         .map(|(id, _)| id.clone())
         .collect();
     verdict.failed_tests.sort();
+    let mut p2p_broken: Vec<String> = p2p_res
+        .iter()
+        .filter(|(_, ok)| !**ok)
+        .map(|(id, _)| id.clone())
+        .collect();
+    p2p_broken.sort();
+    verdict.failure_excerpt = compose_failure_excerpt(
+        &p2p_broken,
+        &p2p_report,
+        verdict.f2p_passed < verdict.f2p_total,
+        &f2p_report,
+    );
     verdict.resolved = verdict.f2p_passed == verdict.f2p_total
         && verdict.p2p_passed == verdict.p2p_total
         && verdict.f2p_total > 0;
@@ -654,6 +749,31 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the hidden-collateral verdict (atlas-24066-n7) — a patch that
+    // broke 30 pass-to-pass tests produced retry feedback built from the f2p report
+    // alone, so she resubmitted the identical broken patch twice. The REGRESSION
+    // section must lead the excerpt whenever p2p broke, name the broken tests, and
+    // still carry the f2p tail after it; no-breakage keeps the old f2p-only shape.
+    #[test]
+    fn regression_breakage_leads_the_failure_excerpt() {
+        let broken: Vec<String> = (0..12).map(|i| format!("test_p2p_{i}")).collect();
+        let both = compose_failure_excerpt(&broken, "E ImportError: cannot import name 'Exp'", true, "E AssertionError: target still fails")
+            .expect("both sections");
+        assert!(both.starts_with("REGRESSION"), "breakage must LEAD: {both}");
+        assert!(both.contains("BROKE 12 test(s)"));
+        assert!(both.contains("test_p2p_0") && both.contains("(+2 more)"), "names capped at 10: {both}");
+        assert!(both.contains("ImportError") && both.contains("AssertionError"), "both report tails present");
+        let regression_at = both.find("REGRESSION").unwrap();
+        let f2p_at = both.find("AssertionError").unwrap();
+        assert!(regression_at < f2p_at, "regression before target-test tail");
+
+        let clean = compose_failure_excerpt(&[], "", true, "E AssertionError: target still fails")
+            .expect("f2p-only");
+        assert!(!clean.contains("REGRESSION"), "no fabricated regression on a clean tree");
+
+        assert!(compose_failure_excerpt(&[], "", false, "noise").is_none(), "nothing failing → no excerpt");
+    }
 
     // what this catches: the id-shape assumption that mis-scored GOLD as a real failure.
     // sympy's FAIL_TO_PASS entries are bare function names because sympy ships its own runner;

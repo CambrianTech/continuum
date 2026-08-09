@@ -438,10 +438,7 @@ impl CachingEmbeddingProvider {
     /// Wrap `inner`, sharing the process-global cache — what makes the
     /// compute-once-across-personas property hold in production.
     pub fn new(inner: Arc<dyn EmbeddingProvider>) -> Self {
-        Self {
-            inner,
-            cache: global_embedding_cache(),
-        }
+        Self::with_cache(inner, global_embedding_cache())
     }
 
     /// Wrap `inner` against a specific cache (tests / isolated benches).
@@ -484,8 +481,22 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
         }
         // Bound memory: evict one arbitrary entry on overflow before inserting a
         // genuinely new key. Hot/recent content re-populates on its next miss.
+        //
+        // LOCK DISCIPLINE (#368-family stall, 2026-08-08): the victim key MUST be
+        // bound by its own `let` so the `iter()` guard (a shard READ lock) is
+        // dropped at that statement's end. The previous form put the iterator
+        // temporary inside an `if let` scrutinee, where it lives for the WHOLE
+        // block — so `remove` waited forever on the same shard's WRITE lock.
+        // Self-deadlock, reachable only when the cache is FULL, which is why it
+        // slept until the cache first hit EMBEDDING_CACHE_MAX in production:
+        // from then on every novel embed parked its task permanently, and since
+        // recall embeds inside every turn, the entire citizenry went silent one
+        // turn at a time (sampled live: 100% parked in lock_exclusive_slow under
+        // DashMap::remove). dashmap's own docs: never call `remove` while
+        // holding any reference into the map.
         if !self.cache.map.contains_key(&key) && self.cache.map.len() >= EMBEDDING_CACHE_MAX {
-            if let Some(victim) = self.cache.map.iter().next().map(|e| *e.key()) {
+            let victim = self.cache.map.iter().next().map(|e| *e.key());
+            if let Some(victim) = victim {
                 self.cache.map.remove(&victim);
             }
         }
@@ -666,6 +677,29 @@ async fn try_neural_embedder(
         null_std = std,
         "measured unrelated-cosine null for the embedding space"
     );
+    // This node embeds — claim the embed lane's standing FLOOR on the resource
+    // board (#225, Joel 2026-08-08: "the budgeter just has all its parts figure
+    // it out"). The floor makes the ledger's `available_for` math hold the lane's
+    // working VRAM against every OTHER consumer, so the serving plan can no
+    // longer grow its window into the slice cognition needs every turn (measured
+    // the day this landed: 604 MiB governed-available vs the 1792 MiB need —
+    // embedding fully dead, every recall degraded to no-relevance). Reserved
+    // HERE, at successful resolve, so a node with no embed model wastes nothing.
+    // Idempotent: re-resolve re-states the same floor.
+    if let Some(daemon) = crate::resources::ResourceDaemon::global() {
+        use crate::inference::llamacpp_adapter::{EMBED_LANE_CONSUMER_ID, EMBED_LANE_VRAM_BYTES};
+        daemon.reserve(
+            EMBED_LANE_CONSUMER_ID,
+            crate::resources::ResourceKind::Vram,
+            EMBED_LANE_VRAM_BYTES,
+        );
+        crate::probe!(
+            class = "embed.vram.reserved",
+            consumer = EMBED_LANE_CONSUMER_ID,
+            bytes = EMBED_LANE_VRAM_BYTES,
+            "embed lane reserved its standing VRAM floor — serving's budget now plans around it"
+        );
+    }
     Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
 }
 
@@ -1351,6 +1385,50 @@ mod tests {
             "three back-to-back failed resolves must not attempt more than one load \
              (got {} new attempts)",
             attempts_after - attempts_before
+        );
+    }
+
+    // what this catches (regression for the 2026-08-08 civilization-wide stall):
+    // CachingEmbeddingProvider's overflow eviction self-deadlocked — the
+    // `iter()` shard READ guard lived for the whole `if let` block (scrutinee
+    // temporary lifetime), so `remove` parked forever on the same shard's WRITE
+    // lock. Reachable ONLY when the cache is at EMBEDDING_CACHE_MAX, so it
+    // slept until production filled 20k entries — then every novel embed hung
+    // its task, recall embeds inside every turn, and all four citizens went
+    // silent (sampled live: 100% parked in lock_exclusive_slow). This test
+    // fills a PRIVATE cache to the cap and embeds one novel text under a
+    // timeout: pre-fix it deadlocks (timeout fires), post-fix it evicts and
+    // returns in microseconds.
+    #[tokio::test]
+    async fn full_cache_eviction_does_not_self_deadlock() {
+        struct Tiny;
+        #[async_trait::async_trait]
+        impl EmbeddingProvider for Tiny {
+            fn id(&self) -> &str {
+                "tiny-test-embedder"
+            }
+            fn dim(&self) -> usize {
+                2
+            }
+            async fn embed(&self, _text: &str) -> Vec<f32> {
+                vec![0.5, -0.5]
+            }
+        }
+        let cache = Arc::new(EmbeddingCache::new());
+        for i in 0..EMBEDDING_CACHE_MAX {
+            cache.map.insert(i as u64, vec![0.0, 0.0]);
+        }
+        let provider = CachingEmbeddingProvider::with_cache(Arc::new(Tiny), cache.clone());
+        let v = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.embed("a text the full cache has never seen"),
+        )
+        .await
+        .expect("full-cache embed must not deadlock on its own eviction");
+        assert_eq!(v, vec![0.5, -0.5]);
+        assert!(
+            cache.map.len() <= EMBEDDING_CACHE_MAX,
+            "eviction kept the cache bounded"
         );
     }
 }

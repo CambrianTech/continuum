@@ -2481,14 +2481,30 @@ pub fn start_server(
             // only on a SUBSEQUENT change — avoiding a wasteful boot-time adapter
             // rebuild + redundant swap.
             let mut bound: Option<String> = None;
+            // LEVEL-TRIGGERED retry (#368): edge-only waking is how 4 citizens
+            // stayed stranded on a torn-down model for 47 minutes — the adapter
+            // build failed ONCE during a wedge window, the "retry on the next
+            // snapshot edge" never came (the snapshot had already settled and
+            // never republished), and `bound != active` sat unreconciled forever.
+            // The interval turns that residual mismatch into a retried one: each
+            // tick re-reads the CURRENT snapshot, and the `bound == active` fast
+            // path below makes the steady-state tick free.
+            let mut retry = tokio::time::interval(std::time::Duration::from_secs(30));
+            retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                // Park until the daemon republishes its serving snapshot.
-                if serving_rx.changed().await.is_err() {
-                    tracing::info!(
-                        "serving-snapshot watch closed — served-model re-home reconciler \
-                         exiting (substrate shutdown)"
-                    );
-                    break;
+                // Wake on a snapshot edge OR the retry tick — never park solely
+                // on an edge that may already have passed.
+                tokio::select! {
+                    changed = serving_rx.changed() => {
+                        if changed.is_err() {
+                            tracing::info!(
+                                "serving-snapshot watch closed — served-model re-home \
+                                 reconciler exiting (substrate shutdown)"
+                            );
+                            break;
+                        }
+                    }
+                    _ = retry.tick() => {}
                 }
                 let snap = serving_rx.borrow_and_update().clone();
                 if !snap.ready {

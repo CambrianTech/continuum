@@ -26,7 +26,15 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// Max act→observe cycles she may take on one task before it counts as unfinished. Agentic
 /// SWE tasks (read → edit → compile → fix) need several; default generously.
-const DEFAULT_MAX_ACTS: u32 = 12;
+// 32, up from 12 (glass-boxed 2026-08-08, benchy-sympy-22840-n9 attempt 1): the
+// 12-act cap — not the clock — was the binding constraint. She was cut off
+// mid-recovery (edit failed NOT-FOUND → the error taught verbatim-copy → she was
+// re-reading the target region when the budget expired) with 2.5 of the 3
+// deadline hours unused. Field SWE agents routinely take 30–80 steps; a count
+// cap that binds before the deadline is the hardcoded-LCD-clamp shape the
+// cognition pipeline doc forbids. The deadline stays derived from this budget
+// (× PER_ACT_ALLOWANCE_SECS), so the wedge watchdog scales with it.
+const DEFAULT_MAX_ACTS: u32 = 32;
 /// How long to wait for the forked cognition template (post-spawn `register_from_cfg` race).
 const FORK_WAIT_TRIES: u32 = 20;
 
@@ -269,6 +277,16 @@ impl ActionCommand for AgentSolve {
             .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
+                // HOLD THE LANE STEADY for the run's whole lifetime — the same RAII pin a
+                // living-persona eval binds ([[benchmark-is-a-governor-preemption-lease]]).
+                // Without it, the OPTIONAL grow-back re-home relaunches the lane under the
+                // solve's first in-flight generation: measured THREE times on 2026-08-08
+                // (benchy-22840-n7 and atlas-24066-n5 both died at act 0 to "stream read
+                // error" when the post-boot window grow bounced the lane). A scored run is
+                // exactly the demand the hold exists for; a real pressure emergency still
+                // preempts (the hold only suppresses the optional grow, never a shrink).
+                let _steady =
+                    crate::modules::serving_daemon::ServingSteadyHold::acquire(run_id.clone());
                 // N CHANCES: attempts loop. Each attempt is a full solve; a non-resolved
                 // auto-grade re-enters the SAME workspace with the verdict appended to the
                 // task (named failing tests — the teachable half of the grade). The loop
@@ -280,10 +298,75 @@ impl ActionCommand for AgentSolve {
                 let max_attempts = inner.attempts.unwrap_or(1).max(1);
                 let base_task = inner.task.clone();
                 let mut next_task = base_task.clone();
+                // Per-attempt DEADLINE (harnesses-first, Joel 2026-08-08): a wedged
+                // fork/lane used to stall this loop SILENTLY FOREVER — glass-boxed
+                // live: both graded runs froze after attempt 2 for 2.5h with zero
+                // ticks, zero markers, and the operator found out by ASKING. Silence
+                // must never be ambiguous with progress. Derived from the act budget,
+                // never flat (eval's 600s bounds ONE small task; a 12-act SWE attempt
+                // legitimately runs ~1h): budget × per-act allowance, generous 3×
+                // headroom over the measured ~5.5 min/act. On expiry: loud probe +
+                // loud marker on the poll surface, and the run ENDS — a retry into
+                // the same wedge would be a loop, and detection is the job here.
+                // 8 min/act: still ~1.5× the measured ~5.5 min/act worst case (and
+                // 3× the ~2.4 min/act measured on the n9/n6 rounds), while keeping
+                // the full-budget deadline at 32 × 8min ≈ 4.3h — comparable wedge
+                // detection to the old 12 × 15min = 3h, at 2.7× the act budget.
+                const PER_ACT_ALLOWANCE_SECS: u64 = 8 * 60;
+                let attempt_deadline = std::time::Duration::from_secs(
+                    inner.max_acts.unwrap_or(DEFAULT_MAX_ACTS).max(1) as u64
+                        * PER_ACT_ALLOWANCE_SECS,
+                );
                 for attempt in 1..=max_attempts {
                     let mut this_attempt = inner.clone();
                     this_attempt.task = next_task.clone();
-                    match AgentSolve::solve_body(this_attempt).await {
+                    crate::probe!(
+                        class = "benchmark.attempt.start",
+                        run_id = %run_id,
+                        attempt,
+                        max_attempts,
+                        deadline_s = attempt_deadline.as_secs(),
+                        "solve attempt starting — pulse anchor for run-liveness watchers"
+                    );
+                    let body = match tokio::time::timeout(
+                        attempt_deadline,
+                        AgentSolve::solve_body(this_attempt),
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(_) => {
+                            let msg = format!(
+                                "attempt {attempt} of {max_attempts} exceeded its deadline \
+                                 ({}s = max_acts × {}s) with no settlement — fork/lane wedge, \
+                                 an INFRA fault, never a capability verdict",
+                                attempt_deadline.as_secs(),
+                                PER_ACT_ALLOWANCE_SECS,
+                            );
+                            crate::probe!(
+                                class = "benchmark.stall",
+                                run_id = %run_id,
+                                attempt,
+                                deadline_s = attempt_deadline.as_secs(),
+                                "solve attempt DEADLINE EXCEEDED — ending the run loudly"
+                            );
+                            if let Some(path) = path.as_ref() {
+                                let _ = std::fs::write(
+                                    path,
+                                    serde_json::json!({
+                                        "failed": true,
+                                        "infra_error": msg,
+                                        "run_id": run_id,
+                                        "attempt": attempt,
+                                    })
+                                    .to_string(),
+                                );
+                            }
+                            tracing::error!(run_id = %run_id, attempt, "agent/solve detached attempt stalled past deadline");
+                            break;
+                        }
+                    };
+                    match body {
                         Ok(r) => {
                             if let (Some(path), Ok(json)) =
                                 (path.as_ref(), serde_json::to_string_pretty(&r))
@@ -321,6 +404,28 @@ impl ActionCommand for AgentSolve {
                             .await;
                             match grade {
                                 Ok(g) => {
+                                    // attempt.end — the FULL verdict on the wire, the
+                                    // bookend of benchmark.attempt.start (Joel 2026-08-08:
+                                    // "emit events for everything — need to know"). Grades
+                                    // were file-only; every wire consumer (probe router →
+                                    // rooms, exam-room widgets, the pulse monitors) had to
+                                    // scrape the ledger to learn an attempt's outcome.
+                                    crate::probe!(
+                                        class = "benchmark.attempt.end",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        attempt,
+                                        max_attempts,
+                                        resolved = g.resolved,
+                                        gate_ok = g.gate_ok,
+                                        f2p_passed = g.fail_to_pass_passed,
+                                        f2p_total = g.fail_to_pass_total,
+                                        p2p_passed = g.pass_to_pass_passed,
+                                        p2p_total = g.pass_to_pass_total,
+                                        patch_bytes = g.patch_bytes,
+                                        failed_tests = %g.failed_tests.join(","),
+                                        "solve attempt graded — the verdict, on the wire"
+                                    );
                                     crate::probe!(
                                         class = "benchmark.autograde",
                                         run_id = %run_id,
@@ -357,10 +462,39 @@ impl ActionCommand for AgentSolve {
                                     // the same read/search spiral. A retry's objective is
                                     // STATE, so the zero-diff arm changes the objective:
                                     // an edit is the only move that earns feedback.
+                                    // HELD-OUT honesty (due-diligence find, 2026-08-08): the
+                                    // named failing tests come from the grader's fresh clone
+                                    // + the instance's held-out test_patch — they DO NOT
+                                    // EXIST in her workspace. The old wording ("Failing
+                                    // tests: X … run them") was an unfollowable instruction:
+                                    // atlas-24066-n5 was told to run test_issue_24062, which
+                                    // no grep of her tree can find. Name them as the
+                                    // grader's, and point her at the reproduction she CAN
+                                    // run — the example in the task's own issue text.
                                     let failing = if g.failed_tests.is_empty() {
                                         String::new()
                                     } else {
-                                        format!(" Failing tests: {}.", g.failed_tests.join(", "))
+                                        format!(
+                                            " The grader's held-out tests still failing: {} \
+                                             (these are NOT in your workspace — do not search \
+                                             for them; reproduce the problem with the example \
+                                             from the task description instead, and verify \
+                                             your fix against that).",
+                                            g.failed_tests.join(", ")
+                                        )
+                                    };
+                                    // The OUTPUT half of the verdict (atlas-sympy-24066-n4,
+                                    // 2026-08-08): she rebuilt ~90% of the gold patch and
+                                    // missed on one predicate; the verdict named the failing
+                                    // test but not what it PRINTED. The assertion diff — the
+                                    // leftover `Dimension(impedance*capacitance/time)` — is
+                                    // the fact a next attempt reasons from. What a human
+                                    // reviewer would paste, so the grader pastes it.
+                                    let output = match g.failure_excerpt.as_deref() {
+                                        Some(x) if !x.trim().is_empty() => format!(
+                                            "\n\nFailing test output (what the test run printed):\n{x}\n"
+                                        ),
+                                        _ => String::new(),
                                     };
                                     // A retry is a FRESH turn with fresh working memory, so
                                     // "the file you already identified" names knowledge the
@@ -369,22 +503,49 @@ impl ActionCommand for AgentSolve {
                                     // "I worked a coding task" reflection, and she spent 10
                                     // of 12 acts re-deriving cse_main.py). The trail is
                                     // STATE the substrate holds — hand it back explicitly.
-                                    let trail = if r.files_examined.is_empty() {
+                                    // DEAD-ATTEMPT honesty (due-diligence find, 2026-08-08):
+                                    // an attempt that died before acting (infra fault, acts
+                                    // 0) leaves a junk trail — atlas-24066-n5 attempt 2 was
+                                    // told "go straight to the file you already identified.
+                                    // Files examined: sympy/physics" after attempt 1 died at
+                                    // act 0. The verdict asserted history that never
+                                    // happened. A trail only rides when the attempt actually
+                                    // worked, and directory fragments are filtered — only
+                                    // entries that look like FILES teach.
+                                    let attempt_worked = r.acts > 0;
+                                    let file_entries: Vec<&String> = r
+                                        .files_examined
+                                        .iter()
+                                        .filter(|p| p.rsplit('/').next().is_some_and(|s| s.contains('.')))
+                                        .collect();
+                                    let trail = if !attempt_worked || file_entries.is_empty() {
                                         String::new()
                                     } else {
                                         format!(
                                             " Files your previous attempt examined (in order): {}.",
-                                            r.files_examined.join(", ")
+                                            file_entries
+                                                .iter()
+                                                .map(|s| s.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(", ")
                                         )
                                     };
                                     next_task = if g.patch_bytes == 0 {
+                                        // "the file you already identified" is only true when
+                                        // the trail actually names one; a dead or fileless
+                                        // attempt gets a fresh-start objective instead of a
+                                        // reference to history that never happened.
+                                        let go = if trail.is_empty() {
+                                            "Find the file at fault and apply your best-guess fix"
+                                        } else {
+                                            "Go straight to the file you already identified and apply your best-guess fix"
+                                        };
                                         format!(
                                             "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} produced NO EDIT] \
                                              You changed no files, so the grader had nothing to run.{failing}{trail} \
-                                             Reading and searching cannot score; only an edit can. This attempt, go \
-                                             straight to the file you already identified and apply your best-guess fix \
+                                             Reading and searching cannot score; only an edit can. This attempt: {go} \
                                              with code/edit — a wrong edit earns failing-test feedback to iterate on; \
-                                             no edit earns nothing. Do not re-read what you have already read.",
+                                             no edit earns nothing.{output}",
                                         )
                                     } else {
                                         let edited = if r.files_changed.is_empty() {
@@ -396,8 +557,8 @@ impl ActionCommand for AgentSolve {
                                             "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve] \
                                              FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
                                              Your previous edits are still in this workspace.{edited}{trail} \
-                                             Investigate why these tests fail — run them — then fix in place without \
-                                             breaking what passes.",
+                                             Reproduce the problem with the task's own example, fix in place, and \
+                                             verify against that example without breaking what passes.{output}",
                                             g.fail_to_pass_passed,
                                             g.fail_to_pass_total,
                                             g.pass_to_pass_passed,
@@ -490,7 +651,54 @@ impl AgentSolve {
 
         // 1) Stand up a dedicated measurement lane for the model (her genome pages in on top),
         //    exactly as cognition/eval does — held for the whole drive, dropped after.
-        let lane = crate::cognition::eval::spawn_base_eval_lane(&p.base_model_id).await?;
+        //
+        //    BOUNDED, loudly (glass-boxed 2026-08-08, n8/n11: both forks sat 2h+ with
+        //    ZERO generations, parked somewhere inside lane acquisition — three
+        //    candidate parks (warm-pool spawn gate held by a wedged cold-load; the
+        //    share-check's adapter.initialize() HTTP round-trip against a saturated
+        //    lane, whose sibling endpoint is DOCUMENTED to block mid-generation;
+        //    pressure defer) and no receipt discriminated them because the whole
+        //    acquisition was one silent await. The timeout converts any park into a
+        //    loud named error; the bracket probes make the NEXT stall name its line.
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "lane_acquire.start",
+            base_model = %p.base_model_id,
+            "solve prelude: acquiring measurement lane"
+        );
+        const LANE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+        let lane = match tokio::time::timeout(
+            LANE_ACQUIRE_TIMEOUT,
+            crate::cognition::eval::spawn_base_eval_lane(&p.base_model_id),
+        )
+        .await
+        {
+            Ok(lane) => lane?,
+            Err(_) => {
+                crate::probe!(
+                    class = "benchmark.solve.phase",
+                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    phase = "lane_acquire.timeout",
+                    base_model = %p.base_model_id,
+                    "lane acquisition exceeded its bound — INFRA fault, run ends loudly"
+                );
+                return Err(CommandError::Internal(format!(
+                    "measurement-lane acquisition for '{}' exceeded {}s — an infra \
+                     stall (spawn gate, share-check HTTP, or pressure defer), never a \
+                     capability verdict. See eval.lane.* / benchmark.solve.phase probes \
+                     for the parked step.",
+                    p.base_model_id,
+                    LANE_ACQUIRE_TIMEOUT.as_secs()
+                )));
+            }
+        };
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "lane_acquire.done",
+            "solve prelude: lane acquired"
+        );
 
         // 2) Fork her WHOLE cognition onto that lane, rooted at the workspace: tools ON, recall ON.
         //    A brief wait covers the post-spawn template race (same as the eval fork-waiter).
@@ -628,24 +836,110 @@ impl AgentSolve {
                 None,
             ),
         );
-        let settled = crate::cognition::act_observe::drive_to_settle(
-            &cycle,
-            burst,
-            room,
-            max_acts,
-            {
-                let f = crate::cognition::workspace::TurnFraming::directed();
-                match p.deliverable.unwrap_or_default() {
-                    Deliverable::Workspace => f.on_workspace(),
-                    Deliverable::Answer => f,
-                }
-            },
-        )
-        .await;
+        let workspace_deliverable =
+            matches!(p.deliverable.unwrap_or_default(), Deliverable::Workspace);
+        let framing = {
+            let f = crate::cognition::workspace::TurnFraming::directed();
+            if workspace_deliverable {
+                f.on_workspace()
+            } else {
+                f
+            }
+        };
+        let mut settled =
+            crate::cognition::act_observe::drive_to_settle(&cycle, burst, room, max_acts, framing)
+                .await;
 
         // 4) Collect the HANDS artifact: everything she changed in the workspace as a unified diff
         //    (new files included), plus the touched paths. This is what SWE/Terminal-Bench apply.
-        let (patch, files_changed) = workspace_patch(&workspace).await;
+        let (mut patch, mut files_changed) = workspace_patch(&workspace).await;
+
+        // EMPTY-DIFF RE-DRIVE — the two-gates doctrine made mechanism (glass-boxed
+        // 2026-08-08, atlas-sympy-24066-n6 attempts 2+3): on a Workspace-deliverable
+        // task she settled by SPEAKING after ONE act — a generic file summary, zero
+        // edits — leaving 11 of 12 acts unused, twice, near-verbatim. Working is not
+        // speaking: when the deliverable is the workspace diff, a Speak with an EMPTY
+        // diff and real remaining budget must not end the attempt. ONE bounded
+        // re-drive (a retry, never a nag loop): state the structural fact, hand back
+        // the remaining budget. If she speaks to an empty diff again, THAT settles —
+        // honestly graded, with the fact on the record. Not fired on budget
+        // exhaustion (spoken=None un-driven Act) or infra failure — those already
+        // grade honestly.
+        if workspace_deliverable
+            && patch.is_empty()
+            && settled.inference_error.is_none()
+            && settled.spoken.is_some()
+            && settled.acts + 1 < max_acts
+        {
+            let remaining = max_acts - settled.acts;
+            crate::probe!(
+                class = "benchmark.empty_diff_redrive",
+                run_id = %run_id.as_deref().unwrap_or("-"),
+                acts_used = settled.acts,
+                acts_remaining = remaining,
+                "Speak settled a workspace-deliverable attempt with an EMPTY diff and \
+                 remaining act budget — one bounded re-drive with the structural fact"
+            );
+            let fact = format!(
+                "Status check from the grading harness (a structural fact, not a person): \
+                 your workspace diff is EMPTY — no file here differs from where you \
+                 started, so as of now there is NOTHING to grade. Speaking does not \
+                 submit work: this task is graded ONLY on the changes your tools make \
+                 to the files in this workspace. You have {remaining} actions left. \
+                 Use them now: reproduce the problem with the example in the task \
+                 description, find the faulty code, and change it in place with \
+                 code/edit."
+            );
+            let redelivery = crate::persona::rag_budget::RagDelivery {
+                source_id: "airc".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: fact,
+                    tokens: 0,
+                    metadata: serde_json::json!({
+                        "peer_id": "peer",
+                        "occurred_at_ms": crate::persona::trace::now_ms(),
+                    }),
+                }],
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            };
+            let reburst = crate::cognition::workspace::Burst::from_turns(
+                room,
+                crate::persona::service_loop::build_workspace_turns(
+                    std::slice::from_ref(&redelivery),
+                    "",
+                    "",
+                    None,
+                ),
+            );
+            let redriven = crate::cognition::act_observe::drive_to_settle(
+                &cycle, reburst, room, remaining, framing,
+            )
+            .await;
+            // Fold the re-drive into the attempt's outcome: totals sum, the final
+            // verdict/world-state are the re-drive's (it is the attempt's true end),
+            // the spoken text falls back to the first settle's if the re-drive
+            // ended un-spoken (budget-exhausted Act grades as did-not-finish).
+            settled.acts += redriven.acts;
+            settled.decision = redriven.decision;
+            settled.spoken = redriven.spoken.or(settled.spoken.take());
+            settled.world_state = redriven.world_state;
+            settled.inference_error = redriven.inference_error;
+            for path in redriven.touched_paths {
+                if !settled.touched_paths.contains(&path) {
+                    settled.touched_paths.push(path);
+                }
+            }
+            settled.metrics.input_tokens += redriven.metrics.input_tokens;
+            settled.metrics.output_tokens += redriven.metrics.output_tokens;
+            settled.metrics.latency_ms += redriven.metrics.latency_ms;
+            settled.metrics.cached_tokens += redriven.metrics.cached_tokens;
+            settled.metrics.prefill_tokens += redriven.metrics.prefill_tokens;
+            settled.metrics.prefill_ms += redriven.metrics.prefill_ms;
+            settled.metrics.decode_ms += redriven.metrics.decode_ms;
+            (patch, files_changed) = workspace_patch(&workspace).await;
+        }
 
         // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
         //    the same one-way bridge cognition/eval's learn mode uses. The lesson is

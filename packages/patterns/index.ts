@@ -48,6 +48,11 @@ export type { ServingContentBody, ServingNodeVM } from './servingContent';
 // strip's full activity: every node's resources + serving, SCADA-style.
 export { GRID_PURPOSE } from './gridContent';
 export type { GridContentBody, GridNodeVM } from './gridContent';
+
+// The Academy's live BENCHMARK BOARD (`purpose === BENCH_PURPOSE`) — one row
+// per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
+export { BENCH_PURPOSE } from './benchContent';
+export type { BenchContentBody, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,

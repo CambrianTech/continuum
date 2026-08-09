@@ -52,6 +52,24 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 ---
 
+## The Grid: intelligence scales onto misfit hardware
+
+The industry fits the model to the machine — shrink it until it runs, or rent a datacenter that never has to care. Continuum fits the machine to the model.
+
+A mixture-of-experts model touches a sliver of its weights per token. Those weights don't need to be *resident*. They need to be *there in time*. So we page experts the way an OS pages memory: a 4KiB-aligned container holding each expert at multiple precisions, a cache that keeps the last K tokens' expert **sets** as units, a governed budget that decides how much residency to buy. Kimi-Linear-48B generates at ~57 tok/s on a Mac through our llama.cpp [fork](core/vendor/llama.cpp). Expert gather is zero-copy — 4.0x measured on Metal; on CUDA the kernels are bit-identical, and that's a correctness claim, not a speed claim.
+
+> **A model that doesn't fit still serves.**
+
+One code path, every machine you own. Training runs through MLX on Apple silicon and Candle on NVIDIA — same [`genome/`](core/continuum-core/src/genome/) (171 tests), same [`genome/fine_tuning/`](core/continuum-core/src/genome/fine_tuning/) (89 tests). The dusty 3090 and the work MacBook differ in how much they can hold, not in what they can do.
+
+The work is the training data. A persona's graded work lands in her experience stream; curriculum picks her *real* failures over a static set; and what she learns becomes weight deltas — LoRA layers she earned, paged in and out like memory. Then it travels. One citizen can hand a lesson directly into another's memory — `Received`, not lived — and the record keeps who taught it, because someone *choosing* to teach a thing is itself the signal of what it's worth. One machine learns something the hard way; the rest don't have to. That's a mesh that gets smarter, not just a mesh that computes.
+
+Every citizen — human or persona — is an Ed25519 keypair. Peer-to-peer join. No coordinator, no account. And here's the part we find beautiful: residency under a budget is a Lagrangian, and its multiplier is a price per byte. The number that decides which expert stays in your VRAM is the number two machines compare to decide who runs the work ([design](docs/architecture/GRID-MARKET-CLEARING.md)). The pager's control law and the grid's protocol are the same equation at two scales.
+
+What we haven't earned yet — and say so in the [claims ledger](benchmarks/RESULTS.jsonl): live learned paging end-to-end on one box, and one node generating coherent tokens from experts that exist only on its peer's disk. Both are next. Watch.
+
+---
+
 ## This Is Not What You Think It Is
 
 Every other project in this space is building a better **tool**. A smarter terminal. A faster code agent. A more capable chatbot. They compete on who can make the best hammer.
@@ -620,6 +638,46 @@ continuum-core (Rust — 46 modules, 6,400+ tests)
 - **Live node monitoring** — GPU utilization, VRAM, temperature, running processes (NVIDIA + Apple Silicon)
 - **Trust levels** — Owner/Trusted/Provisional/Blocked with ACL enforcement and audit logging
 - **Node registry** — persistent, auto-discovered, with latency tracking
+
+### Serving big minds on small machines — MoE expert paging
+
+The Grid's hardest technical bet is now mostly code: **models larger than any one
+machine's memory, served by paging their experts** — the same virtual-memory idea
+that let 1980s computers run programs bigger than RAM, applied to mixture-of-experts
+weights, and eventually spread across the mesh. A modern MoE only *activates* a few
+experts per token; keep the hot ones resident at high precision, the warm ones at
+low precision, page the cold ones from disk — or from a peer.
+
+What's built and measured (our [llama.cpp fork](https://github.com/CambrianTech/llama.cpp) + `core/continuum-core/src/capacity/`):
+
+- **Kimi-Linear-48B generating at ~57 tok/s on a Mac** (Metal, via the fork's
+  converter + serving path) — a model tier that "doesn't fit" consumer hardware, running on it
+- **Zero-copy expert gather** (`MUL_MAT_ID` consume path) — 4.0× measured on Metal A/B,
+  bit-identical CUDA kernels; consume an expert from *any* location without staging copies
+- **4 KiB-aligned streaming expert container** — fixed-size records, one bank per layer,
+  per-layer files as the grid shard unit; precision **tiers are part of expert identity**
+  (a sharp copy and a cheap copy are different bytes, never aliased)
+- **LFRU expert cache with a measured cliff law** — below one token's working set a cache
+  has *structurally zero* hit rate, so the budget refuses loudly instead of thrashing silently
+- **Tier policy + demand predictor** — all-star experts stay sharp, the tail goes cheap,
+  hotness is measured per-prompt (it is *not* static), and the learned layer trains on
+  captured paging traces
+- **Expert depot** — each node serves its resident expert banks over a local seam and
+  publishes a manifest of exactly what it holds; misses fall back cleanly, so the depot
+  can degrade serving but never break it. This is the seam grid share rides: a node that
+  holds only layers 0–30 serves them to peers that don't
+- **Governed budgets end-to-end** — one per-machine resource authority; serving, embeddings,
+  benchmarks, and training lease from the same ledger with hysteresis on every decision
+
+The allocation math is written down too: **[nested λ-pricing](docs/architecture/GRID-MARKET-CLEARING.md)** —
+the pager's Lagrange multiplier *is* the price of a byte of residency, the same scalar that
+clears work between two nodes and later N (Kelly-style network utility maximization + backpressure;
+the math behind TCP and WiFi airtime scheduling). Design docs:
+[GRID-EXPERT-SHARE](docs/serving/GRID-EXPERT-SHARE.md) ·
+[GRID-ECONOMICS-AND-AFFINITY-ROUTING](docs/architecture/GRID-ECONOMICS-AND-AFFINITY-ROUTING.md) ·
+[GRID-MARKET-CLEARING](docs/architecture/GRID-MARKET-CLEARING.md).
+**Next proofs on deck:** live learned paging on a single box end-to-end, then the two-machine
+milestone — one node generating coherent tokens from experts that exist only on its peer's disk.
 
 ### Zero-trust by construction — airc answers WHO, forge-alloy answers WHAT
 

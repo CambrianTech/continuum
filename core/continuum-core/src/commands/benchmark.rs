@@ -1727,6 +1727,12 @@ pub struct SweGradeResult {
     /// next attempt) can actually chase.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_tests: Vec<String>,
+    /// The failing FAIL_TO_PASS run's output tail (capped) — the assertion diff.
+    /// Names say WHICH test failed; this says WHAT it printed, which is the half
+    /// a next attempt (or a human reviewer) actually reasons from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure_excerpt: Option<String>,
 }
 
 impl From<(SweVerdict, usize)> for SweGradeResult {
@@ -1742,6 +1748,7 @@ impl From<(SweVerdict, usize)> for SweGradeResult {
             error: v.error,
             patch_bytes: patch_bytes as u32,
             failed_tests: v.failed_tests,
+            failure_excerpt: v.failure_excerpt,
         }
     }
 }
@@ -2919,4 +2926,296 @@ mod swe_setup_tests {
         assert_eq!(BenchmarkSweSetup::NAME, "benchmark/swe-setup");
         assert!(matches!(BenchmarkSweSetup::ACCESS, AccessLevel::Privileged));
     }
+
+    // benchmark/runs (RunProjection) — nested per the one-mod rule.
+    mod run_projection {
+        use super::super::{fold_run_card, RUN_STALL_WINDOW_SECS};
+        use serde_json::json;
+
+        // what this catches: the projection's whole reason to exist — a
+        // non-terminal run with old artifacts must read `quiet`/stalled, not
+        // blend into `active` (the 2026-08-08 shape: 2.5h of silence that
+        // looked identical to progress).
+        #[test]
+        fn a_silent_nonterminal_run_reads_quiet_and_stalled() {
+            let result = json!({"persona_id": "p1", "acts": 12, "files_changed": []});
+            let grade = json!({"resolved": false, "failToPassPassed": 0, "failToPassTotal": 2,
+                               "passToPassPassed": 40, "passToPassTotal": 40, "patchBytes": 0,
+                               "failedTests": ["t1"]});
+            let now: u64 = 10_000_000_000;
+            let old = now - (RUN_STALL_WINDOW_SECS + 60) * 1000;
+            let card = fold_run_card("r1", Some(&result), Some(&grade), old, now);
+            assert_eq!(card.phase, "quiet");
+            assert!(card.stalled);
+            assert_eq!(card.fail_to_pass.as_deref(), Some("0/2"));
+            assert_eq!(card.pass_to_pass.as_deref(), Some("40/40"));
+        }
+
+        // what this catches: terminal states must NEVER be flagged stalled —
+        // a resolved run and a loud #2180 deadline kill are both finished,
+        // and paging the operator about finished work is alarm fatigue.
+        #[test]
+        fn terminal_states_are_never_stalled_regardless_of_age() {
+            let now: u64 = 10_000_000_000;
+            let ancient = 1_000;
+            let resolved = json!({"resolved": true, "failToPassPassed": 1, "failToPassTotal": 1,
+                                  "passToPassPassed": 6, "passToPassTotal": 6, "patchBytes": 974,
+                                  "failedTests": []});
+            let card = fold_run_card("r2", None, Some(&resolved), ancient, now);
+            assert_eq!(card.phase, "resolved");
+            assert!(!card.stalled);
+
+            let failed = json!({"failed": true, "infra_error": "attempt 2 exceeded its deadline"});
+            let card = fold_run_card("r3", Some(&failed), None, ancient, now);
+            assert_eq!(card.phase, "failed");
+            assert!(!card.stalled);
+            assert!(card.infra_error.as_deref().unwrap_or("").contains("deadline"));
+        }
+
+        // what this catches: fresh activity reads `active` — the stall window
+        // gates the QUIET verdict, not the other way around.
+        #[test]
+        fn recent_activity_reads_active() {
+            let now: u64 = 10_000_000_000;
+            let fresh = now - 60_000;
+            let card = fold_run_card("r4", None, None, fresh, now);
+            assert_eq!(card.phase, "active");
+            assert!(!card.stalled);
+        }
+    }
 }
+
+// ---------------------------------------------------------------------------
+// benchmark/runs — the RunProjection (exam-room surface, slice 2)
+// ---------------------------------------------------------------------------
+
+/// How long a non-terminal run may go without ANY artifact activity before the
+/// projection flags it `stalled`. Matches the harness cadence expectation (a
+/// healthy Devstral act lands every ~4-6 min; 20 min of silence is 3-4 missed
+/// beats), deliberately TIGHTER than the in-loop deadline (#2180's
+/// `max_acts × 15 min` kills the run) — the projection warns first, the
+/// deadline executes later. Glass-boxed origin: 2026-08-08, two runs sat
+/// silent 2.5h and the operator found out by asking.
+const RUN_STALL_WINDOW_SECS: u64 = 20 * 60;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsParams.ts")]
+pub struct BenchmarkRunsParams {
+    /// Filter to one run. Omit → the newest `limit` runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
+    /// Newest N runs to return (default 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub limit: Option<u32>,
+}
+
+/// One run's card — the projection every consumer renders: the positron
+/// exam-room tab bar, a teacher persona's grounding, and the operator's
+/// liveness Monitor all fold THIS, never bespoke file scraping
+/// (docs/architecture/ACADEMY-EXAM-ROOM-POSITRONIC-SURFACE.md §5.2).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchRunCard.ts")]
+pub struct BenchRunCard {
+    pub run_id: String,
+    /// Solver persona (from the result ledger; absent while attempt 1 is
+    /// still in flight and nothing has been written yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub solver: Option<String>,
+    /// `resolved` | `failed` (loud infra marker, incl. #2180 stalls the
+    /// deadline caught) | `active` (artifact activity within the stall
+    /// window) | `quiet` (non-terminal AND silent past the window — the
+    /// shape the projection exists to make visible).
+    pub phase: String,
+    /// True exactly when `phase == "quiet"`.
+    pub stalled: bool,
+    /// Epoch ms of the newest artifact write (result or grade ledger).
+    #[ts(type = "number")]
+    pub last_activity_ms: u64,
+    #[ts(type = "number")]
+    pub age_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub acts: Option<u32>,
+    pub files_changed: Vec<String>,
+    /// Investigation trail (#2177) — reads/searches/edit attempts, not git.
+    pub files_examined: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resolved: Option<bool>,
+    /// "passed/total", e.g. "1/1" — string so the sparkline renders directly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub fail_to_pass: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pass_to_pass: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub patch_bytes: Option<u32>,
+    pub failed_tests: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub infra_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsResult.ts")]
+pub struct BenchmarkRunsResult {
+    pub runs: Vec<BenchRunCard>,
+}
+
+/// Fold one run's on-disk ledgers into a card. Pure over the two JSON values +
+/// mtime so the derivation is unit-testable without a filesystem.
+fn fold_run_card(
+    run_id: &str,
+    result: Option<&serde_json::Value>,
+    grade: Option<&serde_json::Value>,
+    last_activity_ms: u64,
+    now_ms: u64,
+) -> BenchRunCard {
+    let s = |v: Option<&serde_json::Value>, k: &str| {
+        v.and_then(|v| v.get(k)).and_then(|x| x.as_str()).map(String::from)
+    };
+    let n = |v: Option<&serde_json::Value>, k: &str| {
+        v.and_then(|v| v.get(k)).and_then(|x| x.as_u64()).map(|x| x as u32)
+    };
+    let arr = |v: Option<&serde_json::Value>, k: &str| -> Vec<String> {
+        v.and_then(|v| v.get(k))
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    let resolved = grade.and_then(|g| g.get("resolved")).and_then(|x| x.as_bool());
+    let infra_error = s(result, "infra_error").or_else(|| s(result, "error"));
+    let failed_marker = result
+        .and_then(|r| r.get("failed"))
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let age_secs = now_ms.saturating_sub(last_activity_ms) / 1000;
+    let phase = if resolved == Some(true) {
+        "resolved"
+    } else if failed_marker {
+        "failed"
+    } else if age_secs < RUN_STALL_WINDOW_SECS {
+        "active"
+    } else {
+        "quiet"
+    };
+    let ratio = |g: Option<&serde_json::Value>, passed: &str, total: &str| {
+        match (n(g, passed), n(g, total)) {
+            (Some(p), Some(t)) => Some(format!("{p}/{t}")),
+            _ => None,
+        }
+    };
+    BenchRunCard {
+        run_id: run_id.to_string(),
+        solver: s(result, "persona_id"),
+        stalled: phase == "quiet",
+        phase: phase.to_string(),
+        last_activity_ms,
+        age_secs,
+        acts: n(result, "acts"),
+        files_changed: arr(result, "files_changed"),
+        files_examined: arr(result, "files_examined"),
+        resolved,
+        fail_to_pass: ratio(grade, "failToPassPassed", "failToPassTotal"),
+        pass_to_pass: ratio(grade, "passToPassPassed", "passToPassTotal"),
+        patch_bytes: n(grade, "patchBytes"),
+        failed_tests: arr(grade, "failedTests"),
+        infra_error,
+    }
+}
+
+#[derive(Default)]
+pub struct BenchmarkRuns;
+
+#[async_trait]
+impl ActionCommand for BenchmarkRuns {
+    const NAME: &'static str = "benchmark/runs";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "The benchmark RunProjection: every agent/solve run's live card — phase \
+         (active/quiet/resolved/failed), last-activity age, stall flag, acts, grade summary, \
+         investigation trail — folded from the run ledgers. ONE projection for every consumer: \
+         the exam-room tab bar, a teacher persona's grounding, and the operator's liveness \
+         monitor all read THIS instead of scraping files. `quiet` (stalled=true) is the shape \
+         it exists to expose: a non-terminal run with no artifact activity past the stall \
+         window — silence must never be ambiguous with progress.";
+    type Params = BenchmarkRunsParams;
+    type Output = BenchmarkRunsResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: BenchmarkRunsParams,
+    ) -> Result<BenchmarkRunsResult, CommandError> {
+        let base = std::env::var("CONTINUUM_HOME")
+            .map(std::path::PathBuf::from)
+            .ok()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
+            .ok_or_else(|| CommandError::Internal("no home dir".into()))?
+            .join("progress");
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut cards: Vec<BenchRunCard> = Vec::new();
+        let entries = std::fs::read_dir(&base)
+            .map_err(|e| CommandError::Internal(format!("read {}: {e}", base.display())))?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(run_id) = name
+                .strip_prefix("agent-solve-")
+                .and_then(|r| r.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            // Grade files are read as SIBLINGS of their run below, never
+            // enumerated as runs (live first use showed `X.grade` phantoms:
+            // `agent-solve-X.grade.json` survives the prefix/suffix strip).
+            if run_id.ends_with(".grade") {
+                continue;
+            }
+            if let Some(want) = p.run_id.as_deref() {
+                if want != run_id {
+                    continue;
+                }
+            }
+            let read_json = |p: &std::path::Path| -> Option<serde_json::Value> {
+                std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
+            };
+            let mtime_ms = |p: &std::path::Path| -> Option<u64> {
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis() as u64)
+            };
+            let result_path = entry.path();
+            let grade_path = base.join(format!("agent-solve-{run_id}.grade.json"));
+            let result = read_json(&result_path);
+            let grade = read_json(&grade_path);
+            let last_activity_ms = mtime_ms(&result_path)
+                .into_iter()
+                .chain(mtime_ms(&grade_path))
+                .max()
+                .unwrap_or(0);
+            cards.push(fold_run_card(
+                run_id,
+                result.as_ref(),
+                grade.as_ref(),
+                last_activity_ms,
+                now_ms,
+            ));
+        }
+        cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
+        cards.truncate(p.limit.unwrap_or(20).max(1) as usize);
+        Ok(BenchmarkRunsResult { runs: cards })
+    }
+}
+
+crate::register_stateless_command!(BenchmarkRuns);
