@@ -298,6 +298,13 @@ impl ActionCommand for AgentSolve {
                 let max_attempts = inner.attempts.unwrap_or(1).max(1);
                 let base_task = inner.task.clone();
                 let mut next_task = base_task.clone();
+                // #379 follow-through (round D's learning-stuck finding): the sha of the
+                // previous FAILED attempt's patch. When the current attempt's patch hashes
+                // the same, the resubmission is detected as STATE — not inferred from
+                // size — and the next contract leads with that fact. Round B and round D
+                // both burned attempts on byte-identical resubmits the verdict prose
+                // never surfaced as such.
+                let mut prev_patch_sha: Option<String> = None;
                 // Per-attempt DEADLINE (harnesses-first, Joel 2026-08-08): a wedged
                 // fork/lane used to stall this loop SILENTLY FOREVER — glass-boxed
                 // live: both graded runs froze after attempt 2 for 2.5h with zero
@@ -481,6 +488,26 @@ impl ActionCommand for AgentSolve {
                                     if g.resolved || !g.gate_ok || g.error.is_some() {
                                         break;
                                     }
+                                    // Identical-resubmit detection: a receipt comparison,
+                                    // never a guess. Only meaningful for a real diff (two
+                                    // empty patches hash equal vacuously — the zero-diff
+                                    // arm owns that case).
+                                    let identical_resubmit = g.patch_bytes > 0
+                                        && !patch_sha256.is_empty()
+                                        && prev_patch_sha.as_deref() == Some(patch_sha256.as_str());
+                                    if identical_resubmit {
+                                        crate::probe!(
+                                            class = "benchmark.resubmit.identical",
+                                            run_id = %run_id,
+                                            instance = %instance,
+                                            attempt,
+                                            patch_sha256 = %patch_sha256,
+                                            "attempt resubmitted a BYTE-IDENTICAL patch — \
+                                             the previous verdict did not teach (learning-stuck \
+                                             signature, on the wire the moment it happens)"
+                                        );
+                                    }
+                                    prev_patch_sha = Some(patch_sha256.clone());
                                     if attempt == max_attempts {
                                         break;
                                     }
@@ -589,8 +616,30 @@ impl ActionCommand for AgentSolve {
                                         } else {
                                             format!(" Your edits are in: {}.", r.files_changed.join(", "))
                                         };
+                                        // The resubmit fact LEADS the contract when it fired:
+                                        // round D proved a verdict buried mid-prose does not
+                                        // alter resubmission behavior. This is the receipt
+                                        // (sha equality) speaking, and it names the ONLY
+                                        // moves that can change the next verdict.
+                                        let resubmit = if identical_resubmit {
+                                            format!(
+                                                " STOP AND READ: attempt {attempt}'s patch was \
+                                                 BYTE-IDENTICAL to attempt {}'s (verified by \
+                                                 hash). The grader ran the exact same diff and \
+                                                 returned the exact same failure. Submitting it \
+                                                 a third time cannot change anything. Before any \
+                                                 other work: run `git diff HEAD` to SEE your \
+                                                 current patch, then either fix the part the \
+                                                 failing tests name, or revert it \
+                                                 (`git checkout -- <file>`) and take a different \
+                                                 approach.",
+                                                attempt - 1
+                                            )
+                                        } else {
+                                            String::new()
+                                        };
                                         format!(
-                                            "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve] \
+                                            "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve]{resubmit} \
                                              FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
                                              Your previous edits are still in this workspace.{edited}{trail} \
                                              Reproduce the problem with the task's own example, fix in place, and \
