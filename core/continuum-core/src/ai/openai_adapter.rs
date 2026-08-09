@@ -2363,6 +2363,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let mut stream_timings: Option<OpenAITimings> = None;
         let mut resp_model: Option<String> = None;
 
+        // #385 (the 5-hour wedge): the timeout below bounds TRANSPORT silence, but
+        // any bytes reset it — and a wedged slot that keeps emitting keepalives /
+        // comment frames (n_decoded frozen at 1 for HOURS, 2026-08-09) resets it
+        // forever. Liveness must be keyed on PROGRESS: `last_progress` advances only
+        // when a parsed event yields an actual delta (content / reasoning / tool /
+        // finish). Bytes without progress for the same idle budget = the
+        // keepalive-masked wedge, failed as loudly as transport silence.
+        let mut last_progress = Instant::now();
         loop {
             let next = tokio::time::timeout(idle, byte_stream.next())
                 .await
@@ -2377,6 +2385,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         self.config.name, STREAM_IDLE_TIMEOUT_SECS
                     )
                 })?;
+            if last_progress.elapsed() >= idle {
+                if local_lane {
+                    crate::inference::llama_server::note_real_decode_failure();
+                }
+                return Err(format!(
+                    "{}: no TOKEN progress for {}s despite the stream carrying bytes — \
+                     keepalive-masked wedge (slot processing with frozen n_decoded); \
+                     refusing to wait on a stream that is alive but not generating (#385)",
+                    self.config.name, STREAM_IDLE_TIMEOUT_SECS
+                ));
+            }
             let Some(chunk) = next else {
                 break; // server closed the stream (EOF) — generation complete
             };
@@ -2423,23 +2442,27 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     if let Some(choice) = parsed.choices.into_iter().next() {
                         if let Some(fr) = choice.finish_reason {
                             finish_reason_str = Some(fr);
+                            last_progress = Instant::now();
                         }
                         if let Some(delta) = choice.delta {
                             if let Some(c) = delta.content {
                                 if !c.is_empty() {
                                     acc_content.push_str(&c);
                                     let _ = sink.send(GenerationChunk::Token(c));
+                                    last_progress = Instant::now();
                                 }
                             }
                             if let Some(r) = delta.reasoning_content {
                                 if !r.is_empty() {
                                     acc_reasoning.push_str(&r);
                                     let _ = sink.send(GenerationChunk::Reasoning(r));
+                                    last_progress = Instant::now();
                                 }
                             }
                             if let Some(tcs) = delta.tool_calls {
                                 for tc in tcs {
                                     accumulate_stream_tool_call(&mut acc_tools, tc);
+                                    last_progress = Instant::now();
                                 }
                             }
                         }
