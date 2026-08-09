@@ -413,7 +413,15 @@ impl ActionCommand for AgentSolve {
                             // capability verdict: retry the SAME attempt after a
                             // settling pause, bounded; exhausted retries end the run
                             // with a loud infra marker instead of a graded zero.
-                            if r.acts == 0 && r.infra_error.is_none() && r.patch.is_empty() {
+                            // #386 extension: an attempt whose settle carries ANY
+                            // infra_error died to INFRASTRUCTURE by definition (the
+                            // inference path failed her — round G: wedge-killed
+                            // attempts with 'no TOKEN progress' still graded and
+                            // burned). Same arm, same bound; her partial work stays
+                            // in the workspace and the retry resumes from it.
+                            if r.infra_error.is_some()
+                                || (r.acts == 0 && r.patch.is_empty())
+                            {
                                 if infra_void_retries < INFRA_VOID_RETRIES_MAX {
                                     infra_void_retries += 1;
                                     crate::probe!(
