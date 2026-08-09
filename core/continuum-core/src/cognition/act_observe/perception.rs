@@ -5,6 +5,7 @@
 //! re-survey. No steering, no side effects: proprioception, not policy.
 
 use crate::ai::types::ToolCall;
+use crate::cognition::working_memory::{WmEntry, WmKind};
 
 use super::recency::summarize_args_for_recency;
 
@@ -125,36 +126,31 @@ pub(super) fn is_redundant_orientation(recent: &[String], calls: &[ToolCall]) ->
     })
 }
 
-/// True only for a REAL receipt line — `[action #<digit>`. The proprioception
-/// TEACHING texts mention the literal placeholder `[action #n]` ("real
-/// executions leave [action #n] receipts"), and a bare `contains("[action #")`
-/// matches the mention: the medicine suppressed the diagnosis (glass-boxed
-/// 2026-07-12 — the [actions] zero-fact vanished from every prompt the moment
-/// any backstop fact rendered, and the confab backstop went blind after its
-/// own first firing). Receipts are numbered; placeholders are not.
-/// …and numbering alone is not enough: `record_action` numbers EVERY working-
-/// memory entry, so the proprioception facts themselves render as
-/// `[action #4] [unfulfilled] …` — the facts wore receipt numbering and
-/// suppressed the zero-fact all afternoon (glass-boxed 16:50 2026-07-12,
-/// second layer of the same onion). A real receipt's body is prose
-/// ("I ran code/shell(…) Result: …"); a fact's body opens with another
-/// bracket tag. Digit + non-bracket body = receipt.
-pub(crate) fn has_real_action_receipt(text: &str) -> bool {
-    text.match_indices("[action #").any(|(i, _)| {
-        let rest = &text[i + "[action #".len()..];
-        let mut chars = rest.chars();
-        if !chars.next().is_some_and(|c| c.is_ascii_digit()) {
-            return false;
-        }
-        // Body after "N] " must not open with a bracket tag (a fact), and
-        // must exist at all (a bare numbered line is not a receipt).
-        rest.split_once(']')
-            .map(|(_, body)| {
-                let body = body.trim_start();
-                !body.is_empty() && !body.starts_with('[')
-            })
-            .unwrap_or(false)
-    })
+/// The typed acts inside a slice of working-memory entries, oldest → newest —
+/// flattened across every receipt so a batch that ran N calls contributes N acts
+/// in order. The typed sibling of scanning receipt PROSE for `I ran …`, which is
+/// the seam-5 live-drift bug this refactor kills: the live receipt render is a
+/// bare `name(args)` (the `I ran ` opener was removed for #158), so the old string
+/// scans NEVER fired against a real recency window — `[no-deliverable]` and
+/// `[unobserved]` were structurally dead. Reading `ToolVerb` off the typed
+/// `Observation` is immune to that drift.
+fn acts_in<'a>(entries: &'a [WmEntry]) -> impl Iterator<Item = &'a super::observation::Observation> {
+    entries.iter().flat_map(|e| e.acts.iter())
+}
+
+/// Index of the last SETTLEMENT boundary in a typed entry slice, or `None`.
+fn last_settlement(entries: &[WmEntry]) -> Option<usize> {
+    entries.iter().rposition(|e| matches!(e.kind, WmKind::Settlement))
+}
+
+/// TRUE if any entry in this slice is a real tool RECEIPT — the typed kind query
+/// that replaces string-scanning rendered text for a numbered `[action #n]` line.
+/// The `[action #n]` teaching texts and the proprioception facts both used to
+/// render with brackets, so a bare `contains("[action #")` matched the mention
+/// and the confab backstop went blind after its own first firing (the 2026-07-12
+/// suppression onion). `WmKind::Receipt` cannot be spoofed by prose.
+pub(super) fn any_real_receipt(entries: &[WmEntry]) -> bool {
+    entries.iter().any(|e| matches!(e.kind, WmKind::Receipt { .. }))
 }
 
 /// Did this Speak CLAIM completed work on a named file that no tool act backs?
@@ -162,12 +158,14 @@ pub(crate) fn has_real_action_receipt(text: &str) -> bool {
 /// Returns the first file name (a backtick-quoted or bare `name.ext` token) that
 /// appears in the same text as a completion-claim verb (created / implemented /
 /// wrote / added / finished / ready) when the working-memory snapshot contains
-/// NO `code/write`/`code/edit` act mentioning that file. Pure geometry: text
-/// tokens × trace lines. Deliberately conservative — no claim verbs → None, so
-/// ordinary discussion of files is never taxed; and the recorded fact says only
-/// "my memory shows no act", because a finite trace can't disprove past-session
-/// work.
-pub(super) fn claimed_file_without_act(text: &str, recent: &[String]) -> Option<String> {
+/// NO mutating act (`code/write`/`code/edit`/…) whose TYPED `paths` name that
+/// file. Text tokens × typed act paths — exact typed membership from her OWN
+/// call input, immune to the receipt head-truncation that dropped a filename off
+/// the tail of a long result. Deliberately conservative — no claim verbs → None,
+/// so ordinary discussion of files is never taxed; and the recorded fact says
+/// only "my memory shows no act", because a finite trace can't disprove
+/// past-session work.
+pub(super) fn claimed_file_without_act(text: &str, recent: &[WmEntry]) -> Option<String> {
     let lower = text.to_lowercase();
     const CLAIM_VERBS: &[&str] = &[
         "i've created",
@@ -201,87 +199,115 @@ pub(super) fn claimed_file_without_act(text: &str, recent: &[String]) -> Option<
         }
     }
     candidates.into_iter().find(|f| {
-        !recent.iter().any(|l| {
-            (l.contains("I ran code/write(") || l.contains("I ran code/edit(")) && l.contains(f.as_str())
+        // Unbacked iff no MUTATING act names this file in its typed paths.
+        !acts_in(recent).any(|a| {
+            a.output.verb.mutates()
+                && a.output
+                    .paths
+                    .iter()
+                    .any(|p| p.to_string_lossy().contains(f.as_str()))
         })
     })
 }
 
 /// Did the CURRENT concern mutate the workspace without a later observation act?
 ///
-/// Scans a working-memory snapshot (oldest → newest, taken BEFORE the settlement
-/// marker lands) from the last `[settled]` boundary: true when a `code/write` or
-/// `code/edit` act appears with NO subsequent run/read/screenshot-class act after
-/// the LAST mutation. Pure geometry over the trace — no judgment about whether
-/// the artifact needed observing; the recorded fact leaves that to her.
-pub(super) fn wrote_without_observation(recent: &[String]) -> bool {
-    let start = recent
-        .iter()
-        .rposition(|l| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX))
-        .map_or(0, |i| i + 1);
-    let concern = &recent[start..];
-    let last_mutation = concern
-        .iter()
-        .rposition(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("));
-    let Some(m) = last_mutation else { return false };
-    !concern[m + 1..].iter().any(|l| {
-        l.contains("I ran code/run(")
-            || l.contains("I ran code/shell(")
-            || l.contains("I ran code/read(")
-            || l.contains("I ran interface/screenshot(")
-    })
+/// From the last settlement boundary: true when a mutating act (`ToolVerb::mutates`)
+/// appears with NO subsequent observing act (`ToolVerb::observes`) after the LAST
+/// mutation. Typed verbs, not receipt prose — the seam-5 fix (`acts_in`). Pure
+/// geometry over her own acts; no judgment about whether the artifact needed
+/// observing, the recorded fact leaves that to her.
+pub(super) fn wrote_without_observation(recent: &[WmEntry]) -> bool {
+    let start = last_settlement(recent).map_or(0, |i| i + 1);
+    let verbs: Vec<&super::observation::ToolVerb> =
+        acts_in(&recent[start..]).map(|a| &a.output.verb).collect();
+    let Some(m) = verbs.iter().rposition(|v| v.mutates()) else {
+        return false;
+    };
+    !verbs[m + 1..].iter().any(|v| v.observes())
 }
 
-/// Did THIS concern actually change the workspace? True iff a `code/write` /
-/// `code/edit` receipt sits after the last settlement marker — the same
-/// concern-scoping and the same receipt vocabulary [`wrote_without_observation`]
-/// uses, so the two agree by construction about what a mutation is.
+/// Did THIS concern actually change the workspace? True iff a mutating act
+/// (`ToolVerb::mutates`) sits after the last settlement marker — the same
+/// concern-scoping [`wrote_without_observation`] uses, so the two agree by
+/// construction about what a mutation is.
 ///
-/// Deliberately receipt-based, not act-count-based: a turn can spend acts on
-/// `code/tree` + `code/read` and still have produced nothing a diff-grader will
-/// see (the live sympy-21379 shape — one act, zero bytes). Only a receipt of a
-/// mutation that really executed counts.
+/// Deliberately act-based on the TYPED verb, not string prose: a turn can spend
+/// acts on `code/tree` + `code/read` and still have produced nothing a diff-grader
+/// will see (the live sympy-21379 shape — one act, zero bytes). Only a mutating
+/// act that really executed counts.
 /// CRITICAL ordering detail: `settle_step`'s Speak arm records its settlement
 /// marker BEFORE returning (which is why that arm snapshots `pre_settle` first).
 /// So by the time this runs the marker is already the tail, and scanning "after
 /// the last marker" would read an EMPTY span and call every turn unmutated. The
 /// concern that just settled is the span ENDING at that marker.
-pub(super) fn mutated_workspace(recent: &[String]) -> bool {
-    let is_settle =
-        |l: &String| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX);
+pub(super) fn mutated_workspace(recent: &[WmEntry]) -> bool {
+    let is_settle = |e: &WmEntry| matches!(e.kind, WmKind::Settlement);
     let end = recent.iter().rposition(is_settle).unwrap_or(recent.len());
     let start = recent[..end].iter().rposition(is_settle).map_or(0, |i| i + 1);
-    recent[start..end]
-        .iter()
-        .any(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("))
+    acts_in(&recent[start..end]).any(|a| a.output.verb.mutates())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::types::{ToolCall, ToolResult};
+    use crate::cognition::act_observe::observation::{
+        extract_paths, ActStatus, Observation, ToolOutput, ToolVerb,
+    };
+
+    // Build ONE typed act (call + id-correlated result + precomputed verb/paths)
+    // the way the live act seam does — the fixtures the string scans could never
+    // reach (the live receipt render is a bare `name(args)`, no `I ran ` opener,
+    // so the old `"I ran code/write("` fixtures were the GREEN≠REACHABLE defect).
+    fn act(name: &str, path: Option<&str>) -> Observation {
+        let input = match path {
+            Some(p) => serde_json::json!({ "file_path": p }),
+            None => serde_json::json!({}),
+        };
+        Observation {
+            call: ToolCall { id: "c".into(), name: name.into(), input: input.clone() },
+            output: ToolOutput {
+                result: ToolResult { tool_use_id: "c".into(), content: "ok".into(), is_error: None },
+                verb: ToolVerb::classify(name),
+                paths: extract_paths(&input),
+            },
+            status: ActStatus::Executed,
+        }
+    }
+    // A receipt WmEntry carrying the typed acts (text is irrelevant to the typed
+    // predicates — they read `acts`, never re-parse the string).
+    fn receipt(acts: Vec<Observation>) -> WmEntry {
+        WmEntry { kind: WmKind::Receipt { n: 1 }, text: String::new(), acts }
+    }
+    fn settle() -> WmEntry {
+        WmEntry {
+            kind: WmKind::Settlement,
+            text: crate::cognition::working_memory::WM_SETTLEMENT_PREFIX.to_string(),
+            acts: Vec::new(),
+        }
+    }
 
     // what this catches: the ORDERING TRAP in `mutated_workspace`. `settle_step`'s Speak
     // arm records its settlement marker BEFORE the driver's arm runs, so a naive
     // "scan after the last marker" reads an EMPTY tail and calls EVERY turn unmutated —
     // which would fire the re-perception at a persona who had just written the file.
-    // The concern that settled is the span ENDING at that marker.
+    // The concern that settled is the span ENDING at that marker. Typed over ToolVerb
+    // now (seam-5): the old `"I ran code/edit("` string fixtures matched a receipt render
+    // the live path never emits, so the predicate was dead against real recency.
     #[test]
     fn mutation_is_read_from_the_concern_that_just_settled_not_the_empty_tail() {
-        let settle = crate::cognition::working_memory::WM_SETTLEMENT_PREFIX;
         let wrote = vec![
-            "[action #1] I ran code/read(file_path: x.py) Result: ok".to_string(),
-            "[action #2] I ran code/edit(file_path: x.py) Result: ok".to_string(),
-            format!("{settle} here is what I changed"),
+            receipt(vec![act("code/read", Some("x.py"))]),
+            receipt(vec![act("code/edit", Some("x.py"))]),
+            settle(),
         ];
         assert!(
             mutated_workspace(&wrote),
             "an edit inside the concern that just settled COUNTS — the marker at the tail must not hide it"
         );
 
-        let only_looked = vec![
-            "[action #1] I ran code/tree(path: .) Result: src/".to_string(),
-            format!("{settle} here is my analysis of the bug"),
-        ];
+        let only_looked = vec![receipt(vec![act("code/tree", None)]), settle()];
         assert!(
             !mutated_workspace(&only_looked),
             "acts that only LOOK are not a deliverable — the live sympy-21379 shape"
@@ -289,10 +315,10 @@ mod tests {
 
         // A prior concern's edit must not launder the current one.
         let stale = vec![
-            "[action #1] I ran code/write(file_path: a.py) Result: ok".to_string(),
-            format!("{settle} done with the first thing"),
-            "[action #2] I ran code/read(file_path: b.py) Result: ok".to_string(),
-            format!("{settle} and here is my analysis of the second"),
+            receipt(vec![act("code/write", Some("a.py"))]),
+            settle(),
+            receipt(vec![act("code/read", Some("b.py"))]),
+            settle(),
         ];
         assert!(
             !mutated_workspace(&stale),
@@ -304,7 +330,7 @@ mod tests {
     // 2026-07-11: Asha's "I've implemented the game update function in
     // `game_of_life.rs`" with zero tool acts on that file — peers then offered
     // to review code that didn't exist). A completion claim naming a file with
-    // no backing write/edit act in the trace yields the file; a claim WITH a
+    // no backing mutating act (typed `paths`) yields the file; a claim WITH a
     // backing act yields None; discussion without claim verbs is never taxed.
     #[test]
     fn unacted_claim_geometry() {
@@ -315,11 +341,15 @@ mod tests {
             claimed_file_without_act(claim, &[]).as_deref(),
             Some("game_of_life.rs")
         );
-        // A write act naming the file backs the claim → None.
-        let backed = "[action #3] I ran code/write({\"file_path\":\"game_of_life.rs\"}) …";
+        // A write act whose TYPED path names the file backs the claim → None.
+        let backed = vec![receipt(vec![act("code/write", Some("game_of_life.rs"))])];
+        assert_eq!(claimed_file_without_act(claim, &backed), None);
+        // A read of the same file does NOT back a completion claim (only a mutation does).
+        let only_read = vec![receipt(vec![act("code/read", Some("game_of_life.rs"))])];
         assert_eq!(
-            claimed_file_without_act(claim, &[backed.to_string()]),
-            None
+            claimed_file_without_act(claim, &only_read).as_deref(),
+            Some("game_of_life.rs"),
+            "reading a file is not implementing it — the claim stays unbacked"
         );
         // Plain discussion of a file without claim verbs is never taxed.
         assert_eq!(
@@ -335,31 +365,43 @@ mod tests {
 
     // what this catches: the observation-gap geometry (Joel 2026-07-11 — the
     // run+observe half of the creation loop is part of THEIR process). A concern
-    // that mutated the workspace (code/write / code/edit) with no LATER
-    // observation act (run/shell/read/screenshot) is unobserved; observation
-    // BEFORE the mutation doesn't count; a prior settled concern's writes don't
-    // nag the next one.
+    // that mutated the workspace with no LATER observation act (run/shell/read/
+    // screenshot) is unobserved; observation BEFORE the mutation doesn't count;
+    // a prior settled concern's writes don't nag the next one. Typed over ToolVerb.
     #[test]
     fn unobserved_mutation_geometry() {
-        let w = "[action #1] I ran code/write({\"file_path\":\"game.rs\"}) …".to_string();
-        let r = "[action #2] I ran code/shell({\"cmd\":\"cargo run\"}) …".to_string();
-        let read_first = "[action #0] I ran code/read({\"file_path\":\"game.rs\"}) …".to_string();
+        let w = || receipt(vec![act("code/write", Some("game.rs"))]);
+        let r = || receipt(vec![act("code/shell", None)]);
+        let read_first = || receipt(vec![act("code/read", Some("game.rs"))]);
 
         // write with no later observation → unobserved
-        assert!(wrote_without_observation(&[w.clone()]));
+        assert!(wrote_without_observation(&[w()]));
         // write then run → observed
-        assert!(!wrote_without_observation(&[w.clone(), r.clone()]));
+        assert!(!wrote_without_observation(&[w(), r()]));
         // read BEFORE the write doesn't count as observing the write
-        assert!(wrote_without_observation(&[read_first, w.clone()]));
+        assert!(wrote_without_observation(&[read_first(), w()]));
         // a prior settled concern's write never leaks into this concern
-        let settled = format!(
-            "{} I answered: done",
-            crate::cognition::working_memory::WM_SETTLEMENT_PREFIX
-        );
-        assert!(!wrote_without_observation(&[w, settled, r]));
+        assert!(!wrote_without_observation(&[w(), settle(), r()]));
         // no mutation at all → nothing to observe
-        assert!(!wrote_without_observation(&[
-            "[action #1] I ran code/tree({}) …".to_string()
-        ]));
+        assert!(!wrote_without_observation(&[receipt(vec![act("code/tree", None)])]));
+    }
+
+    // what this catches: the typed receipt-presence query that replaces the
+    // brackets-in-prose scan (`has_real_action_receipt`). A window with a Receipt
+    // reads true; Facts/Settlements/Thoughts — even ones rendering `[action #n]`
+    // teaching text — read false (the 2026-07-12 suppression onion).
+    #[test]
+    fn any_real_receipt_reads_the_kind_not_the_prose() {
+        assert!(any_real_receipt(&[receipt(vec![act("code/read", Some("x.py"))])]));
+        assert!(!any_real_receipt(&[settle()]));
+        let facty = WmEntry {
+            kind: WmKind::Fact,
+            text: "[unfulfilled] real executions leave [action #n] receipts".to_string(),
+            acts: Vec::new(),
+        };
+        assert!(
+            !any_real_receipt(&[facty]),
+            "a Fact that MENTIONS [action #n] is not a receipt — kind, not prose"
+        );
     }
 }

@@ -16,7 +16,7 @@ use crate::cognition::workspace::{
 
 use super::apply::apply_act;
 use super::perception::{
-    claimed_file_without_act, collect_touched_paths, has_real_action_receipt,
+    any_real_receipt, claimed_file_without_act, collect_touched_paths,
     mutated_workspace, wrote_without_observation,
 };
 use super::types::{SettleOutcome, SettleStep};
@@ -154,7 +154,7 @@ pub async fn drive_to_settle(
                 // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]].
                 if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
                     if let Some(body) = cycle.acting() {
-                        if !mutated_workspace(&body.working_memory.recent()) {
+                        if !mutated_workspace(&body.working_memory.recent_entries()) {
                             acts_at_last_nudge = Some(acts);
                             body.working_memory.record_fact(
                                 "[no-deliverable] I settled by speaking, and my working \
@@ -204,7 +204,7 @@ pub async fn drive_to_settle(
                 // #206 failure this file already documents.
                 if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
                     if let Some(body) = cycle.acting() {
-                        if !mutated_workspace(&body.working_memory.recent()) {
+                        if !mutated_workspace(&body.working_memory.recent_entries()) {
                             acts_at_last_nudge = Some(acts);
                             body.working_memory.record_fact(&format!(
                                 "[no-deliverable] I have taken {acts} actions on this task and \
@@ -407,7 +407,11 @@ pub async fn settle_step(
             if let Some(body) = cycle.acting() {
                 // Snapshot the concern BEFORE the settlement marker lands, so the
                 // observation scan below sees this concern's acts, not an empty tail.
-                let pre_settle = body.working_memory.recent();
+                // TYPED concern snapshot BEFORE the settlement marker lands — the
+                // proprioception backstops below (confabulation / unobserved / unacted-claim)
+                // read the typed acts (verb + paths) off these entries, not receipt prose,
+                // so they survive the seam-5 live-drift the `I ran …` scans died on.
+                let pre_settle = body.working_memory.recent_entries();
                 let head: String = text
                     .chars()
                     .take(body.working_memory.budget().trail_head_chars())
@@ -495,7 +499,7 @@ pub async fn settle_step(
                 // ([[no-hardcoded-heuristics-to-steer-cognition]]).
                 let claimed_past =
                     crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
-                if claimed_past && !pre_settle.iter().any(|l| has_real_action_receipt(l)) {
+                if claimed_past && !any_real_receipt(&pre_settle) {
                     body.working_memory.record_fact(
                         "[confabulation] I described having run a tool, but no \
                          action actually executed this concern — the claimed \
