@@ -845,6 +845,41 @@ mod tests {
             2,
             "each discovery became a durable memory the mind perceived next tick"
         );
+
+        // THE 18057 TYPED-THREAD ASSERTION (Step 6). The just-executed act's RESULT
+        // re-enters through the TYPED field — read `active_act().output.result.content`,
+        // never a re-parse of the `[action #n]` prose — and the call correlates to its
+        // result BY ID (`call.id == result.tool_use_id`), never by positional index. This
+        // is act-grained proof the tool result threads back into the mind: the exact
+        // structural channel run-18057-f1 lost the grep result through when it flowed as an
+        // evictable perception bid, yielding the 0-byte patch. (The message-builder pinned
+        // assistant-tool-use↔tool-result pair — the render side of this same typed value —
+        // is the remaining Step 6 piece; it changes every live prompt and is deferred to a
+        // live-validated follow-up rather than shipped blind.)
+        let active = wm
+            .active_act()
+            .expect("the settled mind still holds its last typed act");
+        assert_eq!(
+            active.call.id, active.output.result.tool_use_id,
+            "the tool result correlates to its call BY ID, not a positional index"
+        );
+        assert!(
+            active.output.result.content.contains("boot"),
+            "the last act's RESULT threads back through the TYPED field (not [action #n] prose): {}",
+            active.output.result.content
+        );
+        let typed_acts = wm.recent_acts();
+        assert_eq!(
+            typed_acts.len(),
+            2,
+            "both discoveries are typed acts in the window, read off the typed channel"
+        );
+        assert!(
+            typed_acts
+                .iter()
+                .all(|a| a.call.id == a.output.result.tool_use_id),
+            "every discovery's result is id-correlated to its call"
+        );
     }
 
     // what this catches: the repeat-perception short-circuit. An IDENTICAL, already-
