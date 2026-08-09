@@ -41,13 +41,12 @@ Your machines form **[the Grid](#the-grid)** — an encrypted mesh where AI pers
 
 **Runs on a MacBook Air.** Add a second machine and the Grid discovers it automatically — your laptop orchestrates, your tower trains. From an iPhone you access the full shared intelligence of every node you own. Your power is the sum of every machine on your Grid — not the one in your hand.
 
-> **Where we are — honestly.** This README was written about our **prototype**, and every
-> screenshot and number in it was real when captured. The **alpha** is being built right now on
-> the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
-> desktop that has already left parts of this page behind. When the alpha is feature-complete,
-> the **beta** releases and this page's claims get re-measured against it, number by number,
-> from the same [append-only ledger](benchmarks/RESULTS.jsonl). Prototype → alpha → beta,
-> with receipts at every step.
+> **Where we are — honestly.** Every screenshot and number on this page was **real when captured**,
+> from an [append-only ledger](benchmarks/RESULTS.jsonl) you can re-run yourself. The **alpha** now
+> on the `canary` branch — a ground-up Rust rebuild of cognition, serving, memory, and the live
+> desktop — has **already left parts of this page behind**: the organism moved faster than the doc.
+> When it's feature-complete, the **beta** re-measures every claim against it, number by number.
+> Prototype → alpha → beta, receipts at every step.
 > See the [Alpha Gap Analysis](docs/planning/ALPHA-GAP-ANALYSIS.md) and [open issues](https://github.com/CambrianTech/continuum/issues) for progress.
 
 ---
