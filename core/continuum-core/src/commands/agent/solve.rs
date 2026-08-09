@@ -864,6 +864,36 @@ impl AgentSolve {
             "solve prelude: lane acquired"
         );
 
+        // 1b) Give this persona an EXCLUSIVE warm slot for the solve's duration by quiescing the
+        //      OTHER resident citizens. On a single-warm-slot box (glass-boxed 2026-08-09,
+        //      serving.plan "warm-slot-oversubscribed": 4 residents, 1 warm slot) the idle
+        //      citizens' autonomic turns rotate through the shared llama.cpp KV slots and EVICT
+        //      this solver's prefilled prefix — so every act re-prefills the FULL prompt cold
+        //      (measured ~85s for ~12k tokens at 139 tok/s, O(n²) degrading) instead of reusing
+        //      cache and prefilling only the ~50-token delta. Quiescing the others lets the prefix
+        //      survive turn-to-turn. This is the SAME discipline cognition/eval uses (`quiesce_all`
+        //      at eval.rs) for a measured snapshot — swe-solve/agent-solve simply never invoked it.
+        //      The lease is panic-safe RAII: the fleet resumes on drop, early-return, OR unwind, so
+        //      a stalled or panicking solve can never leave the citizens frozen. SHE is never
+        //      suspended — only the idle contenders step back, and they still answer DIRECTED
+        //      messages (quiesced gates only the autonomic self-tick). `None` in unit tests / tools
+        //      that never stood up a live roster — a solve with no fleet has nothing to quiesce.
+        //      [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
+        let _quiesce_lease =
+            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
+                |reg| {
+                    let lease = reg.quiesce_others(persona_uuid);
+                    crate::probe!(
+                        class = "benchmark.solve.phase",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        phase = "quiesce_others",
+                        quiesced_peers = lease.count() as u64,
+                        "measured solve holds an exclusive warm slot — idle citizens quiesced so the KV prefix survives turn-to-turn"
+                    );
+                    lease
+                },
+            );
+
         // 2) Fork her WHOLE cognition onto that lane, rooted at the workspace: tools ON, recall ON.
         //    A brief wait covers the post-spawn template race (same as the eval fork-waiter).
         let registry = crate::cognition::persona_workspace::global();
