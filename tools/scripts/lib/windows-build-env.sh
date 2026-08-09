@@ -57,6 +57,53 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
   fi
 fi
 
+# ── Build drivers: cmake + ninja (EVERY platform, independent of CUDA) ──────────────────────
+# These two used to live INSIDE the CUDA/MSVC block below, which gated them on
+# `nvcc present AND cl.exe absent`. Neither has anything to do with CUDA:
+#
+#   * a CPU-only Windows box (no nvcc) skipped the block entirely and got no cmake
+#     pin, so `cargo build` died with "is `cmake` not installed?" while cmake sat
+#     installed at ~/.continuum/tools/cmake — a manifest-provisioned tool the build
+#     could not see;
+#   * a shell where cl.exe was ALREADY resolvable skipped it for the same reason.
+#
+# The PATH half is now the manifest's job (`[module.runtime_path]` on cmake/ninja,
+# consumed by the generic loop above) — that is where the windows-vs-unix split
+# belongs, because it IS a packaging fact: brew/apt put these on PATH, the Windows
+# archives do not. What is left here is only what the manifest cannot express: the
+# two env vars the cmake crate reads.
+
+# cmake-rs (core/llama build.rs) resolves cmake from the CMAKE env var, else PATH.
+# Point it at whatever the loop above (or the system package manager) resolved, so
+# the crate never re-guesses. No fallback path is invented: if cmake is genuinely
+# absent, the build fails loudly with the crate's own message rather than pointing
+# at a file that isn't there.
+if [ -z "$CMAKE" ] && command -v cmake >/dev/null 2>&1; then
+  _wbe_cmake="$(command -v cmake)"
+  if [ "$_mf_os" = windows ]; then
+    export CMAKE="$(cygpath -w "$_wbe_cmake" 2>/dev/null || echo "$_wbe_cmake")"
+  else
+    export CMAKE="$_wbe_cmake"
+  fi
+fi
+
+# WINDOWS ONLY: force a generator cmake actually knows. The cmake crate auto-picks
+# the newest installed Visual Studio; on a VS18-2026 box that is "Visual Studio 18
+# 2026", which cmake 3.30.x does not define ("Could not create named generator") —
+# so the configure step fails on a machine where every tool is present and correct.
+# Ninja is generator-version-agnostic and uses the MSVC env imported below.
+# [[windows-build-env-drift]]
+#
+# Deliberately NOT applied on unix: cmake's default there (Unix Makefiles) is never
+# broken, so pinning Ninja would change every Linux/macOS contributor's build to buy
+# nothing. The asymmetry is the point — this is a Windows-specific defect, and the
+# fix stays scoped to it.
+if [ "$_mf_os" = windows ] && [ -z "$CMAKE_GENERATOR" ] && command -v ninja >/dev/null 2>&1; then
+  # cmake ignores CMAKE_MAKE_PROGRAM from the env and searches PATH for ninja, which
+  # the manifest runtime_path above already guarantees.
+  export CMAKE_GENERATOR="Ninja"
+fi
+
 # ── Windows: import the MSVC toolchain so cargo's CUDA (candle) build finds cl.exe ──────────
 # candle compiles CUDA kernels (affine.cu, ...) via nvcc, which needs cl.exe as its host
 # compiler plus INCLUDE/LIB. The cargo builds below run in THIS bash shell (unlike the
@@ -92,27 +139,8 @@ if [ "$_mf_os" = windows ] && command -v nvcc >/dev/null 2>&1 && ! command -v cl
     if [ -n "$_vct" ]; then _clb="$(cygpath -u "${_vct}bin\\Hostx64\\x64" 2>/dev/null)"; [ -d "$_clb" ] && PATH="$_clb:$PATH"; fi
     if [ -n "$_sdkbin" ]; then _sdb="$(cygpath -u "${_sdkbin}x64" 2>/dev/null)"; [ -d "$_sdb" ] && PATH="$_sdb:$PATH"; fi
     export PATH
-    # Pin cmake explicitly: the cmake crate (core/llama build.rs) resolves cmake via the CMAKE env
-    # var or PATH, but a manifest-provisioned cmake lives at ~/.continuum/tools/cmake/bin and is not
-    # guaranteed on the build shell's PATH (measured: absent in a clean subshell -> "cmake not
-    # found"). Point CMAKE at the known install (same resolution as install-llama-server.sh) and put
-    # its dir on PATH for cmake's own sub-tools.
-    _ccmk="$(command -v cmake 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/cmake/bin/cmake.exe")"
-    if [ -x "$_ccmk" ]; then
-      export CMAKE="$(cygpath -w "$_ccmk" 2>/dev/null || echo "$_ccmk")"
-      PATH="$(dirname "$_ccmk"):$PATH"; export PATH
-    fi
-    # Force a generator cmake actually knows. The cmake crate auto-picks the newest installed VS; on a
-    # VS18-2026 box that is "Visual Studio 18 2026" - a generator cmake 3.30.x does NOT define ("Could
-    # not create named generator"). Ninja is version-agnostic, uses the MSVC env imported above, and
-    # matches the llama-server build. [[windows-build-env-drift]]
-    _cninja="$(command -v ninja 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/ninja/ninja.exe")"
-    if [ -x "$_cninja" ]; then
-      export CMAKE_GENERATOR="Ninja"
-      # ninja must be ON PATH: the cmake crate ignores CMAKE_MAKE_PROGRAM env, so with -G Ninja it
-      # searches PATH ("unable to find Ninja / CMAKE_MAKE_PROGRAM is not set" otherwise).
-      PATH="$(dirname "$_cninja"):$PATH"; export PATH
-    fi
+    # (cmake + ninja are pinned ABOVE, outside this block — they are not CUDA concerns.
+    # Gating them on nvcc is what left a CPU-only Windows box with no cmake at all.)
     # CUDA_PATH must be set: cudarc/candle/pocket-tts read it to emit their link-search; without it the
     # link has NO CUDA search path (measured: LNK1181 cuda.lib). Point it at a cuda-* whose import-lib
     # dir actually has the libs (a provisioning split can leave the crate-detected dir EMPTY - cuda-env
