@@ -392,6 +392,41 @@ impl ActionCommand for AgentSolve {
                                 .file_name()
                                 .map(|s| s.to_string_lossy().to_string())
                                 .unwrap_or_default();
+                            // #379: the attempt's PATCH is a receipt, not a transient.
+                            // Read the exact candidate the grader is about to read (same
+                            // helper — one definition of "her diff"), persist it beside
+                            // the run's captures, and put its sha256 on the wire. Round D
+                            // (2026-08-08) needed "is att3 byte-identical to att2?" and
+                            // NO artifact could answer: probes carried size only. Hash
+                            // custody per the transcript standard (#377); the persisted
+                            // patch is what a verdict-as-state lever will compare against.
+                            let patch_sha256 =
+                                match crate::commands::benchmark::workspace_candidate_diff(&ws) {
+                                    Ok(diff) => {
+                                        use sha2::{Digest, Sha256};
+                                        let sha =
+                                            format!("{:x}", Sha256::digest(diff.as_bytes()));
+                                        if let Some(dir) = inner.capture_dir.as_ref() {
+                                            let _ = std::fs::create_dir_all(dir);
+                                            let _ = std::fs::write(
+                                                std::path::Path::new(dir)
+                                                    .join(format!("attempt-{attempt}.patch")),
+                                                &diff,
+                                            );
+                                        }
+                                        sha
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            run_id = %run_id,
+                                            attempt,
+                                            error = %e,
+                                            "attempt patch receipt could not be read — \
+                                             verdict proceeds, custody hole logged"
+                                        );
+                                        String::new()
+                                    }
+                                };
                             let grade = crate::commands::benchmark::grade_swe(
                                 crate::commands::benchmark::SweGradeParams {
                                     instance: instance.clone(),
@@ -423,6 +458,7 @@ impl ActionCommand for AgentSolve {
                                         p2p_passed = g.pass_to_pass_passed,
                                         p2p_total = g.pass_to_pass_total,
                                         patch_bytes = g.patch_bytes,
+                                        patch_sha256 = %patch_sha256,
                                         failed_tests = %g.failed_tests.join(","),
                                         "solve attempt graded — the verdict, on the wire"
                                     );
