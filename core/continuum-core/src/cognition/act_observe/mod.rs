@@ -31,6 +31,11 @@
 mod recency;
 mod perception;
 
+mod observation;
+pub use observation::{
+    extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb,
+};
+
 mod types;
 pub use types::{SettleOutcome, SettleStep};
 
