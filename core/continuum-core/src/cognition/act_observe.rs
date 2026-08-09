@@ -966,6 +966,19 @@ pub async fn drive_to_settle(
     // rather than being trapped. Her own behavior is the budget — no counter, no constant.
     let mut acts_at_last_nudge: Option<usize> = None;
 
+    // #386: transient-deliberation retry. Glass-boxed on atlas-17139-h1
+    // (2026-08-09): the per-slot wedge fails ~1 in 3 generations and the VERY
+    // NEXT generation succeeds — capture tick 2 faults, tick 3 acts, tick 5
+    // faults, tick 6 acts. The old behaviour abandoned the ENTIRE turn on the
+    // first fault, so a single transient flicker cost her a whole attempt. A
+    // faulted thought is retried in place, bounded, before the turn is
+    // surrendered — the flicker costs one re-generation, not the turn. Only a
+    // SUSTAINED fault (budget spent across the turn) ends the turn with
+    // inference_error, exactly as before — 4+ faults in one turn IS a wedge worth
+    // surrendering to, not a flicker. Whole-turn budget, not per-tick.
+    const DELIBERATION_RETRY_BUDGET: u32 = 3;
+    let mut delib_retries: u32 = 0;
+
     loop {
         // ONE settlement step through the SHARED primitive the live heartbeat uses
         // (`settle_step`). The only thing this driver adds is the LOOP — because the
@@ -1146,6 +1159,27 @@ pub async fn drive_to_settle(
             // not loop/retry here — the grader owns retry policy; the settle loop's
             // job is to report the truth of THIS attempt.
             SettleStep::InferenceFailed { error } => {
+                // #386 transient-deliberation retry. A faulted generation is NOT
+                // yet a surrendered turn — glass-box (atlas-17139-h1) proved the
+                // very next generation succeeds ~2/3 of the time. Retry the thought
+                // in place, bounded, and ALWAYS probe so the wedge signal stays
+                // visible to the concurrency investigation (the retry recovers the
+                // turn; it must never HIDE the fault). Only a SUSTAINED fault
+                // (budget spent) surrenders the turn with inference_error, exactly
+                // as before.
+                if delib_retries < DELIBERATION_RETRY_BUDGET {
+                    delib_retries += 1;
+                    crate::probe!(
+                        class = "persona.settle.deliberation_retry",
+                        room_id = %room_id,
+                        acts = acts,
+                        retry = delib_retries,
+                        budget = DELIBERATION_RETRY_BUDGET,
+                        error = %error,
+                        "transient deliberation fault — retrying the thought in place (the turn is not yet surrendered)"
+                    );
+                    continue;
+                }
                 return SettleOutcome {
                     decision: Decision::Pass,
                     spoken: None,
