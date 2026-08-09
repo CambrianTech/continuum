@@ -14,10 +14,6 @@ use super::observation::{
 };
 use super::settle::now_ms;
 use super::perception::{all_calls_already_satisfied, is_redundant_orientation};
-use super::recency::{
-    bound_recency_result, humanize_result_content, render_act_for_recall,
-    summarize_args_for_recency,
-};
 
 /// Recall salience for an action-observation receipt (#166). Below the neutral
 /// default (0.5) so genuine findings/facts win recall, but well above zero so the
@@ -346,61 +342,21 @@ pub async fn apply_act(
     // perceives when it is RE-ISSUING an identical call. The result HEAD varies turn to turn,
     // so `entries`/`#seq` alone make a repeat look "new"; the fingerprint keys on the call.
     let mut max_repeat = 0usize;
-    for (i, call) in fg_calls.iter().enumerate() {
+    for call in fg_calls.iter() {
         let fp = format!(
             "{}|{}",
             call.name,
             serde_json::to_string(&call.input).unwrap_or_default()
         );
         max_repeat = max_repeat.max(body.working_memory.note_action_fingerprint(&fp));
-        let result = outcome.results.get(i);
-        // HUMANIZE before rendering (card 0a4c0648, Joel's encoding catch): the
-        // executor hands back the command's serde-serialized JSON, so without this
-        // a file read reached her window as ONE line of `\n`-escaped soup — the
-        // indentation was byte-preserved and structurally ILLEGIBLE, and block
-        // indentation is exactly what code edits are graded on. Glass-boxed on
-        // Benchy's requests-2148 solve: correct diagnosis, correct fix, replacement
-        // block mis-indented against code she had only ever seen escaped, parse
-        // gate refused. Render code as code: top-level string fields print RAW
-        // (real newlines, real columns); everything else stays compact JSON.
-        let body_text = match result {
-            Some(r) => humanize_result_content(&r.content),
-            None => "(no result returned)".to_string(),
-        };
-        let body_text = body_text.as_str();
-        let is_err = result.map(|r| r.is_error == Some(true)).unwrap_or(false);
-        // Bounded (#165) and kept BYTE-IDENTICAL to the dedup signature in
-        // `all_calls_already_satisfied` — that guard matches this rendering against the
-        // receipt trail, so the two must render args the same way or dedup silently breaks
-        // (caught by `identical_already_satisfied_act_does_not_re_execute`).
-        let args = summarize_args_for_recency(&call.input, fold);
-        // Omit the "because …" clause when there is no real stated reason — an
-        // empty intent must never render as an imitable receipt template (#158).
-        let because = if intent.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" because {}", intent.trim())
-        };
-        // No first-person "I ran" opener (#158) — a bare `name(args)` proprioception
-        // entry the base model won't reproduce as a room-message opener.
-        observation.push_str(&format!(
-            "{}({}){}\nResult:\n{}\n\n",
-            call.name,
-            args,
-            because,
-            bound_recency_result(body_text, &budget),
-        ));
-        recall_observation.push_str(&render_act_for_recall(
-            &call.name,
-            &call.input,
-            intent.trim(),
-            is_err,
-            body_text,
-        ));
-        // The TYPED act. Correlate the result by `tool_use_id == call.id` (NOT the
-        // positional `.get(i)` the string render uses) — id-correlation is immune to
-        // the fg-vs-original index hazard (invariant 5). The raw ToolResult is stored;
-        // humanize/bound are rendering concerns applied by `render_recency`.
+        // The TYPED act is the SINGLE source now (Step 5). Correlate the result by
+        // `tool_use_id == call.id` (NOT the positional `.get(i)` the old string render
+        // used) — id-correlation is immune to the fg-vs-original index hazard (invariant
+        // 5). Both channel strings are then rendered ONCE, from the act, via the pure
+        // `render_recency`/`render_recall` helpers (which own the humanize/bound/args
+        // shaping — the card-0a4c0648 code-as-code decode and the #165 bound live there):
+        // byte-identical to the old inline `format!`, but render is now a pure function of
+        // the Observation so no consumer re-derives structure from prose.
         let typed_result = outcome
             .results
             .iter()
@@ -411,7 +367,7 @@ pub async fn apply_act(
                 content: "(no result returned)".to_string(),
                 is_error: None,
             });
-        acts.push(Observation {
+        let obs = Observation {
             call: call.clone(),
             output: ToolOutput {
                 result: typed_result,
@@ -419,7 +375,10 @@ pub async fn apply_act(
                 paths: extract_paths(&call.input),
             },
             status: ActStatus::Executed,
-        });
+        };
+        observation.push_str(&obs.render_recency(intent, &budget));
+        recall_observation.push_str(&obs.render_recall(intent));
+        acts.push(obs);
     }
     // A pure-background batch (every call was long-running → dispatched, `fg_calls`
     // empty) still counts as an act — one typed Observation per dispatch so
