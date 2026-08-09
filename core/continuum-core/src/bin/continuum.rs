@@ -52,6 +52,14 @@ async fn run() -> Result<(), String> {
             eprintln!("{}", usage());
             Ok(())
         }
+        // Handled HERE, never dispatched. `version` asks what THIS BINARY is;
+        // forwarding it to the core answered a different question and, when no
+        // core was running, answered none at all — the operator asking "what am
+        // I holding?" got "the substrate refused your command."
+        "version" | "--version" | "-V" => {
+            println!("{}", version_line());
+            Ok(())
+        }
         "start" => start().await,
         "reboot" | "restart" => {
             let force = args.any(|a| a == "--force");
@@ -1534,7 +1542,71 @@ mod tests {
     }
 }
 
+/// The name this binary was actually INVOKED as, for help text.
+///
+/// One binary ships under several names — `uu` (the short canonical one) and
+/// `continuum` (the long-form alias kept so existing scripts and docs keep
+/// working). Hardcoding "continuum" in the usage text meant `uu --help` printed
+/// `usage: continuum ...`: the front door did not know its own name, and every
+/// example it gave was a command the reader had not typed.
+///
+/// Derived from argv[0] rather than a constant so a new alias is correct the
+/// moment it exists, with nothing to remember to update. Falls back to the
+/// canonical name when argv[0] is missing or unreadable — an odd exec is not a
+/// reason to print nothing.
+fn program_name() -> String {
+    std::env::args_os()
+        .next()
+        .map(std::path::PathBuf::from)
+        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "uu".to_string())
+}
+
+/// This binary's build identity — number, sha, and when it was compiled.
+///
+/// Joel's ruling 2026-08-08: versions must ALWAYS auto-increment and display
+/// with the sha, in EVERY repo, visible on connection/health/query, because
+/// stale binaries have repeatedly poisoned testing.
+///
+/// This was UNANSWERABLE from the front door before: `continuum version` fell
+/// through to the substrate dispatcher and came back
+/// `Unknown command: 'version'` — the CLI could ask the core what IT was and
+/// could not say what ITSELF was. That is the exact gap that lets an operator
+/// debug a fixed bug with an unfixed binary in their hand.
+fn version_line() -> String {
+    format!(
+        "{} #{} {} built {}",
+        program_name(),
+        option_env!("CONTINUUM_BUILD_NUMBER").unwrap_or("0"),
+        option_env!("CONTINUUM_BUILD_GIT_SHA").unwrap_or("unknown"),
+        option_env!("CONTINUUM_BUILD_AT").unwrap_or("unknown"),
+    )
+}
+
 fn usage() -> String {
+    let me = program_name();
+    format!(
+        "usage: {me} <start|reboot|stop|version|command> [json | --key value ...]\n\
+     \n\
+     Lifecycle:\n  \
+       {me} start                 build + run the headless Rust core (detached), wait until ready\n  \
+       {me} reboot                rebuild + relaunch, replacing any running core (~0 downtime)\n  \
+       {me} stop                  stop the running core\n  \
+       {me} version               this binary's build number + sha (NOT the core's)\n\
+     \n\
+     Commands (dispatch to the running core):\n  \
+       {me} ping\n  \
+       {me} ping --message hi                 # --key value, coerced + camelCased automatically\n  \
+       {me} commands/list                     # discover commands dynamically (single source)\n\
+     \n\
+     Env: CONTINUUM_CORE_SOCKET (default /tmp/continuum-core.sock)\n     \
+          CONTINUUM_START_SCRIPT (override the start script path)"
+    )
+}
+
+#[allow(dead_code)]
+fn usage_legacy() -> String {
     "usage: continuum <start|reboot|stop|command> [json | --key value ...]\n\
      \n\
      Lifecycle:\n  \

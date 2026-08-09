@@ -429,10 +429,10 @@ let results = algo.execute(&input);
 cd src
 npm start                    # DEPLOYS code changes, takes 130s or so
 
-./jtag ping #check for server and browser connection
-./jtag interface/screenshot            # Verify any visual changes
-./jtag collaboration/chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
-./jtag collaboration/chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
+uu ping #check for server and browser connection
+uu interface/screenshot            # Verify any visual changes
+uu collaboration/chat/send --room="general" --message="Try using the ping command" #be sure to randomlize this, check for list, help, etc, or they think it's a repeat 
+uu collaboration/chat/export --room="general" --limit=20 | tail -20 #Wait about 30 seconds and get the last 20 messages
 ```
 
 **IF YOU FORGET `npm start`, THE BROWSER SHOWS OLD CODE!**
@@ -452,13 +452,13 @@ Don't panic and stash changes first before anything drastic. Use the stash to yo
 **Basic Usage:**
 ```bash
 # Send message to chat room (direct DB, no UI)
-./jtag collaboration/chat/send --room="general" --message="Hello team" 
-./jtag collaboration/chat/send --room="general" --message="Reply" --replyToId="abc123"
+uu collaboration/chat/send --room="general" --message="Hello team" 
+uu collaboration/chat/send --room="general" --message="Reply" --replyToId="abc123"
 
 # Export chat messages to markdown
-./jtag collaboration/chat/export --room="general" --limit=50                    # Print to stdout
-./jtag collaboration/chat/export --room="general" --output="/tmp/export.md"    # Save to file
-./jtag collaboration/chat/export --limit=100 --includeSystem=true               # All rooms with system messages
+uu collaboration/chat/export --room="general" --limit=50                    # Print to stdout
+uu collaboration/chat/export --room="general" --output="/tmp/export.md"    # Save to file
+uu collaboration/chat/export --limit=100 --includeSystem=true               # All rooms with system messages
 ```
 
 **Interactive Workflow - Working WITH the AI Team:**
@@ -467,7 +467,7 @@ When you send a message, `chat/send` returns a message ID. Use this to track res
 
 ```bash
 # 1. Send message (captures the JSON response with messageId)
-RESPONSE=$(./jtag collaboration/chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
+RESPONSE=$(uu collaboration/chat/send --room="general" --message="Deployed new tool error visibility fix. Can you see errors clearly now?")
 
 # 2. Extract message ID (using jq if available, or manual)
 MESSAGE_ID=$(echo "$RESPONSE" | jq -r '.shortId')
@@ -477,19 +477,19 @@ echo "My message ID: $MESSAGE_ID"
 sleep 10
 
 # 4. Check their responses
-./jtag collaboration/chat/export --room="general" --limit=20
+uu collaboration/chat/export --room="general" --limit=20
 
 # 5. Reply to specific AI feedback
-./jtag collaboration/chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
+uu collaboration/chat/send --room="general" --replyToId="<their-message-id>" --message="Good catch! Let me fix that..."
 ```
 
 **CRITICAL**: Don't just broadcast to the AI team - WORK WITH THEM. Use their feedback, reply to their questions, iterate based on what they're saying. The chat export shows message IDs as `#abcd123` - use those to reply.
 
 ### Debug Commands
 ```bash
-./jtag debug/logs --tailLines=50 --includeErrorsOnly=true
-./jtag debug/widget-events --widgetSelector="chat-widget"
-./jtag ai/report                       # AI performance metrics
+uu debug/logs --tailLines=50 --includeErrorsOnly=true
+uu debug/widget-events --widgetSelector="chat-widget"
+uu ai/report                       # AI performance metrics
 ```
 
 ### Persona Logging (Cognition Visibility)
@@ -511,16 +511,16 @@ Persona logging is **opt-in** and controlled by `.continuum/logging.json`. Categ
 **Commands**:
 ```bash
 # Enable logging for a persona (persists to logging.json)
-./jtag logging/enable --persona="helper" --category="cognition"
+uu logging/enable --persona="helper" --category="cognition"
 
 # Disable logging for a persona
-./jtag logging/disable --persona="helper"
+uu logging/disable --persona="helper"
 
 # Show logging status for all personas
-./jtag logging/status
+uu logging/status
 
 # Show logging status for a specific persona
-./jtag logging/status --persona="helper"
+uu logging/status --persona="helper"
 ```
 
 **Log locations**:
@@ -581,7 +581,7 @@ mkdir daemons/logger-daemon && touch LoggerDaemon.ts
 
 **What generators provide:**
 - Auto-generated README with usage examples
-- Help text that AIs can access via `./jtag command/name --help`
+- Help text that AIs can access via `uu command/name --help`
 - Package.json integration for `npm run` scripts
 - Consistent structure across all modules
 - Proper discovery mechanisms
@@ -600,13 +600,13 @@ mkdir daemons/logger-daemon && touch LoggerDaemon.ts
 npm start
 
 # 2. Ask AI team to test
-./jtag collaboration/chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
+uu collaboration/chat/send --room="general" --message="I just added a new 'collaboration/wall/write' command. Can you try writing a document to the wall and let me know if the error messages make sense?"
 
 # 3. Wait for responses (30-60 seconds)
 sleep 60
 
 # 4. Check their feedback
-./jtag collaboration/chat/export --room="general" --limit=30
+uu collaboration/chat/export --room="general" --limit=30
 
 # 5. Fix issues they found
 # - Improve error messages
@@ -615,7 +615,7 @@ sleep 60
 # - Clarify parameters
 
 # 6. Test again with AIs
-./jtag collaboration/chat/send --room="general" --message="Fixed the error messages. Can you try again?"
+uu collaboration/chat/send --room="general" --message="Fixed the error messages. Can you try again?"
 
 # 7. Once AIs confirm it works, THEN commit
 git commit -m "Add wall/write with AI-validated UX"
@@ -963,7 +963,7 @@ The system bridges capability gaps so every persona gets the same senses:
 - Autonomous polling loop integrated into PersonaUser
 
 **🚧 IN PROGRESS (Phase 4)**:
-- Task database and CLI commands (`./jtag task/create`, `task/list`, `task/complete`)
+- Task database and CLI commands (`uu task/create`, `task/list`, `task/complete`)
 - Self-task generation (AIs create own work)
 
 **📋 PLANNED (Phases 5-7)**:
@@ -1018,14 +1018,14 @@ async serviceInbox(): Promise<void> {
 **Phase 4: Task Database & Commands** (NEXT)
 ```bash
 # Create task
-./jtag task/create --assignee="helper-ai-id" \
+uu task/create --assignee="helper-ai-id" \
   --description="Review main.ts" --priority=0.7 --domain="code"
 
 # List tasks
-./jtag task/list --assignee="helper-ai-id"
+uu task/list --assignee="helper-ai-id"
 
 # Complete task
-./jtag task/complete --taskId="001" --outcome="Found 3 issues"
+uu task/complete --taskId="001" --outcome="Found 3 issues"
 ```
 
 **Phase 5: Self-Task Generation**
@@ -1073,7 +1073,7 @@ npx vitest tests/integration/continuous-learning.test.ts
 # System tests (end-to-end)
 npm start
 # Wait 1 hour, check for self-created tasks
-./jtag task/list --assignee="helper-ai-id" \
+uu task/list --assignee="helper-ai-id" \
   --filter='{"createdBy":"helper-ai-id"}'
 ```
 
@@ -1156,7 +1156,7 @@ npx tsx generator/CommandGenerator.ts generator/specs/gpu-stats.json
 
 # 7. Build and verify
 npm run build:ts && npm start
-./jtag gpu/stats
+uu gpu/stats
 ```
 
 **The three-layer architecture:**
@@ -1167,7 +1167,7 @@ npm run build:ts && npm start
 | TS Mixin | `bindings/modules/gpu.ts` | snake_case→camelCase, typed wrapper |
 | TS Command | `commands/gpu/stats/` | Generated scaffold, uses mixin |
 
-**Without the mixin + command layer**, Rust IPC commands exist but are invisible to `./jtag` and the command system. The generator creates discoverability (README, help text, CLI params).
+**Without the mixin + command layer**, Rust IPC commands exist but are invisible to `uu` and the command system. The generator creates discoverability (README, help text, CLI params).
 
 ---
 
@@ -1188,7 +1188,7 @@ Never guess - logs tell the truth
 
 ### 2. USE VISUAL VERIFICATION
 ```bash
-./jtag interface/screenshot --querySelector="chat-widget" --filename="debug.png"
+uu interface/screenshot --querySelector="chat-widget" --filename="debug.png"
 ```
 Screenshots don't lie - don't trust success messages
 
@@ -1213,12 +1213,12 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # STEP 1: Ask a question in the general room (no room ID needed!)
-./jtag collaboration/chat/send --room="general" --message="How should I implement connection pooling for websockets?"
+uu collaboration/chat/send --room="general" --message="How should I implement connection pooling for websockets?"
 
 # STEP 2: Wait 5-10 seconds for responses
 
 # STEP 3: View responses in chat widget
-./jtag interface/screenshot --querySelector="chat-widget"
+uu interface/screenshot --querySelector="chat-widget"
 
 # STEP 4: Export conversation to markdown (coming soon - see workflow below)
 ```
@@ -1227,25 +1227,25 @@ Local PersonaUsers (Helper AI, Teacher AI, CodeReview AI, Local Assistant, and 5
 
 ```bash
 # 1. Send your question and capture the message ID
-MESSAGE_ID=$(./jtag collaboration/chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
+MESSAGE_ID=$(uu collaboration/chat/send --room="general" --message="What's the best way to handle rate limiting?" | jq -r '.messageId')
 
 # 2. Wait for AI responses (they respond within 5-10 seconds)
 sleep 10
 
 # 3. Get all messages after your question
-./jtag data/list --collection=chat_messages \
+uu data/list --collection=chat_messages \
   --filter="{\"roomId\":\"ROOM_UUID\",\"timestamp\":{\"\$gte\":\"$MESSAGE_ID_TIMESTAMP\"}}" \
   --orderBy='[{"field":"timestamp","direction":"asc"}]'
 
 # 4. View in browser
-./jtag interface/screenshot --querySelector="chat-widget"
+uu interface/screenshot --querySelector="chat-widget"
 ```
 
 ### Future Workflow (Planned)
 
 ```bash
 # Export conversation thread to markdown
-./jtag collaboration/chat/export --messageId="UUID" --format="markdown" --output="solution.md"
+uu collaboration/chat/export --messageId="UUID" --format="markdown" --output="solution.md"
 
 # This will include:
 # - Your question
@@ -1309,9 +1309,22 @@ The AIs will:
 ### 2. ASSUME SUCCESS WITHOUT TESTING
 **Fix**: Always take screenshot after deployment
 
-### 3. WRONG WORKING DIRECTORY
-**Always work from**: `src`
-**Commands**: `./jtag` NOT `./continuum`
+### 3. WRONG COMMAND NAME
+**The command is `uu`.** Not `./jtag`, not `ctm`, and not `./continuum` from a
+directory — `uu` is on `$PATH` after install.
+
+This entry used to say *"Always work from `src`"* and *"Commands: `./jtag` NOT
+`./continuum`"*. Both were wrong, and wrong in the way that costs a fresh
+session its first ten minutes: `src/` was the Node monolith and no longer
+exists, `jtag` was its CLI and is not installed by anything, and `continuum` —
+the one it told you to avoid — is a real alias that works.
+
+`uu` and `continuum` are the SAME binary under two names; `uu` is canonical
+because it is shortest and it is what people reach for. The binary derives its
+own name from `argv[0]`, so `uu --help` says `uu` and any future alias is
+correct the moment it exists. `uu version` reports the build number + sha of the
+binary in your hand, which is a different question from what the running core
+is — ask both when they might disagree.
 
 ### 4. IGNORE EXISTING TYPES
 **Fix**: Search for types first: `find . -name "*Types.ts"`
@@ -1335,7 +1348,7 @@ The AIs will:
 
 - **npm start takes 90+ seconds** - BE PATIENT
 - **One server, many clients** - All tests connect to running server
-- **"browserConnected: false" is a red herring** - Use `./jtag ping` instead
+- **"browserConnected: false" is a red herring** - Use `uu ping` instead
 - **Precommit hook is sacred** - TypeScript + CRUD tests must pass
 - **AI response testing is manual** - Hook doesn't test this, you must
 
@@ -1621,7 +1634,7 @@ Generators and OOP are intertwined parallel forces:
 **File reduced from 61k to ~20k characters**
 - if you only edit a test, and not the api itself, you don't need to redeploy with npm start, just edit and test again e.g npx tsx tests/integration/genome-fine-tuning-e2e.test.ts
 - need to remember to npm run build:ts before deploying with npm start, just to make sure there's no compilation issues
-- ./jtag collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
+- uu collaboration/chat/export --room="general" --limit=30 will let you see ai opinions after chat/send to ask
 - Tool logging is in PersonaToolExecutor
 - make sure to put any markdown architecture or design documents other than readmes in docs/* into the appropriate directort OR document if they exist. run tree there.
 - assume a new concept or group of functions ought to be in its own file and most likely own class. Use good OOP, interfaces, like java, dot net, or ts
