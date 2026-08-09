@@ -1,17 +1,50 @@
+# Continuum CI — TypeScript clients gate
+#
+# ## What this replaced, and why it mattered
+#
+# This workflow used to run in `working-directory: src` against
+# `src/package-lock.json`, calling `npm run build:ts` and `npm run test:crud`.
+# Every one of those is gone: `src/` was the Node monolith, retired when the
+# substrate became a headless Rust core (#1840), and both scripts left with it.
+#
+# So it failed on every run — last success 2026-06-07, red continuously from
+# 2026-06-09 — with `Cannot find module 'dotenv'`, an error that describes the
+# absence of the whole world it was pointed at rather than any defect in the
+# code under test.
+#
+# A check that ALWAYS fails is worse than no check. It cannot distinguish a
+# broken PR from a healthy one, so the only thing anyone can learn from it is to
+# stop reading CI — which is exactly what happened: work routed around it
+# through the Rust and drift-guard workflows for two months.
+#
+# ## What it does now
+#
+# Gates the TypeScript clients workspace — the one thing this file was always
+# supposed to cover and had stopped being able to see.
+#
+# `npm run test:clients` was ALREADY in package.json and ALREADY passing
+# locally. Nothing called it. That is how `renderBench.spec.ts` and six sibling
+# spec files across `apps/web` and `packages/` came to exist, be green on a
+# developer's machine, and gate nothing at all — a correct check that nothing
+# invokes, which is indistinguishable from having no check until someone greps
+# for the caller.
+#
+# Triggers on `canary` as well as `main`, because canary is where development
+# happens; a gate that only watches the stable line learns about breakage after
+# it has already been merged.
+
 name: Continuum CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, canary ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, canary ]
 
 jobs:
-  validate:
+  clients:
+    name: TypeScript clients (typecheck + tests)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: src
 
     steps:
     - uses: actions/checkout@v4
@@ -21,32 +54,20 @@ jobs:
       with:
         node-version: '20'
         cache: 'npm'
-        cache-dependency-path: src/package-lock.json
+        # Root lockfile — npm workspaces hoist, so there is exactly one.
+        cache-dependency-path: package-lock.json
 
-    - name: Install dependencies
+    # `npm ci` installs the whole workspace from the lockfile, which is what
+    # makes this job the substrate the tests stand on: without it, every spec
+    # file fails at COLLECTION with "Failed to load url @continuum/chat-view",
+    # an error that points a reader at missing source rather than missing deps.
+    - name: Install workspace
       run: npm ci
 
-    - name: TypeScript compilation
-      run: |
-        npm run build:ts
-        echo "✅ TypeScript compilation passed"
+    - name: Typecheck clients
+      run: npm run typecheck:clients
 
-    # Skip full tests for documentation-only PRs
-    - name: Check if documentation-only PR
-      id: check_pr
-      working-directory: .
-      run: |
-        if git diff --name-only origin/main..HEAD | grep -qvE '\.(md|txt|yml|yaml)$'; then
-          echo "skip_tests=false" >> $GITHUB_OUTPUT
-        else
-          echo "skip_tests=true" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Run tests
-      if: steps.check_pr.outputs.skip_tests != 'true'
-      run: |
-        npm run test:crud
-        echo "✅ CRUD tests passed"
-
-    - name: Validation complete
-      run: echo "✅ CI validation complete - local precommit hook validates full system"
+    # The suite that existed and was never run. Covers apps/web, apps/tui,
+    # the view packages, and the SDK.
+    - name: Test clients
+      run: npm run test:clients
