@@ -678,6 +678,21 @@ pub struct ServingSnapshot {
     #[serde(default)]
     #[ts(optional)]
     pub vision_model: Option<String>,
+    /// WHICH ENGINE is serving — llama.cpp's own `/props.build_info`
+    /// (`b<build-number>-<commit-sha>` of the fork it was compiled from), read at
+    /// reconcile. `None` = nothing served, or a build too old to publish it.
+    ///
+    /// Here because "is my fix in the engine that is actually running?" was, until
+    /// 2026-08-09, answerable only by comparing binary mtimes across machines — and
+    /// answering it that way produced a wrong attribution (a Rust CORE build number
+    /// read as the engine's). The engine has published this all along; the daemon
+    /// simply never asked. See [`LlamaServerControl::engine_build`].
+    ///
+    /// The sha is the load-bearing half: build numbers are ancestor counts, so our
+    /// fork and upstream can share one and mean different code.
+    #[serde(default)]
+    #[ts(optional)]
+    pub engine_build: Option<String>,
 }
 
 impl ServingSnapshot {
@@ -719,6 +734,10 @@ impl ServingSnapshot {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // Nothing served → no engine to identify. Never a placeholder string:
+            // an unknown engine and an engine that says it is "unknown" are
+            // different facts, and only the first one is true here.
+            engine_build: None,
         }
     }
 
@@ -1045,6 +1064,38 @@ pub trait LlamaServerControl: Send + Sync {
     /// impl returns `Ok(None)` so fakes/remote controls stay honest by
     /// construction.
     async fn multimodal_support(&self) -> Result<Option<MultimodalSupport>, LlamaServerError> {
+        Ok(None)
+    }
+
+    /// What the running engine says it IS — llama.cpp's `/props.build_info`, the
+    /// string `b<build-number>-<commit-sha>` compiled in from `cmake/build-info.cmake`
+    /// (`git rev-list --count HEAD` + `git rev-parse --short HEAD` **of the fork**).
+    ///
+    /// ## Why the daemon asks
+    ///
+    /// 2026-08-09: a per-slot wedge was attributed to "the fork bump in build 4577".
+    /// 4577 is the Rust CORE's build number; the engine has its own, unrelated one, and
+    /// the fork engine had not been rebuilt at all. Settling that took comparing
+    /// **binary mtimes on two machines** — because while llama-server has published its
+    /// identity all along (here, on `--version`, and as `system_fingerprint` on every
+    /// completion), nothing on OUR side of the seam ever READ it. The version surface
+    /// existed; the question could not be asked in our own terms.
+    ///
+    /// That is [[silently-unwired-capability]] with the polarity reversed — not a
+    /// capability we built and failed to wire, but one we DEPEND on, that upstream
+    /// hands us for free, and that we drop on the floor. The cost is the same: a fact
+    /// available for the asking gets re-derived by archaeology, and the derivation is
+    /// wrong often enough to send a diagnosis sideways for an afternoon.
+    ///
+    /// The commit sha is what makes the answer load-bearing: build NUMBERS are a count
+    /// of ancestors, so our fork and upstream can both say `b6789` and mean different
+    /// code. `b6789-a28ee566c` names exactly one tree.
+    ///
+    /// `Ok(None)` = the server answered but publishes no `build_info` (a build too old
+    /// to carry it). Unverifiable, never a guessed identity — the same contract
+    /// [`multimodal_support`](Self::multimodal_support) keeps. Default impl returns
+    /// `Ok(None)` so fakes and remote controls stay honest by construction.
+    async fn engine_build(&self) -> Result<Option<String>, LlamaServerError> {
         Ok(None)
     }
 
@@ -1685,6 +1736,39 @@ impl LlamaServerControl for LlamaServerProcess {
                         .to_string(),
                 )
             })
+    }
+
+    async fn engine_build(&self) -> Result<Option<String>, LlamaServerError> {
+        // Same root-level `/props` as the served window. `build_info` is compiled
+        // into the binary (`common/build-info.cpp.in`), so it describes the ENGINE
+        // ON DISK — not the model, not our core, not what we believe we shipped.
+        let url = format!("{}/props", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        // Absent field → `Ok(None)`: this build cannot say what it is. An empty
+        // string is the same absence wearing a value's clothes, so it is filtered
+        // out rather than published as an identity nobody can look up.
+        Ok(body
+            .get("build_info")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string))
     }
 
     async fn multimodal_support(&self) -> Result<Option<MultimodalSupport>, LlamaServerError> {
@@ -3009,6 +3093,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -3025,6 +3111,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -3041,6 +3129,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await

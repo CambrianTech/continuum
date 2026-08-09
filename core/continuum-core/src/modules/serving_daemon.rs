@@ -1590,6 +1590,28 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } => 0,
             };
+            // WHICH engine is answering (#, 2026-08-09). Read from the same `/props`
+            // as the window, from the live process, so `serving/status` can answer
+            // "is my fork fix in the binary that is actually running?" without the
+            // mtime archaeology that produced a wrong attribution once already.
+            // A read failure is NOT a degrade: identity is diagnostic, and a lane
+            // that decodes fine while its `build_info` is unreadable is still a
+            // working lane. It publishes `None` — unknown, never guessed.
+            let engine_build = match &outcome {
+                EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                    server.engine_build().await.unwrap_or_else(|e| {
+                        crate::probe!(
+                            class = "serving.reconcile",
+                            desired = desired.as_str(),
+                            error = %e,
+                            "server ready but /props build_info unreadable — engine \
+                             identity unknown this tick (not a degrade; retries next tick)",
+                        );
+                        None
+                    })
+                }
+                EnsureOutcome::Degraded { .. } => None,
+            };
             // #106 vision readiness: for a ready lane, resolve the node's VERIFIED
             // vision endpoint. First the MAIN lane — the row's declared Vision, the
             // resolved mmproj, and the server's own `/props modalities` must all
@@ -1723,6 +1745,7 @@ impl ServingDaemonModule {
                 served_window,
                 target.lanes,
                 vision,
+                engine_build,
             );
             crate::probe!(
                 class = "serving.reconcile",
@@ -1730,6 +1753,10 @@ impl ServingDaemonModule {
                 ready = snapshot.ready,
                 active = snapshot.active_model.as_deref().unwrap_or("<none>"),
                 served_window = snapshot.served_context_window,
+                // On the reconcile line because that is where an operator already
+                // looks when serving behaves unexpectedly, and "which engine" is
+                // the first question a surprising behaviour raises.
+                engine = snapshot.engine_build.as_deref().unwrap_or("<unreported>"),
                 "serving reconcile complete",
             );
             // #363: remember the last HEALTHY lane's shape in a record that SURVIVES
@@ -2696,6 +2723,9 @@ fn snapshot_from_outcome(
     // `vision_model` are all projected from this ONE value, so an address can
     // never be published without the verified flag (or vice versa).
     vision: Option<crate::inference::vision_sidecar::SidecarLane>,
+    // WHICH engine answered this reconcile — llama.cpp's `/props.build_info`.
+    // `None` = nothing served, or a build that cannot say what it is.
+    engine_build: Option<String>,
 ) -> ServingSnapshot {
     match outcome {
         EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. }
@@ -2740,6 +2770,9 @@ fn snapshot_from_outcome(
                 vision_ready: vision.is_some(),
                 vision_base_url: vision.as_ref().map(|v| v.base_url.clone()),
                 vision_model: vision.map(|v| v.model_id),
+                // The engine's own account of itself, carried so a reader never has
+                // to infer it from a binary's mtime (2026-08-09).
+                engine_build,
             }
         }
         // Ready outcome but the served window was unreadable (0) → do NOT publish
@@ -3536,6 +3569,7 @@ mod tests {
                 base_url: "http://127.0.0.1:58091/v1".to_string(),
                 model_id: "vl-7b".to_string(),
             }),
+            Some("b6789-a28ee566c".to_string()),
         );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
@@ -3564,6 +3598,16 @@ mod tests {
              address can never publish without verified readiness"
         );
         assert_eq!(up.vision_model.as_deref(), Some("vl-7b"));
+        // what this catches (2026-08-09): dropping the engine's own identity on the
+        // way to the snapshot. `/props` carries `build_info` and the daemon reads it,
+        // but if it does not SURVIVE to here, "which engine is running?" falls back to
+        // comparing binary mtimes across machines — which is how a Rust CORE build
+        // number got read as the engine's and misattributed a wedge.
+        assert_eq!(
+            up.engine_build.as_deref(),
+            Some("b6789-a28ee566c"),
+            "the engine's own build_info must reach the published snapshot"
+        );
 
         let already = snapshot_from_outcome(
             &EnsureOutcome::AlreadyServing,
@@ -3571,6 +3615,8 @@ mod tests {
             &genes,
             11008,
             4,
+            None,
+            // An engine too old to publish `build_info` — serving is unaffected.
             None,
         );
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
@@ -3585,6 +3631,13 @@ mod tests {
             already.vision_base_url.is_none() && already.vision_model.is_none(),
             "no verified endpoint → no address, no model (None-iff-not-ready)"
         );
+        // what this catches: inventing an identity for an engine that did not give
+        // one. A build too old to publish `build_info` must read as UNKNOWN, never as
+        // a plausible-looking string a reader would then try to look up.
+        assert_eq!(
+            already.engine_build, None,
+            "an engine that cannot say what it is reads as unknown, not as a guess"
+        );
 
         // Ready outcome but the served window was unreadable (0) → publish the gap,
         // NOT a ready snapshot with a zero window a persona would budget against.
@@ -3595,6 +3648,7 @@ mod tests {
             0,
             4,
             None,
+            Some("b6789-a28ee566c".to_string()),
         );
         assert_eq!(
             windowless.active_model, None,
@@ -3603,6 +3657,14 @@ mod tests {
         assert!(!windowless.ready);
         assert_eq!(windowless.served_context_window, 0);
         assert_eq!(windowless.lanes, 0, "empty snapshot carries no lanes");
+        // what this catches: a snapshot that says nothing is live while still naming
+        // an engine. Both halves would be read together ("not live, but running
+        // b6789?"), and the contradiction is worse than the absence — a reader would
+        // reasonably conclude the lane is up and the flag is stale.
+        assert_eq!(
+            windowless.engine_build, None,
+            "a not-live snapshot claims no engine, even when one answered the probe"
+        );
 
         let degraded = snapshot_from_outcome(
             &EnsureOutcome::Degraded { reason: "x".into() },
@@ -3611,6 +3673,7 @@ mod tests {
             11008,
             4,
             None,
+            Some("b6789-a28ee566c".to_string()),
         );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
@@ -3729,6 +3792,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         let budget = HostBudget {
             usable_bytes: 45 * GB,
@@ -3793,6 +3858,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         (daemon, plan_window)
     }
@@ -3980,6 +4047,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         }
     }
 
@@ -4279,6 +4348,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         // A quarter of the plan is a 300% shortfall — far past the margin — but the
         // gain must still PERSIST before it buys a relaunch (BigMama's sustained-delta
@@ -4310,6 +4381,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         assert!(
             daemon.reconcile_to_plan().is_none(),
@@ -4340,6 +4413,8 @@ mod tests {
             vision_ready: false,
             vision_base_url: None,
             vision_model: None,
+            // test fixture: no engine identity claimed.
+            engine_build: None,
         });
         let budget = HostBudget {
             usable_bytes: 45 * GB,
