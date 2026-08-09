@@ -1780,6 +1780,23 @@ impl ActionCommand for BenchmarkSweGrade {
     }
 }
 
+/// The candidate diff of a solver workspace — the ONE reading of "her work"
+/// (grade_swe's candidate arm and agent/solve's attempt-patch receipt both
+/// call this; a second inline `git diff` would drift on the exclude rules).
+/// `diff HEAD` (not bare `diff`) so STAGED edits count as her work too, and
+/// `:(exclude).airc` because the substrate stages its own coordination files
+/// into her workspace (card b34f7eb5): Atlas's first grade carried 91KB of
+/// staged `.airc` blobs, and the fresh clone refused the WHOLE candidate —
+/// a real fix voided by files no solver wrote.
+pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError> {
+    let out = std::process::Command::new("git")
+        .args(["diff", "HEAD", "--", ".", ":(exclude).airc"])
+        .current_dir(ws)
+        .output()
+        .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 /// The `benchmark/swe-grade` body, callable without a command context — the
 /// hands-free autograde on `agent/solve` completion invokes the SAME grader
 /// (fresh clone at base_commit, held-out tests, experience-stream write) as
@@ -1804,17 +1821,7 @@ pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, Comma
         let candidate: Option<String> = if p.gold.unwrap_or(false) {
             Some(instance.patch.clone())
         } else if let Some(ws) = p.workspace.as_ref() {
-            // `diff HEAD` (not bare `diff`) so STAGED edits count as her work too, and
-            // `:(exclude).airc` because the substrate stages its own coordination files
-            // into her workspace (card b34f7eb5): Atlas's first grade carried 91KB of
-            // staged `.airc` blobs, and the fresh clone refused the WHOLE candidate —
-            // a real fix voided by files no solver wrote.
-            let out = std::process::Command::new("git")
-                .args(["diff", "HEAD", "--", ".", ":(exclude).airc"])
-                .current_dir(ws)
-                .output()
-                .map_err(|e| CommandError::Internal(format!("could not read {ws}'s diff: {e}")))?;
-            Some(String::from_utf8_lossy(&out.stdout).to_string())
+            Some(workspace_candidate_diff(ws)?)
         } else {
             p.patch.clone()
         };
