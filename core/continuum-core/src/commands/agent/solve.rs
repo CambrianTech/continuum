@@ -1039,6 +1039,124 @@ impl AgentSolve {
             }
         }
 
+        // IN-LOOP TEST VERIFIER — the structural gap between this exam room and the
+        // field harnesses that pass with the SAME model (scoreboard 2026-08-09: six
+        // rounds, zero resolves; field agents iterate against real test output every
+        // few edits, our citizens got one verdict per attempt and settled hopeful —
+        // producing the signature "on-target, harmless, doesn't fix" patch). When a
+        // workspace-deliverable settle carries a non-empty diff, run the REPO'S OWN
+        // tests for the files she touched (the held-out FAIL_TO_PASS stays held out —
+        // this is the regression half of feedback, the same loop a field harness
+        // closes) and on failure re-drive with the ACTUAL test output. Bounded at
+        // VERIFIER_ROUNDS; green tests, an unchanged diff, no test mapping, or an env
+        // fault all end the loop (loudly, never silently).
+        const VERIFIER_ROUNDS: usize = 3;
+        let mut verifier_round = 0usize;
+        let mut last_verified_sha = String::new();
+        while workspace_deliverable
+            && verifier_round < VERIFIER_ROUNDS
+            && !patch.is_empty()
+            && settled.inference_error.is_none()
+            && settled.acts + 1 < max_acts
+        {
+            let sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(patch.as_bytes()))
+            };
+            if sha == last_verified_sha {
+                break; // re-drive produced no new diff — nothing new to verify
+            }
+            let tests = mapped_test_files(&workspace, &files_changed);
+            if tests.is_empty() {
+                crate::probe!(
+                    class = "benchmark.verifier.no_mapping",
+                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    files = %files_changed.join(","),
+                    "in-loop verifier found no test files for the touched paths — \
+                     settle stands unverified"
+                );
+                break;
+            }
+            let py = p
+                .path_prepend
+                .as_ref()
+                .and_then(|v| v.first())
+                .map(|bin| format!("{bin}/python"))
+                .filter(|py| std::path::Path::new(py).exists())
+                .unwrap_or_else(|| "python3".to_string());
+            let mut args: Vec<&str> = vec!["-m", "pytest"];
+            for t in &tests {
+                args.push(t);
+            }
+            args.extend(["-q", "--no-header", "-p", "no:cacheprovider"]);
+            match crate::cognition::swe_bench::run(&py, &args, Some(std::path::Path::new(&workspace)))
+                .await
+            {
+                Ok(out) if out.status.success() => {
+                    crate::probe!(
+                        class = "benchmark.verifier.green",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        tests = %tests.join(","),
+                        round = verifier_round,
+                        "in-loop verifier: touched-file tests PASS — settle stands"
+                    );
+                    break;
+                }
+                Ok(out) => {
+                    verifier_round += 1;
+                    last_verified_sha = sha;
+                    let report = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    let tail: String = report
+                        .chars()
+                        .rev()
+                        .take(2000)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect();
+                    crate::probe!(
+                        class = "benchmark.verifier.fail",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        tests = %tests.join(","),
+                        round = verifier_round,
+                        "in-loop verifier: touched-file tests FAIL — re-driving with \
+                         the real output"
+                    );
+                    let remaining = max_acts - settled.acts;
+                    let fact = format!(
+                        "Status check from the grading harness (a structural fact, not a \
+                         person): I ran the repo's own tests for the files you changed \
+                         ({}) and they FAIL with your current edits. Test output:\n{}\n\
+                         You have {} actions left. Fix your edit so these tests pass — \
+                         or revert the part that broke them (`git diff HEAD` shows your \
+                         changes) — and run the tests yourself with code/shell before \
+                         settling.",
+                        files_changed.join(", "),
+                        tail,
+                        remaining
+                    );
+                    (patch, files_changed) = redrive_with_fact(
+                        &cycle, room, framing, remaining, fact, &mut settled, &workspace,
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    crate::probe!(
+                        class = "benchmark.verifier.error",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        error = %e,
+                        "in-loop verifier could not run tests — env fault, settle \
+                         stands (never blocks the attempt)"
+                    );
+                    break;
+                }
+            }
+        }
+
         // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
         //    the same one-way bridge cognition/eval's learn mode uses. The lesson is
         //    experience-shaped (task + how she worked + which files), deliberately
@@ -1204,6 +1322,35 @@ const PATCH_EXCLUDES: &[&str] = &[
 /// is source-only. `git add -N` stages new files as intent-to-add so `git diff` includes them
 /// without committing content; the same excludes keep junk from being intent-added in the first
 /// place. Non-repo or git-less environments return empty (honest — no hands artifact).
+/// The touched-file → test-file mapping for the in-loop verifier. Deliberately
+/// dumb v1: a source file maps to a sibling `tests/test_<stem>.py` (sympy's
+/// layout) or a top-level `tests/test_<stem>.py` (flask/requests layout).
+/// No mapping found → the verifier skips, loudly. Repo-specific tables can
+/// grow here as data when the dumb version's misses are measured.
+fn mapped_test_files(workspace: &str, files_changed: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for f in files_changed {
+        let path = std::path::Path::new(f);
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(parent) = path.parent() else { continue };
+        let candidates = [
+            parent.join("tests").join(format!("test_{stem}.py")),
+            std::path::PathBuf::from("tests").join(format!("test_{stem}.py")),
+        ];
+        for cand in candidates {
+            if std::path::Path::new(workspace).join(&cand).exists() {
+                let c = cand.to_string_lossy().to_string();
+                if !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// ONE bounded re-drive with a structural fact injected as the next burst —
 /// the shared plumbing of the empty-diff and identical-diff re-drives (the
 /// two blocks differ only in trigger and fact text; a second inline copy
