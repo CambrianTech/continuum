@@ -86,11 +86,7 @@ pub async fn apply_act(
         calls
             .iter()
             .map(|c| {
-                let fp = format!(
-                    "{}|{}",
-                    c.name,
-                    serde_json::to_string(&c.input).unwrap_or_default()
-                );
+                let fp = c.loop_fingerprint();
                 body.working_memory.note_action_fingerprint(&fp)
             })
             .max()
