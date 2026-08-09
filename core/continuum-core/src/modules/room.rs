@@ -244,13 +244,12 @@ pub struct RoomListResult {
 #[async_trait]
 impl ActionCommand for RoomList {
     const NAME: &'static str = "room/list";
-    const ALIASES: &'static [&'static str] = &["rooms", "my_rooms", "where_am_i", "list_rooms"];
+    const ALIASES: &'static [&'static str] = &["rooms", "where_am_i"];
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "List the rooms you belong to. You can be in several at once, like anyone \
-         else here. Takes no arguments. Use this to see where you are before joining \
-         or leaving somewhere. (For who is PRESENT in a room, use room/members.)";
+        "The rooms you belong to — you can be in several. For who is PRESENT in one, \
+         use room/members.";
     type Params = RoomListParams;
     type Output = RoomListResult;
 
@@ -332,14 +331,12 @@ pub struct RoomJoinResult {
 #[async_trait]
 impl ActionCommand for RoomJoin {
     const NAME: &'static str = "room/join";
-    const ALIASES: &'static [&'static str] = &["join_room", "subscribe_room", "enter_room"];
+    const ALIASES: &'static [&'static str] = &["join_room", "enter_room"];
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Join a room by name so you hear it and can speak in it. You can belong to \
-         several rooms at once — joining a new one does NOT move you out of the ones \
-         you are already in, and does not change which room your short-shape actions \
-         default to. Use room/list to see where you are, room/leave to step out.";
+        "Join a room by NAME so you hear it and can speak in it. Joining does not \
+         remove you from your other rooms.";
     type Params = RoomJoinParams;
     type Output = RoomJoinResult;
 
@@ -412,13 +409,12 @@ pub struct RoomLeaveResult {
 #[async_trait]
 impl ActionCommand for RoomLeave {
     const NAME: &'static str = "room/leave";
-    const ALIASES: &'static [&'static str] = &["leave_room", "part_room", "exit_room"];
+    const ALIASES: &'static [&'static str] = &["leave_room", "part_room"];
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Leave a room by name, or your default room if you name none. You stop \
-         hearing it and stop being addressable there. Leaving one room does not \
-         affect the others you belong to — use room/list to check what is left.";
+        "Leave a room by name, or your default room if you name none. Your other \
+         rooms are unaffected.";
     type Params = RoomLeaveParams;
     type Output = RoomLeaveResult;
 
