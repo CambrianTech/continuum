@@ -264,15 +264,61 @@ fn urlencoding_encode(s: &str) -> String {
         .collect()
 }
 
+/// Ceiling on any single grader subprocess. Nothing legitimate here — a git
+/// mirror fetch, a uv venv build, one instance's full pytest files — takes
+/// this long; the class this kills is INFINITE (task #381: sympy
+/// symbolic-computation hangs orphaned to launchd at 100% CPU for ELEVEN
+/// HOURS, detected by the operator's cooling fan, not by any instrument).
+const SUBPROCESS_CEILING: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 async fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    cmd.output()
-        .await
-        .map_err(|e| format!("could not run `{program}`: {e}"))
+    // #381: the child leads its own PROCESS GROUP so a kill reaches the whole
+    // tree — pytest spawns grandchildren (sympy's own runner, plugins) that
+    // survive a parent-only kill and orphan to launchd. kill_on_drop covers
+    // the drop path (a core reboot cancels this future mid-await); the
+    // explicit killpg below covers the grandchildren the drop-kill misses.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
+    cmd.kill_on_drop(true);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("could not run `{program}`: {e}"))?;
+    let child_pid = child.id();
+    match tokio::time::timeout(SUBPROCESS_CEILING, child.wait_with_output()).await {
+        Ok(out) => out.map_err(|e| format!("could not run `{program}`: {e}")),
+        Err(_elapsed) => {
+            // The timed-out future was just dropped, killing the DIRECT child;
+            // now kill its group (pgid == child pid, it was made group leader
+            // at spawn) so grandchildren die with it. Windows has no process
+            // groups in this shape — kill_on_drop alone is the story there.
+            #[cfg(unix)]
+            if let Some(pid) = child_pid {
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGKILL);
+                }
+            }
+            crate::probe!(
+                class = "benchmark.subprocess.ceiling",
+                program = %program,
+                ceiling_s = SUBPROCESS_CEILING.as_secs(),
+                "grader subprocess exceeded the ceiling — whole process group killed \
+                 (a hung test run is an environment fault, never a verdict)"
+            );
+            Err(format!(
+                "`{program}` exceeded the {}s subprocess ceiling and was killed \
+                 (whole process group) — a hung run is an environment fault, \
+                 never a verdict (task #381)",
+                SUBPROCESS_CEILING.as_secs()
+            ))
+        }
+    }
 }
 
 /// Clone the repo at `base_commit`. The commit is the whole point — a clone left at HEAD is
