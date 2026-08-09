@@ -563,7 +563,11 @@ pub async fn apply_act(
     // Pass the FULL observation — WorkingMemory keeps the latest whole (so the mind can
     // work with what it just fetched) and derives the trail head itself. This is the fix
     // for live agents being starved to the head of their own tool results.
-    body.working_memory.record_receipt(&observation);
+    // TYPED: store the receipt string (byte-identical to the old `record_receipt`)
+    // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
+    // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
+    // one-time recency rendering; `acts` are the id-correlated typed observations.
+    body.working_memory.record_receipt_typed(&acts, &observation);
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }

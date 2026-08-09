@@ -87,6 +87,7 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 // and `WM_ACTION_FULL_MAX_CHARS = 12_000` are exactly 1/64 and 1/4 of a 16k-token lane, so
 // behavior on a small machine is unchanged while a big window finally gets a big budget).
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::act_observe::Observation;
 use crate::cognition::context_budget::ContextBudget;
 
 /// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
@@ -276,10 +277,21 @@ pub struct VolatileSnapshot {
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
 /// once at record time so `recent()` stays byte-stable and cheap).
+///
+/// `acts` carries the TYPED [`Observation`](crate::cognition::act_observe::Observation)s
+/// this entry was recorded FROM (empty for Thought/Fact/Settlement and for a
+/// receipt recorded via the legacy string path). The `text` STAYS the source of
+/// truth for `recent()` byte-stability (#205 — rendered once at record time,
+/// never re-derived from `acts` at read); `acts` is the parallel typed channel a
+/// consumer reads instead of re-parsing `text` (run-18057-f1). `#[serde(default)]`
+/// so an OLD `volatile.json` written before this field restores without panic —
+/// same back-compat contract as `saved_at_ms`/`build_sha`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WmEntry {
     pub kind: WmKind,
     pub text: String,
+    #[serde(default)]
+    pub acts: Vec<Observation>,
 }
 
 impl WorkingMemory {
@@ -369,7 +381,7 @@ impl WorkingMemory {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string() });
+        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string(), acts: Vec::new() });
         while e.len() > self.capacity {
             e.pop_front();
         }
@@ -384,6 +396,26 @@ impl WorkingMemory {
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
     pub fn record_receipt(&self, result: &str) {
+        self.record_receipt_inner(result, Vec::new());
+    }
+
+    /// TYPED sibling of [`record_receipt`](Self::record_receipt): store the same
+    /// byte-identical rendered receipt AND the typed [`Observation`]s the batch
+    /// produced, so a consumer reads `recent_acts()`/`active_act()` instead of
+    /// re-parsing the `[action #n]` prose (run-18057-f1). `rendered` is the recency
+    /// string produced ONCE at the act seam (`render_recency`) — this method does NOT
+    /// re-render from `acts` (that would break the #205 KV byte-stability invariant:
+    /// `text` is the stable source of truth, `acts` the parallel typed channel).
+    pub fn record_receipt_typed(&self, acts: &[Observation], rendered: &str) {
+        self.record_receipt_inner(rendered, acts.to_vec());
+    }
+
+    /// Shared body: mint the monotonic `#seq`, keep the FULL latest result, and push
+    /// ONE `[action #seq]`-stamped receipt entry carrying the pre-rendered head text
+    /// plus the (possibly empty) typed acts. One entry per batch so `recent()` stays
+    /// byte-stable (a multi-call batch renders as one receipt exactly as before);
+    /// `acts` carries every call's typed observation for the typed consumers.
+    fn record_receipt_inner(&self, result: &str, acts: Vec<Observation>) {
         let a = result.trim();
         if a.is_empty() {
             return;
@@ -402,10 +434,38 @@ impl WorkingMemory {
         e.push_back(WmEntry {
             kind: WmKind::Receipt { n: seq },
             text: format!("[action #{seq}] {head}"),
+            acts,
         });
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// The TYPED acts still in the recency window, oldest → newest — the parallel
+    /// channel to [`recent`](Self::recent)'s rendered strings. A consumer that used
+    /// to grep the receipt prose for a verb / a path (`mutated_workspace`,
+    /// `claimed_file_without_act`) reads these instead. Only receipts recorded via
+    /// [`record_receipt_typed`](Self::record_receipt_typed) carry acts; legacy
+    /// string receipts and non-receipt entries contribute none.
+    pub fn recent_acts(&self) -> Vec<Observation> {
+        self.entries
+            .lock()
+            .iter()
+            .flat_map(|e| e.acts.iter().cloned())
+            .collect()
+    }
+
+    /// The just-executed act whose result re-enters the next prompt — the newest
+    /// typed [`Observation`] in the recency window (last act of the most recent
+    /// receipt that carries one). This is what the message builder threads back as
+    /// the assistant-tool-use ↔ tool-result pair (the run-18057-f1 fix), read by the
+    /// TYPED field rather than re-parsed from `[action #n]` prose.
+    pub fn active_act(&self) -> Option<Observation> {
+        self.entries
+            .lock()
+            .iter()
+            .rev()
+            .find_map(|e| e.acts.last().cloned())
     }
 
     /// Record a PERCEPTION FACT ([unfulfilled]/[unverified]/[confabulation]/
@@ -422,6 +482,7 @@ impl WorkingMemory {
         e.push_back(WmEntry {
             kind: WmKind::Fact,
             text: f.to_string(),
+            acts: Vec::new(),
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -686,6 +747,7 @@ impl WorkingMemory {
             } else {
                 format!("{WM_SETTLEMENT_PREFIX} {a}")
             },
+            acts: Vec::new(),
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -1163,6 +1225,90 @@ mod tests {
         assert_eq!(q.len(), 1);
         assert!(q[0].contains("nothing was in flight"), "{q:?}");
         assert!(!q[0].contains("ago"), "no fabricated gap on legacy snapshots: {q:?}");
+    }
+
+    // what this catches (Step 3, run-18057-f1): a receipt recorded via
+    // `record_receipt_typed` carries the TYPED acts so `active_act()` reads the tool
+    // result by FIELD (call.id-correlated to result.tool_use_id) instead of re-parsing
+    // the `[action #n]` prose — AND the rendered `text` stays byte-identical to the
+    // legacy `record_receipt` path (the #205 KV-stability invariant). `recent_acts()`
+    // exposes every act in the window for the typed predicates (Step 4).
+    #[test]
+    fn typed_receipt_threads_the_act_by_field_and_keeps_text_byte_stable() {
+        use crate::ai::types::{ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+
+        let obs = Observation {
+            call: ToolCall {
+                id: "call-42".into(),
+                name: "code/search".into(),
+                input: serde_json::json!({ "query": "needle" }),
+            },
+            output: ToolOutput {
+                result: ToolResult {
+                    tool_use_id: "call-42".into(),
+                    content: "match at foo.rs:42".into(),
+                    is_error: None,
+                },
+                verb: ToolVerb::Search,
+                paths: Vec::new(),
+            },
+            status: ActStatus::Executed,
+        };
+        let rendered = "code/search({\"query\":\"needle\"})\nResult:\nmatch at foo.rs:42\n\n";
+
+        let typed = WorkingMemory::new(8);
+        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered);
+        let legacy = WorkingMemory::new(8);
+        legacy.record_receipt(rendered);
+        assert_eq!(
+            typed.recent(),
+            legacy.recent(),
+            "the rendered receipt text is byte-identical to the legacy string path (#205)"
+        );
+
+        let active = typed.active_act().expect("the typed act threads through the receipt");
+        assert_eq!(
+            active.call.id, active.output.result.tool_use_id,
+            "correlated by id, not positional index"
+        );
+        assert!(
+            active.output.result.content.contains("match at foo.rs:42"),
+            "the tool RESULT re-enters by the TYPED field, not a re-parsed [action #n] head"
+        );
+        assert_eq!(typed.recent_acts().len(), 1, "the batch's act is in the window");
+        assert!(
+            legacy.active_act().is_none(),
+            "a legacy string receipt carries no typed act — the two channels are distinct"
+        );
+    }
+
+    // what this catches (Step 3 back-compat): an OLD volatile.json — written before
+    // the WmEntry.acts field existed — restores WITHOUT panic, the `acts` defaulting
+    // to empty via `#[serde(default)]` (the same contract as saved_at_ms/build_sha).
+    // A grid-sync peer or a pre-deploy snapshot must never wedge the mind on restore.
+    #[test]
+    fn an_old_snapshot_without_acts_restores_without_panic() {
+        // A hand-authored legacy snapshot: entries have NO `acts` key at all.
+        let legacy_json = r#"{
+            "entries": [
+                { "kind": "Thought", "text": "thinking about the tokenizer" },
+                { "kind": { "Receipt": { "n": 1 } }, "text": "[action #1] code/list → ok" }
+            ],
+            "last_action": [1, "code/list → ok"],
+            "action_fps": ["code/list|{}"],
+            "next_action_seq": 2
+        }"#;
+        let snap: VolatileSnapshot =
+            serde_json::from_str(legacy_json).expect("legacy snapshot deserializes");
+        let fresh = WorkingMemory::new(8);
+        fresh.restore(snap);
+        assert_eq!(fresh.recent().len(), 2, "both legacy entries restored");
+        assert!(
+            fresh.recent_acts().is_empty(),
+            "a legacy receipt has no typed acts — defaulted empty, never a panic"
+        );
+        assert!(fresh.has_receipt(), "the receipt kind still survives the trip");
     }
 
     #[test]
