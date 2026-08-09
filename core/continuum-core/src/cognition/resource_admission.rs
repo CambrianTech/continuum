@@ -106,11 +106,15 @@ pub fn inflight_model_calls() -> usize {
 }
 
 /// True when every shared decode slot is busy, so one more call would QUEUE behind
-/// the fleet. Threshold is the serving concurrency (`serving_plan::MAX_LANES`) — the
-/// same constant the planner sizes lanes by, NOT a new magic number. A self-tick
-/// yields on this; message/directed turns are never gated on it (a human/peer waits).
+/// the fleet. Threshold is the LIVE served lane count (`LANES.lane_count()` — the real
+/// `--parallel` slots serving reports, `set_served_lane_count`), falling back to the
+/// `MAX_LANES` backstop only before the first plan lands. This must track the live count,
+/// not the `MAX_LANES` ceiling: once the ceiling can exceed the served count (#266 raised it
+/// 2 → 8), keying saturation off the ceiling would let a 2-slot host admit 8 in-flight and
+/// queue 6 at the backend before a self-tick ever yields. A self-tick yields on this;
+/// message/directed turns are never gated on it (a human/peer waits).
 pub fn shared_model_saturated() -> bool {
-    INFLIGHT_MODEL_CALLS.saturated(crate::cognition::serving_plan::MAX_LANES as usize)
+    INFLIGHT_MODEL_CALLS.saturated(LANES.lane_count())
 }
 
 // ── Ambient-turn admission permit (#171) ───────────────────────────────────────
