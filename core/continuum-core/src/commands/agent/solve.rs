@@ -94,6 +94,16 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub capture_dir: Option<String>,
+    /// HARNESS-INTERNAL (set by the attempts loop, never by callers): sha256 of
+    /// the previous FAILED attempt's patch. When this attempt settles with a
+    /// byte-identical diff, ONE bounded re-drive fires with the hash-proven
+    /// fact — catching the resubmission BEFORE a redundant grade burns the
+    /// attempt (round E receipts: BOTH citizens copied their failed patch on
+    /// attempt 3, and post-grade detection could only warn an attempt 4 that
+    /// never exists).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub prev_failed_patch_sha: Option<String>,
     /// DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
     /// durable episodic/semantic recall is suppressed for this run — the same probe
     /// `cognition/eval` exposes ([[eval-measures-the-true-full-being-not-a-stripped-copy]]).
@@ -327,6 +337,7 @@ impl ActionCommand for AgentSolve {
                 for attempt in 1..=max_attempts {
                     let mut this_attempt = inner.clone();
                     this_attempt.task = next_task.clone();
+                    this_attempt.prev_failed_patch_sha = prev_patch_sha.clone();
                     crate::probe!(
                         class = "benchmark.attempt.start",
                         run_id = %run_id,
@@ -975,55 +986,57 @@ impl AgentSolve {
                  description, find the faulty code, and change it in place with \
                  code/edit."
             );
-            let redelivery = crate::persona::rag_budget::RagDelivery {
-                source_id: "airc".to_string(),
-                items: vec![crate::persona::rag_budget::RagItem {
-                    content: fact,
-                    tokens: 0,
-                    metadata: serde_json::json!({
-                        "peer_id": "peer",
-                        "occurred_at_ms": crate::persona::trace::now_ms(),
-                    }),
-                }],
-                tokens_used: 0,
-                continuation: None,
-                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            (patch, files_changed) =
+                redrive_with_fact(&cycle, room, framing, remaining, fact, &mut settled, &workspace)
+                    .await;
+        }
+
+        // IDENTICAL-DIFF RE-DRIVE — the empty-diff block's sibling (round E
+        // sha receipts, 2026-08-08: BOTH citizens settled attempt 3 with a
+        // patch byte-identical to the attempt-2 patch that had just failed —
+        // Atlas c4dbfba9…×2, Benchy 531a03d2…×2 — and the post-grade detector
+        // could only address an attempt 4 that never exists). Same patch ⇒
+        // same verdict, deterministically: settling on it re-buys a failure.
+        // ONE bounded re-drive with the hash-proven fact, at the only moment
+        // it can still change the attempt's outcome. If she settles identical
+        // AGAIN, that grades honestly — fact on the record, never a nag loop.
+        if workspace_deliverable
+            && !patch.is_empty()
+            && settled.inference_error.is_none()
+            && settled.spoken.is_some()
+            && settled.acts + 1 < max_acts
+        {
+            let sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(patch.as_bytes()))
             };
-            let reburst = crate::cognition::workspace::Burst::from_turns(
-                room,
-                crate::persona::service_loop::build_workspace_turns(
-                    std::slice::from_ref(&redelivery),
-                    "",
-                    "",
-                    None,
-                ),
-            );
-            let redriven = crate::cognition::act_observe::drive_to_settle(
-                &cycle, reburst, room, remaining, framing,
-            )
-            .await;
-            // Fold the re-drive into the attempt's outcome: totals sum, the final
-            // verdict/world-state are the re-drive's (it is the attempt's true end),
-            // the spoken text falls back to the first settle's if the re-drive
-            // ended un-spoken (budget-exhausted Act grades as did-not-finish).
-            settled.acts += redriven.acts;
-            settled.decision = redriven.decision;
-            settled.spoken = redriven.spoken.or(settled.spoken.take());
-            settled.world_state = redriven.world_state;
-            settled.inference_error = redriven.inference_error;
-            for path in redriven.touched_paths {
-                if !settled.touched_paths.contains(&path) {
-                    settled.touched_paths.push(path);
-                }
+            if p.prev_failed_patch_sha.as_deref() == Some(sha.as_str()) {
+                let remaining = max_acts - settled.acts;
+                crate::probe!(
+                    class = "benchmark.identical_diff_redrive",
+                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    patch_sha256 = %sha,
+                    acts_remaining = remaining,
+                    "settle produced a patch BYTE-IDENTICAL to the previous failed \
+                     attempt's — one bounded re-drive with the hash-proven fact, \
+                     before a redundant grade burns the attempt"
+                );
+                let fact = format!(
+                    "Status check from the grading harness (a structural fact, not a \
+                     person): your workspace diff right now is BYTE-IDENTICAL to the \
+                     patch that was already graded and FAILED on the previous attempt \
+                     (verified by hash). Submitting it again will produce the exact \
+                     same failure. You have {remaining} actions left. First run \
+                     `git diff HEAD` with code/shell to SEE your current patch. Then \
+                     either fix the specific part the failing tests named, or revert \
+                     it (`git checkout -- <file>`) and take a genuinely different \
+                     approach. Do not settle until the diff has changed."
+                );
+                (patch, files_changed) = redrive_with_fact(
+                    &cycle, room, framing, remaining, fact, &mut settled, &workspace,
+                )
+                .await;
             }
-            settled.metrics.input_tokens += redriven.metrics.input_tokens;
-            settled.metrics.output_tokens += redriven.metrics.output_tokens;
-            settled.metrics.latency_ms += redriven.metrics.latency_ms;
-            settled.metrics.cached_tokens += redriven.metrics.cached_tokens;
-            settled.metrics.prefill_tokens += redriven.metrics.prefill_tokens;
-            settled.metrics.prefill_ms += redriven.metrics.prefill_ms;
-            settled.metrics.decode_ms += redriven.metrics.decode_ms;
-            (patch, files_changed) = workspace_patch(&workspace).await;
         }
 
         // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
@@ -1191,6 +1204,69 @@ const PATCH_EXCLUDES: &[&str] = &[
 /// is source-only. `git add -N` stages new files as intent-to-add so `git diff` includes them
 /// without committing content; the same excludes keep junk from being intent-added in the first
 /// place. Non-repo or git-less environments return empty (honest — no hands artifact).
+/// ONE bounded re-drive with a structural fact injected as the next burst —
+/// the shared plumbing of the empty-diff and identical-diff re-drives (the
+/// two blocks differ only in trigger and fact text; a second inline copy
+/// would drift on the fold rules). Folds the re-drive into the attempt's
+/// outcome — totals sum, the final verdict/world-state are the re-drive's
+/// (it is the attempt's true end), the spoken text falls back to the first
+/// settle's if the re-drive ended un-spoken — and returns the workspace's
+/// post-re-drive (patch, files_changed).
+async fn redrive_with_fact(
+    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    room: Uuid,
+    framing: crate::cognition::workspace::TurnFraming,
+    remaining: usize,
+    fact: String,
+    settled: &mut crate::cognition::act_observe::SettleOutcome,
+    workspace: &str,
+) -> (String, Vec<String>) {
+    let redelivery = crate::persona::rag_budget::RagDelivery {
+        source_id: "airc".to_string(),
+        items: vec![crate::persona::rag_budget::RagItem {
+            content: fact,
+            tokens: 0,
+            metadata: serde_json::json!({
+                "peer_id": "peer",
+                "occurred_at_ms": crate::persona::trace::now_ms(),
+            }),
+        }],
+        tokens_used: 0,
+        continuation: None,
+        resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+    };
+    let reburst = crate::cognition::workspace::Burst::from_turns(
+        room,
+        crate::persona::service_loop::build_workspace_turns(
+            std::slice::from_ref(&redelivery),
+            "",
+            "",
+            None,
+        ),
+    );
+    let redriven =
+        crate::cognition::act_observe::drive_to_settle(cycle, reburst, room, remaining, framing)
+            .await;
+    settled.acts += redriven.acts;
+    settled.decision = redriven.decision;
+    settled.spoken = redriven.spoken.or(settled.spoken.take());
+    settled.world_state = redriven.world_state;
+    settled.inference_error = redriven.inference_error;
+    for path in redriven.touched_paths {
+        if !settled.touched_paths.contains(&path) {
+            settled.touched_paths.push(path);
+        }
+    }
+    settled.metrics.input_tokens += redriven.metrics.input_tokens;
+    settled.metrics.output_tokens += redriven.metrics.output_tokens;
+    settled.metrics.latency_ms += redriven.metrics.latency_ms;
+    settled.metrics.cached_tokens += redriven.metrics.cached_tokens;
+    settled.metrics.prefill_tokens += redriven.metrics.prefill_tokens;
+    settled.metrics.prefill_ms += redriven.metrics.prefill_ms;
+    settled.metrics.decode_ms += redriven.metrics.decode_ms;
+    workspace_patch(workspace).await
+}
+
 async fn workspace_patch(workspace: &str) -> (String, Vec<String>) {
     let git = |args: &[&str]| {
         let mut c = tokio::process::Command::new("git");

@@ -402,6 +402,7 @@ async fn dispatch_staged_swe_solve(
         max_acts: None,
         path_prepend: None,
         suppress_recall: None,
+                prev_failed_patch_sha: None,
         // The SWE claim adapter's N (Joel, 2026-08-08): a failed grade re-enters the
         // same workspace with the named failing tests — learning to investigate your
         // own failure is part of the exam. Three chances: first attempt, one informed
