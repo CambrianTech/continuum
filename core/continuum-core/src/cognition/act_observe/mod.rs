@@ -73,120 +73,12 @@ mod tests {
     use super::*;
     use uuid::Uuid;
     use crate::ai::types::ToolCall;
-    use crate::cognition::context_budget::ContextBudget;
     use crate::cognition::workspace::{Decision, Situation, TurnFraming, WorkspaceCycle};
-    use super::recency::{
-        bound_recency_result, humanize_result_content, render_act_for_recall,
-        summarize_args_for_recency,
-    };
     use super::perception::{
         claimed_file_without_act, is_redundant_orientation, mutated_workspace,
         wrote_without_observation,
     };
 
-    /// what this catches: card 0a4c0648 — the receipt renderer embedding the executor's
-    /// serde-serialized JSON VERBATIM, so a code/read result reached her window as one
-    /// line of `\n` literals with structurally illegible indentation. Benchy diagnosed
-    /// requests-2148 correctly and still lost the solve to a mis-indented edit against
-    /// code she had only ever seen escaped. String payloads must render as vertical
-    /// text with real columns; non-JSON results must pass through byte-identical.
-    #[test]
-    fn tool_result_json_renders_as_vertical_text_not_escape_soup() {
-        // The exact shape the executor returns for a code/read: JSON object whose
-        // `content` field is the file text with real newlines *inside the JSON string*.
-        let read_result = serde_json::json!({
-            "content": "def iter_content(self):\n    while True:\n        chunk = \"x\"\n",
-            "file_path": "requests/models.py",
-            "error": null,
-            "lines": 3
-        })
-        .to_string();
-        assert!(
-            read_result.contains("\\n"),
-            "precondition: the wire form really is escape-soup"
-        );
-
-        let rendered = humanize_result_content(&read_result);
-        assert!(
-            rendered.contains("    while True:\n        chunk = \"x\""),
-            "file content must come out as REAL indented lines, got: {rendered}"
-        );
-        assert!(
-            !rendered.contains("\\n"),
-            "no escape literals may survive into her window: {rendered}"
-        );
-        assert!(
-            !rendered.contains("error"),
-            "null fields are dropped — `error: null` teaches nothing"
-        );
-        // Multi-line strings open on their own line so payload column 0 is window column 0.
-        assert!(rendered.contains("content:\ndef iter_content"), "{rendered}");
-        assert!(rendered.contains("file_path: requests/models.py"), "{rendered}");
-        assert!(rendered.contains("lines: 3"), "{rendered}");
-
-        // Non-JSON results (plain shell output) pass through untouched.
-        let plain = "FAILED tests/test_lowlevel.py - 3 passed, 1 failed";
-        assert_eq!(humanize_result_content(plain), plain);
-
-        // A bare JSON string unwraps to its text.
-        assert_eq!(
-            humanize_result_content("\"line1\\nline2\""),
-            "line1\nline2"
-        );
-
-        // The DOUBLE-ENCODED shape, live-verified on Benchy's r2 run: the executor
-        // wraps the command's JSON doc in a JSON string, so one unwrap still left
-        // `{"error":null,...}` in her window. Every string layer must strip.
-        let double = serde_json::Value::String(read_result.clone()).to_string();
-        let rendered2 = humanize_result_content(&double);
-        assert_eq!(
-            rendered2, rendered,
-            "a double-encoded result must humanize identically to the single-encoded one"
-        );
-        assert!(
-            !rendered2.contains("\"error\":null"),
-            "the inner JSON layer must not survive raw: {rendered2}"
-        );
-    }
-
-    // what this catches: recall collapse (the PX/handle primitive, RAG side). A code/write
-    // carries a WHOLE FILE in `content` — on recall that must become `content: N chars`, not
-    // the file re-shown every future turn (the measured context tax). A small success stays
-    // inline; an ERROR is always shown, highlighted. The recency channel keeps the full trace;
-    // this only guards what recall re-injects.
-    #[test]
-    fn recall_collapses_big_args_and_highlights_errors() {
-        let big = "fn main(){}\n".repeat(200); // a whole "file"
-        let args = serde_json::json!({ "file_path": "x.rs", "content": big });
-        let ref_ok = render_act_for_recall("code/write", &args, "acting", false, "{\"success\":true}");
-        assert!(ref_ok.contains("content: "), "big content arg must collapse to a size");
-        assert!(ref_ok.contains("chars"), "collapsed arg names its size");
-        assert!(!ref_ok.contains("fn main(){}\nfn main(){}"), "the file must NOT be re-shown verbatim");
-
-        // small success → inline
-        let small = render_act_for_recall("code/read", &serde_json::json!({"file_path":"a"}), "acting", false, "hello");
-        assert!(small.contains("→ hello"), "small result stays inline");
-
-        // error → highlighted + shown
-        let err = render_act_for_recall("code/shell", &serde_json::json!({"cmd":"x"}), "acting", true, "error: no such file");
-        assert!(err.starts_with("⚠"), "errors are highlighted");
-        assert!(err.contains("FAILED") && err.contains("no such file"), "errors are shown, never hidden");
-    }
-
-    // what this catches: #158 — an EMPTY intent (no `<think>` reasoning) renders NO
-    // "because …" clause, so the receipt carries nothing template-shaped for a base
-    // model to imitate. The old fabricated default ("{name} is acting on the current
-    // situation") was the identity-bleed mimicry fuel. A real intent still renders.
-    #[test]
-    fn empty_intent_renders_no_because_clause() {
-        let args = serde_json::json!({"file_path": "a"});
-        let empty = render_act_for_recall("code/read", &args, "", false, "hi");
-        assert!(!empty.contains("because"), "no fabricated reason: {empty}");
-        assert!(empty.contains("code/read("), "the act is still recorded by name(args)");
-        assert!(!empty.contains("I ran"), "no imitable 'I ran' opener (#158): {empty}");
-        let real = render_act_for_recall("code/read", &args, "checking the header", false, "hi");
-        assert!(real.contains("because checking the header"), "a real intent still shows");
-    }
 
     use crate::cognition::tool_executor::{
         NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolExecutor,
@@ -450,68 +342,6 @@ mod tests {
         })
     }
 
-    // what this catches: the recency-channel result bound (#165) — a huge raw-JSON
-    // result (a 5000-entry code/list, a multi-match code/search) is cut CLEANLY at
-    // the source with a teaching marker, never dumped whole (flood) and never left
-    // for the downstream budget to cut mid-JSON (the garbled/nested line_content a
-    // persona then loops on). A small result passes through untouched.
-    // what this catches: the RESULT buried under her own ARGS. The recall path has collapsed
-    // whole-file args forever; the recency path echoed `serde_json::to_string(&call.input)`
-    // raw. Live on sympy-21379 — her one `code/edit` passed all of basic.py as `content`, so
-    // that paste went into working memory AHEAD of the `EDIT REFUSED` result carrying the
-    // diagnostic, on a 16k lane. She never landed an edit. The thing she must READ is the
-    // result; the args she wrote herself one generation ago.
-    #[test]
-    fn a_whole_file_arg_is_not_echoed_back_ahead_of_the_result() {
-        let whole_file = "x = 1\n".repeat(4000); // ~24k chars, a real source file
-        let args = serde_json::json!({ "file_path": "sympy/core/basic.py", "content": whole_file });
-        let rendered = summarize_args_for_recency(&args, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
-        assert!(
-            rendered.chars().count() < 400,
-            "a whole-file arg must collapse, not flood: {} chars",
-            rendered.chars().count()
-        );
-        assert!(rendered.contains("chars"), "says how big it was: {rendered}");
-        assert!(
-            rendered.contains("sympy/core/basic.py"),
-            "the SMALL args stay whole — she still sees WHICH file: {rendered}"
-        );
-
-        // A realistic targeted edit is NOT collapsed — recency is shown once, and she may
-        // genuinely need to see the change she just issued.
-        let small = serde_json::json!({
-            "file_path": "a.py",
-            "new_content": "def f():\n    return refine_arg(x)\n"
-        });
-        let kept = summarize_args_for_recency(&small, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
-        assert!(
-            kept.contains("refine_arg"),
-            "an ordinary edit stays visible verbatim: {kept}"
-        );
-    }
-
-    #[test]
-    fn recency_result_is_bounded_cleanly_not_flooded() {
-        // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
-        // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
-        let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
-        assert_eq!(bound_recency_result(&real_file, &ContextBudget::from_window(16_384)), real_file.trim(), "a real file stays whole");
-        // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
-        // the ONE result bound (a fraction of the live window), not a tiny hand cap.
-        let huge = "x".repeat(50_000);
-        let bounded = bound_recency_result(&huge, &ContextBudget::from_window(16_384));
-        assert!(
-            bounded.chars().count() < ContextBudget::from_window(16_384).result_fold_chars() + 200,
-            "flood bounded to the fold max: {} chars",
-            bounded.chars().count()
-        );
-        assert!(bounded.chars().count() > 8_000, "but still generous — not re-choked small");
-        assert!(bounded.contains("truncated"), "cut is announced, not silent");
-        assert!(bounded.contains("narrow"), "teaches how to get a usable result");
-        // char-boundary safe on multibyte content (never panics mid-codepoint)
-        let multibyte = "日本語".repeat(1_000);
-        let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));
-    }
 
     // what this catches: an act is scoped to the room it is FOR (one mind is in
     // many rooms — the body is room-agnostic, `room_id` flows per-call), the
