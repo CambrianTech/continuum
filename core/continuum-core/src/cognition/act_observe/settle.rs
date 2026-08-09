@@ -383,9 +383,17 @@ pub async fn settle_step(
             if !may_act {
                 SettleStep::WouldAct { calls, intent }
             } else {
-                match apply_act(cycle, &calls, &intent, room_id).await {
-                    Some(_observation) => SettleStep::Acted { calls, intent },
-                    None => SettleStep::ActUnfulfilled { calls, intent },
+                // The typed outcome: `Acted` (any act ran or was short-circuited) →
+                // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
+                // identical to the old `Some`/`None`, but `ExecutorError` is now
+                // distinguishable for a future backstop.
+                if apply_act(cycle, &calls, &intent, room_id)
+                    .await
+                    .produced_an_act()
+                {
+                    SettleStep::Acted { calls, intent }
+                } else {
+                    SettleStep::ActUnfulfilled { calls, intent }
                 }
             }
         }

@@ -5,10 +5,13 @@
 
 use uuid::Uuid;
 
-use crate::ai::types::ToolCall;
+use crate::ai::types::{ToolCall, ToolResult};
 use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
+use super::observation::{
+    extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb,
+};
 use super::settle::now_ms;
 use super::perception::{all_calls_already_satisfied, is_redundant_orientation};
 use super::recency::{
@@ -31,9 +34,12 @@ const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
 /// simultaneously); the [`ActingBody`](crate::cognition::workspace::ActingBody) itself is
 /// room-agnostic.
 ///
-/// Returns `None` (abstain — never a fabricated success) when the mind has no
-/// hands or the executor errors. The admission is best-effort: an un-admitted
-/// observation still flows back via the returned text, so re-perception works
+/// Returns [`ActOutcome`] — `NoHands` when the mind has no hands, `ExecutorError`
+/// when the tool batch failed at the channel level (both formerly a bare `None`,
+/// never a fabricated success), or `Acted { acts }` carrying the TYPED
+/// [`Observation`]s (call + result correlated by `tool_use_id == call.id`, verb
+/// and paths precomputed). The admission is best-effort: an un-admitted
+/// observation still re-enters via the typed acts, so re-perception works
 /// regardless; admission is what makes it durable long-term memory.
 /// Commands that run long enough that BLOCKING the turn on them starves the mind — they
 /// are DISPATCHED in the background (fire-and-poll) and stream their result back into
@@ -47,13 +53,41 @@ fn is_long_running(command: &str) -> bool {
     )
 }
 
+/// Build one typed [`Observation`] per demoted call for a short-circuit path
+/// (already-satisfied / redundant-orientation): NO tool executed, so the OUTPUT
+/// carries the nudge as its result (the perception the mind gets back instead of
+/// a re-execution) and the STATUS names why it was demoted. `verb`/`paths` are
+/// still precomputed from the call. Non-empty ⇒ `produced_an_act()` stays true,
+/// so the settle loop treats this exactly as the old `Some(nudge)` return did.
+fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec<Observation> {
+    calls
+        .iter()
+        .map(|c| Observation {
+            call: c.clone(),
+            output: ToolOutput {
+                result: ToolResult {
+                    tool_use_id: c.id.clone(),
+                    content: nudge.to_string(),
+                    is_error: None,
+                },
+                verb: ToolVerb::classify(&c.name),
+                paths: extract_paths(&c.input),
+            },
+            status: status.clone(),
+        })
+        .collect()
+}
+
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
     intent: &str,
     room_id: Uuid,
-) -> Option<String> {
-    let body = cycle.acting()?; // no hands → cannot act (and tools were never offered)
+) -> ActOutcome {
+    // no hands → cannot act (and tools were never offered)
+    let Some(body) = cycle.acting() else {
+        return ActOutcome::NoHands;
+    };
 
     // Repeat-perception (proprioception, content-driven — NOT an agentic counter).
     // If this exact batch was ALREADY carried out this settle, its result is already
@@ -161,7 +195,12 @@ pub async fn apply_act(
             calls = calls.len(),
             "identical act already satisfied this turn — recorded already-satisfied proprioception, skipped re-execution"
         );
-        return Some(nudge);
+        // Each demoted call becomes a typed act whose OUTPUT is the nudge (the
+        // perception the mind gets back instead of a re-execution) and whose
+        // STATUS names the short-circuit. produced_an_act() stays true, so the
+        // settle loop treats this exactly as the old `Some(nudge)` did.
+        let acts = short_circuit_acts(calls, &nudge, ActStatus::AlreadySatisfied { repeat: n });
+        return ActOutcome::Acted { acts };
     }
 
     // Redundant-orientation demotion (Joel-approved "demote discovery at the seam",
@@ -197,7 +236,9 @@ pub async fn apply_act(
             calls = calls.len(),
             "orientation call with a discovery receipt already in the concern — recorded redundant-orientation proprioception, skipped re-execution"
         );
-        return Some(nudge);
+        let acts =
+            short_circuit_acts(calls, &nudge, ActStatus::RedundantOrientation { repeat: n });
+        return ActOutcome::Acted { acts };
     }
 
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
@@ -221,6 +262,10 @@ pub async fn apply_act(
     // expose it; harnesses don't → everything runs synchronously). No long-running calls —
     // the overwhelmingly common case — means `fg_calls == calls` and this is inert.
     let mut bg_notes: Vec<String> = Vec::new();
+    // The long-running calls that were dispatched (not run synchronously) — retained so a
+    // pure-background batch (no foreground calls) can still emit a typed act, keeping
+    // `produced_an_act()` true exactly as the old `Some(bg_notes)` return did.
+    let mut dispatched_calls: Vec<ToolCall> = Vec::new();
     let fg_calls: Vec<ToolCall> = match body.executor.command_executor() {
         Some(exec) => {
             let mut fg = Vec::with_capacity(calls.len());
@@ -228,6 +273,7 @@ pub async fn apply_act(
                 let cmd = call.name.replace('_', "/");
                 if is_long_running(&cmd) {
                     let handle = exec.dispatch_background(cmd.clone(), call.input.clone(), None);
+                    dispatched_calls.push(call.clone());
                     body.working_memory.record_dispatch_event(
                         handle,
                         &cmd,
@@ -269,12 +315,17 @@ pub async fn apply_act(
         Err(e) => {
             // Fail loud-ish: the hand could not run. Abstain — do NOT synthesize a
             // result the mind would then "remember" as fact ([[fallbacks-are-illegal-fail-loud]]).
+            // Typed as `ExecutorError` (was a bare `None`, indistinguishable from
+            // no-hands) so a future backstop can tell a broken hand from an absent one.
             tracing::warn!(
                 persona = %body.persona_name,
                 error = %e,
                 "act→observe: tool batch failed; abstaining (no fabricated outcome)"
             );
-            return None;
+            return ActOutcome::ExecutorError {
+                calls: calls.to_vec(),
+                message: e.to_string(),
+            };
         }
     };
 
@@ -287,6 +338,10 @@ pub async fn apply_act(
     // is the COLLAPSED reference for the EPISODIC engram that RECALL re-injects on later turns.
     let mut observation = String::new();
     let mut recall_observation = String::new();
+    // The TYPED acts this batch produced — the value that replaces the flattened String.
+    // Each carries the call (INCLUDING `.id`), the id-correlated ToolResult, the precomputed
+    // verb, and the typed paths, so no downstream consumer re-parses the receipt string.
+    let mut acts: Vec<Observation> = Vec::new();
     // Loop-awareness (experience structure): fingerprint each call (name+args) so the mind
     // perceives when it is RE-ISSUING an identical call. The result HEAD varies turn to turn,
     // so `entries`/`#seq` alone make a repeat look "new"; the fingerprint keys on the call.
@@ -342,6 +397,49 @@ pub async fn apply_act(
             is_err,
             body_text,
         ));
+        // The TYPED act. Correlate the result by `tool_use_id == call.id` (NOT the
+        // positional `.get(i)` the string render uses) — id-correlation is immune to
+        // the fg-vs-original index hazard (invariant 5). The raw ToolResult is stored;
+        // humanize/bound are rendering concerns applied by `render_recency`.
+        let typed_result = outcome
+            .results
+            .iter()
+            .find(|r| r.tool_use_id == call.id)
+            .cloned()
+            .unwrap_or_else(|| ToolResult {
+                tool_use_id: call.id.clone(),
+                content: "(no result returned)".to_string(),
+                is_error: None,
+            });
+        acts.push(Observation {
+            call: call.clone(),
+            output: ToolOutput {
+                result: typed_result,
+                verb: ToolVerb::classify(&call.name),
+                paths: extract_paths(&call.input),
+            },
+            status: ActStatus::Executed,
+        });
+    }
+    // A pure-background batch (every call was long-running → dispatched, `fg_calls`
+    // empty) still counts as an act — one typed Observation per dispatch so
+    // `produced_an_act()` stays true, matching the old `Some(bg_notes)` return.
+    if acts.is_empty() && !dispatched_calls.is_empty() {
+        for call in &dispatched_calls {
+            acts.push(Observation {
+                call: call.clone(),
+                output: ToolOutput {
+                    result: ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: "dispatched — running in background".to_string(),
+                        is_error: None,
+                    },
+                    verb: ToolVerb::classify(&call.name),
+                    paths: extract_paths(&call.input),
+                },
+                status: ActStatus::Executed,
+            });
+        }
     }
     // The background dispatches are part of what she just did — record them as
     // proprioception so the mind knows it sent them away (and won't re-dispatch or block).
@@ -496,7 +594,7 @@ pub async fn apply_act(
         "acted and observed the result"
     );
 
-    Some(observation)
+    ActOutcome::Acted { acts }
 }
 
 #[cfg(test)]
