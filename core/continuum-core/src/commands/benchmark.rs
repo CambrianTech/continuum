@@ -2180,6 +2180,7 @@ impl BenchmarkSweSolve {
                 // Recall STAYS ON — she is measured as her whole self, never a stripped copy
                 // ([[benchmark-must-never-score-persona-against-a-soul-stripped-copy]]).
                 suppress_recall: None,
+                prev_failed_patch_sha: None,
                 // SWE grades the DIFF: `grade_instance` below applies her patch to a fresh
                 // clone and runs FAIL_TO_PASS. Nothing she says is ever read. Declaring that
                 // contract is what stops a zero-change explanation from ending the run with
