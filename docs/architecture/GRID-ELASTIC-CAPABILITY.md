@@ -175,6 +175,54 @@ breached is not a floor.
 policy object is wrong — it means we wrote a grower and bolted on a shrinker.
 One arbiter, run in both directions, with different time constants and a floor.
 
+## 3b. Every node has BOTH ends — solo is a grid of one
+
+Joel's keystone framing, and it is a hard implementation constraint, not a
+sentiment: **there is no grid-mode and no solo-mode.** Every node runs both ends
+of the same policy, always:
+
+- the **local end** — fit to my own capacity. This is the end that never blocks,
+  including in total partition. A node alone on a plane is fully functional.
+- the **grid end** — consume peers' spare, contribute my own.
+
+**Therefore: no branch.** Not `if grid_available { grid_path } else { local_path }`.
+One code path in which a solo node is simply a grid whose peer list is empty.
+
+This falls out of the `max` formulation for free — `max` over `{local}` is
+`local`, which is exactly today's behavior — but it must be treated as a
+*requirement* rather than a happy accident, because the tempting optimization
+("skip the projection when there are no peers") reintroduces the branch and with
+it two code paths that drift.
+
+The two ends map onto code that already exists, which is a good sign the framing
+is right:
+
+| End | Mechanism | State |
+|---|---|---|
+| **contribute** | `GridCapacityModule` publishes this node's `CapacityOffer` each tick | **already built and live** |
+| **consume** | `grid_budget(grid)` reads the ledger snapshot | this slice |
+
+So we are not building "grid support". Half of it has been running the whole
+time; this adds the other half of a loop that was already turning.
+
+### Integration tests are the acceptance criteria
+
+Per Joel, literal tests — not a demo:
+
+1. **Solo, no grid.** No peers ever. Behavior must be byte-identical to today's
+   local-only planning. This is the regression guard on the no-branch rule.
+2. **Total partition mid-flight.** Peers exist, then all vanish. The node keeps
+   serving at its local capacity; the drop is `Graceful`, damped, and legible.
+3. **Node added.** A capable peer joins; budget rises at the next tick and the
+   plan may select a better model or deeper window.
+4. **Node dropped.** The peer goes silent; ledger eviction lowers the budget and
+   the surrender is LIFO (§3a), damped (§3a rule 2), and logged (§3a rule 3).
+5. **Flap.** A peer joins/leaves repeatedly. The fleet must NOT oscillate — this
+   is the test that the downshift debounce is actually load-bearing.
+
+Test 1 and test 5 are the ones that fail if we get this wrong: 1 catches the
+accidental branch, 5 catches missing hysteresis.
+
 ## 4. Where this sits in the λ framing
 
 Per Joel: the lease/mode arbiter is the wireless-MAC "price the seams" mechanism —
