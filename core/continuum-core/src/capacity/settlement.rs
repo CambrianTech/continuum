@@ -185,6 +185,39 @@ impl Reputation {
     pub fn verification_rate(&self) -> Option<f64> {
         (self.settled > 0).then(|| self.honored as f64 / self.settled as f64)
     }
+
+    /// **The number a market should price on.** A confidence-discounted rate:
+    /// evidence earns trust, and absence of evidence earns a little.
+    ///
+    /// `(honored + PRIOR_GOOD) / (settled + PRIOR_GOOD + PRIOR_BAD)` — a Beta
+    /// prior, i.e. pseudo-counts representing skepticism toward the unproven.
+    ///
+    /// Why not `verification_rate()` directly: a market that prices on the raw
+    /// rate has to answer "what about no data?", and BOTH obvious answers are
+    /// wrong. Pricing unknown as **perfect** is the sybil hole — measured on the
+    /// grid market sim at 100/100 jobs absorbed with the honest node fully
+    /// starved, because minting an identity is cheap and each fresh one wins at
+    /// the best price. Pricing unknown as **worst** excludes every newcomer, and
+    /// a market nobody can enter is not a market either.
+    ///
+    /// The prior dissolves the question. With the constants below an unproven
+    /// seller starts at 0.2 — well beneath a proven performer (→ 1.0), well above
+    /// a demonstrated failure (→ 0.0). It wins *occasionally*, when proven nodes
+    /// are expensive or busy, which is exactly the capped probe budget bounded
+    /// exploration wants: **a newcomer buys standing with delivered work, and
+    /// minting N identities buys N small chances rather than N free wins.**
+    ///
+    /// Monotone in evidence, which is what makes it safe to price on: honoring
+    /// raises it, failing lowers it, and no amount of churn resets an identity to
+    /// better than 0.2.
+    pub fn trust_lower_bound(&self) -> f64 {
+        /// Optimism granted to the unproven — the size of the probe budget.
+        const PRIOR_GOOD: f64 = 1.0;
+        /// Skepticism toward the unproven. The ratio sets the newcomer's start.
+        const PRIOR_BAD: f64 = 4.0;
+
+        (self.honored as f64 + PRIOR_GOOD) / (self.settled as f64 + PRIOR_GOOD + PRIOR_BAD)
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +353,107 @@ mod tests {
             "our own overquote is judged exactly like a peer's"
         );
         assert_eq!(s.seller, BudgetSource::Local);
+    }
+
+    /// what this catches: THE SYBIL HOLE, measured. A fresh identity must NOT be
+    /// priced at or near a proven performer. On the grid market sim, pricing
+    /// unknown as 1.0 let churned shells absorb 100/100 jobs and starve the
+    /// honest incumbent completely — minting is cheap, and each new identity won
+    /// at the best price.
+    #[test]
+    fn an_unproven_seller_is_priced_well_below_a_proven_one() {
+        let fresh = Reputation::default();
+        let mut proven = Reputation::default();
+        for _ in 0..20 {
+            proven.record(&Settlement {
+                seller: BudgetSource::Local,
+                verdict: Verdict::Honored,
+            });
+        }
+        assert!(
+            fresh.trust_lower_bound() < proven.trust_lower_bound() * 0.5,
+            "unproven {} must be far below proven {}",
+            fresh.trust_lower_bound(),
+            proven.trust_lower_bound()
+        );
+    }
+
+    /// what this catches: the opposite failure — pricing unknown as WORST, which
+    /// bars every newcomer. A market nobody can enter is not a market. The
+    /// newcomer needs a real, bounded chance.
+    #[test]
+    fn but_an_unproven_seller_is_still_admissible_not_excluded() {
+        let fresh = Reputation::default();
+        let mut failed = Reputation::default();
+        for _ in 0..20 {
+            failed.record(&Settlement {
+                seller: BudgetSource::Local,
+                verdict: Verdict::Failed,
+            });
+        }
+        assert!(fresh.trust_lower_bound() > 0.0, "a newcomer is not excluded");
+        assert!(
+            fresh.trust_lower_bound() > failed.trust_lower_bound() * 2.0,
+            "unproven {} must beat demonstrated failure {}",
+            fresh.trust_lower_bound(),
+            failed.trust_lower_bound()
+        );
+    }
+
+    /// what this catches: churn resetting the clock. The whole sybil attack is
+    /// "mint a new identity, get a fresh best price". N fresh identities must be
+    /// worth N *small* chances, never N free wins — so a fresh identity can never
+    /// outrank a node that has actually delivered.
+    #[test]
+    fn minting_identities_never_beats_having_delivered() {
+        let mut modest = Reputation::default();
+        // Deliberately imperfect: 3 of 4 honored. Even a MEDIOCRE proven node
+        // must outrank an infinitely-churnable fresh one.
+        for v in [
+            Verdict::Honored,
+            Verdict::Honored,
+            Verdict::Failed,
+            Verdict::Honored,
+        ] {
+            modest.record(&Settlement {
+                seller: BudgetSource::Local,
+                verdict: v,
+            });
+        }
+        let fresh = Reputation::default();
+        assert!(
+            modest.trust_lower_bound() > fresh.trust_lower_bound(),
+            "a 3-of-4 record ({}) must beat a fresh shell ({}), or churn wins",
+            modest.trust_lower_bound(),
+            fresh.trust_lower_bound()
+        );
+    }
+
+    /// what this catches: a non-monotone trust curve, which would make pricing
+    /// exploitable. Honoring must raise standing and failing must lower it, with
+    /// no local dips a strategic actor could sit in.
+    #[test]
+    fn trust_moves_monotonically_with_evidence() {
+        let mut r = Reputation::default();
+        let mut last = r.trust_lower_bound();
+        for _ in 0..10 {
+            r.record(&Settlement {
+                seller: BudgetSource::Local,
+                verdict: Verdict::Honored,
+            });
+            let now = r.trust_lower_bound();
+            assert!(now > last, "honoring must always raise trust");
+            last = now;
+        }
+        for _ in 0..10 {
+            r.record(&Settlement {
+                seller: BudgetSource::Local,
+                verdict: Verdict::Failed,
+            });
+            let now = r.trust_lower_bound();
+            assert!(now < last, "failing must always lower trust");
+            last = now;
+        }
     }
 
     /// what this catches: a shortfall silently rounded to success. Landing but
