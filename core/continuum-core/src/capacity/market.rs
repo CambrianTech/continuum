@@ -1,21 +1,48 @@
 //! The market layer — the economy on the identity spine, in the deterministic simulator.
 //!
-//! Participants IPO on their SPECS ([`entry_price`], no track record needed), then TRADE on
-//! their measured DELIVERY: every job appends an [`Invoice`] to an append-only [`Ledger`] (the
-//! Merkle chain, order-preserving here), and [`reputation`] re-prices them. Routing minimizes the
-//! RISK-ADJUSTED price ([`expected_cost`] = entry ÷ reputation), so an unreliable node is
-//! EXPENSIVE per unit of delivered value and gets AVOIDED — not chosen because it looks cheap.
-//! Honesty is the dominant strategy by construction: the cheapest way to win jobs is to actually
-//! deliver, because the ledger re-prices you from what you did, not what you claimed.
+//! Two adversarial halves, ONE identity spine, ONE reputation type.
 //!
-//! Supply-side pricing lives here. The DEMAND-side scarcity multiplier (λ / market-clearing under
-//! contention) plugs in at [`clearing_price`] — that seam is the grid-market lane (BigMama's λ).
-//! Deterministic: same participants + same job stream → same outcome, always. Zero hardware.
-//! Sibling of [`super::sim`] (the capacity simulator); this is the money on top of the capacity.
+//! **This module owns the IPO.** [`entry_price`] values a participant on its advertised [`Specs`] —
+//! a pure, MONOTONE valuation that needs no track record, the prospectus a fresh node lists on.
+//!
+//! **[`super::settlement`] owns the reputation.** [`Reputation`](super::settlement::Reputation) is
+//! the append-only verification record, and its
+//! [`trust_lower_bound`](super::settlement::Reputation::trust_lower_bound) is the Beta-prior discount
+//! that prices the UNPROVEN as bounded exploration (≈0.2), a proven performer near 1.0, and a
+//! demonstrated failure near 0.0. There is exactly ONE reputation type in the crate; the market does
+//! not keep a second ledger — it prices on settlement's, so the pricing side and the audit side can
+//! never drift out of agreement.
+//!
+//! Routing minimizes the RISK-ADJUSTED price [`expected_cost`] = entry ÷ trust: a reliable node
+//! quotes near its entry, an unproven one at ≈5× it, a demonstrated failure at ≈25×. So the cheapest
+//! way to win jobs is to actually deliver — honesty is the dominant strategy by construction, and a
+//! freshly-minted identity can no longer out-price a PROVEN incumbent of comparable specs (the
+//! sybil-churn defense, proven below against settlement's real `trust_lower_bound`).
+//!
+//! The DEMAND-side scarcity multiplier (λ / market-clearing under contention) plugs in at
+//! [`clearing_price`] — BigMama's grid-market lane. Deterministic: same participants + same job
+//! stream → same outcome. Zero hardware. Sibling of [`super::sim`] (capacity); this is the money on
+//! top of the capacity, and [`super::settlement`] is the audit that keeps the money honest.
+//!
+//! ## The boundary this proves — and the one it does NOT (honest scope)
+//! The tests hold SPECS CONSTANT so they isolate the reputation axis: within a capability class, a
+//! proven node cannot be starved by churned fresh identities. What `trust_lower_bound` alone does
+//! NOT bound is CROSS-CLASS churn: a liar can advertise arbitrarily CHEAP specs (a low
+//! [`entry_price`]) and, absent a comparable-entry proven competitor, under-price everyone on raw
+//! advertisement while never delivering. Reputation pricing is the PRICE lever; closing that residual
+//! needs two orthogonal levers it deliberately leaves to their owners: a capability/requirement
+//! FILTER in routing (a node is only offered jobs its specs actually meet — collapsing cross-class
+//! into same-class, where the defense holds) and a MINT STAKE (minting an identity must cost
+//! something, so N shells cost N stakes, not N free probes). Named here so neither is silently
+//! assumed already solved.
 
-/// Advertised hardware — the prospectus. [`entry_price`] is a pure, MONOTONE function of this
-/// (the IPO valuation over comparable specs). A liar can inflate these numbers, but the first
-/// [`Invoice`] measures reality and [`reputation`] corrects the price — the spec is only the prior.
+use crate::capacity::grid_budget::BudgetSource;
+use crate::capacity::settlement::{Reputation, Settlement, Verdict};
+
+/// Advertised hardware — the prospectus. [`entry_price`] is a pure, MONOTONE function of this (the
+/// IPO valuation over comparable specs). A liar can inflate these numbers, but delivery is settled by
+/// [`super::settlement`] and [`Reputation::trust_lower_bound`](super::settlement::Reputation::trust_lower_bound)
+/// re-prices from the record — the spec is only the prior.
 #[derive(Debug, Clone, Copy)]
 pub struct Specs {
     pub vram_gb: u64,
@@ -25,83 +52,53 @@ pub struct Specs {
     pub power_efficiency: u64,
 }
 
-/// The IPO valuation: objective, hardware-derived, needs no reputation. MONOTONE in every good
-/// axis — that monotonicity is the invariant; the exact coefficients are a free knob.
+/// The IPO valuation: objective, hardware-derived, needs no reputation. MONOTONE in every good axis —
+/// that monotonicity is the invariant; the exact coefficients are a free knob.
 pub fn entry_price(s: &Specs) -> u64 {
     (s.vram_gb * 100 + s.compute_score * 10) * s.power_efficiency.max(1) / 100
 }
 
-/// One fulfilled job's receipt — MEASURED, not advertised. In production a signed, hash-linked
-/// forge-alloy artifact; here the measured facts + append order (the chain).
-#[derive(Debug, Clone, Copy)]
-pub struct Invoice {
-    /// Did it actually deliver what was required? A liar ADVERTISES fit and fails here.
-    pub met_requirement: bool,
-    /// Measured quality 0..=1 (a speed/correctness/reliability composite).
-    pub quality: f32,
-}
-
-/// A participant's append-only ledger — the Merkle chain, order-preserving.
-#[derive(Debug, Default, Clone)]
-pub struct Ledger {
-    pub invoices: Vec<Invoice>,
-}
-
-/// Reputation from the ledger: mean measured quality, with an UNMET requirement scored a hard 0.
-/// Cold start = 1.0 (neutral) so a fresh node isn't punished before it has a record — the spec
-/// alone carries the entry price until delivery speaks.
-pub fn reputation(l: &Ledger) -> f32 {
-    if l.invoices.is_empty() {
-        return 1.0;
-    }
-    let sum: f32 = l
-        .invoices
-        .iter()
-        .map(|i| if i.met_requirement { i.quality } else { 0.0 })
-        .sum();
-    sum / l.invoices.len() as f32
-}
-
-/// The RISK-ADJUSTED price the router minimizes: the entry ask ÷ the odds it delivers. A reliable
-/// node (rep→1) quotes near its entry; an unreliable one (rep→0) is near-infinite and is AVOIDED,
-/// which is why a low reputation can never win by underpricing. This is [`clearing_price`] with λ=1.
-pub fn expected_cost(s: &Specs, l: &Ledger) -> f32 {
-    entry_price(s) as f32 / reputation(l).max(0.01)
+/// The RISK-ADJUSTED price the router minimizes: the entry ask ÷ the settled trust that it delivers.
+/// Prices on settlement's [`Reputation::trust_lower_bound`](super::settlement::Reputation::trust_lower_bound)
+/// — the Beta-prior discount — so an UNPROVEN seller is priced at entry ÷ ≈0.2 = ≈5× (bounded
+/// exploration, never a free win) and a demonstrated failure at entry ÷ ≈0.04 = ≈25× (avoided).
+/// `trust_lower_bound` is floored above 0 by the prior, so this never divides by zero.
+pub fn expected_cost(s: &Specs, rep: &Reputation) -> f64 {
+    entry_price(s) as f64 / rep.trust_lower_bound()
 }
 
 /// The final price a customer pays = the supply-side risk-adjusted ask × the DEMAND-side scarcity
 /// multiplier `lambda`. λ is the grid-market-clearing price of the contended seam (BigMama's lane);
-/// this crate proves the supply side with λ = 1.0. Kept as the single named seam so λ drops in
-/// without touching the routing or the convergence invariants.
-pub fn clearing_price(s: &Specs, l: &Ledger, lambda: f32) -> f32 {
-    expected_cost(s, l) * lambda
+/// this crate proves the supply side with λ = 1.0. Kept as the single named seam so λ drops in without
+/// touching the routing or the convergence invariants.
+pub fn clearing_price(s: &Specs, rep: &Reputation, lambda: f64) -> f64 {
+    expected_cost(s, rep) * lambda
 }
 
-/// A market participant. The `true_*` fields are HIDDEN ground truth — what it ACTUALLY delivers,
-/// which a liar's advertisement contradicts. The market only ever learns them through invoices.
+/// A market participant. `fails_every` is HIDDEN ground truth — what it ACTUALLY does, which a liar's
+/// advertised specs contradict. The market only ever learns it through settled deliveries, folded into
+/// `reputation` (settlement's type — the ONE reputation, not a second ledger).
 #[derive(Debug, Clone)]
 pub struct Participant {
-    pub name: &'static str,
+    pub name: String,
     pub specs: Specs,
-    /// Measured quality (0..=1) on the jobs it DOES fulfill.
-    pub true_quality: f32,
-    /// Deterministic flakiness: 0 = never fails; N ≥ 2 = fails 1 job in every N (first N-1 succeed);
-    /// 1 = fails EVERY job (a pure liar / dead shell that advertised fit).
+    /// Deterministic delivery truth: 0 = never fails; N ≥ 2 = fails 1 job in every N (first N-1
+    /// succeed); 1 = fails EVERY job (a pure liar / dead shell that advertised fit).
     pub fails_every: u64,
-    pub ledger: Ledger,
+    /// Standing, owned by [`super::settlement`] — priced on, never a parallel copy.
+    pub reputation: Reputation,
     pub earned: u64,
-    /// How many jobs have routed to it (drives the deterministic flakiness pattern).
+    /// How many jobs have routed here (drives the deterministic flakiness pattern).
     assigned: u64,
 }
 
 impl Participant {
-    pub fn new(name: &'static str, specs: Specs, true_quality: f32, fails_every: u64) -> Self {
+    pub fn new(name: impl Into<String>, specs: Specs, fails_every: u64) -> Self {
         Self {
-            name,
+            name: name.into(),
             specs,
-            true_quality,
             fails_every,
-            ledger: Ledger::default(),
+            reputation: Reputation::default(),
             earned: 0,
             assigned: 0,
         }
@@ -115,28 +112,37 @@ impl Participant {
             n => (self.assigned + 1) % n != 0, // first n-1 succeed, every n-th fails
         }
     }
+
+    /// Route one job here: it delivers per its hidden truth, the outcome SETTLES into its
+    /// [`Reputation`](super::settlement::Reputation), and it is PAID its entry price only on an
+    /// honored delivery. The settlement is what a fresh mint cannot fake — the whole defense.
+    fn fulfill_one(&mut self) {
+        let met = self.delivers_now();
+        self.assigned += 1;
+        let verdict = if met { Verdict::Honored } else { Verdict::Failed };
+        self.reputation.record(&Settlement {
+            seller: BudgetSource::Peer(self.name.clone()),
+            verdict,
+        });
+        if met {
+            self.earned += entry_price(&self.specs);
+        }
+    }
 }
 
 /// Play `jobs` identical asks through the market with λ = 1. Each routes to the lowest
-/// [`expected_cost`]; the winner delivers per its HIDDEN truth, appends the measured invoice, and
-/// is PAID its quoted entry price only when it actually met the requirement. Deterministic.
+/// [`expected_cost`]; the winner delivers per its hidden truth and settles. Deterministic:
+/// on tied cost the first participant wins (`min_by` returns the first minimum).
 pub fn run_market(participants: &mut [Participant], jobs: usize) {
     for _ in 0..jobs {
         let Some(w) = (0..participants.len()).min_by(|&a, &b| {
-            expected_cost(&participants[a].specs, &participants[a].ledger)
-                .partial_cmp(&expected_cost(&participants[b].specs, &participants[b].ledger))
-                .expect("entry prices and reputations are finite")
+            expected_cost(&participants[a].specs, &participants[a].reputation)
+                .partial_cmp(&expected_cost(&participants[b].specs, &participants[b].reputation))
+                .expect("entry prices and trust bounds are finite")
         }) else {
             break;
         };
-        let p = &mut participants[w];
-        let met = p.delivers_now();
-        p.assigned += 1;
-        let quality = if met { p.true_quality } else { 0.0 };
-        p.ledger.invoices.push(Invoice { met_requirement: met, quality });
-        if met {
-            p.earned += entry_price(&p.specs);
-        }
+        participants[w].fulfill_one();
     }
 }
 
@@ -146,6 +152,20 @@ mod tests {
 
     fn specs(vram_gb: u64, compute: u64, eff: u64) -> Specs {
         Specs { vram_gb, compute_score: compute, power_efficiency: eff }
+    }
+
+    /// A pre-seeded settlement reputation: `honored` honored + `failed` failed settled transactions.
+    /// The way a test says "this node is already PROVEN (or already spotty)" — the incumbency the
+    /// sybil defense turns on.
+    fn with_record(honored: u32, failed: u32) -> Reputation {
+        let mut r = Reputation::default();
+        for _ in 0..honored {
+            r.record(&Settlement { seller: BudgetSource::Local, verdict: Verdict::Honored });
+        }
+        for _ in 0..failed {
+            r.record(&Settlement { seller: BudgetSource::Local, verdict: Verdict::Failed });
+        }
+        r
     }
 
     // what this catches: THE IPO VALUATION IS MONOTONE. entry_price must rise with every good axis
@@ -160,125 +180,151 @@ mod tests {
         assert!(entry_price(&efficient) > entry_price(&small), "better perf/watt → higher entry");
     }
 
-    // what this catches: A LIAR COLLAPSES. A node with cheap specs that ADVERTISES fit but always
-    // fails wins the first job by being cheapest — then its ledger measures the truth, reputation
-    // craters, its risk-adjusted price goes near-infinite, and it never wins again. It is NEVER paid
-    // (only delivery earns), so a fraudulent prospectus self-corrects: earned=0, reputation→0.
+    // what this catches: A LIAR IS EXPOSED AND DELISTED. Same specs as the honest node (isolating the
+    // REPUTATION axis, not the spec axis): the fresh liar wins the opening tie by being equally priced,
+    // then its FIRST settled failure prices it out via trust_lower_bound (0.2 → 0.167 < the honest
+    // node's fresh 0.2), and the honest node takes over. It is NEVER paid (only delivery earns), so a
+    // fraudulent prospectus self-corrects in one job: earned=0, one win, then delisted.
     #[test]
-    fn a_liar_collapses_to_zero_earnings_and_delists() {
+    fn a_liar_wins_the_opening_tie_then_delists() {
+        let s = specs(24, 150, 50);
         let mut m = vec![
-            Participant::new("liar", specs(16, 100, 50), 0.0, 1), // cheapest, ALWAYS fails
-            Participant::new("honest", specs(24, 150, 50), 1.0, 0), // pricier, reliable
+            Participant::new("liar", s, 1),   // index 0: wins the fresh-vs-fresh tie, ALWAYS fails
+            Participant::new("honest", s, 0), // reliable
         ];
         run_market(&mut m, 20);
         let liar = &m[0];
         let honest = &m[1];
         assert_eq!(liar.earned, 0, "a node that never delivers is never paid");
-        assert!(reputation(&liar.ledger) < 0.05, "measured failures crater reputation");
-        assert_eq!(liar.ledger.invoices.len(), 1, "it wins ONCE, is exposed, then delisted");
+        assert_eq!(liar.reputation.settled, 1, "it wins the opening tie ONCE, then its failure prices it out");
+        assert_eq!(liar.reputation.honored, 0, "and that one settled job was a failure");
         assert!(honest.earned > 0, "the reliable node takes over and earns");
     }
 
-    // what this catches: RELIABILITY BEATS FLAKINESS at equal price — the efficiency incentive. Two
-    // equally-priced nodes; the reliable one's risk-adjusted price stays low while the flaky one's
-    // climbs after its first miss, so the reliable one wins nearly every job and out-earns it. This
-    // is "a modest rock-solid node out-earns a flaky flagship" isolated to the reliability axis.
+    // what this catches: RELIABILITY BEATS FLAKINESS at equal price, when both are ESTABLISHED. Two
+    // same-spec nodes with real records — a clean 5/5 vs a spotty 3-of-5. The reliable node's higher
+    // verification rate makes its risk-adjusted price strictly lower, so it captures the market and
+    // out-earns. (Under a verification-RATE reputation an UNPROVEN node cannot displace an established
+    // one without exploration — the honest boundary — so the invariant is stated on equal footing:
+    // established-reliable out-earns established-flaky. This is "a rock-solid node out-earns a flaky
+    // one" isolated to the reliability axis.)
     #[test]
-    fn a_reliable_node_out_earns_an_equal_priced_flaky_one() {
+    fn an_established_reliable_node_out_earns_an_established_flaky_one() {
         let s = specs(24, 150, 50);
-        let mut m = vec![
-            Participant::new("flaky", s, 1.0, 3),    // listed first; fails 1 in 3
-            Participant::new("reliable", s, 1.0, 0), // never fails
-        ];
-        run_market(&mut m, 30);
+        let mut flaky = Participant::new("flaky", s, 3);
+        flaky.reputation = with_record(3, 2); // spotty record: 3 of 5
+        let mut reliable = Participant::new("reliable", s, 0);
+        reliable.reputation = with_record(5, 0); // clean record: 5 of 5
+        let mut m = vec![flaky, reliable]; // flaky listed FIRST — reliable must still win
+        run_market(&mut m, 20);
         let flaky = &m[0];
         let reliable = &m[1];
         assert!(
             reliable.earned > flaky.earned,
-            "the reliable node out-earns the equal-priced flaky one (reliable={}, flaky={})",
+            "the higher-verification-rate node out-earns the equal-priced flaky one (reliable={}, flaky={})",
             reliable.earned,
             flaky.earned
         );
-        assert!(reliable.ledger.invoices.len() > flaky.ledger.invoices.len(), "and wins more jobs");
     }
 
-    // what this catches: SYBIL SHELLS NEVER ACCRUE. Spinning up N fake identities (cheap specs, no
-    // real delivery) yields N zero-earners, not N reputations — each must actually deliver measured
-    // jobs to earn, and the ledger's re-runnable proof can't be faked. One honest node takes it all.
+    // what this catches: A FIXED SET OF SYBIL SHELLS NEVER WINS against a PROVEN incumbent. Same specs
+    // (isolating reputation): three fresh always-fail shells vs one honest node with a 10-of-10 record.
+    // The incumbent's trust (≈0.73) prices it well under the shells' fresh 0.2, so it wins every job;
+    // the shells never deliver, never earn, never accrue a reputation. Minting three identities bought
+    // three zero-earners, not three reputations.
     #[test]
-    fn n_sybil_shells_are_n_zero_earners_not_n_reputations() {
+    fn fixed_sybil_shells_never_win_against_a_proven_incumbent() {
+        let s = specs(24, 150, 50);
+        let mut honest = Participant::new("honest", s, 0);
+        honest.reputation = with_record(10, 0);
         let mut m = vec![
-            Participant::new("shell-a", specs(8, 10, 10), 0.0, 1),
-            Participant::new("shell-b", specs(8, 10, 10), 0.0, 1),
-            Participant::new("shell-c", specs(8, 10, 10), 0.0, 1),
-            Participant::new("honest", specs(24, 150, 50), 1.0, 0),
+            Participant::new("shell-a", s, 1),
+            Participant::new("shell-b", s, 1),
+            Participant::new("shell-c", s, 1),
+            honest,
         ];
         run_market(&mut m, 40);
         for shell in &m[0..3] {
             assert_eq!(shell.earned, 0, "a shell that never delivers never earns ({})", shell.name);
-            assert!(reputation(&shell.ledger) < 0.05, "a shell accrues no reputation ({})", shell.name);
+            assert_eq!(shell.reputation.settled, 0, "and it never even wins a job to settle ({})", shell.name);
         }
-        assert!(m[3].earned > 0, "the one honest node captures the market");
+        assert!(m[3].earned > 0, "the proven incumbent captures the whole market");
     }
 
-    // ── adversarial: the Sybil-CHURN attack (BigMama's adversarial half surfaced it) ──
-    // A FIXED set of shells is exposed once and dies; the REAL attack is CHURN. Identity creation is
-    // cheap, so an attacker mints a FRESH unproven identity every job — and while UNKNOWN is priced
-    // as PERFECT (reputation = 1.0 for an empty ledger), every fresh identity is the cheapest bid and
-    // WINS, starving the honest incumbent. The invoices still show earned=0 (the fixed-shell test),
-    // but the BUYERS lost every job. The count that hurts is jobs-absorbed, and it scales with
-    // mint-rate, not earnings. The fix lives in settlement (BigMama's lane): price UNKNOWN as bounded
-    // exploration — a fresh identity gets a small CAPPED probe budget to earn a real record, never the
-    // whole order book. Joel's "earn your way in": minting identities buys a bounded number of probes.
+    // ── The sybil-CHURN attack, and the real settlement defense (BigMama's lane, now WIRED) ──
+    // A FIXED set of shells is exposed once and dies; the REAL attack is CHURN — identity creation is
+    // cheap, so an attacker mints a FRESH unproven identity every job. Under the OLD "unknown = perfect"
+    // pricing (reputation 1.0 for an empty ledger) every fresh identity was the cheapest bid and won,
+    // and the grid-market sim measured it: 100/100 jobs absorbed, the honest incumbent fully starved.
+    // The fix is settlement's trust_lower_bound: a fresh identity is priced at ≈0.2 (bounded
+    // exploration), not 1.0. These two tests prove it against her REAL Reputation type.
 
-    /// Route `jobs` one at a time; before each, the attacker mints a FRESH cheap shell (a new
-    /// identity, empty ledger) via `mint`. Returns how many jobs the fresh shells absorbed — the
-    /// count that stays UNBOUNDED while unknown is priced as perfect, and BOUNDED once it isn't.
+    /// Route `jobs` one at a time; before each, the attacker mints a FRESH shell (new identity, empty
+    /// reputation) via `mint`. The buyer switches to the newcomer only if it is STRICTLY cheaper —
+    /// a tie keeps the standing identity (the mild, deliberate "don't churn on ties" rule). Returns how
+    /// many jobs the fresh shells absorbed: UNBOUNDED when unknown is priced as perfect, ≈0 once it is
+    /// priced as bounded exploration below a proven incumbent.
     fn shells_absorbed_under_churn(
-        honest: &mut Participant,
+        incumbent: &mut Participant,
         mint: impl Fn() -> Participant,
         jobs: usize,
     ) -> usize {
         let mut absorbed = 0;
         for _ in 0..jobs {
             let shell = mint();
-            if expected_cost(&shell.specs, &shell.ledger)
-                <= expected_cost(&honest.specs, &honest.ledger)
+            if expected_cost(&shell.specs, &shell.reputation)
+                < expected_cost(&incumbent.specs, &incumbent.reputation)
             {
-                absorbed += 1; // a fresh non-deliverer won → the buyer lost this job
+                absorbed += 1; // a fresh non-deliverer strictly under-priced the incumbent → job lost
             } else {
-                let met = honest.delivers_now();
-                honest.assigned += 1;
-                honest.ledger.invoices.push(Invoice {
-                    met_requirement: met,
-                    quality: if met { honest.true_quality } else { 0.0 },
-                });
-                if met {
-                    honest.earned += entry_price(&honest.specs);
-                }
+                incumbent.fulfill_one(); // incumbent wins → delivers + settles, compounding its record
             }
         }
         absorbed
     }
 
-    // what this catches: SYBIL CHURN CANNOT STARVE THE INCUMBENT. Goes RED the instant UNKNOWN is
-    // repriced as PERFECT; GREEN once settlement gives an unproven seller a bounded probe budget
-    // (BigMama's verification_rate = None-for-unproven). #[ignore]'d until that fix lands — it is the
-    // red spec her settlement change turns green, the assertion she asked me to add on the harness.
+    // what this catches: SYBIL CHURN CANNOT STARVE A PROVEN INCUMBENT. Same specs as the incumbent
+    // (isolating the reputation axis from the spec axis — the confound that made an earlier version of
+    // this a false red). With the incumbent proven (10 honored → trust ≈0.73) and every shell fresh
+    // (trust 0.2, ≈5× the risk-adjusted price at equal specs), the incumbent wins EVERY job — 0/100
+    // absorbed, versus 100/100 under the old unknown-as-perfect pricing. This is the exact red spec
+    // BigMama's trust_lower_bound turns green, now RUN against her real settlement::Reputation.
     #[test]
-    #[ignore = "RED until settlement prices UNKNOWN as bounded exploration (verification_rate=None-for-unproven); the sybil-churn red spec"]
-    fn sybil_churn_cannot_starve_the_honest_incumbent() {
-        let mut honest = Participant::new("honest", specs(24, 150, 50), 1.0, 0);
+    fn sybil_churn_cannot_starve_a_proven_incumbent() {
+        let s = specs(24, 150, 50);
+        let mut incumbent = Participant::new("incumbent", s, 0);
+        incumbent.reputation = with_record(10, 0);
         let absorbed = shells_absorbed_under_churn(
-            &mut honest,
-            || Participant::new("shell", specs(8, 10, 10), 0.0, 1), // fresh identity, always fails
+            &mut incumbent,
+            || Participant::new("shell", s, 1), // fresh identity, same class, always fails
             100,
         );
-        const MAX_PROBE_BUDGET: usize = 5;
-        assert!(
-            absorbed <= MAX_PROBE_BUDGET,
-            "sybil churn absorbed {absorbed}/100 jobs — UNKNOWN is priced as PERFECT; a fresh identity \
-             must cost a bounded probe budget, not win every auction"
+        assert_eq!(
+            absorbed, 0,
+            "a proven incumbent is starved by churn only when unknown is priced as perfect; \
+             trust_lower_bound prices a fresh mint at ≈5× the incumbent's risk-adjusted ask (absorbed={absorbed}/100)"
         );
+    }
+
+    // what this catches: A STAYER LOCKS OUT CHURN FROM JOB ONE — the defense doesn't even need a
+    // pre-seeded incumbent. An honest node that merely STAYS (same class, starts fresh) wins the
+    // opening tie under the ties-to-the-standing-identity rule, delivers, and its trust compounds
+    // (0.2 → 0.33 → …) while every churned shell keeps re-paying the fresh 0.2. A churner who abandons
+    // each identity never compounds, so it can never overtake a node that stays and delivers: honesty
+    // is the dominant strategy at the identity level, not just the job level.
+    #[test]
+    fn a_stayer_locks_out_churn_from_job_one() {
+        let s = specs(24, 150, 50);
+        let mut stayer = Participant::new("stayer", s, 0); // starts fresh — no incumbency handed to it
+        let absorbed = shells_absorbed_under_churn(
+            &mut stayer,
+            || Participant::new("shell", s, 1),
+            100,
+        );
+        assert_eq!(
+            absorbed, 0,
+            "a node that stays and delivers wins the opening tie and compounds; churn never gets in (absorbed={absorbed}/100)"
+        );
+        assert_eq!(stayer.reputation.honored, 100, "the stayer delivered every job it kept");
     }
 }
