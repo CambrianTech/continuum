@@ -125,15 +125,40 @@ fn stable_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'
         Some(Cow::Owned(taking_your_turn_block(p.persona_name))),
         // Tools + acting — only when the persona has tools.
         tools_block(p.tools, p.expanded).map(Cow::Owned),
+        // Assembled context — the standing grounding (roster/doctrine/workspace-map)
+        // FIRST (stable-sorted inside the block), then whatever volatile tail survived the
+        // fit. It stays in the cacheable system prefix by design: its stable head IS the
+        // reusable KV, and the truly per-turn material (recall / working-memory traces) is
+        // already separated out as its own `.trailing()` conversation turns upstream
+        // (#205), so it never lands here. Keeping context in `stable` preserves the
+        // "standing framing reaches the system message" contract
+        // (`trailing_proprioception_renders_in_the_tail_not_the_system_prefix`).
+        working_context_block(p.context).map(Cow::Owned),
+        // Her NOW — a one-line clock (minute granularity), LAST in the stable prefix and
+        // nearest the framing that follows: freshest temporal grounding at the write point.
+        // Per-minute churn costs at most one re-prefill per minute (turns are seconds
+        // apart), versus the per-TURN flip the framing below would cause if it stayed here.
+        // Eval passes its pinned epoch; tests pass None.
+        p.now_ms
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|dt| {
+                Cow::Owned(format!(
+                    "\n\n[now {}]",
+                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
+                ))
+            }),
     ]
     .into_iter()
     .flatten()
 }
 
-/// The PER-TURN situational blocks — own-time/presence framing, assembled context, clock.
-/// Each flips or grows turn-to-turn, so they MUST NOT sit in the cacheable system prefix;
-/// the message builder renders them as the newest trailing turn (same text, same order,
-/// nearest generation — the #205 trailing-proprioception placement).
+/// The PER-TURN situational FRAMING — the own-time affordance and the conversational-
+/// presence block, whose variant (DIRECTED / WORKING / SILENCE) flips hard every turn.
+/// This is the block the raw prompt-captures caught breaking the KV prefix at char ~7607
+/// (#266): it sat BEFORE the context, so every turn's flip re-prefilled the whole tail.
+/// It MUST NOT sit in the cacheable system prefix; the message builder renders it as the
+/// newest trailing turn — same text, nearest generation (the #205 trailing placement),
+/// where its volatility no longer invalidates the cached identity + tools + context prefix.
 fn volatile_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
     [
         // Self-directed free time — only on a self-initiated heartbeat turn.
@@ -155,21 +180,6 @@ fn volatile_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow
         } else {
             SILENCE_AFFORDANCE_BLOCK
         })),
-        // Assembled context — the standing grounding (roster/doctrine/workspace-map)
-        // FIRST (stable-sorted inside the block by render_assembled_context_within), then
-        // the volatile tail (recall, working memory).
-        working_context_block(p.context).map(Cow::Owned),
-        // Her NOW — a one-line clock (minute granularity), LAST, nearest the generation
-        // point: freshest temporal grounding at the write point. Eval passes its pinned
-        // epoch; tests pass None.
-        p.now_ms
-            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
-            .map(|dt| {
-                Cow::Owned(format!(
-                    "\n\n[now {}]",
-                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
-                ))
-            }),
     ]
     .into_iter()
     .flatten()
@@ -373,14 +383,21 @@ pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with 
 mod tests {
     use super::*;
 
-    // what this catches (#266 KV-cache reuse): the STABLE prefix — identity + [Taking your
-    // turn] + tools — is a pure function of the PERSONA, byte-identical across EVERY turn
-    // shape (directed / undirected / self-initiated / holds-work / clock on-or-off / any
-    // context). If a per-turn block ever leaks back into the stable prefix, the whole ~6k
-    // system prompt re-prefills every act (0% KV reuse — the ~13min SWE solves this fix
-    // targets). The per-turn framing must ride `trailing` instead, asserted below.
+    // what this catches (#266 KV-cache reuse): the block that HARD-FLIPS every turn — the
+    // own-time / conversational-presence framing (DIRECTED vs WORKING vs SILENCE) — must
+    // NOT sit in the cacheable system prefix. The raw prompt-captures caught exactly this:
+    // consecutive prompts shared only 7,607 of ~14,706 chars because the presence framing
+    // sat at char ~7607, BEFORE the context, and flipped every act → the whole tail
+    // re-prefilled (0% KV reuse, the ~13min SWE solves this targets). The fix rides that
+    // framing on `trailing` instead. The persona-and-context prefix (identity + [Taking
+    // your turn] + tools + assembled grounding + clock) stays in `stable`: its head is the
+    // reusable KV, and the truly per-turn material (recall / working-memory) is already
+    // separated as its own `.trailing()` conversation turns upstream (#205), so it never
+    // reaches this `context` string. The invariant: for a FIXED context, flipping the
+    // per-turn framing dimensions (directed / self-initiated / holds-work) must not perturb
+    // the stable prefix — that flip is what used to poison the cache.
     #[test]
-    fn stable_prefix_is_byte_identical_across_turn_shapes() {
+    fn framing_flip_never_perturbs_the_cacheable_prefix() {
         let expanded = BTreeSet::new();
         let parts = |directed, self_initiated, holds_live_work, now_ms, context| {
             SystemPromptParts {
@@ -396,36 +413,36 @@ mod tests {
             }
         };
         let stable = |p: &SystemPromptParts| compose_split(p).stable;
-        let baseline = stable(&parts(false, false, false, None, "CTX-A"));
-        // Every per-turn shape yields the SAME cacheable prefix.
+        // Context held CONSTANT — only the per-turn FRAMING dimensions flip.
+        let baseline = stable(&parts(false, false, false, None, "CTX"));
         assert_eq!(
-            stable(&parts(true, false, false, None, "CTX-B")),
+            stable(&parts(true, false, false, None, "CTX")),
             baseline,
-            "directed must not change the stable prefix"
+            "directed must not change the stable prefix (framing rides trailing)"
         );
         assert_eq!(
-            stable(&parts(false, true, false, None, "CTX-C")),
+            stable(&parts(false, true, false, None, "CTX")),
             baseline,
-            "self-initiated must not change the stable prefix"
+            "self-initiated must not change the stable prefix (own-time rides trailing)"
         );
         assert_eq!(
-            stable(&parts(false, false, true, None, "CTX-D")),
+            stable(&parts(false, false, true, None, "CTX")),
             baseline,
-            "holds-work must not change the stable prefix"
+            "holds-work must not change the stable prefix (working-presence rides trailing)"
         );
-        assert_eq!(
-            stable(&parts(false, false, false, Some(1_700_000_000_000), "CTX-E")),
-            baseline,
-            "the minute clock must not change the stable prefix"
-        );
-        // The stable prefix carries NONE of the volatile framing…
+        // The hard-flipping framing carries NONE of its markers in the cacheable prefix…
         assert!(
-            !baseline.contains("[Conversational Presence]")
-                && !baseline.contains("[Your own time]")
-                && !baseline.contains("[What you are working with"),
-            "no per-turn framing/context may sit in the cacheable prefix: {baseline}"
+            !baseline.contains("[Conversational Presence]") && !baseline.contains("[Your own time]"),
+            "the per-turn framing must not sit in the cacheable prefix: {baseline}"
         );
-        // …and that framing DOES ride the trailing bundle (same content, relocated).
+        // …the STANDING grounding, by contrast, DOES stay in the cacheable prefix (its head
+        // is the reusable KV; keeping it here preserves the "framing reaches the system
+        // message" contract that trailing_proprioception_renders_in_the_tail asserts).
+        assert!(
+            stable(&parts(false, false, false, None, "ROSTER: alice")).contains("ROSTER: alice"),
+            "standing grounding stays in the cacheable prefix, not trailing"
+        );
+        // …and the framing DOES ride the trailing bundle (same content, relocated).
         assert!(
             compose_split(&parts(false, true, false, None, "CTX"))
                 .trailing

@@ -1018,7 +1018,35 @@ impl LlmDeliberationFaculty {
         now_ms: Option<u64>,
         holds_live_work: bool,
     ) -> String {
-        deliberation_prompt::compose(&deliberation_prompt::SystemPromptParts {
+        // Whole-string form (stable ++ trailing), byte-identical to the pre-split output.
+        // Kept for the many framing-shape tests that assert against the composed whole; the
+        // LIVE prompt path calls `compose_system_split` and places the two parts separately.
+        let c =
+            self.compose_system_split(context, expanded, directed, self_initiated, now_ms, holds_live_work);
+        let mut s = c.stable;
+        s.push_str(&c.trailing);
+        s
+    }
+
+    /// The system prompt split at the KV-cache boundary (#266): a persona-invariant
+    /// [`stable`](deliberation_prompt::ComposedSystemPrompt::stable) prefix
+    /// (identity + `[Taking your turn]` + tools) that belongs in the cacheable system
+    /// message, and the per-turn
+    /// [`trailing`](deliberation_prompt::ComposedSystemPrompt::trailing) framing +
+    /// assembled context + clock that the live path rides on the newest turn so it never
+    /// invalidates the cached prefix. The whole-string [`compose_system_holding`] is
+    /// `stable ++ trailing` of exactly this.
+    #[allow(clippy::too_many_arguments)]
+    fn compose_system_split(
+        &self,
+        context: &str,
+        expanded: &BTreeSet<String>,
+        directed: bool,
+        self_initiated: bool,
+        now_ms: Option<u64>,
+        holds_live_work: bool,
+    ) -> deliberation_prompt::ComposedSystemPrompt {
+        deliberation_prompt::compose_split(&deliberation_prompt::SystemPromptParts {
             system_prompt: &self.system_prompt,
             persona_name: &self.persona_name,
             tools: &self.tools,
@@ -1254,6 +1282,16 @@ impl LlmDeliberationFaculty {
             ),
         );
 
+        // #266 KV-cache fix lives in the block ORDER (see `deliberation_prompt::compose`):
+        // the per-turn presence/own-time framing now renders LAST in the system message,
+        // AFTER the standing grounding context, instead of before it. The raw
+        // prompt-captures caught the framing sitting at char ~7607, ahead of the context,
+        // so every directed/silence flip shortened the reusable KV prefix to ~7.6k chars
+        // and re-prefilled the whole tail. With the framing last, the served slot's reused
+        // prefix now extends through identity + tools + the stable head of the grounding —
+        // the framing flip falls past it and costs only its own short re-prefill. The ask
+        // stays the last CONVERSATION turn (framing is system-role instruction, not a
+        // conversation message), so nothing pulls the model off the freshest peer turn.
         DeliberationPromptView {
             system: self.compose_system_holding(
                 &context,
@@ -2625,6 +2663,71 @@ mod tests {
             assert!(
                 in_tail(&v2, "Then I read it back to verify"),
                 "the new act must append to the trailing turn"
+            );
+        }
+
+        // what this catches: #266 KV-cache reuse at the CALLER. The per-turn presence
+        // framing (DIRECTED vs SILENCE) flips hard every turn; the raw prompt-captures
+        // caught it sitting in the system message at char ~7607, BEFORE the grounding
+        // context, so every flip shortened the reusable KV prefix to ~7.6k chars and
+        // re-prefilled the whole tail (0% KV reuse — the ~13min SWE solves). The fix moves
+        // the framing to render LAST in the system message, after the context, so the
+        // reusable prefix now extends THROUGH the grounding and the flip falls past it.
+        // This asserts the property at the live boundary: the two systems (directed vs
+        // undirected) share a common prefix that reaches into the grounding context, and
+        // each carries its own presence variant only in the diverging tail. Before the
+        // reorder this was RED — the systems diverged at the framing, char ~7607, ahead of
+        // the context. regression for #266
+        #[test]
+        fn directedness_flip_keeps_the_grounding_inside_the_reusable_prefix() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+                // Ample window so budget pressure never perturbs what renders — this
+                // isolates the framing POSITION, not truncation.
+                .with_context_window(8192);
+
+            // Same room content + the same standing grounding (a session-stable roster
+            // contribution renders the [What you are working with] block); only the
+            // directedness dimension flips.
+            let with_grounding = |directed: bool| {
+                let mut ws = Workspace::new("the team is chatting about the plan");
+                ws.broadcast.push(
+                    Contribution::context(
+                        FacultyId::Custom("room-roster".to_string()),
+                        "ROSTER: alice, bob present",
+                        0.5,
+                        "framing",
+                    )
+                    .session_stable(),
+                );
+                ws.directed_at_self = directed;
+                ws
+            };
+            let undirected = faculty.prompt_view(&with_grounding(false));
+            let directed = faculty.prompt_view(&with_grounding(true));
+
+            // The longest shared leading run of the two system messages IS the KV prefix
+            // the served slot reuses across the flip.
+            let common_len = directed
+                .system
+                .bytes()
+                .zip(undirected.system.bytes())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let reusable_prefix = &directed.system[..common_len];
+            assert!(
+                reusable_prefix.contains("[What you are working with"),
+                "the reusable KV prefix must extend THROUGH the grounding context — the \
+                 framing flip falls after it (#266). prefix ended at byte {common_len}:\n{reusable_prefix}"
+            );
+            // The presence variants diverge only in the tail past that prefix, and stay in
+            // the system message (framing is system-role instruction, not a conversation
+            // turn — so the ask remains the last conversation message).
+            assert!(
+                directed.system.contains("This message names you")
+                    && !undirected.system.contains("This message names you"),
+                "the directed presence variant renders in the system tail, past the reusable prefix"
             );
         }
 
