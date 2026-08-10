@@ -259,9 +259,48 @@ per-node clamp (`a_peer_claiming_more_free_than_it_has_is_clamped_to_its_own_tot
 is the first anti-fraud measure in the system and was written as mere robustness.
 
 The honest verification is the delivered result: did the work land, at the quoted
-speed, on the hardware claimed? That is forge-alloy's attestation-as-invoice
-shape — reputation as verification rate — and it is where this connects to the
-third pillar.
+speed, on the hardware claimed?
+
+### forge-alloy IS the verification layer — and it already works one scale down
+
+Per Joel: invoicing, requirements, zero trust, a Merkle chain of the steps taken
+and the metrics. **This is not new machinery to invent — the foundry already does
+it for custom transformers.**
+
+Look at what an alloy attests about a *model artifact*: `stages[]` with per-stage
+notes, `results.benchmarks[]` carrying `samplesPath` and `baseSamplesPath`,
+`priorMetricBaselines[]` for falsifiability, declared `limitations[]`. Now read
+that as a *service delivery*: what was required, which steps ran, what was
+measured, against which baseline, with the raw samples retained so a buyer can
+check rather than trust.
+
+Same structure, artifact-scale and service-scale. An abstraction that fits at two
+scales unchanged is usually the real one rather than a convenience — the same
+fractal property this design relies on for the λ arbiter (box -> grid -> P2P).
+
+So the economy's three unknowns already have owners:
+
+| Need | Mechanism |
+|---|---|
+| **requirements** | the contract — what the asker needs (model class, window, latency class) |
+| **zero trust** | don't believe the seller's capacity claim; verify against delivery |
+| **invoice** | the attestation itself — reputation as verification rate |
+
+### What that means for the ROUTING seam, concretely
+
+**The routing decision is the first attested step in the chain.** It is where a
+requirement meets a claim, and it is therefore where the invoice starts.
+
+`RouteDecision::Remote { node, reason }` already carries `reason` — but today it
+is a `&'static str`, a debug breadcrumb. For a chain of custody it needs to become
+a **structured claim**: what was required, what the node advertised, why it won.
+That is a small and forward-compatible change, and making it now is far cheaper
+than reconstructing intent from log strings after money moves.
+
+The counter-signature is the delivered result plus its measured metrics. Route
+decision and delivery record together are one link: *promised* and *delivered*,
+by the same node, for the same activity. A node whose promises and deliveries
+diverge is exactly what reputation-as-verification-rate measures.
 
 **`never a pool` has an economic reading too:** you cannot sell memory that is not
 on one machine. Two 20GiB sellers cannot jointly deliver a 40GiB service, so they
