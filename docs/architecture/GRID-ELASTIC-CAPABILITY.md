@@ -223,6 +223,55 @@ Per Joel, literal tests — not a demo:
 Test 1 and test 5 are the ones that fail if we get this wrong: 1 catches the
 accidental branch, 5 catches missing hysteresis.
 
+## 3c. The economic reading — and the two requirements it adds
+
+Joel's framing: people earn and pay into this system, incentivized by its own
+metrics to improve efficiency, power, reliability, capability, and speed — all of
+which have market value. **Every command is potentially a service; every ask is a
+customer.** The contrast with proof-of-work is substantive, not rhetorical: PoW
+burns energy proving work nobody wanted, and the burn *is* the proof. Here the
+proof is a result someone asked for and can check — the receipt is the product
+rather than the waste.
+
+The substrate is already shaped for this, which is a good sign the framing is
+native rather than bolted on:
+
+| Code today | Economic reading |
+|---|---|
+| `CapacityOffer` | literally an **offer** — supply, advertised |
+| `BudgetSource` | **attribution** — who supplied it |
+| lease ladder (`Pinned`/`Graceful`/`Hard`) | **terms of service** — what may be reclaimed, and how |
+| λ arbiter pricing seams | the **market**, not merely a scheduler |
+| an activity leasing governed resources | a **transaction** |
+
+Two requirements follow, and both are cheap now and expensive later:
+
+**1. Attribution must be a receipt, not a log line.** `BudgetSource` exists today
+for legibility — "the budget went up, from where". In an economy that same field
+answers *who gets paid*. It therefore has to be accurate and non-repudiable, not
+merely informative.
+
+**2. Capacity claims must be VERIFIABLE, not trusted.** This is the real gap.
+`CapacityOffer` is self-reported and believed. That is correct among friends and
+wrong in a market: a node that overstates its free bytes is not buggy, it is
+**overselling supply it cannot deliver**, and it gets paid for it. The existing
+per-node clamp (`a_peer_claiming_more_free_than_it_has_is_clamped_to_its_own_total`)
+is the first anti-fraud measure in the system and was written as mere robustness.
+
+The honest verification is the delivered result: did the work land, at the quoted
+speed, on the hardware claimed? That is forge-alloy's attestation-as-invoice
+shape — reputation as verification rate — and it is where this connects to the
+third pillar.
+
+**`never a pool` has an economic reading too:** you cannot sell memory that is not
+on one machine. Two 20GiB sellers cannot jointly deliver a 40GiB service, so they
+must never be able to jointly *quote* one. The invariant is a truth-in-advertising
+rule as much as a technical one.
+
+Nothing here changes the first slice. It changes what must be true of it before
+anyone is billed, and it is recorded now because retrofitting attribution and
+verification after money moves is the expensive order.
+
 ## 4. Where this sits in the λ framing
 
 Per Joel: the lease/mode arbiter is the wireless-MAC "price the seams" mechanism —
