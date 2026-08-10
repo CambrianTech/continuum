@@ -466,12 +466,32 @@ async fn serve_persona_loop_inner(
                 // is waiting, they always get served immediately.
                 // [[idle-is-self-directed-free-time]]
                 // [[conversational-latency-is-a-misdirection-budget]]
-                if crate::cognition::resource_admission::shared_model_saturated() {
-                    next_beat = (next_beat + next_beat / 2).min(rest_cap);
-                    continue;
-                }
+                // Idle admission is a PERMIT, not a gauge — the fix the ambient-reply
+                // path (below, ~line 980) already made and this self-tick path never
+                // received. The gauge (`shared_model_saturated`) has a stampede race
+                // (#139/#385): N idle minds waking on the SAME cadence all read
+                // inflight=0 before any has generated a token, all pass, and all fire at
+                // the shared decode slot at once — oversubscribing a 1-lane node and
+                // #385-wedging it (glass-boxed 2026-08-10: resident_personas=4 vs
+                // warm_slots=1, every self-tick died on "no TOKEN progress for 90s").
+                // The permit is sized to the LIVE served lane count (LaneAdmission ←
+                // set_served_lane_count) and HELD across the whole self-cycle, so ambient
+                // concurrency is bounded to real capacity no matter when everyone woke —
+                // the surplus minds genuinely yield toward rest instead of stampeding.
+                // Directed turns still bypass entirely (they were named). Self-tick and
+                // ambient replies share the same ambient pool — both are lowest-priority
+                // non-directed work competing for the same lanes.
+                let _self_tick_permit = match crate::cognition::resource_admission::try_hold_ambient_turn()
+                {
+                    Some(permit) => permit,
+                    None => {
+                        next_beat = (next_beat + next_beat / 2).min(rest_cap);
+                        continue;
+                    }
+                };
                 let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
+                drop(_self_tick_permit);
                 next_beat = if last_burst_fp != before {
                     engaged_beat
                 } else {
