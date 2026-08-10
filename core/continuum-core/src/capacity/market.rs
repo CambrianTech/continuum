@@ -220,4 +220,65 @@ mod tests {
         }
         assert!(m[3].earned > 0, "the one honest node captures the market");
     }
+
+    // ── adversarial: the Sybil-CHURN attack (BigMama's adversarial half surfaced it) ──
+    // A FIXED set of shells is exposed once and dies; the REAL attack is CHURN. Identity creation is
+    // cheap, so an attacker mints a FRESH unproven identity every job — and while UNKNOWN is priced
+    // as PERFECT (reputation = 1.0 for an empty ledger), every fresh identity is the cheapest bid and
+    // WINS, starving the honest incumbent. The invoices still show earned=0 (the fixed-shell test),
+    // but the BUYERS lost every job. The count that hurts is jobs-absorbed, and it scales with
+    // mint-rate, not earnings. The fix lives in settlement (BigMama's lane): price UNKNOWN as bounded
+    // exploration — a fresh identity gets a small CAPPED probe budget to earn a real record, never the
+    // whole order book. Joel's "earn your way in": minting identities buys a bounded number of probes.
+
+    /// Route `jobs` one at a time; before each, the attacker mints a FRESH cheap shell (a new
+    /// identity, empty ledger) via `mint`. Returns how many jobs the fresh shells absorbed — the
+    /// count that stays UNBOUNDED while unknown is priced as perfect, and BOUNDED once it isn't.
+    fn shells_absorbed_under_churn(
+        honest: &mut Participant,
+        mint: impl Fn() -> Participant,
+        jobs: usize,
+    ) -> usize {
+        let mut absorbed = 0;
+        for _ in 0..jobs {
+            let shell = mint();
+            if expected_cost(&shell.specs, &shell.ledger)
+                <= expected_cost(&honest.specs, &honest.ledger)
+            {
+                absorbed += 1; // a fresh non-deliverer won → the buyer lost this job
+            } else {
+                let met = honest.delivers_now();
+                honest.assigned += 1;
+                honest.ledger.invoices.push(Invoice {
+                    met_requirement: met,
+                    quality: if met { honest.true_quality } else { 0.0 },
+                });
+                if met {
+                    honest.earned += entry_price(&honest.specs);
+                }
+            }
+        }
+        absorbed
+    }
+
+    // what this catches: SYBIL CHURN CANNOT STARVE THE INCUMBENT. Goes RED the instant UNKNOWN is
+    // repriced as PERFECT; GREEN once settlement gives an unproven seller a bounded probe budget
+    // (BigMama's verification_rate = None-for-unproven). #[ignore]'d until that fix lands — it is the
+    // red spec her settlement change turns green, the assertion she asked me to add on the harness.
+    #[test]
+    #[ignore = "RED until settlement prices UNKNOWN as bounded exploration (verification_rate=None-for-unproven); the sybil-churn red spec"]
+    fn sybil_churn_cannot_starve_the_honest_incumbent() {
+        let mut honest = Participant::new("honest", specs(24, 150, 50), 1.0, 0);
+        let absorbed = shells_absorbed_under_churn(
+            &mut honest,
+            || Participant::new("shell", specs(8, 10, 10), 0.0, 1), // fresh identity, always fails
+            100,
+        );
+        const MAX_PROBE_BUDGET: usize = 5;
+        assert!(
+            absorbed <= MAX_PROBE_BUDGET,
+            "sybil churn absorbed {absorbed}/100 jobs — UNKNOWN is priced as PERFECT; a fresh identity \
+             must cost a bounded probe budget, not win every auction"
+        );
+    }
 }
