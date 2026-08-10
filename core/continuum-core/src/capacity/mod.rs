@@ -43,6 +43,7 @@ pub mod expert_tier_policy;
 pub mod gossip;
 pub mod grid;
 pub mod lease;
+pub mod market;
 pub mod moe_arch_profile;
 pub mod moe_serving;
 pub mod pager_capture;
