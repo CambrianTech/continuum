@@ -361,8 +361,56 @@ refused.**
 
 ## 7. First slice
 
-**`grid_budget(grid)` feeding `HostBudget.usable_bytes`**, in place of the
-local-only budget.
+> ### ⚠️ CORRECTED — `HostBudget` is the WRONG consumer
+>
+> An earlier version of this section said the first slice was `grid_budget`
+> feeding `HostBudget.usable_bytes`. **That would have been a real bug**, caught
+> one edit before writing it by reading the consumer:
+>
+> - `host_budget()` ends as `usable_bytes = live * mode.serving_fraction()`, where
+>   `live` is **this box's** governed VRAM ceiling.
+> - `served_context_window` lives in `inference/llama_server.rs` and sizes
+>   resident KV as `lanes × kv_per_token × served_context_window` — **on the local
+>   GPU**.
+>
+> So `HostBudget` configures the LOCAL serving process. Feeding it a peer's bytes
+> would make this node allocate KV it does not physically have: a 40GB peer
+> produces a plan this box tries to load and OOMs on — planning against capacity
+> that is not there, which is the exact failure this design exists to prevent. It
+> would also have presented as a serving/OOM bug rather than an arithmetic one.
+>
+> **The projection was fine; the mental model was wrong.** A peer's spare VRAM does
+> not make *my* llama-server bigger. To use a peer's capacity the work must
+> **execute there** — which is routing.
+>
+> This also sharpens the Σ-vs-`max` question: it is not "no summed budget reaches
+> `HostBudget`", it is **no grid number of any shape reaches `HostBudget`**,
+> because `HostBudget` is strictly a local physical fact.
+
+**`grid_budget(grid)` feeding the ROUTER's capability decision** —
+`modules/grid/router.rs::Router::route`, reached by
+`GridState::try_route_remote`, the kernel's one dispatch hook (shared with
+`grid/send`: one path, two callers).
+
+Why the router is the right home, where `HostBudget` was not:
+
+- It is **policy**, not a physical fact, so a grid quantity legitimately belongs.
+- `RouteDecision::Remote { node, reason }` already carries `reason` — the
+  attribution slot §3c needs for a receipt.
+- Routing sends the WORK to the capacity, which is the only way a peer's VRAM
+  ever helps anyone.
+- `RouteDecision::Local` is already the always-available fallback — the end that
+  never blocks in total partition, with no branch to add.
+
+**The concrete gap it closes:** `HINT_PREFER_GPU` currently routes via
+`find_gpu_node(registry)` — a **boolean** has-a-GPU test. It cannot tell a 5090
+from an 8GB laptop card, and it has no idea whether the model this activity needs
+actually fits on the node it picks. `grid_budget` answers the question at the
+resolution that matters: *which reachable node can actually host this?*
+
+So the corrected chain is: grid grows → `grid_budget` sees a node that fits a
+better model → the router sends the activity there → the persona is more capable.
+No node is ever configured against memory it does not have.
 
 It is the smallest honest change, needs **no wire change** (`CapacityOffer`
 already carries the bytes), and unblocks the other two levers — because
