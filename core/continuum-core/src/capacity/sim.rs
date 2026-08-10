@@ -135,9 +135,15 @@ pub struct NodeReading {
 /// The surplus a node can lend to the pool: free GPU bytes beyond what its OWN demand needs.
 /// Zero demand ⇒ its whole free is surplus (a pure provider this tick); a node whose demand
 /// meets or exceeds its free lends nothing (all its free serves itself).
+///
+/// Free is CLAMPED to the node's own total first: a bad reading or a hostile offer reporting
+/// `free > total` cannot invent borrowable capacity for the whole grid — one broken number stays
+/// bounded by the one machine it came from (BigMama's `grid_budget` find; the per-node clamp is
+/// the sim sibling of her winner-ceiling clamp in `host_budget_from`).
 pub fn node_surplus(node: &NodeReading) -> u64 {
+    let free = node.capacity.gpu_free_bytes_live.min(node.capacity.gpu_total_bytes);
     let own_need = (node.demand.want_concurrency as u64).saturating_mul(node.demand.spike_bytes);
-    node.capacity.gpu_free_bytes_live.saturating_sub(own_need)
+    free.saturating_sub(own_need)
 }
 
 /// A symmetric grid scenario: N nodes over a shared virtual clock. `ticks[t]` is the set of
@@ -413,6 +419,27 @@ mod tests {
             assert!(
                 conc(&trace[0], "laptop-a") > 2 && conc(&trace[0], "laptop-b") > 2,
                 "a pool big enough for both grows BOTH borrowers above their local-only fit of 2"
+            );
+        }
+
+        // what this catches: A LIAR CANNOT INFLATE THE GRID. A node reporting free > its own total
+        // (a bad reading or a hostile offer) is clamped to its total before it can lend anything, so
+        // one broken number never invents borrowable capacity for everyone else (BigMama's
+        // grid_budget silent-bug #2 — the per-node clamp, in the sim).
+        #[test]
+        fn a_node_reporting_free_above_its_total_cannot_inflate_the_pool() {
+            let liar = NodeReading {
+                capacity: DeviceCapacity {
+                    gpu_total_bytes: 8 * GB,
+                    gpu_free_bytes_live: 400 * GB, // absurd claim: 400GB free on an 8GB card
+                    system_ram_free_bytes: 40 * GB,
+                },
+                demand: LeaseRequest { consumer: "liar".into(), want_concurrency: 0, spike_bytes: 4 * GB },
+            };
+            assert!(
+                node_surplus(&liar) <= 8 * GB,
+                "surplus is bounded by the node's REAL total, never its lie — got {}",
+                node_surplus(&liar)
             );
         }
     }
