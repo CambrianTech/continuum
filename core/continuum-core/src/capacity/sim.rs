@@ -159,32 +159,37 @@ pub struct NodeGrant {
 }
 
 /// Play the symmetric grid through ONE policy per node — no placer. Each PRESENT node fits its
-/// OWN demand to its LOCAL free PLUS the reachable surplus it can borrow (Σ of the OTHER present
-/// nodes' [`node_surplus`]). That Σ is exactly what a live tier-projection fills from real peers
-/// in production; here it is scenario data. Deterministic: same scenario + policy → same trace.
+/// OWN demand to its LOCAL free PLUS a fair share of the reachable surplus POOL it can borrow.
+/// The pool is FINITE — Σ of every present node's [`node_surplus`] — and it is split among the
+/// BORROWERS (nodes that cannot meet their own demand from local free alone), so the total
+/// borrowed can never exceed what the providers actually have. That is the no-double-lend
+/// guarantee: no hidden aggregate over-subscription while every per-node fit still looks safe —
+/// the exact failure [`super::lanes_that_fit`] warns against. In production the pool is the live
+/// tier-projection over reachable peers; here it is scenario data. Deterministic: same scenario
+/// + policy → same trace.
 ///
-/// FIRST-SLICE SCOPE (named, not hidden): the pool is summed and offered to each borrower in
-/// full — exact when at most one node has a deficit per tick (the seed scenarios). Multi-borrower
-/// CONTENTION (two deficits drawing the same surplus → fair draw-down, never double-lend) is the
-/// next slice; [`super::lanes_that_fit`]'s "sum of per-node fits, never a hiding aggregate" rule
-/// is where it lands.
+/// Fairness is EQUAL-SPLIT among borrowers for now; proportional-fair by deficit size (the
+/// wireless-MAC / market share) is the refinement, and it drops in at the `share` computation
+/// without touching the interface or the invariants.
 pub fn run_symmetric_grid(
     scenario: &SymmetricGridScenario,
     policy: &dyn AllocationPolicy,
 ) -> Vec<Vec<NodeGrant>> {
+    // A node borrows iff it cannot meet its own demand from local free alone.
+    let is_borrower = |node: &NodeReading| -> bool {
+        policy.grant(&node.capacity, &node.demand).concurrency < node.demand.want_concurrency
+    };
     let mut out = Vec::with_capacity(scenario.ticks.len());
     for present in &scenario.ticks {
+        // The finite shared pool, and how many borrowers contend for it THIS tick.
+        let pool: u64 = present.iter().map(|e| node_surplus(&e.1)).sum();
+        let borrowers = present.iter().filter(|e| is_borrower(&e.1)).count() as u64;
+        let share = if borrowers == 0 { 0 } else { pool / borrowers };
         let mut tick = Vec::with_capacity(present.len());
         for entry in present {
             let name: &'static str = entry.0;
             let node: &NodeReading = &entry.1;
-            // Reachable surplus = Σ of the OTHER present nodes' lendable spare. In production
-            // this Σ is the live tier-projection over reachable peers; here it is scenario data.
-            let borrowable: u64 = present
-                .iter()
-                .filter(|other| other.0 != name)
-                .map(|other| node_surplus(&other.1))
-                .sum();
+            let borrowable = if is_borrower(node) { share } else { 0 };
             let effective_free = node.capacity.gpu_free_bytes_live.saturating_add(borrowable);
             let view = DeviceCapacity {
                 gpu_free_bytes_live: effective_free,
@@ -378,6 +383,37 @@ mod tests {
                 "the shed grant fits the shrunken effective free — graceful, never OOM"
             );
             assert!(conc(&trace[1], "server") >= 1, "the lender is now ALSO a consumer of its own work");
+        }
+
+        // what this catches: MULTI-BORROWER CONTENTION never double-lends. Two deficit laptops and
+        // one provider: the finite surplus pool is SPLIT between the borrowers, so the total they
+        // borrow never exceeds what the provider actually has. Without the finite pool each would
+        // greedily take the whole surplus and the grid would over-subscribe (aggregate OOM) while
+        // every per-node fit still looked safe — the hidden aggregate lanes_that_fit warns against.
+        #[test]
+        fn two_borrowers_split_a_finite_pool_and_never_double_lend() {
+            let scenario = SymmetricGridScenario {
+                name: "contention",
+                ticks: vec![vec![
+                    ("laptop-a", node(10, 4, 4)),
+                    ("laptop-b", node(10, 4, 4)),
+                    ("server", node(40, 0, 4)),
+                ]],
+            };
+            let trace = run_symmetric_grid(&scenario, &FitPolicy { safety_margin_bytes: MARGIN });
+            let local = node(10, 4, 4).capacity.gpu_free_bytes_live;
+            let borrowed = |name: &str| {
+                trace[0].iter().find(|g| g.node == name).unwrap().effective_free_bytes - local
+            };
+            let pool = node_surplus(&node(40, 0, 4));
+            assert!(
+                borrowed("laptop-a") + borrowed("laptop-b") <= pool,
+                "the two borrowers together never borrow more than the finite pool"
+            );
+            assert!(
+                conc(&trace[0], "laptop-a") > 2 && conc(&trace[0], "laptop-b") > 2,
+                "a pool big enough for both grows BOTH borrowers above their local-only fit of 2"
+            );
         }
     }
 }
