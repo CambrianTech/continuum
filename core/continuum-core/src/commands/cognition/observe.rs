@@ -279,13 +279,58 @@ impl ActionCommand for CognitionObserve {
         let feed_limit = p.feed_limit.unwrap_or(10);
 
         // Read the persona's ledger, if a persona was named.
-        let ledger_text = p.persona_id.as_ref().and_then(|pid| {
-            let home = std::env::var("HOME").ok()?;
-            let path = std::path::PathBuf::from(home)
-                .join(".continuum/progress")
-                .join(format!("{pid}.jsonl"));
-            std::fs::read_to_string(path).ok()
-        });
+        //
+        // The reference is resolved to a typed id BEFORE it is ever interpolated
+        // into a path. Three separate defects lived in the five lines this
+        // replaces, and all three presented identically — as "this persona has no
+        // ledger":
+        //
+        //   1. `persona_id` went straight into the filename unresolved. A persona
+        //      NAME or 8-char short-id — both legal references everywhere else in
+        //      the system, and both accepted by `resolve_persona` — produced a
+        //      path that cannot exist. `.ok()` then turned COULD-NOT-LOOK into
+        //      NOT-FOUND, which is the #396 defect class exactly: a loose String
+        //      that parses fine and misreports downstream.
+        //   2. `HOME` is routinely unset on Windows, so the whole closure
+        //      short-circuited to `None` on this platform regardless of the id —
+        //      the ledger was silently empty for every persona, always.
+        //   3. An unresolved caller-supplied string in a `join` is a traversal
+        //      surface. A `Uuid` cannot traverse.
+        let ledger_text = match p.persona_id.as_deref() {
+            None => None,
+            Some(reference) => {
+                let uuid = crate::cognition::persona_workspace::global()
+                    .resolve_persona(reference)
+                    .map_err(|e| {
+                        CommandError::Invalid(format!("{e} Or call persona/instances/list."))
+                    })?;
+                let home = std::env::var("USERPROFILE")
+                    .or_else(|_| std::env::var("HOME"))
+                    .map_err(|_| {
+                        CommandError::Invalid(
+                            "neither USERPROFILE nor HOME is set, so the persona progress \
+                             directory cannot be located"
+                                .to_string(),
+                        )
+                    })?;
+                let path = std::path::PathBuf::from(home)
+                    .join(".continuum/progress")
+                    .join(format!("{uuid}.jsonl"));
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => Some(text),
+                    // A resolved persona that has simply not written a ledger yet
+                    // is a real, reportable absence — the ONLY case that may be
+                    // silently `None`.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(e) => {
+                        return Err(CommandError::Invalid(format!(
+                            "persona {uuid} ledger at {} could not be read: {e}",
+                            path.display()
+                        )))
+                    }
+                }
+            }
+        };
 
         Ok(BenchmarkObserveResult::assemble(
             progress,
