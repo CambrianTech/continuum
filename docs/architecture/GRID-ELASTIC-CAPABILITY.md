@@ -4,9 +4,9 @@
 (every claim below was checked, and the dead paths are named so nobody builds on
 them). Implementation not started.
 
-**One sentence:** a persona's capability is currently a frozen function of the
-local GPU string and an env var; make those two inputs **live projections of the
-GridSnapshot** and everything downstream is already dynamic.
+**One sentence:** a persona's capability is currently a frozen function of this
+box's serving budget and an env var; make those two inputs **live projections of
+the GridSnapshot** and everything downstream is already dynamic.
 
 ---
 
@@ -67,9 +67,38 @@ Replace two static inputs with live projections over
 `capacity::gossip::global_ledger().snapshot(..)`:
 
 ```
-detect_tier(local_gpu_name)     ->  reachable_tier(grid)      // best node, not this node
+HostBudget { usable_bytes }     ->  grid_budget(grid)         // best node's bytes, not this node's
 CONTINUUM_PERSONA_FLOOR (env)   ->  citizen_demand(grid)      // count of nodes, not a constant
 ```
+
+### Why BYTES, not tier — a correction to an earlier draft of this document
+
+An earlier version of this design said `detect_tier(local_gpu) -> reachable_tier(grid)`.
+**That was the wrong quantity, and building it would have forced an unnecessary
+wire change.** Recorded here because the mistake is instructive:
+
+- `CapacityOffer` (`capacity/gossip.rs:49`) carries **bytes only** —
+  `gpu_total_bytes`, `gpu_free_bytes_live`, `system_ram_free_bytes`, `at_ms`. No
+  GPU name, no tier. So "max `HwCapabilityTier` over reachable peers" is not
+  implementable from the current wire at all.
+- `HwCapabilityTier` (`cognition/model_resolver/types.rs:41`) is a **silicon
+  identity** — `M4UmaProMax`, `VulkanAmd`, `MacIntelMetalDiscrete` — derived from
+  a GPU *name string*. Projecting it across the grid would push hardware identity
+  over the wire to answer a question nobody asks. No consumer needs to know a
+  peer is an M4 Pro; they need to know it can host a 27B at a 32k window.
+- **The live path is already bytes-based.** `plan_serving` takes
+  `HostBudget { usable_bytes, perf_cores }` and selects the model from the
+  *budget*, deriving the served window as
+  `(context_window ∩ budget / lanes / kv_per_token)`. Capacity decides capability;
+  tier does not.
+
+So the projection is over **bytes**, which `CapacityOffer` already carries. No
+wire change, and it works across heterogeneous silicon for free — bytes are
+comparable between a 5090 and an M5 Max; GPU name strings are not.
+
+**`never a pool` applies directly here:** `grid_budget` is the **best single
+reachable node's usable bytes** — `max`, never `sum`. Two 20GiB peers still do
+not make a 40GiB node.
 
 Everything else is unchanged. The tick replans, the watch publishes, subscribers
 react, and the lease ladder absorbs downgrades.
@@ -235,8 +264,20 @@ refused.**
 
 ## 7. First slice
 
-`reachable_tier(grid)` replacing `detect_tier(local_gpu)`. It unblocks the other
-levers, is the smallest honest change, and is directly observable: a peer joining
-should raise the tier at the next tick, and a peer going silent should lower it —
-through the existing ledger eviction, with the drop taken by `Graceful`
-revocation rather than a stall.
+**`grid_budget(grid)` feeding `HostBudget.usable_bytes`**, in place of the
+local-only budget.
+
+It is the smallest honest change, needs **no wire change** (`CapacityOffer`
+already carries the bytes), and unblocks the other two levers — because
+`plan_serving` already derives model choice *and* served window from the budget.
+
+It is also directly observable in both directions, which is the point:
+
+- a capable peer joining raises the budget at the next tick, so the plan may
+  select a better model or a deeper window;
+- a peer going silent lowers it through the ledger's existing silence-eviction,
+  and the drop is taken by `Graceful` revocation rather than a stall.
+
+Watch for the failure mode named in §3a: without the downshift debounce, one
+flapping peer walks the whole fleet up and down on every gossip tick. Reuse
+`e3ac68b99`'s damping rather than adding a second one.
