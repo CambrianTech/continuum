@@ -22,6 +22,25 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let mut cfg = cmake::Config::new(&submodule);
+
+    // windows-msvc: pick Ninja unless the operator already chose a generator.
+    //
+    // With CMAKE_GENERATOR unset, cmake defaults to the newest Visual Studio
+    // generator it can find — and the cmake we ship does not know the generator
+    // string for the VS version on newer boxes, so configure dies with
+    // "Could not create named generator Visual Studio NN". The whole build script
+    // then exits 101 and `cargo check` fails on a crate the developer never
+    // touched, which reads as "the repo is broken" rather than "no generator".
+    //
+    // Ninja is generator-agnostic about the VS version (it finds the toolchain
+    // through the environment, not a hardcoded name), and it is already a
+    // manifest module the installer places on PATH. Explicit env still wins, so
+    // an operator who wants VS or another generator is not overridden.
+    #[cfg(target_env = "msvc")]
+    if std::env::var_os("CMAKE_GENERATOR").is_none() {
+        cfg.generator("Ninja");
+    }
+
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
         .define("LLAMA_BUILD_TESTS", "OFF")
         .define("LLAMA_BUILD_SERVER", "OFF")
