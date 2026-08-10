@@ -79,6 +79,47 @@ pub(crate) fn persona_airc(
     Ok(rt.airc().clone())
 }
 
+/// Resolve an airc handle for an OPERATOR/curator board write — e.g.
+/// `benchmark/dispatch` seeding a benchmark's tasks as claimable cards. Unlike
+/// [`persona_airc`], this does NOT dead-end when the caller has no self-identity.
+///
+/// A persona calling through her own toolbelt still authors as HERSELF (same as
+/// `persona_airc`). But the substrate-local operator has no self-peer in-core yet
+/// (#27), and seeding the board is a *curator* action, not a personal one — so when
+/// there is no caller identity, the seed is authored through a LIVE citizen's airc
+/// runtime. That is honest, not a fiction: benchmarks ARE the citizens' work, so a
+/// citizen posting the tasks is the right author (we prefer a benchmark curator,
+/// "Benchy", when one is online, else the first live citizen). This fails loud only
+/// when NO citizen is online to author through — because then there is genuinely no
+/// board to seed for, and the fix is to spawn a persona, not to invent an identity.
+pub(crate) fn curator_airc(
+    registry: &PersonaAircRuntimeRegistry,
+    ctx: &Ctx,
+    family: &str,
+) -> Result<Arc<Airc>, CommandError> {
+    // An authenticated caller (a persona acting through her toolbelt) wins: the card
+    // is authored as her, exactly like `persona_airc`.
+    if let Some(rt) = ctx
+        .caller
+        .as_ref()
+        .and_then(|c| registry.get(c.peer_id.as_uuid()))
+    {
+        return Ok(rt.airc().clone());
+    }
+    // Operator seeding with no self-peer (#27): author through a live citizen.
+    let rt = registry
+        .get_by_agent_name("Benchy")
+        .or_else(|| registry.iter().next())
+        .ok_or_else(|| {
+            CommandError::Denied(format!(
+                "{family} seeds the shared board and must author as a citizen, but none \
+                 are online to author through — spawn a persona first (persona/spawn), \
+                 then retry."
+            ))
+        })?;
+    Ok(rt.airc().clone())
+}
+
 fn parse_priority(s: &str) -> Priority {
     match s.to_ascii_lowercase().as_str() {
         "p0" => Priority::P0,

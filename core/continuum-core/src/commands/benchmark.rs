@@ -641,7 +641,7 @@ impl ActionCommand for BenchmarkDispatch {
         p: BenchmarkDispatchParams,
     ) -> Result<BenchmarkDispatchResult, CommandError> {
         use crate::cognition::eval::EvalTask;
-        use crate::modules::work::persona_airc;
+        use crate::modules::work::curator_airc;
         use airc_lib::{CreateWorkCard, Priority, RepoId};
 
         let spec = known_benchmarks()
@@ -677,7 +677,10 @@ impl ActionCommand for BenchmarkDispatch {
             })
             .collect::<Result<_, _>>()?;
 
-        let airc = persona_airc(&self.registry, ctx, "benchmark/dispatch")?;
+        // Curator seed: a persona dispatching through her toolbelt authors as herself;
+        // the operator with no self-peer (#27) authors through a live citizen (benchmarks
+        // ARE their work). See `curator_airc`.
+        let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
 
         // Repo: caller-supplied, else the repo the board already uses. No
         // baked-in default — an empty board with no repo argument is a real
