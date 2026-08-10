@@ -72,27 +72,70 @@ pub(super) struct SystemPromptParts<'a> {
     pub holds_live_work: bool,
 }
 
-/// Assemble the system prompt: fold the present blocks, in order, into one string.
-pub(super) fn compose(p: &SystemPromptParts<'_>) -> String {
-    let mut s = String::with_capacity(p.system_prompt.len() + p.context.len() + 768);
-    for block in ordered_blocks(p) {
-        s.push_str(&block);
+/// The system prompt split at the KV-cache boundary (#266/#205). `stable` is a pure
+/// function of the PERSONA (identity + turn-framing + tools) — byte-identical across all
+/// of her turns, so it lands in the cacheable prefix llama-server reuses. `trailing` is the
+/// PER-TURN situational framing (own-time/presence, assembled context, clock): same content,
+/// same order as before, but delivered as the newest turn instead of baked into the system
+/// message, so a per-turn flip (addressed↔self-initiated, a new context tail) can no longer
+/// invalidate the whole prefix. Before the split every act re-prefilled ~6k tokens because
+/// the presence block flipped at ~char 7.6k of the system prompt (0% KV reuse — the ~13min
+/// SWE solves). See [`compose`] for the byte-identical concatenation.
+pub(super) struct ComposedSystemPrompt {
+    /// Persona-invariant prefix — safe to place in the cacheable system message.
+    pub stable: String,
+    /// Per-turn situational framing — the message builder appends it as the newest turn.
+    pub trailing: String,
+}
+
+/// Assemble the system prompt split into its cacheable [`stable`](ComposedSystemPrompt::stable)
+/// prefix and its per-turn [`trailing`](ComposedSystemPrompt::trailing) tail. The single
+/// place the block set + order + gating lives, now partitioned by cache-stability.
+pub(super) fn compose_split(p: &SystemPromptParts<'_>) -> ComposedSystemPrompt {
+    let mut stable = String::with_capacity(p.system_prompt.len() + 768);
+    for block in stable_blocks(p) {
+        stable.push_str(&block);
     }
+    let mut trailing = String::with_capacity(p.context.len() + 512);
+    for block in volatile_blocks(p) {
+        trailing.push_str(&block);
+    }
+    ComposedSystemPrompt { stable, trailing }
+}
+
+/// Assemble the WHOLE system prompt as one string — `stable ++ trailing`, byte-identical
+/// to the pre-split output. Kept so callers/tests that want the composed whole are
+/// unchanged; the live message builder uses [`compose_split`] to place `stable` in the
+/// cacheable system message and `trailing` on the newest turn (the #266 KV-reuse fix).
+pub(super) fn compose(p: &SystemPromptParts<'_>) -> String {
+    let c = compose_split(p);
+    let mut s = c.stable;
+    s.push_str(&c.trailing);
     s
 }
 
-/// The system prompt AS DATA: an ordered list of present blocks. Each entry pairs a
-/// block builder with its gate — a block that doesn't apply this turn yields `None`
-/// and drops out of the fold. This is the one place the block set + their order +
-/// their gating lives; add a block by inserting an entry, nothing else changes.
-fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
+/// The BYTE-STABLE prefix blocks: identity + `[Taking your turn]` + tools/`[Acting]`.
+/// A pure function of the persona (system prompt, name, authorized tool set) — invariant
+/// across her turns, so it is the cacheable KV prefix. NOTHING situational belongs here.
+fn stable_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
     [
         // Identity — always; the byte-stable head of the cacheable prefix.
         Some(Cow::Borrowed(p.system_prompt)),
-        // Take a TURN in this activity — always.
+        // Take a TURN in this activity — always; pure function of her name.
         Some(Cow::Owned(taking_your_turn_block(p.persona_name))),
         // Tools + acting — only when the persona has tools.
         tools_block(p.tools, p.expanded).map(Cow::Owned),
+    ]
+    .into_iter()
+    .flatten()
+}
+
+/// The PER-TURN situational blocks — own-time/presence framing, assembled context, clock.
+/// Each flips or grows turn-to-turn, so they MUST NOT sit in the cacheable system prefix;
+/// the message builder renders them as the newest trailing turn (same text, same order,
+/// nearest generation — the #205 trailing-proprioception placement).
+fn volatile_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
+    [
         // Self-directed free time — only on a self-initiated heartbeat turn.
         p.self_initiated.then_some(Cow::Borrowed(OWN_TIME_BLOCK)),
         // Conversational presence — the AMBIENT block on undirected turns; the DIRECTED
@@ -114,15 +157,11 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
         })),
         // Assembled context — the standing grounding (roster/doctrine/workspace-map)
         // FIRST (stable-sorted inside the block by render_assembled_context_within), then
-        // the volatile tail (recall, working memory). Placed BEFORE [now] so its stable
-        // prefix lands in the cacheable KV region adjacent to the static system prompt.
+        // the volatile tail (recall, working memory).
         working_context_block(p.context).map(Cow::Owned),
         // Her NOW — a one-line clock (minute granularity), LAST, nearest the generation
-        // point: freshest temporal grounding at the write point, and — being
-        // minute-volatile — kept OUT in front of nothing, so it can NEVER break the
-        // cacheable prefix. (Was position-6, ahead of the context block, which pinned the
-        // KV-cache boundary at ~2k tokens and re-prefilled the whole stable grounding
-        // every turn — #139 context-split.) Eval passes its pinned epoch; tests pass None.
+        // point: freshest temporal grounding at the write point. Eval passes its pinned
+        // epoch; tests pass None.
         p.now_ms
             .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
             .map(|dt| {
@@ -333,6 +372,73 @@ pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#266 KV-cache reuse): the STABLE prefix — identity + [Taking your
+    // turn] + tools — is a pure function of the PERSONA, byte-identical across EVERY turn
+    // shape (directed / undirected / self-initiated / holds-work / clock on-or-off / any
+    // context). If a per-turn block ever leaks back into the stable prefix, the whole ~6k
+    // system prompt re-prefills every act (0% KV reuse — the ~13min SWE solves this fix
+    // targets). The per-turn framing must ride `trailing` instead, asserted below.
+    #[test]
+    fn stable_prefix_is_byte_identical_across_turn_shapes() {
+        let expanded = BTreeSet::new();
+        let parts = |directed, self_initiated, holds_live_work, now_ms, context| {
+            SystemPromptParts {
+                system_prompt: "IDENTITY-PROMPT",
+                persona_name: "Asha",
+                tools: &[],
+                expanded: &expanded,
+                context,
+                directed,
+                self_initiated,
+                now_ms,
+                holds_live_work,
+            }
+        };
+        let stable = |p: &SystemPromptParts| compose_split(p).stable;
+        let baseline = stable(&parts(false, false, false, None, "CTX-A"));
+        // Every per-turn shape yields the SAME cacheable prefix.
+        assert_eq!(
+            stable(&parts(true, false, false, None, "CTX-B")),
+            baseline,
+            "directed must not change the stable prefix"
+        );
+        assert_eq!(
+            stable(&parts(false, true, false, None, "CTX-C")),
+            baseline,
+            "self-initiated must not change the stable prefix"
+        );
+        assert_eq!(
+            stable(&parts(false, false, true, None, "CTX-D")),
+            baseline,
+            "holds-work must not change the stable prefix"
+        );
+        assert_eq!(
+            stable(&parts(false, false, false, Some(1_700_000_000_000), "CTX-E")),
+            baseline,
+            "the minute clock must not change the stable prefix"
+        );
+        // The stable prefix carries NONE of the volatile framing…
+        assert!(
+            !baseline.contains("[Conversational Presence]")
+                && !baseline.contains("[Your own time]")
+                && !baseline.contains("[What you are working with"),
+            "no per-turn framing/context may sit in the cacheable prefix: {baseline}"
+        );
+        // …and that framing DOES ride the trailing bundle (same content, relocated).
+        assert!(
+            compose_split(&parts(false, true, false, None, "CTX"))
+                .trailing
+                .contains("[Your own time]"),
+            "own-time framing rides trailing, not the stable prefix"
+        );
+        assert!(
+            compose_split(&parts(true, false, false, None, "CTX"))
+                .trailing
+                .contains("This message names you"),
+            "directed framing rides trailing, not the stable prefix"
+        );
+    }
 
     // what this catches: the procedural assembler must honor each block's gate AND
     // preserve block ORDER — identity first, the volatile context last. A regression
