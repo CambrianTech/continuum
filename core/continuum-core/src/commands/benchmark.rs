@@ -894,21 +894,27 @@ impl ActionCommand for BenchmarkDispatch {
         let mut kickoffs = 0u32;
         let mut solves_fired = 0u32;
         let mut kickoff_errors = Vec::new();
-        // Auto-fire is capped at the live serving LANE count, and only when serving is
-        // READY — a directed dispatch must never fire more concurrent scored solves than
-        // the box can hold (glass-boxed 2026-08-11: over-firing solves onto a 2-lane box
-        // thrashed the llama-server lane to a Connection-refused death mid-solve). 0 when
-        // serving isn't ready: stage + kick off, but don't launch a solve into a dead lane.
-        // NOTE: this caps THIS dispatch call; a global in-flight-solve admission gate shared
-        // with the work/claim path (so total solves ≤ lanes across all triggers) is the
-        // proper fix and is tracked separately (#385/#386).
-        let solve_cap: u32 = {
-            let s = crate::inference::llama_server::current_serving();
-            if s.ready {
-                s.lanes.max(1)
-            } else {
-                0
-            }
+        // Auto-fire is capped at the live serving LANE count. A directed dispatch must never
+        // fire more concurrent scored solves than the box can hold (glass-boxed 2026-08-11:
+        // over-firing solves onto a 2-lane box thrashed the llama-server lane to a
+        // Connection-refused death mid-solve).
+        //
+        // WAIT for the boot-gate, don't guard against it (Joel 2026-08-11: "persona should boot
+        // beforehand … dispatch requires live is dumb"). Personas boot event-driven the moment
+        // the serving lane proves it can decode (ipc/mod.rs spawn_all), so a dispatch that lands
+        // in that ~10-15s window must PARK on serving readiness, not skip every solve and post
+        // silent cards. `await_ready_serving` returns as soon as the lane is decode-verified, or
+        // None after the deadline (a genuinely dead lane — then we stage + kick off but don't
+        // launch a solve into a corpse, self-healing on the next dispatch). NOTE: this caps THIS
+        // dispatch call; the global in-flight-solve admission gate shared with work/claim
+        // (#385/#386) is the broader fix.
+        let solve_cap: u32 = match crate::inference::llama_server::await_ready_serving(
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        {
+            Some(s) => s.lanes.max(1),
+            None => 0,
         };
         for pc in prepared.into_iter().take(take) {
             // A gym setup_shell task needs its workspace re-broken before work
