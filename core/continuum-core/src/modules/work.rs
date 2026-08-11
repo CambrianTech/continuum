@@ -19,7 +19,7 @@
 //! open up later; writes stay trusted.
 
 use std::any::Any;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -34,8 +34,24 @@ use airc_lib::{
 };
 
 use crate::persona::PersonaAircRuntimeRegistry;
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{
+    CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry,
+    ServiceModule,
+};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
+
+/// The bus event `work/state` publishes the moment a card transitions. Subscribers
+/// glob-match this to REACT (e.g. the SWE grade-on-done handler, board freshness,
+/// auto-close) — the system is event-based, never polling
+/// ([[the-whole-system-is-event-based-not-polling]]). Payload: `{card_id, state}`.
+pub const WORK_CARD_STATE_CHANGED: &str = "work.card.state_changed";
+
+/// Process-global handle to the bus + registry so `work/state` (a command, which holds
+/// no `ModuleContext`) can publish the transition event. Set once by `WorkModule::
+/// initialize`; the bus and registry ARE process-global (one core), same granularity as
+/// the gossip ledger and the admission gates — so a process-global is the honest shape,
+/// not a field threaded through every command constructor.
+static WORK_EVENT_BUS: OnceLock<(Arc<MessageBus>, Arc<ModuleRegistry>)> = OnceLock::new();
 
 /// Default claim lease (ms) — 30 min — when the caller doesn't set one. The claim
 /// is heartbeat-extendable; this is just the initial TTL.
@@ -630,6 +646,21 @@ impl ActionCommand for WorkState {
         airc.change_work_card_state(ChangeWorkCardState { card_id, state })
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
+
+        // Emit the transition as a bus EVENT — the moment a citizen moves a card, any
+        // subscriber REACTS (the SWE grade-on-done handler, board freshness, auto-close).
+        // Nothing scans the board on a clock; this is the event-based system law
+        // ([[the-whole-system-is-event-based-not-polling]]). Best-effort: the state
+        // change already succeeded, so a bus that isn't wired yet must never fail the verb.
+        if let Some((bus, registry)) = WORK_EVENT_BUS.get() {
+            bus.publish(
+                WORK_CARD_STATE_CHANGED,
+                serde_json::json!({ "card_id": p.card_id.clone(), "state": p.state.clone() }),
+                registry,
+            )
+            .await;
+        }
+
         Ok(WorkStateResult {
             card_id: p.card_id,
             state: p.state,
@@ -1093,7 +1124,11 @@ impl ServiceModule for WorkModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Wire the process-global so `work/state` can PUBLISH the card-transition event.
+        // Subscribers then REACT (event-based, no poll — the system law). Idempotent:
+        // `set` fails silently on a second call, which is correct for a one-core global.
+        let _ = WORK_EVENT_BUS.set((ctx.bus.clone(), ctx.registry.clone()));
         Ok(())
     }
 
@@ -1147,6 +1182,16 @@ impl ServiceModule for WorkModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the card-transition event NAME is the contract between the
+    // emitter (`work/state`) and every subscriber (SWE grade-on-done, board freshness,
+    // auto-close). A silent rename here would unsubscribe every reactor — the event
+    // would fire into the void, undetectably. Pin the string. (Event-based system law:
+    // the grade REACTS to this, it never polls the board.)
+    #[test]
+    fn card_state_changed_event_name_is_the_stable_emitter_subscriber_contract() {
+        assert_eq!(WORK_CARD_STATE_CHANGED, "work.card.state_changed");
+    }
 
     /// what this catches (#357): `work/claim` inventing a holder out of a stale
     /// `owner` field, then `claim_rejections::record` burning that fabrication
