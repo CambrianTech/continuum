@@ -503,8 +503,45 @@ impl ServingDaemonModule {
     /// persona floor). The boot wiring calls this before the first
     /// [`Self::compute_plan`]; the next tick replans if it changes.
     pub fn set_lane_demand(&self, demand: u32) {
+        // Register the demand cell process-globally the first time boot sets it, so a
+        // measurement preemption lease (quiesce_all / quiesce_others) can drop the
+        // warm-slot demand to the ACTIVE (non-quiesced) count for its duration and
+        // restore on drop — without threading a ServingDaemon handle into the persona
+        // registry. Idempotent: `set` after the first call is a no-op.
+        let _ = LANE_DEMAND_CELL.set(self.lane_demand.clone());
         self.lane_demand.store(demand.max(1), Ordering::Relaxed);
     }
+}
+
+/// Process-global handle to the live lane-demand cell (registered by the first
+/// [`ServingDaemonModule::set_lane_demand`] at boot). Lets a measurement preemption lease
+/// override serving's warm-slot demand to the number of minds that ACTUALLY need a
+/// warm slot right now — 1 during a solo measured solve — and restore it on drop, so
+/// the plan is feasible for the measurement instead of thrashing to warm-host every
+/// resident persona ([[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]).
+/// `None` before boot (unit tests / tools that never stood a daemon) → every override
+/// is a no-op, so the quiesce lease stays pure and daemon-free-testable.
+static LANE_DEMAND_CELL: std::sync::OnceLock<Arc<std::sync::atomic::AtomicU32>> =
+    std::sync::OnceLock::new();
+
+/// Override the lane demand to `active` (minds that need a warm slot now; floored at
+/// 1 — a measurement still needs one lane), returning the PREVIOUS value for restore.
+/// No-op returning `None` before the daemon has booted.
+pub fn quiesce_lane_demand(active: u32) -> Option<u32> {
+    LANE_DEMAND_CELL
+        .get()
+        .map(|cell| cell.swap(active.max(1), Ordering::Relaxed))
+}
+
+/// Restore the lane demand to `prev` — the value [`quiesce_lane_demand`] returned when
+/// the lease was acquired. No-op if the daemon never booted.
+pub fn restore_lane_demand(prev: u32) {
+    if let Some(cell) = LANE_DEMAND_CELL.get() {
+        cell.store(prev.max(1), Ordering::Relaxed);
+    }
+}
+
+impl ServingDaemonModule {
 
     /// The current lane demand (≥ 1).
     /// Register serving's autonomic PLANNER to run on the memory authority's tick

@@ -112,6 +112,10 @@ pub struct PersonaAircRuntimeRegistry {
 /// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
 pub struct QuiesceLease {
     flags: Vec<Arc<AtomicBool>>,
+    /// The serving lane-demand value in effect BEFORE this lease dropped it to the
+    /// active (non-quiesced) count — restored on drop. `None` when no serving daemon
+    /// was booted to override (unit tests / tools), keeping the lease pure there.
+    prev_demand: Option<u32>,
 }
 
 impl QuiesceLease {
@@ -126,6 +130,10 @@ impl Drop for QuiesceLease {
     fn drop(&mut self) {
         for f in &self.flags {
             f.store(false, Ordering::Relaxed);
+        }
+        // Restore the fleet's warm-slot demand the measurement borrowed down.
+        if let Some(prev) = self.prev_demand {
+            crate::modules::serving_daemon::restore_lane_demand(prev);
         }
     }
 }
@@ -313,6 +321,7 @@ impl PersonaAircRuntimeRegistry {
         pairs: Vec<(Uuid, Arc<AtomicBool>)>,
         except: Option<Uuid>,
     ) -> QuiesceLease {
+        let total = pairs.len();
         let flags: Vec<Arc<AtomicBool>> = pairs
             .into_iter()
             .filter(|(id, _)| except != Some(*id))
@@ -321,7 +330,17 @@ impl PersonaAircRuntimeRegistry {
         for f in &flags {
             f.store(true, Ordering::Relaxed);
         }
-        QuiesceLease { flags }
+        // Drop serving's warm-slot demand to the minds that ACTUALLY need a warm slot
+        // for the measurement's duration — the non-quiesced remainder (`total - flags`,
+        // = 1 for quiesce_others(solver), 0 → floored to 1 for quiesce_all). Without
+        // this the plan keeps budgeting a warm slot for EVERY resident persona and
+        // thrashes recompute→relaunch trying to warm-host a fleet that is deliberately
+        // idle — the exact 4→0→2 oscillation glass-boxed under a dispatched solve
+        // ([[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]). Restored on
+        // drop. A no-op (`None`) before the serving daemon booted — pure in unit tests.
+        let active = (total - flags.len()) as u32;
+        let prev_demand = crate::modules::serving_daemon::quiesce_lane_demand(active);
+        QuiesceLease { flags, prev_demand }
     }
 
     /// Acquire the same exclusive-measurement lease as [`quiesce_all`] but leave ONE
