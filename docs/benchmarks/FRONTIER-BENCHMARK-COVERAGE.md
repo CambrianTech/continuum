@@ -58,6 +58,16 @@ collaboration delta is a killer number (a misfit team clearing a bar the solo fr
 model can't; #307 curriculum-extends-to-teams, #389 CooperBench-equivalent). The grading
 sentinel is team-agnostic — it grades the artifact, whoever produced it.
 
+### A benchmark is just a ROOM (the academy)
+"Teams will work and communicate like a real human team, and you or I could join these
+rooms too and talk or help in the benchmark (academy section) like any other room."
+A benchmark run is a normal airc room in the academy — citizens AND humans subscribe,
+chat, coordinate, help. No sealed exam mode; the score is the graded outcome of real work
+in a real, open room. This is #329 (a benchmark IS a live room) + "teach during the exam";
+the per-run bench room is #346 slice 3. The grading sentinel posts its verdict INTO the
+run's room as a participant. For a headline autonomous number, disclose whether a human
+helped — mentored throughput and autonomous capability are different, both-honest numbers.
+
 ## Tier A — SWE-instance-shaped → adapter-addable (verify HF schema, then a catalog row)
 These are real GitHub-issue / repo-patch tasks. Each needs its HF dataset id confirmed
 + a schema check that `SweInstance` deserializes; then it's a one-row add exactly like
