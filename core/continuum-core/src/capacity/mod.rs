@@ -32,6 +32,7 @@ pub mod expert_depot;
 pub mod expert_ecache;
 pub mod expert_observer;
 pub mod expert_pager;
+pub mod eligibility;
 pub mod grid_budget;
 pub mod settlement;
 pub mod host_cache_lease;
