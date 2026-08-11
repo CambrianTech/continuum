@@ -163,21 +163,39 @@ members = [
 # Purely additive: the existing `attach_as` / `open_as` still mint a random
 # peer_id (`generate_and_save_as` delegates with `PeerId::new()`), and a
 # RESUMED identity ignores a supplied id (never a rotation) — so the 8 living
-# personas load their stored peer_id unchanged. This SHA is on the
-# feat/persona-peer-id-mint branch, not canary — reconcile to the canary SHA
-# when the airc PR lands. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
+# personas load their stored peer_id unchanged. Re-validate persona attach on bump.
+#
+# 2026-08-08 → dd34f68 (canary): the peer-id-mint work this comment describes has
+# LANDED — the note that used to sit here, "this SHA is on the
+# feat/persona-peer-id-mint branch, not canary, reconcile when the airc PR lands",
+# was still telling readers to reconcile something already reconciled. dd34f68 is
+# on canary and contains a08f3d3 (verified by ancestry, not assumed), and adds
+# `current_room_landing_in` — caller-chosen fresh-scope landing room, which is what
+# lets a fresh citizen land in #academy instead of airc's generic lobby.
+#
+# 2026-08-08 bump dd34f68 → e910008 (airc#1330): `Airc::subscribe_room(name)` —
+# join a room WITHOUT promoting it to default. `join` conflates membership ("I am
+# part of this room") with focus ("my next short-shape command means this room"),
+# which is identical for an operator at a prompt and wrong for a citizen who
+# belongs to several rooms at once: every additional join would drag her default
+# behind it, so her "current room" would mean nothing but the room she was added
+# to most recently. That matters because ~23 reads in airc-lib resolve against
+# `current_room()`. Purely additive — `join` is unchanged, and a scope's FIRST
+# room is still its default under either verb. This is what continuum's
+# room/join needs (task #65, Joel: a persona is first-class and can subscribe to
+# many rooms). Also fixes `RoomJoinedBody.is_default`, previously hardcoded true.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "e910008" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "e910008" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "e910008" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "e910008" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "e910008" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "dd34f68" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "e910008" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

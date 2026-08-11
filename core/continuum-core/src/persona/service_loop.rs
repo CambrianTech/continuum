@@ -125,8 +125,17 @@ pub trait PersonaConversation: Send + Sync {
     /// eager priming so the round-trip lands off the hot path.
     async fn next_message(&mut self) -> Result<Option<IncomingMessage>, String>;
 
-    /// Reply with text to the persona's default room.
-    async fn say(&self, text: &str) -> Result<(), String>;
+    /// Reply with text INTO A NAMED ROOM — normally the room the turn
+    /// being answered arrived in ([`IncomingMessage::room_id`]).
+    ///
+    /// Not "the persona's default room", which is what this used to
+    /// be. A persona is in more than one room, so a reply that always
+    /// went to her default answered the wrong audience the moment she
+    /// was addressed anywhere else — visibly worse than silence,
+    /// because it reads as a non-sequitur rather than a missing wire.
+    /// `Uuid::nil()` keeps the documented pre-room-stamping contract
+    /// (scripted / test sources) and routes to her default.
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String>;
 
     /// #170: the airc citizen behind this conversation, for OFF-THREAD streaming
     /// (`publish_stream_chunk`) from a spawned drain task. Returns an OWNED `Arc`
@@ -1198,7 +1207,13 @@ async fn serve_persona_loop_inner(
                                                     decision = "spoke",
                                                     "work-turn settled with a report"
                                                 );
-                                                if let Err(e) = conversation.say(&text).await {
+                                                // Answer where she was asked — `turn_room`
+                                                // is the A.6 arrival room already resolved
+                                                // for this turn, so the report lands in the
+                                                // room whose work it reports on.
+                                                if let Err(e) =
+                                                    conversation.say_in(turn_room, &text).await
+                                                {
                                                     tracing::warn!(
                                                         error = %e,
                                                         "work-turn report failed to send"
@@ -1302,7 +1317,10 @@ async fn serve_persona_loop_inner(
 
         // Per #195 slice 1: time the airc publish + downstream ack.
         let say_started = std::time::Instant::now();
-        let say_result = conversation.say(&response_text).await;
+        // Into the room the trigger arrived in (A.6 `turn_room`), which is the
+        // same room whose context this turn reasoned over — never her ambient
+        // default, or she answers one room's question to a different audience.
+        let say_result = conversation.say_in(turn_room, &response_text).await;
         phase_timings.say_ms = say_started.elapsed().as_millis() as u64;
         if let Err(e) = say_result {
             tracing::warn!(
@@ -2601,7 +2619,13 @@ async fn run_self_cycle(
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
                 return;
             }
-            if let Err(e) = conversation.say(&text).await {
+            // A self-cycle answers no one — there is no arrival room, so her
+            // default IS the correct audience. Same room the cycle framed its
+            // context against two lines up.
+            if let Err(e) = conversation
+                .say_in(ctx.identity.default_room, &text)
+                .await
+            {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }

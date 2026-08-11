@@ -1112,7 +1112,31 @@ commands/example/
 
 **Never import server/browser code IN shared files!**
 
-### Rust-Backed Commands (IPC Mixin Pattern)
+### Rust-Backed Commands (IPC Mixin Pattern) — ⚠️ LEGACY (Node-era), read the rule first
+
+> **⚠️ This section describes the NODE-ERA command system and reads as if it were current.
+> It is not the architecture.** It cost a full misdiagnosis on 2026-08-07: reading the
+> three-layer chain below as the intended design led to "a Rust command called from
+> TypeScript is correct, so port the legacy TS voice bridge" — which would have moved core
+> orchestration *into* the presentation tier, the exact bottleneck this project forbids.
+>
+> **THE RULE (Joel, 2026-08-07):** *"Node nor Python are ever part of core. They bottleneck.
+> Node is presentation only."* And only for the **optional** web desktop — there are iOS,
+> Android and TUI clients too.
+>
+> So: the **Rust core owns the behaviour**. Clients render. If logic lives in a client, only
+> that client has the feature — which is why voice existed solely in the web desktop and
+> iOS/Android/TUI citizens were structurally voiceless (#58,
+> [docs/architecture/LIVE-CALL-POSITRON-CONTROLS.md](docs/architecture/LIVE-CALL-POSITRON-CONTROLS.md)).
+>
+> For anything that must reach every interface, the current pattern is a **positron
+> `ViewState` + source** (eight exist: chat, roster, kanban, nav, serving, wall, foundry,
+> metrics) — one truth in Rust, N renderers, ts-rs exporting the type to
+> `protocol/typescript/positron/`. Not a per-client mixin.
+>
+> The mixin chain below remains accurate **only** for exposing a Rust command to the Node
+> web desktop's `./jtag` CLI. It is a presentation-tier convenience, never where behaviour
+> belongs.
 
 When a command is backed by Rust (via continuum-core IPC), it requires **THREE layers**:
 

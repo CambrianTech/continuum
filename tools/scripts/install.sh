@@ -4,8 +4,9 @@
 # ┌───────────────────────────────────────────────────────────────────────┐
 # │  MOST USERS DO NOT RUN THIS. To just *use* Continuum, run the one-      │
 # │  command installer (pre-built Docker images, no compiler needed):      │
-# │    • Windows:      irm https://cambriantech.github.io/continuum/install.ps1 | iex
-# │    • Linux/macOS:  curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
+# │    • Windows:      irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
+# │    • Linux/macOS:  curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/install.sh | bash
+# │  (the github.io URLs these replaced 404 — Pages is not published; verified 2026-08-07)
 # │  On Windows that handles WSL2 + Docker + GPU for you — no shell choice. │
 # └───────────────────────────────────────────────────────────────────────┘
 #

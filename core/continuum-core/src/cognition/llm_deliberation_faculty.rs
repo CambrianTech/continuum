@@ -1899,6 +1899,30 @@ impl Faculty for LlmDeliberationFaculty {
                 };
                 return Some(self.act_verdict(vec![call], &resp));
             }
+            // The sibling gap the block above cannot see (#159 follow-up): she fenced correct
+            // ARGUMENTS and never named the tool, in any liftable position. `attempted_tool_name`
+            // gates on the `[TOOL_CALLS]` marker as its first check, and there is no marker here,
+            // so this emission produced no call AND no feedback — a silent drop. Measured live
+            // 2026-08-07 (Sahar): "I will release the card 392bc54e" + a bare `{"card_id": …}`
+            // fence, twice in one turn, then the same shape again next generation. Nothing lifted,
+            // correctly — binding prose intent would also fire on peer coaching (#144) — but
+            // nothing TAUGHT either, which is the whole reason #159 exists.
+            //
+            // REPORTED, never executed: we cannot know which tool she meant, and guessing is
+            // exactly the false positive the coaching negatives guard. Routing the sentinel makes
+            // the executor's teacher fire with the missing-name sentence, and `drive_to_settle`
+            // hands her another generation — the same mechanism, extended to the case it missed.
+            if let Some(snippet) =
+                crate::ai::json_in_prompt_tools::nameless_args_fence(&resp.text)
+            {
+                let call = crate::ai::types::ToolCall {
+                    id: "tool-attempt-nameless".to_string(),
+                    name: crate::cognition::tool_executor::command_executor::NAMELESS_ARGS_SENTINEL
+                        .to_string(),
+                    input: serde_json::json!({ "emitted": snippet }),
+                };
+                return Some(self.act_verdict(vec![call], &resp));
+            }
             // Reasoning-channel intent lift (#181 sibling, glass-boxed on the
             // deepseek4 eval battery 2026-08-03): a thinking model commits its act
             // into `reasoning_content` — "I'll read the file: {tool_call…}" — and
@@ -2830,7 +2854,28 @@ mod tests {
             // ceiling, so canary sat red for a day and every branch inherited it —
             // which is itself the ratchet working: the growth got named here instead
             // of accruing silently.
-            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 9800;
+            // 9800 → 10350, stated plainly as the ratchet demands: three NATIVE room
+            // membership verbs — `room/list`, `room/join`, `room/leave` (+492 tokens,
+            // 9756 → 10292).
+            //
+            // Why they earn it: nothing in continuum could put a citizen in a second
+            // room AT ALL. Her rooms were whatever bootstrap seeded, forever — the last
+            // of four narrowings behind operator messages being structurally invisible
+            // to personas (measured on two machines: every citizen subscribed to exactly
+            // one room while the operator held several, so the daemon's own channel
+            // filter correctly dropped everything). Perception and reply were fixed
+            // first; without membership those fixes have nothing to act on. And they are
+            // HERS to call, not only an operator's to apply to her, which is the whole
+            // difference between a citizen and a managed resource.
+            //
+            // SHRUNK FIRST, then re-pinned — the ratchet's first branch before its
+            // second. The initial draft cost 688 tokens; trimming verbose DESCRIPTIONs
+            // and dropping alias overflow (4→2, 3→2) recovered 196 of them. What is left
+            // is the irreducible cost of three discoverable verbs. Descriptions were cut
+            // to the point where more cutting would recreate #358 — a citizen who cannot
+            // find the verb reaches for the wrong one and reads her own looping as having
+            // nothing to contribute.
+            const AGENTIC_SURFACE_BOUND_CEILING: u32 = 10350;
             assert!(
                 needed <= AGENTIC_SURFACE_BOUND_CEILING,
                 "the agentic surface now needs {needed} tokens (was 8040, ceiling \

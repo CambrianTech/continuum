@@ -45,7 +45,7 @@
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;
-use airc_lib::EventStream;
+use airc_lib::FilteredEventStream;
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -77,7 +77,7 @@ pub struct AircPersonaConversation {
     /// when airc-lib DELIBERATELY ends the subscription (a decode /
     /// wire-schema fault it surfaces loud, card 807193ab), which we
     /// re-surface rather than mask.
-    stream: Option<EventStream>,
+    stream: Option<FilteredEventStream>,
 }
 
 impl AircPersonaConversation {
@@ -120,7 +120,7 @@ impl PersonaConversation for AircPersonaConversation {
         }
         let stream = self
             .runtime
-            .subscribe()
+            .subscribe_all_rooms()
             .await
             .map_err(|e| format!("subscribe failed: {e}"))?;
         // #146 diagnostic: confirm the CHAT subscribe stream actually opened for
@@ -302,9 +302,9 @@ impl PersonaConversation for AircPersonaConversation {
         }
     }
 
-    async fn say(&self, text: &str) -> Result<(), String> {
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
         self.runtime
-            .say(text)
+            .say_in(room_id, text)
             .await
             .map(|_event_id| ())
             .map_err(|e| format!("say failed: {e}"))

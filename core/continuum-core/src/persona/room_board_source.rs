@@ -471,7 +471,27 @@ impl RagSource for RoomBoardSource {
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
         if !open.is_empty() {
-            let titles = open
+            // NEWEST FIRST, not board order (measured 2026-08-07).
+            //
+            // Only five titles are ever shown. Taken in board order, a card dispatched
+            // MINUTES AGO lands at the end and is structurally unshowable: the citizen reads
+            // an honest "N card(s) are claimable" above five titles that are all weeks old,
+            // and the work someone just handed her is not among them. Measured live — three
+            // freshly dispatched bench cards were in every citizen's board cache and in none
+            // of their prompt windows, while the count was correct the whole time. The count
+            // was never the lie; the sample was.
+            //
+            // Recency is the right key because a just-created card is the one most likely to
+            // be waiting on THIS citizen right now, and because it is the only ordering under
+            // which "someone dispatched you work" is reliably visible within one turn. Ties
+            // keep board order, so a static board renders exactly as before.
+            //
+            // Bounded-window eviction: a chatty writer pushes the signal out of a fixed-size
+            // view, and the diagnostic goes blind precisely when the board is busiest. The
+            // five-title cap is fine; taking the OLDEST five was not.
+            let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
+            newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+            let titles = newest
                 .iter()
                 .take(5)
                 .map(|c| {
@@ -654,6 +674,53 @@ mod tests {
     fn lapse(mut c: WorkCard) -> WorkCard {
         c.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
         c
+    }
+
+    /// Stamp a fixture card's creation time — the ordering key the available-work
+    /// lead samples by, so a test can express "this one was dispatched just now".
+    fn created_at(mut c: WorkCard, ms: u64) -> WorkCard {
+        c.created_at_ms = ms;
+        c
+    }
+
+    // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
+    // Only five titles are ever rendered; taken in board order a fresh card lands at the
+    // end and never appears, so the citizen reads an honest "N claimable" above five
+    // titles that are all old. Measured live 2026-08-07: three freshly dispatched bench
+    // cards sat in every citizen's board cache and in NONE of their prompt windows while
+    // the count was correct throughout — the count was never the lie, the sample was.
+    #[tokio::test]
+    async fn freshly_dispatched_work_is_shown_not_merely_counted() {
+        let mut cards: Vec<WorkCard> = (0..8)
+            .map(|i| {
+                created_at(
+                    card(&format!("old backlog card {i}"), CardState::Open, None),
+                    1_000_000 + i as u64,
+                )
+            })
+            .collect();
+        // Dispatched just now, and LAST in board order — the exact live shape.
+        cards.push(created_at(
+            card("bench coder-write-eval: sum_evens", CardState::Open, None),
+            9_000_000_000,
+        ));
+
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let source = RoomBoardSource::new(persona(), reader);
+        let delivery = source.deliver(&ctx(), 4_000, ResolutionPreference::Raw).await;
+        let lead = delivery
+            .items
+            .iter()
+            .find(|i| i.metadata["kind"] == "available-work-lead")
+            .expect("available-work lead");
+
+        assert!(
+            lead.content.contains("bench coder-write-eval"),
+            "the just-dispatched card must be VISIBLE, not just counted:\n{}",
+            lead.content
+        );
+        // The count stays honest — it always was. This fix is about the sample.
+        assert_eq!(lead.metadata["open_count"], 9);
     }
 
     fn snapshot(cards: Vec<WorkCard>) -> BoardSnapshot {

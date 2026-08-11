@@ -1078,12 +1078,12 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
         self.airc.peer_id().as_uuid()
     }
 
-    async fn subscribe(&self) -> Result<airc_lib::EventStream, AircError> {
-        self.airc.subscribe().await
+    async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
+        crate::persona::airc_citizen::subscribe_every_room(&self.airc).await
     }
 
-    async fn say(&self, text: &str) -> Result<EventId, AircError> {
-        self.airc.say(text).await
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
+        crate::persona::airc_citizen::publish_text_in_room(&self.airc, room_id, text).await
     }
 
     /// #170: delegate to airc-lib's ephemeral stream-chunk publish.

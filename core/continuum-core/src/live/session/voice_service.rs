@@ -24,6 +24,41 @@ impl VoiceService {
         }
     }
 
+    /// Core-driven join (#58): one participant enters a live call, so the session gains
+    /// her — created on the first arrival. The call id IS the airc room id
+    /// (`session_id == room_id`, #193 slice B), so there is one identity and no
+    /// translation table.
+    ///
+    /// Returns the parse error loud rather than swallowing it: a call id that is not a
+    /// RoomId means the transport's own gate let something through, and silently
+    /// declining to register would put us straight back in the invisible state this
+    /// exists to end.
+    pub fn join_participant(
+        &self,
+        call_id: &str,
+        participant: VoiceParticipant,
+    ) -> Result<(), String> {
+        let id = Uuid::parse_str(call_id)
+            .map_err(|e| format!("call_id '{call_id}' is not a RoomId uuid: {e}"))?;
+        self.orchestrator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .add_participant(id, id, participant);
+        Ok(())
+    }
+
+    /// Sessions the orchestrator currently holds — the read side the live-call
+    /// projection folds against `CallManager::live_calls()` (#58). The divergence
+    /// between the two IS the defect: a live call with no session here is why a
+    /// persona sits in a room, present, while `isInCall()` returns false and her
+    /// responses are dropped.
+    pub fn registered_sessions(&self) -> Vec<(Uuid, Vec<VoiceParticipant>)> {
+        self.orchestrator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .registered_sessions()
+    }
+
     /// Register a voice session with participants
     pub fn register_session(
         &self,

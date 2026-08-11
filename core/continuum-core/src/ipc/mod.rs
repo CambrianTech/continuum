@@ -120,6 +120,7 @@ pub mod positron_kanban_source;
 pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
+pub mod positron_live_source;
 pub mod positron_serving_source;
 pub mod positron_source;
 pub mod positron_wall_source;
@@ -981,13 +982,42 @@ pub fn start_server(
     // and a missing config is a boot-order / packaging bug, not a runtime
     // condition we can recover from.
     match crate::model_registry::init_global() {
-        Ok(reg) => log_info!(
-            "ipc",
-            "server",
-            "model_registry loaded: {} models across {} providers",
-            reg.models().count(),
-            reg.providers().count()
-        ),
+        Ok(reg) => {
+            log_info!(
+                "ipc",
+                "server",
+                "model_registry loaded: {} models across {} providers",
+                reg.models().count(),
+                reg.providers().count()
+            );
+            // A degraded model is REPORTED, never silent (#63). Boot survives a bad
+            // artifact now, so the only way an operator learns their model is unusable is
+            // if we say it — once per model, with the parser's own words, at the seam that
+            // decided it. Silence here would trade a loud crash for a quiet lie.
+            // NOT log_warn! — this line fires BEFORE any ServiceModule exists (see the
+            // comment above: the registry loads first on purpose), and every file-logging
+            // path is dead at that instant. Measured, three silent drops deep:
+            //   1. `log_*` needs LOGGER, whose only production initializer is ffi/mod.rs
+            //      (the legacy Node-embedding entry) — never called on the native server.
+            //   2. `clog_*`/`write_log_direct` needs GLOBAL_LOG_SENDER, set by
+            //      LoggerModule::new() — which has not been constructed yet here.
+            //   3. even once set, `queue_log` try_sends into a bounded channel and drops
+            //      silently when full.
+            // I wrote this warning with log_warn!, could not find it anywhere, and only
+            // then learned the whole chain was dark. A degradation nobody can see is
+            // exactly the bug this fix exists to kill, so it uses the sink that needs no
+            // initialization and demonstrably reaches the log file at boot.
+            for (id, why) in reg.unhydratable() {
+                tracing::warn!(
+                    model_id = %id,
+                    reason = %why,
+                    probe_class = "registry.model.unhydratable",
+                    "model is UNAVAILABLE — its artifact did not hydrate. The core is up \
+                     and every other model is usable; this one cannot be served or planned \
+                     against until the artifact or the reader is fixed."
+                );
+            }
+        }
         Err(e) => panic!("failed to load model_registry: {e}"),
     }
 
@@ -1579,7 +1609,59 @@ pub fn start_server(
     // default 8790. Bind failure is LOUD (a squatted port must surface), but
     // non-fatal: the core serves without a media plane rather than dying —
     // the live face shows its honest avatar-presence chip in that state.
-    let call_manager = std::sync::Arc::new(crate::live::transport::call_server::CallManager::new());
+    let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
+    // Handle for the live-call projection (#58). Taken HERE because the original is
+    // moved into the module registry below, and the emitter is a READER — it must not
+    // change who owns the service.
+    let voice_service_for_view = voice_service.clone();
+
+    // CORE-DRIVEN SESSION REGISTRATION (#58). Built mutable so the registrar can be
+    // installed BEFORE the Arc freezes it: joining a call now registers the session in
+    // the core itself, instead of waiting for whichever client happened to implement it.
+    // Exactly one ever did (Node, in legacy/, now retired), which is why iOS/Android/TUI
+    // citizens were structurally voiceless rather than merely buggy.
+    let call_manager = {
+        let mut mgr = crate::live::transport::call_server::CallManager::new();
+        let voice_for_join = voice_service.clone();
+        mgr.set_session_registrar(std::sync::Arc::new(
+            move |call_id: &str, user_id: &str, display_name: &str, is_ai: bool| {
+                let Ok(uid) = uuid::Uuid::parse_str(user_id) else {
+                    // A non-uuid participant id is a caller bug, not a runtime condition —
+                    // say so rather than registering a citizen nobody can address later.
+                    tracing::warn!(
+                        call_id = %call_id,
+                        user_id = %user_id,
+                        probe_class = "live.register.bad_user_id",
+                        "call join carried a non-uuid user id — session NOT registered for                          this participant; she will render as unregistered in the live view"
+                    );
+                    return;
+                };
+                let participant = crate::live::VoiceParticipant {
+                    user_id: uid,
+                    display_name: display_name.to_string(),
+                    participant_type: if is_ai {
+                        crate::live::SpeakerType::Persona
+                    } else {
+                        crate::live::SpeakerType::Human
+                    },
+                    expertise: Vec::new(),
+                    // Audio-native is a MODEL capability the transport cannot know. Left
+                    // false here and owned by whoever knows the model; claiming it from a
+                    // join flag would make a text persona silently miss transcriptions.
+                    is_audio_native: false,
+                };
+                if let Err(e) = voice_for_join.join_participant(call_id, participant) {
+                    tracing::warn!(
+                        call_id = %call_id,
+                        error = %e,
+                        probe_class = "live.register.failed",
+                        "core-driven session registration FAILED — the call is live and the                          core cannot route to this participant"
+                    );
+                }
+            },
+        ));
+        std::sync::Arc::new(mgr)
+    };
     {
         let port = crate::config_env::read("CONTINUUM_CALL_WS")
             .and_then(|s| s.trim().parse::<u16>().ok())
@@ -1596,7 +1678,6 @@ pub fn start_server(
     }
 
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
-    let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
     let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
     let voice_state = Arc::new(VoiceState::new(
         voice_service.clone(),
@@ -3025,6 +3106,20 @@ pub fn start_server(
                 positron_serving_source::spawn_serving_emitter(
                     &state.rt_handle,
                     ws_substrate.clone(),
+                );
+
+                // Live-call glass box (#58): folds the TRANSPORT's calls against
+                // the ORCHESTRATOR's registered sessions. Their disagreement is
+                // the defect — a live call with no registration is why a persona
+                // sits present and silent while isInCall() returns false and her
+                // responses are dropped. Rendering it makes that a visible fact on
+                // web + iOS + Android + TUI at once, instead of a mystery each
+                // client rediscovers.
+                positron_live_source::spawn_live_call_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                    call_manager.clone(),
+                    voice_service_for_view.clone(),
                 );
 
                 // Producer half of the same stream: attach a node-level
