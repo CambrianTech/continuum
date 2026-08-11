@@ -419,6 +419,7 @@ mod registry_integration {
                 trust_level: TrustLevel::Owner,
                 last_seen: 1000000,
                 latency_ms: Some(47),
+                peer_id: None,
             });
             registry.save_to_disk().unwrap();
         }
@@ -453,6 +454,7 @@ mod registry_integration {
             trust_level: TrustLevel::Trusted,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
         });
 
         // Storage node
@@ -466,6 +468,7 @@ mod registry_integration {
             trust_level: TrustLevel::Trusted,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
         });
 
         let compute_nodes = registry.nodes_with_capability("compute");
@@ -495,6 +498,7 @@ mod registry_integration {
             trust_level: TrustLevel::Blocked,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
         });
 
         assert_eq!(
@@ -529,6 +533,7 @@ mod registry_integration {
             trust_level: TrustLevel::Blocked,
             last_seen: 0,
             latency_ms: None,
+            peer_id: None,
         });
 
         assert!(registry.get("removeme").is_some());
@@ -626,6 +631,7 @@ mod router_integration {
                 .unwrap()
                 .as_millis() as u64,
             latency_ms: Some(47),
+            peer_id: None,
         });
 
         // Router: Mac with no GPU
