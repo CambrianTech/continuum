@@ -653,16 +653,16 @@ pub(crate) fn dispatch_swe_card_body(
     };
     format!(
         "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\n{}\n\n\
-         This is a REAL open-source issue. Clone `{}` into your workspace, check out commit \
-         `{}`, reproduce the bug, and fix it in the actual source. Definition of done: these \
-         tests pass — {}. Commit your change, then mark the card done (work/state). Your DIFF \
-         is graded against the repo's held-out test suite — do not edit the tests.",
+         This is a REAL open-source issue. When you CLAIM this card, the repo is already \
+         staged in your workspace at `swe/{}/` (checked out at the buggy commit) and your \
+         scored solve starts automatically — fix the bug IN PLACE in that checkout. Definition \
+         of done: these tests pass — {}. Your DIFF is graded against the repo's held-out test \
+         suite; do not edit the tests.",
         i.instance_id,
         i.repo,
         i.base_commit,
         i.problem_statement.trim(),
-        i.repo,
-        i.base_commit,
+        i.instance_id,
         tests,
     )
 }
@@ -715,8 +715,12 @@ impl ActionCommand for BenchmarkDispatch {
         enum CardWork {
             /// Gym: write a solution file; DoD is a compile/test shell.
             Gym { solution_file: String },
-            /// SWE: clone a real repo at a commit, fix the issue, produce a diff.
-            Swe { repo: String, base_commit: String },
+            /// SWE: the pulled instance. Dispatch STAGES it into the directed assignee's
+            /// workspace/swe/<instance> so her claim auto-fires the scored solve (#346's
+            /// dispatch_staged_swe_solve) — the loop closes with nobody in it.
+            Swe {
+                instance: Box<crate::cognition::swe_bench::SweInstance>,
+            },
         }
         struct PreparedCard {
             title: String,
@@ -741,11 +745,10 @@ impl ActionCommand for BenchmarkDispatch {
                 .map(|i| PreparedCard {
                     title: dispatch_card_title(spec.name, &i.instance_id, &i.problem_statement),
                     body: dispatch_swe_card_body(spec.name, &i),
-                    work: CardWork::Swe {
-                        repo: i.repo.clone(),
-                        base_commit: i.base_commit.clone(),
-                    },
                     needs_setup: false,
+                    work: CardWork::Swe {
+                        instance: Box::new(i),
+                    },
                 })
                 .collect()
         } else {
@@ -821,6 +824,8 @@ impl ActionCommand for BenchmarkDispatch {
         }
 
         let take = p.limit.map(|l| l as usize).unwrap_or(prepared.len());
+        // Continuum home under which each citizen's workspace lives (for SWE staging).
+        let stage_home = continuum_home().ok();
         let mut card_ids = Vec::new();
         let mut skipped_needs_setup = 0u32;
         let mut kickoffs = 0u32;
@@ -834,6 +839,48 @@ impl ActionCommand for BenchmarkDispatch {
                 skipped_needs_setup += 1;
                 continue;
             }
+
+            // The directed assignee (round-robin) — resolved UP FRONT because a SWE card
+            // stages into HER workspace before it is claimable, so her claim auto-fires the
+            // scored solve (#346 dispatch_staged_swe_solve). None → undirected dispatch.
+            let who: Option<&String> = if assignees.is_empty() {
+                None
+            } else {
+                Some(&assignees[card_ids.len() % assignees.len()])
+            };
+
+            // STAGE the SWE checkout into the assignee's workspace/swe/<instance> BEFORE the
+            // card is claimable, so `work/claim` finds it and launches the solve. Reuses the
+            // proven swe_bench::clone_at (fast from the local mirror). Best-effort: a stage
+            // failure is REPORTED and the card still posts — the loop never half-breaks.
+            let mut staged_ok = false;
+            if let (CardWork::Swe { instance }, Some(who), Some(home)) =
+                (&pc.work, who, stage_home.as_ref())
+            {
+                if let Some(peer) = self
+                    .registry
+                    .get_by_agent_name(who)
+                    .map(|rt| rt.airc().peer_id().as_uuid())
+                {
+                    let dir = home
+                        .join("citizens")
+                        .join("peers")
+                        .join(peer.to_string())
+                        .join("workspace")
+                        .join("swe")
+                        .join(&instance.instance_id);
+                    if dir.join(".git").exists() {
+                        staged_ok = true; // already staged (a prior claim / dispatch)
+                    } else if let Err(e) =
+                        crate::cognition::swe_bench::clone_at(instance, &dir).await
+                    {
+                        kickoff_errors.push(format!("stage {}: {e}", instance.instance_id));
+                    } else {
+                        staged_ok = true;
+                    }
+                }
+            }
+
             let mut req = CreateWorkCard::new(repo.clone(), pc.title, Priority::P2);
             req.body = Some(pc.body);
             let card_id = airc
@@ -843,14 +890,11 @@ impl ActionCommand for BenchmarkDispatch {
             let full = card_id.as_uuid().simple().to_string();
             let short = full[..8].to_string();
 
-            // Directed dispatch: round-robin an addressed kickoff per card.
-            // A card on the board is a fact; an addressed imperative in its
-            // own message block is what actually starts work (measured
-            // 2026-08-07: the same instruction actuated as its own block and
-            // was ignored when coalesced mid-burst). airc.say is one event =
-            // one block, so the structural condition holds by construction.
-            if !assignees.is_empty() {
-                let who = &assignees[card_ids.len() % assignees.len()];
+            // Directed dispatch: round-robin an addressed kickoff per card. An addressed
+            // imperative in its OWN message block is what actually starts work (measured
+            // 2026-08-07: coalesced mid-burst it was ignored). airc.say is one event = one
+            // block, so the structural condition holds by construction.
+            if let Some(who) = who {
                 let kickoff = match &pc.work {
                     CardWork::Gym { solution_file } => format!(
                         "@{who} (to you): card {short} on this board is yours. Claim it \
@@ -859,13 +903,24 @@ impl ActionCommand for BenchmarkDispatch {
                          (work/state {short} done). Your artifact gets graded against \
                          held-out tests."
                     ),
-                    CardWork::Swe { repo: r, base_commit } => format!(
-                        "@{who} (to you): card {short} is a REAL {r} issue (SWE-bench, a full \
-                         project). Claim it (claim_task {short}), read its body, clone {r} at \
-                         commit {base_commit} into your workspace, fix the issue in the actual \
-                         source, then mark it done (work/state {short} done). Your diff is \
-                         graded against the repo's held-out tests — do not edit the tests."
-                    ),
+                    CardWork::Swe { instance } => {
+                        let staged = if staged_ok {
+                            format!(
+                                " The repo is STAGED in your workspace at `swe/{}/`.",
+                                instance.instance_id
+                            )
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "@{who} (to you): card {short} is a REAL {} issue (SWE-bench, a full \
+                             project).{staged} Claim it (claim_task {short}) — claiming STARTS \
+                             your scored solve automatically. Fix the bug in `swe/{}/` (do not \
+                             edit the tests); your diff is graded against the repo's held-out \
+                             tests.",
+                            instance.repo, instance.instance_id
+                        )
+                    }
                 };
                 match airc.say(&kickoff).await {
                     Ok(_) => kickoffs += 1,
