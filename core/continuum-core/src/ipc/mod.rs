@@ -2388,7 +2388,14 @@ pub fn start_server(
                     .as_ref()
                     .map(|p| p.fits_on_gpu)
                     .unwrap_or(false);
-                if plan_ready {
+                // Lane-source-agnostic hosting (misfit / grid design): when the
+                // operator pinned an EXTERNAL OpenAI-compatible endpoint, there is
+                // no local lane to "fit on GPU" — enter the ready-check regardless
+                // of the local plan. `await_ready_serving` short-circuits to a
+                // direct decode-probe of the pinned endpoint (K3, a grid peer).
+                let external_lane =
+                    crate::inference::llama_server::external_serving_pin().is_some();
+                if plan_ready || external_lane {
                     // `fits_on_gpu` is a RESOURCE decision (the model fits VRAM) — it does
                     // NOT prove the lane can DECODE. A lane can fit yet fail EVERY
                     // generation with `500 "Compute error."` while `/health` still answers
