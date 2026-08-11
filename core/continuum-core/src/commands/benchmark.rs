@@ -572,6 +572,14 @@ pub struct BenchmarkDispatchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub assignees: Option<Vec<String>>,
+    /// Restrict a SWE-class dispatch to these exact `instance_id`s (e.g.
+    /// `sympy__sympy-24152`), in this order — instead of taking the first `limit` from the
+    /// dataset. Substring match, so a short id (`sympy-24152`) also selects. Omit to dispatch
+    /// the dataset head. Lets a caller target a KNOWN-buildable instance rather than whatever
+    /// sits first in the dataset (astropy's C-extension build is the hard tail, #383, and it
+    /// leads swe-bench-lite). Ignored for gym-class benchmarks.
+    #[serde(default)]
+    pub instances: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -793,11 +801,28 @@ impl ActionCommand for BenchmarkDispatch {
             // full-project card each. Reuses the SAME loader agent/solve grades against —
             // no second source of truth. THIS is what killed the "no runnable eval_set"
             // refusal that had blocked every SWE dispatch (Joel: "fix the goddamn thing").
-            let instances = crate::cognition::swe_bench::load_dataset(dataset)
+            let mut instances = crate::cognition::swe_bench::load_dataset(dataset)
                 .await
                 .map_err(|e| {
                     CommandError::Internal(format!("swe dataset '{dataset}' load failed: {e}"))
                 })?;
+            // Caller-targeted instances win over dataset order — select by substring (so a
+            // short id resolves) and preserve the CALLER's ordering, fail loud on a miss so a
+            // typo never silently dispatches the wrong (or whole) set.
+            if let Some(wanted) = p.instances.as_ref().filter(|w| !w.is_empty()) {
+                let mut picked: Vec<crate::cognition::swe_bench::SweInstance> = Vec::new();
+                for want in wanted {
+                    match instances.iter().position(|i| i.instance_id.contains(want.as_str())) {
+                        Some(idx) => picked.push(instances.remove(idx)),
+                        None => {
+                            return Err(CommandError::Invalid(format!(
+                                "no instance in '{dataset}' matches '{want}' — check the id (e.g. sympy__sympy-24152)"
+                            )));
+                        }
+                    }
+                }
+                instances = picked;
+            }
             instances
                 .into_iter()
                 .map(|i| PreparedCard {
