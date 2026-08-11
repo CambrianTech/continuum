@@ -311,6 +311,66 @@ Nothing here changes the first slice. It changes what must be true of it before
 anyone is billed, and it is recorded now because retrofitting attribution and
 verification after money moves is the expensive order.
 
+### 3d. The three key-spaces the router must join — #2228, the gate under every live wire
+
+Audited 2026-08-10. This is the one thing every live wire in this document
+silently assumes, and it is not true yet. There are **three live key-spaces plus
+a sim, and none of them share a key:**
+
+| Island | Keyed by | Carries | file:line |
+|---|---|---|---|
+| **Router registry** (the only live remote-routing path) | `GridNode.node_id: String` = a **Tailscale IP** | ADVERTISED `vram_mb`, ranked desc | `modules/grid/node.rs:175`, `modules/grid/router.rs:143` |
+| **Capacity gossip** | airc **`PeerId`** (Uuid) | LIVE free bytes | `capacity/gossip.rs:49,129` |
+| **Settlement / economy** | `BudgetSource::Peer(String)` (a PeerId string) | delivery reputation | `capacity/settlement.rs:48,152`, `capacity/grid_budget.rs:54` |
+| **Sim** (market + placement policies) | `PeerId` | proven pricing, all sim-only | `capacity/{market,grid,sim}.rs` (§5) |
+
+The live router (`modules/grid/router.rs`) references **none** of `market`,
+`Reputation`, `CapacityOffer`, or `gossip` — zero hits. And `market::expected_cost`
+/ `Reputation::trust_lower_bound` have **zero callers outside the sim**. They are
+four disconnected islands.
+
+**This is why §7 below is subtly wrong where it says "needs no wire change,
+`CapacityOffer` already carries the bytes."** The *bytes* exist — but
+`CapacityOffer` is keyed by `PeerId` and the router's `NodeRegistry` is keyed by a
+Tailscale-IP `node_id` **String**. `grid_budget` cannot reach `find_gpu_node`, and
+reputation cannot price a node the router names, until the three keys become one.
+The missing piece is not a lookup — it is a **shared identity**.
+
+**The fix is the identity spine (#2228), and it is not inventing a pattern — it is
+applying the one personas already follow.** `airc_runtime.rs:390` enforces
+`persona_id == peer_id` ("a persona IS her airc PeerId"). The node fix is the exact
+sibling: **`node_id == peer_id`** — a NODE is an airc peer too. Set at the
+pairing/discovery correlation point (airc pairing already learns the transport
+address *and* the PeerId together; the grid ran a parallel transport scan instead
+of consuming it). Then `GridNode` carries the `PeerId`, `find_gpu_node` joins the
+gossip's live bytes + the settlement reputation by that one key, and
+[[the-grid-identity-spine-durable-id-fluid-location]] is real: identity → capacity
+→ routing → settlement → reputation, all one spine, one key.
+
+**Consequence for build order — this is the gate, and it un-thrashes the lanes:**
+
+1. **#2228 join first** (`node_id == peer_id` on `GridNode`, set at pairing). It
+   is a *precondition*, not a parallel lever: no economy wire — price, reputation,
+   benchmark routing — is reachable from the live router until it lands. Own it as
+   the identity lane; it needs a healthy 2-node lane for the live proof.
+2. **Then price at the router** — `grid_budget` (fit) + `expected_cost` ÷
+   `trust_lower_bound` (reputation) rank the survivors of the capability filter
+   inside `find_gpu_node`. The sim already proved the pricing (§5 is the gym; the
+   policies are dead *as wiring* but the `market`/`settlement` math is validated).
+3. **Then make the benchmark lane consult the router at all** — today
+   `spawn_base_eval_lane` → `acquire_eval_lane_slot` is LOCAL-ONLY
+   (`cognition/eval.rs:817,576`), GPU-vs-CPU, bypassing all grid routing. "A
+   benchmark is an activity like any other" (§6) is the *target*; the eval lane
+   emitting a routed demand is the change that makes it true.
+4. **Then settle** — the grade at `commands/agent/solve.rs:523-547` becomes a
+   `Settlement` keyed by the serving node's PeerId, so benchmark deliveries BUILD
+   the reputation the router prices on. On a solo box this is self-reputation and
+   inert; it earns its value the moment step 1 makes multi-node real.
+
+Do not skip step 1. Every attempt to wire price/reputation/benchmark-routing
+before the keys are joined lands on one of the four islands and reads as progress
+while connecting nothing — the failure this section exists to name.
+
 ## 4. Where this sits in the λ framing
 
 Per Joel: the lease/mode arbiter is the wireless-MAC "price the seams" mechanism —
@@ -442,18 +502,25 @@ Why the router is the right home, where `HostBudget` was not:
   never blocks in total partition, with no branch to add.
 
 **The concrete gap it closes:** `HINT_PREFER_GPU` currently routes via
-`find_gpu_node(registry)` — a **boolean** has-a-GPU test. It cannot tell a 5090
-from an 8GB laptop card, and it has no idea whether the model this activity needs
-actually fits on the node it picks. `grid_budget` answers the question at the
-resolution that matters: *which reachable node can actually host this?*
+`find_gpu_node(registry)`, which sorts candidates by **advertised** `vram_mb`
+descending (`modules/grid/router.rs:143`) — so it *does* rank a 5090 above a laptop
+card, but on a self-reported number it never verifies, and with no check that the
+model this activity needs actually *fits* on the node it picks. `grid_budget`
+answers the question at the resolution that matters: *which reachable node can
+actually host this?* — using the gossip's LIVE free bytes, not the advertised
+total.
 
 So the corrected chain is: grid grows → `grid_budget` sees a node that fits a
 better model → the router sends the activity there → the persona is more capable.
 No node is ever configured against memory it does not have.
 
-It is the smallest honest change, needs **no wire change** (`CapacityOffer`
-already carries the bytes), and unblocks the other two levers — because
-`plan_serving` already derives model choice *and* served window from the budget.
+It is the smallest honest change *on the byte-plumbing* — `CapacityOffer` already
+carries the bytes, and `plan_serving` already derives model choice *and* served
+window from the budget, so once the number reaches the router the other two levers
+fall out. **But it is gated on §3d:** `CapacityOffer` is `PeerId`-keyed and the
+router registry is `node_id`-keyed, so `grid_budget` cannot reach `find_gpu_node`
+until the #2228 join makes `node_id == peer_id`. The join is the wire change this
+slice actually depends on; the byte-plumbing is trivial once the keys are one.
 
 It is also directly observable in both directions, which is the point:
 
