@@ -6,12 +6,29 @@ and the "we can handle any benchmark" claim. Everything routes through the ONE
 adapter (`benchmark/dispatch` → kanban → learning citizens); the tiers below are
 about **what the adapter can actually reach**, not hand-authored optimism.
 
-**The dividing line:** our dispatch path today pulls a HuggingFace dataset whose rows
-are **SWE-bench-INSTANCE-shaped** (`repo` + `base_commit` + `patch` + `test_patch` +
-`problem_statement` + FAIL_TO_PASS) via `cognition/swe_bench::load_dataset`, and grades
-by cloning + applying the diff + running held-out tests. Benchmarks that don't fit that
-schema need either (B) a per-benchmark harness adapter (Docker/GPU/agent-loop) or (C)
-are compare-only (no public dataset — we cite the number, we don't run it).
+## ⚠️ DOCTRINE (Joel, 2026-08-10): adapt the benchmark INTO the system — never run the persona in a weird situation
+
+We do **NOT** adopt a benchmark's native agent harness (mini-SWE-agent, Terminus 2,
+Codex, Claude Code harness, their Docker agent-loop). Running our persona inside someone
+else's harness is exactly the "weird situation" we refuse — it is not how she works for
+a real user, so a score from it measures the wrong thing. **From every benchmark we
+import only two things: (1) the TASK INPUTS and (2) the GRADING ORACLE.** Everything else
+is OURS and invariant: the persona works the SAME loop she always does — a kanban card
+lands in her room, she claims it, works it in her own workspace with her own hands/tools,
+marks it done, and our grader runs the benchmark's oracle against the artifact she
+produced. Test like we plan to do work.
+
+So the real seam (#370) is NOT "a harness adapter per benchmark." It is a
+**`BenchmarkAdapter`** with two responsibilities, the persona untouched between them:
+- `stage_task_into_workspace(task) -> workspace` — materialize the benchmark's inputs
+  as things she can perceive and act on (a repo checked out at a commit; a spec + files;
+  a spreadsheet; a PDF corpus rendered as images for her eyes; a terminal sandbox).
+- `grade_artifact(workspace) -> verdict` — run the benchmark's own oracle (held-out
+  tests, validator, judge) against what she made. Import the oracle, not the driver.
+
+The swe-bench wiring already IS this adapter (stage repo → she works her loop → grade
+with held-out tests). The tiers below are ordered by **staging + oracle complexity**,
+NOT by "how weird their harness is" — because we never touch their harness.
 
 ## Tier A — SWE-instance-shaped → adapter-addable (verify HF schema, then a catalog row)
 These are real GitHub-issue / repo-patch tasks. Each needs its HF dataset id confirmed
@@ -21,10 +38,12 @@ These are real GitHub-issue / repo-patch tasks. Each needs its HF dataset id con
 - **FrontierSWE** — frontierswe.com; dominance-scored. K3=81.2.
 - (swe-bench-lite / swe-bench-verified — ALREADY WIRED + live-verified.)
 
-## Tier B — needs a per-benchmark HARNESS adapter (Docker / GPU / agent-loop / judge)
-Real, runnable, but NOT a JSONL of instances — each carries its own environment and
-grader. These generalize #370 into a `BenchmarkHarness` seam (outlier B to the SWE
-loader). Heavy infra; grid-relevant (GPU tasks are why the grid exists).
+## Tier B — richer STAGING + ORACLE, still worked through OUR loop (never their harness)
+Real, runnable, but the task isn't just an issue string — it carries an environment to
+stage (Docker image, terminal, GPU sandbox, spreadsheet, PDF-as-images) and its own
+oracle (validator/judge) to grade. We import BOTH into a `BenchmarkAdapter`; the persona
+still works her normal loop. Heavy infra; grid-relevant (GPU tasks are why the grid
+exists). We import their oracle, NOT their agent driver.
 - **SWE Marathon v1.1** — swe-marathon.org; Docker images + **GPU tasks (H20-calibrated)**, anti-cheat validators. K3=42.0.
 - **Terminal-Bench 2.1** — real terminal tasks, Docker envs. K3=88.3.
 - **PostTrain Bench** — posttrainbench.com; official **Harbor** impl, **GPU (H20)**, max reasoning, 3-run avg.
@@ -51,9 +70,12 @@ loader). Heavy infra; grid-relevant (GPU tasks are why the grid exists).
    fully real (dispatch → work → graded), not just dispatch.
 2. **Tier A adds** — verify DeepSWE / FrontierSWE HF dataset ids + schema; one catalog
    row each (mirrors the swe-bench-lite wiring). Cheap once #1 proves the loop.
-3. **`BenchmarkHarness` seam (#370, outlier B)** — the SWE loader is outlier A; a
-   Docker/agent-loop harness is outlier B. Validate the interface on Terminal-Bench 2.1
-   (self-contained Docker) before the GPU-heavy ones (SWE-Marathon, PostTrain, MLE).
+3. **`BenchmarkAdapter` seam (#370)** — generalize the swe-bench adapter to
+   `stage_task_into_workspace` + `grade_artifact` (import task + oracle, persona
+   invariant). The SWE loader is outlier A; a Docker-environment task is outlier B.
+   Validate the interface on Terminal-Bench 2.1 (self-contained Docker) before the
+   GPU-heavy ones (SWE-Marathon, PostTrain, MLE). We stage their env + run their oracle;
+   we NEVER run their agent harness.
 4. **Compare-only ledger** — Tier C numbers live in the results ledger as cited
    baselines, clearly labeled "not run here" (falsifiability, forge-alloy standard #377).
 5. **Multimodal** — Tier D rides the vision-serving lane (#106).
