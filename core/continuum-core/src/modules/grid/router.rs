@@ -314,6 +314,7 @@ mod tests {
                 .unwrap()
                 .as_millis() as u64,
             latency_ms: Some(47),
+            peer_id: None,
         };
         registry.register_node(node);
         (registry, dir.to_string_lossy().into())

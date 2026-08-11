@@ -299,6 +299,15 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
     let address = TransportAddress::tailscale(address_str, name.map(String::from));
     let node_id = address_str.to_string();
 
+    // The durable airc identity, if the caller knows it (#2228 — a NODE is an airc peer,
+    // the sibling of persona_id == peer_id). Optional: manual pairing by address alone
+    // won't carry it, and the gossip correlation supplies it later via set_peer_id.
+    let peer_id = params
+        .get("peerId")
+        .and_then(|v| v.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .map(crate::identity::PeerId::from_uuid);
+
     let node = GridNode {
         node_id: node_id.clone(),
         node_name: name.map(String::from),
@@ -307,6 +316,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         trust_level: trust,
         last_seen: frame::now_millis(),
         latency_ms: None,
+        peer_id,
     };
 
     state.registry.register_node(node);
@@ -315,6 +325,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
     Ok(CommandResult::Json(json!({
         "paired": true,
         "nodeId": node_id,
+        "peerId": peer_id.map(|p| p.to_string()),
         "trustLevel": trust_str,
         "capabilities": capabilities,
     })))
