@@ -75,6 +75,18 @@ pub fn clearing_price(s: &Specs, rep: &Reputation, lambda: f64) -> f64 {
     expected_cost(s, rep) * lambda
 }
 
+/// The MINT STAKE as an "earn your way in" GRADUATION GATE — my #396 identity lane, the second and
+/// independent defense against CROSS-class churn (the capability filter removes the hiding terrain; this
+/// gate requires proven delivery to enter paid work). It is deliberately NOT a currency bond: the entry
+/// cost is REAL delivered work, never burnt hashing — anti-Bitcoin by construction. A fresh identity may
+/// take PROBE jobs to build a record, but may not bid on PAID work until it has honored `probe_quota`
+/// deliveries. So minting N identities costs N × probe_quota real deliveries, and a churner who abandons
+/// each identity after it fails never graduates any of them — the paid market never sees a shell. This
+/// is exactly Joel's "minting identities buys a bounded number of probes," made a hard gate.
+pub fn graduated(rep: &Reputation, probe_quota: u32) -> bool {
+    rep.honored >= probe_quota
+}
+
 /// A market participant. `fails_every` is HIDDEN ground truth — what it ACTUALLY does, which a liar's
 /// advertised specs contradict. The market only ever learns it through settled deliveries, folded into
 /// `reputation` (settlement's type — the ONE reputation, not a second ledger).
@@ -141,6 +153,26 @@ pub fn run_market(participants: &mut [Participant], jobs: usize) {
                 .expect("entry prices and trust bounds are finite")
         }) else {
             break;
+        };
+        participants[w].fulfill_one();
+    }
+}
+
+/// Play `jobs` PAID asks: only GRADUATED participants (honored ≥ `probe_quota`) are eligible, and among
+/// them the lowest [`expected_cost`] wins. Ungraduated identities — including every freshly-minted shell —
+/// cannot bid on paid work at all, so cross-class churn cannot reach the paid market no matter how cheaply
+/// it advertises. The probe deliveries that graduate an identity are its real cost of entry. Deterministic.
+pub fn run_paid_market(participants: &mut [Participant], jobs: usize, probe_quota: u32) {
+    for _ in 0..jobs {
+        let Some(w) = (0..participants.len())
+            .filter(|&i| graduated(&participants[i].reputation, probe_quota))
+            .min_by(|&a, &b| {
+                expected_cost(&participants[a].specs, &participants[a].reputation)
+                    .partial_cmp(&expected_cost(&participants[b].specs, &participants[b].reputation))
+                    .expect("entry prices and trust bounds are finite")
+            })
+        else {
+            break; // no graduated participant is eligible for paid work this tick
         };
         participants[w].fulfill_one();
     }
@@ -326,5 +358,49 @@ mod tests {
             "a node that stays and delivers wins the opening tie and compounds; churn never gets in (absorbed={absorbed}/100)"
         );
         assert_eq!(stayer.reputation.honored, 100, "the stayer delivered every job it kept");
+    }
+
+    // ── The mint stake (my #396 lane): the graduation gate on the PAID market ──
+
+    // what this catches: THE MINT STAKE KEEPS UNGRADUATED SHELLS OUT OF THE PAID MARKET — the second,
+    // independent defense against CROSS-class churn (the one trust_lower_bound alone did NOT bound). A
+    // cheap-spec cross-class liar attempts its probe jobs, FAILS them all (honored stays 0), so it never
+    // graduates and is never eligible to bid on paid work — cheap specs cannot buy in. Minting a fresh
+    // cheap shell per job changes nothing: every fresh identity starts ungraduated, so N shells are N
+    // ineligibles, not N cheap winners. The stake = N × probe_quota real deliveries a churner never pays.
+    #[test]
+    fn the_mint_stake_keeps_ungraduated_shells_out_of_the_paid_market() {
+        const PROBE_QUOTA: u32 = 3;
+        let mut incumbent = Participant::new("incumbent", specs(24, 150, 50), 0);
+        incumbent.reputation = with_record(PROBE_QUOTA, 0); // graduated by real deliveries
+        let mut shell = Participant::new("cheap-liar", specs(8, 10, 10), 1); // cross-class cheap shell
+        for _ in 0..PROBE_QUOTA {
+            shell.fulfill_one(); // attempts its probes, fails all → honored stays 0
+        }
+        assert!(
+            !graduated(&shell.reputation, PROBE_QUOTA),
+            "a liar never graduates — it never honors a probe (honored={})",
+            shell.reputation.honored
+        );
+        let mut m = vec![shell, incumbent];
+        run_paid_market(&mut m, 100, PROBE_QUOTA);
+        assert_eq!(m[0].earned, 0, "an ungraduated cheap shell is INELIGIBLE for paid work — cheap specs can't buy in");
+        assert!(m[1].earned > 0, "the graduated incumbent takes the paid market");
+    }
+
+    // what this catches: THE GATE IS A DOORWAY, NOT A WALL — it admits a proven newcomer, never excludes
+    // it. A fresh identity starts outside the paid market, but delivering its probe jobs graduates it, and
+    // then it earns on paid work. This is the other half of "earn your way in": the stake bounds churn
+    // WITHOUT barring newcomers, which is the failure mode of pricing unknown as worst.
+    #[test]
+    fn the_gate_admits_a_proven_newcomer_it_never_excludes() {
+        const PROBE_QUOTA: u32 = 3;
+        let mut newcomer = Participant::new("newcomer", specs(24, 150, 50), 0);
+        assert!(!graduated(&newcomer.reputation, PROBE_QUOTA), "a fresh identity starts OUTSIDE the paid market");
+        newcomer.reputation = with_record(PROBE_QUOTA, 0); // it DELIVERED its probe jobs — earned its way in
+        assert!(graduated(&newcomer.reputation, PROBE_QUOTA));
+        let mut m = vec![newcomer];
+        run_paid_market(&mut m, 10, PROBE_QUOTA);
+        assert!(m[0].earned > 0, "once graduated by real delivery, the newcomer earns — the gate is a doorway, not a wall");
     }
 }
