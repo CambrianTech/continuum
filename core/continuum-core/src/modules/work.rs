@@ -388,7 +388,16 @@ const SWE_CLAIM_ATTEMPTS: u32 = 3;
 /// title. Task text = the card body (the real issue, gold held out). Model = the live
 /// served base (dynamic — never a hardcoded id). All outcomes on the
 /// `benchmark.dispatch` probe; silence is not an outcome.
-async fn dispatch_staged_swe_solve(
+///
+/// Called from TWO triggers, both legitimate: (1) `work/claim` — a citizen claims a
+/// staged card off the board; (2) `benchmark/dispatch` directed at an assignee — dispatch
+/// already staged the repo into HER workspace and addressed the card to her, so it fires
+/// her solve DIRECTLY rather than depend on her re-deriving a `work/claim` from a chat
+/// kickoff (the fragile hop that stalls every run under warm-slot starvation — glass-boxed
+/// 2026-08-11: cards staged + assigned, zero claims, zero solves). The solve is her WHOLE
+/// cognition with an exclusive warm slot (`quiesce_others`), so nothing about "she does the
+/// work herself" changes — only the trigger moves off the chat turn.
+pub(crate) async fn dispatch_staged_swe_solve(
     ctx: &Ctx,
     airc: &std::sync::Arc<airc_lib::Airc>,
     claimer: uuid::Uuid,

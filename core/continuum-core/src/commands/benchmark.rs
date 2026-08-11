@@ -597,6 +597,12 @@ pub struct BenchmarkDispatchResult {
     /// reported via `kickoff_errors`, never silently counted as delivered.
     #[ts(type = "number")]
     pub kickoffs: u32,
+    /// Scored solves FIRED directly for directed SWE assignees — the loop starting work
+    /// without waiting on a cognitive `work/claim` (the hop that stalls under warm-slot
+    /// starvation). One per staged directed SWE card. `dispatched - solves_fired` are the
+    /// gym / undirected cards that still start on organic claim.
+    #[ts(type = "number")]
+    pub solves_fired: u32,
     /// Send failures for kickoff messages, card-id-prefixed. The cards are ON
     /// the board regardless — a failed kickoff is reported, not unwound; the
     /// citizen can still find and claim the card off the board.
@@ -886,7 +892,24 @@ impl ActionCommand for BenchmarkDispatch {
         let mut card_ids = Vec::new();
         let mut skipped_needs_setup = 0u32;
         let mut kickoffs = 0u32;
+        let mut solves_fired = 0u32;
         let mut kickoff_errors = Vec::new();
+        // Auto-fire is capped at the live serving LANE count, and only when serving is
+        // READY — a directed dispatch must never fire more concurrent scored solves than
+        // the box can hold (glass-boxed 2026-08-11: over-firing solves onto a 2-lane box
+        // thrashed the llama-server lane to a Connection-refused death mid-solve). 0 when
+        // serving isn't ready: stage + kick off, but don't launch a solve into a dead lane.
+        // NOTE: this caps THIS dispatch call; a global in-flight-solve admission gate shared
+        // with the work/claim path (so total solves ≤ lanes across all triggers) is the
+        // proper fix and is tracked separately (#385/#386).
+        let solve_cap: u32 = {
+            let s = crate::inference::llama_server::current_serving();
+            if s.ready {
+                s.lanes.max(1)
+            } else {
+                0
+            }
+        };
         for pc in prepared.into_iter().take(take) {
             // A gym setup_shell task needs its workspace re-broken before work
             // starts — harness orchestration a claimed card can't provide yet.
@@ -960,10 +983,10 @@ impl ActionCommand for BenchmarkDispatch {
                         };
                         format!(
                             "@{who} (to you): card {short} is a REAL {} issue (SWE-bench, a full \
-                             project).{staged} Claim it (claim_task {short}) — claiming STARTS \
-                             your scored solve automatically. Fix the bug in `swe/{}/` (do not \
-                             edit the tests); your diff is graded against the repo's held-out \
-                             tests.",
+                             project).{staged} I've STARTED your scored solve on it — fix the bug \
+                             in `swe/{}/` (do not edit the tests); your diff is graded against the \
+                             repo's held-out tests, and you get a few attempts to investigate your \
+                             own failures. Watch the room for the verdict.",
                             instance.repo, instance.instance_id
                         )
                     }
@@ -975,6 +998,21 @@ impl ActionCommand for BenchmarkDispatch {
                     Err(e) => kickoff_errors.push(format!("{short}: {e}")),
                 }
             }
+
+            // DIRECTED SWE dispatch FIRES her scored solve directly — the repo is staged in
+            // her workspace and the card is addressed to her, so we don't wait on her to
+            // re-derive a work/claim from the kickoff (the hop that stalls under warm-slot
+            // starvation — glass-boxed 2026-08-11: cards staged + assigned, zero claims,
+            // zero solves). Her WHOLE cognition solves it with an exclusive warm slot; the
+            // work/claim path stays the trigger for undirected / human-claimed cards. Only a
+            // STAGED SWE card has a solve to fire here (a gym card self-grades differently).
+            if staged_ok && solves_fired < solve_cap {
+                if let CardWork::Swe { .. } = &pc.work {
+                    crate::modules::work::dispatch_staged_swe_solve(ctx, &airc, *who_peer, card_id)
+                        .await;
+                    solves_fired += 1;
+                }
+            }
             card_ids.push(short);
         }
 
@@ -984,6 +1022,7 @@ impl ActionCommand for BenchmarkDispatch {
             card_ids,
             skipped_needs_setup,
             kickoffs,
+            solves_fired,
             kickoff_errors,
         })
     }
