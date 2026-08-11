@@ -87,18 +87,18 @@ impl ServiceModule for BenchmarkGradeModule {
         if event_name != WORK_CARD_STATE_CHANGED {
             return Ok(());
         }
-        let state = payload
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !is_terminal(state) {
+        // Typed event, not a hand-parsed JSON object: deserialize the same
+        // `WorkCardStateChanged` struct the emitter serialized. A malformed payload
+        // (impossible for our own emitter) is simply not a transition we grade.
+        let Ok(evt) = serde_json::from_value::<
+            crate::modules::work::WorkCardStateChanged,
+        >(payload) else {
+            return Ok(());
+        };
+        if !is_terminal(&evt.state) {
             return Ok(());
         }
-        let card_id = payload
-            .get("card_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let card_id = evt.card_id;
         if card_id.is_empty() {
             return Ok(());
         }

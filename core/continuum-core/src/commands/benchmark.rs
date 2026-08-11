@@ -16,10 +16,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::competitor::{
-    classify, optional_arms, run_competition, ArmClass, ArmTaskResult, DEFAULT_ENDPOINT,
-};
-use crate::cognition::eval::{CognitionEval, CognitionEvalParams};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// How a benchmark's solutions are scored.

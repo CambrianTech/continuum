@@ -46,6 +46,16 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynComma
 /// ([[the-whole-system-is-event-based-not-polling]]). Payload: `{card_id, state}`.
 pub const WORK_CARD_STATE_CHANGED: &str = "work.card.state_changed";
 
+/// Typed payload for [`WORK_CARD_STATE_CHANGED`]. The emitter and every subscriber
+/// (the SWE grade-on-done handler, board freshness, auto-close) share this ONE struct —
+/// the event is a typed row serialized/deserialized through serde, never a hand-built
+/// `json!` object on one side and a `.get("field")` scrape on the other.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkCardStateChanged {
+    pub card_id: String,
+    pub state: String,
+}
+
 /// Process-global handle to the bus + registry so `work/state` (a command, which holds
 /// no `ModuleContext`) can publish the transition event. Set once by `WorkModule::
 /// initialize`; the bus and registry ARE process-global (one core), same granularity as
@@ -684,9 +694,13 @@ impl ActionCommand for WorkState {
         // ([[the-whole-system-is-event-based-not-polling]]). Best-effort: the state
         // change already succeeded, so a bus that isn't wired yet must never fail the verb.
         if let Some((bus, registry)) = WORK_EVENT_BUS.get() {
+            let evt = WorkCardStateChanged {
+                card_id: p.card_id.clone(),
+                state: p.state.clone(),
+            };
             bus.publish(
                 WORK_CARD_STATE_CHANGED,
-                serde_json::json!({ "card_id": p.card_id.clone(), "state": p.state.clone() }),
+                serde_json::to_value(&evt).unwrap_or_default(),
                 registry,
             )
             .await;
