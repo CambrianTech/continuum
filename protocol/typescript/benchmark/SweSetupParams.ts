@@ -11,7 +11,7 @@ instance: string,
 dataset?: string, 
 /**
  * The solver's peer id — full UUID or hex prefix, resolved against
- * `citizens/peers/` exactly like `benchmark/grade`.
+ * `citizens/peers/` exactly like `benchmark/swe-grade`.
  */
 solver: string, 
 /**
