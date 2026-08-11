@@ -442,16 +442,24 @@ pub(crate) async fn dispatch_staged_swe_solve(
         }
         return;
     };
-    let model = crate::inference::llama_server::current_serving()
-        .active_model
-        .unwrap_or_default();
+    // WAIT for the boot-gate, don't guard against it. A claim can land while the serving lane
+    // is still proving it can decode (the ~10-15s window after core-ready); parking here until
+    // the lane is decode-verified means the solve fires the moment serving is up instead of the
+    // claim silently no-op-ing (Joel 2026-08-11: "persona should boot beforehand"). None after
+    // the deadline = a genuinely dead lane; the claim stands and re-fires on the next serving edge.
+    let model = crate::inference::llama_server::await_ready_serving(
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .and_then(|s| s.active_model)
+    .unwrap_or_default();
     if model.is_empty() {
         crate::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
             instance = %instance,
-            "no served model — dispatch skipped; claim stands, re-claim after serving is up"
+            "serving not decode-ready within 30s — dispatch skipped; claim stands, re-fires on next serving edge"
         );
         return;
     }
