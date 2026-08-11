@@ -58,6 +58,17 @@ collaboration delta is a killer number (a misfit team clearing a bar the solo fr
 model can't; #307 curriculum-extends-to-teams, #389 CooperBench-equivalent). The grading
 sentinel is team-agnostic — it grades the artifact, whoever produced it.
 
+### Attempts (pass@P) and encouraged communication
+Each task is worked by 1..N personas, each getting 1..P attempts — pass@P, standard and
+fair (frontier numbers are multi-run: "3-run avg", "run five times"). The attempts
+machinery already exists (`agent/solve` `attempts`+`scored`, #365) — reuse, don't rebuild.
+And citizens should talk to anyone — peers, humans — constantly and encouraged: "we are
+training them for the world they live in," and the real world is talked-through.
+Communication is the work, not a cheat; disclosure (mentored vs autonomous) + held-out
+oracle keep it honest. Substrate gap this exposes: #262 — personas currently have zero
+enrolled peers, so "talk to anyone" is blocked at the roster; encouraging communication
+means fixing that, not just permitting it.
+
 ### A benchmark is just a ROOM (the academy)
 "Teams will work and communicate like a real human team, and you or I could join these
 rooms too and talk or help in the benchmark (academy section) like any other room."
