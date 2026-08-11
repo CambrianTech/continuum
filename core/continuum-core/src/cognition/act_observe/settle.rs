@@ -58,7 +58,7 @@ pub async fn drive_to_settle(
     fn calls_signature(calls: &[ToolCall]) -> String {
         let mut parts: Vec<String> = calls
             .iter()
-            .map(|c| format!("{}|{}", c.name, serde_json::to_string(&c.input).unwrap_or_default()))
+            .map(|c| c.loop_fingerprint())
             .collect();
         parts.sort();
         parts.join(",")
