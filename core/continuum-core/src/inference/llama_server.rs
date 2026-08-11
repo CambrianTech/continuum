@@ -864,6 +864,76 @@ pub fn serving_state_receiver() -> Option<watch::Receiver<ServingSnapshot>> {
     SERVING_STATE.get().cloned()
 }
 
+/// Outcome of [`await_snapshot_resettle`] — did the serving layout change?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotSettle {
+    /// A READY snapshot arrived whose (lanes, window) differ from the
+    /// pre-change layout — the planner acted on the demand change.
+    Resettled { lanes: u32, window: u32 },
+    /// The bound expired with the layout unchanged. A demand change the
+    /// planner decides not to act on is a legitimate outcome (the current
+    /// layout may already be optimal), never an error.
+    Unchanged,
+}
+
+/// Await the serving plan RESETTLING after a demand change — event-gated on
+/// the daemon's own `watch` (each wake is a real snapshot publish), never a
+/// condition-scanning poll ([[the-whole-system-is-event-based-not-polling]]).
+///
+/// The consumer this exists for (glass-boxed 2026-08-11, Atlas on
+/// sympy-24152): a measured solve's quiesce lease lowers lane demand so the
+/// planner can collapse a crowded 4-lane × 16k layout into one big-window
+/// lane — but the old prelude drove IMMEDIATELY, and the reconcile then
+/// refused to relaunch under a live measurement ("eval holds the lane
+/// steady"). The solve froze the cramped layout under itself and the persona
+/// worked a SWE repo through a ~400-token keyhole (13.1k of her 16.4k window
+/// was fixed overhead). Awaiting the resettle BEFORE the lane is acquired
+/// breaks that deadlock with ordering alone.
+///
+/// Resolves on the first READY snapshot whose (lanes, served window) differ
+/// from `pre_*`, or when `bound` expires — bounded loudly by the caller, so a
+/// planner that (correctly) keeps the layout can never park the solve.
+pub async fn await_snapshot_resettle(
+    mut rx: watch::Receiver<ServingSnapshot>,
+    pre_lanes: u32,
+    pre_window: u32,
+    bound: std::time::Duration,
+) -> SnapshotSettle {
+    let deadline = tokio::time::Instant::now() + bound;
+    // The daemon publishes once per reconcile tick. TWO ready publishes with the
+    // layout still unchanged means the planner has RUN under the new demand and
+    // decided to hold — return early instead of taxing every no-change solve
+    // with the full bound (the bound remains the backstop for a daemon that
+    // stops publishing entirely).
+    let mut unchanged_ready_publishes = 0u8;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return SnapshotSettle::Unchanged;
+        }
+        match tokio::time::timeout(remaining, rx.changed()).await {
+            // Sender dropped — the daemon is gone; nothing further will arrive.
+            Ok(Err(_)) => return SnapshotSettle::Unchanged,
+            Ok(Ok(())) => {
+                let (ready, lanes, window) = {
+                    let snap = rx.borrow();
+                    (snap.ready, snap.lanes, snap.served_context_window)
+                };
+                if ready && (lanes != pre_lanes || window != pre_window) {
+                    return SnapshotSettle::Resettled { lanes, window };
+                }
+                if ready {
+                    unchanged_ready_publishes += 1;
+                    if unchanged_ready_publishes >= 2 {
+                        return SnapshotSettle::Unchanged;
+                    }
+                }
+            }
+            Err(_) => return SnapshotSettle::Unchanged,
+        }
+    }
+}
+
 /// The model currently served on this node, per the daemon's last reconcile.
 /// Returns [`ServingSnapshot::empty`] before the daemon installs its state
 /// (boot) or when nothing is live. No HTTP, no probe — a `watch` borrow.
@@ -2500,6 +2570,62 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    /// what this catches (2026-08-11, the solve-prelude keyhole): the settle wait
+    /// must resolve on the FIRST ready snapshot whose layout differs from the
+    /// pre-quiesce one (event-gated on the watch, no polling), and a planner that
+    /// keeps its layout must end as `Unchanged` at the bound — a legitimate
+    /// outcome that proceeds, never a park. A non-ready layout change must NOT
+    /// resolve it (mid-relaunch snapshots are transient, not a settled plan).
+    #[tokio::test]
+    async fn await_snapshot_resettle_resolves_on_ready_layout_change_and_bounds_out_otherwise() {
+        use super::{await_snapshot_resettle, ServingSnapshot, SnapshotSettle};
+        use std::time::Duration;
+
+        // Resettle: a ready snapshot with a NEW layout resolves the wait.
+        let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
+        let waiter = tokio::spawn(await_snapshot_resettle(rx, 4, 16384, Duration::from_secs(5)));
+        // Transient mid-relaunch publish (not ready) must be ignored…
+        let mut transitional = ServingSnapshot::empty();
+        transitional.lanes = 1;
+        transitional.served_context_window = 32768;
+        transitional.ready = false;
+        tx.send(transitional.clone()).unwrap();
+        // …and the settled ready layout resolves it.
+        transitional.ready = true;
+        tx.send(transitional).unwrap();
+        assert_eq!(
+            waiter.await.unwrap(),
+            SnapshotSettle::Resettled {
+                lanes: 1,
+                window: 32768
+            }
+        );
+
+        // Unchanged, EARLY: two ready publishes with the same layout mean the
+        // planner ran and held — resolves well before the (long) bound, so a
+        // no-change solve pays reconcile-tick latency, never the full backstop.
+        let (tx2, rx2) = tokio::sync::watch::channel(ServingSnapshot::empty());
+        let waiter2 = tokio::spawn(await_snapshot_resettle(rx2, 4, 16384, Duration::from_secs(30)));
+        let mut same = ServingSnapshot::empty();
+        same.lanes = 4;
+        same.served_context_window = 16384;
+        same.ready = true;
+        tx2.send(same.clone()).unwrap();
+        tokio::task::yield_now().await;
+        tx2.send(same).unwrap();
+        let early = tokio::time::timeout(Duration::from_secs(2), waiter2)
+            .await
+            .expect("two unchanged ready publishes must resolve early, not ride the bound")
+            .unwrap();
+        assert_eq!(early, SnapshotSettle::Unchanged);
+
+        // Unchanged, BACKSTOP: a daemon that stops publishing ends at the bound.
+        let (_tx3, rx3) = tokio::sync::watch::channel(ServingSnapshot::empty());
+        let waiter3 =
+            tokio::spawn(await_snapshot_resettle(rx3, 4, 16384, Duration::from_millis(80)));
+        assert_eq!(waiter3.await.unwrap(), SnapshotSettle::Unchanged);
+    }
 
     /// what this catches (#350): the two states an EMPTY serving snapshot can mean
     /// collapsing back into one. `ServingSnapshot::empty()` is published from process
