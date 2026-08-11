@@ -260,7 +260,7 @@ impl TrainingTriggerState {
         // L2→L3 retention (the board write) lives at the ONE birth-seam every
         // training job funnels through — the `genome/job-create` command body that
         // this helper dispatches to above — NOT here. That keeps a single
-        // registration point for the trigger path, a direct `cu genome/job-create`,
+        // registration point for the trigger path, a direct `uu genome/job-create`,
         // and any future caller alike (compression principle), instead of one writer
         // per caller that silently misses jobs born off this path.
         // ([[dev-task-learning-loop-gap-map]] L3, docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md)

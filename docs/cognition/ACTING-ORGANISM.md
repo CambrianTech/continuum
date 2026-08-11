@@ -230,7 +230,7 @@ adapter.**
 Each step compiles and tests green before the next (`cargo check` first; escalate
 to `test` only when behavior changed; `CARGO_TARGET_DIR=$HOME/.continuum/cache/
 cargo-target`; `--features metal,accelerate`; `df -h /` after cycles). Validate
-via pure Rust + the `cu` client, never npm/jtag.
+via pure Rust + the `uu` client, never npm/jtag.
 
 > **Steps 3–5 are ONE coupled cut — do not split them.** Today's working tool-use
 > (`[[persona-tool-loop-act-then-report]]`) lives ENTIRELY inside the deliberation

@@ -87,7 +87,7 @@ mod tests {
     use crate::sdk_codegen::ActionCommand;
 
     // what this catches: the six oauth commands carry their `auth/oauth/<verb>` wire
-    // names — the routing keys cu / the persona tool surface / the grid bind to. The
+    // names — the routing keys uu / the persona tool surface / the grid bind to. The
     // name mirrors the file path; drift silently breaks "the file tree IS the
     // namespace".
     #[test]

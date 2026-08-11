@@ -103,7 +103,7 @@ use vision_describe::VisionDescribe;
 /// [`CommandExecutor`] slot (it re-enters the bus to run `ai/generate`), same as the
 /// `chat/*` family. Called from
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
-/// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `cu`.
+/// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `uu`.
 ///
 /// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
 /// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],

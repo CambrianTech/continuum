@@ -10,7 +10,7 @@
 //! Wired together by [`command_objects`], which the owning `ChatModule` calls from its
 //! [`commands()`](crate::runtime::ServiceModule::commands) so both verbs reach the
 //! kernel's typed object map (and thus `command_registry()`, the persona tool surface,
-//! the ACL, codegen, and `cu`).
+//! the ACL, codegen, and `uu`).
 
 use std::sync::Arc;
 

@@ -13,7 +13,7 @@
 //!
 //! This module just AGGREGATES those per-command declarations into two generated
 //! indices (built once, cached), and is the surface-agnostic core every entry
-//! point shares — the persona tool-call path, the `cu` CLI, MCP. The mapping is
+//! point shares — the persona tool-call path, the `uu` CLI, MCP. The mapping is
 //! one thing; each surface renders it in its own native form.
 //!
 //! - [`from_wire_name`] — a wire tool-call name → the canonical command. Trained
@@ -208,7 +208,7 @@ fn classify(wire: &str) -> (String, Outcome) {
 }
 
 /// Resolve a wire tool-call name to the canonical command WITHOUT tallying — the
-/// shared resolver every dispatch seam (the `cu` CLI, the IPC/MCP socket route)
+/// shared resolver every dispatch seam (the `uu` CLI, the IPC/MCP socket route)
 /// funnels through so a trained reflex / former name / charset-legal form resolves
 /// the SAME way it does on the persona path. No recording here: these surfaces
 /// carry infra traffic (`commands/list`, health pings) that would drown the
@@ -466,8 +466,8 @@ mod tests {
     }
 
     // what this catches: the socket/CLI resolver (used at Runtime::route_command and
-    // the `cu` entry) maps IDENTICALLY to the persona path — alias, canonical
-    // (idempotent), charset-legal, unknown-passthrough — so `cu` / IPC / MCP accept
+    // the `uu` entry) maps IDENTICALLY to the persona path — alias, canonical
+    // (idempotent), charset-legal, unknown-passthrough — so `uu` / IPC / MCP accept
     // the same vocabulary a persona does. Non-recording is a structural guarantee
     // (resolve_wire_name == classify().0, and classify never calls record), so it's
     // asserted by construction, not by racy global-tally inspection.

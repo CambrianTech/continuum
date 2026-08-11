@@ -7,7 +7,7 @@
 //! Migrated off the module's legacy `handle_command` arm (#62). Returns the same typed
 //! [`BrokerSnapshot`](crate::paging::BrokerSnapshot) the legacy handler did — its
 //! camelCase serde + ts-rs export (`protocol/typescript/paging/BrokerSnapshot.ts`) is
-//! the wire contract the TS mixin and `cu`/status row consume, preserved byte-identical.
+//! the wire contract the TS mixin and `uu`/status row consume, preserved byte-identical.
 //!
 //! ## Gating
 //!

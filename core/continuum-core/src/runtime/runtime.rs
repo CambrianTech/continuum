@@ -363,7 +363,7 @@ impl Runtime {
         params: serde_json::Value,
         caller: Option<crate::routing::CallerIdentity>,
     ) -> Option<Result<CommandResult, String>> {
-        // Meet the caller's dialect: a socket client (cu / IPC / MCP) may reach for
+        // Meet the caller's dialect: a socket client (uu / IPC / MCP) may reach for
         // a command's trained alias (`read_file`), former name, or charset-legal
         // form (`code_read`). Resolve to the canonical name through the SAME
         // tool_dialect section the persona path uses, so every surface accepts the
@@ -374,7 +374,7 @@ impl Runtime {
 
         // Typed path wins: a registered DynCommand object routes DIRECTLY (O(1),
         // lock-free), ahead of the prefix table — same precedence the
-        // CommandExecutor uses. This is the live socket route (cu / IPC), so the
+        // CommandExecutor uses. This is the live socket route (uu / IPC), so the
         // consult must live here too until the dispatch paths are unified.
         // See docs/architecture/COMMAND-ORGANIZATION.md.
         //
@@ -399,7 +399,7 @@ impl Runtime {
         // Provided commands (perception/observe, interface/screenshot) have NO
         // ServiceModule — the headless substrate can't render/capture them. Route
         // through the ONE Provided decision shared with the CommandExecutor's
-        // interceptor, so the SOCKET route (cu / IPC / MCP) reaches the eye-node by
+        // interceptor, so the SOCKET route (uu / IPC / MCP) reaches the eye-node by
         // the SAME infrastructure the in-process persona route uses — no path gains
         // a capability another lacks. Guard on the cheap set lookup so `params` is
         // moved (not cloned) on the common non-Provided path.
@@ -1892,7 +1892,7 @@ mod piece_2_pr3_dispatch_tests {
         assert_eq!(b_keys, vec!["paging/broker.snapshot".to_string()]);
     }
 
-    // what this catches: the SOCKET route (`route_command`, used by cu / IPC / MCP)
+    // what this catches: the SOCKET route (`route_command`, used by uu / IPC / MCP)
     // reaches a connected Provided-command provider through the SAME
     // `provider_registry` the in-process persona route uses via the interceptor —
     // no dispatch path can gain (or lack) a capability the other has. Both call the
