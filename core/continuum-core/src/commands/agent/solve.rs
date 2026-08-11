@@ -790,6 +790,27 @@ fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
     Some(dir.join(format!("agent-solve-{run_id}.json")))
 }
 
+/// Global admission gate for scored solve DRIVES — the fix for the lane-thrash death
+/// (glass-boxed 2026-08-11, build 4627): with solves finally firing (dispatch auto-fire +
+/// claim + durable-restore all launch `dispatch_staged_swe_solve`), MORE solves than the
+/// box has serving lanes ran their generation phase at once and thrashed one llama-server
+/// lane to a Connection-refused death mid-solve ("6 mid-relaunch retries exhausted — lane
+/// never came back"). This caps concurrent solve drives at the live serving-lane budget:
+/// the (lanes+1)th solve WAITS for a permit instead of oversubscribing and killing the
+/// lane. The permit is held for the whole drive and released on drop — panic-safe, so a
+/// stalled or panicking solve can never leak a slot. Sized ONCE at first use from the live
+/// lane count (min 1); a later lane shrink is a v1 mismatch (rare, and quiesce_others still
+/// protects the KV prefix). One place, both triggers respect it, because every solve —
+/// inline or detached, dispatch or claim — flows through `solve_body`.
+/// [[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]
+fn solve_admission() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let lanes = crate::inference::llama_server::current_serving().lanes.max(1) as usize;
+        tokio::sync::Semaphore::new(lanes)
+    })
+}
+
 impl AgentSolve {
     /// The solve body — deliberately ctx-free (reaches the persona via the global workspace
     /// registry), so it runs inline OR spawned detached with the same code path.
@@ -824,6 +845,19 @@ impl AgentSolve {
         //    pressure defer) and no receipt discriminated them because the whole
         //    acquisition was one silent await. The timeout converts any park into a
         //    loud named error; the bracket probes make the NEXT stall name its line.
+        // Admission gate (held for the whole drive, released on drop): WAIT for one of the
+        // serving-lane solve slots before acquiring/using a lane, so a dispatch fan-out +
+        // claim + restore can never run more solves than the box has lanes and thrash one to
+        // a Connection-refused death mid-generation. `.ok()` because the semaphore is never
+        // closed; binding to `_solve_permit` keeps the permit alive across the drive.
+        let _solve_permit = solve_admission().acquire().await.ok();
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "admission.acquired",
+            available_slots = solve_admission().available_permits() as u64,
+            "solve admitted — holding one serving-lane solve slot for the drive"
+        );
         crate::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"),
