@@ -296,11 +296,33 @@ fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, Stri
         .iter()
         .map(|c| (normalize_key(c), c.as_str()))
         .collect();
+    // Universally-common flag synonyms. If the user typed one spelling and the
+    // SCHEMA uses the other, resolve to the schema's canonical field — so muscle
+    // memory ("--command" for a shell, the name Claude's Bash tool + most CLIs use)
+    // is served, not bounced (Joel's rule #328: canonical follows the common
+    // standard, aliases resolve). Only consulted when the raw flag is NOT itself a
+    // canonical field; data-driven, so it never overrides a command's real param.
+    const SYNONYMS: &[(&str, &str)] = &[("command", "cmd")];
     let field = |raw: &str| -> String {
-        canon_by_norm
-            .get(&normalize_key(raw))
-            .map(|c| (*c).to_string())
-            .unwrap_or_else(|| to_camel_case(raw))
+        let norm = normalize_key(raw);
+        if let Some(c) = canon_by_norm.get(&norm) {
+            return (*c).to_string();
+        }
+        for (a, b) in SYNONYMS {
+            let other = if normalize_key(a) == norm {
+                Some(*b)
+            } else if normalize_key(b) == norm {
+                Some(*a)
+            } else {
+                None
+            };
+            if let Some(o) = other {
+                if let Some(c) = canon_by_norm.get(&normalize_key(o)) {
+                    return (*c).to_string();
+                }
+            }
+        }
+        to_camel_case(raw)
     };
 
     let mut map = serde_json::Map::new();
