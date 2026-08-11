@@ -503,41 +503,93 @@ impl ServingDaemonModule {
     /// persona floor). The boot wiring calls this before the first
     /// [`Self::compute_plan`]; the next tick replans if it changes.
     pub fn set_lane_demand(&self, demand: u32) {
-        // Register the demand cell process-globally the first time boot sets it, so a
+        // Register the demand state process-globally the first time boot sets it, so a
         // measurement preemption lease (quiesce_all / quiesce_others) can drop the
         // warm-slot demand to the ACTIVE (non-quiesced) count for its duration and
-        // restore on drop — without threading a ServingDaemon handle into the persona
+        // release on drop — without threading a ServingDaemon handle into the persona
         // registry. Idempotent: `set` after the first call is a no-op.
-        let _ = LANE_DEMAND_CELL.set(self.lane_demand.clone());
-        self.lane_demand.store(demand.max(1), Ordering::Relaxed);
+        let state = LANE_DEMAND.get_or_init(|| LaneDemandState {
+            cell: self.lane_demand.clone(),
+            base: std::sync::Mutex::new(demand.max(1)),
+            overrides: std::sync::Mutex::new(Vec::new()),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        });
+        *state.base.lock().expect("lane-demand base lock poisoned") = demand.max(1);
+        state.recompute();
     }
 }
 
-/// Process-global handle to the live lane-demand cell (registered by the first
-/// [`ServingDaemonModule::set_lane_demand`] at boot). Lets a measurement preemption lease
-/// override serving's warm-slot demand to the number of minds that ACTUALLY need a
-/// warm slot right now — 1 during a solo measured solve — and restore it on drop, so
-/// the plan is feasible for the measurement instead of thrashing to warm-host every
-/// resident persona ([[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]).
-/// `None` before boot (unit tests / tools that never stood a daemon) → every override
-/// is a no-op, so the quiesce lease stays pure and daemon-free-testable.
-static LANE_DEMAND_CELL: std::sync::OnceLock<Arc<std::sync::atomic::AtomicU32>> =
-    std::sync::OnceLock::new();
-
-/// Override the lane demand to `active` (minds that need a warm slot now; floored at
-/// 1 — a measurement still needs one lane), returning the PREVIOUS value for restore.
-/// No-op returning `None` before the daemon has booted.
-pub fn quiesce_lane_demand(active: u32) -> Option<u32> {
-    LANE_DEMAND_CELL
-        .get()
-        .map(|cell| cell.swap(active.max(1), Ordering::Relaxed))
+/// The lane-demand authority: one BASE (the boot-wired persona floor) plus a registry of
+/// measurement OVERRIDES, with the effective value recomputed on every change — never a
+/// swap/restore pair. The naive swap/restore version had a real interleaving bug: with two
+/// overlapping leases (eval's `quiesce_all` + a solve's `quiesce_others`), the first drop
+/// restored the pre-lease value OVER the still-held second lease, and the second drop then
+/// restored the FIRST lease's override — leaving the whole fleet's demand stuck at 1 with
+/// nobody quiesced until the (boot-only) `set_lane_demand` ever ran again. Order-independent
+/// recompute makes overlap correct by construction: effective = max(overrides) while any are
+/// held (never starve a concurrent measurement below what it asked for), else base.
+struct LaneDemandState {
+    /// The live cell the planner reads (`ServingDaemonModule::lane_demand`).
+    cell: Arc<std::sync::atomic::AtomicU32>,
+    /// The boot-wired persona floor — restored whenever the last override releases.
+    base: std::sync::Mutex<u32>,
+    /// Active measurement overrides as `(lease_id, active_minds)`.
+    overrides: std::sync::Mutex<Vec<(u64, u32)>>,
+    next_id: std::sync::atomic::AtomicU64,
 }
 
-/// Restore the lane demand to `prev` — the value [`quiesce_lane_demand`] returned when
-/// the lease was acquired. No-op if the daemon never booted.
-pub fn restore_lane_demand(prev: u32) {
-    if let Some(cell) = LANE_DEMAND_CELL.get() {
-        cell.store(prev.max(1), Ordering::Relaxed);
+impl LaneDemandState {
+    /// Recompute the effective demand from base + overrides and publish it to the cell.
+    fn recompute(&self) {
+        let overrides = self.overrides.lock().expect("lane-demand overrides lock poisoned");
+        let effective = overrides
+            .iter()
+            .map(|(_, active)| *active)
+            .max()
+            .unwrap_or_else(|| *self.base.lock().expect("lane-demand base lock poisoned"));
+        drop(overrides);
+        self.cell.store(effective.max(1), Ordering::Relaxed);
+    }
+
+    /// Add an override and return its lease id.
+    fn acquire(&self, active: u32) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.overrides
+            .lock()
+            .expect("lane-demand overrides lock poisoned")
+            .push((id, active.max(1)));
+        self.recompute();
+        id
+    }
+
+    /// Remove the override with `id` (unknown id = no-op) and recompute.
+    fn release(&self, id: u64) {
+        self.overrides
+            .lock()
+            .expect("lane-demand overrides lock poisoned")
+            .retain(|(oid, _)| *oid != id);
+        self.recompute();
+    }
+}
+
+/// Registered by the first [`ServingDaemonModule::set_lane_demand`] at boot. `None` before
+/// boot (unit tests / tools that never stood a daemon) → every override is a no-op, so the
+/// quiesce lease stays pure and daemon-free-testable.
+/// [[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]
+static LANE_DEMAND: std::sync::OnceLock<LaneDemandState> = std::sync::OnceLock::new();
+
+/// Add a measurement override: the fleet's warm-slot demand becomes `active` (minds that
+/// need a warm slot now; floored at 1 — a measurement still needs one lane) until released.
+/// Returns the lease id to pass to [`release_lane_demand`]; `None` before the daemon booted.
+pub fn quiesce_lane_demand(active: u32) -> Option<u64> {
+    LANE_DEMAND.get().map(|state| state.acquire(active))
+}
+
+/// Release the override acquired by [`quiesce_lane_demand`]. Idempotent (an unknown id is
+/// a no-op) and order-independent — the effective demand is recomputed from what remains.
+pub fn release_lane_demand(id: u64) {
+    if let Some(state) = LANE_DEMAND.get() {
+        state.release(id);
     }
 }
 
@@ -3016,6 +3068,62 @@ mod tests {
     // denied (glass-boxed 2026-07-21: pin Devstral 14GB refused while a 20GB 32B
     // teacher was resident, though evicting it frees enough). Regression for the
     // stronger-teacher swap-and-back the Academy needs.
+    // what this catches: the swap/restore interleaving bug in the measurement demand
+    // override (regression for the #2238 follow-up). With TWO overlapping quiesce
+    // leases, releasing in ACQUISITION order under the old swap/restore scheme first
+    // restored the pre-lease base over the still-held second lease, then restored the
+    // FIRST lease's override — leaving the fleet's warm-slot demand stuck at the
+    // measurement value with nobody quiesced. The authority must recompute from what
+    // remains: any-order release, base restored only when the LAST override lifts.
+    #[test]
+    fn overlapping_demand_overrides_release_in_any_order() {
+        let cell = Arc::new(AtomicU32::new(0));
+        let state = LaneDemandState {
+            cell: cell.clone(),
+            base: std::sync::Mutex::new(4),
+            overrides: std::sync::Mutex::new(Vec::new()),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        };
+        state.recompute();
+        assert_eq!(cell.load(Ordering::Relaxed), 4, "base floor before any lease");
+
+        // Overlap: eval quiesce_all (active 0 → floored 1), then a solve's
+        // quiesce_others (active 1) while the first is still held.
+        let eval = state.acquire(0);
+        assert_eq!(cell.load(Ordering::Relaxed), 1);
+        let solve = state.acquire(1);
+        assert_eq!(cell.load(Ordering::Relaxed), 1);
+
+        // The killer interleaving: release in ACQUISITION order. The solve still
+        // holds its lease, so demand must STAY at the measurement value...
+        state.release(eval);
+        assert_eq!(
+            cell.load(Ordering::Relaxed),
+            1,
+            "first release must not restore the base over a still-held lease"
+        );
+        // ...and only the LAST release restores the base floor.
+        state.release(solve);
+        assert_eq!(
+            cell.load(Ordering::Relaxed),
+            4,
+            "last release restores the base — never a stale override"
+        );
+
+        // Idempotent: releasing an unknown/stale id changes nothing.
+        state.release(solve);
+        assert_eq!(cell.load(Ordering::Relaxed), 4);
+
+        // Concurrent measurements with different needs: never starve the larger one.
+        let a = state.acquire(2);
+        let b = state.acquire(1);
+        assert_eq!(cell.load(Ordering::Relaxed), 2, "max of held overrides");
+        state.release(a);
+        assert_eq!(cell.load(Ordering::Relaxed), 1);
+        state.release(b);
+        assert_eq!(cell.load(Ordering::Relaxed), 4);
+    }
+
     #[test]
     fn pin_swap_down_credits_the_evicted_incumbents_weights() {
         let base = HostBudget {
