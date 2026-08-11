@@ -287,6 +287,28 @@ impl ActionCommand for AgentSolve {
             .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
+                // JOURNAL `state: running` NOW, before attempt 1 does anything (#2246,
+                // live 2026-08-11): the result file used to be written only when an
+                // attempt ENDED, so `benchmark/runs` — the projection whose whole job
+                // is "silence must never be ambiguous with progress" — could not list
+                // a run at all for the entire first attempt (an hour-plus on a full
+                // SWE budget). Four dispatched solves ran invisible for 17 minutes
+                // while every watcher read the empty projection as "nothing started".
+                // The marker folds as `active` with the solver named (fold_run_card
+                // reads `persona_id`); each finished attempt overwrites it with the
+                // real result, exactly as before.
+                if let Some(p) = path.as_ref() {
+                    let _ = std::fs::write(
+                        p,
+                        serde_json::json!({
+                            "state": "running",
+                            "run_id": run_id,
+                            "persona_id": inner.persona_id,
+                            "workspace": inner.workspace,
+                        })
+                        .to_string(),
+                    );
+                }
                 // HOLD THE LANE STEADY for the run's whole lifetime — the same RAII pin a
                 // living-persona eval binds ([[benchmark-is-a-governor-preemption-lease]]).
                 // Without it, the OPTIONAL grow-back re-home relaunches the lane under the

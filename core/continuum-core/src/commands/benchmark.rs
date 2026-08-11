@@ -1752,6 +1752,24 @@ mod swe_setup_tests {
             assert_eq!(card.phase, "active");
             assert!(!card.stalled);
         }
+
+        // what this catches: the dispatch-time `state: running` marker (#2246 —
+        // four live solves ran INVISIBLE to this projection for their whole
+        // first attempt because nothing was journaled until an attempt ended)
+        // must fold as a live `active` card with the solver named, never as
+        // failed/resolved, so the run is on the board from second zero.
+        #[test]
+        fn a_running_marker_folds_active_with_the_solver_named() {
+            let now: u64 = 10_000_000_000;
+            let fresh = now - 5_000;
+            let marker = json!({"state": "running", "run_id": "r5",
+                                "persona_id": "atlas-uuid", "workspace": "/w/swe/x"});
+            let card = fold_run_card("r5", Some(&marker), None, fresh, now);
+            assert_eq!(card.phase, "active");
+            assert!(!card.stalled);
+            assert_eq!(card.solver.as_deref(), Some("atlas-uuid"));
+            assert_eq!(card.resolved, None, "no grade yet — never a verdict");
+        }
     }
 }
 
