@@ -1180,16 +1180,34 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     true
                 }
             };
-            if !window_ok {
+            // LANE grow-back — the exact sibling of the window grow-back above. After a
+            // transient RAM/VRAM squeeze relaunched the lane at fewer parallel slots
+            // (n_seq_max 4→1), a later plan that wants more lanes would otherwise
+            // short-circuit to AlreadyServing on `genome_matches && window_ok` and stay
+            // FROZEN AT ONE LANE FOREVER — starving every citizen to one-at-a-time while
+            // the daemon re-decides the same plan each tick (glass-boxed 2026-08-11:
+            // ~11GB free, lanes stuck at 1, a benchmark solve infra-failed). llama.cpp
+            // cannot hot-resize n_seq_max any more than the window, so a lane increase
+            // needs a relaunch. Grow-only + discrete: served 0 = nothing to compare;
+            // target ≤ served is fine (a down-plan is the daemon's sticky choice); only
+            // target > served relaunches. `served_lanes` is the process's own truth
+            // (ServingSnapshot.lanes), never a recomputed plan value.
+            let served_lanes = current_serving().lanes;
+            let lanes_ok = served_lanes == 0 || target.lanes <= served_lanes;
+            if !window_ok || !lanes_ok {
                 crate::probe!(
-                    class = "serving.window_grow",
+                    class = "serving.grow",
                     model = target.model_id(),
                     target_window = target.context_window,
-                    "served window is below the target beyond padding tolerance — \
-                     relaunching to grow (llama.cpp has no hot-resize; a genome-set \
-                     match alone must not strand a starved lane at the boot floor)",
+                    target_lanes = target.lanes,
+                    served_lanes,
+                    window_ok,
+                    lanes_ok,
+                    "served capacity is below target (window and/or lanes) — relaunching to \
+                     grow (llama.cpp has no hot-resize; a genome-set match alone must not \
+                     strand a starved lane at the boot floor)",
                 );
-                // fall through to relaunch at the larger window.
+                // fall through to relaunch at the larger window / more lanes.
             } else {
                 // Window matches. Is the COMPUTE path alive? A child we spawned
                 // ourselves was decode-verified at `wait_ready` and is trusted
