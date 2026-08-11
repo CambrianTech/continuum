@@ -112,10 +112,12 @@ pub struct PersonaAircRuntimeRegistry {
 /// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
 pub struct QuiesceLease {
     flags: Vec<Arc<AtomicBool>>,
-    /// The serving lane-demand value in effect BEFORE this lease dropped it to the
-    /// active (non-quiesced) count — restored on drop. `None` when no serving daemon
-    /// was booted to override (unit tests / tools), keeping the lease pure there.
-    prev_demand: Option<u32>,
+    /// The serving lane-demand override this lease holds (released on drop). Held as an
+    /// ID into the demand authority's override registry — NOT a saved prev-value — so
+    /// overlapping leases (eval `quiesce_all` + a solve's `quiesce_others`) release in
+    /// any order and the effective demand recomputes from what remains. `None` when no
+    /// serving daemon was booted (unit tests / tools), keeping the lease pure there.
+    demand_override: Option<u64>,
 }
 
 impl QuiesceLease {
@@ -131,9 +133,11 @@ impl Drop for QuiesceLease {
         for f in &self.flags {
             f.store(false, Ordering::Relaxed);
         }
-        // Restore the fleet's warm-slot demand the measurement borrowed down.
-        if let Some(prev) = self.prev_demand {
-            crate::modules::serving_daemon::restore_lane_demand(prev);
+        // Release this lease's demand override; the authority recomputes the effective
+        // demand from whatever overrides remain (or the base floor if none) — safe under
+        // any release order of overlapping measurements.
+        if let Some(id) = self.demand_override {
+            crate::modules::serving_daemon::release_lane_demand(id);
         }
     }
 }
@@ -339,8 +343,11 @@ impl PersonaAircRuntimeRegistry {
         // ([[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]). Restored on
         // drop. A no-op (`None`) before the serving daemon booted — pure in unit tests.
         let active = (total - flags.len()) as u32;
-        let prev_demand = crate::modules::serving_daemon::quiesce_lane_demand(active);
-        QuiesceLease { flags, prev_demand }
+        let demand_override = crate::modules::serving_daemon::quiesce_lane_demand(active);
+        QuiesceLease {
+            flags,
+            demand_override,
+        }
     }
 
     /// Acquire the same exclusive-measurement lease as [`quiesce_all`] but leave ONE
@@ -537,7 +544,7 @@ mod tests {
 
         // normal path: held → suspended, dropped → resumed.
         {
-            let _lease = QuiesceLease { flags: flags.clone() };
+            let _lease = QuiesceLease { flags: flags.clone(), demand_override: None };
             assert!(
                 flags.iter().all(|f| f.load(Ordering::Relaxed)),
                 "lease held → fleet suspended"
@@ -554,7 +561,7 @@ mod tests {
         }
         let flags_moved = flags.clone();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _lease = QuiesceLease { flags: flags_moved };
+            let _lease = QuiesceLease { flags: flags_moved, demand_override: None };
             panic!("eval blew up mid-run while holding the lease");
         }));
         assert!(outcome.is_err(), "the leased closure did panic");
