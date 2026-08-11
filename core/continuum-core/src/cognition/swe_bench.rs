@@ -447,6 +447,32 @@ pub fn interpreter_for_year(year: u32) -> &'static str {
 
 /// Build (or reuse) the per-instance environment. Per-instance rather than per-repo because
 /// instances span years of a repo's history and their dependency graphs genuinely differ.
+/// The repo's declared build-time dependencies, from `[build-system].requires` in its
+/// `pyproject.toml`. Empty when there is no pyproject, no `[build-system]` table, or no
+/// `requires` array. These must be pre-installed into the venv when building with
+/// `--no-build-isolation` (see the call site) — pip won't fetch them for us in that mode.
+fn build_requires(repo_dir: &Path) -> Vec<String> {
+    let text = match std::fs::read_to_string(repo_dir.join("pyproject.toml")) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let parsed: toml::Value = match toml::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    parsed
+        .get("build-system")
+        .and_then(|bs| bs.get("requires"))
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
     let py = env_dir.join("bin").join("python");
@@ -491,6 +517,33 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         None,
     )
     .await?;
+
+    // BUILD REQUIRES: `--no-build-isolation` means pip will NOT fetch the repo's declared
+    // build-time dependencies — it builds against whatever is already in the venv. A repo whose
+    // setup.py imports a build helper (astropy: `import extension_helpers`; any C-extension repo:
+    // cython, numpy) therefore fails with `ModuleNotFoundError` at the metadata step unless we
+    // pre-install what its own `[build-system].requires` declares. We honor that declaration
+    // rather than hardcoding per-repo build deps — the pyproject IS the source of truth. Installed
+    // MODERN (no date-pin) like pytest/setuptools/wheel above: these are build harness, run on
+    // THIS interpreter, and carry their own version pins where they matter (e.g. cython==0.29.22).
+    let build_reqs = build_requires(repo_dir);
+    if !build_reqs.is_empty() {
+        let mut breq_args = vec!["pip", "install", "-q", "--python", &py_s];
+        breq_args.extend(build_reqs.iter().map(String::as_str));
+        let out = run(&uv, &breq_args, None).await?;
+        if !out.status.success() {
+            // Non-fatal: some declared build deps (e.g. `oldest-supported-numpy` on a fresh
+            // interpreter) may not resolve, yet the build can still succeed against the modern
+            // setuptools already present. Let the `-e .` step below be the real gate; surface this
+            // only as a breadcrumb if that step then fails.
+            tracing::warn!(
+                instance = %instance.instance_id,
+                requires = ?build_reqs,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "build-system.requires install had non-zero exit — proceeding to -e . anyway"
+            );
+        }
+    }
 
     let as_of = if instance.created_at.is_empty() {
         None

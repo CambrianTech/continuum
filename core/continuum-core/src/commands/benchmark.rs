@@ -948,6 +948,18 @@ impl ActionCommand for BenchmarkDispatch {
                 } else {
                     staged_ok = true;
                 }
+                // Build the per-instance venv NOW (with pytest + the repo installed) so her
+                // HANDS have a working `pytest`/`python` the moment she starts — not only at
+                // grade time. Without this the solve's `code/shell pytest` hits the system
+                // interpreter and she loops trying to install pytest into it (glass-boxed
+                // 2026-08-11 from Anon's astropy turn). ensure_env is idempotent and cached, so
+                // the later grade reuses this exact venv. Best-effort: a build failure is
+                // reported but the card still posts — the loop never half-breaks.
+                if staged_ok {
+                    if let Err(e) = crate::cognition::swe_bench::ensure_env(instance, &dir).await {
+                        kickoff_errors.push(format!("env {}: {e}", instance.instance_id));
+                    }
+                }
             }
 
             let mut req = CreateWorkCard::new(repo.clone(), pc.title, Priority::P2);
