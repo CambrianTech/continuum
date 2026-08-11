@@ -45,6 +45,19 @@ capacity ≠ answer leak). Design consequence: the adapter must NOT strip her do
 bare eval config (the recurring "tools disabled during eval" bug class); she takes the
 exam whole.
 
+### Teams take benchmarks too — and that's a headline
+"It's just work, and work is often a team." A benchmark is not a solo-exam mode; a team
+of citizens can co-claim + collaborate on one task and be graded on their collective
+artifact. Two reasons this is the point: **(1)** we do NOT dissect the mind to test it —
+the reductionist isolate-and-strip exam is vivisection, measuring parts and losing the
+living whole; we test the intact being (and team) doing real work. **(2)** learn in the
+situations we'll encounter in the real world — the signal transfers only if the situation
+matches DEPLOYMENT (collaborative, tool-using, memory-backed, multi-turn), which is why
+we adapt INTO our loop. Headline: measure the same benchmark SOLO vs TEAM — the
+collaboration delta is a killer number (a misfit team clearing a bar the solo frontier
+model can't; #307 curriculum-extends-to-teams, #389 CooperBench-equivalent). The grading
+sentinel is team-agnostic — it grades the artifact, whoever produced it.
+
 ## Tier A — SWE-instance-shaped → adapter-addable (verify HF schema, then a catalog row)
 These are real GitHub-issue / repo-patch tasks. Each needs its HF dataset id confirmed
 + a schema check that `SweInstance` deserializes; then it's a one-row add exactly like
