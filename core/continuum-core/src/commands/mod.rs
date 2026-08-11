@@ -16,6 +16,7 @@ pub mod airc;
 pub mod auth;
 pub mod avatar;
 pub mod benchmark;
+pub mod persona_roster;
 pub mod ai;
 pub mod capacity;
 pub mod catalog;
