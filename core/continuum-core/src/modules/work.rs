@@ -224,6 +224,48 @@ fn parse_state(s: &str) -> Result<CardState, CommandError> {
 
 // ─────────────────────────── work/claim ──────────────────────────
 
+/// Locate `card_id` on the board of one of the caller's OTHER subscribed rooms,
+/// switch her current room there, and retry the claim once.
+///
+/// Returns `None` when no subscribed room holds the card (the original
+/// wrong-room refusal stands, verbatim), `Some(result)` when the card was found
+/// and a room-switched claim was attempted — that result REPLACES the refusal,
+/// so a genuine contention in the card's room still reports as contention.
+/// Rooms are tried in subscription order; a card exists on exactly one board
+/// (boards are per-room), so the first hit is the only hit.
+async fn claim_following_card_room(
+    airc: &Arc<Airc>,
+    card_id: WorkCardId,
+    ttl_ms: u64,
+) -> Option<Result<ClaimId, airc_lib::AircError>> {
+    let set = airc.subscription_set().await.ok()?;
+    let current = airc.current_room().await.ok();
+    for sub in set.all() {
+        let room = sub.as_room();
+        if current.as_ref().is_some_and(|c| c.channel == room.channel) {
+            continue; // the room that already refused
+        }
+        let Ok(board) = airc.work_board_in(&room).await else {
+            continue;
+        };
+        if board.snapshot().cards.iter().all(|c| c.card_id != card_id) {
+            continue;
+        }
+        if airc.join(&room.name).await.is_err() {
+            continue;
+        }
+        crate::probe!(
+            class = "work.claim.followed_card_room",
+            card_id = %short8(card_id.as_uuid()),
+            room = %room.name,
+            "claim-by-id targeted a card outside the current room — switched to \
+             the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
+        );
+        return Some(airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms }).await);
+    }
+    None
+}
+
 /// Claim a work card for this persona (as its own airc key).
 pub struct WorkClaim {
     pub registry: PersonaAircRuntimeRegistry,
@@ -268,12 +310,28 @@ impl ActionCommand for WorkClaim {
     async fn run(&self, ctx: &Ctx, p: WorkClaimParams) -> Result<WorkClaimResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
-        let claim_attempt = airc
-            .claim_work_card(ClaimWorkCard {
-                card_id,
-                ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS),
-            })
-            .await;
+        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
+        let mut claim_attempt = airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms }).await;
+        // FOLLOW THE CARD TO ITS ROOM (#328 accept-or-redirect, live 2026-08-11):
+        // Atlas's very first act on her dispatched SWE card was work/claim by full
+        // uuid — refused with "not in current room general; switch to the card's
+        // room", because her room pointer was still on #general while the bench
+        // card lived on another board. The refusal burned the act, taught her the
+        // substrate was broken, and set off a 4×code/list discovery spiral that
+        // ended in an empty patch. A card id is unguessable and she can only see
+        // boards of rooms she is SUBSCRIBED to, so an explicit claim-by-id is
+        // unambiguous intent: find which of her rooms holds the card, switch her
+        // there (room = the activity — being in the card's room IS correct), and
+        // claim. airc's room-scoping semantics stay untouched; this is her own
+        // client doing exactly what the refusal text instructs.
+        if matches!(
+            claim_attempt,
+            Err(airc_lib::AircError::WorkCardNotInCurrentRoom { .. })
+        ) {
+            if let Some(retry) = claim_following_card_room(&airc, card_id, ttl_ms).await {
+                claim_attempt = retry;
+            }
+        }
         let claim_id = match claim_attempt {
             Ok(id) => id,
             Err(e) => {
