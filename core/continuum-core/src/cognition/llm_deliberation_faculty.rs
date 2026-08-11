@@ -1438,6 +1438,24 @@ impl LlmDeliberationFaculty {
             }
         }
 
+        // PINNED just-executed result (#392, run-18057-f1). The full result of the act
+        // she just ran is appended DIRECTLY from the shared working-memory buffer as the
+        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of the
+        // working-memory contribution at `WORKING_MEMORY_SALIENCE` it competed in
+        // `arbiter.focus()` top-k and was evicted whole under capacity pressure, so the
+        // persona generated blind to her own grep/read output (the 0-byte SWE-bench patch).
+        // Reading it here puts no attention pass between the hands and the mind. Text, not
+        // structured tool_use/tool_result Parts: `content_text()` is blind to non-Text
+        // parts, so Parts would undercount in `fit_messages`/`messages_cost` and risk a
+        // window-edge overflow — and the live GGUF chat template renders text reliably.
+        // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated inside
+        // the accessor so it stops re-prefilling once the turn settles (#139/#165).
+        if let Some(wm) = &self.working_memory {
+            if let Some(block) = wm.pinned_active_result_block() {
+                messages.push(ChatMessage::text("user", block));
+            }
+        }
+
         // An empty conversation is a legitimate state (a quiet room on a
         // self-initiated tick): the situation lives in the system prompt's assembled
         // context, not in a conversation turn. Adapters still require ≥1 message, so
@@ -2631,6 +2649,63 @@ mod tests {
             assert!(
                 in_tail(&v2, "Then I read it back to verify"),
                 "the new act must append to the trailing turn"
+            );
+        }
+
+        // what this catches: run-18057-f1 — the just-executed act's FULL result must reach
+        // the next prompt EVEN WHEN NOTHING BID IT through the arbiter. The 0-byte SWE-bench
+        // patch happened because the result rode the working-memory faculty's single
+        // 0.5-salience contribution, which `arbiter.focus()` truncated whole under capacity
+        // pressure — she then generated blind to her own grep output. The fix reads the
+        // result DIRECTLY from working memory in the message builder and pins it as a
+        // trailing turn (#392). This test simulates the exact failure: an EMPTY broadcast
+        // (every faculty bid evicted) with a live result in working memory — and asserts the
+        // result still lands in the tail. A regression means the result went back through
+        // the evictable path. regression for #392 / run-18057-f1
+        #[test]
+        fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
+            use crate::ai::types::MessageContent;
+            use crate::cognition::working_memory::WorkingMemory;
+
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+
+            // A live working memory carrying the result of a just-run grep — the sympy-18057
+            // shape: `code/search` returned the `_sympify` location she must edit next. Large
+            // enough to clear the trail-head threshold so the pinned block surfaces.
+            let wm = Arc::new(WorkingMemory::new(8));
+            wm.set_served_window(16_384);
+            let needle = "sympy/core/expr.py:123:        return self == sympify(other)  # _sympify HERE";
+            let grep_result = format!("code/search matches:\n{needle}\n{}", "context line\n".repeat(200));
+            wm.record_receipt(&grep_result);
+
+            let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter)
+                .with_context_window(8192)
+                .with_working_memory(wm);
+
+            // The deliberate failure condition: NOTHING in the broadcast. No working-memory
+            // faculty bid survived attention — the exact state that dropped the grep result
+            // to a 0-byte patch. The ask is still present.
+            let ws = Workspace::new("fix the __eq__ comparison in sympy Expr");
+            assert!(
+                ws.broadcast.is_empty(),
+                "the harness must reproduce the empty-broadcast eviction"
+            );
+
+            let view = faculty.prompt_view(&ws);
+            let in_tail = view.messages.iter().any(|m| {
+                matches!(&m.content, MessageContent::Text(t) if t.contains(needle))
+            });
+            assert!(
+                in_tail,
+                "the just-fetched result must reach the prompt independent of any faculty bid \
+                 — this is the run-18057-f1 fix:\n{:#?}",
+                view.messages
+            );
+            // And it must be a trailing USER turn (nearest generation), never the system prefix.
+            assert!(
+                !view.system.contains(needle),
+                "the pinned result is trailing proprioception, not the cacheable system prefix"
             );
         }
 

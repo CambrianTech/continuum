@@ -31,6 +31,11 @@
 mod recency;
 mod perception;
 
+mod observation;
+pub use observation::{
+    extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb,
+};
+
 mod types;
 pub use types::{SettleOutcome, SettleStep};
 
@@ -311,6 +316,15 @@ mod tests {
         }
     }
 
+    /// Unwrap the typed acts of an `Acted` outcome (panics on NoHands/ExecutorError) —
+    /// the typed sibling of the old `.expect("acted")` on the `Option<String>`.
+    fn acts_of(outcome: ActOutcome) -> Vec<Observation> {
+        match outcome {
+            ActOutcome::Acted { acts } => acts,
+            other => panic!("expected Acted, got {other:?}"),
+        }
+    }
+
     fn admission() -> Arc<AdmissionState> {
         Arc::new(AdmissionState::new(Arc::new(RecallMetadataRegistry::new())))
     }
@@ -356,21 +370,33 @@ mod tests {
             .with_acting(body(exec.clone(), adm.clone()));
 
         let room = Uuid::new_v4();
-        let observation = apply_act(&cycle, &[tool_call()], "check the math", room)
-            .await
-            .expect("acted");
+        let acts = match apply_act(&cycle, &[tool_call()], "check the math", room).await {
+            ActOutcome::Acted { acts } => acts,
+            other => panic!("expected Acted, got {other:?}"),
+        };
+        assert_eq!(acts.len(), 1, "one call → one typed act");
+        let obs = &acts[0];
 
         assert_eq!(
             *exec.seen_context.lock().unwrap(),
             Some(room),
             "the act must be scoped to the room it is for, not a phantom nil room"
         );
-        assert!(observation.contains("code/run"), "names the tool it ran");
-        assert!(observation.contains("check the math"), "carries the intent");
-        assert!(
-            observation.contains('4'),
-            "folds in the result the hand returned"
+        assert_eq!(obs.call.name, "code/run", "the typed act names the tool it ran");
+        // THE RESULT THREADS BACK BY ID — the run-18057-f1 correlation, now a TYPED
+        // field the caller reads instead of splitting on "[action #".
+        assert_eq!(
+            obs.output.result.tool_use_id, obs.call.id,
+            "result correlates to the call by tool_use_id, not positional index"
         );
+        assert!(
+            obs.output.result.content.contains('4'),
+            "the hand's result rides the typed output"
+        );
+        // The recency rendering still names tool + intent + result (byte-stable).
+        assert!(obs.render_recall("check the math").contains("code/run"));
+        assert!(obs.render_recall("check the math").contains("check the math"));
+        assert!(obs.render_recall("check the math").contains('4'));
         assert_eq!(
             adm.engram_count(),
             1,
@@ -390,10 +416,11 @@ mod tests {
     async fn apply_act_without_hands_abstains() {
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8);
         assert!(
-            apply_act(&cycle, &[tool_call()], "try", Uuid::new_v4())
-                .await
-                .is_none(),
-            "no hands → None, never a fabricated success"
+            matches!(
+                apply_act(&cycle, &[tool_call()], "try", Uuid::new_v4()).await,
+                ActOutcome::NoHands
+            ),
+            "no hands → NoHands, never a fabricated success"
         );
     }
 
@@ -405,9 +432,13 @@ mod tests {
         let adm = admission();
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
             .with_acting(body(Arc::new(FailingExecutor), adm.clone()));
-        assert!(apply_act(&cycle, &[tool_call()], "run", Uuid::new_v4())
-            .await
-            .is_none());
+        assert!(
+            matches!(
+                apply_act(&cycle, &[tool_call()], "run", Uuid::new_v4()).await,
+                ActOutcome::ExecutorError { .. }
+            ),
+            "a batch-level failure surfaces as ExecutorError, distinct from NoHands"
+        );
         assert_eq!(adm.engram_count(), 0, "a failed act admits no memory");
     }
 
@@ -814,6 +845,41 @@ mod tests {
             2,
             "each discovery became a durable memory the mind perceived next tick"
         );
+
+        // THE 18057 TYPED-THREAD ASSERTION (Step 6). The just-executed act's RESULT
+        // re-enters through the TYPED field — read `active_act().output.result.content`,
+        // never a re-parse of the `[action #n]` prose — and the call correlates to its
+        // result BY ID (`call.id == result.tool_use_id`), never by positional index. This
+        // is act-grained proof the tool result threads back into the mind: the exact
+        // structural channel run-18057-f1 lost the grep result through when it flowed as an
+        // evictable perception bid, yielding the 0-byte patch. (The message-builder pinned
+        // assistant-tool-use↔tool-result pair — the render side of this same typed value —
+        // is the remaining Step 6 piece; it changes every live prompt and is deferred to a
+        // live-validated follow-up rather than shipped blind.)
+        let active = wm
+            .active_act()
+            .expect("the settled mind still holds its last typed act");
+        assert_eq!(
+            active.call.id, active.output.result.tool_use_id,
+            "the tool result correlates to its call BY ID, not a positional index"
+        );
+        assert!(
+            active.output.result.content.contains("boot"),
+            "the last act's RESULT threads back through the TYPED field (not [action #n] prose): {}",
+            active.output.result.content
+        );
+        let typed_acts = wm.recent_acts();
+        assert_eq!(
+            typed_acts.len(),
+            2,
+            "both discoveries are typed acts in the window, read off the typed channel"
+        );
+        assert!(
+            typed_acts
+                .iter()
+                .all(|a| a.call.id == a.output.result.tool_use_id),
+            "every discovery's result is id-correlated to its call"
+        );
     }
 
     // what this catches: the repeat-perception short-circuit. An IDENTICAL, already-
@@ -841,10 +907,12 @@ mod tests {
         let room = Uuid::new_v4();
 
         // First act genuinely runs; its result lands in working memory.
-        let first = apply_act(&cycle, &[tool_call()], "check the math", room)
-            .await
-            .expect("first act runs");
-        assert!(first.contains("code/run"), "first act names the tool it ran");
+        let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
+        assert_eq!(first[0].call.name, "code/run", "first act names the tool it ran");
+        assert!(
+            matches!(first[0].status, ActStatus::Executed),
+            "the first act really executed"
+        );
         assert_eq!(
             exec.results.lock().unwrap().len(),
             1,
@@ -852,12 +920,16 @@ mod tests {
         );
 
         // Second, byte-identical act: already satisfied → short-circuit, no re-run.
-        let second = apply_act(&cycle, &[tool_call()], "check the math", room)
-            .await
-            .expect("short-circuit still returns Some — it counts as an act, honestly");
+        // The typed act's OUTPUT carries the nudge and the STATUS names the demotion.
+        let second = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
         assert!(
-            second.contains("issued") && second.contains("times"),
-            "records explicit repeat-count proprioception instead of another result: {second}"
+            matches!(second[0].status, ActStatus::AlreadySatisfied { .. }),
+            "the second identical act is typed AlreadySatisfied, not Executed"
+        );
+        let second_nudge = second[0].output.result.content.clone();
+        assert!(
+            second_nudge.contains("issued") && second_nudge.contains("times"),
+            "records explicit repeat-count proprioception instead of another result: {second_nudge}"
         );
         assert_eq!(
             exec.results.lock().unwrap().len(),
@@ -869,16 +941,15 @@ mod tests {
         // than the second — the proprioception climbs rather than repeating byte-identical
         // text. Without this, static-nudge spam evicts the useful receipt from the bounded
         // recency window and a greedy (temp-0) model re-emits the identical call forever.
-        let third = apply_act(&cycle, &[tool_call()], "check the math", room)
-            .await
-            .expect("still short-circuits");
+        let third = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
+        let third_nudge = third[0].output.result.content.clone();
         assert_ne!(
-            second, third,
+            second_nudge, third_nudge,
             "the repeat proprioception must ESCALATE (distinct text), not repeat verbatim"
         );
         assert!(
-            third.contains("3 times"),
-            "the third identical call perceives itself as the 3rd, breaking the fixed point: {third}"
+            third_nudge.contains("3 times"),
+            "the third identical call perceives itself as the 3rd, breaking the fixed point: {third_nudge}"
         );
         assert_eq!(
             exec.results.lock().unwrap().len(),
@@ -1021,9 +1092,7 @@ mod tests {
         };
 
         // First orientation genuinely runs; its receipt lands in working memory.
-        apply_act(&cycle, &[list], "orient", room)
-            .await
-            .expect("first orientation runs");
+        acts_of(apply_act(&cycle, &[list], "orient", room).await);
         assert_eq!(
             exec.results.lock().unwrap().len(),
             1,
@@ -1031,12 +1100,15 @@ mod tests {
         );
 
         // Second, DIFFERENT-args orientation this concern → demoted, no re-run.
-        let second = apply_act(&cycle, &[help], "orient again", room)
-            .await
-            .expect("demotion still returns Some — it counts as an act, honestly");
+        let second = acts_of(apply_act(&cycle, &[help], "orient again", room).await);
         assert!(
-            second.contains("orientation") && second.contains("times"),
-            "records escalating redundant-orientation proprioception, not another catalog: {second}"
+            matches!(second[0].status, ActStatus::RedundantOrientation { .. }),
+            "the demoted orientation is typed RedundantOrientation, not Executed"
+        );
+        let nudge = second[0].output.result.content.clone();
+        assert!(
+            nudge.contains("orientation") && nudge.contains("times"),
+            "records escalating redundant-orientation proprioception, not another catalog: {nudge}"
         );
         assert_eq!(
             exec.results.lock().unwrap().len(),

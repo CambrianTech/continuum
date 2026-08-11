@@ -87,6 +87,7 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 // and `WM_ACTION_FULL_MAX_CHARS = 12_000` are exactly 1/64 and 1/4 of a 16k-token lane, so
 // behavior on a small machine is unchanged while a big window finally gets a big budget).
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
+use crate::cognition::act_observe::Observation;
 use crate::cognition::context_budget::ContextBudget;
 
 /// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
@@ -276,10 +277,21 @@ pub struct VolatileSnapshot {
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
 /// once at record time so `recent()` stays byte-stable and cheap).
+///
+/// `acts` carries the TYPED [`Observation`](crate::cognition::act_observe::Observation)s
+/// this entry was recorded FROM (empty for Thought/Fact/Settlement and for a
+/// receipt recorded via the legacy string path). The `text` STAYS the source of
+/// truth for `recent()` byte-stability (#205 — rendered once at record time,
+/// never re-derived from `acts` at read); `acts` is the parallel typed channel a
+/// consumer reads instead of re-parsing `text` (run-18057-f1). `#[serde(default)]`
+/// so an OLD `volatile.json` written before this field restores without panic —
+/// same back-compat contract as `saved_at_ms`/`build_sha`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WmEntry {
     pub kind: WmKind,
     pub text: String,
+    #[serde(default)]
+    pub acts: Vec<Observation>,
 }
 
 impl WorkingMemory {
@@ -369,7 +381,7 @@ impl WorkingMemory {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string() });
+        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string(), acts: Vec::new() });
         while e.len() > self.capacity {
             e.pop_front();
         }
@@ -384,6 +396,26 @@ impl WorkingMemory {
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
     pub fn record_receipt(&self, result: &str) {
+        self.record_receipt_inner(result, Vec::new());
+    }
+
+    /// TYPED sibling of [`record_receipt`](Self::record_receipt): store the same
+    /// byte-identical rendered receipt AND the typed [`Observation`]s the batch
+    /// produced, so a consumer reads `recent_acts()`/`active_act()` instead of
+    /// re-parsing the `[action #n]` prose (run-18057-f1). `rendered` is the recency
+    /// string produced ONCE at the act seam (`render_recency`) — this method does NOT
+    /// re-render from `acts` (that would break the #205 KV byte-stability invariant:
+    /// `text` is the stable source of truth, `acts` the parallel typed channel).
+    pub fn record_receipt_typed(&self, acts: &[Observation], rendered: &str) {
+        self.record_receipt_inner(rendered, acts.to_vec());
+    }
+
+    /// Shared body: mint the monotonic `#seq`, keep the FULL latest result, and push
+    /// ONE `[action #seq]`-stamped receipt entry carrying the pre-rendered head text
+    /// plus the (possibly empty) typed acts. One entry per batch so `recent()` stays
+    /// byte-stable (a multi-call batch renders as one receipt exactly as before);
+    /// `acts` carries every call's typed observation for the typed consumers.
+    fn record_receipt_inner(&self, result: &str, acts: Vec<Observation>) {
         let a = result.trim();
         if a.is_empty() {
             return;
@@ -402,10 +434,41 @@ impl WorkingMemory {
         e.push_back(WmEntry {
             kind: WmKind::Receipt { n: seq },
             text: format!("[action #{seq}] {head}"),
+            acts,
         });
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// The TYPED acts still in the recency window, oldest → newest — the parallel
+    /// channel to [`recent`](Self::recent)'s rendered strings. A consumer that used
+    /// to grep the receipt prose for a verb / a path (`mutated_workspace`,
+    /// `claimed_file_without_act`) reads these instead. Only receipts recorded via
+    /// [`record_receipt_typed`](Self::record_receipt_typed) carry acts; legacy
+    /// string receipts and non-receipt entries contribute none.
+    pub fn recent_acts(&self) -> Vec<Observation> {
+        self.entries
+            .lock()
+            .iter()
+            .flat_map(|e| e.acts.iter().cloned())
+            .collect()
+    }
+
+    /// The just-executed act — the newest typed [`Observation`] in the recency
+    /// window (last act of the most recent receipt that carries one). The typed
+    /// channel the seam-5 predicates read (verb / paths / status) by the TYPED field
+    /// rather than re-parsed from `[action #n]` prose, and the source a future
+    /// structured tool_use↔tool_result emission would render from. NOTE: the live
+    /// run-18057-f1 fix pins the full result via
+    /// [`pinned_active_result_block`](Self::pinned_active_result_block) (settlement-
+    /// gated, text on the wire); this accessor is unaffected by that.
+    pub fn active_act(&self) -> Option<Observation> {
+        self.entries
+            .lock()
+            .iter()
+            .rev()
+            .find_map(|e| e.acts.last().cloned())
     }
 
     /// Record a PERCEPTION FACT ([unfulfilled]/[unverified]/[confabulation]/
@@ -422,6 +485,7 @@ impl WorkingMemory {
         e.push_back(WmEntry {
             kind: WmKind::Fact,
             text: f.to_string(),
+            acts: Vec::new(),
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -606,6 +670,35 @@ impl WorkingMemory {
         (action.0 >= active_from).then_some(action)
     }
 
+    /// The FULL result of the just-executed act, ready to render as a **pinned**
+    /// trailing prompt block — the run-18057-f1 fix.
+    ///
+    /// This block used to live INSIDE the working-memory faculty's single
+    /// [`Contribution`](crate::cognition::workspace::Contribution) at
+    /// `WORKING_MEMORY_SALIENCE` (0.5). That bid competes in `arbiter.focus()`
+    /// top-k, so under capacity pressure the whole contribution — the just-fetched
+    /// grep/read result included — was truncated, and the persona generated blind
+    /// to what her own hands had returned (the 0-byte SWE-bench patch). The message
+    /// builder now reads this DIRECTLY and appends it as its own durable trailing
+    /// turn, so no `focus()` pass stands between the hands and the mind.
+    ///
+    /// Identical gating + clipping to the old faculty block: settlement-gated via
+    /// [`active_action_full`](Self::active_action_full) (stops re-prefilling once the
+    /// turn settles — #139/#165), and shown only when the full result carries MORE
+    /// than the trail head already does. `None` when there is no active result or it
+    /// would add nothing.
+    pub fn pinned_active_result_block(&self) -> Option<String> {
+        let (seq, full) = self.active_action_full()?;
+        let budget = self.budget();
+        if full.chars().count() <= budget.trail_head_chars() {
+            return None;
+        }
+        Some(format!(
+            "Full result of your most recent action (#{seq}):\n{}",
+            clip_action_full(&full, &budget)
+        ))
+    }
+
     /// Fold a streamed event from a DISPATCHED (background) command into the mind's
     /// recency, keyed by its handle. The async twin of `record_action`: a sentinel /
     /// compile / debugger the persona sent away emits events CONTINUOUSLY — `Running`
@@ -686,6 +779,7 @@ impl WorkingMemory {
             } else {
                 format!("{WM_SETTLEMENT_PREFIX} {a}")
             },
+            acts: Vec::new(),
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -847,20 +941,14 @@ impl Faculty for WorkingMemoryFaculty {
                 render_trail(&recent)
             ));
         }
-        // The FULL result of the most recent act, AFTER the append-only trail: the stable
-        // prefix keeps its KV-cache, only this fresh block re-prefills (new each act
-        // regardless). Lets the mind USE what its hands fetched — count the file, read the
-        // screenshot description, scan the log — instead of looping on the truncated head.
-        // Only when it carries more than the trail head already does.
-        if let Some((seq, full)) = self.memory.active_action_full() {
-            let budget = self.memory.budget();
-            if full.chars().count() > budget.trail_head_chars() {
-                let clipped = clip_action_full(&full, &budget);
-                sections.push(format!(
-                    "Full result of your most recent action (#{seq}):\n{clipped}"
-                ));
-            }
-        }
+        // The FULL result of the most recent act is NO LONGER emitted here. It is the
+        // load-bearing content for the mind to act on what its hands fetched, and as part
+        // of THIS 0.5-salience bid it rode `arbiter.focus()` top-k and was silently evicted
+        // under capacity pressure (the run-18057-f1 0-byte patch). It is now PINNED by the
+        // message builder as its own durable trailing turn — see
+        // [`WorkingMemory::pinned_active_result_block`] — so no attention pass can drop it.
+        // This contribution keeps only the append-only trail + notices + dispatched status,
+        // which are proprioceptive summary, not the just-fetched result.
         // Substrate notices AFTER the trail: nearest generation (the [resumed]
         // fact's must-be-newest recency intent survives the kind split), framed
         // in the substrate's own voice so they read as status about her
@@ -1165,6 +1253,105 @@ mod tests {
         assert!(!q[0].contains("ago"), "no fabricated gap on legacy snapshots: {q:?}");
     }
 
+    // what this catches (Step 3, run-18057-f1): a receipt recorded via
+    // `record_receipt_typed` carries the TYPED acts so `active_act()` reads the tool
+    // result by FIELD (call.id-correlated to result.tool_use_id) instead of re-parsing
+    // the `[action #n]` prose — AND the rendered `text` stays byte-identical to the
+    // legacy `record_receipt` path (the #205 KV-stability invariant). `recent_acts()`
+    // exposes every act in the window for the typed predicates (Step 4).
+    #[test]
+    fn typed_receipt_threads_the_act_by_field_and_keeps_text_byte_stable() {
+        use crate::ai::types::{ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+
+        let obs = Observation {
+            call: ToolCall {
+                id: "call-42".into(),
+                name: "code/search".into(),
+                input: serde_json::json!({ "query": "needle" }),
+            },
+            output: ToolOutput {
+                result: ToolResult {
+                    tool_use_id: "call-42".into(),
+                    content: "match at foo.rs:42".into(),
+                    is_error: None,
+                },
+                verb: ToolVerb::Search,
+                paths: Vec::new(),
+            },
+            status: ActStatus::Executed,
+        };
+        let rendered = "code/search({\"query\":\"needle\"})\nResult:\nmatch at foo.rs:42\n\n";
+
+        let typed = WorkingMemory::new(8);
+        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered);
+        let legacy = WorkingMemory::new(8);
+        legacy.record_receipt(rendered);
+        assert_eq!(
+            typed.recent(),
+            legacy.recent(),
+            "the rendered receipt text is byte-identical to the legacy string path (#205)"
+        );
+
+        let active = typed.active_act().expect("the typed act threads through the receipt");
+        assert_eq!(
+            active.call.id, active.output.result.tool_use_id,
+            "correlated by id, not positional index"
+        );
+        assert!(
+            active.output.result.content.contains("match at foo.rs:42"),
+            "the tool RESULT re-enters by the TYPED field, not a re-parsed [action #n] head"
+        );
+        assert_eq!(typed.recent_acts().len(), 1, "the batch's act is in the window");
+        assert!(
+            legacy.active_act().is_none(),
+            "a legacy string receipt carries no typed act — the two channels are distinct"
+        );
+    }
+
+    // what this catches (Step 3 back-compat): an OLD volatile.json — written before
+    // the WmEntry.acts field existed — restores WITHOUT panic, the `acts` defaulting
+    // to empty via `#[serde(default)]` (the same contract as saved_at_ms/build_sha).
+    // A grid-sync peer or a pre-deploy snapshot must never wedge the mind on restore.
+    #[test]
+    fn an_old_snapshot_without_acts_restores_without_panic() {
+        // A hand-authored legacy snapshot: entries have NO `acts` key at all.
+        let legacy_json = r#"{
+            "entries": [
+                { "kind": "Thought", "text": "thinking about the tokenizer" },
+                { "kind": { "Receipt": { "n": 1 } }, "text": "[action #1] code/list → ok" }
+            ],
+            "last_action": [1, "code/list → ok"],
+            "action_fps": ["code/list|{}"],
+            "next_action_seq": 2
+        }"#;
+        let snap: VolatileSnapshot =
+            serde_json::from_str(legacy_json).expect("legacy snapshot deserializes");
+        let fresh = WorkingMemory::new(8);
+        fresh.restore(snap);
+        // Both legacy entries survive the round-trip (asserted by content, not a raw
+        // count — restore ALSO appends a `[resumed]` wake-orientation fact by design,
+        // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
+        let texts = fresh.recent();
+        assert!(
+            texts.iter().any(|t| t.contains("thinking about the tokenizer")),
+            "the legacy thought restored"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("[action #1] code/list")),
+            "the legacy receipt restored"
+        );
+        assert!(
+            texts.iter().any(|t| t.starts_with("[resumed]")),
+            "restore appends the wake-orientation fact"
+        );
+        assert!(
+            fresh.recent_acts().is_empty(),
+            "a legacy receipt has no typed acts — defaulted empty, never a panic"
+        );
+        assert!(fresh.has_receipt(), "the receipt kind still survives the trip");
+    }
+
     #[test]
     fn note_action_fingerprint_counts_identical_repeats() {
         let wm = WorkingMemory::new(8);
@@ -1243,18 +1430,16 @@ mod tests {
             "trail entry is head-truncated, not the whole result"
         );
 
-        // The faculty surfaces the full result as its own block.
-        let rendered = WorkingMemoryFaculty::new(wm.clone())
-            .contribute(&Workspace::new("a fresh burst"))
-            .await
-            .expect("bids")
-            .content
-            .clone();
+        // The full result is PINNED by the message builder (#392) as its own durable
+        // trailing block — it is no longer part of the evictable faculty bid.
+        let pinned = wm
+            .pinned_active_result_block()
+            .expect("the whole result is pinned for the mind");
         assert!(
-            rendered.contains("Full result of your most recent action (#1):"),
+            pinned.contains("Full result of your most recent action (#1):"),
             "the whole result reaches the mind"
         );
-        assert!(rendered.contains(&"x".repeat(5_000)), "and it's the FULL body");
+        assert!(pinned.contains(&"x".repeat(5_000)), "and it's the FULL body");
 
         // A second act replaces the full slot; the first survives only as a trail head.
         wm.record_receipt("small follow-up");
@@ -1303,24 +1488,21 @@ mod tests {
             "the marker tells the mind how to see the rest — never a silent starve"
         );
 
-        // End-to-end through the faculty: the oversized block renders clipped.
+        // End-to-end through the PINNED block (#392): the oversized result renders clipped.
         let wm = Arc::new(WorkingMemory::new(8));
         // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
         // is unbounded by contract, so a clipping test must declare the window it measures.
         wm.set_served_window(16_384);
         wm.record_receipt(&dump);
-        let rendered = WorkingMemoryFaculty::new(wm.clone())
-            .contribute(&Workspace::new("a fresh burst"))
-            .await
-            .expect("bids")
-            .content
-            .clone();
+        let pinned = wm
+            .pinned_active_result_block()
+            .expect("the oversized result still surfaces, clipped");
         assert!(
-            rendered.contains("Full result of your most recent action (#1):"),
+            pinned.contains("Full result of your most recent action (#1):"),
             "the block still surfaces"
         );
         assert!(
-            rendered.contains("chars truncated"),
+            pinned.contains("chars truncated"),
             "and it's the CLIPPED body, not the raw 16k dump"
         );
     }
@@ -1339,7 +1521,9 @@ mod tests {
         let dump = format!("code/tree result\n{}", "n".repeat(3_000)); // > WM_ACTION_HEAD_CHARS
         wm.record_receipt(&dump);
 
-        let render = |wm: Arc<WorkingMemory>| async move {
+        // The proprioceptive trail head lives in the faculty contribution; the FULL result
+        // is the PINNED block the message builder appends (#392). This test spans both.
+        let faculty_trail = |wm: Arc<WorkingMemory>| async move {
             WorkingMemoryFaculty::new(wm)
                 .contribute(&Workspace::new("tick"))
                 .await
@@ -1348,10 +1532,11 @@ mod tests {
                 .clone()
         };
 
-        // Active (acted, not yet spoken): the full result is present.
-        let r1 = render(wm.clone()).await;
+        // Active (acted, not yet spoken): the full result is present in the pinned block.
         assert!(
-            r1.contains("Full result of your most recent action"),
+            wm.pinned_active_result_block()
+                .expect("active result is pinned")
+                .contains("Full result of your most recent action"),
             "while active, the mind sees the whole result it just fetched"
         );
 
@@ -1361,13 +1546,12 @@ mod tests {
             wm.active_action_full().is_none(),
             "a settled result is no longer active"
         );
-        let r2 = render(wm.clone()).await;
         assert!(
-            !r2.contains("Full result of your most recent action"),
+            wm.pinned_active_result_block().is_none(),
             "after settling, the 2k-token dump stops riding along the prompt (#139/#165)"
         );
         assert!(
-            r2.contains("[action #1]"),
+            faculty_trail(wm.clone()).await.contains("[action #1]"),
             "but the proprioceptive trail head survives — the mind still knows it acted"
         );
 
@@ -1378,9 +1562,10 @@ mod tests {
             wm.active_action_full().map(|(s, _)| s) == Some(2),
             "the fresh act is active again"
         );
-        let r3 = render(wm.clone()).await;
         assert!(
-            r3.contains("Full result of your most recent action (#2):"),
+            wm.pinned_active_result_block()
+                .expect("the fresh act's result is pinned")
+                .contains("Full result of your most recent action (#2):"),
             "the new act's result is surfaced whole for its own what-next decision"
         );
     }
