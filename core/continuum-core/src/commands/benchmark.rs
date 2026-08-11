@@ -50,6 +50,27 @@ pub struct BenchmarkSpec {
     pub source_url: Option<&'static str>,
 }
 
+impl BenchmarkSpec {
+    /// The HuggingFace dataset id for a SWE-bench-INSTANCE-shaped collection (each row a
+    /// real repo + `base_commit` + gold `patch` + `problem_statement` + held-out tests),
+    /// pulled on demand by [`crate::cognition::swe_bench::load_dataset`] and dispatched as
+    /// real full-project cards. `None` for the gym collections and for non-SWE datasets.
+    ///
+    /// Instance-shape is a property of the COLLECTION, not derivable from the URL alone —
+    /// `livecodebench`/`bigcodebench` are also HF datasets but do NOT speak `SweInstance` —
+    /// so the SWE family is named here (the ONE place that knows), and the id itself is read
+    /// back off `source_url` so it is never duplicated. Add `swe-lancer` etc. here when its
+    /// loader lands. This is what makes `runnable` true and `benchmark/dispatch` work for the
+    /// real-project tier the frontier models fight over (Joel's target, 2026-08-10).
+    pub fn swe_dataset(&self) -> Option<&'static str> {
+        if !matches!(self.name, "swe-bench-lite" | "swe-bench-verified") {
+            return None;
+        }
+        self.source_url?
+            .strip_prefix("https://huggingface.co/datasets/")
+    }
+}
+
 /// THE benchmark catalog. Add a respected collection (SWE-bench, LiveCodeBench, …) = one row.
 pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
     &[
@@ -364,7 +385,7 @@ impl ActionCommand for BenchmarkList {
                     description: b.description.to_string(),
                     grader: format!("{:?}", b.grader).to_lowercase(),
                     tasks: b.tasks,
-                    runnable: b.eval_set.is_some(),
+                    runnable: b.eval_set.is_some() || b.swe_dataset().is_some(),
                 })
                 .collect(),
         })
@@ -614,6 +635,38 @@ pub(crate) fn dispatch_card_body(bench: &str, t: &crate::cognition::eval::EvalTa
     body
 }
 
+/// Compose the card BODY for a REAL SWE-bench project instance — a live open-source issue
+/// on a real repo. The issue text plus a definition of done a citizen acts on with her own
+/// git hands. The gold `patch` and the held-out `test_patch` are deliberately NOT written:
+/// the card names the repo + commit + which tests must pass, never the answer key (same
+/// held-out discipline as [`dispatch_card_body`]). This is the real-project tier — "full
+/// projects, not stupid homework" (Joel, 2026-08-10).
+pub(crate) fn dispatch_swe_card_body(
+    bench: &str,
+    i: &crate::cognition::swe_bench::SweInstance,
+) -> String {
+    let f2p = i.f2p();
+    let tests = if f2p.is_empty() {
+        "the repo's held-out failing tests".to_string()
+    } else {
+        f2p.join(", ")
+    };
+    format!(
+        "benchmark: {bench}\ninstance: {}\nrepo: {} @ {}\n\n{}\n\n\
+         This is a REAL open-source issue. Clone `{}` into your workspace, check out commit \
+         `{}`, reproduce the bug, and fix it in the actual source. Definition of done: these \
+         tests pass — {}. Commit your change, then mark the card done (work/state). Your DIFF \
+         is graded against the repo's held-out test suite — do not edit the tests.",
+        i.instance_id,
+        i.repo,
+        i.base_commit,
+        i.problem_statement.trim(),
+        i.repo,
+        i.base_commit,
+        tests,
+    )
+}
+
 /// `benchmark/dispatch` — post a benchmark's tasks as claimable work cards on
 /// the shared board. Citizens claim and work them through the SAME kanban loop
 /// as any other work; nothing about the turn is exam-shaped.
@@ -653,29 +706,79 @@ impl ActionCommand for BenchmarkDispatch {
                     p.name
                 ))
             })?;
-        let reference = spec.eval_set.ok_or_else(|| {
-            CommandError::Invalid(format!(
-                "benchmark '{}' has no runnable eval_set yet — it is catalogued but its \
-                 task collection hasn't been pulled/committed (see benchmark/list `runnable`)",
-                p.name
-            ))
-        })?;
+        // Two shapes of dispatchable benchmark, ONE card loop below. A `PreparedCard`
+        // normalizes both so create + kickoff is source-agnostic:
+        //  • gym collections resolve a committed JSONL of `EvalTask`s (write→compile→test);
+        //  • SWE-bench-INSTANCE collections pull real GitHub-issue PROJECTS via the proven
+        //    `swe_bench` loader — the real-project tier "the frontier models fight over"
+        //    (Joel, 2026-08-10). Each instance becomes a clone-and-fix card.
+        enum CardWork {
+            /// Gym: write a solution file; DoD is a compile/test shell.
+            Gym { solution_file: String },
+            /// SWE: clone a real repo at a commit, fix the issue, produce a diff.
+            Swe { repo: String, base_commit: String },
+        }
+        struct PreparedCard {
+            title: String,
+            body: String,
+            work: CardWork,
+            /// Gym-only: a task needing a workspace re-break the card can't orchestrate yet.
+            needs_setup: bool,
+        }
 
-        // Same fail-loud task loading as cognition/eval: the committed gym
-        // resolves from the embedded registry, a malformed line names itself.
-        let (origin, text) =
-            crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
-        let tasks: Vec<EvalTask> = text
-            .lines()
-            .enumerate()
-            .map(|(i, l)| (i + 1, l.trim()))
-            .filter(|(_, l)| !l.is_empty())
-            .map(|(n, l)| {
-                serde_json::from_str::<EvalTask>(l).map_err(|e| {
-                    CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
+        let prepared: Vec<PreparedCard> = if let Some(dataset) = spec.swe_dataset() {
+            // Real-project tier: pull instances on demand (cached on first use), one
+            // full-project card each. Reuses the SAME loader agent/solve grades against —
+            // no second source of truth. THIS is what killed the "no runnable eval_set"
+            // refusal that had blocked every SWE dispatch (Joel: "fix the goddamn thing").
+            let instances = crate::cognition::swe_bench::load_dataset(dataset)
+                .await
+                .map_err(|e| {
+                    CommandError::Internal(format!("swe dataset '{dataset}' load failed: {e}"))
+                })?;
+            instances
+                .into_iter()
+                .map(|i| PreparedCard {
+                    title: dispatch_card_title(spec.name, &i.instance_id, &i.problem_statement),
+                    body: dispatch_swe_card_body(spec.name, &i),
+                    work: CardWork::Swe {
+                        repo: i.repo.clone(),
+                        base_commit: i.base_commit.clone(),
+                    },
+                    needs_setup: false,
                 })
-            })
-            .collect::<Result<_, _>>()?;
+                .collect()
+        } else {
+            let reference = spec.eval_set.ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "benchmark '{}' has no runnable eval_set yet — it is catalogued but its \
+                     task collection hasn't been pulled/committed (see benchmark/list `runnable`)",
+                    p.name
+                ))
+            })?;
+            // Same fail-loud task loading as cognition/eval: the committed gym resolves
+            // from the embedded registry, a malformed line names itself.
+            let (origin, text) =
+                crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
+            text.lines()
+                .enumerate()
+                .map(|(i, l)| (i + 1, l.trim()))
+                .filter(|(_, l)| !l.is_empty())
+                .map(|(n, l)| {
+                    let t: EvalTask = serde_json::from_str(l).map_err(|e| {
+                        CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
+                    })?;
+                    let solution_file =
+                        t.solution_file.clone().unwrap_or_else(|| format!("{}.rs", t.id));
+                    Ok(PreparedCard {
+                        title: dispatch_card_title(spec.name, &t.id, &t.prompt),
+                        body: dispatch_card_body(spec.name, &t),
+                        needs_setup: t.setup_shell.is_some(),
+                        work: CardWork::Gym { solution_file },
+                    })
+                })
+                .collect::<Result<_, CommandError>>()?
+        };
 
         // Curator seed: a persona dispatching through her toolbelt authors as herself;
         // the operator with no self-peer (#27) authors through a live citizen (benchmarks
@@ -717,26 +820,22 @@ impl ActionCommand for BenchmarkDispatch {
             ));
         }
 
-        let take = p.limit.map(|l| l as usize).unwrap_or(tasks.len());
+        let take = p.limit.map(|l| l as usize).unwrap_or(prepared.len());
         let mut card_ids = Vec::new();
         let mut skipped_needs_setup = 0u32;
         let mut kickoffs = 0u32;
         let mut kickoff_errors = Vec::new();
-        for t in tasks.into_iter().take(take) {
-            // A setup_shell task needs its workspace re-broken before work
+        for pc in prepared.into_iter().take(take) {
+            // A gym setup_shell task needs its workspace re-broken before work
             // starts — harness orchestration a claimed card can't provide yet.
             // Skipping SILENTLY would report "dispatched" over fewer tasks
             // than the benchmark holds; the count rides on the result instead.
-            if t.setup_shell.is_some() {
+            if pc.needs_setup {
                 skipped_needs_setup += 1;
                 continue;
             }
-            let mut req = CreateWorkCard::new(
-                repo.clone(),
-                dispatch_card_title(spec.name, &t.id, &t.prompt),
-                Priority::P2,
-            );
-            req.body = Some(dispatch_card_body(spec.name, &t));
+            let mut req = CreateWorkCard::new(repo.clone(), pc.title, Priority::P2);
+            req.body = Some(pc.body);
             let card_id = airc
                 .create_work_card(req)
                 .await
@@ -752,16 +851,22 @@ impl ActionCommand for BenchmarkDispatch {
             // one block, so the structural condition holds by construction.
             if !assignees.is_empty() {
                 let who = &assignees[card_ids.len() % assignees.len()];
-                let file = t
-                    .solution_file
-                    .clone()
-                    .unwrap_or_else(|| format!("{}.rs", t.id));
-                let kickoff = format!(
-                    "@{who} (to you): card {short} on this board is yours. Claim it \
-                     (claim_task {short}), read its body, write your solution to `{file}` \
-                     in your workspace, then mark it done (work/state {short} done). \
-                     Your artifact gets graded against held-out tests."
-                );
+                let kickoff = match &pc.work {
+                    CardWork::Gym { solution_file } => format!(
+                        "@{who} (to you): card {short} on this board is yours. Claim it \
+                         (claim_task {short}), read its body, write your solution to \
+                         `{solution_file}` in your workspace, then mark it done \
+                         (work/state {short} done). Your artifact gets graded against \
+                         held-out tests."
+                    ),
+                    CardWork::Swe { repo: r, base_commit } => format!(
+                        "@{who} (to you): card {short} is a REAL {r} issue (SWE-bench, a full \
+                         project). Claim it (claim_task {short}), read its body, clone {r} at \
+                         commit {base_commit} into your workspace, fix the issue in the actual \
+                         source, then mark it done (work/state {short} done). Your diff is \
+                         graded against the repo's held-out tests — do not edit the tests."
+                    ),
+                };
                 match airc.say(&kickoff).await {
                     Ok(_) => kickoffs += 1,
                     // The card stays — a lost kickoff degrades to undirected
