@@ -315,7 +315,7 @@ mod tests {
     // inbox. NOTE: this seeds only the command-side inbox (the deterministic doorbell) —
     // it deliberately does NOT register a live WorkspaceCycle in persona_workspace::global()
     // (that needs a real adapter + model). So a turn WITH messages here exercises the
-    // not-hosted fail-loud path; the real settle_step outcome is validated live via `cu`.
+    // not-hosted fail-loud path; the real settle_step outcome is validated live via `uu`.
     fn command_with_persona(persona_id: Uuid) -> (TurnExecute, Arc<CognitionState>) {
         let rag_engine = Arc::new(RagEngine::new());
         let state = Arc::new(CognitionState::new(rag_engine.clone()));

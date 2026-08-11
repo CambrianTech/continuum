@@ -92,7 +92,7 @@ and a chat room runs the chat projection. Deliverable: the dispatch design in th
 - Route rooms by resolved purpose: a `purpose="foundry"` room emits `ForgeViewState` (via the
   `positron_foundry_source` projection subscribed to the `ModelCatalog` watch, REPLACE-on-change),
   a chat room emits `ChatViewState`. (R3 design.)
-- **Verify:** `cu` + a WS probe — a foundry room's state arrives as `kind:"foundry"` with the
+- **Verify:** `uu` + a WS probe — a foundry room's state arrives as `kind:"foundry"` with the
   real model list; a chat room still arrives as `kind:"chat"`.
 
 ### P3 — Web `WorkspaceShell` + Content registry — **first pixels of the framework live**
@@ -111,7 +111,7 @@ and a chat room runs the chat projection. Deliverable: the dispatch design in th
   looks like the old signature interface, cross-theme.
 
 ### P5 — Screenshot verification loop (runs throughout P3–P4)
-- Wire CDP real-delay capture into `cu screenshot` / `interface/capture` (replacing
+- Wire CDP real-delay capture into `uu screenshot` / `interface/capture` (replacing
   `--virtual-time-budget`, which can't capture live-WS renders) so the persona *and* I can see
   the live UI. Every visible slice ends with a screenshot diffed against the design reference.
 
@@ -127,7 +127,7 @@ and a chat room runs the chat projection. Deliverable: the dispatch design in th
   `Listing`/`Content`/`Workspace`; no per-surface shape. The shell is identical across
   activities; only Content/Context vary by purpose.
 - **"Universe" = the token layer** — one theme file swaps the whole look; no hardcoded colors.
-- **Review-gate + CI-green every slice**, canary-merged; validate via `cargo` + `cu` and CDP
+- **Review-gate + CI-green every slice**, canary-merged; validate via `cargo` + `uu` and CDP
   screenshots, never `npm start`/`jtag`. ([[validate-via-pure-rust-not-npm-jtag]])
 - **The persona sees it too** — the RAG `RenderTarget` renders the same primitives into
   grounding, so eyes-and-mind stay one projection ([[persona-is-a-client]]).

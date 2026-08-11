@@ -27,7 +27,7 @@ use crate::sdk_codegen::CommandError;
 /// validator ([`crate::sdk_codegen`]) rejects a bare `Vec<T>` output because an
 /// inline collection has no named TS type (it can't be `export_to`'d), and one
 /// such command panics the whole `command_registry()` walk (→ `commands/list`
-/// panics, cu can't fetch schemas, every schema-canonicalized flag breaks). Same
+/// panics, uu can't fetch schemas, every schema-canonicalized flag breaks). Same
 /// shape as `McpSearchToolsResult` wrapping `tools: Vec<McpSearchHit>`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

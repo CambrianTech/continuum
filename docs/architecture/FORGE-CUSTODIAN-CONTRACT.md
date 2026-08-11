@@ -123,7 +123,7 @@ grid-readiness property — noted inline.
 | R1 | **One wire contract, one source** (`forge::protocol`) | no drift between server/client | a grid client and a remote server compiled from the same crate can't disagree on the wire |
 | R2 | **Typed two-variant client error** `Unreachable` \| `Api` (reuse the `UnslothError` shape) | caller distinguishes "custodian down" from "job failed" | "node down" ⇒ fabric **re-routes**; "job failed" ⇒ fabric **does not** (same job will fail elsewhere) |
 | R3 | **Bounded everything** — request timeout, a concurrency **semaphore** (a GPU does one convert at a time), a subprocess **deadline** on the `python3` convert | one wedged convert can't hang the daemon | a node advertises *real* remaining capacity; the fabric's score is honest |
-| R4 | **Liveness + readiness + capability + contract-version on `/health`** | `cu`/curl can tell "up" from "ready to take work" | this IS the fabric's discovery + health-probe input (§5) |
+| R4 | **Liveness + readiness + capability + contract-version on `/health`** | `uu`/curl can tell "up" from "ready to take work" | this IS the fabric's discovery + health-probe input (§5) |
 | R5 | **Graceful shutdown + `probe!` observability** (reuse `ServiceModule`, `watch<Snapshot>`, `PressureBroker`, the `probe!` macro — do NOT reinvent) | clean drain; glass-box every decision | the snapshot a node publishes locally is the same snapshot the fabric aggregates grid-wide |
 | R6 | **Idempotent jobs by content address** — `job_id = hash(checkpoint_digest ⊕ base_model_id ⊕ outtype)` | a retried convert returns the existing gene, doesn't redo it | at-least-once grid delivery becomes safe; a re-dispatched job after a node flaps doesn't duplicate work |
 

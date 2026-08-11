@@ -7,7 +7,7 @@
 //! The deliberation faculty reaches for it via `Decision::Act { calls: [code/run …] }`;
 //! the act→observe driver (step 3) runs it and re-admits the result as an Episodic
 //! engram, closing the causal loop (act → observe → re-perceive). Standalone it is also
-//! directly callable via `cu code/run` and every SDK — one file, zero wiring, AiSafe.
+//! directly callable via `uu code/run` and every SDK — one file, zero wiring, AiSafe.
 //!
 //! RUST ONLY. This organism builds the Rust substrate it runs on; its throwaway-snippet
 //! hand is `rustc`, never an interpreter. The persona hands a complete program (with its

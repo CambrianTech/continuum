@@ -14,7 +14,7 @@
 //! Self-determination first: a persona edits HER OWN card (the target defaults to the
 //! authenticated caller). A persona may NOT edit another persona's identity — that is
 //! an operator/consent-gated action ([[consent-gates-on-actions-never-caps-on-cognition]]).
-//! An operator (a non-persona caller, e.g. the `cu`/positron owner) may edit any persona
+//! An operator (a non-persona caller, e.g. the `uu`/positron owner) may edit any persona
 //! by passing her `persona_id`.
 //!
 //! ## Scope note (system name deferred)

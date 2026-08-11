@@ -3,7 +3,7 @@
 //!
 //! These once lived ONLY in [`DataModule::handle_command`](crate::modules::data)'s
 //! stringly `match` (the `migration/` prefix arms) — dispatchable, but with no
-//! descriptor in the registry, so invisible to the grid ACL, codegen, and `cu`. As
+//! descriptor in the registry, so invisible to the grid ACL, codegen, and `uu`. As
 //! typed commands they get a descriptor AND route through the O(1) lock-free typed
 //! object map. The wire name mirrors the file path — `commands/migration/start.rs`
 //! ⟺ `migration/start`.

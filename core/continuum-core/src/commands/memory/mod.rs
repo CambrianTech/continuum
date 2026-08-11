@@ -7,7 +7,7 @@
 //! stringly `match` — dispatchable, but with no descriptor in the registry, so a
 //! persona was never OFFERED recall as a tool. As typed commands each gets a
 //! descriptor (so it appears in the persona tool surface, the grid ACL, codegen,
-//! `cu`) AND routes through the O(1) lock-free typed path. The wire name mirrors the
+//! `uu`) AND routes through the O(1) lock-free typed path. The wire name mirrors the
 //! file path — `commands/memory/multi_layer_recall.rs` ⟺ `memory/multi-layer-recall`.
 //!
 //! ## Identity note

@@ -168,7 +168,7 @@ crate::action_command! {
             Ok(handle) => {
                 // L2→L3 seam (the ONE birth-seam): every training job is born here —
                 // the trigger's batch path dispatches THIS command, a direct
-                // `cu genome/job-create` lands here, and so will any future caller.
+                // `uu genome/job-create` lands here, and so will any future caller.
                 // Registering the in-flight handle on the board at this single point
                 // is what lets the completion sentinel poll it, run `cognition/eval`,
                 // and page the gene in on `lift > 0`. Without it the handle drops on

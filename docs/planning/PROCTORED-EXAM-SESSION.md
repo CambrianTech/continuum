@@ -235,7 +235,7 @@ that A is only needed under heavy live load / on the grid.
 
 - Unit/scenario tests per slice — the oracle. `capacity/sim.rs` is the deterministic gym for
   the preemption/placement decisions (`[[capacity-fabric-live-never-block-sim-as-gym]]`).
-- The single native path IS the process: `cu benchmark/run --name hard-rs` returns either a
+- The single native path IS the process: `uu benchmark/run --name hard-rs` returns either a
   real `Scored` number **on a verified lane**, or a loud `InfraUnavailable` reason — no bash
   timing, no "sleep then hope." That command being dependable is the acceptance test.
 - Must NOT regress live personas: preemption tiers them down gracefully (they keep

@@ -2795,7 +2795,7 @@ pub fn start_server(
     // The ONE provider registry, OWNED by the Runtime so all three readers share
     // it: the ProvidedCommandInterceptor (in-process/persona route), the
     // connection layer (writer, via ServerState — binds an eye-node on connect),
-    // AND `Runtime::route_command` (the socket route: cu / IPC / MCP). An
+    // AND `Runtime::route_command` (the socket route: uu / IPC / MCP). An
     // eye-node's `provider/register` on any connection binds here; every dispatch
     // path routes perception/observe to it, or fails loud when none is connected.
     let provider_registry = runtime.provider_registry();

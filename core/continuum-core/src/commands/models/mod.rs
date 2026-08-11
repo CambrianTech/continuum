@@ -17,7 +17,7 @@
 //! The legacy `ModelsModule::handle_command` arms were dispatchable but had no
 //! descriptor in `command_registry()`, so a persona was never OFFERED model
 //! management as a tool. As typed commands each gets a descriptor (persona tool
-//! surface, grid ACL, codegen, `cu`) AND routes through the O(1) lock-free typed
+//! surface, grid ACL, codegen, `uu`) AND routes through the O(1) lock-free typed
 //! path. The wire name mirrors the file path — `commands/models/list.rs` ⟺
 //! `models/list`.
 //!
