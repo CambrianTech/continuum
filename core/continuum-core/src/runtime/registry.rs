@@ -467,6 +467,14 @@ mod tests {
             crate::persona::PersonaAircRuntimeRegistry::new(),
         )));
         registry.register(std::sync::Arc::new(crate::modules::room::RoomModule::new(crate::persona::PersonaAircRuntimeRegistry::new(),)));
+        // Event-driven SWE grade-on-done: subscribes to work.card.state_changed (emitted
+        // by work/state) and grades a finished bench SWE card's workspace against the
+        // held-out oracle. No commands, no tick — pure event subscriber.
+        registry.register(std::sync::Arc::new(
+            crate::modules::benchmark_grade::BenchmarkGradeModule::new(
+                crate::persona::PersonaAircRuntimeRegistry::new(),
+            ),
+        ));
         let after = registry.dispatch_orphans();
         for name in work_names {
             assert!(

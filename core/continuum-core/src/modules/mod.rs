@@ -84,5 +84,6 @@ pub mod training_completion_sentinel;
 pub mod training_trigger;
 pub mod vdd;
 pub mod vision;
+pub mod benchmark_grade;
 pub mod room;
 pub mod work;
