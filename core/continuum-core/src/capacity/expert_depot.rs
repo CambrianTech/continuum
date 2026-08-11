@@ -84,14 +84,42 @@ impl DepotManifest {
     }
 }
 
-/// The local expert depot: one opened container + the derived resident
-/// manifest, servable over localhost HTTP. Fetches run on the blocking
-/// pool (positioned file reads) behind a `std::sync::Mutex` that is never
-/// held across an await — the concurrency-guide shape, same as every other
-/// sync-IO seam in the substrate.
+/// A peer depot this node can fetch missing banks FROM — its base URL plus the
+/// manifest it published. Injected by the control plane (airc manifest exchange, a
+/// later slice); the depot routes a local miss only to peers whose manifest actually
+/// HOLDS the bank, so a partial-shard node never storms a peer that also lacks it.
+#[derive(Debug, Clone)]
+pub struct PeerDepot {
+    /// e.g. `http://100.1.2.3:58200` (a peer's depot over Tailscale) — the base the
+    /// fork's `GGML_MOE_DEPOT_URL` would point at, one hop out on the grid.
+    pub base_url: String,
+    /// What that peer advertised it holds — the routing predicate.
+    pub manifest: DepotManifest,
+}
+
+/// Cap on the cross-grid record cache — bounded so a partial-shard node fetching many
+/// banks from peers cannot grow unbounded (disk/RAM is governed). The ecache LFRU
+/// integration is the follow-up; correctness (and a hard ceiling) first.
+const REMOTE_CACHE_MAX: usize = 512;
+
+/// The local expert depot: one opened container + the derived resident manifest,
+/// servable over localhost HTTP — AND (slice 2, #315) able to fetch a bank it does not
+/// hold from a grid peer that does. Fetches of resident records run on the blocking pool
+/// (positioned file reads) behind a `std::sync::Mutex` never held across an await;
+/// cross-grid fetches are async HTTP. This is where two nodes' compute combines on ONE
+/// model: node A serves an expert it lacks, streamed from node B that holds it.
 pub struct ExpertDepot {
     container: Mutex<ExpertContainer>,
     manifest: DepotManifest,
+    /// Peer depots to try on a local miss. Empty = local-only (the Slice-0/1 behavior,
+    /// unchanged). The control plane owns membership; the depot owns fetch + verify.
+    peers: Mutex<Vec<PeerDepot>>,
+    /// Records already pulled across the grid, verified — so a bank served remotely is
+    /// not re-fetched every token. Bounded by [`REMOTE_CACHE_MAX`].
+    remote_cache: Mutex<std::collections::HashMap<ExpertKey, Vec<u8>>>,
+    /// One client for peer fetches. `no_proxy`: a grid peer (Tailscale / localhost) must
+    /// never route through an ambient corporate proxy.
+    http: reqwest::Client,
 }
 
 impl ExpertDepot {
@@ -134,11 +162,133 @@ impl ExpertDepot {
         Ok(Self {
             container: Mutex::new(container),
             manifest,
+            peers: Mutex::new(Vec::new()),
+            remote_cache: Mutex::new(std::collections::HashMap::new()),
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap_or_default(),
         })
     }
 
     pub fn manifest(&self) -> &DepotManifest {
         &self.manifest
+    }
+
+    /// Inject the peer depots the control plane discovered (base URL + published
+    /// manifest). Replaces the set — the control plane owns membership; the depot owns
+    /// the fetch/verify. Empty restores local-only behavior.
+    pub fn set_peers(&self, peers: Vec<PeerDepot>) {
+        *self.peers.lock().unwrap_or_else(|p| p.into_inner()) = peers;
+    }
+
+    /// A LOCAL miss — try the grid. Find a peer whose manifest HOLDS this bank, GET the
+    /// record from its depot, VERIFY the body against the `x-expert-sha256` header, cache
+    /// it (bounded), and return the bytes. `None` = no peer holds it, or every candidate
+    /// failed to reach/verify → the caller answers 404 and the fork falls back to its
+    /// current source (degrade, never break). This IS the combine: node A serves an
+    /// expert it does not hold, from node B that does. #315, [[misfit-grid-is-a-distributed-moe]]
+    async fn resolve_from_peer(&self, key: ExpertKey) -> Option<Vec<u8>> {
+        // Already pulled across the grid this session → don't re-fetch per token.
+        if let Some(bytes) = self
+            .remote_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
+            .cloned()
+        {
+            return Some(bytes);
+        }
+        // Only peers that actually advertise this (layer, tier) — never a 404 storm.
+        let candidates: Vec<PeerDepot> = self
+            .peers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|p| p.manifest.holds(key.layer, key.tier))
+            .cloned()
+            .collect();
+        for peer in candidates {
+            let url = format!(
+                "{}/expert/{}/{}?tier={}",
+                peer.base_url.trim_end_matches('/'),
+                key.layer,
+                key.expert,
+                key.tier
+            );
+            let resp = match self.http.get(&url).send().await {
+                Ok(r) if r.status().is_success() => r,
+                Ok(r) => {
+                    crate::probe!(
+                        class = "depot.peer.miss",
+                        layer = key.layer,
+                        expert = key.expert,
+                        tier = key.tier,
+                        peer = %peer.base_url,
+                        status = %r.status(),
+                        "peer did not serve the bank it advertised — trying the next holder"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    crate::probe!(
+                        class = "depot.peer.unreachable",
+                        peer = %peer.base_url,
+                        error = %error,
+                        "grid peer depot unreachable — trying the next holder"
+                    );
+                    continue;
+                }
+            };
+            let advertised = resp
+                .headers()
+                .get(EXPERT_SHA256_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let body = match resp.bytes().await {
+                Ok(b) => b.to_vec(),
+                Err(error) => {
+                    crate::probe!(
+                        class = "depot.peer.unreachable",
+                        peer = %peer.base_url,
+                        error = %error,
+                        "grid peer stream broke mid-record — trying the next holder"
+                    );
+                    continue;
+                }
+            };
+            // VERIFY: a peer's bytes are trusted only if they hash to what it advertised.
+            // A mismatch is a corrupt or lying peer — skip it, NEVER serve wrong weights.
+            let digest = hex_sha256(&body);
+            if advertised.as_deref() != Some(digest.as_str()) {
+                crate::probe!(
+                    class = "depot.peer.corrupt",
+                    layer = key.layer,
+                    expert = key.expert,
+                    tier = key.tier,
+                    peer = %peer.base_url,
+                    "peer record failed sha256 verify — refused, never served as trusted weights"
+                );
+                continue;
+            }
+            {
+                let mut cache = self.remote_cache.lock().unwrap_or_else(|p| p.into_inner());
+                if cache.len() < REMOTE_CACHE_MAX {
+                    cache.insert(key, body.clone());
+                }
+            }
+            crate::probe!(
+                class = "depot.peer.served",
+                layer = key.layer,
+                expert = key.expert,
+                tier = key.tier,
+                peer = %peer.base_url,
+                bytes = body.len(),
+                "expert fetched + verified from a grid peer that holds the bank — two nodes combined on one model (#315)"
+            );
+            return Some(body);
+        }
+        None
     }
 
     /// Fetch one resident record (blocking file IO — callers on the async
@@ -215,45 +365,30 @@ async fn get_expert(
     Query(query): Query<TierQuery>,
 ) -> Response {
     let tier = query.tier.unwrap_or(0);
-    // Not resident → clean 404 BEFORE touching the container: the fork
-    // falls back, and a shard we never held is a miss, not an error.
+    let key = ExpertKey { layer, expert, tier };
+    // Not resident locally → try the GRID (#315 slice 2): fetch this bank from a peer
+    // that holds it, verify, serve. Only if no peer holds it is this a clean 404 the
+    // fork falls back on. A shard we never held is a miss, never an error.
     if !depot.manifest.holds(layer, tier) {
+        if let Some(bytes) = depot.resolve_from_peer(key).await {
+            return expert_ok_response(layer, expert, tier, bytes);
+        }
         crate::probe!(
             class = "depot.miss",
             layer,
             expert,
             tier,
-            "expert requested from a bank this depot does not hold"
+            "expert not held here and no grid peer holds it — clean miss, fork falls back"
         );
         return StatusCode::NOT_FOUND.into_response();
     }
-    let key = ExpertKey { layer, expert, tier };
     let fetched = tokio::task::spawn_blocking({
         let depot = depot.clone();
         move || depot.fetch_blocking(key)
     })
     .await;
     match fetched {
-        Ok(Ok(bytes)) => {
-            let digest = hex_sha256(&bytes);
-            crate::probe!(
-                class = "depot.serve",
-                layer,
-                expert,
-                tier,
-                bytes = bytes.len(),
-                "served expert record"
-            );
-            (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                    (EXPERT_SHA256_HEADER, digest),
-                ],
-                bytes,
-            )
-                .into_response()
-        }
+        Ok(Ok(bytes)) => expert_ok_response(layer, expert, tier, bytes),
         Ok(Err(error)) => {
             let status = miss_or_defect(&error);
             crate::probe!(
@@ -286,6 +421,30 @@ async fn get_expert(
 /// from the first localhost byte served.
 pub const EXPERT_SHA256_HEADER: header::HeaderName =
     header::HeaderName::from_static("x-expert-sha256");
+
+/// The 200 response for one served record — bytes + the body-hashing `x-expert-sha256`
+/// header — shared by the local-container path and the cross-grid peer-fetch path so both
+/// carry the exact same verify seam the fork reads.
+fn expert_ok_response(layer: u16, expert: u16, tier: u16, bytes: Vec<u8>) -> Response {
+    let digest = hex_sha256(&bytes);
+    crate::probe!(
+        class = "depot.serve",
+        layer,
+        expert,
+        tier,
+        bytes = bytes.len(),
+        "served expert record"
+    );
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (EXPERT_SHA256_HEADER, digest),
+        ],
+        bytes,
+    )
+        .into_response()
+}
 
 fn hex_sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
@@ -453,5 +612,93 @@ mod tests {
             "truncated bank is corruption, never a silent miss"
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_node_serves_a_bank_it_lacks_by_fetching_from_a_peer_that_holds_it() {
+        // what this catches: THE COMBINE (#315 slice 2) — two nodes' storage combined on ONE
+        // model. Node B holds layer 1; node A does NOT. A gets B as a peer, and a request to
+        // A for an L1 expert must be served by FETCHING it from B, verified against the
+        // sha256 header. This is the whole reason to interlink: A serves compute it could not
+        // hold alone. If A ever 404'd an expert a peer holds, the grid cannot combine.
+        let dir_b = tempfile::tempdir().expect("tempdir b");
+        write_container(dir_b.path(), 2, 3);
+        let depot_b = Arc::new(ExpertDepot::open(dir_b.path()).expect("open b"));
+        let manifest_b = depot_b.manifest().clone();
+        let (port_b, server_b) = depot_b.serve_localhost(0).await.expect("serve b");
+
+        // A is a PARTIAL-SHARD node: holds L0, genuinely lacks L1's bank.
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        write_container(dir_a.path(), 2, 3);
+        std::fs::remove_file(dir_a.path().join("experts-L1.bin")).expect("drop A's L1");
+        let depot_a = Arc::new(ExpertDepot::open(dir_a.path()).expect("open a"));
+        assert!(!depot_a.manifest().holds(1, 0), "A genuinely lacks layer 1");
+        depot_a.set_peers(vec![PeerDepot {
+            base_url: format!("http://127.0.0.1:{port_b}"),
+            manifest: manifest_b,
+        }]);
+        let (port_a, server_a) = depot_a.serve_localhost(0).await.expect("serve a");
+
+        // Ask A for an expert in the bank it does NOT hold — it must combine with B.
+        let response = client()
+            .get(format!("http://127.0.0.1:{port_a}/expert/1/2"))
+            .send()
+            .await
+            .expect("A expert get");
+        assert_eq!(
+            response.status(),
+            reqwest::StatusCode::OK,
+            "A serves layer 1 by fetching it from the peer that holds it — the combine"
+        );
+        let advertised = response
+            .headers()
+            .get("x-expert-sha256")
+            .expect("hash header")
+            .to_str()
+            .expect("ascii")
+            .to_string();
+        let body = response.bytes().await.expect("body");
+        assert_eq!(body.len() as u64, RECORD_ALIGN);
+        assert_v1_record_identity(&body, 1, 2); // it IS layer-1 expert-2, sourced from B
+        assert_eq!(hex_sha256(&body), advertised, "the cross-grid record is verified end to end");
+        server_a.abort();
+        server_b.abort();
+    }
+
+    #[tokio::test]
+    async fn a_miss_no_peer_holds_still_404s_never_breaks() {
+        // what this catches: degrade-never-break ACROSS the grid. A lacks L1, and its only
+        // peer B ALSO lacks L1 — A must answer a clean 404 (the fork falls back), never 500
+        // and never hang on a peer that cannot help. The grid can only ever ADD reach.
+        let dir_b = tempfile::tempdir().expect("tempdir b");
+        write_container(dir_b.path(), 2, 3);
+        std::fs::remove_file(dir_b.path().join("experts-L1.bin")).expect("B also lacks L1");
+        let depot_b = Arc::new(ExpertDepot::open(dir_b.path()).expect("open b"));
+        let manifest_b = depot_b.manifest().clone();
+        let (port_b, server_b) = depot_b.serve_localhost(0).await.expect("serve b");
+
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        write_container(dir_a.path(), 2, 3);
+        std::fs::remove_file(dir_a.path().join("experts-L1.bin")).expect("A lacks L1");
+        let depot_a = Arc::new(ExpertDepot::open(dir_a.path()).expect("open a"));
+        depot_a.set_peers(vec![PeerDepot {
+            base_url: format!("http://127.0.0.1:{port_b}"),
+            manifest: manifest_b,
+        }]);
+        let (port_a, server_a) = depot_a.serve_localhost(0).await.expect("serve a");
+
+        let status = client()
+            .get(format!("http://127.0.0.1:{port_a}/expert/1/0"))
+            .send()
+            .await
+            .expect("get")
+            .status();
+        assert_eq!(
+            status,
+            reqwest::StatusCode::NOT_FOUND,
+            "no peer holds it → clean miss, the fork falls back; the grid never breaks serving"
+        );
+        server_a.abort();
+        server_b.abort();
     }
 }
