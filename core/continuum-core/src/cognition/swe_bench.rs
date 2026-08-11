@@ -559,13 +559,48 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         Some(instance.created_at.clone())
     };
     let repo_s = repo_dir.to_string_lossy().to_string();
-    let mut args = vec!["pip", "install", "-q", "--python", &py_s];
-    if let Some(ref date) = as_of {
-        args.push("--exclude-newer");
-        args.push(date);
-    }
-    args.extend(["--no-build-isolation", "-e", "."]);
-    let out = run(&uv, &args, Some(Path::new(&repo_s))).await?;
+
+    // DELETED-HISTORY packages: `--exclude-newer <date>` assumes PyPI still carries the
+    // uploads that existed at that date. It does not always — `atomicwrites` had its whole
+    // pre-2022 history deleted by its author, so for any pre-2022 instance the date pin
+    // leaves ZERO candidates and resolution fails outright (pytest-dev__pytest-5103, live
+    // 2026-08-11). uv's error names both the package and the earliest surviving upload, and
+    // its own suggested remedy is a per-package `--exclude-newer-package` cutoff. We heal
+    // exactly as instructed: parse the hint, override ONLY that package to just past its
+    // earliest surviving upload, and retry. The subject stays date-pinned; the override is
+    // the minimum needed for a resolvable graph, discovered from the resolver's own evidence
+    // rather than a hand-maintained package list. Bounded: each round must surface a NEW
+    // package or we stop, and history-holes per graph are few.
+    let mut overrides: Vec<String> = Vec::new();
+    let out = loop {
+        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
+        if let Some(ref date) = as_of {
+            args.push("--exclude-newer");
+            args.push(date);
+        }
+        for pin in &overrides {
+            args.push("--exclude-newer-package");
+            args.push(pin);
+        }
+        args.extend(["--no-build-isolation", "-e", "."]);
+        let out = run(&uv, &args, Some(Path::new(&repo_s))).await?;
+        if out.status.success() || as_of.is_none() {
+            break out;
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        match deleted_history_override(&stderr) {
+            Some(pin) if !overrides.contains(&pin) && overrides.len() < 8 => {
+                tracing::warn!(
+                    instance = %instance.instance_id,
+                    r#override = %pin,
+                    "date-pinned resolution hit a deleted-history package — retrying with \
+                     uv's own suggested per-package cutoff"
+                );
+                overrides.push(pin);
+            }
+            _ => break out,
+        }
+    };
     if !out.status.success() {
         // DELETE the half-built env rather than cache it. Keying on "the directory exists"
         // made a failed install sticky: every later run reused a venv with no repo in it and
@@ -579,6 +614,38 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         ));
     }
     Ok(py)
+}
+
+/// Parse uv's deleted-history hint into an `--exclude-newer-package` value (`pkg=cutoff`).
+///
+/// The hint shape (uv 0.11):
+/// ```text
+/// hint: `atomicwrites` was filtered by `exclude-newer` to only include packages uploaded
+/// before 2019-04-13T16:17:45Z. The latest version satisfying the requirement is v1.4.1,
+/// published at 2022-07-08T18:31:40.459Z. Consider using `exclude-newer-package` to
+/// override the cutoff for this package.
+/// ```
+/// The cutoff is that surviving upload's timestamp plus one second — `--exclude-newer-package`
+/// is exclusive ("prior to"), so the publish instant itself must land inside the window, and
+/// one second past it admits nothing else.
+fn deleted_history_override(stderr: &str) -> Option<String> {
+    let hint_at = stderr.find("Consider using `exclude-newer-package`")?;
+    let region = &stderr[..hint_at];
+    let pkg = {
+        let rest = &region[region.rfind("hint: `")? + "hint: `".len()..];
+        rest.split('`').next()?
+    };
+    let published = {
+        let rest = &region[region.rfind("published at ")? + "published at ".len()..];
+        &rest[..=rest.find('Z')?]
+    };
+    let ts = chrono::DateTime::parse_from_rfc3339(published).ok()?;
+    let cutoff =
+        (ts + chrono::Duration::seconds(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    if pkg.is_empty() || pkg.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(format!("{pkg}={cutoff}"))
 }
 
 fn which(bin: &str) -> Option<String> {
@@ -856,6 +923,39 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the deleted-history env-build failure (pytest-dev__pytest-5103,
+    // live 2026-08-11) — `atomicwrites`' pre-2022 uploads were deleted from PyPI, so the
+    // date-pinned resolve has ZERO candidates and the env build dies. The heal parses uv's
+    // own hint into an `--exclude-newer-package` value cut one second past the earliest
+    // surviving upload; unrelated errors must parse to None (no retry storm).
+    #[test]
+    fn deleted_history_hint_parses_into_a_per_package_cutoff() {
+        let stderr = "\u{d7} No solution found when resolving dependencies:\n\
+            \u{2570}\u{2500}\u{25b6} Because there are no versions of atomicwrites ...\n\
+            hint: `atomicwrites` was filtered by `exclude-newer` to only include packages \
+            uploaded before 2019-04-13T16:17:45Z. The latest version satisfying the requirement \
+            is v1.4.1, published at 2022-07-08T18:31:40.459Z. Consider using \
+            `exclude-newer-package` to override the cutoff for this package.";
+        assert_eq!(
+            deleted_history_override(stderr).as_deref(),
+            Some("atomicwrites=2022-07-08T18:31:41Z"),
+            "one second past the surviving upload, exclusive-bound safe"
+        );
+
+        assert_eq!(
+            deleted_history_override("error: could not compile `foo` due to previous errors"),
+            None,
+            "a non-resolver failure must not synthesize an override"
+        );
+        assert_eq!(
+            deleted_history_override(
+                "hint: `pkg` was filtered ... Consider using `exclude-newer-package` ..."
+            ),
+            None,
+            "a hint with no parsable publish timestamp must not synthesize an override"
+        );
+    }
 
     // what this catches: the hidden-collateral verdict (atlas-24066-n7) — a patch that
     // broke 30 pass-to-pass tests produced retry feedback built from the f2p report
