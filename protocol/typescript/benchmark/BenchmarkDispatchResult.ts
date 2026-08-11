@@ -17,14 +17,21 @@ card_ids: Array<string>,
  */
 skipped_needs_setup: number, 
 /**
- * Addressed kickoff messages actually delivered (0 when `assignees` was
- * omitted). A kickoff that failed to send is reported via `kickoff_errors`,
- * never silently counted as delivered.
+ * Addressed kickoff messages actually delivered (one per dispatched card —
+ * every card is directed at a live citizen). A kickoff that failed to send is
+ * reported via `kickoff_errors`, never silently counted as delivered.
  */
 kickoffs: number, 
 /**
+ * Scored solves FIRED directly for directed SWE assignees — the loop starting work
+ * without waiting on a cognitive `work/claim` (the hop that stalls under warm-slot
+ * starvation). One per staged directed SWE card. `dispatched - solves_fired` are the
+ * gym / undirected cards that still start on organic claim.
+ */
+solves_fired: number, 
+/**
  * Send failures for kickoff messages, card-id-prefixed. The cards are ON
- * the board regardless — a failed kickoff degrades to undirected dispatch,
- * it does not unwind the card.
+ * the board regardless — a failed kickoff is reported, not unwound; the
+ * citizen can still find and claim the card off the board.
  */
 kickoff_errors: Array<string>, };
