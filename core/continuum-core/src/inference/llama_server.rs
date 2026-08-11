@@ -1089,6 +1089,21 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
         // One shared lane. A future refinement can read `/props.total_slots`.
         lanes: 1,
         degraded_reason: None,
+        // NOT `Some(now)`. This path ADOPTS an endpoint the operator pinned; we
+        // have confirmed it answers, not that it has ever delivered a token to
+        // us. `ready_verified_at_ms` means exactly the latter, and stamping it
+        // here would tell every downstream reader that a lane we have never
+        // pulled a token from was confirmed this instant — which is the wedged-
+        // slot failure the field was added to expose, manufactured by hand.
+        // `None` = never confirmed, which is true and which readers already
+        // handle.
+        ready_verified_at_ms: None,
+        // An external OpenAI-compatible endpoint does not tell us whether it can
+        // see, and we have not asked. Absence of knowledge, reported as absence
+        // — not as `false` meaning "we checked and it cannot".
+        vision_ready: false,
+        vision_base_url: None,
+        vision_model: None,
     })
 }
 
