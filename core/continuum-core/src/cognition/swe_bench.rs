@@ -511,9 +511,17 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     //
     // `--no-build-isolation` is what lets the two coexist: the build runs against the modern
     // setuptools already in the venv instead of pip fetching a date-pinned one.
+    //
+    // setuptools is pinned `<70`, NOT bare-latest. Two era-2020..2022 build requirements fight:
+    // an editable install (`-e .`) needs PEP 660 `build_editable`, which landed in setuptools 64;
+    // and those repos' C-extension setup code imports legacy APIs like `setuptools.dep_util`
+    // (astropy's `wcs/setup_package.py`), which setuptools REMOVED in 70.0. setuptools 69.x is the
+    // only version that has BOTH — bare-latest (>=70) builds the pure-Python repos but dies on
+    // every C-extension instance with `ModuleNotFoundError: setuptools.dep_util`. This is the whole
+    // era class, not one repo (#380 "pin era deps"). pytest/wheel stay latest.
     let _ = run(
         &uv,
-        &["pip", "install", "-q", "--python", &py_s, "pytest", "setuptools", "wheel"],
+        &["pip", "install", "-q", "--python", &py_s, "pytest", "setuptools<70", "wheel"],
         None,
     )
     .await?;
