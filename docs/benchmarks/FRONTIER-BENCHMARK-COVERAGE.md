@@ -30,6 +30,21 @@ The swe-bench wiring already IS this adapter (stage repo → she works her loop 
 with held-out tests). The tiers below are ordered by **staging + oracle complexity**,
 NOT by "how weird their harness is" — because we never touch their harness.
 
+### Full capacity is fair — and disclosed (Joel, 2026-08-10)
+"It's fair to take our exams with our entire intellectual capacity, especially
+considering how we divide across the grid." Every frontier number is a model on its FULL
+agentic stack (Kimi Code, Codex, Claude Code — tools, retries, max reasoning, multi-run,
+disclosed). The fair equivalent for a citizen is her WHOLE being: genome + memory/recall
++ hands/tools + teammates + the **grid** beneath her (compute COMBINES across nodes, so a
+hard exam can pull a bigger/faster model or distributed MoE, governor-arbitrated). That
+IS her harness; using it is honest. Two guardrails: **(1)** the reported number carries
+its config ("citizen X, N-node grid, genome+memory+tools+K teammates, tier T") exactly as
+Kimi discloses "Kimi Code harness, max reasoning, 3-run avg, H20"; **(2)** the oracle
+stays HELD OUT — she uses everything she IS, never the gold patch / test file (full
+capacity ≠ answer leak). Design consequence: the adapter must NOT strip her down to a
+bare eval config (the recurring "tools disabled during eval" bug class); she takes the
+exam whole.
+
 ## Tier A — SWE-instance-shaped → adapter-addable (verify HF schema, then a catalog row)
 These are real GitHub-issue / repo-patch tasks. Each needs its HF dataset id confirmed
 + a schema check that `SweInstance` deserializes; then it's a one-row add exactly like
