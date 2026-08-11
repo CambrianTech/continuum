@@ -90,6 +90,28 @@ pub async fn drive_to_settle(
     // rather than being trapped. Her own behavior is the budget — no counter, no constant.
     let mut acts_at_last_nudge: Option<usize> = None;
 
+    // DISCOVERY SATURATION GATE (#390) — the STATE escalation of the [no-deliverable]
+    // fact above, built on its own measured failure: the fact fires on EVERY act with
+    // no mutation receipt (see the Acted arm), and a live run still spent 15+ varied
+    // reads on the right file with a zero-byte diff — the fact was perceived and
+    // changed nothing ([[perception-facts-fire-correctly-and-change-nothing-only-
+    // state-changes-behaviour]]). Varied reads never trip the #206 identical-act
+    // backstop (each has a fresh signature), so the only bound they ever hit is
+    // `max_acts` — at which point the budget is gone and the empty-diff re-drive in
+    // `agent/solve` structurally cannot fire. The state fix: on a turn whose
+    // DELIVERABLE IS THE WORKSPACE, discovery may spend at most HALF the act budget
+    // before the first workspace mutation; past that, acts are withheld (same
+    // `may_act` lever as #206) so the drive ends with REAL remaining budget — which
+    // is exactly what the empty-diff re-drive needs to hand back with the structural
+    // fact. The first mutation lifts the gate for the rest of the turn: iteration
+    // (edit → run tests → edit) is never bounded, only pre-write wandering. Not a
+    // steer — it never says what to write, exactly like `max_acts`; it converts an
+    // unbounded read loop into a decision point while the budget can still buy the
+    // decision. Non-workspace turns (chat, research) are untouched.
+    let discovery_budget = (max_acts / 2).max(1);
+    let mut mutated_yet = false;
+    let mut saturation_probed = false;
+
     // #386: transient-deliberation retry. Glass-boxed on atlas-17139-h1
     // (2026-08-09): the per-slot wedge fails ~1 in 3 generations and the VERY
     // NEXT generation succeeds — capture tick 2 faults, tick 3 acts, tick 5
@@ -121,10 +143,27 @@ pub async fn drive_to_settle(
         } else {
             Situation::PostAction
         };
-        // may_act gates ACTING (not speaking): past the act budget OR once she is provably
-        // stuck re-emitting the identical act, a fresh Act is returned un-driven and she must
-        // settle into a Speak/Pass. Speaking is never gated.
-        let may_act = acts < max_acts && stuck < STUCK_LIMIT;
+        // may_act gates ACTING (not speaking): past the act budget, once she is provably
+        // stuck re-emitting the identical act, OR once a workspace-deliverable turn has
+        // saturated its discovery budget without a single mutation (#390 gate above), a
+        // fresh Act is returned un-driven and she must settle into a Speak/Pass.
+        // Speaking is never gated.
+        let discovery_open =
+            !framing.workspace_deliverable || mutated_yet || acts < discovery_budget;
+        if !discovery_open && acts < max_acts && stuck < STUCK_LIMIT && !saturation_probed {
+            saturation_probed = true;
+            crate::probe!(
+                class = "persona.settle.discovery_saturated",
+                room_id = %room_id,
+                acts = acts,
+                discovery_budget = discovery_budget,
+                max_acts = max_acts,
+                "workspace-deliverable turn spent its discovery budget with zero \
+                 mutations — withholding further acts so the remaining budget reaches \
+                 the empty-diff re-drive instead of being read away (#390 state gate)"
+            );
+        }
+        let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
         let (step, step_metrics) =
             settle_step(cycle, burst.clone(), room_id, may_act, framing, situation).await;
         if let Some(m) = step_metrics {
@@ -186,6 +225,15 @@ pub async fn drive_to_settle(
             SettleStep::Acted { calls, .. } => {
                 acts += 1;
                 collect_touched_paths(&mut touched, &calls);
+                // Latch the #390 discovery gate OPEN on the first workspace mutation:
+                // once she has written anything, iteration is hers for the whole
+                // remaining budget. Same receipt predicate as the [no-deliverable]
+                // fact — one truth for "did an act change a file".
+                if framing.workspace_deliverable && !mutated_yet {
+                    if let Some(body) = cycle.acting() {
+                        mutated_yet = mutated_workspace(&body.working_memory.recent_entries());
+                    }
+                }
                 // THE DELIVERABLE FACT BELONGS ON THE ACT PATH, NOT ONLY ON SETTLE.
                 //
                 // It used to live exclusively in the Spoke arm, so it could only reach a

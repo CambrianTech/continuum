@@ -1086,17 +1086,23 @@ impl AgentSolve {
         // 2026-08-08, atlas-sympy-24066-n6 attempts 2+3): on a Workspace-deliverable
         // task she settled by SPEAKING after ONE act — a generic file summary, zero
         // edits — leaving 11 of 12 acts unused, twice, near-verbatim. Working is not
-        // speaking: when the deliverable is the workspace diff, a Speak with an EMPTY
-        // diff and real remaining budget must not end the attempt. ONE bounded
+        // speaking: when the deliverable is the workspace diff, an attempt ending with
+        // an EMPTY diff and real remaining budget must not end silently. ONE bounded
         // re-drive (a retry, never a nag loop): state the structural fact, hand back
-        // the remaining budget. If she speaks to an empty diff again, THAT settles —
-        // honestly graded, with the fact on the record. Not fired on budget
-        // exhaustion (spoken=None un-driven Act) or infra failure — those already
-        // grade honestly.
+        // the remaining budget. If she ends on an empty diff again, THAT settles —
+        // honestly graded, with the fact on the record.
+        //
+        // This fires on ANY non-infra end with budget remaining — a Speak, the #206
+        // stuck backstop, or the #390 discovery-saturation gate (which deliberately
+        // ends the drive EARLY, at half budget, precisely so this re-drive still has
+        // budget to hand back; see `drive_to_settle`). It used to require
+        // `spoken.is_some()`, which structurally excluded the gated endings — the one
+        // population that most needs the redirect. TRUE budget exhaustion is still
+        // excluded by `acts + 1 < max_acts` (nothing left to hand back), and infra
+        // failures by `inference_error` — those grade honestly as before.
         if workspace_deliverable
             && patch.is_empty()
             && settled.inference_error.is_none()
-            && settled.spoken.is_some()
             && settled.acts + 1 < max_acts
         {
             let remaining = max_acts - settled.acts;
@@ -1105,8 +1111,9 @@ impl AgentSolve {
                 run_id = %run_id.as_deref().unwrap_or("-"),
                 acts_used = settled.acts,
                 acts_remaining = remaining,
-                "Speak settled a workspace-deliverable attempt with an EMPTY diff and \
-                 remaining act budget — one bounded re-drive with the structural fact"
+                "workspace-deliverable attempt ended with an EMPTY diff and remaining \
+                 act budget (Speak, stuck backstop, or #390 saturation gate) — one \
+                 bounded re-drive with the structural fact"
             );
             let fact = format!(
                 "Status check from the grading harness (a structural fact, not a person): \
