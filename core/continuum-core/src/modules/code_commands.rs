@@ -1489,9 +1489,14 @@ impl ActionCommand for CodeCreateWorkspace {
         if !p.path_prepend.is_empty() {
             ensure_shell(&self.state, &who)?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
-                let inherited = std::env::var("PATH").unwrap_or_default();
                 let prepend = p.path_prepend.join(":");
-                shell.set_env("PATH".to_string(), format!("{prepend}:{inherited}"));
+                // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
+                // reconstructed PATH. The shell runs as the user's LOGIN shell
+                // (shell_session.rs), which already carries the user's full toolchain and
+                // re-sets PATH from the profile — so an inherited PATH override is clobbered.
+                // The shell prepends this prefix AFTER the profile loads (like `activate`), so
+                // the era venv layers on top of the user's real environment. No hand-rolled PATH.
+                shell.set_env("CONTINUUM_PATH_PREPEND".to_string(), prepend.clone());
                 // HER TREE MUST WIN THE IMPORT (due-diligence find, 2026-08-08,
                 // gold-through-her-hands on sympy-24066): the era venv's package is
                 // `pip install -e` bound to the GRADER'S work repo, so `import sympy`

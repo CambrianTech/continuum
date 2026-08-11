@@ -759,9 +759,43 @@ async fn run_shell_command(
             return;
         }
     };
-    let mut cmd = TokioCommand::new(&bash);
-    cmd.arg("-c")
-        .arg(command)
+    // Run as the USER'S LOGIN SHELL so every persona inherits the user's COMPLETE
+    // environment — their PATH and every program they've installed (uv, cargo, node,
+    // pyenv, git…) — exactly like Claude Code runs in the user's own shell. A bare
+    // non-login `bash -c` only sees whatever env the CORE happened to launch with and
+    // never sources the profile, so a persona could be missing the user's whole
+    // toolchain (measured 2026-08-11: a login zsh resolves uv/cargo/node; a non-login
+    // shell resolves none). On Unix use `$SHELL` (the user's own shell) as a login
+    // shell; fall back to the located POSIX bash. Windows keeps the located bash (the
+    // shell_portable WSL-shim guard) — its env model differs and $SHELL is absent.
+    let (shell_bin, shell_flag): (PathBuf, &str) = if cfg!(windows) {
+        (bash, "-c")
+    } else {
+        match std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.is_empty() && Path::new(s).exists())
+        {
+            Some(user_shell) => (PathBuf::from(user_shell), "-lc"),
+            None => (bash, "-lc"),
+        }
+    };
+
+    // Layer the per-task PATH prefix (the era venv's bin) ON TOP of the login-loaded
+    // PATH. A login shell RE-SETS PATH from the profile, so an inherited PATH override
+    // is clobbered (measured); instead the caller hands the prefix as
+    // CONTINUUM_PATH_PREPEND and we prepend it AFTER the profile loads — the same thing
+    // `source venv/bin/activate` does. No prefix → run the command verbatim. This is the
+    // ONLY hand on PATH; the base environment is entirely the user's own.
+    let effective_command = match env.get("CONTINUUM_PATH_PREPEND") {
+        Some(prefix) if !prefix.is_empty() => {
+            format!("export PATH=\"{prefix}:$PATH\"; {command}")
+        }
+        _ => command.to_string(),
+    };
+
+    let mut cmd = TokioCommand::new(&shell_bin);
+    cmd.arg(shell_flag)
+        .arg(&effective_command)
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
