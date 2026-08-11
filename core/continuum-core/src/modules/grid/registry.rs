@@ -106,6 +106,41 @@ impl NodeRegistry {
             .map(|r| r.value().clone())
     }
 
+    /// Ensure a grid node exists for a peer known ONLY by its durable airc `PeerId` — the
+    /// automatic path: a capacity beacon arrives over airc carrying the authenticated PeerId
+    /// (no transport address), and the grid FIGURES OUT the node identity from it rather than
+    /// waiting for a manual `grid/pair` (#2228). If a node already carries this `peer_id` this
+    /// is a no-op; otherwise a node is self-registered keyed by the PeerId (a beaconing peer
+    /// IS a grid node, identity-first). Trust is left at the DEFAULT — discovery is not
+    /// authorization, so the node is visible to `get_by_peer`/pricing but is not sent work
+    /// until the trust bridge (#38) elevates it. `vram_mb` seeds a Compute capability from the
+    /// offer so the router can weigh it. Returns true when a node was newly created.
+    pub fn ensure_peer_node(&self, peer: PeerId, vram_mb: Option<u64>) -> bool {
+        if self.get_by_peer(&peer).is_some() {
+            return false;
+        }
+        let node_id = peer.to_string();
+        let capabilities = match vram_mb {
+            Some(mb) => vec![super::node::NodeCapability::Compute { gpu: None, vram_mb: Some(mb) }],
+            None => vec![],
+        };
+        let mut created = false;
+        self.nodes.entry(node_id.clone()).or_insert_with(|| {
+            created = true;
+            GridNode {
+                node_id,
+                node_name: None,
+                addresses: vec![],
+                capabilities,
+                trust_level: TrustLevel::default(), // discovery ≠ authorization (#38)
+                last_seen: now_millis(),
+                latency_ms: None,
+                peer_id: Some(peer),
+            }
+        });
+        created
+    }
+
     /// Correlate a known node (keyed by its transport-derived `node_id`) with its durable
     /// airc `PeerId` once discovery/gossip/pairing learns it. The airc pairing already
     /// learns the transport route AND the `PeerId` together; this is where the grid
@@ -303,6 +338,30 @@ mod tests {
             registry.set_peer_id("100.0.0.0", ghost).is_err(),
             "correlating an unknown node fails loud"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: THE AUTOMATIC PATH — a beaconing peer known ONLY by its PeerId becomes
+    // a routable grid node with no manual pairing (#2228). ensure_peer_node self-registers it
+    // (identity-first), is idempotent (a re-beacon is a no-op), carries the beacon's advertised
+    // compute, and leaves trust at the default so discovery does not grant authorization (#38).
+    #[test]
+    fn ensure_peer_node_auto_registers_a_beaconing_peer_by_identity() {
+        let dir = std::env::temp_dir().join("grid-test-ensure-peer");
+        let _ = std::fs::remove_dir_all(&dir);
+        let registry = NodeRegistry::new(&dir);
+        let peer = PeerId::from_uuid(uuid::Uuid::from_u128(0xbeac04));
+
+        assert!(registry.get_by_peer(&peer).is_none(), "unknown before any beacon");
+        assert!(registry.ensure_peer_node(peer, Some(32768)), "first beacon self-registers the peer");
+
+        let node = registry.get_by_peer(&peer).expect("now routable by durable identity");
+        assert_eq!(node.peer_id, Some(peer));
+        assert_ne!(node.trust_level, TrustLevel::Owner, "discovery is not authorization");
+        assert!(!node.capabilities.is_empty(), "carries the beacon's advertised compute");
+
+        assert!(!registry.ensure_peer_node(peer, Some(32768)), "a re-beacon from the same peer is a no-op");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
