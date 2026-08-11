@@ -441,9 +441,15 @@ pub struct CodeEditParams {
     // flat-call shape a model reaches for instead of the nested tagged object.
     #[serde(default)]
     pub content: Option<String>,
-    #[serde(default)]
+    // `old_string`/`new_string` (Claude Code / most agents) and `old_str`/`new_str` are the
+    // UNIVERSAL edit idiom every citizen — persona, Claude, or human-over-Positron — reaches for
+    // first. Dogfooded 2026-08-09: a bare `code/edit old_string=… new_string=…` was refused
+    // ("could not determine the edit mode") because these weren't fields. Serde aliases map them
+    // straight onto search/replace at the shared handler, so search_replace is INFERRED and the
+    // edit lands first-try for everyone. [[dogfood-the-continuum-command-surface]]
+    #[serde(default, alias = "old_string", alias = "old_str")]
     pub search: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "new_string", alias = "new_str")]
     pub replace: Option<String>,
     #[serde(default)]
     pub new_content: Option<String>,
@@ -481,8 +487,14 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             .or_else(|| p.edit_mode.get(key).and_then(|v| v.as_str().map(str::to_string)))
     };
     let content = s(&p.content, "content");
-    let search = s(&p.search, "search");
-    let replace = s(&p.replace, "replace");
+    // Top-level old_string/new_string land on p.search/p.replace via serde aliases above; this
+    // also accepts them NESTED inside an untyped `edit_mode:{old_string:…,new_string:…}` object.
+    let search = s(&p.search, "search")
+        .or_else(|| s(&None, "old_string"))
+        .or_else(|| s(&None, "old_str"));
+    let replace = s(&p.replace, "replace")
+        .or_else(|| s(&None, "new_string"))
+        .or_else(|| s(&None, "new_str"));
     let new_content = s(&p.new_content, "new_content");
     // Numeric fields, pulled from top-level OR the nested untyped edit_mode object.
     // Live glass-box (2026-07-14): Devstral emitted `edit_mode:{end_line:65535,
@@ -987,7 +999,7 @@ impl ActionCommand for CodeSearch {
             error = Some(format!(
                 "{total_matches} matches across {files_total} file(s) — too many to list \
                  line-by-line, so this shows ONE representative match per file for the top \
-                 {} file(s) by match count: [{}]. Next: read the most relevant file \
+                 {} file(s) by match count: [{}]. Next: read the hottest file listed first above \
                  (code/read file_path=...) or narrow the search (more specific `pattern`, \
                  or `file_glob` limiting which files).",
                 matches.len(),
