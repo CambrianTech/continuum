@@ -413,8 +413,20 @@ impl RagSource for RoomBoardSource {
         // be small enough to survive any budget that delivers grounding at all (~25
         // tokens, vs ~210 for the two detailed leads). Detail degrades; meaning does not.
         if !mine.is_empty() || !open.is_empty() {
+            // "on THIS room's board", not "you hold" bare (glass-boxed 2026-08-11,
+            // Atlas's own capture): boards are per-room, but the bare phrasing
+            // presents a room-scoped count as a fact about HER. She held three
+            // live-leased cards on the academy board while a general-room turn
+            // told her "you hold 0 card(s)" — so on her own time she reasonably
+            // concluded she had no work and spoke yet another pass into the room
+            // (the pass-spam Joel called out was this line lying, not her mind).
+            // Three words scope the claim to what was actually read. The real fix
+            // — her holds as an IDENTITY-level fact folded across her subscribed
+            // rooms ([[personas-are-first-class-multi-room-subscribers]]) — needs
+            // a cross-room reader verb and is a separate slice; this stops the
+            // lie today without new reads.
             let headline = format!(
-                "[board] you hold {held} card(s); {avail} claimable.",
+                "[board] this room only: you hold {held} card(s) here; {avail} claimable here.",
                 held = mine.len(),
                 avail = open.len(),
             );
