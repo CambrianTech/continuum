@@ -20,6 +20,18 @@ repo?: string,
  * an addressed kickoff message in-room naming the assignee + card id — the
  * empirically proven activation path (an addressed imperative in its OWN
  * message block actuates; a card sitting silently on the board does not).
- * Omit for undirected dispatch (cards only, citizens self-select).
+ * Every name MUST be a citizen currently online (dispatch fails loud on an
+ * unknown name, listing who is online) — never our specific roster, always
+ * this machine's live citizens. OMIT to dispatch to the WHOLE live roster
+ * (whoever this repo user has spawned) — the general default.
  */
-assignees?: Array<string>, };
+assignees?: Array<string>, 
+/**
+ * Restrict a SWE-class dispatch to these exact `instance_id`s (e.g.
+ * `sympy__sympy-24152`), in this order — instead of taking the first `limit` from the
+ * dataset. Substring match, so a short id (`sympy-24152`) also selects. Omit to dispatch
+ * the dataset head. Lets a caller target a KNOWN-buildable instance rather than whatever
+ * sits first in the dataset (astropy's C-extension build is the hard tail, #383, and it
+ * leads swe-bench-lite). Ignored for gym-class benchmarks.
+ */
+instances: Array<string> | null, };
