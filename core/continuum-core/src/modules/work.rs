@@ -1173,6 +1173,12 @@ impl ServiceModule for WorkModule {
             Arc::new(crate::commands::benchmark::BenchmarkDispatch {
                 registry: self.registry.clone(),
             }),
+            // persona/roster reads the SAME live registry benchmark/dispatch resolves its
+            // assignees against — constructed here for the same dep-ownership reason (#396
+            // live-roster verb; the observability side of "dispatch targets the live roster").
+            Arc::new(crate::commands::persona_roster::PersonaRoster {
+                registry: self.registry.clone(),
+            }),
         ]
     }
 
