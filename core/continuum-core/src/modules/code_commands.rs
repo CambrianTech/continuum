@@ -1057,6 +1057,9 @@ pub struct CodeShell {
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeShellParams {
     /// The shell command line to run (bash), e.g. `cargo check` or `git status`.
+    /// Accepts `command` too — the common name (Claude's Bash tool, most CLIs use it) —
+    /// so a caller who reaches for the standard field name is served, not rejected.
+    #[serde(alias = "command")]
     pub cmd: String,
     /// How long to wait INLINE for completion before returning the execution_id
     /// handle to poll. Defaults to 30000 (30s). A long job keeps running past this.
