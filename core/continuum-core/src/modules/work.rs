@@ -456,6 +456,18 @@ pub(crate) async fn dispatch_staged_swe_solve(
         return;
     }
     let workspace = swe_root.join(instance).to_string_lossy().to_string();
+    // Her HANDS must resolve `python`/`pytest`/`pip` to THIS instance's venv, not the system
+    // interpreter. Without this, `code/shell pytest` hits homebrew python3.14 (no pytest, no
+    // repo), she loops `pip install pytest` into the wrong interpreter, and burns every action
+    // without ever validating her edit (glass-boxed 2026-08-11 from Anon's astropy turn). The
+    // venv is built at staging (benchmark.rs) / on first grade; the path is deterministic, and
+    // solve.rs already `.exists()`-filters it, so prepending a not-yet-built bin is harmless.
+    let venv_bin = crate::cognition::swe_bench::swe_cache_dir()
+        .join("envs")
+        .join(instance)
+        .join("bin")
+        .to_string_lossy()
+        .to_string();
     let params = crate::commands::agent::solve::AgentSolveParams {
         persona_id: claimer.to_string(),
         base_model_id: model,
@@ -468,7 +480,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         capture_dir: None,
         learn: crate::cognition::learning_policy::LearningPolicy::LearnFromThisWork,
         max_acts: None,
-        path_prepend: None,
+        path_prepend: Some(vec![venv_bin]),
         suppress_recall: None,
                 prev_failed_patch_sha: None,
         // The SWE claim adapter's N (Joel, 2026-08-08): a failed grade re-enters the
