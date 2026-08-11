@@ -1941,6 +1941,19 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::activity::ActivityModule::new(
             registry.clone(),
         )));
+        // Event-driven SWE grade-on-done — the REACT half of the benchmark adapter,
+        // and the verb that actually CLOSES the kanban benchmark loop. Subscribes to
+        // work.card.state_changed (emitted by work/state) and, when a benchmark SWE
+        // card reaches a terminal state, grades the citizen's workspace diff against
+        // the HELD-OUT oracle in a fresh clone at base_commit (launder-proof) and posts
+        // the verdict into the room. No commands, no tick — a pure event subscriber
+        // ([[the-whole-system-is-event-based-not-polling]]). Registered here, at the
+        // real boot site, because `impl ServiceModule` registers nothing: until this
+        // line, the module existed but never reached dispatch, so grade-on-done never
+        // fired in production.
+        runtime.register(Arc::new(
+            crate::modules::benchmark_grade::BenchmarkGradeModule::new(registry.clone()),
+        ));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
         // Schedules the ChannelDigestRegion: per live persona it pre-stages the
         // persona's current-channel digest into the SHARED digest buffer
