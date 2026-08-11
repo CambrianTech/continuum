@@ -564,6 +564,104 @@ mod tests {
     }
 
 
+    /// Emits a DIFFERENT read-class act every tick (fresh path per generation), so
+    /// every batch has a fresh loop signature — the exact shape the #206 identical-act
+    /// backstop can never bound. The instrument for the #390 discovery-saturation gate.
+    struct VaryingAct {
+        ticks: Mutex<usize>,
+    }
+    #[async_trait]
+    impl Faculty for VaryingAct {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+            let n = {
+                let mut t = self.ticks.lock().unwrap();
+                *t += 1;
+                *t
+            };
+            Some(Contribution::verdict(
+                Decision::Act {
+                    calls: vec![ToolCall {
+                        id: format!("call-{n}"),
+                        name: "code/read".into(),
+                        input: serde_json::json!({ "path": format!("src/file_{n}.rs") }),
+                    }],
+                    intent: "keep reading".into(),
+                },
+                0.9,
+                "reads forever, never writes",
+            ))
+        }
+    }
+
+    // what this catches (#390 discovery-saturation gate): a workspace-deliverable turn
+    // spending VARIED read acts — each with a fresh signature, so the #206 identical-act
+    // backstop never trips — must be stopped at HALF the act budget while nothing has
+    // mutated the workspace, so the remaining half survives for the empty-diff re-drive
+    // instead of being read away (glass-boxed live: 15 varied reads on the right file,
+    // patch_bytes 0, [no-deliverable] fact firing every act and changing nothing). The
+    // ambient control pins the scope: a turn whose deliverable is the UTTERANCE reads
+    // freely to the full budget — the gate exists only where the diff is the deliverable.
+    #[tokio::test]
+    async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "file contents...".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(VaryingAct { ticks: Mutex::new(0) })],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body(exec.clone(), adm.clone()));
+
+        let outcome = drive_to_settle(
+            &cycle,
+            "fix the bug",
+            Uuid::new_v4(),
+            20,
+            TurnFraming::ambient().on_workspace(),
+        )
+        .await;
+
+        assert_eq!(
+            outcome.acts, 10,
+            "discovery saturates at half the budget (20/2) with zero mutations — \
+             the other half is preserved for the empty-diff re-drive"
+        );
+        assert!(
+            matches!(outcome.decision, Decision::Act { .. }) && outcome.spoken.is_none(),
+            "the never-write faculty returns un-driven — honest 'saturated, did not settle'"
+        );
+
+        // Ambient control: same never-writing faculty, deliverable is the utterance —
+        // discovery is not gated and the full budget is hers.
+        let exec2 = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "file contents...".into(),
+        });
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(VaryingAct { ticks: Mutex::new(0) })],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body(exec2, admission()));
+        let ambient =
+            drive_to_settle(&cycle2, "look around", Uuid::new_v4(), 20, TurnFraming::ambient())
+                .await;
+        assert_eq!(
+            ambient.acts, 20,
+            "a non-workspace turn reads to the full budget — the gate scopes to \
+             workspace-deliverable turns only"
+        );
+    }
+
     // what this catches: the grader's stopwatch. A mind that never settles is
     // bounded by the EXTERNAL `max_acts` budget and the final un-driven Act is
     // returned as unfinished — never a fabricated answer, and the budget is the
