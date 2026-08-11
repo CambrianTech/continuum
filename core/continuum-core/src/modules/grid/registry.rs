@@ -358,7 +358,15 @@ mod tests {
 
         let node = registry.get_by_peer(&peer).expect("now routable by durable identity");
         assert_eq!(node.peer_id, Some(peer));
-        assert_ne!(node.trust_level, TrustLevel::Owner, "discovery is not authorization");
+        // NOT `!= Owner`. That also passes at Trusted, which is the exact bar
+        // `router::find_gpu_node` admits compute candidates on — so the weaker form
+        // would stay green while every beaconing stranger became routable. The
+        // danger is the second rung from the top, not the top.
+        assert!(
+            node.trust_level < TrustLevel::Trusted,
+            "a beaconing stranger must not clear the router's admission bar — \
+             discovery is not authorization"
+        );
         assert!(!node.capabilities.is_empty(), "carries the beacon's advertised compute");
 
         assert!(!registry.ensure_peer_node(peer, Some(32768)), "a re-beacon from the same peer is a no-op");

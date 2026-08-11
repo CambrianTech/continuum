@@ -345,6 +345,10 @@ mod tests {
                     .unwrap()
                     .as_millis() as u64,
                 latency_ms: Some(latency_ms),
+                // These fixtures predate the #2228 join key and describe nodes known
+                // only by transport identity — which is the honest state for a node
+                // the registry learned before any beacon correlated it.
+                peer_id: None,
             }
         }
 
@@ -480,6 +484,42 @@ mod tests {
                 ),
                 "a local card that clears the floor keeps the job"
             );
+        }
+
+        /// what this catches: the #2228 auto-correlation turning discovery into
+        /// authorization. `GridModule::tick` now folds every beaconing peer into
+        /// the registry automatically, so a stranger with a big advertised card
+        /// appears as a candidate-shaped node with no human in the loop. This pins
+        /// the BEHAVIOUR rather than the constant: `registry.rs` asserts the trust
+        /// default sits below `Trusted`, and this asserts the router does not route
+        /// to such a node — so moving the bar cannot silently open the door.
+        #[test]
+        fn an_auto_registered_beaconing_peer_is_discovered_but_not_routed_to() {
+            let dir = std::env::temp_dir().join("grid-router-elig-beacon");
+            let _ = std::fs::remove_dir_all(&dir);
+            let registry = NodeRegistry::new(&dir);
+            let peer = airc_core::PeerId(uuid::Uuid::from_u128(0xbeac04));
+
+            // A beacon self-registers it, advertising a card big enough for the job.
+            assert!(registry.ensure_peer_node(peer, Some(32768)));
+            assert!(
+                registry.get_by_peer(&peer).is_some(),
+                "the peer IS discovered — that half must keep working"
+            );
+
+            let router = GridRouter::new(false, 0);
+            let decision = router.route(
+                "ai/generate",
+                &serde_json::json!({ PARAM_REQUIRES_VRAM_MB: 24576 }),
+                &registry,
+            );
+
+            assert!(
+                matches!(decision, RouteDecision::Local),
+                "an unauthorized beaconing peer must not receive compute: {decision:?}"
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         /// what this catches: max-compute hopping to a bigger-but-still-too-small
