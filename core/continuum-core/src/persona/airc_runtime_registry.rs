@@ -211,6 +211,46 @@ impl PersonaAircRuntimeRegistry {
             .map(|entry| entry.value().runtime.clone())
     }
 
+    /// One live citizen chosen DETERMINISTICALLY (lexicographically-lowest
+    /// `agent_name`) — the general "author a curator action through whoever is
+    /// online" pick for ANY repo user's roster. Never keys on a specific name
+    /// (our "Benchy" is not on a fresh clone's grid); a stable choice so the same
+    /// box authors curator actions through the same citizen until the roster
+    /// changes. `None` when nobody is online — the honest signal that a
+    /// curator action (seeding a board, posting a grade) has no author yet and
+    /// the fix is `persona/spawn`, not inventing an identity.
+    /// [[general-by-design-beats-hardcoded-users]]
+    pub fn any_live_citizen(&self) -> Option<Arc<PersonaAircRuntime>> {
+        self.inner
+            .iter()
+            .min_by(|a, b| {
+                a.value()
+                    .runtime
+                    .agent_name()
+                    .cmp(b.value().runtime.agent_name())
+            })
+            .map(|e| e.value().runtime.clone())
+    }
+
+    /// Snapshot of every live citizen as `(agent_name, persona-airc peer_id)`,
+    /// sorted by name for a stable round-robin. This is the roster a directed
+    /// dispatch resolves against — the citizens THIS machine actually has online,
+    /// whoever they are, never a baked-in name list. O(N), N = tens.
+    pub fn roster_snapshot(&self) -> Vec<(String, Uuid)> {
+        let mut out: Vec<(String, Uuid)> = self
+            .inner
+            .iter()
+            .map(|e| {
+                (
+                    e.value().runtime.agent_name().to_string(),
+                    e.value().runtime.airc().peer_id().as_uuid(),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// The persona's autonomic-quiesce flag (a shared handle). The service loop
     /// clones this once at spawn and checks it each self-tick (slice 2); the
     /// setters below flip it. `None` if the persona isn't online. Returning the
