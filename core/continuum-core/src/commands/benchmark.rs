@@ -565,7 +565,10 @@ pub struct BenchmarkDispatchParams {
     /// an addressed kickoff message in-room naming the assignee + card id — the
     /// empirically proven activation path (an addressed imperative in its OWN
     /// message block actuates; a card sitting silently on the board does not).
-    /// Omit for undirected dispatch (cards only, citizens self-select).
+    /// Every name MUST be a citizen currently online (dispatch fails loud on an
+    /// unknown name, listing who is online) — never our specific roster, always
+    /// this machine's live citizens. OMIT to dispatch to the WHOLE live roster
+    /// (whoever this repo user has spawned) — the general default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub assignees: Option<Vec<String>>,
@@ -589,14 +592,14 @@ pub struct BenchmarkDispatchResult {
     /// full coverage is the lie this field exists to prevent.
     #[ts(type = "number")]
     pub skipped_needs_setup: u32,
-    /// Addressed kickoff messages actually delivered (0 when `assignees` was
-    /// omitted). A kickoff that failed to send is reported via `kickoff_errors`,
-    /// never silently counted as delivered.
+    /// Addressed kickoff messages actually delivered (one per dispatched card —
+    /// every card is directed at a live citizen). A kickoff that failed to send is
+    /// reported via `kickoff_errors`, never silently counted as delivered.
     #[ts(type = "number")]
     pub kickoffs: u32,
     /// Send failures for kickoff messages, card-id-prefixed. The cards are ON
-    /// the board regardless — a failed kickoff degrades to undirected dispatch,
-    /// it does not unwind the card.
+    /// the board regardless — a failed kickoff is reported, not unwound; the
+    /// citizen can still find and claim the card off the board.
     pub kickoff_errors: Vec<String>,
 }
 
@@ -672,6 +675,55 @@ pub(crate) fn dispatch_swe_card_body(
 /// as any other work; nothing about the turn is exam-shaped.
 pub struct BenchmarkDispatch {
     pub registry: crate::persona::PersonaAircRuntimeRegistry,
+}
+
+/// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
+/// roster, never our specific names. Pure over the live snapshot so it is unit-testable
+/// without a running airc daemon (a real `PersonaSlot` needs one); the wrapper in `run`
+/// just feeds `registry.roster_snapshot()` in.
+///
+/// - `requested` empty → the WHOLE live roster (whoever THIS machine spawned). This is the
+///   "dispatch to my citizens, whoever they are" default: a fresh clone runs
+///   `benchmark/dispatch --name=…` with no `--assignees` and it targets their own online
+///   citizens. Directed dispatch is what actuates (a silent card does not — measured
+///   2026-08-07), so defaulting to the live roster keeps the loop autonomous everywhere.
+/// - `requested` non-empty → every name MUST resolve to a live citizen; an unknown name
+///   FAILS LOUD listing who is online (never silently addresses a ghost that never claims,
+///   and never silently skips SWE staging). Order is preserved for a stable round-robin.
+/// - roster empty → `Denied` (nobody online — `persona/spawn` first; the fix is a citizen,
+///   not an invented identity).
+fn resolve_dispatch_roster(
+    live: &[(String, uuid::Uuid)],
+    requested: &[String],
+) -> Result<Vec<(String, uuid::Uuid)>, CommandError> {
+    if live.is_empty() {
+        return Err(CommandError::Denied(
+            "no citizens are online to work the cards — spawn a persona (persona/spawn) \
+             first, then dispatch."
+                .to_string(),
+        ));
+    }
+    if requested.is_empty() {
+        return Ok(live.to_vec());
+    }
+    let mut resolved = Vec::with_capacity(requested.len());
+    let mut unknown = Vec::new();
+    for name in requested {
+        match live.iter().find(|(n, _)| n == name) {
+            Some(pair) => resolved.push(pair.clone()),
+            None => unknown.push(name.clone()),
+        }
+    }
+    if !unknown.is_empty() {
+        let online: Vec<&str> = live.iter().map(|(n, _)| n.as_str()).collect();
+        return Err(CommandError::Invalid(format!(
+            "assignee(s) not online: {}. Citizens currently online: [{}]. Pass names from \
+             that list, or omit --assignees to dispatch to all of them.",
+            unknown.join(", "),
+            online.join(", "),
+        )));
+    }
+    Ok(resolved)
 }
 
 #[async_trait]
@@ -815,13 +867,18 @@ impl ActionCommand for BenchmarkDispatch {
         let repo = RepoId::new(repo_key)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
 
-        let assignees = p.assignees.unwrap_or_default();
-        if assignees.iter().any(|a| a.trim().is_empty()) {
+        let requested = p.assignees.unwrap_or_default();
+        if requested.iter().any(|a| a.trim().is_empty()) {
             return Err(CommandError::Invalid(
                 "assignees contains an empty name — every kickoff must address a real citizen"
                     .to_string(),
             ));
         }
+        // Resolve the dispatch roster against THIS machine's live citizens (never our
+        // names): empty request → the whole live roster; explicit names → validated or
+        // fail-loud. This is the generalization for all repo users — dispatch targets the
+        // citizens they actually spawned, whoever those are.
+        let roster = resolve_dispatch_roster(&self.registry.roster_snapshot(), &requested)?;
 
         let take = p.limit.map(|l| l as usize).unwrap_or(prepared.len());
         // Continuum home under which each citizen's workspace lives (for SWE staging).
@@ -840,44 +897,33 @@ impl ActionCommand for BenchmarkDispatch {
                 continue;
             }
 
-            // The directed assignee (round-robin) — resolved UP FRONT because a SWE card
-            // stages into HER workspace before it is claimable, so her claim auto-fires the
-            // scored solve (#346 dispatch_staged_swe_solve). None → undirected dispatch.
-            let who: Option<&String> = if assignees.is_empty() {
-                None
-            } else {
-                Some(&assignees[card_ids.len() % assignees.len()])
-            };
+            // The directed assignee (round-robin over the RESOLVED live roster). Always a
+            // real online citizen — resolve_dispatch_roster guaranteed a non-empty roster
+            // or errored. Her peer_id rides along, so SWE staging needs no second name
+            // lookup (and can never silently no-stage on an unknown name). A SWE card stages
+            // into HER workspace before it is claimable, so her claim auto-fires the scored
+            // solve (#346 dispatch_staged_swe_solve).
+            let (who, who_peer) = &roster[card_ids.len() % roster.len()];
 
             // STAGE the SWE checkout into the assignee's workspace/swe/<instance> BEFORE the
             // card is claimable, so `work/claim` finds it and launches the solve. Reuses the
             // proven swe_bench::clone_at (fast from the local mirror). Best-effort: a stage
             // failure is REPORTED and the card still posts — the loop never half-breaks.
             let mut staged_ok = false;
-            if let (CardWork::Swe { instance }, Some(who), Some(home)) =
-                (&pc.work, who, stage_home.as_ref())
-            {
-                if let Some(peer) = self
-                    .registry
-                    .get_by_agent_name(who)
-                    .map(|rt| rt.airc().peer_id().as_uuid())
-                {
-                    let dir = home
-                        .join("citizens")
-                        .join("peers")
-                        .join(peer.to_string())
-                        .join("workspace")
-                        .join("swe")
-                        .join(&instance.instance_id);
-                    if dir.join(".git").exists() {
-                        staged_ok = true; // already staged (a prior claim / dispatch)
-                    } else if let Err(e) =
-                        crate::cognition::swe_bench::clone_at(instance, &dir).await
-                    {
-                        kickoff_errors.push(format!("stage {}: {e}", instance.instance_id));
-                    } else {
-                        staged_ok = true;
-                    }
+            if let (CardWork::Swe { instance }, Some(home)) = (&pc.work, stage_home.as_ref()) {
+                let dir = home
+                    .join("citizens")
+                    .join("peers")
+                    .join(who_peer.to_string())
+                    .join("workspace")
+                    .join("swe")
+                    .join(&instance.instance_id);
+                if dir.join(".git").exists() {
+                    staged_ok = true; // already staged (a prior claim / dispatch)
+                } else if let Err(e) = crate::cognition::swe_bench::clone_at(instance, &dir).await {
+                    kickoff_errors.push(format!("stage {}: {e}", instance.instance_id));
+                } else {
+                    staged_ok = true;
                 }
             }
 
@@ -894,7 +940,7 @@ impl ActionCommand for BenchmarkDispatch {
             // imperative in its OWN message block is what actually starts work (measured
             // 2026-08-07: coalesced mid-burst it was ignored). airc.say is one event = one
             // block, so the structural condition holds by construction.
-            if let Some(who) = who {
+            {
                 let kickoff = match &pc.work {
                     CardWork::Gym { solution_file } => format!(
                         "@{who} (to you): card {short} on this board is yours. Claim it \
@@ -924,8 +970,8 @@ impl ActionCommand for BenchmarkDispatch {
                 };
                 match airc.say(&kickoff).await {
                     Ok(_) => kickoffs += 1,
-                    // The card stays — a lost kickoff degrades to undirected
-                    // dispatch and is REPORTED, never unwound or hidden.
+                    // The card stays claimable — a lost kickoff is REPORTED (never unwound
+                    // or hidden); the citizen can still find and claim it off the board.
                     Err(e) => kickoff_errors.push(format!("{short}: {e}")),
                 }
             }

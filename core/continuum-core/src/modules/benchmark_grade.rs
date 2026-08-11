@@ -48,7 +48,8 @@ fn parse_bench_title(title: &str) -> Option<(String, String)> {
 }
 
 /// The grade-on-done subscriber. Holds a persona-airc registry so it can author the grade
-/// through a live citizen (prefer "Benchy") — the same handle `benchmark/dispatch` uses.
+/// through a live citizen — whoever this machine has online (never a hardcoded name), the
+/// same `any_live_citizen` pick `benchmark/dispatch`'s curator uses.
 pub struct BenchmarkGradeModule {
     registry: PersonaAircRuntimeRegistry,
 }
@@ -122,10 +123,10 @@ impl ServiceModule for BenchmarkGradeModule {
 /// Read the card, and — if it is a bench SWE card — grade her workspace against the
 /// held-out oracle and post the verdict into the room.
 async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Result<(), String> {
-    // Author/read through a live citizen (prefer Benchy), same fallback as curator_airc.
+    // Author/read through a live citizen — whoever this machine has online (never a
+    // hardcoded name), the same deterministic pick curator_airc uses.
     let rt = registry
-        .get_by_agent_name("Benchy")
-        .or_else(|| registry.iter().next())
+        .any_live_citizen()
         .ok_or("no live citizen to author the grade through")?;
     let airc = rt.airc().clone();
 

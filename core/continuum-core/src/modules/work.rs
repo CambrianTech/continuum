@@ -104,10 +104,12 @@ pub(crate) fn persona_airc(
 /// (#27), and seeding the board is a *curator* action, not a personal one — so when
 /// there is no caller identity, the seed is authored through a LIVE citizen's airc
 /// runtime. That is honest, not a fiction: benchmarks ARE the citizens' work, so a
-/// citizen posting the tasks is the right author (we prefer a benchmark curator,
-/// "Benchy", when one is online, else the first live citizen). This fails loud only
-/// when NO citizen is online to author through — because then there is genuinely no
-/// board to seed for, and the fix is to spawn a persona, not to invent an identity.
+/// citizen posting the tasks is the right author (a live citizen chosen
+/// deterministically — never a hardcoded name like our "Benchy", which does not exist
+/// on a fresh clone's grid; see [`PersonaAircRuntimeRegistry::any_live_citizen`]). This
+/// fails loud only when NO citizen is online to author through — because then there is
+/// genuinely no board to seed for, and the fix is to spawn a persona, not to invent an
+/// identity.
 pub(crate) fn curator_airc(
     registry: &PersonaAircRuntimeRegistry,
     ctx: &Ctx,
@@ -122,10 +124,10 @@ pub(crate) fn curator_airc(
     {
         return Ok(rt.airc().clone());
     }
-    // Operator seeding with no self-peer (#27): author through a live citizen.
+    // Operator seeding with no self-peer (#27): author through a live citizen —
+    // whoever this machine has online, chosen deterministically, never our name.
     let rt = registry
-        .get_by_agent_name("Benchy")
-        .or_else(|| registry.iter().next())
+        .any_live_citizen()
         .ok_or_else(|| {
             CommandError::Denied(format!(
                 "{family} seeds the shared board and must author as a citizen, but none \
