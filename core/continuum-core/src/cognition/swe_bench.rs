@@ -681,6 +681,38 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+
+    // PYTEST IS SUBJECT, NOT HARNESS, for date-pinned instances (#380, glass-boxed
+    // 2026-08-12): era test suites import pytest INTERNALS — flask 2.2's test_cli.py does
+    // `from _pytest.monkeypatch import notset`, deleted by modern pytest — so the
+    // latest-pytest installed above voids every such baseline. The era interpreter rungs
+    // (#2253) removed the original reason pytest had to be modern, so downgrade it to the
+    // instance's own date. Skipped when the repo IS pytest: the editable install already
+    // provides the (exactly-era) subject and a PyPI pytest would stomp it.
+    if as_of.is_some() && instance.repo != "pytest-dev/pytest" {
+        let date = instance.created_at.clone();
+        // --reinstall is load-bearing: the modern pytest above already satisfies the bare
+        // requirement, so without it this resolve is a no-op (hand-verified: flask-5063
+        // stayed on 9.1.1 until --reinstall brought it to era 7.3.0, tests then green).
+        let out = run(
+            &uv,
+            &[
+                "pip", "install", "-q", "--python", &py_s, "--exclude-newer", &date,
+                "--reinstall", "pytest",
+            ],
+            None,
+        )
+        .await?;
+        if !out.status.success() {
+            let _ = std::fs::remove_dir_all(&env_dir);
+            return Err(format!(
+                "could not era-pin pytest for {} (cutoff {date}) — env removed rather than \
+                 cached broken: {}",
+                instance.instance_id,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    }
     Ok(py)
 }
 
@@ -843,7 +875,13 @@ pub async fn run_tests(
     for f in test_files {
         args.push(f);
     }
-    args.extend(["-v", "--no-header", "-rN", "-p", "no:cacheprovider"]);
+    // Flags must be era-portable: the interpreter under `-m pytest` can be the repo's OWN
+    // pytest (pytest-dev instances: the editable install IS the subject) or an era-pinned
+    // one. `--no-header` (6.1+) and `-rN` (5.1+) made pytest 4.4 exit 4 with "unrecognized
+    // arguments" before running a single test — every id read as failed, and the whole
+    // 2019-pytest class graded p2p 0/N (live: pytest-5221 retry, 2026-08-12). Cosmetic
+    // flags are not worth a version gate; `-v` and no:cacheprovider go back to 2.x.
+    args.extend(["-v", "-p", "no:cacheprovider"]);
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
         return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
     };
