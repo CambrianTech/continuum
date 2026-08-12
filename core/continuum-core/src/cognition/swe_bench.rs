@@ -560,6 +560,20 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                 "build-system.requires install had non-zero exit — proceeding to -e . anyway"
             );
         }
+        // RE-ASSERT THE HARNESS FLOOR (pylint-7114, live 2026-08-12): a repo whose own
+        // `[build-system].requires` pins an OLDER setuptools (pylint 2022 pins ~62.6)
+        // just CLOBBERED the 69.x we installed above — and setuptools <64 predates PEP
+        // 660, so the editable build dies with "build_meta has no attribute
+        // build_editable". Honoring the repo's declaration is right for ITS build
+        // helpers (cython, extension-helpers); setuptools itself is HARNESS, and the
+        // window [64, 70) is the only range with BOTH build_editable (>=64) and
+        // dep_util (<70) — the same two-sided constraint documented above.
+        let _ = run(
+            &uv,
+            &["pip", "install", "-q", "--python", &py_s, "setuptools>=64,<70"],
+            None,
+        )
+        .await?;
     }
 
     let as_of = if instance.created_at.is_empty() {
