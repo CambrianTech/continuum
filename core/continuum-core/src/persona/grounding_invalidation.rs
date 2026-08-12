@@ -97,6 +97,68 @@ pub fn spawn_workspace_invalidator(bus: Arc<MessageBus>, dirty: WeakDirtyHandle)
     });
 }
 
+/// Is this transcript event a room-state PUBLISH — the event class that
+/// changes what the doctrine and wall groundings project?
+///
+/// Covers BOTH kinds because they alias in the wild: doctrine now rides
+/// `WallPostPublished` with `category="doctrine"` while legacy peers still
+/// emit `DoctrinePublished` (transcript.rs documents the aliasing). One
+/// predicate, both caches — a doctrine event dirtying the wall (and vice
+/// versa) is over-invalidation, which is safe; splitting them on the
+/// category field would risk the stale side of the aliasing instead.
+pub fn is_room_state_publish(kind: &airc_core::TranscriptKind) -> bool {
+    matches!(
+        kind,
+        airc_core::TranscriptKind::DoctrinePublished
+            | airc_core::TranscriptKind::WallPostPublished
+    )
+}
+
+/// Spawn the doctrine/wall invalidator: ONE subscribe stream per persona
+/// marking every handed-in cache when a room-state publish lands. The
+/// caller subscribes BEFORE calling (failure surfaces at the call site,
+/// same contract as the command pump) and hands the stream in.
+///
+/// These events are RARE (a doctrine or wall edit), which is exactly why
+/// the sources cache so well — and why the doctrine fetch, the one
+/// SYNCHRONOUS airc round-trip on every live compose (ColdStartCritical),
+/// was pure waste per tick. Exits when every handle is dead (all wrapped
+/// sources dropped) or the stream ends terminally (airc-lib owns transient
+/// reconnection; a terminal end is a real fault the pump already logs loud
+/// — this listener just stops, the caches go permanently dirty-capable-less
+/// but the personas' pumps have bigger problems at that point).
+pub fn spawn_publish_invalidator(
+    mut stream: airc_lib::FilteredEventStream,
+    handles: Vec<WeakDirtyHandle>,
+) {
+    use futures::stream::StreamExt;
+    tokio::spawn(async move {
+        let mut handles = handles;
+        loop {
+            let event = match stream.next().await {
+                None => return,
+                // Lag: we missed events — one may have been a publish.
+                // Mark everything conservatively, prune the dead.
+                Some(Err(_lag)) => {
+                    handles.retain(|h| h.mark());
+                    if handles.is_empty() {
+                        return;
+                    }
+                    continue;
+                }
+                Some(Ok(e)) => e,
+            };
+            if !is_room_state_publish(&event.kind) {
+                continue;
+            }
+            handles.retain(|h| h.mark());
+            if handles.is_empty() {
+                return; // every wrapped source dropped — stop listening
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +284,20 @@ mod tests {
         }
         assert!(refetched, "a code/write completion must dirty the wrapped map");
         assert_eq!(inner.fetches.load(Ordering::SeqCst), 2, "exactly one refetch");
+    }
+
+    // what this catches: the publish predicate — BOTH kinds must dirty (they
+    // alias: doctrine rides WallPostPublished with category="doctrine" while
+    // legacy peers emit DoctrinePublished), and chat traffic must NOT, or the
+    // doctrine cache refetches per message and the whole win evaporates.
+    #[test]
+    fn room_state_publish_predicate_covers_the_aliasing_pair_only() {
+        use airc_core::TranscriptKind as K;
+        assert!(is_room_state_publish(&K::DoctrinePublished));
+        assert!(is_room_state_publish(&K::WallPostPublished));
+        for benign in [K::Message, K::Attachment, K::Receipt, K::Presence, K::System] {
+            assert!(!is_room_state_publish(&benign), "{benign:?} must not dirty doctrine/wall");
+        }
     }
 
     // what this catches: the weak-handle lifecycle — a dead cache must stop
