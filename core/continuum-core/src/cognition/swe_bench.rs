@@ -667,6 +667,25 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     "date-pinned resolution hit an unresolvable era package — retrying with \
                      a per-package cutoff derived from uv's own error"
                 );
+                // The setuptools/importlib clash needs MORE than a lifted cutoff: the
+                // broken importlib-metadata 0.x is ALREADY INSTALLED in the venv (2019
+                // pluggy pulled it in the requirements step), and `-e .` won't touch an
+                // already-satisfied package — so the cutoff pin alone retries into the
+                // exact same crash (live: pytest-5413/5495 kickoff, 2026-08-12, the
+                // first run after this arm shipped). Apply the banner's own remedy
+                // directly: upgrade the installed copy, then retry the editable build.
+                if pin.starts_with("importlib-metadata=") {
+                    let up = run(
+                        &uv,
+                        &["pip", "install", "-q", "--python", &py_s, "--upgrade", "importlib-metadata"],
+                        None,
+                    )
+                    .await?;
+                    if !up.status.success() {
+                        // The heal itself failed — no point looping on the same wall.
+                        break out;
+                    }
+                }
                 overrides.push(pin);
             }
             _ => break out,
