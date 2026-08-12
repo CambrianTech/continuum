@@ -8,6 +8,15 @@
  */
 export type BenchRunCard = { run_id: string, 
 /**
+ * Instance under test ("sympy__sympy-24066") — from the result ledger's
+ * staged-checkout name (#329: the board names WHAT, not just who).
+ */
+instance?: string, 
+/**
+ * Attempt N of `max_attempts` — the N-chances counter, live per ledger write.
+ */
+attempt?: number, max_attempts?: number, 
+/**
  * Solver persona (from the result ledger; absent while attempt 1 is
  * still in flight and nothing has been written yet).
  */

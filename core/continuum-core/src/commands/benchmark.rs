@@ -1778,6 +1778,31 @@ mod swe_setup_tests {
             assert_eq!(card.solver.as_deref(), Some("atlas-uuid"));
             assert_eq!(card.resolved, None, "no grade yet — never a verdict");
         }
+
+        // what this catches: the board facts (#329) — instance + attempt N/M
+        // projected from the result ledger, and patch_bytes derived LIVE from
+        // the result's own diff before any grade exists (the "patch is
+        // forming" leading indicator), while a real grade's byte count stays
+        // authoritative the moment one lands.
+        #[test]
+        fn board_facts_project_and_live_patch_yields_to_the_grade() {
+            let now: u64 = 10_000_000_000;
+            let fresh = now - 5_000;
+            let result = json!({"persona_id": "anon-uuid", "acts": 7,
+                                "instance": "sympy__sympy-21055",
+                                "attempt": 2, "max_attempts": 3,
+                                "patch": "diff --git a/x b/x\n+fix\n"});
+            // Pre-grade: live patch length from the result's own diff.
+            let card = fold_run_card("r6", Some(&result), None, fresh, now);
+            assert_eq!(card.instance.as_deref(), Some("sympy__sympy-21055"));
+            assert_eq!(card.attempt, Some(2));
+            assert_eq!(card.max_attempts, Some(3));
+            assert_eq!(card.patch_bytes, Some(24), "live diff length pre-grade");
+            // Graded: the grade's byte count wins over the live derivation.
+            let grade = json!({"resolved": false, "patchBytes": 1299});
+            let card = fold_run_card("r6", Some(&result), Some(&grade), fresh, now);
+            assert_eq!(card.patch_bytes, Some(1299), "grade is authoritative");
+        }
     }
 }
 
@@ -1815,6 +1840,18 @@ pub struct BenchmarkRunsParams {
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchRunCard.ts")]
 pub struct BenchRunCard {
     pub run_id: String,
+    /// Instance under test ("sympy__sympy-24066") — from the result ledger's
+    /// staged-checkout name (#329: the board names WHAT, not just who).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub instance: Option<String>,
+    /// Attempt N of `max_attempts` — the N-chances counter, live per ledger write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub attempt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub max_attempts: Option<u32>,
     /// Solver persona (from the result ledger; absent while attempt 1 is
     /// still in flight and nothing has been written yet).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1908,6 +1945,9 @@ fn fold_run_card(
     };
     BenchRunCard {
         run_id: run_id.to_string(),
+        instance: s(result, "instance"),
+        attempt: n(result, "attempt"),
+        max_attempts: n(result, "max_attempts"),
         solver: s(result, "persona_id"),
         stalled: phase == "quiet",
         phase: phase.to_string(),
@@ -1919,7 +1959,15 @@ fn fold_run_card(
         resolved,
         fail_to_pass: ratio(grade, "failToPassPassed", "failToPassTotal"),
         pass_to_pass: ratio(grade, "passToPassPassed", "passToPassTotal"),
-        patch_bytes: n(grade, "patchBytes"),
+        // Graded diff size when a grade exists; before any grade, the RESULT's
+        // own patch length — the live "a patch is forming" leading indicator
+        // (#329). One field, grade-authoritative, never both shown.
+        patch_bytes: n(grade, "patchBytes").or_else(|| {
+            result
+                .and_then(|r| r.get("patch"))
+                .and_then(|p| p.as_str())
+                .map(|p| p.len() as u32)
+        }),
         failed_tests: arr(grade, "failedTests"),
         infra_error,
     }

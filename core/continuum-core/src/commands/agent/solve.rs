@@ -297,6 +297,19 @@ impl ActionCommand for AgentSolve {
                 // The marker folds as `active` with the solver named (fold_run_card
                 // reads `persona_id`); each finished attempt overwrites it with the
                 // real result, exactly as before.
+                // The instance under test — the staged checkout's own dir name (the
+                // shape benchmark/swe-setup stages). Carried on EVERY ledger write so
+                // the board (#329) names WHAT is being worked from second zero, not
+                // just who; None outside a staged SWE checkout (a plain agent run).
+                let instance: Option<String> = inner
+                    .workspace
+                    .contains("/workspace/swe/")
+                    .then(|| {
+                        std::path::Path::new(&inner.workspace)
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                    })
+                    .flatten();
                 if let Some(p) = path.as_ref() {
                     let _ = std::fs::write(
                         p,
@@ -305,6 +318,7 @@ impl ActionCommand for AgentSolve {
                             "run_id": run_id,
                             "persona_id": inner.persona_id,
                             "workspace": inner.workspace,
+                            "instance": instance,
                         })
                         .to_string(),
                     );
@@ -417,10 +431,23 @@ impl ActionCommand for AgentSolve {
                     };
                     match body {
                         Ok(r) => {
-                            if let (Some(path), Ok(json)) =
-                                (path.as_ref(), serde_json::to_string_pretty(&r))
+                            // Ledger write carries the board facts the result struct
+                            // doesn't: WHICH instance, attempt N of M (#329) — injected
+                            // as JSON rather than widening AgentSolveResult, whose wire
+                            // shape non-benchmark callers also consume.
+                            if let (Some(path), Ok(mut v)) =
+                                (path.as_ref(), serde_json::to_value(&r))
                             {
-                                let _ = std::fs::write(path, json);
+                                if let Some(obj) = v.as_object_mut() {
+                                    obj.insert("attempt".into(), attempt.into());
+                                    obj.insert("max_attempts".into(), max_attempts.into());
+                                    if let Some(inst) = instance.clone() {
+                                        obj.insert("instance".into(), inst.into());
+                                    }
+                                }
+                                if let Ok(json) = serde_json::to_string_pretty(&v) {
+                                    let _ = std::fs::write(path, json);
+                                }
                             }
                             if let Some(bus) = crate::runtime::MessageBus::global() {
                                 if let Ok(v) = serde_json::to_value(&r) {
