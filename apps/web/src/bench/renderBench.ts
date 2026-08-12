@@ -82,8 +82,15 @@ export function renderBench(body: BenchContentBody): TemplateResult {
     </div>`;
   }
   const resolved = body.runs.filter((r) => r.state === 'resolved').length;
-  const working = body.runs.filter((r) => r.state === 'working' || r.state === 'grading').length;
-  const stalled = body.runs.filter((r) => r.state === 'stalled' || r.state === 'failed').length;
+  const working = body.runs.filter(
+    (r) => r.state === 'working' || r.state === 'grading' || r.state === 'queued',
+  ).length;
+  // Terminal failures are HISTORY, not an alarm — they get their own stat.
+  // `stalled` (live-but-silent) is the true alarm and renders as a banner
+  // only when it exists; 17 ancient failed runs must never read as "17
+  // currently stalled" (the live-feed first-render lesson, 2026-08-12).
+  const failed = body.runs.filter((r) => r.state === 'failed').length;
+  const stalled = body.runs.filter((r) => r.state === 'stalled').length;
   const maxGens = Math.max(...body.runs.map((r) => r.generations));
   return html`<div class="bench-board">
     ${body.feedLive ? nothing : html`<div class="bench-snapshot-banner">snapshot — no live feed attached</div>`}
@@ -94,10 +101,14 @@ export function renderBench(body: BenchContentBody): TemplateResult {
       <div class="bench-stat bench-stat-working">
         <span class="bench-stat-n">${working}</span><span class="bench-stat-l">working</span>
       </div>
-      <div class="bench-stat bench-stat-stalled">
-        <span class="bench-stat-n">${stalled}</span><span class="bench-stat-l">stalled</span>
+      <div class="bench-stat bench-stat-failed">
+        <span class="bench-stat-n">${failed}</span><span class="bench-stat-l">failed</span>
       </div>
     </div>
+    ${stalled > 0
+      ? html`<div class="bench-stall-banner" role="alert">
+          ⚠ ${stalled} run${stalled === 1 ? '' : 's'} gone quiet — live but no artifact activity</div>`
+      : nothing}
     ${body.lanePressure
       ? html`<div class="bench-lanes" title="serving lanes vs lanes of demand — contention at a glance">
           lanes ${body.lanePressure.serving} serving · ${body.lanePressure.demanding} demanding</div>`

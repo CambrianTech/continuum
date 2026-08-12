@@ -2072,6 +2072,24 @@ pub(crate) fn scan_run_cards(
     }
     cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
     cards.truncate(limit);
+    // The ledger stores the solver as her PERSONA UUID; the board speaks NAMES.
+    // Resolve against the live workspace roster here — the ONE scan — so every
+    // consumer (command + positron emitter) gets the same display identity. A
+    // uuid not in the roster (despawned persona, operator-fired run) stays as-is;
+    // the client compacts unresolved ids to short form (#161 vocabulary).
+    let names: std::collections::HashMap<String, String> =
+        crate::cognition::persona_workspace::global()
+            .roster()
+            .into_iter()
+            .filter_map(|(id, name)| name.map(|n| (id.to_string(), n)))
+            .collect();
+    for card in &mut cards {
+        if let Some(solver) = &card.solver {
+            if let Some(name) = names.get(solver) {
+                card.solver = Some(name.clone());
+            }
+        }
+    }
     Ok(cards)
 }
 

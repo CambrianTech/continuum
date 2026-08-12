@@ -62,14 +62,23 @@ function verdictOf(row: BenchRunRow): BenchVerdictVM | undefined {
   };
 }
 
+/** A raw UUID (or uuid-suffixed run id) is an ID, not a NAME — the core resolves
+ *  live personas to display names; anything still uuid-shaped here compacts to
+ *  its 8-char short form (the same short-id vocabulary the rest of the system
+ *  speaks, #161) so the board never spends a row-width on 36 hex chars. */
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+function compactId(s: string): string {
+  return s.replace(UUID_RE, (u) => u.slice(0, 8));
+}
+
 function runVM(row: BenchRunRow): BenchRunVM {
   const acts = row.acts ?? 0;
   return {
     runId: row.run_id,
     // The board names WHAT when the ledger carries it; a non-SWE run is
     // honestly identified by its run id, never a guessed instance.
-    instance: row.instance ?? row.run_id,
-    persona: row.solver ?? 'unclaimed',
+    instance: compactId(row.instance ?? row.run_id),
+    persona: compactId(row.solver ?? 'unclaimed'),
     // The wire doesn't yet distinguish self-claimed from operator-launched;
     // unmarked until it does (mark only what is KNOWN).
     selfClaimed: false,

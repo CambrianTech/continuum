@@ -140,10 +140,13 @@ describe('renderBench', () => {
     expect(text).toMatch(/3\s*<i>\s*\/\s*<\/i>\s*3/); // attempt 3/3 chip
     expect(text).toMatch(/f2p\s+<b>\s*0\s*\/\s*2/);
 
-    // the SCOREBOARD header: 0 resolved / 0 working / 2 stalled (failed counts as stalled).
+    // the SCOREBOARD header: 0 resolved / 1 working (queued counts — an attempt
+    // in flight) / 2 FAILED. Terminal failures are history with their own stat,
+    // never dressed as a live stall; no runs are quiet → no alarm banner.
     expect(text).toContain('bench-score');
     expect(text).toMatch(/bench-stat-resolved[\s\S]*?0/);
-    expect(text).toMatch(/bench-stat-stalled[\s\S]*?2/);
+    expect(text).toMatch(/bench-stat-failed[\s\S]*?2/);
+    expect(text).not.toContain('bench-stall-banner');
 
     // the acts progress bar: the busiest run (41 gens) fills to 100%.
     expect(text).toContain('bench-bar-fill');
@@ -155,6 +158,21 @@ describe('renderBench', () => {
 
     // no fabricated verdict on the queued run: exactly two verdict cells.
     expect(text.split('class="bench-verdict"').length - 1).toBe(2);
+  });
+
+  it('raises the stall ALARM banner only for live-but-silent runs, never for terminal failures', () => {
+    // what this catches: 17 ancient failed runs reading as "17 stalled" (the
+    // live-feed first-render defect, 2026-08-12) — failed is history, stalled alarms.
+    const withStall = flatten(
+      renderBench({
+        feedLive: true,
+        runs: [
+          { ...REAL_HOUR.runs[2]!, runId: 'stall-1', state: 'stalled', verdict: undefined },
+        ],
+      }),
+    ).join(' ');
+    expect(withStall).toContain('bench-stall-banner');
+    expect(withStall).toMatch(/1\s+run\s+gone quiet/);
   });
 
   it('renders the awaiting frame on an empty board and the snapshot banner off-feed', () => {

@@ -60,6 +60,23 @@ describe('benchContentBody', () => {
     expect(body.runs[1]!.state).toBe('stalled');
   });
 
+  it('compacts uuid-shaped ids to short form — a board row never spends 36 hex chars', () => {
+    // what this catches: the live-feed first-render defect (2026-08-12) — the
+    // ledger's persona_id uuid and claim-<uuid> run ids rendered raw. The core
+    // resolves LIVE personas to names; anything still uuid-shaped compacts to
+    // the system's 8-char short-id vocabulary (#161). Real names pass through.
+    const body = benchContentBody(
+      view([
+        row({
+          run_id: 'claim-c995488a-bb84-4c31-9f10-6a2b3c4d5e6f',
+          solver: '90e758b2-3cf3-45c1-b100-de7c4ab5a549',
+        }),
+      ]),
+    );
+    expect(body.runs[0]!.instance).toBe('claim-c995488a');
+    expect(body.runs[0]!.persona).toBe('90e758b2');
+  });
+
   it('undelivered feed is the honest snapshot frame', () => {
     const body = benchContentBody(undefined);
     expect(body.feedLive).toBe(false);

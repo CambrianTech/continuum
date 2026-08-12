@@ -1013,7 +1013,16 @@ export class ChatWidget extends LitElement {
     }
     .bench-stat-resolved .bench-stat-n { color: var(--status-success, #4caf7d); }
     .bench-stat-working .bench-stat-n { color: var(--accent-primary); }
-    .bench-stat-stalled .bench-stat-n { color: var(--status-warning, #e0a458); }
+    .bench-stat-failed .bench-stat-n { color: var(--content-secondary); }
+    .bench-stall-banner {
+      padding: 5px 8px;
+      border: 1px solid color-mix(in srgb, var(--status-warning, #e0a458) 45%, transparent);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--status-warning, #e0a458) 12%, transparent);
+      color: var(--status-warning, #e0a458);
+      font-size: 9.5px;
+      font-weight: 600;
+    }
     .bench-card {
       display: flex;
       flex-direction: column;
