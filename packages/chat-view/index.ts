@@ -30,7 +30,11 @@ export type {
   RosterMemberVM,
   LoadoutVM,
   MessageRowVM,
+  ActReceiptVM,
+  ActGroupVM,
+  TranscriptRowVM,
 } from './chatViewModel';
+export { actSummaryLine } from './chatViewModel';
 
 // The transcript's digest tier ([[perception-resolution-contract]]): mechanical
 // head + tail-summary + repetition-histogram classification of over-threshold

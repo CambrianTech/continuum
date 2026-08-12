@@ -2097,6 +2097,65 @@ export class ChatWidget extends LitElement {
       gap: var(--spacing-sm);
       padding: 6px 0;
     }
+    /* Tool-act receipt rows (#243) — the collapsed "Read 2 files, ran a command ›"
+       line between speech, expanding IN PLACE via native <details>. Quiet by
+       design: the work is one gesture away, never shouting over the words. */
+    .messages .act-group {
+      list-style: none;
+      padding: 1px 0;
+      margin-left: calc(28px + var(--spacing-sm));
+      font-size: 11px;
+      color: var(--content-secondary);
+    }
+    .act-group summary {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+      padding: 2px 8px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: color-mix(in srgb, var(--surface, #0b1220) 40%, transparent);
+    }
+    .act-group summary::-webkit-details-marker { display: none; }
+    .act-group summary::after { content: '›'; opacity: 0.6; transition: transform 0.15s; }
+    .act-group details[open] summary::after { transform: rotate(90deg); }
+    .act-gear { opacity: 0.75; }
+    .act-gear.act-failed { color: var(--status-warning, #e0a458); }
+    .act-actor { font-weight: 600; color: var(--content-primary); }
+    .act-count {
+      font-size: 9px;
+      padding: 0 5px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--content-secondary) 18%, transparent);
+      font-variant-numeric: tabular-nums;
+    }
+    .act-list {
+      list-style: none;
+      margin: 4px 0 2px;
+      padding: 0 0 0 14px;
+      border-left: 1px solid var(--border-subtle);
+    }
+    .act-item {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      padding: 1.5px 0;
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 10.5px;
+    }
+    .act-item .act-mark { color: var(--status-success, #4caf7d); }
+    .act-item.act-failed .act-mark { color: var(--status-error, #e05858); }
+    .act-tool { color: var(--accent-primary); }
+    .act-obj {
+      color: var(--content-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 420px;
+    }
+    .act-time { margin-left: auto; opacity: 0.5; font-size: 9px; }
     /* Continuation rows (same sender, grouped upstream): tuck the body into the
        sender's column — tight runs, the classic chat grouping. */
     .messages .msg.continues {

@@ -72,8 +72,13 @@ const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
 
 /** Project a `ChatViewState` payload through the exact pipe apps/web's index.ts
  *  runs, so the renderer is fed what the seam actually produces. */
-const project = (payload: ChatViewState): ChatViewModel => {
-  const env: StateEnvelope = { kind: CHAT_KIND, revision: 1, layer: 'ephemeral', payload };
+const project = (payload: Omit<ChatViewState, 'acts'> & { acts?: ChatViewState['acts'] }): ChatViewModel => {
+  const env: StateEnvelope = {
+    kind: CHAT_KIND,
+    revision: 1,
+    layer: 'ephemeral',
+    payload: { acts: [], ...payload },
+  };
   return chatViewModel(chatStateFromEnvelope(env));
 };
 

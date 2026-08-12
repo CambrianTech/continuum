@@ -12,7 +12,13 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
 import { ROSTER_LISTING_ID } from '@continuum/patterns';
 import type { GaugeView, ListingCell, ListingView, MetricsView } from '@continuum/patterns';
-import type { LoadoutVM, MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
+import type {
+  ActGroupVM,
+  LoadoutVM,
+  MemberKind,
+  MessageRowVM,
+  RosterMemberVM,
+} from '@continuum/chat-view';
 
 /** Per-series hues for the SYS gauge — the old sidebar's legend palette (CPU
  *  red · MEM green · GPU purple), keyed by label with a cyan fallback for any
@@ -841,6 +847,37 @@ function messageBody(msg: MessageRowVM): TemplateResult {
       class="digest-tail" title="collapsed — mechanical summary of the hidden remainder">${digest.tailSummary}${digest.histogram
         ? html` <span class="digest-histogram">· ${digest.histogram}</span>`
         : nothing}</div><button class="digest-toggle" @click=${toggle}>show full message</button></div>`;
+}
+
+/** A collapsed run of tool acts — the transcript's RECEIPT row (#243, the
+ *  Claude-iOS pattern). Renders as a native `<details>` disclosure: the
+ *  collapsed line reads "⚙ Asha · Read 2 files, ran a command ›" and expands
+ *  IN PLACE (Joel's law: web expands inline; mobile opens a sheet) to one
+ *  line per act — status mark, tool name, object. No JS state — the browser
+ *  owns the open/closed bit, so a re-render never fights the reader. */
+export function actGroupRow(group: ActGroupVM): TemplateResult {
+  return html`
+    <li class="act-group" data-actor=${group.actorId} title=${group.time}>
+      <details>
+        <summary>
+          <span class="act-gear${group.anyFailed ? ' act-failed' : ''}">⚙</span>
+          <span class="act-actor">${group.actorName}</span>
+          <span class="act-line">${group.summaryLine}</span>
+          <span class="act-count">${group.receipts.length}</span>
+        </summary>
+        <ul class="act-list">
+          ${group.receipts.map(
+            (r) => html`<li class="act-item${r.ok ? '' : ' act-failed'}">
+              <span class="act-mark">${r.ok ? '✓' : '✗'}</span>
+              <span class="act-tool">${r.tool}</span>
+              ${r.summary ? html`<span class="act-obj">${r.summary}</span>` : nothing}
+              <span class="act-time">${r.time}</span>
+            </li>`,
+          )}
+        </ul>
+      </details>
+    </li>
+  `;
 }
 
 /** One conversation row — WHAT was said. */
