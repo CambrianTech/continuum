@@ -999,6 +999,22 @@ impl AgentSolve {
         // 2) Fork her WHOLE cognition onto that lane, rooted at the workspace: tools ON, recall ON.
         //    A brief wait covers the post-spawn template race (same as the eval fork-waiter).
         let registry = crate::cognition::persona_workspace::global();
+        // The MISSION rides as standing framing, not as the opening burst alone (#390,
+        // glass-boxed 2026-08-12 on pytest-5221): the task text delivered once was evicted
+        // from every captured prompt after act ~6 of a 24-act solve, and the persona
+        // literally asked "could you describe the symptoms of the issue?" — anchor loss,
+        // the dominant patch-0 shape. A `[mission]` StandingFraming block survives every
+        // compose of the drive, exactly like the pinned board (#347). The burst below
+        // still fires — it is the directed TRIGGER; this is the PERSISTENCE.
+        let mission = std::sync::Arc::new(crate::persona::mission_source::MissionSource::new(
+            persona_uuid,
+            format!(
+                "YOUR ONE JOB this whole session (re-read this every step):\n{}\n\nWork in \
+                 `{workspace}` — that directory IS the task's repo. The deliverable is the \
+                 edit your tools leave there; a session that only reads has failed.",
+                p.task.trim()
+            ),
+        ));
         let mut cycle = None;
         for attempt in 0..FORK_WAIT_TRIES {
             cycle = registry.fork_eval_cycle_with_adapter(
@@ -1008,6 +1024,9 @@ impl AgentSolve {
                 true,             // with_tools — her hands are ON
                 Some(&workspace), // roots the ToolExecutor at the sandbox cwd
                 p.suppress_recall.unwrap_or(false), // memory/RAG ON by default; the diagnostic knob
+                vec![crate::cognition::persona_workspace::GroundingSource::framing(
+                    mission.clone(),
+                )],
             );
             if cycle.is_some() {
                 break;

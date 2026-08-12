@@ -87,6 +87,7 @@ pub mod resource_forecast;
 pub mod response;
 pub mod media_perception_source;
 pub mod room_board_source;
+pub mod mission_source;
 pub mod room_doctrine_source;
 pub mod room_roster_source;
 pub mod resume_or_mint_provider;

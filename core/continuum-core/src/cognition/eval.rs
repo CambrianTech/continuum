@@ -1987,7 +1987,7 @@ impl CognitionEval {
                 let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall, Vec::new())
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -2006,7 +2006,7 @@ impl CognitionEval {
                 let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall, Vec::new())
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
@@ -2090,7 +2090,7 @@ impl CognitionEval {
                         let served_ctx = el.served_ctx;
                         let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                             crate::cognition::persona_workspace::global()
-                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
+                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall, Vec::new())
                         })
                         .await
                         .ok_or_else(|| CommandError::NotFound(format!(
