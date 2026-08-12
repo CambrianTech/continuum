@@ -153,7 +153,7 @@ impl ChatModule {
         });
 
         let anchor_result = self
-            .executor()
+            .executor()?
             .execute_json("data/query", anchor_query)
             .await
             .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;
