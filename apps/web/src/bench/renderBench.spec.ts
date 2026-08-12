@@ -121,7 +121,7 @@ describe('renderBench', () => {
     // fact 1 — the regression alarm: count of broken p2p, alarm class, names.
     expect(text).toContain('REGRESSION');
     expect(text).toMatch(/30\s+broken/); // p2pTotal 30 - p2pPassed 0
-    expect(text).toContain('bench-verdict-regression');
+    expect(text).toContain('bench-alarm');
     expect(text).toContain('test_Quantity_definition');
 
     // fact 2 — queued honesty: the relaunched run shows its truth, not a pulse.
@@ -133,20 +133,28 @@ describe('renderBench', () => {
     expect(text).toContain('flask-4045');
     expect(text).toContain('Casper');
 
-    // progress facts reach markup: gens+age, edits, patch bytes, attempts, counts.
+    // progress facts reach markup: gens+age (compacted), patch bytes, attempts, counts.
     expect(text).toMatch(/41\s+gens/);
-    expect(text).toMatch(/60m0s\s+ago/);
-    expect(text).toMatch(/3\s+edits/);
+    expect(text).toMatch(/1h0m\s+ago/); // 3600s compacts to h+m for board legibility
     expect(text).toContain('2003');
-    expect(text).toMatch(/attempt\s+3\s*\/\s*3/);
-    expect(text).toMatch(/f2p\s+0\s*\/\s*2/);
+    expect(text).toMatch(/3\s*<i>\s*\/\s*<\/i>\s*3/); // attempt 3/3 chip
+    expect(text).toMatch(/f2p\s+<b>\s*0\s*\/\s*2/);
+
+    // the SCOREBOARD header: 0 resolved / 0 working / 2 stalled (failed counts as stalled).
+    expect(text).toContain('bench-score');
+    expect(text).toMatch(/bench-stat-resolved[\s\S]*?0/);
+    expect(text).toMatch(/bench-stat-stalled[\s\S]*?2/);
+
+    // the acts progress bar: the busiest run (41 gens) fills to 100%.
+    expect(text).toContain('bench-bar-fill');
+    expect(text).toMatch(/width:\s*100\s*%/);
 
     // lane pressure — the contention that took probe archaeology to see.
     expect(text).toMatch(/2\s+serving/);
     expect(text).toMatch(/4\s+demanding/);
 
     // no fabricated verdict on the queued run: exactly two verdict cells.
-    expect(text.split('bench-verdict ').length - 1).toBe(2);
+    expect(text.split('class="bench-verdict"').length - 1).toBe(2);
   });
 
   it('renders the awaiting frame on an empty board and the snapshot banner off-feed', () => {

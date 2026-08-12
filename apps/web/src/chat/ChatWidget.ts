@@ -973,111 +973,179 @@ export class ChatWidget extends LitElement {
       border-radius: var(--radius-sm);
       overflow: hidden;
     }
-    /* BENCH board (#329) — one state-coded card per run: left border carries
-     * the state, instance in mono, meta pills for attempt/pulse/patch, and
-     * the p2p REGRESSION rendered as the alarm it is. */
+    /* BENCH board (#329) — console-grade: scoreboard header, state-dot
+     * cards with a real acts progress bar, patch-forming accent chip, and
+     * the REGRESSION alarm. Working dots pulse (reduced-motion: static). */
     .bench-board {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
       padding: var(--spacing-xs) var(--spacing-md) var(--spacing-sm);
     }
-    .bench-row {
+    .bench-score {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+    .bench-stat {
       display: flex;
       flex-direction: column;
-      gap: 3px;
-      padding: 6px 8px;
+      align-items: center;
+      padding: 8px 4px 6px;
       border: 1px solid var(--border-subtle);
-      border-left-width: 3px;
       border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--surface, #0b1220) 60%, transparent);
+    }
+    .bench-stat-n {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      color: var(--content-primary);
+    }
+    .bench-stat-l {
+      margin-top: 3px;
+      font-size: 8.5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--content-secondary);
+    }
+    .bench-stat-resolved .bench-stat-n { color: var(--status-success, #4caf7d); }
+    .bench-stat-working .bench-stat-n { color: var(--accent-primary); }
+    .bench-stat-stalled .bench-stat-n { color: var(--status-warning, #e0a458); }
+    .bench-card {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--surface, #0b1220) 45%, transparent);
       font-size: 10px;
       color: var(--content-secondary);
     }
-    .bench-state-working { border-left-color: var(--accent-primary); }
-    .bench-state-queued { border-left-color: var(--border-subtle); opacity: 0.75; }
-    .bench-state-grading { border-left-color: var(--accent-primary); }
-    .bench-state-stalled { border-left-color: var(--status-warning, #e0a458); }
-    .bench-state-resolved { border-left-color: var(--status-success, #4caf7d); }
-    .bench-state-failed { border-left-color: var(--status-error, #d9534f); }
+    .bench-state-queued { opacity: 0.65; }
+    .bench-card-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .bench-dot {
+      flex-shrink: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--border-subtle);
+    }
+    .bench-state-working .bench-dot,
+    .bench-state-grading .bench-dot {
+      background: var(--accent-primary);
+      box-shadow: 0 0 6px var(--accent-primary);
+      animation: bench-pulse 1.6s ease-in-out infinite;
+    }
+    .bench-state-stalled .bench-dot { background: var(--status-warning, #e0a458); }
+    .bench-state-resolved .bench-dot { background: var(--status-success, #4caf7d); }
+    .bench-state-failed .bench-dot { background: var(--status-error, #d9534f); }
+    @keyframes bench-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.8); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .bench-dot { animation: none !important; }
+    }
     .bench-instance {
+      flex: 1;
+      min-width: 0;
       font-family: var(--font-mono);
       font-weight: 700;
-      font-size: 10.5px;
+      font-size: 11px;
       color: var(--content-primary);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .bench-who {
+    .bench-attempt {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--content-secondary);
+    }
+    .bench-attempt i { font-style: normal; opacity: 0.5; padding: 0 1px; }
+    .bench-card-meta {
       display: flex;
       align-items: baseline;
-      gap: 6px;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 9.5px;
     }
-    .bench-persona { font-weight: 600; color: var(--content-primary); }
+    .bench-persona { font-weight: 700; color: var(--content-primary); }
     .bench-selfclaimed {
-      font-size: 8.5px;
-      letter-spacing: 0.05em;
+      font-size: 8px;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--accent-primary);
     }
-    .bench-attempt,
-    .bench-state,
-    .bench-pulse,
-    .bench-nogen,
-    .bench-acts,
+    .bench-pulse { font-variant-numeric: tabular-nums; }
+    .bench-nogen { font-style: italic; opacity: 0.7; }
     .bench-patch {
-      display: inline-block;
-      font-size: 9px;
-      padding: 1px 5px;
-      border: 1px solid var(--border-subtle);
-      border-radius: 999px;
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-weight: 800;
+      font-size: 9.5px;
+      color: var(--accent-primary);
     }
-    .bench-state { text-transform: uppercase; letter-spacing: 0.06em; }
-    .bench-state-resolved .bench-state { color: var(--status-success, #4caf7d); border-color: currentColor; }
-    .bench-state-stalled .bench-state { color: var(--status-warning, #e0a458); border-color: currentColor; }
-    .bench-state-failed .bench-state { color: var(--status-error, #d9534f); border-color: currentColor; }
-    .bench-nogen { opacity: 0.7; font-style: italic; border-style: dashed; }
-    .bench-patch { color: var(--accent-primary); border-color: var(--accent-primary); font-weight: 700; }
+    .bench-bar {
+      height: 3px;
+      border-radius: 2px;
+      background: color-mix(in srgb, var(--border-subtle) 60%, transparent);
+      overflow: hidden;
+    }
+    .bench-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--accent-primary) 45%, transparent),
+        var(--accent-primary));
+    }
+    .bench-state-resolved .bench-bar-fill { background: var(--status-success, #4caf7d); }
+    .bench-state-stalled .bench-bar-fill { background: var(--status-warning, #e0a458); }
     .bench-verdict {
       display: flex;
       flex-wrap: wrap;
       align-items: baseline;
-      gap: 6px;
-      padding-top: 2px;
+      gap: 7px;
+      padding-top: 1px;
+      font-size: 9.5px;
     }
+    .bench-verdict b { color: var(--content-primary); font-variant-numeric: tabular-nums; }
     .bench-resolved {
       font-weight: 800;
-      font-size: 9.5px;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.06em;
       color: var(--status-success, #4caf7d);
     }
     .bench-alarm {
       font-weight: 800;
-      font-size: 9.5px;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.04em;
       color: var(--status-error, #d9534f);
-      border: 1px solid currentColor;
-      border-radius: var(--radius-sm);
-      padding: 1px 5px;
     }
-    .bench-counts { font-variant-numeric: tabular-nums; }
     .bench-failed {
       font-family: var(--font-mono);
-      font-size: 9px;
-      opacity: 0.85;
+      font-size: 8.5px;
+      opacity: 0.8;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       max-width: 100%;
     }
+    .bench-lanes,
     .bench-snapshot-banner,
     .bench-awaiting {
       font-size: 9.5px;
       font-style: italic;
       color: var(--content-secondary);
-      padding: var(--spacing-xs) var(--spacing-md);
     }
     .serving-arm[data-chosen] {
       border-color: var(--accent-primary);
