@@ -984,6 +984,11 @@ impl PersonaWorkspaceRegistry {
     /// deliberation faculty budgets its prompt against what THIS lane serves —
     /// otherwise a fork carrying the 14B's larger window could build a prompt the
     /// ephemeral 4B lane can't hold and overflow it (the Asha-mute failure class).
+    /// `extra_grounding` joins the persona's own grounding sources for THIS fork only —
+    /// the seam a measurement drive uses to pin its task brief as `[mission]` standing
+    /// framing (#390: the brief delivered once as a burst was evicted by act ~6 on a
+    /// 24-act solve, and the persona literally asked what the issue was; a
+    /// StandingFraming source cannot be evicted). Empty for plain evals.
     pub fn fork_eval_cycle_with_adapter(
         &self,
         persona_id: &Uuid,
@@ -992,12 +997,14 @@ impl PersonaWorkspaceRegistry {
         with_tools: bool,
         workspace_root: Option<&str>,
         suppress_recall: bool,
+        extra_grounding: Vec<GroundingSource>,
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
         cfg.suppress_recall = suppress_recall;
+        cfg.grounding_sources.extend(extra_grounding);
         repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
