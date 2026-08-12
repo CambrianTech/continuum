@@ -17,6 +17,8 @@ export { CHAT_KIND, chatStateFromEnvelope } from './ChatState';
 export { NAV_KIND, navStateFromEnvelope } from './NavState';
 export { SYSTEM_METRICS_KIND, systemMetricsFromEnvelope } from './SystemMetricsState';
 export { SERVING_KIND, servingFromEnvelope } from './ServingState';
+export { BENCH_KIND, benchFromEnvelope } from './BenchState';
+export { benchContentBody, benchWidget } from './benchProjections';
 export { KANBAN_KIND, kanbanStateFromEnvelope } from './KanbanState';
 export type { ChatState } from './ChatState';
 

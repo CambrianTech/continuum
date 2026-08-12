@@ -174,6 +174,10 @@ export interface ContentView<Body = unknown> {
  *  kinds join this union as they land. */
 export interface ContextPanelView {
   readonly listings: readonly ListingView[];
+  /** Activity-scoped widgets for the contextual rail (the bench board on an
+   *  academy room, #329) — heterogeneous like the left rail, dispatched by
+   *  `kind` through the same WidgetRegistry. Absent = listings only. */
+  readonly widgets?: readonly PanelWidget<unknown>[];
 }
 
 // ── PanelWidget (the left rail's global widget stack) ────────────────────────
