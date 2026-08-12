@@ -114,6 +114,7 @@ impl IpcStream for TcpStream {
 pub mod diagnostics;
 pub mod endpoint_paths;
 pub mod experience_resolver;
+pub mod positron_bench_source;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
@@ -3129,6 +3130,14 @@ pub fn start_server(
                 // snapshot + the MoE pager capture feed (when live) into
                 // kind="serving" — the beat-WASTE control loop on screen.
                 positron_serving_source::spawn_serving_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                );
+
+                // Benchmark board (#329): fold the run-ledger projection into
+                // kind="bench" — the academy right-rail's live rows (who is
+                // solving what, attempt N/M, patch forming, verdicts).
+                positron_bench_source::spawn_bench_emitter(
                     &state.rt_handle,
                     ws_substrate.clone(),
                 );
