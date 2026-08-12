@@ -27,7 +27,7 @@ import {
 } from '@continuum/patterns';
 import type { ChatContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
-import { listingCell, messageRow } from '../render/parts';
+import { actGroupRow, listingCell, messageRow } from '../render/parts';
 import { renderPersona } from '../persona/renderPersona';
 import { renderLive } from '../live/renderLive';
 import { renderBench } from '../bench/renderBench';
@@ -37,10 +37,15 @@ import { renderGrid } from '../grid/renderGrid';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
+  // The FULL transcript (#243): speech rows interleaved with collapsed tool-act
+  // receipts, in timestamp order — the room shows the WORK, not just the words.
+  // An older wire without acts folds to a messages-only transcript upstream.
   return body.isEmpty
     ? html`<div class="empty">No messages yet — say hello.</div>`
     : html`<ul class="messages">
-        ${body.messages.map(messageRow)}
+        ${body.transcript.map((row) =>
+          row.row === 'acts' ? actGroupRow(row) : messageRow(row),
+        )}
       </ul>`;
 }
 

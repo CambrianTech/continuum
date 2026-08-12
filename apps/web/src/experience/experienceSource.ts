@@ -66,7 +66,7 @@ export function makeExperienceSource(on: OnKind): AppSource<ExperienceState> {
         // Project the chat payload through the shared seam → the content body the
         // "chat" content renderer draws (identical to the standalone chat widget).
         const vm = chatViewModel(chatStateFromEnvelope(env));
-        contentBody = { messages: vm.messages, isEmpty: vm.isEmpty };
+        contentBody = { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty };
         emit();
       }),
     ];

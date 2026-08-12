@@ -29,7 +29,13 @@ import type {
   ServingViewState,
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
-import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
+import type {
+  ChatViewModel,
+  MemberKind,
+  MessageRowVM,
+  RosterMemberVM,
+  TranscriptRowVM,
+} from './chatViewModel';
 import { ARENA_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, type ArenaContentBody as ArenaContentBodyT, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
@@ -377,6 +383,9 @@ export interface WorkspaceLive {
  *  renderer draws these rows; a foundry room would carry a different purpose + body. */
 export interface ChatContentBody {
   readonly messages: readonly MessageRowVM[];
+  /** The full interleaved transcript (speech + collapsed act receipts, #243) —
+   *  what the center pane draws. `messages` stays for speech-only consumers. */
+  readonly transcript: readonly TranscriptRowVM[];
   readonly isEmpty: boolean;
 }
 
@@ -442,7 +451,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
             ? { purpose: GRID_PURPOSE, body: gridBody }
             : {
                 purpose: vm.purpose,
-                body: { messages: vm.messages, isEmpty: vm.isEmpty },
+                body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
               };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.

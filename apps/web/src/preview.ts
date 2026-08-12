@@ -163,10 +163,23 @@ const FIXTURES: Record<string, ChatState> = {
       message({ id: 'm2', sender_id: 'solenne', sender_name: 'Solenne', provenance: { runtime: 'qwen' },
         content: 'I can take the projection side once the wire type lands.', timestamp: 1_700_000_060_000 }),
     ],
+    // Tool-act receipts (#243) between the two turns — the shapes a live solve
+    // radiates: reads collapse with the shell run into ONE "Read 2 files, ran a
+    // command ›" group (Asha), Solenne's edit stands alone after her message.
+    acts: [
+      { id: 'a1', room_id: 'general', actor_id: 'asha', actor_name: 'Asha',
+        tool: 'code/read', summary: 'sympy/core/mul.py', ok: true, timestamp: 1_700_000_010_000 },
+      { id: 'a2', room_id: 'general', actor_id: 'asha', actor_name: 'Asha',
+        tool: 'code/read', summary: 'sympy/core/tests/test_mul.py', ok: true, timestamp: 1_700_000_020_000 },
+      { id: 'a3', room_id: 'general', actor_id: 'asha', actor_name: 'Asha',
+        tool: 'code/shell', summary: 'pytest sympy/core/tests/test_mul.py -x', ok: false, timestamp: 1_700_000_030_000 },
+      { id: 'a4', room_id: 'general', actor_id: 'solenne', actor_name: 'Solenne',
+        tool: 'code/edit', summary: 'packages/chat-view/patternProjections.ts', ok: true, timestamp: 1_700_000_070_000 },
+    ],
   },
   empty: {
     kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat',
-    roster, messages: [],
+    roster, messages: [], acts: [],
   },
   // The digest-tier reference input ([[perception-resolution-contract]]): the live
   // incident's shape — a degenerate repetition wall (hundreds of "ae0e-" lines)
@@ -176,6 +189,7 @@ const FIXTURES: Record<string, ChatState> = {
   flood: {
     kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat',
     roster,
+    acts: [],
     messages: [
       message({ id: 'f1', content: 'Deploying the lane planner now — trace incoming.' }),
       message({
@@ -396,6 +410,7 @@ function main(): void {
       kind: 'chat', revision: 1, room_id: 'general', room_name: 'general', purpose: 'chat',
       roster: liveRoster,
       messages: FIXTURES.roster?.messages ?? [],
+      acts: [],
     };
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
@@ -417,7 +432,7 @@ function main(): void {
     widget.state = {
       kind: 'chat', revision: 1, room_id: 'arena', room_name: 'arena', purpose: 'arena',
       roster: FIXTURES.roster?.roster ?? [],
-      messages: [],
+      messages: [], acts: [],
     };
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;

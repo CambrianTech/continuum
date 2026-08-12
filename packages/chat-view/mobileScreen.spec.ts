@@ -30,7 +30,7 @@ const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
 });
 const chatState = (over: Partial<ChatState> = {}): ChatState => ({
   kind: 'chat', revision: 3, room_id: 'room-1', room_name: 'general',
-  purpose: 'chat', messages: [], roster: [], ...over,
+  purpose: 'chat', messages: [], roster: [], acts: [], ...over,
 });
 
 describe('toMobileScreen — the mobile adaptation rule', () => {

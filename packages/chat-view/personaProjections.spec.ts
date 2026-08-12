@@ -27,6 +27,7 @@ const vm: ChatViewModel = {
   roomName: 'general',
   roomId: 'room-1',
   purpose: 'chat',
+  transcript: [],
   memberCount: 2,
   activeCount: 1,
   members: [
