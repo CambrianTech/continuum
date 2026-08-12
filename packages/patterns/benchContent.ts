@@ -61,13 +61,16 @@ export interface BenchRunVM {
   readonly attempt: number;
   readonly maxAttempts: number;
   readonly state: BenchRunState;
-  /** Generations completed this attempt. */
+  /** Full-generation acts completed this attempt. */
   readonly generations: number;
-  /** Seconds since the last completed generation; null before the first —
+  /** Seconds since the last artifact write; null before the first —
    *  renders as the honest "no generations yet", never a fabricated pulse. */
   readonly lastGenAgeS: number | null;
-  /** Edit/write acts so far — the leading indicator a patch is forming. */
-  readonly editActs: number;
+  /** Edit/write acts so far — the leading indicator a patch is forming.
+   *  Absent when the feed doesn't carry the edit/discovery split yet
+   *  (kind="bench" v1) — the row hides the count rather than showing a
+   *  fabricated 0. */
+  readonly editActs?: number;
   /** Workspace diff size at last grading; null before any grade. */
   readonly patchBytes: number | null;
   /** Last graded attempt's verdict, when one exists. */

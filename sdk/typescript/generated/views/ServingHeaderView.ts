@@ -6,7 +6,8 @@
  */
 export type ServingHeaderView = { 
 /**
- * Model id currently served. `None` = nothing live (honest empty).
+ * Model id currently served. `None` = nothing live (honest empty) —
+ * omitted from the wire so the TS optional (`model?: string`) is true.
  */
 model?: string, 
 /**

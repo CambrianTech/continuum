@@ -58,7 +58,9 @@ function runRow(run: BenchRunVM): TemplateResult {
     <span class="bench-attempt">attempt ${run.attempt}/${run.maxAttempts}</span>
     <span class="bench-state">${run.state}</span>
     ${pulse}
-    <span class="bench-acts" title="edit/write acts — a patch forming">${run.editActs} edits</span>
+    ${run.editActs !== undefined
+      ? html`<span class="bench-acts" title="edit/write acts — a patch forming">${run.editActs} edits</span>`
+      : nothing}
     ${run.patchBytes !== null
       ? html`<span class="bench-patch">${run.patchBytes}B patch</span>`
       : nothing}
