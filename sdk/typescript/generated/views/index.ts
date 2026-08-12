@@ -64,3 +64,5 @@ export type { KanbanCardState } from './KanbanCardState';
 export type { KanbanLaneState } from './KanbanLaneState';
 export type { KanbanPriority } from './KanbanPriority';
 export type { KanbanPullRequest } from './KanbanPullRequest';
+export type { BenchViewState } from './BenchViewState';
+export type { BenchRunRow } from './BenchRunRow';

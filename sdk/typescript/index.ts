@@ -76,6 +76,8 @@ export type {
   ServingHeaderView,
   ServingArmView,
   ServingEventCard,
+  BenchViewState,
+  BenchRunRow,
   KanbanViewState,
   KanbanCardView,
   KanbanLaneView,
