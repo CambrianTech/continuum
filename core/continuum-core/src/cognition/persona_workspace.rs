@@ -586,13 +586,39 @@ fn repoint_workspace_map_if_pinned(
     let Some(root) = workspace_root else {
         return;
     };
+    // The fork's hands expose the bus where its write-completions land — the
+    // invalidation wire for the cache wrap below. Resolved once, outside the loop.
+    let bus = cfg
+        .tool_executor
+        .as_ref()
+        .and_then(|t| t.command_executor())
+        .and_then(|c| c.message_bus());
     for g in cfg.grounding_sources.iter_mut() {
         if g.source.source_id() == "workspace-map" {
-            g.source = Arc::new(
+            let pinned: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
                 crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(
                     *persona_id, root,
                 ),
             );
+            // Event-invalidated cache (#398): eval forks compose SYNCHRONOUSLY
+            // (defer_grounding=false), so without this the pinned map re-walks
+            // the repo dir on EVERY act — the measured per-act prefill churn on
+            // solve runs (#266). Serve last-good until one of the fork's own
+            // mutating commands completes. No wrap without a wire: a handless
+            // cfg keeps the raw walk. The invalidator holds only a weak handle,
+            // so it exits with the ephemeral fork instead of leaking.
+            g.source = match bus.clone() {
+                Some(bus) => {
+                    let (cached, dirty) =
+                        crate::persona::cached_source::CachedRagSource::new(pinned);
+                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        bus,
+                        dirty.downgrade(),
+                    );
+                    cached
+                }
+                None => pinned,
+            };
         }
     }
 }

@@ -666,6 +666,11 @@ pub async fn materialize_adapters(
                 runtime.clone(),
             ));
 
+        // The persona's HANDS, built once here — consumed by the brain config
+        // below AND by the workspace-map cache wire (its command executor's bus
+        // is where write-completion events land).
+        let tool_executor = tool_executor_for(identity.peer_id.as_uuid());
+
         // Workspace map: grounds the persona in WHERE code lives — the real root
         // and top-level layout the code tools resolve against. NOT airc-backed
         // (reads the same cwd-rooted FileEngine as the persona's hands, so it
@@ -674,10 +679,34 @@ pub async fn materialize_adapters(
         // the layout was only ever an echoed error in recall, never standing
         // framing. Grounding, not steering — names the dirs, never which holds
         // the answer. Swaps to the airc-leased root when #49 lands.
-        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        //
+        // Wrapped as an event-invalidated cache (#398): the dir re-walk ran on
+        // EVERY compose, so it serves last-good until a workspace-mutating
+        // command completes on the bus. No wrap without a wire — a speak-only
+        // persona (no hands → no bus) keeps the raw source, because her map
+        // can still be mutated by OTHERS' hands and an unwired cache would be
+        // stale forever.
+        let raw_workspace_map: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
                 identity.peer_id.as_uuid(),
             ));
+        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            match tool_executor
+                .as_ref()
+                .and_then(|t| t.command_executor())
+                .and_then(|c| c.message_bus())
+            {
+                Some(bus) => {
+                    let (cached, dirty) =
+                        crate::persona::cached_source::CachedRagSource::new(raw_workspace_map);
+                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        bus,
+                        dirty.downgrade(),
+                    );
+                    cached
+                }
+                None => raw_workspace_map,
+            };
 
         // Wall source: grounds the persona in the room's LIVING SHARED
         // DOCUMENTS — the airc-pinned plan, coding instructions, agenda,
@@ -886,7 +915,7 @@ pub async fn materialize_adapters(
                 ],
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".
-                tool_executor: tool_executor_for(identity.peer_id.as_uuid()),
+                tool_executor,
                 // The window the gateway actually serves this persona (task #50:
                 // single-sourced; Local → ServingPlan.served_context_window). The
                 // deliberation faculty keeps its prompt inside it so llama-server

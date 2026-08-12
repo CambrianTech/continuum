@@ -44,6 +44,33 @@ impl DirtyHandle {
     pub fn mark(&self) {
         self.0.store(true, Ordering::SeqCst);
     }
+
+    /// A weak lever for long-lived listeners (a bus subscriber task): `mark()`
+    /// returns `false` once the wrapped source is gone, so the listener can
+    /// exit instead of parking forever on behalf of a dead cache. This is what
+    /// keeps per-fork invalidator tasks from leaking across ephemeral eval
+    /// forks — the fork's cycle drops, the weak dies, the task ends.
+    pub fn downgrade(&self) -> WeakDirtyHandle {
+        WeakDirtyHandle(Arc::downgrade(&self.0))
+    }
+}
+
+/// See [`DirtyHandle::downgrade`].
+#[derive(Clone)]
+pub struct WeakDirtyHandle(std::sync::Weak<AtomicBool>);
+
+impl WeakDirtyHandle {
+    /// Mark dirty if the cache is still alive. `false` == the owner dropped;
+    /// the caller should stop listening.
+    pub fn mark(&self) -> bool {
+        match self.0.upgrade() {
+            Some(flag) => {
+                flag.store(true, Ordering::SeqCst);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 struct CachedDelivery {
