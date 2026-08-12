@@ -36,6 +36,7 @@ pub mod durable_history;
 pub mod allocator;
 pub mod cached_source;
 pub mod card;
+pub mod grounding_invalidation;
 pub mod card_holder;
 pub mod channel_items;
 pub mod channel_queue;
