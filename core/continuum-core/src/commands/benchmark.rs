@@ -1996,70 +1996,83 @@ impl ActionCommand for BenchmarkRuns {
         _ctx: &Ctx,
         p: BenchmarkRunsParams,
     ) -> Result<BenchmarkRunsResult, CommandError> {
-        let base = std::env::var("CONTINUUM_HOME")
-            .map(std::path::PathBuf::from)
-            .ok()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-            .ok_or_else(|| CommandError::Internal("no home dir".into()))?
-            .join("progress");
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let mut cards: Vec<BenchRunCard> = Vec::new();
-        let entries = std::fs::read_dir(&base)
-            .map_err(|e| CommandError::Internal(format!("read {}: {e}", base.display())))?;
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let Some(run_id) = name
-                .strip_prefix("agent-solve-")
-                .and_then(|r| r.strip_suffix(".json"))
-            else {
-                continue;
-            };
-            // Grade files are read as SIBLINGS of their run below, never
-            // enumerated as runs (live first use showed `X.grade` phantoms:
-            // `agent-solve-X.grade.json` survives the prefix/suffix strip).
-            if run_id.ends_with(".grade") {
-                continue;
-            }
-            if let Some(want) = p.run_id.as_deref() {
-                if want != run_id {
-                    continue;
-                }
-            }
-            let read_json = |p: &std::path::Path| -> Option<serde_json::Value> {
-                std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
-            };
-            let mtime_ms = |p: &std::path::Path| -> Option<u64> {
-                std::fs::metadata(p)
-                    .and_then(|m| m.modified())
-                    .ok()?
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|d| d.as_millis() as u64)
-            };
-            let result_path = entry.path();
-            let grade_path = base.join(format!("agent-solve-{run_id}.grade.json"));
-            let result = read_json(&result_path);
-            let grade = read_json(&grade_path);
-            let last_activity_ms = mtime_ms(&result_path)
-                .into_iter()
-                .chain(mtime_ms(&grade_path))
-                .max()
-                .unwrap_or(0);
-            cards.push(fold_run_card(
-                run_id,
-                result.as_ref(),
-                grade.as_ref(),
-                last_activity_ms,
-                now_ms,
-            ));
-        }
-        cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
-        cards.truncate(p.limit.unwrap_or(20).max(1) as usize);
-        Ok(BenchmarkRunsResult { runs: cards })
+        let runs = scan_run_cards(p.run_id.as_deref(), p.limit.unwrap_or(20).max(1) as usize)
+            .map_err(CommandError::Internal)?;
+        Ok(BenchmarkRunsResult { runs })
     }
+}
+
+/// The ONE run-ledger scan behind every consumer: the `benchmark/runs`
+/// command AND the positron `kind="bench"` board emitter (#329) fold THIS —
+/// never a parallel file scrape ([[the-compression-principle]]). Synchronous
+/// fs I/O: async callers wrap it in `spawn_blocking`.
+pub(crate) fn scan_run_cards(
+    run_id_filter: Option<&str>,
+    limit: usize,
+) -> Result<Vec<BenchRunCard>, String> {
+    let base = std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
+        .ok_or_else(|| "no home dir".to_string())?
+        .join("progress");
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut cards: Vec<BenchRunCard> = Vec::new();
+    let entries =
+        std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(run_id) = name
+            .strip_prefix("agent-solve-")
+            .and_then(|r| r.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        // Grade files are read as SIBLINGS of their run below, never
+        // enumerated as runs (live first use showed `X.grade` phantoms:
+        // `agent-solve-X.grade.json` survives the prefix/suffix strip).
+        if run_id.ends_with(".grade") {
+            continue;
+        }
+        if let Some(want) = run_id_filter {
+            if want != run_id {
+                continue;
+            }
+        }
+        let read_json = |p: &std::path::Path| -> Option<serde_json::Value> {
+            std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
+        };
+        let mtime_ms = |p: &std::path::Path| -> Option<u64> {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as u64)
+        };
+        let result_path = entry.path();
+        let grade_path = base.join(format!("agent-solve-{run_id}.grade.json"));
+        let result = read_json(&result_path);
+        let grade = read_json(&grade_path);
+        let last_activity_ms = mtime_ms(&result_path)
+            .into_iter()
+            .chain(mtime_ms(&grade_path))
+            .max()
+            .unwrap_or(0);
+        cards.push(fold_run_card(
+            run_id,
+            result.as_ref(),
+            grade.as_ref(),
+            last_activity_ms,
+            now_ms,
+        ));
+    }
+    cards.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
+    cards.truncate(limit);
+    Ok(cards)
 }
 
 crate::register_stateless_command!(BenchmarkRuns);
