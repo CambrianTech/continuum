@@ -895,6 +895,36 @@ pub async fn grade(
     let (p2p_res, p2p_report) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
+
+    // THE GATE'S OTHER HALF (#383 family, live 2026-08-11): PASS_TO_PASS is defined as
+    // "passes before AND after the fix" — so a tree where p2p passes ZERO of N is not a
+    // graded failure, it is a suite that does not run in this environment at all
+    // (pytest-dev__pytest-5103 graded p2p 0/40 with an EMPTY patch: the era env cannot run
+    // pytest's own suite, and that env fault was recorded as a capability verdict). The
+    // f2p half of the gate cannot catch this: f2p "fails on pristine" is exactly what a
+    // broken suite also produces. Distinguish the two the only honest way — re-run p2p on
+    // the PRISTINE tree, paid only when the suspicious all-fail shape appears: pristine
+    // ALSO passes zero → the env is broken, void the tree; pristine passes any → the
+    // candidate patch genuinely broke the suite and the graded numbers stand.
+    if verdict.p2p_total > 0 && verdict.p2p_passed == 0 {
+        let _ = run("git", &["checkout", "--quiet", "."], Some(repo_dir)).await;
+        if let Err(e) = apply_patch(repo_dir, &instance.test_patch, "p2p-gate").await {
+            verdict.error = Some(e);
+            return verdict;
+        }
+        let (pristine_p2p, _) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
+        if pristine_p2p.values().filter(|ok| **ok).count() == 0 {
+            verdict.gate_ok = false;
+            verdict.error = Some(format!(
+                "UNGRADEABLE — PASS_TO_PASS passes 0 of {} on the PRISTINE tree: the \
+                 suite does not run in this environment, so every score from this tree \
+                 is an env fault, never a capability verdict.",
+                verdict.p2p_total
+            ));
+            return verdict;
+        }
+    }
+
     verdict.failed_tests = f2p_res
         .iter()
         .chain(p2p_res.iter())
