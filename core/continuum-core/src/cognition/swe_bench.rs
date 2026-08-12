@@ -437,9 +437,18 @@ pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), 
 /// for; uv's own floor is 3.8, so there is no lower rung to offer. Coarse on purpose — the
 /// gold gate is the arbiter, and a wrong guess fails loudly rather than producing a
 /// plausible number.
+///
+/// The 2020..=2022 rung is 3.10, learned live (pylint-5859, 2026-08-11): Python 3.11
+/// removed `inspect.formatargspec`, which era sdist BUILDS still import (wrapt 1.13.3,
+/// pulled by 2022 astroid) — every 2022-era env with such a dep died at build on 3.11.
+/// 3.11 released 2022-10; a March-2022 dependency graph never targeted it. The same
+/// mismatch is the leading suspect for the p2p-0/N broken baselines (flask-5063,
+/// pytest-5103) whose envs were built on 3.11 before this rung existed.
 pub fn interpreter_for_year(year: u32) -> &'static str {
     if year < 2020 {
         "3.9"
+    } else if year <= 2022 {
+        "3.10"
     } else {
         "3.11"
     }
@@ -588,13 +597,21 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             break out;
         }
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        match deleted_history_override(&stderr) {
+        // Two heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
+        // candidates, uv's hint names the earliest surviving upload; (2) metadata-mismatch —
+        // an era sdist with no wheel for this platform builds as version 0.0.0
+        // (setuptools_scm without git metadata; live 2026-08-11: lazy-object-proxy 1.7.1 has
+        // no arm64 wheel, pulled by 2022 pylint→astroid), so the ONE unbuildable package's
+        // cutoff is lifted entirely — a modern wheel-shipping release of a shim library, in
+        // an otherwise era-pure graph, disclosed on the probe. Both parse uv's OWN evidence;
+        // no hand-maintained package list.
+        match deleted_history_override(&stderr).or_else(|| metadata_mismatch_override(&stderr)) {
             Some(pin) if !overrides.contains(&pin) && overrides.len() < 8 => {
                 tracing::warn!(
                     instance = %instance.instance_id,
                     r#override = %pin,
-                    "date-pinned resolution hit a deleted-history package — retrying with \
-                     uv's own suggested per-package cutoff"
+                    "date-pinned resolution hit an unresolvable era package — retrying with \
+                     a per-package cutoff derived from uv's own error"
                 );
                 overrides.push(pin);
             }
@@ -646,6 +663,31 @@ fn deleted_history_override(stderr: &str) -> Option<String> {
         return None;
     }
     Some(format!("{pkg}={cutoff}"))
+}
+
+/// Parse uv's metadata-version-mismatch failure into an `--exclude-newer-package` value
+/// that LIFTS the era cutoff for the one unbuildable package.
+///
+/// The failure shape (uv 0.11, live pylint-5859 2026-08-11):
+/// ```text
+/// ╰─▶ Package metadata version `0.0.0` does not match given version `1.7.1`
+/// hint: `lazy-object-proxy` (v1.7.1) was included because `pylint` (v2.13.0.dev0) ...
+/// ```
+/// The `0.0.0` is an sdist built without git metadata (setuptools_scm fallback) — it happens
+/// exactly when the era release ships no wheel for this platform, so no date-pinned retry can
+/// ever succeed. Lifting that ONE package's cutoff (far-future bound) lets uv take a modern
+/// wheel-shipping release; the rest of the graph stays era-pinned. Verified live: pylint
+/// 2.13.0-dev0 + astroid 2.9.3 (era-correct) with only the shim floated.
+fn metadata_mismatch_override(stderr: &str) -> Option<String> {
+    if !stderr.contains("Package metadata version `0.0.0` does not match given version") {
+        return None;
+    }
+    let rest = &stderr[stderr.find("hint: `")? + "hint: `".len()..];
+    let pkg = rest.split('`').next()?;
+    if pkg.is_empty() || pkg.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(format!("{pkg}=9999-01-01T00:00:00Z"))
 }
 
 fn which(bin: &str) -> Option<String> {
@@ -987,6 +1029,29 @@ mod tests {
         );
     }
 
+    // what this catches: the wheel-less era sdist (pylint-5859, live 2026-08-11) —
+    // lazy-object-proxy 1.7.1 has no arm64 wheel and its sdist stamps 0.0.0, so the
+    // date-pinned install can NEVER succeed; the heal must lift exactly that package's
+    // cutoff. Unrelated errors and mismatches without a named package parse to None.
+    #[test]
+    fn metadata_mismatch_parses_into_a_lifted_cutoff() {
+        let stderr = "\u{2570}\u{2500}\u{25b6} Package metadata version `0.0.0` does not \
+            match given version `1.7.1`\n\nhint: `lazy-object-proxy` (v1.7.1) was included \
+            because `pylint` (v2.13.0.dev0) depends on `astroid` (v2.9.3)";
+        assert_eq!(
+            metadata_mismatch_override(stderr).as_deref(),
+            Some("lazy-object-proxy=9999-01-01T00:00:00Z"),
+        );
+        assert_eq!(metadata_mismatch_override("error: some other failure"), None);
+        assert_eq!(
+            metadata_mismatch_override(
+                "Package metadata version `0.0.0` does not match given version `1.0` (no hint)"
+            ),
+            None,
+            "mismatch without a named package must not synthesize an override"
+        );
+    }
+
     // what this catches: the hidden-collateral verdict (atlas-24066-n7) — a patch that
     // broke 30 pass-to-pass tests produced retry feedback built from the f2p report
     // alone, so she resubmitted the identical broken patch twice. The REGRESSION
@@ -1079,12 +1144,17 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
 
     // what this catches: the INTERPRETER has an era too, not just the dependency graph. A 2014
     // requests vendors a urllib3 doing `from collections import Mapping`, deleted in 3.10 — no
-    // dependency pin can rescue that, the language moved.
+    // dependency pin can rescue that, the language moved. The 3.10 rung for 2020..=2022 is the
+    // same lesson from the other side (pylint-5859, live 2026-08-11): 3.11 removed
+    // `inspect.formatargspec`, which era sdist BUILDS (wrapt 1.13.3) still import — a
+    // March-2022 graph never targeted an interpreter released 2022-10.
     #[test]
     fn the_interpreter_is_chosen_by_the_instances_era() {
         assert_eq!(interpreter_for_year(2014), "3.9");
         assert_eq!(interpreter_for_year(2019), "3.9");
-        assert_eq!(interpreter_for_year(2021), "3.11");
+        assert_eq!(interpreter_for_year(2020), "3.10");
+        assert_eq!(interpreter_for_year(2021), "3.10");
+        assert_eq!(interpreter_for_year(2022), "3.10");
         assert_eq!(interpreter_for_year(2023), "3.11");
     }
 
