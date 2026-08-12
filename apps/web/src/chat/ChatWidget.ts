@@ -973,6 +973,112 @@ export class ChatWidget extends LitElement {
       border-radius: var(--radius-sm);
       overflow: hidden;
     }
+    /* BENCH board (#329) — one state-coded card per run: left border carries
+     * the state, instance in mono, meta pills for attempt/pulse/patch, and
+     * the p2p REGRESSION rendered as the alarm it is. */
+    .bench-board {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: var(--spacing-xs) var(--spacing-md) var(--spacing-sm);
+    }
+    .bench-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 6px 8px;
+      border: 1px solid var(--border-subtle);
+      border-left-width: 3px;
+      border-radius: var(--radius-sm);
+      font-size: 10px;
+      color: var(--content-secondary);
+    }
+    .bench-state-working { border-left-color: var(--accent-primary); }
+    .bench-state-queued { border-left-color: var(--border-subtle); opacity: 0.75; }
+    .bench-state-grading { border-left-color: var(--accent-primary); }
+    .bench-state-stalled { border-left-color: var(--status-warning, #e0a458); }
+    .bench-state-resolved { border-left-color: var(--status-success, #4caf7d); }
+    .bench-state-failed { border-left-color: var(--status-error, #d9534f); }
+    .bench-instance {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 10.5px;
+      color: var(--content-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bench-who {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .bench-persona { font-weight: 600; color: var(--content-primary); }
+    .bench-selfclaimed {
+      font-size: 8.5px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--accent-primary);
+    }
+    .bench-attempt,
+    .bench-state,
+    .bench-pulse,
+    .bench-nogen,
+    .bench-acts,
+    .bench-patch {
+      display: inline-block;
+      font-size: 9px;
+      padding: 1px 5px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .bench-state { text-transform: uppercase; letter-spacing: 0.06em; }
+    .bench-state-resolved .bench-state { color: var(--status-success, #4caf7d); border-color: currentColor; }
+    .bench-state-stalled .bench-state { color: var(--status-warning, #e0a458); border-color: currentColor; }
+    .bench-state-failed .bench-state { color: var(--status-error, #d9534f); border-color: currentColor; }
+    .bench-nogen { opacity: 0.7; font-style: italic; border-style: dashed; }
+    .bench-patch { color: var(--accent-primary); border-color: var(--accent-primary); font-weight: 700; }
+    .bench-verdict {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 6px;
+      padding-top: 2px;
+    }
+    .bench-resolved {
+      font-weight: 800;
+      font-size: 9.5px;
+      letter-spacing: 0.08em;
+      color: var(--status-success, #4caf7d);
+    }
+    .bench-alarm {
+      font-weight: 800;
+      font-size: 9.5px;
+      letter-spacing: 0.06em;
+      color: var(--status-error, #d9534f);
+      border: 1px solid currentColor;
+      border-radius: var(--radius-sm);
+      padding: 1px 5px;
+    }
+    .bench-counts { font-variant-numeric: tabular-nums; }
+    .bench-failed {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      opacity: 0.85;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+    .bench-snapshot-banner,
+    .bench-awaiting {
+      font-size: 9.5px;
+      font-style: italic;
+      color: var(--content-secondary);
+      padding: var(--spacing-xs) var(--spacing-md);
+    }
     .serving-arm[data-chosen] {
       border-color: var(--accent-primary);
     }

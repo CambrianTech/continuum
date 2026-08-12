@@ -50,13 +50,14 @@ function runRow(run: BenchRunVM): TemplateResult {
       : html`<span class="bench-pulse" title="generations this attempt · age of latest">
           ${run.generations} gens · ${age(run.lastGenAgeS)} ago</span>`;
   return html`<div class="bench-row bench-state-${run.state}">
+    <span class="bench-instance" title=${run.runId}>${run.instance}</span>
     <span class="bench-who">
       <span class="bench-persona">${run.persona}</span>
       ${run.selfClaimed ? html`<span class="bench-selfclaimed" title="claimed off the work board by the citizen herself">self-claimed</span>` : nothing}
+      <span class="bench-state">${run.state}</span>
+      <span class="bench-attempt">attempt ${run.attempt}/${run.maxAttempts}</span>
     </span>
-    <span class="bench-instance" title=${run.runId}>${run.instance}</span>
-    <span class="bench-attempt">attempt ${run.attempt}/${run.maxAttempts}</span>
-    <span class="bench-state">${run.state}</span>
+    <span class="bench-who">
     ${pulse}
     ${run.editActs !== undefined
       ? html`<span class="bench-acts" title="edit/write acts — a patch forming">${run.editActs} edits</span>`
@@ -64,6 +65,7 @@ function runRow(run: BenchRunVM): TemplateResult {
     ${run.patchBytes !== null
       ? html`<span class="bench-patch">${run.patchBytes}B patch</span>`
       : nothing}
+    </span>
     ${run.verdict ? verdictCell(run.verdict) : nothing}
   </div>`;
 }
