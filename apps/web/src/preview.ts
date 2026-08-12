@@ -18,6 +18,7 @@ import './theme.css';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
 import type { ChatState } from '@continuum/chat-view';
 import type {
+  BenchViewState,
   KanbanViewState,
   NavViewState,
   RosterSlotView,
@@ -29,6 +30,43 @@ import type {
 void ChatWidget;
 
 /** A roster member with sensible defaults — override only what a fixture varies. */
+// `?fixture=bench` — the ACADEMY BENCH BOARD in the contextual rail (#329):
+// rows mirroring a REAL round (2026-08-12's 19-instance rerun): a working
+// graded row with a p2p REGRESSION alarm, a working row patch-forming, a
+// queued row (no generations yet), a stalled row, and a resolved row.
+const BENCH_FIXTURE: BenchViewState = {
+  sample_interval_ms: 5000,
+  runs: [
+    {
+      run_id: 'claim-c4a91802', instance: 'sympy__sympy-21055', solver: 'Anon',
+      phase: 'active', stalled: false, attempt: 2, max_attempts: 3, age_secs: 420,
+      acts: 10, patch_bytes: 1295, resolved: false, fail_to_pass: '0/1',
+      pass_to_pass: '31/34', failed_tests: ['test_refine_complex'], 
+    },
+    {
+      run_id: 'claim-92ae38af', instance: 'sympy__sympy-13647', solver: 'Anwen',
+      phase: 'active', stalled: false, attempt: 1, max_attempts: 3, age_secs: 180,
+      acts: 17, patch_bytes: 812, failed_tests: [],
+    },
+    {
+      run_id: 'claim-9d3268b6', instance: 'pytest-dev__pytest-5413', solver: 'Asha',
+      phase: 'active', stalled: false, attempt: 1, max_attempts: 3, age_secs: 12,
+      failed_tests: [],
+    },
+    {
+      run_id: 'claim-c995488a', instance: 'sympy__sympy-24066', solver: 'Anon',
+      phase: 'quiet', stalled: true, attempt: 1, max_attempts: 3, age_secs: 3900,
+      acts: 2, failed_tests: [],
+    },
+    {
+      run_id: 'claim-24152', instance: 'sympy__sympy-24152', solver: 'Anwen',
+      phase: 'resolved', stalled: false, attempt: 1, max_attempts: 3, age_secs: 7200,
+      acts: 9, patch_bytes: 974, resolved: true, fail_to_pass: '1/1',
+      pass_to_pass: '6/6', failed_tests: [],
+    },
+  ],
+};
+
 const member = (over: Partial<RosterSlotView>): RosterSlotView => ({
   member_id: 'm',
   display_name: 'Member',
@@ -179,7 +217,7 @@ const PERSONA_BOARD: KanbanViewState = {
       card_id: 'c1', room_id: 'general', title: 'Wire the persona home claims feed',
       state: 'in_progress', priority: 'p1', lane_id: null,
       creator_id: 'joel', creator_name: 'Joel', creator_kind: { kind: 'human' },
-      integrations: {}, provenance: { runtime: '' },
+      integrations: {}, provenance: { runtime: '' }, hold: 'held',
       assignee_id: 'asha', assignee_name: 'Asha',
       created_at: Date.now() - 26 * 3_600_000, updated_at: Date.now() - 40 * 60_000,
     },
@@ -187,7 +225,7 @@ const PERSONA_BOARD: KanbanViewState = {
       card_id: 'c2', room_id: 'general', title: 'Review lane admission planner PR',
       state: 'review', priority: 'p2', lane_id: null,
       creator_id: 'solenne', creator_name: 'Solenne', creator_kind: { kind: 'agent' },
-      integrations: {}, provenance: { runtime: 'qwen' },
+      integrations: {}, provenance: { runtime: 'qwen' }, hold: 'held',
       assignee_id: 'asha', assignee_name: 'Asha',
       created_at: Date.now() - 3 * 86_400_000, updated_at: Date.now() - 5 * 3_600_000,
     },
@@ -195,7 +233,7 @@ const PERSONA_BOARD: KanbanViewState = {
       card_id: 'c3', room_id: 'general', title: 'A card owned by another citizen (must not show)',
       state: 'open', priority: 'p2', lane_id: null,
       creator_id: 'joel', creator_name: 'Joel', creator_kind: { kind: 'human' },
-      integrations: {}, provenance: { runtime: '' },
+      integrations: {}, provenance: { runtime: '' }, hold: 'held',
       assignee_id: 'solenne', assignee_name: 'Solenne',
       created_at: Date.now() - 86_400_000, updated_at: Date.now() - 60_000,
     },
@@ -306,6 +344,18 @@ function main(): void {
     widget.nav = NAV_FIXTURES.rooms;
     widget.sys = SYS_FIXTURE;
   }
+  // `?fixture=bench` — the academy room with the LIVE bench board filling the
+  // contextual rail (#329's render-proof reference input).
+  if (name === 'bench') {
+    const base = FIXTURES.roster;
+    if (base) {
+      widget.state = { ...base, room_name: 'academy', purpose: 'chat' };
+    }
+    widget.nav = NAV_FIXTURES.rooms;
+    widget.sys = SYS_FIXTURE;
+    widget.bench = BENCH_FIXTURE;
+  }
+
   // `?fixture=grid` — the GRID view center-stage (purpose="grid"): every
   // node's panel (resources + serving), the NODES strip's full activity.
   if (name === 'grid') {

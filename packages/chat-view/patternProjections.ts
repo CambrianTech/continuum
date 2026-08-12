@@ -23,6 +23,7 @@ import type {
 } from '@continuum/patterns';
 import type { GaugeView, ServingPanelView } from '@continuum/patterns';
 import type {
+  BenchViewState,
   KanbanViewState,
   NavViewState,
   ServingViewState,
@@ -37,6 +38,7 @@ import {
   personaFactsListing,
 } from './personaProjections';
 import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProjections';
+import { benchWidget } from './benchProjections';
 import { arenaContentBody, type ArenaViewState } from './arenaProjections';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
@@ -365,6 +367,9 @@ export interface WorkspaceLive {
   /** The `kind="arena"` eval-ledger view — feeds an arena-purpose room's
    *  leaderboards. Honestly absent until the feed delivers. */
   readonly arena?: ArenaViewState;
+  /** The node's `kind="bench"` benchmark board (#329) — adds the academy
+   *  right-rail bench widget. Honestly absent until the feed delivers. */
+  readonly bench?: BenchViewState;
 }
 
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
@@ -470,6 +475,9 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     // else the room's info card — the ContextPanel primitive, activity-scoped.
     context: {
       listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
+      // The live benchmark board (#329) — joins the contextual rail whenever
+      // this node has runs, filling the academy's dead right column.
+      ...(benchWidget(live?.bench) ? { widgets: [benchWidget(live?.bench)!] } : {}),
     },
   };
 }

@@ -28,6 +28,7 @@ import {
 import type {
   KanbanViewState,
   NavViewState,
+  BenchViewState,
   ServingViewState,
   StreamDelta,
   SystemMetricsViewState,
@@ -84,6 +85,7 @@ export class ChatWidget extends LitElement {
     nav: { attribute: false },
     sys: { attribute: false },
     serving: { attribute: false },
+    bench: { attribute: false },
     board: { attribute: false },
     arena: { attribute: false },
     version: { attribute: false },
@@ -119,6 +121,10 @@ export class ChatWidget extends LitElement {
   /** The node's live `kind="serving"` view (the serving glass box, #141),
    *  when the host's subscription has delivered. `undefined` = no widget. */
   serving?: ServingViewState;
+
+  /** The node's live `kind="bench"` benchmark board (#329) — fills the academy
+   *  contextual rail with run rows. Honestly absent until the feed delivers. */
+  bench?: BenchViewState;
 
   /** The node's live `kind="kanban"` work board, when the host's subscription
    *  has delivered — feeds the persona home's claims. `undefined` = the claims
@@ -3949,6 +3955,7 @@ export class ChatWidget extends LitElement {
         nav: this.nav,
         sys: this.sys,
         serving: this.serving,
+        bench: this.bench,
         board: this.board,
         arena: this.arena,
         version: this.version,

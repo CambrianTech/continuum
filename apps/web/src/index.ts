@@ -44,6 +44,8 @@ import {
   kanbanStateFromEnvelope,
   navStateFromEnvelope,
   servingFromEnvelope,
+  BENCH_KIND,
+  benchFromEnvelope,
   systemMetricsFromEnvelope,
   type ChatState,
 } from '@continuum/chat-view';
@@ -226,6 +228,10 @@ async function main(): Promise<void> {
   // The serving glass box (#141) — model header + pager control-loop telemetry.
   state.on(SERVING_KIND, (envelope: StateEnvelope) => {
     widget.serving = servingFromEnvelope(envelope);
+  });
+  // The benchmark board (#329) — the academy rail's live run rows.
+  state.on(BENCH_KIND, (envelope: StateEnvelope) => {
+    widget.bench = benchFromEnvelope(envelope);
   });
   // The node's work board — the persona home's claims feed (cards by assignee).
   state.on(KANBAN_KIND, (envelope: StateEnvelope) => {
