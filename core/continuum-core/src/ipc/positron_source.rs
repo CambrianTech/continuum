@@ -82,8 +82,8 @@ use uuid::Uuid;
 
 use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
-    ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView, RosterViewState,
-    SenderKind, StateBuilder, Substrate,
+    ActReceiptView, ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView,
+    RosterViewState, SenderKind, StateBuilder, Substrate,
 };
 
 use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
@@ -119,6 +119,13 @@ pub(crate) const CHAT_FOCUSED: &str = "chat:focused";
 /// renderer shows a recent window; deeper history is a `chat/history`
 /// pull, not a fatter snapshot (see `ChatViewState.messages` doc).
 const MAX_MESSAGES_PER_SNAPSHOT: usize = 100;
+
+/// Bound on the act-receipt ring (#243). Acts arrive far denser than speech
+/// during a work burst (a solve can run 30+ acts per attempt), and the
+/// renderer collapses consecutive receipts anyway — the window exists to show
+/// the CURRENT work rhythm, not to be the act ledger (that is the run
+/// ledger / working memory).
+const MAX_ACTS_PER_SNAPSHOT: usize = 60;
 
 /// A provisional display label for a sender whose identity card has not
 /// yet folded in through presence — the first 8 chars of the peer id,
@@ -200,6 +207,33 @@ pub(crate) struct AircChatFocused {
 
 /// Event name a persona radiates its live vitals under.
 pub(crate) const PERSONA_VITALS: &str = "persona:vitals";
+
+/// Event name a persona's HANDS radiate one executed tool act under (#243:
+/// tool actions show IN chats as collapsed receipts).
+pub(crate) const PERSONA_ACT: &str = "persona:act";
+
+/// Typed `persona:act` payload — one executed tool call, radiated from the
+/// act→observe seam (`apply_act`, the ONE choke point every hand action
+/// passes through: live turns, directed turns, and agent/solve alike). The
+/// projection folds it into [`ChatViewState::acts`] so every client renders
+/// the same receipt stream. Same `pub(crate)` + `Serialize` agree-by-
+/// construction discipline as [`PersonaVitalsUpdate`]: the emitter builds
+/// THIS struct, never a hand JSON. Carries the resolved `actor_name`
+/// because the producer (the acting body) knows it authoritatively — the
+/// projection still re-resolves against the roster when the actor is
+/// present, keeping one display-identity source where possible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PersonaActUpdate {
+    pub(crate) act_id: Uuid,
+    pub(crate) room_id: Uuid,
+    pub(crate) actor_id: Uuid,
+    pub(crate) actor_name: String,
+    pub(crate) tool: String,
+    pub(crate) summary: String,
+    pub(crate) ok: bool,
+    pub(crate) timestamp: u64,
+}
 
 /// Typed `persona:vitals` payload — one persona's live cognition readouts.
 ///
@@ -487,6 +521,11 @@ struct ChatProjection {
     /// Bounded ring of recent messages, oldest first (the order
     /// `ChatViewState.messages` is documented to carry).
     messages: VecDeque<ChatMessageView>,
+    /// Bounded ring of recent tool-act receipts, oldest first — the
+    /// transcript's work stream (#243), folded from `persona:act` events
+    /// the same way `messages` folds `chat:posted`. Cleared on room switch
+    /// with the rest of the per-room state.
+    acts: VecDeque<ActReceiptView>,
     roster: Vec<RosterSlotView>,
     /// Latest live vitals per member id, folded from `persona:vitals` events
     /// (design B). Kept SEPARATE from the presence roster — presence replaces
@@ -551,6 +590,7 @@ impl ChatProjection {
             explicit_focus: None,
             room_name: String::new(),
             messages: VecDeque::new(),
+            acts: VecDeque::new(),
             roster: Vec::new(),
             vitals: HashMap::new(),
             loadout: HashMap::new(),
@@ -575,6 +615,7 @@ impl ChatProjection {
             self.room_id = Some(room_id);
             self.room_name.clear();
             self.messages.clear();
+            self.acts.clear();
             self.roster.clear();
             self.vitals.clear();
             self.loadout.clear();
@@ -662,6 +703,43 @@ impl ChatProjection {
         });
         while self.messages.len() > MAX_MESSAGES_PER_SNAPSHOT {
             self.messages.pop_front();
+        }
+        self.store();
+    }
+
+    /// Fold one executed tool act into the receipt ring and store — the act
+    /// sibling of `apply_message` (#243). Same focus-pin and room-switch
+    /// discipline; idempotent on `act_id` (bus redelivery). The producer's
+    /// resolved `actor_name` is adopted as-is when the actor is NOT in the
+    /// roster (a headless solve fork acting in a room its presence never
+    /// joined); a rostered actor re-resolves so display identity stays
+    /// single-sourced.
+    fn apply_act(&mut self, act: PersonaActUpdate) {
+        if self.pinned_away_from(act.room_id) {
+            return;
+        }
+        self.switch_room(act.room_id);
+        if self.acts.iter().any(|a| a.id == act.act_id) {
+            return;
+        }
+        let name = self
+            .roster
+            .iter()
+            .find(|s| s.member_id == act.actor_id)
+            .map(|s| s.display_name.clone())
+            .unwrap_or(act.actor_name);
+        self.acts.push_back(ActReceiptView {
+            id: act.act_id,
+            room_id: act.room_id,
+            actor_id: act.actor_id,
+            actor_name: name,
+            tool: act.tool,
+            summary: act.summary,
+            ok: act.ok,
+            timestamp: act.timestamp,
+        });
+        while self.acts.len() > MAX_ACTS_PER_SNAPSHOT {
+            self.acts.pop_front();
         }
         self.store();
     }
@@ -778,6 +856,7 @@ impl ChatProjection {
             // dispatches on it (ACTIVITY-ROOM-PATTERNS.md) with no change here.
             purpose: self.purpose_source.purpose_for(room_id),
             messages: self.messages.iter().cloned().collect(),
+            acts: self.acts.iter().cloned().collect(),
             roster,
         };
         self.substrate.store(self.builder.session(view));
@@ -812,6 +891,8 @@ enum ProjectionInput {
     Message(AircChatPosted),
     Presence(AircPresenceUpdate),
     Vitals(PersonaVitalsUpdate),
+    /// One executed tool act (`persona:act` — the receipt stream, #243).
+    Act(PersonaActUpdate),
     /// An explicit focus switch (`chat:focused` — the `nav/select` verb).
     Focus(AircChatFocused),
 }
@@ -831,6 +912,9 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> 
         PERSONA_VITALS => serde_json::from_value::<PersonaVitalsUpdate>(body.clone())
             .ok()
             .map(ProjectionInput::Vitals),
+        PERSONA_ACT => serde_json::from_value::<PersonaActUpdate>(body.clone())
+            .ok()
+            .map(ProjectionInput::Act),
         CHAT_FOCUSED => serde_json::from_value::<AircChatFocused>(body.clone())
             .ok()
             .map(ProjectionInput::Focus),
@@ -941,6 +1025,7 @@ pub fn spawn(
                             ProjectionInput::Message(m) => projection.apply_message(m),
                             ProjectionInput::Presence(p) => projection.apply_presence(p),
                             ProjectionInput::Vitals(v) => projection.apply_vitals(v),
+                            ProjectionInput::Act(a) => projection.apply_act(a),
                             ProjectionInput::Focus(f) => projection.apply_focus(f.room_id),
                         }
                     }
@@ -960,6 +1045,58 @@ pub fn spawn(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A `persona:act` payload — one executed tool receipt (#243).
+    fn act_payload(room: Uuid, act: Uuid, actor: Uuid, tool: &str, summary: &str) -> serde_json::Value {
+        json!({
+            "actId": act,
+            "roomId": room,
+            "actorId": actor,
+            "actorName": "Asha",
+            "tool": tool,
+            "summary": summary,
+            "ok": true,
+            "timestamp": 1_700_000_000_000u64,
+        })
+    }
+
+    #[test]
+    fn act_receipts_fold_into_the_snapshot_dedup_and_clear_on_room_switch() {
+        // what this catches: the #243 act stream's three contracts — a
+        // `persona:act` event lands in `ChatViewState.acts` with its facts
+        // intact, a redelivered act_id folds once, and a room switch clears
+        // the receipts with the rest of the per-room state.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0x1);
+        let act = Uuid::from_u128(0x2);
+        let actor = Uuid::from_u128(0x3);
+        let payload = act_payload(room, act, actor, "code/read", "sympy/core/mul.py");
+        for _ in 0..2 {
+            if let Some(ProjectionInput::Act(a)) = classify(PERSONA_ACT, &payload) {
+                p.apply_act(a);
+            } else {
+                panic!("persona:act payload must classify as an Act input");
+            }
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.acts.len(), 1, "redelivered act_id must fold once");
+        let r = &view.acts[0];
+        assert_eq!(r.tool, "code/read");
+        assert_eq!(r.summary, "sympy/core/mul.py");
+        assert_eq!(r.actor_name, "Asha");
+        assert!(r.ok);
+        // Room switch clears the receipt ring with the rest of the state.
+        if let Some(ProjectionInput::Act(a)) = classify(
+            PERSONA_ACT,
+            &act_payload(Uuid::from_u128(0x9), Uuid::from_u128(0xa), actor, "code/shell", "pytest -x"),
+        ) {
+            p.apply_act(a);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.acts.len(), 1);
+        assert_eq!(view.acts[0].tool, "code/shell");
+    }
 
     /// A thin `chat:posted` payload — core message facts only, sender
     /// hardcoded to `0xc`. Mirrors the emitter contract (identity is NOT

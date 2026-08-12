@@ -396,6 +396,53 @@ pub async fn apply_act(
             });
         }
     }
+    // #243 RECEIPT RADIATION: every executed act reaches the room's transcript
+    // as a collapsed receipt ("Ran 4 commands ›", the Claude-iOS pattern) —
+    // this is the ONE choke point every hand action passes through (live,
+    // directed, agent/solve), so publishing here covers them all. The chat
+    // projection (`positron_source::apply_act`) folds each into
+    // `ChatViewState.acts`; clients render, collapse, expand. PURE
+    // OBSERVABILITY — nothing on the decision path reads these events, and a
+    // handless/mock executor (no `command_executor`) simply radiates nothing.
+    if let Some(bus) = body.executor.command_executor().and_then(|e| e.message_bus()) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        for obs in &acts {
+            // The human OBJECT of the act: the first extracted path (reads,
+            // writes, edits), else the shell command head, else empty —
+            // honest-thin, never dumped raw JSON args.
+            let summary = obs
+                .output
+                .paths
+                .first()
+                .map(|p| p.display().to_string())
+                .or_else(|| {
+                    obs.call
+                        .input
+                        .get("command")
+                        .and_then(|c| c.as_str())
+                        .map(|c| c.chars().take(80).collect::<String>())
+                })
+                .unwrap_or_default();
+            let update = crate::ipc::positron_source::PersonaActUpdate {
+                act_id: Uuid::new_v4(),
+                room_id,
+                actor_id: body.persona_id,
+                actor_name: body.persona_name.clone(),
+                tool: obs.call.name.clone(),
+                summary,
+                ok: obs.output.result.is_error != Some(true),
+                timestamp: now_ms,
+            };
+            match serde_json::to_value(&update) {
+                Ok(payload) => bus.publish_async_only("persona:act", payload),
+                Err(e) => tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected"),
+            }
+        }
+    }
+
     // The background dispatches are part of what she just did — record them as
     // proprioception so the mind knows it sent them away (and won't re-dispatch or block).
     // They are already concise, so both channels carry them verbatim.

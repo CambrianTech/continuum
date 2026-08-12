@@ -60,6 +60,7 @@ export type {
 export type {
   ChatViewState,
   ChatMessageView,
+  ActReceiptView,
   RosterSlotView,
   RosterViewState,
   SenderKind,
