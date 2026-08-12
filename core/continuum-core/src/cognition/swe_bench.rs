@@ -656,7 +656,10 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // cutoff is lifted entirely — a modern wheel-shipping release of a shim library, in
         // an otherwise era-pure graph, disclosed on the probe. Both parse uv's OWN evidence;
         // no hand-maintained package list.
-        match deleted_history_override(&stderr).or_else(|| metadata_mismatch_override(&stderr)) {
+        match deleted_history_override(&stderr)
+            .or_else(|| metadata_mismatch_override(&stderr))
+            .or_else(|| setuptools_importlib_clash_override(&stderr))
+        {
             Some(pin) if !overrides.contains(&pin) && overrides.len() < 8 => {
                 tracing::warn!(
                     instance = %instance.instance_id,
@@ -771,6 +774,20 @@ fn metadata_mismatch_override(stderr: &str) -> Option<String> {
         return None;
     }
     Some(format!("{pkg}=9999-01-01T00:00:00Z"))
+}
+
+/// Third heal arm: an era `importlib-metadata` 0.x in the graph (2019 pluggy 0.12 pulls it
+/// unconditionally) crashes the MODERN setuptools that `--no-build-isolation` builds with —
+/// setuptools' own banner names the clash and its own remedy is "install an updated
+/// version" (setuptools/importlib_metadata#396). Lift that one package's cutoff, exactly
+/// the metadata-mismatch shape (live: pytest-5413 fresh env, 2026-08-12; sibling 5221 is
+/// one pluggy release older and never pulls it).
+fn setuptools_importlib_clash_override(stderr: &str) -> Option<String> {
+    if stderr.contains("`importlib-metadata` version is incompatible with `setuptools`") {
+        Some("importlib-metadata=9999-01-01T00:00:00Z".to_string())
+    } else {
+        None
+    }
 }
 
 fn which(bin: &str) -> Option<String> {
@@ -1182,6 +1199,23 @@ mod tests {
             None,
             "mismatch without a named package must not synthesize an override"
         );
+    }
+
+    // what this catches: the setuptools/importlib-metadata build clash (pytest-5413 fresh
+    // env, live 2026-08-12) — a 2019 graph pulls importlib-metadata 0.x, which crashes the
+    // modern setuptools that --no-build-isolation builds with; the heal lifts exactly that
+    // package's cutoff. Unrelated errors parse to None.
+    #[test]
+    fn setuptools_importlib_clash_lifts_that_packages_cutoff() {
+        let stderr = "SetuptoolsWarning: Incompatibility problem.\n\
+            `importlib-metadata` version is incompatible with `setuptools`.\n\
+            This problem is likely to be solved by installing an updated version of \
+            `importlib-metadata`.";
+        assert_eq!(
+            setuptools_importlib_clash_override(stderr).as_deref(),
+            Some("importlib-metadata=9999-01-01T00:00:00Z"),
+        );
+        assert_eq!(setuptools_importlib_clash_override("error: unrelated"), None);
     }
 
     // what this catches: the hidden-collateral verdict (atlas-24066-n7) — a patch that
