@@ -34,6 +34,7 @@ pub mod airc_runtime_registry;
 pub mod airc_source;
 pub mod durable_history;
 pub mod allocator;
+pub mod cached_source;
 pub mod card;
 pub mod card_holder;
 pub mod channel_items;
