@@ -989,6 +989,14 @@ impl ActionCommand for BenchmarkDispatch {
                 if staged_ok {
                     if let Err(e) = crate::cognition::swe_bench::ensure_env(instance, &dir).await {
                         kickoff_errors.push(format!("env {}: {e}", instance.instance_id));
+                        // A solve against an unbuildable env can ONLY void: she spends a
+                        // full attempt (24 acts, live: pytest-5413 twice on 2026-08-12)
+                        // in a workspace whose grade is a known-in-advance env fault —
+                        // no verdict, no lesson (the failure is the env's, not hers).
+                        // The card still posts (claimable once the env heals); the
+                        // SCORED solve does not fire (Joel: "why run broken code
+                        // knowing she's gonna struggle and fall").
+                        staged_ok = false;
                     }
                 }
             }
