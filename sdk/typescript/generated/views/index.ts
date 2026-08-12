@@ -23,6 +23,7 @@
 
 export type { ChatViewState } from './ChatViewState';
 export type { ChatMessageView } from './ChatMessageView';
+export type { ActReceiptView } from './ActReceiptView';
 export type { RosterSlotView } from './RosterSlotView';
 export type { SenderKind } from './SenderKind';
 export type { Provenance } from './Provenance';

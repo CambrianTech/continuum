@@ -32,6 +32,8 @@ const VENDORED = [
   // chat widget closure (positron payloads → views)
   { src: 'positron', dest: 'views', name: 'ChatViewState' },
   { src: 'positron', dest: 'views', name: 'ChatMessageView' },
+  // ChatViewState.acts — the transcript's tool-act receipt stream (#243)
+  { src: 'positron', dest: 'views', name: 'ActReceiptView' },
   { src: 'positron', dest: 'views', name: 'RosterSlotView' },
   // RosterSlotView imports ./Loadout (the model·size·ctx strip, #186)
   { src: 'positron', dest: 'views', name: 'Loadout' },

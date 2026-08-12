@@ -142,7 +142,8 @@ pub mod wall;
 pub use broadcast::Broadcast;
 pub use cache::SubstrateStateCache;
 pub use chat::{
-    ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView, RosterViewState,
+    ActReceiptView, ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView,
+    RosterViewState,
     SenderKind,
 };
 pub use connection::Connection;
