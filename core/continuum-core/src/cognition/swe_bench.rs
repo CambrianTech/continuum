@@ -417,7 +417,17 @@ pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), 
     let path = repo_dir.join(format!(".{what}.patch"));
     std::fs::write(&path, text).map_err(|e| format!("could not stage {what} patch: {e}"))?;
     let p = path.to_string_lossy().to_string();
-    for extra in [vec![], vec!["--ignore-whitespace"], vec!["--ignore-whitespace", "-C1"]] {
+    // Last arm is --3way: when the candidate patch already edited lines the test_patch's
+    // context touches, exact/relaxed apply fails ("tree is not what the patch expects" —
+    // flask-4992 + sphinx-10451 graded INFRA on this, Round A). 3-way merges against the
+    // blob ids in the patch header instead, succeeding wherever the edits don't genuinely
+    // overlap — and a genuine overlap still fails loudly, which is the honest outcome.
+    for extra in [
+        vec![],
+        vec!["--ignore-whitespace"],
+        vec!["--ignore-whitespace", "-C1"],
+        vec!["--3way"],
+    ] {
         let mut args = vec!["apply"];
         args.extend(extra);
         args.push(&p);
@@ -486,6 +496,33 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
     let py = env_dir.join("bin").join("python");
     if py.exists() {
+        // THE EDITABLE POINTS SOMEWHERE (root cause of the "2019-pytest era" + "flask-2.2
+        // era" env-void classes, glass-boxed 2026-08-12): the env is cached per INSTANCE,
+        // but its `-e .` install pins the ABSOLUTE PATH of whichever tree built it first —
+        // the solver's workspace. A flat-layout repo (sympy, pylint) survives because the
+        // grade clone's cwd shadows the import; a src/-layout repo (pytest 4.x, flask 2.2)
+        // does not, so the grade imported the persona's DIRTY WORKSPACE code and pristine
+        // p2p read 0/N (six instances voided). Re-point the editable at THIS caller's tree:
+        // `--no-deps` skips dependency resolution (the graph is already in the venv), so
+        // this is a seconds-cheap metadata rebuild, and solve/grade run serially per
+        // instance so there is no cross-tree race.
+        if let Some(uv) = which("uv") {
+            let py_s = py.to_string_lossy().to_string();
+            let out = run(
+                &uv,
+                &["pip", "install", "-q", "--python", &py_s, "--no-build-isolation", "--no-deps", "-e", "."],
+                Some(repo_dir),
+            )
+            .await?;
+            if !out.status.success() {
+                return Err(format!(
+                    "could not re-point {}'s cached env at {}: {}",
+                    instance.instance_id,
+                    repo_dir.display(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+        }
         return Ok(py);
     }
     let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir));
