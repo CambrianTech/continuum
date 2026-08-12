@@ -44,8 +44,8 @@
       {"id": "sympy__sympy-24152", "verdict": "RESOLVED", "f2p": "1/1", "p2p": "6/6", "patch_bytes": 974, "citizen": "Anwen"},
       {"id": "pallets__flask-4045", "verdict": "not_resolved", "f2p": "0/2", "p2p": "40/40", "patch_bytes": 1299, "citizen": "Anwen", "note": "real partial fix, no regressions"},
       {"id": "sympy__sympy-24066", "verdict": "not_resolved", "f2p": "0/1", "p2p": "30/30", "patch_bytes": 0, "citizen": "Atlas", "note": "no patch produced; p2p held"},
-      {"id": "pytest-dev__pytest-5103", "verdict": "env_suspect", "f2p": "0/1", "p2p": "0/40", "patch_bytes": 0, "citizen": "Anon", "note": "p2p 0/40 on baseline = suite does not run in this env; #2251 gate (merged, deploys next reboot) voids this shape — re-run owed"},
-      {"id": "pallets__flask-5063", "verdict": "env_suspect", "f2p": "0/2", "p2p": "0/40", "patch_bytes": 0, "citizen": "Anwen", "note": "same p2p-0/N baseline shape as pytest-5103 — re-run owed post-#2251"},
+      {"id": "pytest-dev__pytest-5103", "verdict": "env_void", "f2p": "0/1", "p2p": "0/40", "patch_bytes": 0, "citizen": "Anon", "note": "2019-pytest era env class, confirmed by 4 sibling voids under the live gate (5221/5413/5227/5495)"},
+      {"id": "pallets__flask-5063", "verdict": "env_void", "f2p": "0/2", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anwen", "note": "CONFIRMED on a freshly rebuilt venv 2026-08-12 09:45 — #2251 gate voided the pristine tree; flask-2.2-era env class is genuinely broken, not a stale venv"},
       {"id": "pallets__flask-4992", "verdict": "infra", "f2p": "-", "p2p": "-", "patch_bytes": 1192, "citizen": "Asha", "note": "test_patch failed to apply on her tree — she likely edited files the held-out tests touch; her 1192-byte patch persisted for review"},
       {"id": "sympy__sympy-22714", "verdict": "not_resolved", "f2p": "1/1 best", "p2p": "6/11", "patch_bytes": 2021, "citizen": "Anwen", "note": "best attempt fixed the target test but broke 5 regressions; earlier attempt held p2p 11/11 with no patch"},
       {"id": "sympy__sympy-13480", "verdict": "RESOLVED", "f2p": "1/1", "p2p": "40/40", "patch_bytes": 592, "citizen": "Atlas", "note": "second citizen resolve of the round — wave 1"},
@@ -66,12 +66,12 @@
       {"id": "pytest-dev__pytest-11148", "verdict": "not_resolved", "f2p": "0/2", "p2p": "40/40", "patch_bytes": 0, "citizen": "Asha"},
       {"id": "pytest-dev__pytest-5221", "verdict": "env_void", "f2p": "0/2", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anon", "note": "#2251 gate: 2019-pytest era suite does not run in this env — same class as pytest-5103; expect 5413/5495/5227 to void the same way until the era env is fixed"},
       {"id": "pytest-dev__pytest-5413", "verdict": "env_void", "f2p": "0/1", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anon", "note": "#2251 gate: 2019-pytest era class, as predicted from 5221"},
-      {"id": "pylint-dev__pylint-7993", "verdict": "env_void", "f2p": "0/1", "p2p": "0/10", "patch_bytes": 0, "citizen": "Asha", "note": "venv install fail — #2254 setuptools class; re-run owed post-deploy (her claim was organic)"},
-      {"id": "pylint-dev__pylint-7228", "verdict": "env_void", "f2p": "0/2", "p2p": "0/10", "patch_bytes": 0, "citizen": "Atlas", "note": "venv install fail — #2254 setuptools class; re-run owed post-deploy"},
+      {"id": "pylint-dev__pylint-7993", "verdict": "not_resolved", "f2p": "0/1", "p2p": "10/10", "patch_bytes": 0, "citizen": "Anon", "note": "re-run on #2254 build: env built clean, healthy baseline, honest capability verdict (first run env-voided)"},
+      {"id": "pylint-dev__pylint-7228", "verdict": "not_resolved", "f2p": "0/2", "p2p": "10/10", "patch_bytes": 0, "citizen": "Asha", "note": "re-run on #2254 build: env built clean (first run env-voided)"},
       {"id": "pytest-dev__pytest-5227", "verdict": "env_void", "f2p": "0/3", "p2p": "0/34 pristine", "patch_bytes": 0, "citizen": "Anwen", "note": "#2251 gate: 2019-pytest era class (4th confirmation: 5103/5221/5413/5227)"},
       {"id": "pytest-dev__pytest-5495", "verdict": "env_void", "f2p": "0/2", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anwen", "note": "#2251 gate: 2019-pytest era class"},
       {"id": "sphinx-doc__sphinx-7686", "verdict": "not_resolved", "f2p": "0/2", "p2p": "15/15", "patch_bytes": 0, "citizen": "Anwen"},
-      {"id": "pylint-dev__pylint-7114", "verdict": "env_void", "f2p": "-", "p2p": "-", "patch_bytes": 0, "citizen": "-", "note": "never got a gradeable run this round: 4 env-build failures (#2254 setuptools class); re-run owed post-deploy"}
+      {"id": "pylint-dev__pylint-7114", "verdict": "not_resolved", "f2p": "0/1", "p2p": "39/40", "patch_bytes": 0, "citizen": "Anwen", "note": "re-run on #2254 build: first-ever gradeable run after 4 env failures on the old binary"}
     ]
   },
   "first_pass_tally_2026-08-12_05:51": {
@@ -79,9 +79,10 @@
     "denominator": 31,
     "claim": "resolved 2 of 31 dispatched (SWE-bench Lite, Devstral-Small-2507 local, whole-cognition kanban loop, held-out oracle)",
     "resolved_ids": ["sympy__sympy-24152 (Anwen, 974B)", "sympy__sympy-13480 (Atlas, 592B)"],
-    "not_resolved_gradeable": 17,
+    "post_rerun_update_07:38": "pylint 7114/7228/7993 re-ran clean on the #2254 build — 3 env_voids converted to gradeable not_resolved (healthy baselines 39/40, 10/10, 10/10). Gradeable verdicts now 22 of 31; env/infra column down to 9.",
+    "not_resolved_gradeable": 20,
     "infra_test_patch_apply": 2,
-    "env_void": 8,
+    "env_void": 5,
     "env_suspect_rerun_owed": 2,
     "notes": [
       "19 of 31 produced honest capability verdicts on healthy baselines; 12 of 31 are env/infra classes, each named and receipted — none recorded as fake capability zeros (the #2251 gate fired live 6 times)",
@@ -89,5 +90,15 @@
       "dominant capability failure shape: patch_bytes=0 with p2p fully held — write-avoidance (#390), the training target; every non-zero patch this round held regressions except sympy-22714 attempt 2 and sphinx-11445 attempt 3"
     ],
     "re_runs_owed_post_reboot": ["pylint-7114", "pylint-7228", "pylint-7993", "pytest-5103 (needs 2019-pytest env fix — NOT covered by any merged PR)", "flask-5063 (env rebuild)"]
+  },
+  "FINAL_2026-08-12_09:48": {
+    "resolved": 2,
+    "denominator": 31,
+    "claim": "ROUND CLOSED — resolved 2 of 31, every instance classified: 22 gradeable capability verdicts (2 RESOLVED + 20 not_resolved, all on healthy baselines), 2 infra (test_patch tree mismatch, #383), 7 env_void (5x 2019-pytest era + flask-5063 confirmed-fresh-venv + pylint-7080), zero unclassified",
+    "round_deltas": [
+      "all re-runs executed: pylint 7114/7228/7993 converted env->gradeable on the #2254 build; flask-5063 confirmed env_void on a fresh venv",
+      "substrate PRs shipped DURING the round from its own failures: #2245 deleted-history heal, #2247 running marker, #2248 claim-follows-card, #2251 p2p-pristine gate (fired live 7 times), #2253 3.10 rung + metadata heal, #2254 setuptools floor, #2255 reset-removes-created-files (live positive control: 7114 attempt-2 suite-break graded capability, not env)",
+      "remaining env debt, named: 2019-pytest era class + flask-2.2 era class + test_patch tree-mismatch pair (#383 family)"
+    ]
   }
 }
