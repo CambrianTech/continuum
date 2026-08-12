@@ -783,6 +783,16 @@ pub fn verdict_for(
 
 /// Run the instance's test files once and resolve every required id against that report.
 /// A test absent from the report counts as failed — but the absence is knowable, not silent.
+/// Restore a grade worktree to its checked-out state: revert tracked edits AND remove
+/// files a candidate patch CREATED (checkout alone leaves those untracked in place, and a
+/// leftover broken module poisons later runs — live: pytest-11143 attempt 3 misread a real
+/// capability regression as an env void, 2026-08-12). No `-x`: gitignored editable-install
+/// artifacts (*.egg-info) must survive.
+pub async fn reset_worktree(repo_dir: &Path) {
+    let _ = run("git", &["checkout", "--quiet", "."], Some(repo_dir)).await;
+    let _ = run("git", &["clean", "-fdq"], Some(repo_dir)).await;
+}
+
 pub async fn run_tests(
     repo_dir: &Path,
     venv_py: &Path,
@@ -935,7 +945,7 @@ pub async fn grade(
     }
 
     // Reset, then run the real protocol: model patch first, tests second.
-    let _ = run("git", &["checkout", "--quiet", "."], Some(repo_dir)).await;
+    reset_worktree(repo_dir).await;
     if let Some(patch) = model_patch {
         if let Err(e) = apply_patch(repo_dir, patch, "model").await {
             verdict.error = Some(format!("candidate patch did not apply: {e}"));
@@ -963,7 +973,7 @@ pub async fn grade(
     // ALSO passes zero → the env is broken, void the tree; pristine passes any → the
     // candidate patch genuinely broke the suite and the graded numbers stand.
     if verdict.p2p_total > 0 && verdict.p2p_passed == 0 {
-        let _ = run("git", &["checkout", "--quiet", "."], Some(repo_dir)).await;
+        reset_worktree(repo_dir).await;
         if let Err(e) = apply_patch(repo_dir, &instance.test_patch, "p2p-gate").await {
             verdict.error = Some(e);
             return verdict;
@@ -1009,6 +1019,39 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the false-env-void misgrade (pytest-11143 attempt 3, live
+    // 2026-08-12) — a candidate patch that CREATED a file survived `git checkout .`, the
+    // leftover module broke the "pristine" p2p re-run, and a REAL capability regression was
+    // voided as an env fault. reset_worktree must revert tracked edits AND remove untracked
+    // files, while leaving gitignored artifacts (editable-install *.egg-info) untouched.
+    #[tokio::test]
+    async fn reset_worktree_removes_created_files_but_keeps_ignored_artifacts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(run("git", &args, Some(repo)).await.unwrap().status.success());
+        }
+        std::fs::write(repo.join("tracked.py"), "original").unwrap();
+        std::fs::write(repo.join(".gitignore"), "*.egg-info\n").unwrap();
+        run("git", &["add", "."], Some(repo)).await.unwrap();
+        run("git", &["commit", "-qm", "base"], Some(repo)).await.unwrap();
+
+        // The three states a candidate patch leaves behind:
+        std::fs::write(repo.join("tracked.py"), "edited").unwrap(); // tracked edit
+        std::fs::write(repo.join("conftest.py"), "boom").unwrap(); // CREATED file
+        std::fs::write(repo.join("pkg.egg-info"), "install artifact").unwrap(); // ignored
+
+        reset_worktree(repo).await;
+
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.py")).unwrap(), "original");
+        assert!(!repo.join("conftest.py").exists(), "created file must not survive the reset");
+        assert!(repo.join("pkg.egg-info").exists(), "ignored install artifacts must survive");
+    }
 
     // what this catches: the deleted-history env-build failure (pytest-dev__pytest-5103,
     // live 2026-08-11) — `atomicwrites`' pre-2022 uploads were deleted from PyPI, so the
