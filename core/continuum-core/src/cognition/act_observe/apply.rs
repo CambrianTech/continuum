@@ -404,7 +404,15 @@ pub async fn apply_act(
     // `ChatViewState.acts`; clients render, collapse, expand. PURE
     // OBSERVABILITY — nothing on the decision path reads these events, and a
     // handless/mock executor (no `command_executor`) simply radiates nothing.
-    if let Some(bus) = body.executor.command_executor().and_then(|e| e.message_bus()) {
+    // An act with no ROOM has no transcript home: headless agent/solve runs pass
+    // `Uuid::nil()` (solve.rs), and radiating those stole the single-room chat
+    // projection onto a phantom room (live-proven 2026-08-12: the first real
+    // receipt cleared academy's view). Skip until solves thread their bench
+    // room (#329's per-run rooms make every solve act a room act).
+    if room_id.is_nil() {
+        // fall through to the working-memory record below — the receipt is
+        // transcript-only observability; her own proprioception is unaffected.
+    } else if let Some(bus) = body.executor.command_executor().and_then(|e| e.message_bus()) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
