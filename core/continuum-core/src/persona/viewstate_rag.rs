@@ -40,6 +40,28 @@
 //! is a snapshot cache with interior sharing, so this is a read, not a fetch: no
 //! daemon I/O on the compose path.
 //!
+//! ## ⚠️ BEFORE YOU SWAP A LIVE SOURCE ONTO THIS — read this first
+//!
+//! The obvious next move is to replace `room_roster_source` at its binding site
+//! (`persona/supervisor.rs`, the sanctioned "RAG sources … bound on the brain at
+//! boot" seam) with `ViewStateRagSource<RosterViewState>`. **Do not, yet.**
+//!
+//! The `Substrate` cache is keyed by **kind alone**. `continuum_positron`'s
+//! `revisions.rs` names the fix as a future extension: *"multiple live instances
+//! (per-room widgets), the key extends from the bare kind string to a
+//! `(room_id, kind)` tuple."* Until that lands, the node substrate holds exactly
+//! ONE room's roster — the focused room's.
+//!
+//! So a swap today would trade a source that is sometimes wrong for one that is
+//! reliably EMPTY: this adapter's room gate correctly abstains for any persona
+//! whose turn is in a different room than the focused one, and personas are
+//! first-class MULTI-room subscribers ([[personas-are-first-class-multi-room-subscribers]]).
+//! Most citizens would go blind rather than mis-sighted. That is not a repair.
+//!
+//! **The prerequisite is per-room instancing (`(room_id, kind)`).** With it, this
+//! adapter serves every room correctly and the bespoke sources retire. Without it,
+//! this module is a proven seam waiting on its substrate.
+//!
 //! ## Density, not truncation
 //!
 //! Units are ordered most-salient-first and packed to the budget, so a tight
