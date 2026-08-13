@@ -72,6 +72,7 @@ pub mod profile_builder;
 pub mod projection;
 pub mod prompt_assembly;
 pub mod rag_budget;
+pub mod viewstate_rag;
 pub mod rag_capture;
 pub mod rag_inspect;
 pub mod rag_replay;
