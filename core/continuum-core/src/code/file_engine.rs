@@ -1446,8 +1446,8 @@ fn probe_parse(abs_path: &std::path::Path, content: &str) -> Result<Option<Strin
 /// unbound, is a missing import essentially every time. Anything the file already knew about
 /// is left alone, star-imports included.
 ///
-/// Returns the offending names, or `None` when the analysis cannot run at all (no python, a
-/// non-python file) — an inconclusive probe must never read as a verdict.
+/// Returns the offending names, or `None` when the analysis cannot run at all (no
+/// validator for this file's language) — an inconclusive probe must never read as a verdict.
 fn introduced_undefined_calls(
     abs_path: &std::path::Path,
     old_content: &str,
@@ -2058,13 +2058,6 @@ mod tests {
     // for that reason and nearly cost a correct implementation.
     #[test]
     fn an_edit_that_would_break_the_parse_is_refused_and_changes_nothing() {
-        if std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return; // no interpreter here; degrade-silent is the contract
-        }
         let (dir, engine) = setup_engine();
         let signature = "def f(\n    a,\n    b,\n):\n    return a\n";
         fs::write(dir.path().join("src/broken.py"), signature).unwrap();
@@ -2128,13 +2121,6 @@ mod tests {
     // previously-working file, and the change_id that reverses it.
     #[test]
     fn an_edit_on_an_already_broken_file_says_the_damage_predates_it() {
-        if std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return; // no interpreter here; degrade-silent is the contract
-        }
         let (dir, engine) = setup_engine();
         // Damage that did NOT come from an edit — the engine refuses those now. This is what a
         // whole-file `code/write` (deliberately ungated) or an outside change leaves behind.
@@ -2437,13 +2423,6 @@ mod tests {
 
     #[test]
     fn a_line_range_ending_inside_a_triple_quoted_string_is_refused() {
-        if std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return; // no interpreter here; degrade-silent is the contract
-        }
         let (dir, engine) = setup_engine();
         // Lines 1..8, with the string closing on 8 — the sympy shape, minus the distance.
         let original = "def solve(gens, basis):\n\
