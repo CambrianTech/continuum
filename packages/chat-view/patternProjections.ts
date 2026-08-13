@@ -23,12 +23,19 @@ import type {
 } from '@continuum/patterns';
 import type { GaugeView, ServingPanelView } from '@continuum/patterns';
 import type {
+  BenchViewState,
   KanbanViewState,
   NavViewState,
   ServingViewState,
   SystemMetricsViewState,
 } from '@continuum/sdk-typescript';
-import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
+import type {
+  ChatViewModel,
+  MemberKind,
+  MessageRowVM,
+  RosterMemberVM,
+  TranscriptRowVM,
+} from './chatViewModel';
 import { ARENA_PURPOSE, GRID_PURPOSE, LIVE_PURPOSE, PERSONA_PURPOSE, SERVING_PURPOSE, type ArenaContentBody as ArenaContentBodyT, type GridContentBody, type GridNodeVM, type ServingContentBody, type ServingNodeVM } from '@continuum/patterns';
 import type { LiveContentBody, PersonaContentBody } from '@continuum/patterns';
 import {
@@ -37,6 +44,7 @@ import {
   personaFactsListing,
 } from './personaProjections';
 import { liveContentBody, liveFaceOpen, type LiveCallOverlay } from './liveProjections';
+import { benchWidget } from './benchProjections';
 import { arenaContentBody, type ArenaViewState } from './arenaProjections';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
@@ -365,6 +373,9 @@ export interface WorkspaceLive {
   /** The `kind="arena"` eval-ledger view — feeds an arena-purpose room's
    *  leaderboards. Honestly absent until the feed delivers. */
   readonly arena?: ArenaViewState;
+  /** The node's `kind="bench"` benchmark board (#329) — adds the academy
+   *  right-rail bench widget. Honestly absent until the feed delivers. */
+  readonly bench?: BenchViewState;
 }
 
 /** The chat activity's `Content` body — the conversation. `Content` is keyed by the
@@ -372,6 +383,9 @@ export interface WorkspaceLive {
  *  renderer draws these rows; a foundry room would carry a different purpose + body. */
 export interface ChatContentBody {
   readonly messages: readonly MessageRowVM[];
+  /** The full interleaved transcript (speech + collapsed act receipts, #243) —
+   *  what the center pane draws. `messages` stays for speech-only consumers. */
+  readonly transcript: readonly TranscriptRowVM[];
   readonly isEmpty: boolean;
 }
 
@@ -437,7 +451,7 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
             ? { purpose: GRID_PURPOSE, body: gridBody }
             : {
                 purpose: vm.purpose,
-                body: { messages: vm.messages, isEmpty: vm.isEmpty },
+                body: { messages: vm.messages, transcript: vm.transcript, isEmpty: vm.isEmpty },
               };
   // The ACTIVE nav cell follows the citizen's current tab: the persona tab
   // when a persona home is focused, else the chat room on screen.
@@ -470,6 +484,9 @@ export function chatWorkspace(vm: ChatViewModel, live?: WorkspaceLive): Workspac
     // else the room's info card — the ContextPanel primitive, activity-scoped.
     context: {
       listings: [personaBody ? personaFactsListing(personaBody) : roomInfoListing(vm)],
+      // The live benchmark board (#329) — joins the contextual rail whenever
+      // this node has runs, filling the academy's dead right column.
+      ...(benchWidget(live?.bench) ? { widgets: [benchWidget(live?.bench)!] } : {}),
     },
   };
 }

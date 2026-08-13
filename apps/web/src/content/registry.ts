@@ -11,12 +11,14 @@
 import { html, type TemplateResult } from 'lit';
 import {
   ARENA_PURPOSE,
+  BENCH_PURPOSE,
   createContentRegistry,
   LIVE_PURPOSE,
   GRID_PURPOSE,
   PERSONA_PURPOSE,
   SERVING_PURPOSE,
   type ArenaContentBody,
+  type BenchContentBody,
   type ContentRegistry,
   type GridContentBody,
   type LiveContentBody,
@@ -25,19 +27,25 @@ import {
 } from '@continuum/patterns';
 import type { ChatContentBody } from '@continuum/chat-view';
 import { modelCell, type ForgeContentBody } from '@continuum/foundry-view';
-import { listingCell, messageRow } from '../render/parts';
+import { actGroupRow, listingCell, messageRow } from '../render/parts';
 import { renderPersona } from '../persona/renderPersona';
 import { renderLive } from '../live/renderLive';
+import { renderBench } from '../bench/renderBench';
 import { renderArena } from '../arena/renderArena';
 import { renderServing } from '../serving/renderServing';
 import { renderGrid } from '../grid/renderGrid';
 
 /** The chat activity's center: the conversation (or an honest empty state). */
 function chatContent(body: ChatContentBody): TemplateResult {
+  // The FULL transcript (#243): speech rows interleaved with collapsed tool-act
+  // receipts, in timestamp order — the room shows the WORK, not just the words.
+  // An older wire without acts folds to a messages-only transcript upstream.
   return body.isEmpty
     ? html`<div class="empty">No messages yet — say hello.</div>`
     : html`<ul class="messages">
-        ${body.messages.map(messageRow)}
+        ${body.transcript.map((row) =>
+          row.row === 'acts' ? actGroupRow(row) : messageRow(row),
+        )}
       </ul>`;
 }
 
@@ -73,6 +81,9 @@ webContentRegistry.register<ArenaContentBody>(ARENA_PURPOSE, (body) => renderAre
 // The SERVING console — per-node control-loop panels center-stage, dispatched
 // when the room recipe's purpose is "serving" (the machine room, full view).
 webContentRegistry.register<ServingContentBody>(SERVING_PURPOSE, (body) => renderServing(body));
+// The Academy's live BENCHMARK BOARD — one progress row per run, operator and
+// citizen-claimed alike, dispatched when the room recipe's purpose is "bench".
+webContentRegistry.register<BenchContentBody>(BENCH_PURPOSE, (body) => renderBench(body));
 // The GRID view — every node's panel (resources + serving), the NODES
 // strip's full activity, dispatched when the room's purpose is "grid".
 webContentRegistry.register<GridContentBody>(GRID_PURPOSE, (body) => renderGrid(body));

@@ -339,6 +339,28 @@ impl ServiceModule for GridModule {
             }
         }
 
+        // #2228: fold the auto-discovered gossip peers into the registry by their DURABLE
+        // identity. The capacity beacon already self-registers each peer in the global ledger
+        // (PeerId-keyed, live capacity); this CONSUMES that correlation so a beaconing peer
+        // becomes a routable node with its `peer_id` set — the grid figures out node identities
+        // automatically, no manual `grid/pair`. Trust stays default (discovery ≠ authorization,
+        // #38), so the node is visible to pricing but not sent work until trusted.
+        for (peer_uuid, offer) in crate::capacity::gossip::global_ledger().heard_offers() {
+            let vram_mb = (offer.gpu_total_bytes / (1024 * 1024)).max(1);
+            if self
+                .state
+                .registry
+                .ensure_peer_node(crate::identity::PeerId::from_uuid(peer_uuid), Some(vram_mb))
+            {
+                crate::probe!(
+                    class = "grid.peer.autocorrelated",
+                    peer = %peer_uuid,
+                    vram_mb = vram_mb,
+                    "auto-registered a beaconing grid peer by its durable PeerId (#2228)",
+                );
+            }
+        }
+
         // Background probe: check which nodes are actually reachable.
         // Spawned so it doesn't block IPC command handling.
         let registry = Arc::clone(&self.state.registry);

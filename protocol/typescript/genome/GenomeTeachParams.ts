@@ -13,6 +13,15 @@ tasks?: Array<EvalTask>,
  */
 teachSet?: string, 
 /**
+ * A citizen's peer id (full UUID or ≥4-char hex prefix): teach from HER LIVED
+ * FAILURES instead of a static set (#319 — the curriculum drain). Loads her
+ * durable experience stream (`citizens/peers/<id>/experience.jsonl`, written by
+ * `benchmark/grade`/`swe-grade`), keeps only the LATEST record per task (a later
+ * PASS retires the failure — the lesson was learned), and selects the salient,
+ * test-graded failures as the teach set. Precedence: `tasks` > this > `teach_set`.
+ */
+fromExperience?: string, 
+/**
  * Model that writes + fixes. Omit to use the locally-served model (runs with no
  * external dep); point at a stronger peer/gateway model for higher yield.
  */

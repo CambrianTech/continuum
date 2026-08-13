@@ -30,6 +30,8 @@ import {
   renderListing,
   resizeHandle,
 } from './parts';
+import { renderBench } from '../bench/renderBench';
+import type { BenchContentBody } from '@continuum/patterns';
 import { webContentRegistry } from '../content/registry';
 import { webWidgetRegistry } from './widgets';
 
@@ -208,12 +210,18 @@ export const webTarget: RenderTarget<TemplateResult> = {
           <section class="what" aria-label="conversation">${this.content(ws.content)}</section>
           ${chrome?.centerFooter ?? nothing}
         </section>
-        ${ws.context.listings.length > 0
+        ${ws.context.listings.length > 0 || (ws.context.widgets?.length ?? 0) > 0
           ? html`${resizeHandle('context')}<aside class="context" aria-label="activity context">
               ${ws.context.listings.map(
                 (l) => html`<section class="rail-widget" data-widget="context">
                   <div class="who-head"><span class="who-title">${l.title}</span></div>
                   ${renderListing(l)}
+                </section>`,
+              )}
+              ${(ws.context.widgets ?? []).map(
+                (w) => html`<section class="rail-widget" data-widget=${w.kind}>
+                  <div class="who-head"><span class="who-title">${w.title}</span></div>
+                  ${w.kind === 'bench' ? renderBench(w.body as BenchContentBody) : nothing}
                 </section>`,
               )}
             </aside>`

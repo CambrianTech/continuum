@@ -298,6 +298,14 @@ impl ResourceDaemon {
         g.reserve(consumer_id, kind, min_bytes);
     }
 
+    /// This consumer's plannable headroom: global available minus every OTHER
+    /// consumer's unmet reservation floor — the same math `acquire` enforces,
+    /// exposed for BUDGETING so a planner sizes itself only into bytes it could
+    /// actually be granted (#225). A short governor-lock read, non-blocking.
+    pub fn available_for(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.governor.lock().available_for(consumer_id, kind)
+    }
+
     /// Register a leaseholder after startup — no restart (the directive's
     /// "never restart a daemon to manage resources").
     pub fn add_consumer(&self, consumer: Arc<dyn ResourceConsumer>) {

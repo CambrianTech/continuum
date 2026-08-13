@@ -6,7 +6,7 @@
 //! `data/*` once lived ONLY in [`DataModule::handle_command`](crate::modules::data)'s
 //! stringly `match` (via `DataState::dispatch`) — dispatchable, but with no descriptor
 //! in the registry, so invisible to the persona tool surface, the grid ACL, codegen, and
-//! `cu`. As typed commands they get a descriptor AND route through the O(1) lock-free
+//! `uu`. As typed commands they get a descriptor AND route through the O(1) lock-free
 //! typed object map. The wire name mirrors the file path — `commands/data/list.rs` ⟺
 //! `data/list`.
 //!

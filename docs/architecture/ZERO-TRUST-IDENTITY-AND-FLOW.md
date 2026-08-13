@@ -257,7 +257,7 @@ reverse it.
 ## 7. Build order (outlier-validated slices)
 
 Steps 1–3 are the core flow/capability model; 4–7 are the immune-system properties. Each
-slice validated pure-Rust (`cargo` + `cu`), one `#[cfg(test)] mod tests` per file with
+slice validated pure-Rust (`cargo` + `uu`), one `#[cfg(test)] mod tests` per file with
 `// what this catches:`.
 
 1. **Label-carry (cheap, unblocks all of §4).** Stop dropping provenance on the read path:

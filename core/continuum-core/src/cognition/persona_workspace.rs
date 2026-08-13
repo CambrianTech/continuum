@@ -586,13 +586,39 @@ fn repoint_workspace_map_if_pinned(
     let Some(root) = workspace_root else {
         return;
     };
+    // The fork's hands expose the bus where its write-completions land — the
+    // invalidation wire for the cache wrap below. Resolved once, outside the loop.
+    let bus = cfg
+        .tool_executor
+        .as_ref()
+        .and_then(|t| t.command_executor())
+        .and_then(|c| c.message_bus());
     for g in cfg.grounding_sources.iter_mut() {
         if g.source.source_id() == "workspace-map" {
-            g.source = Arc::new(
+            let pinned: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
                 crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(
                     *persona_id, root,
                 ),
             );
+            // Event-invalidated cache (#398): eval forks compose SYNCHRONOUSLY
+            // (defer_grounding=false), so without this the pinned map re-walks
+            // the repo dir on EVERY act — the measured per-act prefill churn on
+            // solve runs (#266). Serve last-good until one of the fork's own
+            // mutating commands completes. No wrap without a wire: a handless
+            // cfg keeps the raw walk. The invalidator holds only a weak handle,
+            // so it exits with the ephemeral fork instead of leaking.
+            g.source = match bus.clone() {
+                Some(bus) => {
+                    let (cached, dirty) =
+                        crate::persona::cached_source::CachedRagSource::new(pinned);
+                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        bus,
+                        dirty.downgrade(),
+                    );
+                    cached
+                }
+                None => pinned,
+            };
         }
     }
 }
@@ -809,6 +835,79 @@ impl PersonaWorkspaceRegistry {
         self.cycles.lock().get(persona_id).cloned()
     }
 
+    /// The personas that have a fork-template right now — i.e. the set
+    /// `cognition/eval` can fork a measurement copy of. Keyed by the template map
+    /// (populated by [`register_from_cfg`](Self::register_from_cfg) at spawn).
+    pub fn template_ids(&self) -> Vec<Uuid> {
+        self.templates.lock().keys().copied().collect()
+    }
+
+    /// THE ONE formal boundary (#396) that turns an operator-supplied persona
+    /// reference — a full UUID, an 8-char short-id prefix, or a case-insensitive
+    /// persona NAME — into the typed persona `Uuid`. Callers never sniff strings
+    /// themselves; a name resolves INTO the id here (Joel's "come from name, but be
+    /// more formal").
+    ///
+    /// A well-formed full UUID passes through unchanged, WITHOUT a membership check,
+    /// so a persona whose template is still assembling (the post-reboot
+    /// `register_from_cfg` race the fork wait absorbs) is never false-rejected —
+    /// race safety lives in the caller's existing wait, not here. Short-id and name
+    /// resolve against the forkable set that exists at call time. Fails LOUD naming
+    /// the online personas — never a silent guess (the loose-`String` id boundary is
+    /// exactly the defect class that fed a dead id to a doomed eval).
+    pub fn resolve_persona(&self, id_or_name: &str) -> Result<Uuid, String> {
+        // Snapshot (id, name) once, then drop the lock before resolving.
+        let roster: Vec<(Uuid, String)> = {
+            let templates = self.templates.lock();
+            templates
+                .iter()
+                .map(|(id, cfg)| (*id, cfg.persona_name.clone()))
+                .collect()
+        };
+        let ids: Vec<Uuid> = roster.iter().map(|(id, _)| *id).collect();
+
+        // 1. Full UUID (race-safe passthrough) or short-id prefix against the
+        //    forkable set — the shared id normalization primitive.
+        if let Ok(id) = crate::id_resolve::resolve(id_or_name, &ids, "persona") {
+            return Ok(id);
+        }
+
+        // 2. Case-insensitive persona NAME.
+        let want = id_or_name.trim();
+        let name_matches: Vec<Uuid> = roster
+            .iter()
+            .filter(|(_, name)| name.eq_ignore_ascii_case(want))
+            .map(|(id, _)| *id)
+            .collect();
+        match name_matches.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(format!(
+                "no persona matches '{id_or_name}' (not a UUID, an 8-char short-id, or a name). {}",
+                Self::roster_hint(&roster)
+            )),
+            many => Err(format!(
+                "'{id_or_name}' is ambiguous — {} online personas share that name; pass a UUID. {}",
+                many.len(),
+                Self::roster_hint(&roster)
+            )),
+        }
+    }
+
+    /// "Online now: Asha (90e758b2), Atlas (e5f4141d)" — the actionable tail every
+    /// resolution failure carries so an operator can fix the reference without
+    /// grepping. Empty roster reads "no personas are online".
+    fn roster_hint(roster: &[(Uuid, String)]) -> String {
+        if roster.is_empty() {
+            return "No personas are online right now — call persona/instances/list.".to_string();
+        }
+        let mut listed: Vec<String> = roster
+            .iter()
+            .map(|(id, name)| format!("{name} ({})", &id.to_string()[..8]))
+            .collect();
+        listed.sort();
+        format!("Online now: {}.", listed.join(", "))
+    }
+
     /// Build + register a persona's mind from its `cfg`, retaining a clone of the
     /// cfg as a fork-template so `cognition/eval` can later fork a measurement
     /// copy ([`fork_eval_cycle`](Self::fork_eval_cycle)). Overwrites any existing
@@ -911,6 +1010,11 @@ impl PersonaWorkspaceRegistry {
     /// deliberation faculty budgets its prompt against what THIS lane serves —
     /// otherwise a fork carrying the 14B's larger window could build a prompt the
     /// ephemeral 4B lane can't hold and overflow it (the Asha-mute failure class).
+    /// `extra_grounding` joins the persona's own grounding sources for THIS fork only —
+    /// the seam a measurement drive uses to pin its task brief as `[mission]` standing
+    /// framing (#390: the brief delivered once as a burst was evicted by act ~6 on a
+    /// 24-act solve, and the persona literally asked what the issue was; a
+    /// StandingFraming source cannot be evicted). Empty for plain evals.
     pub fn fork_eval_cycle_with_adapter(
         &self,
         persona_id: &Uuid,
@@ -919,12 +1023,14 @@ impl PersonaWorkspaceRegistry {
         with_tools: bool,
         workspace_root: Option<&str>,
         suppress_recall: bool,
+        extra_grounding: Vec<GroundingSource>,
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
         cfg.suppress_recall = suppress_recall;
+        cfg.grounding_sources.extend(extra_grounding);
         repoint_workspace_map_if_pinned(&mut cfg, persona_id, workspace_root);
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
@@ -1173,6 +1279,46 @@ mod tests {
         let ws = cycle.run("teammate: what's the deploy status?").await;
         // The mind reached a participation verdict (heuristic adapter → Speak).
         assert!(matches!(ws.decision(), Some(Decision::Speak { .. })));
+    }
+
+    // what this catches: #396 — resolve_persona is the ONE formal identity boundary
+    // for eval/benchmark. It must (a) resolve a full UUID, an 8-char short-id, and a
+    // case-insensitive persona NAME to the typed id; (b) pass a well-formed full UUID
+    // through WITHOUT a liveness check (race safety — a persona still assembling isn't
+    // false-rejected; the fork wait absorbs it); (c) fail LOUD on garbage, naming the
+    // online roster — never a silent guess. The loose-String id that skipped all of
+    // this is exactly what fed a dead reference to a doomed 10s eval.
+    #[test]
+    fn resolve_persona_takes_uuid_short_id_or_name_and_fails_loud() {
+        let registry = PersonaWorkspaceRegistry::new();
+        let asha = Uuid::new_v4();
+        let atlas = Uuid::new_v4();
+        let mut asha_cfg = cfg_for(asha);
+        asha_cfg.persona_name = "Asha".to_string();
+        let mut atlas_cfg = cfg_for(atlas);
+        atlas_cfg.persona_name = "Atlas".to_string();
+        registry.register_from_cfg(asha_cfg);
+        registry.register_from_cfg(atlas_cfg);
+
+        // full UUID
+        assert_eq!(registry.resolve_persona(&asha.to_string()).unwrap(), asha);
+        // 8-char short-id prefix
+        assert_eq!(
+            registry.resolve_persona(&asha.to_string()[..8]).unwrap(),
+            asha
+        );
+        // case-insensitive name
+        assert_eq!(registry.resolve_persona("atlas").unwrap(), atlas);
+        assert_eq!(registry.resolve_persona("ASHA").unwrap(), asha);
+
+        // (b) a well-formed but NON-live full UUID passes through — race safety. The
+        // caller's fork wait, not this boundary, decides liveness.
+        let ghost = Uuid::new_v4();
+        assert_eq!(registry.resolve_persona(&ghost.to_string()).unwrap(), ghost);
+
+        // (c) garbage fails loud AND names the roster so the operator can fix it.
+        let err = registry.resolve_persona("general").unwrap_err();
+        assert!(err.contains("Asha") && err.contains("Atlas"), "roster hint missing: {err}");
     }
 
     // what this catches: ONE cycle per persona — get_or_build is idempotent and

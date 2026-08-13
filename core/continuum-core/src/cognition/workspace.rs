@@ -1126,18 +1126,35 @@ impl Arbiter for SituationFocusArbiter {
         capacity: usize,
         ctx: &FocusContext<'_>,
     ) -> Vec<Contribution> {
-        let candidates = match ctx.situation {
-            // Re-perceiving a tool result: drop the standing SOCIAL re-grounding so
-            // the result + affordances + working memory own the window. The salience
-            // top-k below then packs the lean, code-first context.
-            Situation::PostAction => candidates
-                .into_iter()
-                .filter(|c| !c.stable)
-                .collect::<Vec<_>>(),
-            // Fresh ask: fuller grounding, ground more never less. Identical to the
-            // bootstrap floor.
-            Situation::FreshContext => candidates,
-        };
+        // `stable` MUST NOT DECIDE ATTENTION — its own contract says so.
+        //
+        // [`Contribution::stable`] is documented as "a SERIALIZATION-order property,
+        // not an attention one — salience still governs which contributions are
+        // included and truncated". It exists to park session-stable text in the
+        // cacheable KV-prefix region. This arm used it as an attention filter, which
+        // is the one thing the field promises it is not.
+        //
+        // The stated intent was narrower than the mechanism could express: "drop the
+        // standing SOCIAL re-grounding so the result + AFFORDANCES + working memory own
+        // the window". But `stable` is every standing source, so the filter deleted the
+        // affordances it named (workspace-map), the citizen's own work board, and the
+        // roster — all of it, on every tick after a single act
+        // (`Situation::PostAction` is set whenever `acts > 0`, act_observe.rs:883).
+        //
+        // Measured live 2026-08-07: Atlas held work card 4780a02e on a healthy,
+        // continuously renewing lease and his turn carried NO board at all. The evicted
+        // set was exactly the three StandingFraming sources; the kept set exactly the
+        // two volatile ones — while the highest bid in the room (workspace-map, 0.90)
+        // was dropped and a 0.50 bid was kept, which top-k cannot do. He then reported
+        // "no open tasks", accurately, about a window we had emptied. A citizen who
+        // acts must not go blind to what she is acting ON.
+        //
+        // So: no categorical filter. Salience decides, which is what both fields'
+        // contracts say. If post-action leanness is wanted later it needs its OWN
+        // explicit signal (a per-source "re-grounding is redundant right now" bid, or
+        // Situation-weighted budgets per #167) — never a serialization flag borrowed as
+        // an attention verdict.
+        let _ = ctx.situation;
         self.inner.focus(candidates, capacity, ctx)
     }
 }
@@ -2675,10 +2692,28 @@ mod tests {
         );
         assert_eq!(fresh.len(), 4, "FreshContext keeps the fuller grounding");
 
-        // Post-action re-perception: the two stable grounding contributions are
-        // dropped BEFORE the top-k, leaving only the volatile task context — even
-        // though the stable ones had the HIGHEST salience (the whole point: they were
-        // already perceived; re-dumping them just crowds the result out).
+        // Post-action re-perception keeps the standing grounding. INVERTED 2026-08-07.
+        //
+        // This arm used to assert the opposite — `stable` contributions dropped before
+        // the top-k — on the rationale "they were already perceived; re-dumping them
+        // just crowds the result out". The premise does not hold: every settle
+        // iteration composes a FRESH prompt (act_observe holds `world` constant and
+        // lets only memory change), so framing dropped at iteration 2 is simply ABSENT
+        // from iteration 2's window, not remembered from iteration 1.
+        //
+        // What that cost, measured live: Atlas held work card 4780a02e on a healthy
+        // renewing lease and his turn carried no board at all — the evicted set was
+        // exactly the three StandingFraming sources, including the workspace-map
+        // (0.90, the highest bid present) that the old comment itself named as
+        // something that should own the window. He then reported "no open tasks",
+        // correctly, about a window we had emptied.
+        //
+        // The real constraint the old rationale was reaching for — a re-perception
+        // should not pay full freight for context that has not changed — is REAL, and
+        // is now #167's job (Situation-weighted per-layer budgets) or a per-source
+        // "re-grounding is redundant this tick" bid. Not a serialization flag used as
+        // an attention verdict: `Contribution::stable` is documented as ordering-only,
+        // "salience still governs which contributions are included and truncated".
         let post = arbiter.focus(
             candidates,
             10,
@@ -2687,10 +2722,15 @@ mod tests {
                 situation: Situation::PostAction,
             },
         );
-        assert_eq!(post.len(), 2, "PostAction drops the stable standing grounding");
+        assert_eq!(
+            post.len(),
+            4,
+            "a citizen who ACTED must not go blind to what she is acting on — \
+             standing framing competes on salience like everything else"
+        );
         assert!(
-            post.iter().all(|c| !c.stable),
-            "no stable grounding survives a re-perception tick: {:?}",
+            post.iter().any(|c| c.stable),
+            "standing grounding survives a re-perception tick: {:?}",
             post.iter().map(|c| c.content.as_str()).collect::<Vec<_>>()
         );
         assert!(

@@ -146,9 +146,42 @@ const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 /// [[a-benchmark-zero-is-a-claim-about-the-harness-until-proven-otherwise]]
 static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Consecutive REAL generations that FAILED on the served lane since the last success —
+/// the other half of "delivery beats probing" (#363). The 2026-08-07 blackout proved a
+/// wedge class the 1-token smoke probe cannot see: an UNDERSIZED slot rejects the
+/// fleet's real 12k-token prompts (every citizen turn dies mid-stream) while a tiny
+/// synthetic probe still passes — "can generate" is not "can serve the actual working
+/// set". Sustained real-turn failure is the honest wedge evidence, symmetric with real
+/// tokens being the honest liveness evidence above.
+static REAL_DECODE_FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record that a real generation FAILED terminally on the served lane (stream read
+/// error, mid-stream silence, transport death). Called from the adapter's error paths —
+/// gated by the caller on the request actually targeting the LOCAL serving lane, so a
+/// cloud provider's 529 can never smear the local lane's record.
+pub fn note_real_decode_failure() {
+    REAL_DECODE_FAILS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Consecutive real-generation failures since the last success. The serving daemon's
+/// heartbeat treats `>= HEALTH_FAILS_TO_RELAUNCH` as wedge evidence that OUTRANKS both
+/// the recent-decode trust window and a passing smoke probe.
+pub fn consecutive_real_decode_failures() -> u64 {
+    REAL_DECODE_FAILS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the failure streak — called when the lane is declared wedged (so the freshly
+/// relaunched lane starts clean instead of being instantly re-condemned by its
+/// predecessor's record) and implicitly by every successful decode.
+pub fn reset_real_decode_failures() {
+    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Record that a real generation produced tokens on the served lane. Called from the adapter's
 /// success path — the one place that knows tokens actually came out.
 pub fn note_real_decode() {
+    // A success ends the failure streak regardless of clock readability below.
+    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
@@ -159,7 +192,10 @@ pub fn note_real_decode() {
         );
         return;
     };
-    LAST_REAL_DECODE_MS.store(since_epoch.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+    LAST_REAL_DECODE_MS.store(
+        since_epoch.as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// Milliseconds since the last real token-producing generation, or `None` if none has been
@@ -645,6 +681,23 @@ pub struct ServingSnapshot {
 }
 
 impl ServingSnapshot {
+    /// Is a lane ACTUALLY live right now — a model resident AND decode-ready?
+    ///
+    /// The canonical "there is a brain attached" predicate, in ONE place, because it has two
+    /// halves and every reader needs both. `ready` alone is not enough: it is a *cached
+    /// claim* (with `ready_verified_at_ms` as its expiry), and a snapshot carrying no
+    /// `active_model` has nothing for a request to be answered BY, whatever the flag says.
+    ///
+    /// Readers: [`await_ready_serving`] (what it waits for), the persona self-tick gate
+    /// (whether to spend a deliberation at all, #350), and the adapter's pre-flight guard
+    /// (whether a refusal is terminal or a transition worth waiting out). They had drifted
+    /// into two spellings of this — `ready` in one, `ready && active_model.is_some()` in the
+    /// other — which is exactly the kind of split that makes a gate look correct while it
+    /// passes the case it was written to stop.
+    pub fn is_live(&self) -> bool {
+        self.ready && self.active_model.is_some()
+    }
+
     /// The "nothing served" state — boot, or after a node drops its server.
     pub fn empty() -> Self {
         Self {
@@ -750,6 +803,53 @@ pub fn vision_lane_ready(
 /// and free functions alike.
 static SERVING_STATE: OnceLock<watch::Receiver<ServingSnapshot>> = OnceLock::new();
 
+/// Has the serving daemon completed its FIRST reconcile in this process?
+///
+/// # Why this exists as its own signal (#350, measured 2026-08-07)
+///
+/// [`current_serving`] answers "what is live". It cannot answer "have we looked
+/// yet" — and those are different facts that produce an IDENTICAL snapshot.
+/// `install_serving_state` is called from the daemon's `initialize()`, BEFORE the
+/// first reconcile, so from process start until the first publish every reader
+/// borrows [`ServingSnapshot::empty`]: `active_model: None, ready: false`. That is
+/// indistinguishable from "the daemon looked and nothing is serving".
+///
+/// The cost of the confusion, measured rather than supposed: personas begin their
+/// self-tick immediately at boot, read the placeholder, and the adapter's
+/// single-resident guard correctly refuses — producing a LOUD
+/// `persona.selftick.inference_failed` naming a serving fault that does not exist.
+/// Across 3 days that was 116 failures in 38 bursts, every burst followed by a real
+/// reconcile 10–20s later. It self-heals in seconds and never indicated a broken
+/// lane; the daemon published `active=<none>` exactly ZERO times in 12 hours while
+/// readers saw `<none>` 61 times. An instrument crying wolf 116 times costs more
+/// than the fault it was pointing at — this one cost a full night of investigation
+/// aimed at the serving layer, which was healthy throughout.
+///
+/// Deliberately a separate `OnceLock` rather than a field on [`ServingSnapshot`]:
+/// that type is ts-rs-exported and read by the grid and positron, with 19
+/// construction sites. "Has the daemon started" is a PROCESS-LIFECYCLE fact, not a
+/// property of what is currently served, so it belongs beside `SERVING_STATE` (the
+/// other process-lifecycle OnceLock in this module) rather than inside the wire
+/// payload. If a remote reader ever needs it, promoting it to a snapshot field is
+/// mechanical.
+static FIRST_RECONCILE: OnceLock<()> = OnceLock::new();
+
+/// Called by the serving daemon the first time it publishes a reconcile. Idempotent.
+pub fn mark_first_reconcile() {
+    let _ = FIRST_RECONCILE.set(());
+}
+
+/// True once the daemon has published at least one reconcile in this process.
+///
+/// A reader seeing `active_model == None` MUST consult this before calling it a
+/// fault: `false` means "still starting, ask again shortly", `true` means "the
+/// daemon looked and there is genuinely nothing serving" — which IS a fault worth
+/// shouting about. Same distinction `ready_verified_at_ms` draws for `ready`: a
+/// claim has to carry whether it rests on evidence or on not-having-looked.
+pub fn has_reconciled() -> bool {
+    FIRST_RECONCILE.get().is_some()
+}
+
 /// Install the daemon's serving-state receiver as the process-wide readable
 /// seam. The daemon is a singleton so this is set-once; a second call (e.g. a
 /// re-init under test) is ignored. Returns `true` iff this call installed it.
@@ -762,6 +862,76 @@ pub fn install_serving_state(rx: watch::Receiver<ServingSnapshot>) -> bool {
 /// ed3661c4) rather than read it once. `None` before the daemon installs.
 pub fn serving_state_receiver() -> Option<watch::Receiver<ServingSnapshot>> {
     SERVING_STATE.get().cloned()
+}
+
+/// Outcome of [`await_snapshot_resettle`] — did the serving layout change?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotSettle {
+    /// A READY snapshot arrived whose (lanes, window) differ from the
+    /// pre-change layout — the planner acted on the demand change.
+    Resettled { lanes: u32, window: u32 },
+    /// The bound expired with the layout unchanged. A demand change the
+    /// planner decides not to act on is a legitimate outcome (the current
+    /// layout may already be optimal), never an error.
+    Unchanged,
+}
+
+/// Await the serving plan RESETTLING after a demand change — event-gated on
+/// the daemon's own `watch` (each wake is a real snapshot publish), never a
+/// condition-scanning poll ([[the-whole-system-is-event-based-not-polling]]).
+///
+/// The consumer this exists for (glass-boxed 2026-08-11, Atlas on
+/// sympy-24152): a measured solve's quiesce lease lowers lane demand so the
+/// planner can collapse a crowded 4-lane × 16k layout into one big-window
+/// lane — but the old prelude drove IMMEDIATELY, and the reconcile then
+/// refused to relaunch under a live measurement ("eval holds the lane
+/// steady"). The solve froze the cramped layout under itself and the persona
+/// worked a SWE repo through a ~400-token keyhole (13.1k of her 16.4k window
+/// was fixed overhead). Awaiting the resettle BEFORE the lane is acquired
+/// breaks that deadlock with ordering alone.
+///
+/// Resolves on the first READY snapshot whose (lanes, served window) differ
+/// from `pre_*`, or when `bound` expires — bounded loudly by the caller, so a
+/// planner that (correctly) keeps the layout can never park the solve.
+pub async fn await_snapshot_resettle(
+    mut rx: watch::Receiver<ServingSnapshot>,
+    pre_lanes: u32,
+    pre_window: u32,
+    bound: std::time::Duration,
+) -> SnapshotSettle {
+    let deadline = tokio::time::Instant::now() + bound;
+    // The daemon publishes once per reconcile tick. TWO ready publishes with the
+    // layout still unchanged means the planner has RUN under the new demand and
+    // decided to hold — return early instead of taxing every no-change solve
+    // with the full bound (the bound remains the backstop for a daemon that
+    // stops publishing entirely).
+    let mut unchanged_ready_publishes = 0u8;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return SnapshotSettle::Unchanged;
+        }
+        match tokio::time::timeout(remaining, rx.changed()).await {
+            // Sender dropped — the daemon is gone; nothing further will arrive.
+            Ok(Err(_)) => return SnapshotSettle::Unchanged,
+            Ok(Ok(())) => {
+                let (ready, lanes, window) = {
+                    let snap = rx.borrow();
+                    (snap.ready, snap.lanes, snap.served_context_window)
+                };
+                if ready && (lanes != pre_lanes || window != pre_window) {
+                    return SnapshotSettle::Resettled { lanes, window };
+                }
+                if ready {
+                    unchanged_ready_publishes += 1;
+                    if unchanged_ready_publishes >= 2 {
+                        return SnapshotSettle::Unchanged;
+                    }
+                }
+            }
+            Err(_) => return SnapshotSettle::Unchanged,
+        }
+    }
 }
 
 /// The model currently served on this node, per the daemon's last reconcile.
@@ -811,25 +981,200 @@ pub const PROVIDER_ID: &str = "llama-server";
 /// process lifetime (the daemon owns it), so the only non-ready resolution is
 /// the timeout.
 pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
+    // Lane-source-agnostic readiness (the misfit / grid design): if the operator
+    // pinned an EXTERNAL OpenAI-compatible endpoint via `LLAMA_SERVER_BASE_URL`,
+    // this node does NOT own a local GPU serving lane — it hosts personas against
+    // the pinned endpoint (a co-located engine like a K3 llama-server, or later a
+    // reachable grid peer). Probe that endpoint directly and synthesize the ready
+    // snapshot instead of waiting on the LOCAL serving daemon's `SERVING_STATE`.
+    // Both the persona-host gate AND the persona adapter factory call THIS one
+    // function, so a single change makes the whole hosting path source-agnostic —
+    // no persona ever requires this box to own the GPU. The endpoint is held to
+    // the IDENTICAL decode bar as a local lane (a real multi-token generation), so
+    // a compute-wedged endpoint is rejected, never faked
+    // ([[fallbacks-are-illegal-fail-loud]]).
+    if external_serving_pin().is_some() {
+        return probe_external_serving(timeout).await;
+    }
     let mut rx = SERVING_STATE.get()?.clone();
     {
         // Fast path: already ready, no await.
         let cur = rx.borrow_and_update();
-        if cur.ready && cur.active_model.is_some() {
+        if cur.is_live() {
             return Some(cur.clone());
         }
     }
     // Bind the timeout result before matching so its `watch::Ref` temporary
     // drops before `rx` does (else the borrow outlives `rx` — E0597).
-    let waited = tokio::time::timeout(
-        timeout,
-        rx.wait_for(|s| s.ready && s.active_model.is_some()),
-    )
-    .await;
+    let waited = tokio::time::timeout(timeout, rx.wait_for(|s| s.is_live())).await;
     match waited {
         Ok(Ok(guard)) => Some(guard.clone()),
         _ => None,
     }
+}
+
+/// The operator-pinned EXTERNAL OpenAI-compatible serving endpoint ROOT
+/// (`http://host:port`, no `/v1`), if `LLAMA_SERVER_BASE_URL` is set in the
+/// config (read via [`crate::config_env::read`] — the `~/.continuum/config.env`
+/// FILE, not a process env var). When set, this node does not own a local GPU
+/// serving lane; persona hosting adopts the pinned endpoint. `serving_root()`
+/// already resolves to this same value — this predicate just answers "is one
+/// pinned", the seam the hosting path branches on.
+pub fn external_serving_pin() -> Option<String> {
+    let raw = crate::config_env::read("LLAMA_SERVER_BASE_URL")?;
+    let trimmed = raw.trim().trim_end_matches('/');
+    let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    (!root.is_empty()).then(|| root.to_string())
+}
+
+/// Read the resident model id an external endpoint reports at `/v1/models`,
+/// accepting BOTH the canonical OpenAI shape (`data[].id`) and the
+/// llama.cpp/Ollama-compat shape some builds answer (`models[].model|name` — a
+/// K3 `llama-server` does exactly this). Returns `None` only if neither shape
+/// names a model; the caller substitutes a stable sentinel (a single-resident
+/// endpoint ignores the request `model` field anyway).
+/// Reachability gate for a pinned EXTERNAL endpoint: `/health` answers 200.
+///
+/// Why NOT the local-lane [`decode_smoke_ok`] (a 5+ token generation): that bar
+/// exists to catch an *untrusted orphan* whose GPU compute path is wedged. It
+/// doubles as a speed test — a legitimately slow external lane (a CPU-offloaded
+/// MoE like K3 at ~0.03 tok/s under load, or a distant grid peer) cannot finish a
+/// multi-token generation inside any sane probe deadline, and worse, a
+/// client-side timeout does NOT cancel the server-side generation, so a probe
+/// storm monopolizes the endpoint's slot and NOTHING ever hosts. The operator
+/// DELIBERATELY pinned this endpoint, so the adopt question is "is it reachable +
+/// serving a model" (proved here + by the `/props` window read + the `/v1/models`
+/// model read in [`probe_external_serving`]); the decode path is exercised by the
+/// persona's real turns, where a genuine wedge (every turn 500s) surfaces LOUD on
+/// the first turn — not silently faked. Cheap, off the HTTP layer, so no slot
+/// contention and no probe storm.
+async fn external_health_ok(root: &str, client: &reqwest::Client) -> bool {
+    let url = format!("{root}/health");
+    matches!(
+        client.get(&url).timeout(PROBE_TIMEOUT).send().await,
+        Ok(resp) if resp.status().is_success()
+    )
+}
+
+async fn external_active_model(v1_url: &str, client: &reqwest::Client) -> Option<String> {
+    let url = format!("{v1_url}/models");
+    let body: serde_json::Value = client
+        .get(&url)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    // OpenAI: { "data": [ { "id": "..." } ] }
+    if let Some(id) = body
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.first())
+        .and_then(|m| m.get("id"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(id.to_string());
+    }
+    // llama.cpp/Ollama-compat: { "models": [ { "model": "...", "name": "..." } ] }
+    body.get("models")
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.first())
+        .and_then(|m| m.get("model").or_else(|| m.get("name")))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Probe a pinned EXTERNAL OpenAI-compatible endpoint for decode-readiness and,
+/// on success, synthesize the ready [`ServingSnapshot`] persona hosting binds
+/// against — the SAME shape the local serving daemon publishes, so every reader
+/// ([`await_ready_serving`], the persona adapter factory) stays source-agnostic.
+///
+/// The endpoint is held to the IDENTICAL bar as a local lane: [`decode_smoke_ok`]
+/// runs a real multi-token generation, so an endpoint that answers `/v1/models`
+/// 200 but 500s (or dribbles ~2 tokens on) every decode is rejected, never
+/// adopted ([[fallbacks-are-illegal-fail-loud]]). `served_context_window` comes
+/// from the endpoint's own `/props` (`n_ctx`) so personas budget prompts to the
+/// truth. Returns `None` if unset, unreachable, wedged, or `/props` won't name a
+/// window (a decode-ready endpoint that can't report its context is not safely
+/// adoptable — never a guessed window).
+pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot> {
+    let _ = timeout; // reachability gate is control-plane (fast); no generation to bound.
+    let root = external_serving_pin()?;
+    let v1_url = format!("{root}/v1");
+    let client = reqwest::Client::new();
+
+    // Reachability gate (see `external_health_ok` for why not a generation probe
+    // against a deliberately-pinned, possibly-very-slow endpoint).
+    if !external_health_ok(&root, &client).await {
+        crate::probe!(
+            class = "serving.external_probe",
+            endpoint = root.as_str(),
+            "pinned external serving endpoint is unreachable (/health) — \
+             not adopting; will retry on the next serving edge",
+        );
+        return None;
+    }
+
+    // The authoritative per-slot window from the endpoint's own `/props`. A
+    // decode-ready endpoint that won't name its window is not safely adoptable.
+    let served_context_window = match LlamaServerProcess::with_root(root.clone())
+        .served_context_window()
+        .await
+    {
+        Ok(w) if w > 0 => w,
+        _ => {
+            crate::probe!(
+                class = "serving.external_probe",
+                endpoint = root.as_str(),
+                "pinned external endpoint decodes but `/props` did not report an n_ctx window — \
+                 refusing to adopt with a guessed window",
+            );
+            return None;
+        }
+    };
+
+    let active_model = external_active_model(&v1_url, &client)
+        .await
+        .unwrap_or_else(|| "external-serving-lane".to_string());
+
+    crate::probe!(
+        class = "serving.external_adopt",
+        endpoint = root.as_str(),
+        model = active_model.as_str(),
+        window = served_context_window,
+        "external serving endpoint adopted as the persona lane — this node hosts personas \
+         without owning a local GPU lane (misfit / grid serving)",
+    );
+
+    Some(ServingSnapshot {
+        active_model: Some(active_model),
+        ready: true,
+        // Personas point their inference adapter here; `serving_v1_url()` already
+        // resolves to the pinned endpoint (operator-honored verbatim).
+        base_url: serving_v1_url(),
+        adapters: Vec::new(),
+        served_context_window,
+        // One shared lane. A future refinement can read `/props.total_slots`.
+        lanes: 1,
+        degraded_reason: None,
+        // NOT `Some(now)`. This path ADOPTS an endpoint the operator pinned; we
+        // have confirmed it answers, not that it has ever delivered a token to
+        // us. `ready_verified_at_ms` means exactly the latter, and stamping it
+        // here would tell every downstream reader that a lane we have never
+        // pulled a token from was confirmed this instant — which is the wedged-
+        // slot failure the field was added to expose, manufactured by hand.
+        // `None` = never confirmed, which is true and which readers already
+        // handle.
+        ready_verified_at_ms: None,
+        // An external OpenAI-compatible endpoint does not tell us whether it can
+        // see, and we have not asked. Absence of knowledge, reported as absence
+        // — not as `false` meaning "we checked and it cannot".
+        vision_ready: false,
+        vision_base_url: None,
+        vision_model: None,
+    })
 }
 
 /// Wait until the served window has SETTLED after a serving-mode change that may have triggered
@@ -862,11 +1207,7 @@ pub async fn wait_for_serving_window_settle(
     // Phase 2: wait for the relaunched lane to come back decode-ready. Bind the timeout result
     // before matching so its `watch::Ref` temporary drops before `rx` does (else E0597).
     let remaining = timeout.saturating_sub(start.elapsed());
-    let waited = tokio::time::timeout(
-        remaining,
-        rx.wait_for(|s| s.ready && s.active_model.is_some()),
-    )
-    .await;
+    let waited = tokio::time::timeout(remaining, rx.wait_for(|s| s.is_live())).await;
     match waited {
         Ok(Ok(guard)) => Some(guard.served_context_window),
         _ => None,
@@ -1088,16 +1429,34 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
                     true
                 }
             };
-            if !window_ok {
+            // LANE grow-back — the exact sibling of the window grow-back above. After a
+            // transient RAM/VRAM squeeze relaunched the lane at fewer parallel slots
+            // (n_seq_max 4→1), a later plan that wants more lanes would otherwise
+            // short-circuit to AlreadyServing on `genome_matches && window_ok` and stay
+            // FROZEN AT ONE LANE FOREVER — starving every citizen to one-at-a-time while
+            // the daemon re-decides the same plan each tick (glass-boxed 2026-08-11:
+            // ~11GB free, lanes stuck at 1, a benchmark solve infra-failed). llama.cpp
+            // cannot hot-resize n_seq_max any more than the window, so a lane increase
+            // needs a relaunch. Grow-only + discrete: served 0 = nothing to compare;
+            // target ≤ served is fine (a down-plan is the daemon's sticky choice); only
+            // target > served relaunches. `served_lanes` is the process's own truth
+            // (ServingSnapshot.lanes), never a recomputed plan value.
+            let served_lanes = current_serving().lanes;
+            let lanes_ok = served_lanes == 0 || target.lanes <= served_lanes;
+            if !window_ok || !lanes_ok {
                 crate::probe!(
-                    class = "serving.window_grow",
+                    class = "serving.grow",
                     model = target.model_id(),
                     target_window = target.context_window,
-                    "served window is below the target beyond padding tolerance — \
-                     relaunching to grow (llama.cpp has no hot-resize; a genome-set \
-                     match alone must not strand a starved lane at the boot floor)",
+                    target_lanes = target.lanes,
+                    served_lanes,
+                    window_ok,
+                    lanes_ok,
+                    "served capacity is below target (window and/or lanes) — relaunching to \
+                     grow (llama.cpp has no hot-resize; a genome-set match alone must not \
+                     strand a starved lane at the boot floor)",
                 );
-                // fall through to relaunch at the larger window.
+                // fall through to relaunch at the larger window / more lanes.
             } else {
                 // Window matches. Is the COMPUTE path alive? A child we spawned
                 // ourselves was decode-verified at `wait_ready` and is trusted
@@ -2211,6 +2570,110 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    /// what this catches (2026-08-11, the solve-prelude keyhole): the settle wait
+    /// must resolve on the FIRST ready snapshot whose layout differs from the
+    /// pre-quiesce one (event-gated on the watch, no polling), and a planner that
+    /// keeps its layout must end as `Unchanged` at the bound — a legitimate
+    /// outcome that proceeds, never a park. A non-ready layout change must NOT
+    /// resolve it (mid-relaunch snapshots are transient, not a settled plan).
+    #[tokio::test]
+    async fn await_snapshot_resettle_resolves_on_ready_layout_change_and_bounds_out_otherwise() {
+        use super::{await_snapshot_resettle, ServingSnapshot, SnapshotSettle};
+        use std::time::Duration;
+
+        // Resettle: a ready snapshot with a NEW layout resolves the wait.
+        let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
+        let waiter = tokio::spawn(await_snapshot_resettle(rx, 4, 16384, Duration::from_secs(5)));
+        // Transient mid-relaunch publish (not ready) must be ignored…
+        let mut transitional = ServingSnapshot::empty();
+        transitional.lanes = 1;
+        transitional.served_context_window = 32768;
+        transitional.ready = false;
+        tx.send(transitional.clone()).unwrap();
+        // …and the settled ready layout resolves it.
+        transitional.ready = true;
+        tx.send(transitional).unwrap();
+        assert_eq!(
+            waiter.await.unwrap(),
+            SnapshotSettle::Resettled {
+                lanes: 1,
+                window: 32768
+            }
+        );
+
+        // Unchanged, EARLY: two ready publishes with the same layout mean the
+        // planner ran and held — resolves well before the (long) bound, so a
+        // no-change solve pays reconcile-tick latency, never the full backstop.
+        let (tx2, rx2) = tokio::sync::watch::channel(ServingSnapshot::empty());
+        let waiter2 = tokio::spawn(await_snapshot_resettle(rx2, 4, 16384, Duration::from_secs(30)));
+        let mut same = ServingSnapshot::empty();
+        same.lanes = 4;
+        same.served_context_window = 16384;
+        same.ready = true;
+        tx2.send(same.clone()).unwrap();
+        tokio::task::yield_now().await;
+        tx2.send(same).unwrap();
+        let early = tokio::time::timeout(Duration::from_secs(2), waiter2)
+            .await
+            .expect("two unchanged ready publishes must resolve early, not ride the bound")
+            .unwrap();
+        assert_eq!(early, SnapshotSettle::Unchanged);
+
+        // Unchanged, BACKSTOP: a daemon that stops publishing ends at the bound.
+        let (_tx3, rx3) = tokio::sync::watch::channel(ServingSnapshot::empty());
+        let waiter3 =
+            tokio::spawn(await_snapshot_resettle(rx3, 4, 16384, Duration::from_millis(80)));
+        assert_eq!(waiter3.await.unwrap(), SnapshotSettle::Unchanged);
+    }
+
+    /// what this catches (#350): the two states an EMPTY serving snapshot can mean
+    /// collapsing back into one. `ServingSnapshot::empty()` is published from process
+    /// start (install_serving_state runs in the daemon's `initialize()`, before the first
+    /// reconcile), so "we have not looked yet" and "we looked and nothing is serving" are
+    /// byte-identical. Readers that cannot tell them apart shout about a serving fault
+    /// during every boot: measured 116 false alarms in 38 bursts over 3 days.
+    ///
+    /// CORRECTION (2026-08-07) to what this comment first claimed. It said the daemon
+    /// "published `active=<none>` ZERO times in 12 hours", which read as: empty means boot,
+    /// full stop. It does not. `serving_daemon` publishes `empty()` on EVERY lane teardown
+    /// — no servable plan, a re-home, and `declare_lane_wedged` (#175 self-heal) — the
+    /// original count simply had no probe on those publish sites to see them. Live receipts
+    /// the same day: three personas read `serving: <none>` 59s into a wedge relaunch, 350s
+    /// after this latch was set. So `has_reconciled()` answers "has a lane EVER come up",
+    /// never "is one up now" — for the latter, read `ServingSnapshot::ready` live.
+    ///
+    /// The empty snapshot deliberately stays unchanged — it is still the honest "nothing
+    /// live" value. What must exist is a SEPARATE signal for whether anyone has looked.
+    #[test]
+    fn an_empty_snapshot_cannot_itself_distinguish_startup_from_a_serving_fault() {
+        let boot = super::ServingSnapshot::empty();
+        assert_eq!(boot.active_model, None);
+        assert!(!boot.ready);
+        // The point: this value is IDENTICAL whether the daemon has reconciled or not,
+        // which is exactly why `has_reconciled()` is a separate signal and not something
+        // a reader can infer from the snapshot. If someone later adds a field that makes
+        // the two distinguishable here, this assertion documents why they must ALSO keep
+        // `has_reconciled()` correct rather than silently replacing it.
+        assert_eq!(boot, super::ServingSnapshot::empty());
+    }
+
+    /// what this catches: `mark_first_reconcile` becoming non-idempotent or
+    /// `has_reconciled` reading the wrong cell. A OnceLock set twice must not panic —
+    /// the daemon calls it on EVERY reconcile, not just the first.
+    ///
+    /// NOTE this test can only observe the post-mark state: `FIRST_RECONCILE` is a
+    /// process-global OnceLock, so once any test in this binary marks it, it stays
+    /// marked. Asserting `!has_reconciled()` first would be order-dependent — the exact
+    /// flake shape that made tests pass locally and fail in CI
+    /// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
+    #[test]
+    fn marking_the_first_reconcile_is_idempotent_and_observable() {
+        super::mark_first_reconcile();
+        assert!(super::has_reconciled());
+        super::mark_first_reconcile(); // must not panic
+        assert!(super::has_reconciled());
+    }
 
     /// what this catches: the health heartbeat going back to probe-always. `decode_smoke_ok`
     /// is a REAL generation through the live slots, so on a saturated lane it cannot get one,

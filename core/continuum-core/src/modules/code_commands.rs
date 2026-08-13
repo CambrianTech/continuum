@@ -377,9 +377,36 @@ impl ActionCommand for CodeWrite {
 
     async fn run(&self, ctx: &Ctx, p: CodeWriteParams) -> Result<WriteResult, CommandError> {
         let engine = engine!(self, ctx);
-        engine
+        // THE WRITE PATH IS WHERE SOLVED WORK DIES (#: flask-4045 was solved and then
+        // destroyed TWICE, and both times we diagnosed it from PROSE — the persona's own
+        // account of what she did — rather than from what actually hit disk. This probe
+        // is the receipt: sizes before/after and whether the file already existed, so a
+        // patch that lands wrong is visible AT THE MOMENT IT LANDS.
+        //
+        // `existed` + `before_bytes` are the load-bearing pair: an overwrite of a large
+        // existing file with a tiny body is the exact shape of "solved, then destroyed"
+        // (the model re-emits a stub or a fragment over a working file). A count alone
+        // could never show that.
+        let before = std::fs::metadata(
+            engine.workspace_root().join(&p.file_path),
+        )
+        .ok()
+        .map(|m| m.len());
+        let out = engine
             .write(&p.file_path, &p.content, p.description.as_deref())
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(|e| CommandError::Internal(e.to_string()));
+        crate::probe!(
+            class = "code.write.landed",
+            path = %p.file_path,
+            existed = before.is_some(),
+            before_bytes = before.unwrap_or(0),
+            after_bytes = p.content.len() as u64,
+            shrank = before.is_some_and(|b| (p.content.len() as u64) < b / 2),
+            ok = out.is_ok(),
+            "a file write reached disk — before/after sizes so a destructive overwrite is \
+             visible without reconstructing it from the persona's account"
+        );
+        out
     }
 }
 
@@ -414,9 +441,15 @@ pub struct CodeEditParams {
     // flat-call shape a model reaches for instead of the nested tagged object.
     #[serde(default)]
     pub content: Option<String>,
-    #[serde(default)]
+    // `old_string`/`new_string` (Claude Code / most agents) and `old_str`/`new_str` are the
+    // UNIVERSAL edit idiom every citizen — persona, Claude, or human-over-Positron — reaches for
+    // first. Dogfooded 2026-08-09: a bare `code/edit old_string=… new_string=…` was refused
+    // ("could not determine the edit mode") because these weren't fields. Serde aliases map them
+    // straight onto search/replace at the shared handler, so search_replace is INFERRED and the
+    // edit lands first-try for everyone. [[dogfood-the-continuum-command-surface]]
+    #[serde(default, alias = "old_string", alias = "old_str")]
     pub search: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "new_string", alias = "new_str")]
     pub replace: Option<String>,
     #[serde(default)]
     pub new_content: Option<String>,
@@ -454,8 +487,14 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             .or_else(|| p.edit_mode.get(key).and_then(|v| v.as_str().map(str::to_string)))
     };
     let content = s(&p.content, "content");
-    let search = s(&p.search, "search");
-    let replace = s(&p.replace, "replace");
+    // Top-level old_string/new_string land on p.search/p.replace via serde aliases above; this
+    // also accepts them NESTED inside an untyped `edit_mode:{old_string:…,new_string:…}` object.
+    let search = s(&p.search, "search")
+        .or_else(|| s(&None, "old_string"))
+        .or_else(|| s(&None, "old_str"));
+    let replace = s(&p.replace, "replace")
+        .or_else(|| s(&None, "new_string"))
+        .or_else(|| s(&None, "new_str"));
     let new_content = s(&p.new_content, "new_content");
     // Numeric fields, pulled from top-level OR the nested untyped edit_mode object.
     // Live glass-box (2026-07-14): Devstral emitted `edit_mode:{end_line:65535,
@@ -960,7 +999,7 @@ impl ActionCommand for CodeSearch {
             error = Some(format!(
                 "{total_matches} matches across {files_total} file(s) — too many to list \
                  line-by-line, so this shows ONE representative match per file for the top \
-                 {} file(s) by match count: [{}]. Next: read the most relevant file \
+                 {} file(s) by match count: [{}]. Next: read the hottest file listed first above \
                  (code/read file_path=...) or narrow the search (more specific `pattern`, \
                  or `file_glob` limiting which files).",
                 matches.len(),
@@ -1462,14 +1501,31 @@ impl ActionCommand for CodeCreateWorkspace {
         if !p.path_prepend.is_empty() {
             ensure_shell(&self.state, &who)?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
-                let inherited = std::env::var("PATH").unwrap_or_default();
                 let prepend = p.path_prepend.join(":");
-                shell.set_env("PATH".to_string(), format!("{prepend}:{inherited}"));
+                // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
+                // reconstructed PATH. The shell runs as the user's LOGIN shell
+                // (shell_session.rs), which already carries the user's full toolchain and
+                // re-sets PATH from the profile — so an inherited PATH override is clobbered.
+                // The shell prepends this prefix AFTER the profile loads (like `activate`), so
+                // the era venv layers on top of the user's real environment. No hand-rolled PATH.
+                shell.set_env("CONTINUUM_PATH_PREPEND".to_string(), prepend.clone());
+                // HER TREE MUST WIN THE IMPORT (due-diligence find, 2026-08-08,
+                // gold-through-her-hands on sympy-24066): the era venv's package is
+                // `pip install -e` bound to the GRADER'S work repo, so `import sympy`
+                // from her python loaded the pristine grader tree and HER EDITS WERE
+                // INVISIBLE TO HER OWN TEST RUNS — anti-verification: a perfect fix
+                // still "failed" when she checked it. Positive-control proven both
+                // ways: with PYTHONPATH at her workspace the issue repro fails
+                // pre-fix and passes post-fix through her exact edit semantics.
+                // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
+                shell.set_env("PYTHONPATH".to_string(), p.workspace_root.clone());
                 crate::probe!(
                     class = "code.workspace.path_prepend",
                     caller = who.as_str(),
                     prepend = prepend.as_str(),
-                    "granted the caller's shell an explicit PATH prefix (era-matched interpreter)"
+                    pythonpath = p.workspace_root.as_str(),
+                    "granted the caller's shell an era PATH prefix + PYTHONPATH at her \
+                     workspace so her edits are what her interpreter imports"
                 );
             }
         }

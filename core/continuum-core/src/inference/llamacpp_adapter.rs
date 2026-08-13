@@ -56,6 +56,18 @@ use std::time::Instant;
 /// "local" → device-filtered local-GPU selection logic).
 pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 
+/// The embed lane's identity on the resource board — the `consumer_id` on both
+/// its per-call VRAM leases and its standing reservation floor.
+pub const EMBED_LANE_CONSUMER_ID: &str = "embed";
+
+/// The embed lane's working VRAM: the bounded Metal embedding context (~1.2 GiB
+/// compute buffer + ~224 MiB KV) plus headroom. ONE constant, two uses: the
+/// per-call lease in [`create_embedding`], and the standing FLOOR the embedder
+/// reserves on the board at resolve so serving's plan can never grow into it
+/// (#225 — measured 2026-08-08: the grown window left 604 MiB governed-available
+/// against this 1792 MiB need, and embedding went fully dead on the box).
+pub const EMBED_LANE_VRAM_BYTES: u64 = 1792 * 1024 * 1024;
+
 /// Overlay live runtime metadata (throughput) on top of the registry's
 /// declared ModelInfo. Context-window still flows from `backend.n_ctx_train()`
 /// because that's the GGUF's ground truth — the catalog value is the intent,
@@ -1207,11 +1219,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // "no signal", never a zero vector.
         //
         // Const, not env-tunable — substrate policy lives in code (concurrency guide).
-        // Only the per-call CONTEXT is leased here; registering the embed model's
-        // resident WEIGHTS (~600 MiB) as a ResourceConsumer (mirroring ServingConsumer)
-        // is the residency-accounting follow-up, not this admission-control slice.
-        const EMBED_LANE_CONSUMER_ID: &str = "embed";
-        const EMBED_LANE_VRAM_BYTES: u64 = 1792 * 1024 * 1024; // ~1.75 GiB (ctx + headroom)
+        // Only the per-call CONTEXT is leased here; the embed lane's standing FLOOR on
+        // the board (so serving can never grow into this slice — Joel 2026-08-08: "the
+        // budgeter just has all its parts figure it out") is claimed at embedder
+        // resolve via [`crate::resources::ResourceDaemon::reserve`], from the same
+        // module-level constants below.
         const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000; // SIGKILL backstop; the RAII guard frees on drop
         let _vram_lease = {
             use crate::resources::{
@@ -1228,35 +1240,58 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         ttl_ms: EMBED_LANE_LEASE_TTL_MS,
                         reclaim_policy: ReclaimPolicy::Pinned,
                     };
-                    match daemon.acquire_guarded(&req) {
-                        Ok(guard) => {
-                            crate::probe!(
-                                class = "embed.vram.leased",
-                                consumer = EMBED_LANE_CONSUMER_ID,
-                                bytes = EMBED_LANE_VRAM_BYTES,
-                                texts = texts.len(),
-                                "embedding lane acquired a governed VRAM lease"
-                            );
-                            Some(guard)
+                    // ONE bounded retry on a capacity refusal (never a loop —
+                    // [[brittleness-is-the-highest-priority-work-there-is]]): with
+                    // the standing floor reserved at resolve, a refusal here means
+                    // a TRANSIENT over-commit (a lane mid-relaunch, a burst), and
+                    // relief lands within a governor tick. The second refusal is
+                    // the honest failure.
+                    let mut refused: Option<u64> = None;
+                    let mut granted = None;
+                    for attempt in 0..2u8 {
+                        match daemon.acquire_guarded(&req) {
+                            Ok(guard) => {
+                                crate::probe!(
+                                    class = "embed.vram.leased",
+                                    consumer = EMBED_LANE_CONSUMER_ID,
+                                    bytes = EMBED_LANE_VRAM_BYTES,
+                                    texts = texts.len(),
+                                    retried = (attempt > 0),
+                                    "embedding lane acquired a governed VRAM lease"
+                                );
+                                granted = Some(guard);
+                                break;
+                            }
+                            Err(LeaseError::InsufficientCapacity { available, .. }) => {
+                                crate::probe!(
+                                    class = "embed.vram.refused",
+                                    requested = EMBED_LANE_VRAM_BYTES,
+                                    available = available,
+                                    attempt = attempt,
+                                    "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
+                                );
+                                refused = Some(available);
+                                if attempt == 0 {
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                }
+                            }
+                            Err(e) => {
+                                return Err(format!(
+                                    "embed: VRAM lease error ({e:?}) — refusing to embed ungoverned"
+                                ));
+                            }
                         }
-                        Err(LeaseError::InsufficientCapacity { available, .. }) => {
-                            crate::probe!(
-                                class = "embed.vram.refused",
-                                requested = EMBED_LANE_VRAM_BYTES,
-                                available = available,
-                                "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
-                            );
+                    }
+                    match granted {
+                        Some(guard) => Some(guard),
+                        None => {
+                            let available = refused.unwrap_or(0);
                             return Err(format!(
-                                "embed: VRAM lease refused — {} MiB requested, {} MiB governed-available. \
+                                "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
                                  Refusing to allocate an OOM-doomed embedding context (it would decode to \
                                  degenerate zeros). Free VRAM (tier down serving) and retry.",
                                 EMBED_LANE_VRAM_BYTES / (1024 * 1024),
                                 available / (1024 * 1024),
-                            ));
-                        }
-                        Err(e) => {
-                            return Err(format!(
-                                "embed: VRAM lease error ({e:?}) — refusing to embed ungoverned"
                             ));
                         }
                     }

@@ -6,7 +6,7 @@
 //! `rag/compose` once lived ONLY in [`RagModule::handle_command`](crate::modules::rag)'s
 //! stringly `match` — dispatchable, but with no descriptor in the registry. As a typed
 //! command it gets a descriptor (so it appears in the persona tool surface, the grid ACL,
-//! codegen, `cu`) AND routes through the O(1) lock-free typed path. The wire name mirrors
+//! codegen, `uu`) AND routes through the O(1) lock-free typed path. The wire name mirrors
 //! the file path — `commands/rag/compose.rs` ⟺ `rag/compose`.
 //!
 //! The source loaders stay on [`RagState`](crate::modules::rag::RagState) (the module owns

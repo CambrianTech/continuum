@@ -4,12 +4,12 @@
 //! resource so repeated calls DON'T spawn a new tab every time.
 //!
 //! Start-simple: a lightweight on-disk session marker is the "lease" — one desktop
-//! per machine. A second `cu desktop` for the same URL is a no-op ("already open")
+//! per machine. A second `uu desktop` for the same URL is a no-op ("already open")
 //! so it never opens a duplicate window; `focus:true` forces a re-open. A later
 //! slice promotes this to a first-class [`crate::resources`] / ResourceGovernor
 //! (#56) consumer alongside VRAM / serving / Bevy, so the desktop window is
 //! allocated + reclaimed like any other machine resource. Owner-scoped: the local
-//! `cu` operator opens their own box's desktop; no persona identity required.
+//! `uu` operator opens their own box's desktop; no persona identity required.
 
 use std::path::PathBuf;
 
@@ -119,7 +119,7 @@ fn open_in_default_browser(url: &str) -> Result<&'static str, CommandError> {
 }
 
 /// `desktop` — open the UI in the natural browser, single-instance. AiSafe;
-/// operator-scoped (the local `cu` caller opens their own box's desktop).
+/// operator-scoped (the local `uu` caller opens their own box's desktop).
 #[derive(Default)]
 pub struct Desktop;
 
@@ -188,7 +188,7 @@ crate::register_stateless_command!(Desktop);
 mod tests {
     use super::*;
 
-    // what this catches: reachable as `cu desktop` (name mirrors the verb typed).
+    // what this catches: reachable as `uu desktop` (name mirrors the verb typed).
     #[test]
     fn name_is_desktop() {
         assert_eq!(Desktop::NAME, "desktop");

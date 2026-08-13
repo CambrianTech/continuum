@@ -53,7 +53,7 @@ use crate::sdk_codegen::{command_registry, WireShape};
 /// this command client-fulfilled (an eye-node verb), not a substrate module?",
 /// shared by BOTH dispatch paths — the [`ProvidedCommandInterceptor`] (the
 /// in-process/persona route via `CommandExecutor`) and `Runtime::route_command`
-/// (the socket route: `cu`/IPC/MCP) — so they never disagree on what routes to a
+/// (the socket route: `uu`/IPC/MCP) — so they never disagree on what routes to a
 /// provider vs a `ServiceModule`.
 pub fn provided_command_names() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
@@ -76,7 +76,7 @@ pub fn is_provided_command(name: &str) -> bool {
 /// (`perception/observe`, `interface/screenshot`) is routed to its connected
 /// provider or failed loud. BOTH dispatch paths call this and nothing else:
 /// the [`ProvidedCommandInterceptor`] (the in-process/persona route via
-/// `CommandExecutor`) and `Runtime::route_command` (the socket route: `cu` / IPC
+/// `CommandExecutor`) and `Runtime::route_command` (the socket route: `uu` / IPC
 /// / MCP). Commands are infinite and every caller — persona, CLI, MCP, benchmark
 /// — MUST reach a capability through the same infrastructure; a second copy of
 /// this logic is exactly how one path gains a command the other lacks.

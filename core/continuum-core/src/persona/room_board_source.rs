@@ -79,8 +79,24 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 /// pushed its creation event out of a transcript window); tests stub it.
 #[async_trait]
 pub trait RoomBoardReader: Send + Sync {
-    /// The current room's work board, folded by airc into a [`BoardSnapshot`].
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError>;
+    /// The work board of `room` — folded by airc into a [`BoardSnapshot`].
+    ///
+    /// `room` is the id this source is BOUND to (`for_room`), i.e. the same
+    /// value [`crate::persona::rag_budget::room_scope_allows`] gates on. Passing
+    /// it is what makes gate and read one decision instead of two that merely
+    /// coincide: before 2026-08-07 the read resolved airc's `current_room()`
+    /// independently ("whatever my default subscription happens to be") while the
+    /// gate checked a bound id the read never consulted. They agreed only because
+    /// both were seeded from the same call at bootstrap — nothing prevented a gate
+    /// that passed for room A while the board came from room B, and no probe would
+    /// have fired.
+    ///
+    /// `None` means the caller genuinely has no binding and accepts the scope's
+    /// current room (the CLI's intent). A `Some(id)` that the scope is not
+    /// subscribed to is an ERROR, never a silent fall back to the default: handing
+    /// a citizen a different room's board is the failure this parameter exists to
+    /// make impossible.
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError>;
 
     /// Published display names for the given peers — the DURABLE alias store,
     /// not the room roster.
@@ -108,10 +124,35 @@ pub trait RoomBoardReader: Send + Sync {
 /// makes; the shared truth is airc's fold, not a shared continuum trait.
 #[async_trait]
 impl RoomBoardReader for airc_lib::Airc {
-    async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
-        let projection =
-            airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                .await?;
+    async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
+        let projection = match room {
+            // BOUND: read exactly the room the gate approved. A miss is loud —
+            // `NotSubscribed` — never a quiet slide to the default room, because
+            // a citizen handed the wrong room's board cannot tell that from a
+            // board that is genuinely empty. That indistinguishability is the
+            // whole bug class ([[fail-loud-never-swallow]]).
+            Some(id) => {
+                let channel = airc_core::RoomId::from_uuid(id);
+                let Some(resolved) = airc_lib::Airc::room_by_channel(self, channel).await? else {
+                    return Err(AircError::NotSubscribed(format!(
+                        "work board requested for room {id}, which this scope is not \
+                         subscribed to — refusing to substitute the default room's board"
+                    )));
+                };
+                airc_lib::Airc::project_room_work_board(
+                    self,
+                    &resolved,
+                    airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE,
+                )
+                .await?
+            }
+            // UNBOUND: the caller genuinely means "my current room" (the CLI's
+            // intent). Same behaviour as before this parameter existed.
+            None => {
+                airc_lib::Airc::work_board_complete(self, airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                    .await?
+            }
+        };
         Ok(projection.snapshot())
     }
 
@@ -275,7 +316,7 @@ impl RagSource for RoomBoardSource {
 
         // One airc call (the current room's complete board). Failure is
         // non-fatal — empty delivery, cognition stays up (good-citizen doctrine).
-        let board = match self.reader.work_board().await {
+        let board = match self.reader.work_board(self.room_id).await {
             Ok(b) => b,
             Err(err) => {
                 tracing::warn!(
@@ -342,24 +383,18 @@ impl RagSource for RoomBoardSource {
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
-            .filter(|c| {
-                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED —
-                // an expired lease is genuinely available work (claim-contention
-                // allows takeover), and before 2026-08-03 lapsed cards appeared in
-                // NEITHER "available" nor honestly-held: invisible as work, sticky
-                // as an attractor.
-                let terminal = matches!(
-                    c.state,
-                    airc_work::CardState::Merged | airc_work::CardState::Closed
-                );
-                if terminal {
-                    return false;
-                }
-                match c.owner {
-                    None => matches!(c.state, airc_work::CardState::Open),
-                    Some(_) => !claim_is_live(c, now_ms),
-                }
-            })
+            // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
+            // expired lease is genuinely available work (claim-contention allows
+            // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
+            // "available" nor honestly-held: invisible as work, sticky as an
+            // attractor.
+            //
+            // The predicate itself lives in `card_holder` and is shared with
+            // `work/list` — this filter used to re-derive it here and excluded only
+            // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
+            // advertised as available: 11 of the 58 offered on the live board
+            // 2026-08-07. One claimability decision, one place.
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
             .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
@@ -378,8 +413,20 @@ impl RagSource for RoomBoardSource {
         // be small enough to survive any budget that delivers grounding at all (~25
         // tokens, vs ~210 for the two detailed leads). Detail degrades; meaning does not.
         if !mine.is_empty() || !open.is_empty() {
+            // "on THIS room's board", not "you hold" bare (glass-boxed 2026-08-11,
+            // Atlas's own capture): boards are per-room, but the bare phrasing
+            // presents a room-scoped count as a fact about HER. She held three
+            // live-leased cards on the academy board while a general-room turn
+            // told her "you hold 0 card(s)" — so on her own time she reasonably
+            // concluded she had no work and spoke yet another pass into the room
+            // (the pass-spam Joel called out was this line lying, not her mind).
+            // Three words scope the claim to what was actually read. The real fix
+            // — her holds as an IDENTITY-level fact folded across her subscribed
+            // rooms ([[personas-are-first-class-multi-room-subscribers]]) — needs
+            // a cross-room reader verb and is a separate slice; this stops the
+            // lie today without new reads.
             let headline = format!(
-                "[board] you hold {held} card(s); {avail} claimable.",
+                "[board] this room only: you hold {held} card(s) here; {avail} claimable here.",
                 held = mine.len(),
                 avail = open.len(),
             );
@@ -436,7 +483,27 @@ impl RagSource for RoomBoardSource {
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
         if !open.is_empty() {
-            let titles = open
+            // NEWEST FIRST, not board order (measured 2026-08-07).
+            //
+            // Only five titles are ever shown. Taken in board order, a card dispatched
+            // MINUTES AGO lands at the end and is structurally unshowable: the citizen reads
+            // an honest "N card(s) are claimable" above five titles that are all weeks old,
+            // and the work someone just handed her is not among them. Measured live — three
+            // freshly dispatched bench cards were in every citizen's board cache and in none
+            // of their prompt windows, while the count was correct the whole time. The count
+            // was never the lie; the sample was.
+            //
+            // Recency is the right key because a just-created card is the one most likely to
+            // be waiting on THIS citizen right now, and because it is the only ordering under
+            // which "someone dispatched you work" is reliably visible within one turn. Ties
+            // keep board order, so a static board renders exactly as before.
+            //
+            // Bounded-window eviction: a chatty writer pushes the signal out of a fixed-size
+            // view, and the diagnostic goes blind precisely when the board is busiest. The
+            // five-title cap is fine; taking the OLDEST five was not.
+            let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
+            newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+            let titles = newest
                 .iter()
                 .take(5)
                 .map(|c| {
@@ -621,6 +688,53 @@ mod tests {
         c
     }
 
+    /// Stamp a fixture card's creation time — the ordering key the available-work
+    /// lead samples by, so a test can express "this one was dispatched just now".
+    fn created_at(mut c: WorkCard, ms: u64) -> WorkCard {
+        c.created_at_ms = ms;
+        c
+    }
+
+    // what this catches: a card dispatched MINUTES AGO being structurally unshowable.
+    // Only five titles are ever rendered; taken in board order a fresh card lands at the
+    // end and never appears, so the citizen reads an honest "N claimable" above five
+    // titles that are all old. Measured live 2026-08-07: three freshly dispatched bench
+    // cards sat in every citizen's board cache and in NONE of their prompt windows while
+    // the count was correct throughout — the count was never the lie, the sample was.
+    #[tokio::test]
+    async fn freshly_dispatched_work_is_shown_not_merely_counted() {
+        let mut cards: Vec<WorkCard> = (0..8)
+            .map(|i| {
+                created_at(
+                    card(&format!("old backlog card {i}"), CardState::Open, None),
+                    1_000_000 + i as u64,
+                )
+            })
+            .collect();
+        // Dispatched just now, and LAST in board order — the exact live shape.
+        cards.push(created_at(
+            card("bench coder-write-eval: sum_evens", CardState::Open, None),
+            9_000_000_000,
+        ));
+
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let source = RoomBoardSource::new(persona(), reader);
+        let delivery = source.deliver(&ctx(), 4_000, ResolutionPreference::Raw).await;
+        let lead = delivery
+            .items
+            .iter()
+            .find(|i| i.metadata["kind"] == "available-work-lead")
+            .expect("available-work lead");
+
+        assert!(
+            lead.content.contains("bench coder-write-eval"),
+            "the just-dispatched card must be VISIBLE, not just counted:\n{}",
+            lead.content
+        );
+        // The count stays honest — it always was. This fix is about the sample.
+        assert_eq!(lead.metadata["open_count"], 9);
+    }
+
     fn snapshot(cards: Vec<WorkCard>) -> BoardSnapshot {
         BoardSnapshot {
             cards,
@@ -662,7 +776,10 @@ mod tests {
 
     #[async_trait]
     impl RoomBoardReader for StubReader {
-        async fn work_board(&self) -> Result<BoardSnapshot, AircError> {
+        async fn work_board(
+            &self,
+            _room: Option<uuid::Uuid>,
+        ) -> Result<BoardSnapshot, AircError> {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }

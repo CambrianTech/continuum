@@ -253,6 +253,34 @@ impl AuthPolicy for GridTrustAuthPolicy {
         if is_command_authorized(path, trust) {
             Verdict::Allowed
         } else {
+            // The ONLY live authorization refusal in the substrate, and until
+            // 2026-08-06 it was the one load-bearing decision in the dispatch chain
+            // with NO probe. Measured that night: 113MB of probe stream, 100 distinct
+            // classes, ZERO covering this gate — while a citizen sat refused in a loop.
+            //
+            // Why that was expensive: a refusal reaches the caller only as text inside
+            // a persona's own action receipt, where "forbidden" is indistinguishable
+            // from "empty result". Two citizens read their own denial and reported "no
+            // open tasks"; it took five separate investigations to notice, because
+            // there was nothing to grep. See #326 and the ACL note in
+            // OBSERVABILITY-AS-SUBSTRATE.
+            //
+            // Refusals ONLY — the allow arm stays unprobed so the hot path pays
+            // nothing. A denial is rare and decisive, which is exactly the shape the
+            // probe stream is for.
+            crate::probe!(
+                class = "routing.acl.refused",
+                path = %path,
+                trust = ?trust,
+                caller_peer = %caller
+                    .map(|c| format!("{:?}", c.peer_id))
+                    .unwrap_or_else(|| "<local-substrate>".to_string()),
+                caller_source = ?caller.map(|c| &c.source),
+                had_capabilities = caller.is_some_and(|c| !c.granted_capabilities.is_empty()),
+                "authorization gate refused a dispatch — no policy grants this URI at \
+                 the caller's trust; the caller sees only a result string, so this probe \
+                 is the sole machine-readable record that it happened"
+            );
             Verdict::Forbidden {
                 reason: ForbiddenReason::NoPermissionForUri(path.to_string()),
             }

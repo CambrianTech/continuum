@@ -142,6 +142,16 @@ impl GridCapacityLedger {
     pub fn heard_count(&self) -> usize {
         self.heard.len()
     }
+
+    /// Every peer currently on the ledger with its latest offer — the auto-discovered,
+    /// PeerId-keyed capacity a capacity beacon self-registers here. The grid folds these into
+    /// the node registry so a beaconing peer becomes a routable node by its DURABLE identity,
+    /// with no manual pairing (#2228). A read, not a sweep: staleness is applied by
+    /// [`snapshot`](Self::snapshot)'s reachability window, so a briefly-silent peer is not
+    /// deregistered here.
+    pub fn heard_offers(&self) -> Vec<(Uuid, CapacityOffer)> {
+        self.heard.iter().map(|r| (*r.key(), r.value().offer.clone())).collect()
+    }
 }
 
 #[cfg(test)]

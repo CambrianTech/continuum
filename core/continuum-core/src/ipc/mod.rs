@@ -114,12 +114,14 @@ impl IpcStream for TcpStream {
 pub mod diagnostics;
 pub mod endpoint_paths;
 pub mod experience_resolver;
+pub mod positron_bench_source;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
 pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
+pub mod positron_live_source;
 pub mod positron_serving_source;
 pub mod positron_source;
 pub mod positron_wall_source;
@@ -981,13 +983,42 @@ pub fn start_server(
     // and a missing config is a boot-order / packaging bug, not a runtime
     // condition we can recover from.
     match crate::model_registry::init_global() {
-        Ok(reg) => log_info!(
-            "ipc",
-            "server",
-            "model_registry loaded: {} models across {} providers",
-            reg.models().count(),
-            reg.providers().count()
-        ),
+        Ok(reg) => {
+            log_info!(
+                "ipc",
+                "server",
+                "model_registry loaded: {} models across {} providers",
+                reg.models().count(),
+                reg.providers().count()
+            );
+            // A degraded model is REPORTED, never silent (#63). Boot survives a bad
+            // artifact now, so the only way an operator learns their model is unusable is
+            // if we say it — once per model, with the parser's own words, at the seam that
+            // decided it. Silence here would trade a loud crash for a quiet lie.
+            // NOT log_warn! — this line fires BEFORE any ServiceModule exists (see the
+            // comment above: the registry loads first on purpose), and every file-logging
+            // path is dead at that instant. Measured, three silent drops deep:
+            //   1. `log_*` needs LOGGER, whose only production initializer is ffi/mod.rs
+            //      (the legacy Node-embedding entry) — never called on the native server.
+            //   2. `clog_*`/`write_log_direct` needs GLOBAL_LOG_SENDER, set by
+            //      LoggerModule::new() — which has not been constructed yet here.
+            //   3. even once set, `queue_log` try_sends into a bounded channel and drops
+            //      silently when full.
+            // I wrote this warning with log_warn!, could not find it anywhere, and only
+            // then learned the whole chain was dark. A degradation nobody can see is
+            // exactly the bug this fix exists to kill, so it uses the sink that needs no
+            // initialization and demonstrably reaches the log file at boot.
+            for (id, why) in reg.unhydratable() {
+                tracing::warn!(
+                    model_id = %id,
+                    reason = %why,
+                    probe_class = "registry.model.unhydratable",
+                    "model is UNAVAILABLE — its artifact did not hydrate. The core is up \
+                     and every other model is usable; this one cannot be served or planned \
+                     against until the artifact or the reader is fixed."
+                );
+            }
+        }
         Err(e) => panic!("failed to load model_registry: {e}"),
     }
 
@@ -1056,6 +1087,23 @@ pub fn start_server(
     // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
     // real foundry executor.
     runtime.register(Arc::new(ForgeModule::new()));
+
+    // GeneratorModule — hosts `generate/module` (scaffold a fresh ServiceModule).
+    //
+    // This was the ONE REAL ORPHAN the dispatch-parity audit had been reporting all
+    // along, invisible under two false positives until `dispatch_orphans` stopped
+    // counting adapter-served `Provided` commands (#325). Nothing was wrong with the
+    // command: `GenerateModule` is a correct dep-holding typed command and IS in
+    // `GeneratorModule::commands()`. The module itself was simply never registered —
+    // it appeared in the codebase only in doc comments — so `generate/module` was
+    // advertised in `commands/help`, did-you-mean suggestions, and the persona tool
+    // offer while nothing on the runtime could route it. Exactly the #309 class, still
+    // live, and the reason the audit exists.
+    //
+    // Background priority, no dedicated thread, `generate/` prefix — see its
+    // `ModuleConfig`. Privileged: it writes Rust source into the workspace tree, so it
+    // is not on the persona toolbelt.
+    runtime.register(Arc::new(crate::modules::generator::GeneratorModule::new()));
 
     // EventsModule (L1-1 — event-class declaration registry).
     // Spec: GRID-BUS-ARCHITECTURE §2.2 (continuum#1439).
@@ -1297,7 +1345,8 @@ pub fn start_server(
                     volume_total,
                     cold_root.clone(),
                     crate::system_resources::serving_active_artifacts(),
-                )) as Arc<dyn crate::paging::pool::ResourcePool>);
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
                 log_info!(
                     "ipc",
                     "server",
@@ -1561,7 +1610,59 @@ pub fn start_server(
     // default 8790. Bind failure is LOUD (a squatted port must surface), but
     // non-fatal: the core serves without a media plane rather than dying —
     // the live face shows its honest avatar-presence chip in that state.
-    let call_manager = std::sync::Arc::new(crate::live::transport::call_server::CallManager::new());
+    let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
+    // Handle for the live-call projection (#58). Taken HERE because the original is
+    // moved into the module registry below, and the emitter is a READER — it must not
+    // change who owns the service.
+    let voice_service_for_view = voice_service.clone();
+
+    // CORE-DRIVEN SESSION REGISTRATION (#58). Built mutable so the registrar can be
+    // installed BEFORE the Arc freezes it: joining a call now registers the session in
+    // the core itself, instead of waiting for whichever client happened to implement it.
+    // Exactly one ever did (Node, in legacy/, now retired), which is why iOS/Android/TUI
+    // citizens were structurally voiceless rather than merely buggy.
+    let call_manager = {
+        let mut mgr = crate::live::transport::call_server::CallManager::new();
+        let voice_for_join = voice_service.clone();
+        mgr.set_session_registrar(std::sync::Arc::new(
+            move |call_id: &str, user_id: &str, display_name: &str, is_ai: bool| {
+                let Ok(uid) = uuid::Uuid::parse_str(user_id) else {
+                    // A non-uuid participant id is a caller bug, not a runtime condition —
+                    // say so rather than registering a citizen nobody can address later.
+                    tracing::warn!(
+                        call_id = %call_id,
+                        user_id = %user_id,
+                        probe_class = "live.register.bad_user_id",
+                        "call join carried a non-uuid user id — session NOT registered for                          this participant; she will render as unregistered in the live view"
+                    );
+                    return;
+                };
+                let participant = crate::live::VoiceParticipant {
+                    user_id: uid,
+                    display_name: display_name.to_string(),
+                    participant_type: if is_ai {
+                        crate::live::SpeakerType::Persona
+                    } else {
+                        crate::live::SpeakerType::Human
+                    },
+                    expertise: Vec::new(),
+                    // Audio-native is a MODEL capability the transport cannot know. Left
+                    // false here and owned by whoever knows the model; claiming it from a
+                    // join flag would make a text persona silently miss transcriptions.
+                    is_audio_native: false,
+                };
+                if let Err(e) = voice_for_join.join_participant(call_id, participant) {
+                    tracing::warn!(
+                        call_id = %call_id,
+                        error = %e,
+                        probe_class = "live.register.failed",
+                        "core-driven session registration FAILED — the call is live and the                          core cannot route to this participant"
+                    );
+                }
+            },
+        ));
+        std::sync::Arc::new(mgr)
+    };
     {
         let port = crate::config_env::read("CONTINUUM_CALL_WS")
             .and_then(|s| s.trim().parse::<u16>().ok())
@@ -1578,7 +1679,6 @@ pub fn start_server(
     }
 
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
-    let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
     let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
     let voice_state = Arc::new(VoiceState::new(
         voice_service.clone(),
@@ -1649,6 +1749,33 @@ pub fn start_server(
     // Phase 4a: LoggerModule (absorbs standalone logger worker)
     // Provides log/write, log/ping via main socket
     runtime.register(Arc::new(LoggerModule::new()));
+
+    // ProbeStreamModule: the LIVE glass-box stream — debug/probes/{open,next,close}
+    // over the ProbeRouterLayer fanout (the historical on-disk ledger is
+    // debug/probes/query, stateless, self-registered). #362: this module shipped
+    // 2026-07 and was registered NOWHERE — and the second half of the trap is that
+    // it MUST be built against the router installed in the global subscriber
+    // stack. `ProbeRouterLayer::new()` here would compile, register, route, and
+    // stream silence forever (per-instance Arc<RwLock<..>> state). The handle
+    // comes from install_probe_tracing via installed_probe_router(). Fail LOUD,
+    // not silent, when tracing was never installed — the stream API being absent
+    // is then a stated fact, not a mystery "Unknown command".
+    match crate::routing::installed_probe_router() {
+        Some(router) => {
+            runtime.register(Arc::new(
+                crate::modules::probe_stream::ProbeStreamModule::new(router),
+            ));
+        }
+        None => {
+            tracing::error!(
+                "debug/probes live stream UNAVAILABLE: install_probe_tracing never ran \
+                 in this process, so there is no ProbeRouterLayer to subscribe to — \
+                 debug/probes/{{open,next,close}} will not route. Production boots \
+                 install tracing in main.rs before start_server; only bare test \
+                 harnesses should ever see this."
+            );
+        }
+    }
 
     // search/* migrated to the DynCommand registry (commands/search/*) — the four
     // verbs self-register via inventory, no module registration needed here.
@@ -1783,8 +1910,12 @@ pub fn start_server(
         // already uses `rt_handle.spawn`). Only reached when airc deps are present, so it broke
         // boot on every airc-configured host.
         rt_handle.spawn(async move {
-            match airc_lib::Airc::attach_as(root, "continuum-airc-interceptor", interceptor_daemon_socket)
-                .await
+            match airc_lib::Airc::attach_as(
+                root,
+                "continuum-airc-interceptor",
+                interceptor_daemon_socket,
+            )
+            .await
             {
                 Ok(airc) => {
                     // attach_as yields an owned `Airc`; the interceptor + AircLiveTransport
@@ -1859,10 +1990,12 @@ pub fn start_server(
         // the grid on the module tick and hears every peer's offers (its own echo
         // included — the loopback proof) via inbound_attach → gossip::global_ledger.
         // Rides the DISCOVERED default room, same dep the citizens attach to.
-        runtime.register(Arc::new(crate::modules::grid_capacity::GridCapacityModule::new(
-            resource_daemon.clone(),
-            default_room,
-        )));
+        runtime.register(Arc::new(
+            crate::modules::grid_capacity::GridCapacityModule::new(
+                resource_daemon.clone(),
+                default_room,
+            ),
+        ));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -1883,6 +2016,26 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
             registry.clone(),
         )));
+        runtime.register(Arc::new(crate::modules::room::RoomModule::new(registry.clone(),)));
+        // activity/* (#274) — the verb that turns a recipe into a room. Same
+        // registry: creating a room acts as the CALLER's own airc identity, so the
+        // creator is a real peer rather than the substrate acting anonymously.
+        runtime.register(Arc::new(crate::modules::activity::ActivityModule::new(
+            registry.clone(),
+        )));
+        // Event-driven SWE grade-on-done — the REACT half of the benchmark adapter,
+        // and the verb that actually CLOSES the kanban benchmark loop. Subscribes to
+        // work.card.state_changed (emitted by work/state) and, when a benchmark SWE
+        // card reaches a terminal state, grades the citizen's workspace diff against
+        // the HELD-OUT oracle in a fresh clone at base_commit (launder-proof) and posts
+        // the verdict into the room. No commands, no tick — a pure event subscriber
+        // ([[the-whole-system-is-event-based-not-polling]]). Registered here, at the
+        // real boot site, because `impl ServiceModule` registers nothing: until this
+        // line, the module existed but never reached dispatch, so grade-on-done never
+        // fired in production.
+        runtime.register(Arc::new(
+            crate::modules::benchmark_grade::BenchmarkGradeModule::new(registry.clone()),
+        ));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
         // Schedules the ChannelDigestRegion: per live persona it pre-stages the
         // persona's current-channel digest into the SHARED digest buffer
@@ -2236,7 +2389,14 @@ pub fn start_server(
                     .as_ref()
                     .map(|p| p.fits_on_gpu)
                     .unwrap_or(false);
-                if plan_ready {
+                // Lane-source-agnostic hosting (misfit / grid design): when the
+                // operator pinned an EXTERNAL OpenAI-compatible endpoint, there is
+                // no local lane to "fit on GPU" — enter the ready-check regardless
+                // of the local plan. `await_ready_serving` short-circuits to a
+                // direct decode-probe of the pinned endpoint (K3, a grid peer).
+                let external_lane =
+                    crate::inference::llama_server::external_serving_pin().is_some();
+                if plan_ready || external_lane {
                     // `fits_on_gpu` is a RESOURCE decision (the model fits VRAM) — it does
                     // NOT prove the lane can DECODE. A lane can fit yet fail EVERY
                     // generation with `500 "Compute error."` while `/health` still answers
@@ -2342,14 +2502,30 @@ pub fn start_server(
             // only on a SUBSEQUENT change — avoiding a wasteful boot-time adapter
             // rebuild + redundant swap.
             let mut bound: Option<String> = None;
+            // LEVEL-TRIGGERED retry (#368): edge-only waking is how 4 citizens
+            // stayed stranded on a torn-down model for 47 minutes — the adapter
+            // build failed ONCE during a wedge window, the "retry on the next
+            // snapshot edge" never came (the snapshot had already settled and
+            // never republished), and `bound != active` sat unreconciled forever.
+            // The interval turns that residual mismatch into a retried one: each
+            // tick re-reads the CURRENT snapshot, and the `bound == active` fast
+            // path below makes the steady-state tick free.
+            let mut retry = tokio::time::interval(std::time::Duration::from_secs(30));
+            retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                // Park until the daemon republishes its serving snapshot.
-                if serving_rx.changed().await.is_err() {
-                    tracing::info!(
-                        "serving-snapshot watch closed — served-model re-home reconciler \
-                         exiting (substrate shutdown)"
-                    );
-                    break;
+                // Wake on a snapshot edge OR the retry tick — never park solely
+                // on an edge that may already have passed.
+                tokio::select! {
+                    changed = serving_rx.changed() => {
+                        if changed.is_err() {
+                            tracing::info!(
+                                "serving-snapshot watch closed — served-model re-home \
+                                 reconciler exiting (substrate shutdown)"
+                            );
+                            break;
+                        }
+                    }
+                    _ = retry.tick() => {}
                 }
                 let snap = serving_rx.borrow_and_update().clone();
                 if !snap.ready {
@@ -2620,7 +2796,7 @@ pub fn start_server(
     // The ONE provider registry, OWNED by the Runtime so all three readers share
     // it: the ProvidedCommandInterceptor (in-process/persona route), the
     // connection layer (writer, via ServerState — binds an eye-node on connect),
-    // AND `Runtime::route_command` (the socket route: cu / IPC / MCP). An
+    // AND `Runtime::route_command` (the socket route: uu / IPC / MCP). An
     // eye-node's `provider/register` on any connection binds here; every dispatch
     // path routes perception/observe to it, or fails loud when none is connected.
     let provider_registry = runtime.provider_registry();
@@ -2676,6 +2852,11 @@ pub fn start_server(
     // #249: the durable-transcript reader behind persona wake hydration shares
     // the same substrate executor (one dispatch chain, no parallel query stack).
     crate::persona::durable_history::install_executor(Arc::clone(&executor));
+    // Autonomic dream consolidation: the dream region dispatches `memory/consolidate`
+    // through the SAME wired executor, so a persona consolidates the lessons other agents
+    // taught her into her genome WHILE IDLE — the being-loop's received axis going
+    // autonomic. Same install site + same executor as the L2 producer above.
+    crate::cognition::dream_consolidation::install_consolidate_executor(Arc::clone(&executor));
 
     // Round-2 verifier fix on PR #1568: now that the executor is
     // installed on every module, release the persona-supervisor task
@@ -2951,6 +3132,28 @@ pub fn start_server(
                 positron_serving_source::spawn_serving_emitter(
                     &state.rt_handle,
                     ws_substrate.clone(),
+                );
+
+                // Benchmark board (#329): fold the run-ledger projection into
+                // kind="bench" — the academy right-rail's live rows (who is
+                // solving what, attempt N/M, patch forming, verdicts).
+                positron_bench_source::spawn_bench_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                );
+
+                // Live-call glass box (#58): folds the TRANSPORT's calls against
+                // the ORCHESTRATOR's registered sessions. Their disagreement is
+                // the defect — a live call with no registration is why a persona
+                // sits present and silent while isInCall() returns false and her
+                // responses are dropped. Rendering it makes that a visible fact on
+                // web + iOS + Android + TUI at once, instead of a mystery each
+                // client rediscovers.
+                positron_live_source::spawn_live_call_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                    call_manager.clone(),
+                    voice_service_for_view.clone(),
                 );
 
                 // Producer half of the same stream: attach a node-level

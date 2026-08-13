@@ -22,4 +22,16 @@ error?: string,
  * How many bytes of candidate patch were graded — 0 means the solver changed nothing,
  * which is a harness signal, not a model score.
  */
-patchBytes: number, };
+patchBytes: number, 
+/**
+ * The NAMES of the failing tests — the actionable half of the verdict. A count
+ * teaches nothing; a named test is what a human reviewer (or the citizen herself,
+ * next attempt) can actually chase.
+ */
+failedTests?: Array<string>, 
+/**
+ * The failing FAIL_TO_PASS run's output tail (capped) — the assertion diff.
+ * Names say WHICH test failed; this says WHAT it printed, which is the half
+ * a next attempt (or a human reviewer) actually reasons from.
+ */
+failureExcerpt?: string, };

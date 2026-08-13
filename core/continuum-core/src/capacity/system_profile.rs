@@ -121,6 +121,9 @@ impl SystemProfile {
             available_bytes: available,
             total_vram_bytes: total,
             perf_cores: self.perf_cores,
+            // Same operator headroom policy as every live serving-budget caller
+            // (serving_daemon): usable = live × the config fraction.
+            budget_fraction: crate::config_env::vram_headroom(),
         })
         .usable_bytes
     }

@@ -26,7 +26,15 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// Max act→observe cycles she may take on one task before it counts as unfinished. Agentic
 /// SWE tasks (read → edit → compile → fix) need several; default generously.
-const DEFAULT_MAX_ACTS: u32 = 12;
+// 32, up from 12 (glass-boxed 2026-08-08, benchy-sympy-22840-n9 attempt 1): the
+// 12-act cap — not the clock — was the binding constraint. She was cut off
+// mid-recovery (edit failed NOT-FOUND → the error taught verbatim-copy → she was
+// re-reading the target region when the budget expired) with 2.5 of the 3
+// deadline hours unused. Field SWE agents routinely take 30–80 steps; a count
+// cap that binds before the deadline is the hardcoded-LCD-clamp shape the
+// cognition pipeline doc forbids. The deadline stays derived from this budget
+// (× PER_ACT_ALLOWANCE_SECS), so the wedge watchdog scales with it.
+const DEFAULT_MAX_ACTS: u32 = 32;
 /// How long to wait for the forked cognition template (post-spawn `register_from_cfg` race).
 const FORK_WAIT_TRIES: u32 = 20;
 
@@ -86,6 +94,16 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub capture_dir: Option<String>,
+    /// HARNESS-INTERNAL (set by the attempts loop, never by callers): sha256 of
+    /// the previous FAILED attempt's patch. When this attempt settles with a
+    /// byte-identical diff, ONE bounded re-drive fires with the hash-proven
+    /// fact — catching the resubmission BEFORE a redundant grade burns the
+    /// attempt (round E receipts: BOTH citizens copied their failed patch on
+    /// attempt 3, and post-grade detection could only warn an attempt 4 that
+    /// never exists).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub prev_failed_patch_sha: Option<String>,
     /// DIAGNOSTIC ONLY (default false — she competes WHOLE, memory ON). When true, her
     /// durable episodic/semantic recall is suppressed for this run — the same probe
     /// `cognition/eval` exposes ([[eval-measures-the-true-full-being-not-a-stripped-copy]]).
@@ -128,6 +146,17 @@ pub struct AgentSolveParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub path_prepend: Option<Vec<String>>,
+    /// N CHANCES (Joel, 2026-08-08: "they too need to learn how to investigate and fix
+    /// their code"): how many graded attempts this detached run may take. After a
+    /// non-resolved auto-grade, the NEXT attempt re-enters the SAME workspace (her
+    /// previous edits intact) with the grader's verdict — named failing tests — appended
+    /// to the task, so investigating her own failure IS the work. Only meaningful on a
+    /// detached, auto-graded run; a resolved grade, an ungradeable tree, or a harness
+    /// fault ends the run early. Default 1 (one shot, exactly the old behavior) — the
+    /// per-benchmark adapter that dispatches the run owns its N, not this abstraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub attempts: Option<u32>,
 }
 
 /// What the caller grades when the solve returns. Two genuinely different contracts,
@@ -159,6 +188,15 @@ pub struct AgentSolveResult {
     pub patch: String,
     /// Paths she touched (from `git diff --name-only`).
     pub files_changed: Vec<String>,
+    /// Paths her acts NAMED (reads, searches, edit attempts — any `file_path`/`path`
+    /// arg on an executed call), first-touch order. The investigation trail as STATE:
+    /// a failed edit or a read appears here and nowhere else. The N-chances retry
+    /// threads these into the next attempt's task, because a retry is a FRESH turn
+    /// with fresh working memory — without this, "the file you already identified"
+    /// names knowledge the next attempt does not have (glass-boxed 2026-08-08,
+    /// benchy-sympy-22840-n4 attempt 2: 10 of 12 acts re-deriving cse_main.py).
+    #[serde(default)]
+    pub files_examined: Vec<String>,
     /// True when this is the immediate ACK of a detached run (`acts`/`patch` empty — poll the
     /// result file `agent-solve-<run_id>.json` for the real outcome).
     pub detached: bool,
@@ -211,34 +249,565 @@ impl ActionCommand for AgentSolve {
             let mut inner = p;
             inner.detach = Some(false);
             inner.run_id = Some(run_id.clone());
+            // HANDS-FREE GRADE eligibility, captured before `inner` moves: a SCORED,
+            // workspace-deliverable run inside a citizen's staged SWE checkout
+            // (`citizens/peers/<uuid>/workspace/swe/<instance>`) grades itself the
+            // moment it settles — #346 slice 2's first cut. The instance id is the
+            // checkout's own directory name (the shape `benchmark/swe-setup` stages).
+            // #365: a scored run inside a staged SWE checkout that left `deliverable`
+            // unset used to slip past this gate and burn its chances as ONE ungraded
+            // attempt with no warning (live 2026-08-08: two sympy runs ended patchless
+            // and silent). Unspecified is not a choice — infer the workspace
+            // deliverable and say so. An EXPLICIT Deliverable::Answer is respected,
+            // loudly, because it disarms grading on a run that asked to be scored.
+            let swe_checkout = inner.workspace.contains("/workspace/swe/");
+            if inner.scored.unwrap_or(false) && swe_checkout {
+                match inner.deliverable {
+                    None => {
+                        inner.deliverable = Some(Deliverable::Workspace);
+                        tracing::warn!(
+                            run_id = %run_id,
+                            "agent/solve: scored SWE-checkout run without `deliverable` — \
+                             inferring deliverable=workspace so autograde + attempts arm (#365)"
+                        );
+                    }
+                    Some(Deliverable::Answer) => {
+                        tracing::warn!(
+                            run_id = %run_id,
+                            "agent/solve: scored SWE-checkout run with EXPLICIT deliverable=answer — \
+                             autograde disarmed; attempts collapse to one ungraded run (#365)"
+                        );
+                    }
+                    Some(Deliverable::Workspace) => {}
+                }
+            }
+            let autograde_workspace = (inner.scored.unwrap_or(false)
+                && matches!(inner.deliverable, Some(Deliverable::Workspace))
+                && swe_checkout)
+            .then(|| inner.workspace.clone());
             tokio::spawn(async move {
                 let path = agent_solve_ledger_path(&run_id);
-                match AgentSolve::solve_body(inner).await {
-                    Ok(r) => {
-                        if let (Some(path), Ok(json)) =
-                            (path.as_ref(), serde_json::to_string_pretty(&r))
-                        {
-                            let _ = std::fs::write(path, json);
+                // JOURNAL `state: running` NOW, before attempt 1 does anything (#2246,
+                // live 2026-08-11): the result file used to be written only when an
+                // attempt ENDED, so `benchmark/runs` — the projection whose whole job
+                // is "silence must never be ambiguous with progress" — could not list
+                // a run at all for the entire first attempt (an hour-plus on a full
+                // SWE budget). Four dispatched solves ran invisible for 17 minutes
+                // while every watcher read the empty projection as "nothing started".
+                // The marker folds as `active` with the solver named (fold_run_card
+                // reads `persona_id`); each finished attempt overwrites it with the
+                // real result, exactly as before.
+                // The instance under test — the staged checkout's own dir name (the
+                // shape benchmark/swe-setup stages). Carried on EVERY ledger write so
+                // the board (#329) names WHAT is being worked from second zero, not
+                // just who; None outside a staged SWE checkout (a plain agent run).
+                let instance: Option<String> = inner
+                    .workspace
+                    .contains("/workspace/swe/")
+                    .then(|| {
+                        std::path::Path::new(&inner.workspace)
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                    })
+                    .flatten();
+                if let Some(p) = path.as_ref() {
+                    let _ = std::fs::write(
+                        p,
+                        serde_json::json!({
+                            "state": "running",
+                            "run_id": run_id,
+                            "persona_id": inner.persona_id,
+                            "workspace": inner.workspace,
+                            "instance": instance,
+                        })
+                        .to_string(),
+                    );
+                }
+                // HOLD THE LANE STEADY for the run's whole lifetime — the same RAII pin a
+                // living-persona eval binds ([[benchmark-is-a-governor-preemption-lease]]).
+                // Without it, the OPTIONAL grow-back re-home relaunches the lane under the
+                // solve's first in-flight generation: measured THREE times on 2026-08-08
+                // (benchy-22840-n7 and atlas-24066-n5 both died at act 0 to "stream read
+                // error" when the post-boot window grow bounced the lane). A scored run is
+                // exactly the demand the hold exists for; a real pressure emergency still
+                // preempts (the hold only suppresses the optional grow, never a shrink).
+                let _steady =
+                    crate::modules::serving_daemon::ServingSteadyHold::acquire(run_id.clone());
+                // N CHANCES: attempts loop. Each attempt is a full solve; a non-resolved
+                // auto-grade re-enters the SAME workspace with the verdict appended to the
+                // task (named failing tests — the teachable half of the grade). The loop
+                // ends on: resolved, attempts exhausted, an ungradeable tree (gate/error —
+                // a harness fault must never burn her chances), a non-graded run (nothing
+                // to iterate against), or a solve failure. Result/grade files are OVERWRITTEN
+                // per attempt — the poll surface shows the LATEST state; history lives on
+                // the `benchmark.autograde` probe (attempt field) and the capture sink.
+                let max_attempts = inner.attempts.unwrap_or(1).max(1);
+                let base_task = inner.task.clone();
+                let mut next_task = base_task.clone();
+                // #379 follow-through (round D's learning-stuck finding): the sha of the
+                // previous FAILED attempt's patch. When the current attempt's patch hashes
+                // the same, the resubmission is detected as STATE — not inferred from
+                // size — and the next contract leads with that fact. Round B and round D
+                // both burned attempts on byte-identical resubmits the verdict prose
+                // never surfaced as such.
+                let mut prev_patch_sha: Option<String> = None;
+                // Per-attempt DEADLINE (harnesses-first, Joel 2026-08-08): a wedged
+                // fork/lane used to stall this loop SILENTLY FOREVER — glass-boxed
+                // live: both graded runs froze after attempt 2 for 2.5h with zero
+                // ticks, zero markers, and the operator found out by ASKING. Silence
+                // must never be ambiguous with progress. Derived from the act budget,
+                // never flat (eval's 600s bounds ONE small task; a 12-act SWE attempt
+                // legitimately runs ~1h): budget × per-act allowance, generous 3×
+                // headroom over the measured ~5.5 min/act. On expiry: loud probe +
+                // loud marker on the poll surface, and the run ENDS — a retry into
+                // the same wedge would be a loop, and detection is the job here.
+                // 8 min/act: still ~1.5× the measured ~5.5 min/act worst case (and
+                // 3× the ~2.4 min/act measured on the n9/n6 rounds), while keeping
+                // the full-budget deadline at 32 × 8min ≈ 4.3h — comparable wedge
+                // detection to the old 12 × 15min = 3h, at 2.7× the act budget.
+                const PER_ACT_ALLOWANCE_SECS: u64 = 8 * 60;
+                let attempt_deadline = std::time::Duration::from_secs(
+                    inner.max_acts.unwrap_or(DEFAULT_MAX_ACTS).max(1) as u64
+                        * PER_ACT_ALLOWANCE_SECS,
+                );
+                // #384: the attempt counter is MANUAL so an infra-void attempt (she
+                // never worked — zero acts, no error, empty patch: the F1 signature,
+                // where six null-decision settles during a serving transition graded
+                // as capability zeros) can retry WITHOUT burning her chances. A zero
+                // is a harness claim; the harness must not launder its own faults
+                // into her record.
+                let mut attempt = 1;
+                let mut infra_void_retries: u32 = 0;
+                const INFRA_VOID_RETRIES_MAX: u32 = 2;
+                while attempt <= max_attempts {
+                    let mut this_attempt = inner.clone();
+                    this_attempt.task = next_task.clone();
+                    this_attempt.prev_failed_patch_sha = prev_patch_sha.clone();
+                    crate::probe!(
+                        class = "benchmark.attempt.start",
+                        run_id = %run_id,
+                        attempt,
+                        max_attempts,
+                        deadline_s = attempt_deadline.as_secs(),
+                        "solve attempt starting — pulse anchor for run-liveness watchers"
+                    );
+                    let body = match tokio::time::timeout(
+                        attempt_deadline,
+                        AgentSolve::solve_body(this_attempt),
+                    )
+                    .await
+                    {
+                        Ok(body) => body,
+                        Err(_) => {
+                            let msg = format!(
+                                "attempt {attempt} of {max_attempts} exceeded its deadline \
+                                 ({}s = max_acts × {}s) with no settlement — fork/lane wedge, \
+                                 an INFRA fault, never a capability verdict",
+                                attempt_deadline.as_secs(),
+                                PER_ACT_ALLOWANCE_SECS,
+                            );
+                            crate::probe!(
+                                class = "benchmark.stall",
+                                run_id = %run_id,
+                                attempt,
+                                deadline_s = attempt_deadline.as_secs(),
+                                "solve attempt DEADLINE EXCEEDED — ending the run loudly"
+                            );
+                            if let Some(path) = path.as_ref() {
+                                let _ = std::fs::write(
+                                    path,
+                                    serde_json::json!({
+                                        "failed": true,
+                                        "infra_error": msg,
+                                        "run_id": run_id,
+                                        "attempt": attempt,
+                                    })
+                                    .to_string(),
+                                );
+                            }
+                            tracing::error!(run_id = %run_id, attempt, "agent/solve detached attempt stalled past deadline");
+                            break;
                         }
-                        if let Some(bus) = crate::runtime::MessageBus::global() {
-                            if let Ok(v) = serde_json::to_value(&r) {
-                                bus.publish_async_only("agent:solve:complete", v);
+                    };
+                    match body {
+                        Ok(r) => {
+                            // Ledger write carries the board facts the result struct
+                            // doesn't: WHICH instance, attempt N of M (#329) — injected
+                            // as JSON rather than widening AgentSolveResult, whose wire
+                            // shape non-benchmark callers also consume.
+                            if let (Some(path), Ok(mut v)) =
+                                (path.as_ref(), serde_json::to_value(&r))
+                            {
+                                if let Some(obj) = v.as_object_mut() {
+                                    obj.insert("attempt".into(), attempt.into());
+                                    obj.insert("max_attempts".into(), max_attempts.into());
+                                    if let Some(inst) = instance.clone() {
+                                        obj.insert("instance".into(), inst.into());
+                                    }
+                                }
+                                if let Ok(json) = serde_json::to_string_pretty(&v) {
+                                    let _ = std::fs::write(path, json);
+                                }
+                            }
+                            if let Some(bus) = crate::runtime::MessageBus::global() {
+                                if let Ok(v) = serde_json::to_value(&r) {
+                                    bus.publish_async_only("agent:solve:complete", v);
+                                }
+                            }
+                            tracing::info!(run_id = %run_id, acts = r.acts, attempt, "agent/solve detached run complete");
+                            // #384: ZERO acts + NO error + EMPTY patch = she never
+                            // worked at all — the serving-transition signature (F1:
+                            // decision:null ticks, ~60ms "deliberations", lane not
+                            // resident at pre-flight). That is INFRA, never a
+                            // capability verdict: retry the SAME attempt after a
+                            // settling pause, bounded; exhausted retries end the run
+                            // with a loud infra marker instead of a graded zero.
+                            // #386 extension: an attempt whose settle carries ANY
+                            // infra_error died to INFRASTRUCTURE by definition (the
+                            // inference path failed her — round G: wedge-killed
+                            // attempts with 'no TOKEN progress' still graded and
+                            // burned). Same arm, same bound; her partial work stays
+                            // in the workspace and the retry resumes from it.
+                            if r.infra_error.is_some()
+                                || (r.acts == 0 && r.patch.is_empty())
+                            {
+                                if infra_void_retries < INFRA_VOID_RETRIES_MAX {
+                                    infra_void_retries += 1;
+                                    crate::probe!(
+                                        class = "benchmark.attempt.infra_void",
+                                        run_id = %run_id,
+                                        attempt,
+                                        retry = infra_void_retries,
+                                        "attempt produced ZERO work with no error — \
+                                         infra void (serving transition); retrying the \
+                                         SAME attempt, her chances unburned (#384)"
+                                    );
+                                    tokio::time::sleep(std::time::Duration::from_secs(90))
+                                        .await;
+                                    continue;
+                                }
+                                crate::probe!(
+                                    class = "benchmark.attempt.infra_void",
+                                    run_id = %run_id,
+                                    attempt,
+                                    retry = infra_void_retries,
+                                    "infra-void retries exhausted — run ends as INFRA, \
+                                     never graded (#384)"
+                                );
+                                if let Some(path) = path.as_ref() {
+                                    let _ = std::fs::write(
+                                        path,
+                                        serde_json::json!({
+                                            "failed": true,
+                                            "infra_error": "attempt produced zero work \
+                                             with no error repeatedly — serving never \
+                                             delivered a working mind (#384); this run \
+                                             is an INFRA VOID, not a capability result",
+                                            "run_id": run_id,
+                                            "attempt": attempt,
+                                        })
+                                        .to_string(),
+                                    );
+                                }
+                                break;
+                            }
+                            // The claim ran to a diff; now the diff runs to a VERDICT with
+                            // no human in the loop. Same grader as `benchmark/swe-grade`
+                            // (fresh clone, held-out tests) — its verdict path also writes
+                            // the citizen's experience stream, so solve→grade→lesson is one
+                            // unbroken chain. The verdict lands on the poll surface beside
+                            // the result (`...<run_id>.grade.json`) + the probe stream.
+                            let Some(ws) = autograde_workspace.clone() else {
+                                break; // ungraded run — nothing to iterate against
+                            };
+                            let instance = std::path::Path::new(&ws)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            // #379: the attempt's PATCH is a receipt, not a transient.
+                            // Read the exact candidate the grader is about to read (same
+                            // helper — one definition of "her diff"), persist it beside
+                            // the run's captures, and put its sha256 on the wire. Round D
+                            // (2026-08-08) needed "is att3 byte-identical to att2?" and
+                            // NO artifact could answer: probes carried size only. Hash
+                            // custody per the transcript standard (#377); the persisted
+                            // patch is what a verdict-as-state lever will compare against.
+                            let patch_sha256 =
+                                match crate::commands::benchmark::workspace_candidate_diff(&ws) {
+                                    Ok(diff) => {
+                                        use sha2::{Digest, Sha256};
+                                        let sha =
+                                            format!("{:x}", Sha256::digest(diff.as_bytes()));
+                                        if let Some(dir) = inner.capture_dir.as_ref() {
+                                            let _ = std::fs::create_dir_all(dir);
+                                            let _ = std::fs::write(
+                                                std::path::Path::new(dir)
+                                                    .join(format!("attempt-{attempt}.patch")),
+                                                &diff,
+                                            );
+                                        }
+                                        sha
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            run_id = %run_id,
+                                            attempt,
+                                            error = %e,
+                                            "attempt patch receipt could not be read — \
+                                             verdict proceeds, custody hole logged"
+                                        );
+                                        String::new()
+                                    }
+                                };
+                            let grade = crate::commands::benchmark::grade_swe(
+                                crate::commands::benchmark::SweGradeParams {
+                                    instance: instance.clone(),
+                                    dataset: None,
+                                    gold: None,
+                                    patch: None,
+                                    workspace: Some(ws),
+                                },
+                            )
+                            .await;
+                            match grade {
+                                Ok(g) => {
+                                    // attempt.end — the FULL verdict on the wire, the
+                                    // bookend of benchmark.attempt.start (Joel 2026-08-08:
+                                    // "emit events for everything — need to know"). Grades
+                                    // were file-only; every wire consumer (probe router →
+                                    // rooms, exam-room widgets, the pulse monitors) had to
+                                    // scrape the ledger to learn an attempt's outcome.
+                                    crate::probe!(
+                                        class = "benchmark.attempt.end",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        attempt,
+                                        max_attempts,
+                                        resolved = g.resolved,
+                                        gate_ok = g.gate_ok,
+                                        f2p_passed = g.fail_to_pass_passed,
+                                        f2p_total = g.fail_to_pass_total,
+                                        p2p_passed = g.pass_to_pass_passed,
+                                        p2p_total = g.pass_to_pass_total,
+                                        patch_bytes = g.patch_bytes,
+                                        patch_sha256 = %patch_sha256,
+                                        failed_tests = %g.failed_tests.join(","),
+                                        "solve attempt graded — the verdict, on the wire"
+                                    );
+                                    crate::probe!(
+                                        class = "benchmark.autograde",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        resolved = g.resolved,
+                                        gate_ok = g.gate_ok,
+                                        attempt,
+                                        max_attempts,
+                                        "solve completion auto-graded"
+                                    );
+                                    if let Some(p) = agent_solve_ledger_path(&run_id) {
+                                        let gp = p.with_extension("grade.json");
+                                        if let Ok(j) = serde_json::to_string_pretty(&g) {
+                                            let _ = std::fs::write(gp, j);
+                                        }
+                                    }
+                                    if g.resolved || !g.gate_ok || g.error.is_some() {
+                                        break;
+                                    }
+                                    // Identical-resubmit detection: a receipt comparison,
+                                    // never a guess. Only meaningful for a real diff (two
+                                    // empty patches hash equal vacuously — the zero-diff
+                                    // arm owns that case).
+                                    let identical_resubmit = g.patch_bytes > 0
+                                        && !patch_sha256.is_empty()
+                                        && prev_patch_sha.as_deref() == Some(patch_sha256.as_str());
+                                    if identical_resubmit {
+                                        crate::probe!(
+                                            class = "benchmark.resubmit.identical",
+                                            run_id = %run_id,
+                                            instance = %instance,
+                                            attempt,
+                                            patch_sha256 = %patch_sha256,
+                                            "attempt resubmitted a BYTE-IDENTICAL patch — \
+                                             the previous verdict did not teach (learning-stuck \
+                                             signature, on the wire the moment it happens)"
+                                        );
+                                    }
+                                    prev_patch_sha = Some(patch_sha256.clone());
+                                    if attempt == max_attempts {
+                                        break;
+                                    }
+                                    // The next chance carries the verdict — what a human
+                                    // reviewer would hand back. Built from the BASE task
+                                    // each round so feedback never stacks into a scroll.
+                                    //
+                                    // The contract FORKS on whether the graded attempt
+                                    // produced a diff. The investigate-and-fix wording is
+                                    // only true when edits exist; handed to a zero-diff
+                                    // attempt it re-authorizes another discovery loop
+                                    // ("investigate… run them…") — glass-boxed live
+                                    // 2026-08-08: three graded attempts, 224 acts, zero
+                                    // code/write|code/edit calls, each retry re-entering
+                                    // the same read/search spiral. A retry's objective is
+                                    // STATE, so the zero-diff arm changes the objective:
+                                    // an edit is the only move that earns feedback.
+                                    // HELD-OUT honesty (due-diligence find, 2026-08-08): the
+                                    // named failing tests come from the grader's fresh clone
+                                    // + the instance's held-out test_patch — they DO NOT
+                                    // EXIST in her workspace. The old wording ("Failing
+                                    // tests: X … run them") was an unfollowable instruction:
+                                    // atlas-24066-n5 was told to run test_issue_24062, which
+                                    // no grep of her tree can find. Name them as the
+                                    // grader's, and point her at the reproduction she CAN
+                                    // run — the example in the task's own issue text.
+                                    let failing = if g.failed_tests.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(
+                                            " The grader's held-out tests still failing: {} \
+                                             (these are NOT in your workspace — do not search \
+                                             for them; reproduce the problem with the example \
+                                             from the task description instead, and verify \
+                                             your fix against that).",
+                                            g.failed_tests.join(", ")
+                                        )
+                                    };
+                                    // The OUTPUT half of the verdict (atlas-sympy-24066-n4,
+                                    // 2026-08-08): she rebuilt ~90% of the gold patch and
+                                    // missed on one predicate; the verdict named the failing
+                                    // test but not what it PRINTED. The assertion diff — the
+                                    // leftover `Dimension(impedance*capacitance/time)` — is
+                                    // the fact a next attempt reasons from. What a human
+                                    // reviewer would paste, so the grader pastes it.
+                                    let output = match g.failure_excerpt.as_deref() {
+                                        Some(x) if !x.trim().is_empty() => format!(
+                                            "\n\nFailing test output (what the test run printed):\n{x}\n"
+                                        ),
+                                        _ => String::new(),
+                                    };
+                                    // A retry is a FRESH turn with fresh working memory, so
+                                    // "the file you already identified" names knowledge the
+                                    // next attempt does not have (glass-boxed 2026-08-08,
+                                    // 22840-n4 attempt 2: her recall carried only a generic
+                                    // "I worked a coding task" reflection, and she spent 10
+                                    // of 12 acts re-deriving cse_main.py). The trail is
+                                    // STATE the substrate holds — hand it back explicitly.
+                                    // DEAD-ATTEMPT honesty (due-diligence find, 2026-08-08):
+                                    // an attempt that died before acting (infra fault, acts
+                                    // 0) leaves a junk trail — atlas-24066-n5 attempt 2 was
+                                    // told "go straight to the file you already identified.
+                                    // Files examined: sympy/physics" after attempt 1 died at
+                                    // act 0. The verdict asserted history that never
+                                    // happened. A trail only rides when the attempt actually
+                                    // worked, and directory fragments are filtered — only
+                                    // entries that look like FILES teach.
+                                    let attempt_worked = r.acts > 0;
+                                    let file_entries: Vec<&String> = r
+                                        .files_examined
+                                        .iter()
+                                        .filter(|p| p.rsplit('/').next().is_some_and(|s| s.contains('.')))
+                                        .collect();
+                                    let trail = if !attempt_worked || file_entries.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(
+                                            " Files your previous attempt examined (in order): {}.",
+                                            file_entries
+                                                .iter()
+                                                .map(|s| s.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(", ")
+                                        )
+                                    };
+                                    next_task = if g.patch_bytes == 0 {
+                                        // "the file you already identified" is only true when
+                                        // the trail actually names one; a dead or fileless
+                                        // attempt gets a fresh-start objective instead of a
+                                        // reference to history that never happened.
+                                        let go = if trail.is_empty() {
+                                            "Find the file at fault and apply your best-guess fix"
+                                        } else {
+                                            "Go straight to the file you already identified and apply your best-guess fix"
+                                        };
+                                        format!(
+                                            "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} produced NO EDIT] \
+                                             You changed no files, so the grader had nothing to run.{failing}{trail} \
+                                             Reading and searching cannot score; only an edit can. This attempt: {go} \
+                                             with code/edit — a wrong edit earns failing-test feedback to iterate on; \
+                                             no edit earns nothing.{output}",
+                                        )
+                                    } else {
+                                        let edited = if r.files_changed.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" Your edits are in: {}.", r.files_changed.join(", "))
+                                        };
+                                        // The resubmit fact LEADS the contract when it fired:
+                                        // round D proved a verdict buried mid-prose does not
+                                        // alter resubmission behavior. This is the receipt
+                                        // (sha equality) speaking, and it names the ONLY
+                                        // moves that can change the next verdict.
+                                        let resubmit = if identical_resubmit {
+                                            format!(
+                                                " STOP AND READ: attempt {attempt}'s patch was \
+                                                 BYTE-IDENTICAL to attempt {}'s (verified by \
+                                                 hash). The grader ran the exact same diff and \
+                                                 returned the exact same failure. Submitting it \
+                                                 a third time cannot change anything. Before any \
+                                                 other work: run `git diff HEAD` to SEE your \
+                                                 current patch, then either fix the part the \
+                                                 failing tests name, or revert it \
+                                                 (`git checkout -- <file>`) and take a different \
+                                                 approach.",
+                                                attempt - 1
+                                            )
+                                        } else {
+                                            String::new()
+                                        };
+                                        format!(
+                                            "{base_task}\n\n[grader verdict — attempt {attempt} of {max_attempts} did not resolve]{resubmit} \
+                                             FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}.{failing} \
+                                             Your previous edits are still in this workspace.{edited}{trail} \
+                                             Reproduce the problem with the task's own example, fix in place, and \
+                                             verify against that example without breaking what passes.{output}",
+                                            g.fail_to_pass_passed,
+                                            g.fail_to_pass_total,
+                                            g.pass_to_pass_passed,
+                                            g.pass_to_pass_total,
+                                        )
+                                    };
+                                }
+                                Err(e) => {
+                                    // A failed GRADE is not a failed solve — surface it
+                                    // loud on its own channel; the solve result stands.
+                                    crate::probe!(
+                                        class = "benchmark.autograde",
+                                        run_id = %run_id,
+                                        instance = %instance,
+                                        error = %e.to_string(),
+                                        attempt,
+                                        "auto-grade FAILED — solve result stands, verdict missing"
+                                    );
+                                    break;
+                                }
                             }
                         }
-                        tracing::info!(run_id = %run_id, acts = r.acts, "agent/solve detached run complete");
-                    }
-                    Err(e) => {
-                        // Fail LOUD on the poll surface too — a detached run that dies must leave a
-                        // diagnosable marker, never an empty file forever.
-                        if let Some(path) = path {
-                            let _ = std::fs::write(
-                                &path,
-                                serde_json::json!({"failed": true, "run_id": run_id, "error": e.to_string()})
-                                    .to_string(),
-                            );
+                        Err(e) => {
+                            // Fail LOUD on the poll surface too — a detached run that dies must leave a
+                            // diagnosable marker, never an empty file forever.
+                            if let Some(path) = path.as_ref() {
+                                let _ = std::fs::write(
+                                    path,
+                                    serde_json::json!({"failed": true, "run_id": run_id, "error": e.to_string()})
+                                        .to_string(),
+                                );
+                            }
+                            tracing::error!(run_id = %run_id, error = %e, attempt, "agent/solve detached run failed");
+                            break;
                         }
-                        tracing::error!(run_id = %run_id, error = %e, "agent/solve detached run failed");
                     }
+                    // Manual increment (#384): only a GENUINE attempt outcome advances
+                    // the counter — the infra-void arm `continue`s above this line.
+                    attempt += 1;
                 }
             });
             return Ok(AgentSolveResult {
@@ -248,6 +817,7 @@ impl ActionCommand for AgentSolve {
                 spoken: String::new(),
                 patch: String::new(),
                 files_changed: Vec::new(),
+                files_examined: Vec::new(),
                 detached: true,
                 run_id: Some(run_id_ack),
                 infra_error: None,
@@ -267,6 +837,27 @@ fn agent_solve_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
     let dir = base.join("progress");
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join(format!("agent-solve-{run_id}.json")))
+}
+
+/// Global admission gate for scored solve DRIVES — the fix for the lane-thrash death
+/// (glass-boxed 2026-08-11, build 4627): with solves finally firing (dispatch auto-fire +
+/// claim + durable-restore all launch `dispatch_staged_swe_solve`), MORE solves than the
+/// box has serving lanes ran their generation phase at once and thrashed one llama-server
+/// lane to a Connection-refused death mid-solve ("6 mid-relaunch retries exhausted — lane
+/// never came back"). This caps concurrent solve drives at the live serving-lane budget:
+/// the (lanes+1)th solve WAITS for a permit instead of oversubscribing and killing the
+/// lane. The permit is held for the whole drive and released on drop — panic-safe, so a
+/// stalled or panicking solve can never leak a slot. Sized ONCE at first use from the live
+/// lane count (min 1); a later lane shrink is a v1 mismatch (rare, and quiesce_others still
+/// protects the KV prefix). One place, both triggers respect it, because every solve —
+/// inline or detached, dispatch or claim — flows through `solve_body`.
+/// [[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]
+fn solve_admission() -> &'static tokio::sync::Semaphore {
+    static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let lanes = crate::inference::llama_server::current_serving().lanes.max(1) as usize;
+        tokio::sync::Semaphore::new(lanes)
+    })
 }
 
 impl AgentSolve {
@@ -294,11 +885,163 @@ impl AgentSolve {
 
         // 1) Stand up a dedicated measurement lane for the model (her genome pages in on top),
         //    exactly as cognition/eval does — held for the whole drive, dropped after.
-        let lane = crate::cognition::eval::spawn_base_eval_lane(&p.base_model_id).await?;
+        //
+        //    BOUNDED, loudly (glass-boxed 2026-08-08, n8/n11: both forks sat 2h+ with
+        //    ZERO generations, parked somewhere inside lane acquisition — three
+        //    candidate parks (warm-pool spawn gate held by a wedged cold-load; the
+        //    share-check's adapter.initialize() HTTP round-trip against a saturated
+        //    lane, whose sibling endpoint is DOCUMENTED to block mid-generation;
+        //    pressure defer) and no receipt discriminated them because the whole
+        //    acquisition was one silent await. The timeout converts any park into a
+        //    loud named error; the bracket probes make the NEXT stall name its line.
+        // Admission gate (held for the whole drive, released on drop): WAIT for one of the
+        // serving-lane solve slots before acquiring/using a lane, so a dispatch fan-out +
+        // claim + restore can never run more solves than the box has lanes and thrash one to
+        // a Connection-refused death mid-generation. `.ok()` because the semaphore is never
+        // closed; binding to `_solve_permit` keeps the permit alive across the drive.
+        let _solve_permit = solve_admission().acquire().await.ok();
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "admission.acquired",
+            available_slots = solve_admission().available_permits() as u64,
+            "solve admitted — holding one serving-lane solve slot for the drive"
+        );
+        // 1a) Quiesce BEFORE the lane, and let the plan RESETTLE before anything
+        //     pins it (glass-boxed 2026-08-11, Atlas on sympy-24152). The old order
+        //     was lane-then-quiesce, which built a catch-22: the lease's lowered
+        //     lane demand (#2238/#2239) would let the planner collapse a crowded
+        //     4-lane × 16k layout into one big-window lane — but by then the solve
+        //     already held the lane, and the reconcile (correctly) refuses to
+        //     relaunch under a live measurement ("eval holds the lane steady"). The
+        //     solve froze the cramped layout under itself, and the persona worked a
+        //     SWE repo through a ~400-token keyhole: 13.1k of her 16.4k window was
+        //     fixed overhead (tools 6300 + framing 2741 + completion reserve 4096),
+        //     over-window on every single compose. Quiesce-first + an EVENT-GATED
+        //     settle (the daemon's own snapshot watch — never a sleep-poll) means
+        //     the lane below is acquired against the settled big-window plan, and
+        //     `lane.served_ctx` carries it into her fork with no further plumbing.
+        //     Bounded loudly: a planner that keeps the layout is a legitimate
+        //     outcome, so `Unchanged` proceeds — it can never park the solve.
+        let _quiesce_lease =
+            crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
+                |reg| {
+                    let lease = reg.quiesce_others(persona_uuid);
+                    crate::probe!(
+                        class = "benchmark.solve.phase",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        phase = "quiesce_others",
+                        quiesced_peers = lease.count() as u64,
+                        "measured solve holds an exclusive warm slot — idle citizens quiesced so the KV prefix survives turn-to-turn"
+                    );
+                    lease
+                },
+            );
+        if let Some(rx) = crate::inference::llama_server::serving_state_receiver() {
+            let pre = crate::inference::llama_server::current_serving();
+            // Wide enough for one planner tick + a resident-model relaunch (weights
+            // already on disk); a settle that needs longer is a serving fault the
+            // lane-acquire timeout below will name, not something to wait out here.
+            const SERVING_RESETTLE_BOUND: Duration = Duration::from_secs(180);
+            let outcome = crate::inference::llama_server::await_snapshot_resettle(
+                rx,
+                pre.lanes,
+                pre.served_context_window,
+                SERVING_RESETTLE_BOUND,
+            )
+            .await;
+            match outcome {
+                crate::inference::llama_server::SnapshotSettle::Resettled { lanes, window } => {
+                    crate::probe!(
+                        class = "benchmark.solve.phase",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        phase = "serving_resettled",
+                        pre_lanes = pre.lanes as u64,
+                        pre_window = pre.served_context_window as u64,
+                        lanes = lanes as u64,
+                        window = window as u64,
+                        "quiesce lowered demand and the plan RESETTLED — the solve \
+                         drives on the settled layout instead of freezing the crowded one"
+                    );
+                }
+                crate::inference::llama_server::SnapshotSettle::Unchanged => {
+                    crate::probe!(
+                        class = "benchmark.solve.phase",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        phase = "serving_unchanged",
+                        lanes = pre.lanes as u64,
+                        window = pre.served_context_window as u64,
+                        "plan held its layout under lowered demand — proceeding on the \
+                         current lanes/window (legitimate: it may already be optimal)"
+                    );
+                }
+            }
+        }
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "lane_acquire.start",
+            base_model = %p.base_model_id,
+            "solve prelude: acquiring measurement lane"
+        );
+        const LANE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+        let lane = match tokio::time::timeout(
+            LANE_ACQUIRE_TIMEOUT,
+            crate::cognition::eval::spawn_base_eval_lane(&p.base_model_id),
+        )
+        .await
+        {
+            Ok(lane) => lane?,
+            Err(_) => {
+                crate::probe!(
+                    class = "benchmark.solve.phase",
+                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    phase = "lane_acquire.timeout",
+                    base_model = %p.base_model_id,
+                    "lane acquisition exceeded its bound — INFRA fault, run ends loudly"
+                );
+                return Err(CommandError::Internal(format!(
+                    "measurement-lane acquisition for '{}' exceeded {}s — an infra \
+                     stall (spawn gate, share-check HTTP, or pressure defer), never a \
+                     capability verdict. See eval.lane.* / benchmark.solve.phase probes \
+                     for the parked step.",
+                    p.base_model_id,
+                    LANE_ACQUIRE_TIMEOUT.as_secs()
+                )));
+            }
+        };
+        crate::probe!(
+            class = "benchmark.solve.phase",
+            run_id = %run_id.as_deref().unwrap_or("-"),
+            phase = "lane_acquire.done",
+            "solve prelude: lane acquired"
+        );
+
+        // (The exclusive-warm-slot quiesce lease — KV-prefix protection, panic-safe
+        // RAII, she is never suspended, only idle contenders' autonomic ticks —
+        // is acquired in step 1a ABOVE the lane, so its lowered demand shapes the
+        // plan the lane is acquired against. [[benchmark-is-a-governor-preemption-lease]]
+        // [[first-class-citizens-even-during-benchmarks]])
 
         // 2) Fork her WHOLE cognition onto that lane, rooted at the workspace: tools ON, recall ON.
         //    A brief wait covers the post-spawn template race (same as the eval fork-waiter).
         let registry = crate::cognition::persona_workspace::global();
+        // The MISSION rides as standing framing, not as the opening burst alone (#390,
+        // glass-boxed 2026-08-12 on pytest-5221): the task text delivered once was evicted
+        // from every captured prompt after act ~6 of a 24-act solve, and the persona
+        // literally asked "could you describe the symptoms of the issue?" — anchor loss,
+        // the dominant patch-0 shape. A `[mission]` StandingFraming block survives every
+        // compose of the drive, exactly like the pinned board (#347). The burst below
+        // still fires — it is the directed TRIGGER; this is the PERSISTENCE.
+        let mission = std::sync::Arc::new(crate::persona::mission_source::MissionSource::new(
+            persona_uuid,
+            format!(
+                "YOUR ONE JOB this whole session (re-read this every step):\n{}\n\nWork in \
+                 `{workspace}` — that directory IS the task's repo. The deliverable is the \
+                 edit your tools leave there; a session that only reads has failed.",
+                p.task.trim()
+            ),
+        ));
         let mut cycle = None;
         for attempt in 0..FORK_WAIT_TRIES {
             cycle = registry.fork_eval_cycle_with_adapter(
@@ -308,6 +1051,9 @@ impl AgentSolve {
                 true,             // with_tools — her hands are ON
                 Some(&workspace), // roots the ToolExecutor at the sandbox cwd
                 p.suppress_recall.unwrap_or(false), // memory/RAG ON by default; the diagnostic knob
+                vec![crate::cognition::persona_workspace::GroundingSource::framing(
+                    mission.clone(),
+                )],
             );
             if cycle.is_some() {
                 break;
@@ -432,24 +1178,237 @@ impl AgentSolve {
                 None,
             ),
         );
-        let settled = crate::cognition::act_observe::drive_to_settle(
-            &cycle,
-            burst,
-            room,
-            max_acts,
-            {
-                let f = crate::cognition::workspace::TurnFraming::directed();
-                match p.deliverable.unwrap_or_default() {
-                    Deliverable::Workspace => f.on_workspace(),
-                    Deliverable::Answer => f,
-                }
-            },
-        )
-        .await;
+        let workspace_deliverable =
+            matches!(p.deliverable.unwrap_or_default(), Deliverable::Workspace);
+        let framing = {
+            let f = crate::cognition::workspace::TurnFraming::directed();
+            if workspace_deliverable {
+                f.on_workspace()
+            } else {
+                f
+            }
+        };
+        let mut settled =
+            crate::cognition::act_observe::drive_to_settle(&cycle, burst, room, max_acts, framing)
+                .await;
 
         // 4) Collect the HANDS artifact: everything she changed in the workspace as a unified diff
         //    (new files included), plus the touched paths. This is what SWE/Terminal-Bench apply.
-        let (patch, files_changed) = workspace_patch(&workspace).await;
+        let (mut patch, mut files_changed) = workspace_patch(&workspace).await;
+
+        // EMPTY-DIFF RE-DRIVE — the two-gates doctrine made mechanism (glass-boxed
+        // 2026-08-08, atlas-sympy-24066-n6 attempts 2+3): on a Workspace-deliverable
+        // task she settled by SPEAKING after ONE act — a generic file summary, zero
+        // edits — leaving 11 of 12 acts unused, twice, near-verbatim. Working is not
+        // speaking: when the deliverable is the workspace diff, an attempt ending with
+        // an EMPTY diff and real remaining budget must not end silently. ONE bounded
+        // re-drive (a retry, never a nag loop): state the structural fact, hand back
+        // the remaining budget. If she ends on an empty diff again, THAT settles —
+        // honestly graded, with the fact on the record.
+        //
+        // This fires on ANY non-infra end with budget remaining — a Speak, the #206
+        // stuck backstop, or the #390 discovery-saturation gate (which deliberately
+        // ends the drive EARLY, at half budget, precisely so this re-drive still has
+        // budget to hand back; see `drive_to_settle`). It used to require
+        // `spoken.is_some()`, which structurally excluded the gated endings — the one
+        // population that most needs the redirect. TRUE budget exhaustion is still
+        // excluded by `acts + 1 < max_acts` (nothing left to hand back), and infra
+        // failures by `inference_error` — those grade honestly as before.
+        if workspace_deliverable
+            && patch.is_empty()
+            && settled.inference_error.is_none()
+            && settled.acts + 1 < max_acts
+        {
+            let remaining = max_acts - settled.acts;
+            crate::probe!(
+                class = "benchmark.empty_diff_redrive",
+                run_id = %run_id.as_deref().unwrap_or("-"),
+                acts_used = settled.acts,
+                acts_remaining = remaining,
+                "workspace-deliverable attempt ended with an EMPTY diff and remaining \
+                 act budget (Speak, stuck backstop, or #390 saturation gate) — one \
+                 bounded re-drive with the structural fact"
+            );
+            let fact = format!(
+                "Status check from the grading harness (a structural fact, not a person): \
+                 your workspace diff is EMPTY — no file here differs from where you \
+                 started, so as of now there is NOTHING to grade. Speaking does not \
+                 submit work: this task is graded ONLY on the changes your tools make \
+                 to the files in this workspace. You have {remaining} actions left. \
+                 Use them now: reproduce the problem with the example in the task \
+                 description, find the faulty code, and change it in place with \
+                 code/edit."
+            );
+            (patch, files_changed) =
+                redrive_with_fact(&cycle, room, framing, remaining, fact, &mut settled, &workspace)
+                    .await;
+        }
+
+        // IDENTICAL-DIFF RE-DRIVE — the empty-diff block's sibling (round E
+        // sha receipts, 2026-08-08: BOTH citizens settled attempt 3 with a
+        // patch byte-identical to the attempt-2 patch that had just failed —
+        // Atlas c4dbfba9…×2, Benchy 531a03d2…×2 — and the post-grade detector
+        // could only address an attempt 4 that never exists). Same patch ⇒
+        // same verdict, deterministically: settling on it re-buys a failure.
+        // ONE bounded re-drive with the hash-proven fact, at the only moment
+        // it can still change the attempt's outcome. If she settles identical
+        // AGAIN, that grades honestly — fact on the record, never a nag loop.
+        if workspace_deliverable
+            && !patch.is_empty()
+            && settled.inference_error.is_none()
+            && settled.spoken.is_some()
+            && settled.acts + 1 < max_acts
+        {
+            let sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(patch.as_bytes()))
+            };
+            if p.prev_failed_patch_sha.as_deref() == Some(sha.as_str()) {
+                let remaining = max_acts - settled.acts;
+                crate::probe!(
+                    class = "benchmark.identical_diff_redrive",
+                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    patch_sha256 = %sha,
+                    acts_remaining = remaining,
+                    "settle produced a patch BYTE-IDENTICAL to the previous failed \
+                     attempt's — one bounded re-drive with the hash-proven fact, \
+                     before a redundant grade burns the attempt"
+                );
+                let fact = format!(
+                    "Status check from the grading harness (a structural fact, not a \
+                     person): your workspace diff right now is BYTE-IDENTICAL to the \
+                     patch that was already graded and FAILED on the previous attempt \
+                     (verified by hash). Submitting it again will produce the exact \
+                     same failure. You have {remaining} actions left. First run \
+                     `git diff HEAD` with code/shell to SEE your current patch. Then \
+                     either fix the specific part the failing tests named, or revert \
+                     it (`git checkout -- <file>`) and take a genuinely different \
+                     approach. Do not settle until the diff has changed."
+                );
+                (patch, files_changed) = redrive_with_fact(
+                    &cycle, room, framing, remaining, fact, &mut settled, &workspace,
+                )
+                .await;
+            }
+        }
+
+        // IN-LOOP TEST VERIFIER — the structural gap between this exam room and the
+        // field harnesses that pass with the SAME model (scoreboard 2026-08-09: six
+        // rounds, zero resolves; field agents iterate against real test output every
+        // few edits, our citizens got one verdict per attempt and settled hopeful —
+        // producing the signature "on-target, harmless, doesn't fix" patch). When a
+        // workspace-deliverable settle carries a non-empty diff, run the REPO'S OWN
+        // tests for the files she touched (the held-out FAIL_TO_PASS stays held out —
+        // this is the regression half of feedback, the same loop a field harness
+        // closes) and on failure re-drive with the ACTUAL test output. Bounded at
+        // VERIFIER_ROUNDS; green tests, an unchanged diff, no test mapping, or an env
+        // fault all end the loop (loudly, never silently).
+        const VERIFIER_ROUNDS: usize = 3;
+        let mut verifier_round = 0usize;
+        let mut last_verified_sha = String::new();
+        while workspace_deliverable
+            && verifier_round < VERIFIER_ROUNDS
+            && !patch.is_empty()
+            && settled.inference_error.is_none()
+            && settled.acts + 1 < max_acts
+        {
+            let sha = {
+                use sha2::{Digest, Sha256};
+                format!("{:x}", Sha256::digest(patch.as_bytes()))
+            };
+            if sha == last_verified_sha {
+                break; // re-drive produced no new diff — nothing new to verify
+            }
+            let tests = mapped_test_files(&workspace, &files_changed);
+            if tests.is_empty() {
+                crate::probe!(
+                    class = "benchmark.verifier.no_mapping",
+                    run_id = %run_id.as_deref().unwrap_or("-"),
+                    files = %files_changed.join(","),
+                    "in-loop verifier found no test files for the touched paths — \
+                     settle stands unverified"
+                );
+                break;
+            }
+            let py = p
+                .path_prepend
+                .as_ref()
+                .and_then(|v| v.first())
+                .map(|bin| format!("{bin}/python"))
+                .filter(|py| std::path::Path::new(py).exists())
+                .unwrap_or_else(|| "python3".to_string());
+            let mut args: Vec<&str> = vec!["-m", "pytest"];
+            for t in &tests {
+                args.push(t);
+            }
+            args.extend(["-q", "--no-header", "-p", "no:cacheprovider"]);
+            match crate::cognition::swe_bench::run(&py, &args, Some(std::path::Path::new(&workspace)))
+                .await
+            {
+                Ok(out) if out.status.success() => {
+                    crate::probe!(
+                        class = "benchmark.verifier.green",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        tests = %tests.join(","),
+                        round = verifier_round,
+                        "in-loop verifier: touched-file tests PASS — settle stands"
+                    );
+                    break;
+                }
+                Ok(out) => {
+                    verifier_round += 1;
+                    last_verified_sha = sha;
+                    let report = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    let tail: String = report
+                        .chars()
+                        .rev()
+                        .take(2000)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect();
+                    crate::probe!(
+                        class = "benchmark.verifier.fail",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        tests = %tests.join(","),
+                        round = verifier_round,
+                        "in-loop verifier: touched-file tests FAIL — re-driving with \
+                         the real output"
+                    );
+                    let remaining = max_acts - settled.acts;
+                    let fact = format!(
+                        "Status check from the grading harness (a structural fact, not a \
+                         person): I ran the repo's own tests for the files you changed \
+                         ({}) and they FAIL with your current edits. Test output:\n{}\n\
+                         You have {} actions left. Fix your edit so these tests pass — \
+                         or revert the part that broke them (`git diff HEAD` shows your \
+                         changes) — and run the tests yourself with code/shell before \
+                         settling.",
+                        files_changed.join(", "),
+                        tail,
+                        remaining
+                    );
+                    (patch, files_changed) = redrive_with_fact(
+                        &cycle, room, framing, remaining, fact, &mut settled, &workspace,
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    crate::probe!(
+                        class = "benchmark.verifier.error",
+                        run_id = %run_id.as_deref().unwrap_or("-"),
+                        error = %e,
+                        "in-loop verifier could not run tests — env fault, settle \
+                         stands (never blocks the attempt)"
+                    );
+                    break;
+                }
+            }
+        }
 
         // 5) LEARN mode (#221 slice 3): carry the EXPERIENCE back to the living self —
         //    the same one-way bridge cognition/eval's learn mode uses. The lesson is
@@ -485,6 +1444,7 @@ impl AgentSolve {
             spoken: settled.spoken.unwrap_or_default(),
             patch,
             files_changed,
+            files_examined: settled.touched_paths.clone(),
             detached: false,
             run_id,
             infra_error: settled.inference_error,
@@ -615,6 +1575,98 @@ const PATCH_EXCLUDES: &[&str] = &[
 /// is source-only. `git add -N` stages new files as intent-to-add so `git diff` includes them
 /// without committing content; the same excludes keep junk from being intent-added in the first
 /// place. Non-repo or git-less environments return empty (honest — no hands artifact).
+/// The touched-file → test-file mapping for the in-loop verifier. Deliberately
+/// dumb v1: a source file maps to a sibling `tests/test_<stem>.py` (sympy's
+/// layout) or a top-level `tests/test_<stem>.py` (flask/requests layout).
+/// No mapping found → the verifier skips, loudly. Repo-specific tables can
+/// grow here as data when the dumb version's misses are measured.
+fn mapped_test_files(workspace: &str, files_changed: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for f in files_changed {
+        let path = std::path::Path::new(f);
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(parent) = path.parent() else { continue };
+        let candidates = [
+            parent.join("tests").join(format!("test_{stem}.py")),
+            std::path::PathBuf::from("tests").join(format!("test_{stem}.py")),
+        ];
+        for cand in candidates {
+            if std::path::Path::new(workspace).join(&cand).exists() {
+                let c = cand.to_string_lossy().to_string();
+                if !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// ONE bounded re-drive with a structural fact injected as the next burst —
+/// the shared plumbing of the empty-diff and identical-diff re-drives (the
+/// two blocks differ only in trigger and fact text; a second inline copy
+/// would drift on the fold rules). Folds the re-drive into the attempt's
+/// outcome — totals sum, the final verdict/world-state are the re-drive's
+/// (it is the attempt's true end), the spoken text falls back to the first
+/// settle's if the re-drive ended un-spoken — and returns the workspace's
+/// post-re-drive (patch, files_changed).
+async fn redrive_with_fact(
+    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    room: Uuid,
+    framing: crate::cognition::workspace::TurnFraming,
+    remaining: usize,
+    fact: String,
+    settled: &mut crate::cognition::act_observe::SettleOutcome,
+    workspace: &str,
+) -> (String, Vec<String>) {
+    let redelivery = crate::persona::rag_budget::RagDelivery {
+        source_id: "airc".to_string(),
+        items: vec![crate::persona::rag_budget::RagItem {
+            content: fact,
+            tokens: 0,
+            metadata: serde_json::json!({
+                "peer_id": "peer",
+                "occurred_at_ms": crate::persona::trace::now_ms(),
+            }),
+        }],
+        tokens_used: 0,
+        continuation: None,
+        resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+    };
+    let reburst = crate::cognition::workspace::Burst::from_turns(
+        room,
+        crate::persona::service_loop::build_workspace_turns(
+            std::slice::from_ref(&redelivery),
+            "",
+            "",
+            None,
+        ),
+    );
+    let redriven =
+        crate::cognition::act_observe::drive_to_settle(cycle, reburst, room, remaining, framing)
+            .await;
+    settled.acts += redriven.acts;
+    settled.decision = redriven.decision;
+    settled.spoken = redriven.spoken.or(settled.spoken.take());
+    settled.world_state = redriven.world_state;
+    settled.inference_error = redriven.inference_error;
+    for path in redriven.touched_paths {
+        if !settled.touched_paths.contains(&path) {
+            settled.touched_paths.push(path);
+        }
+    }
+    settled.metrics.input_tokens += redriven.metrics.input_tokens;
+    settled.metrics.output_tokens += redriven.metrics.output_tokens;
+    settled.metrics.latency_ms += redriven.metrics.latency_ms;
+    settled.metrics.cached_tokens += redriven.metrics.cached_tokens;
+    settled.metrics.prefill_tokens += redriven.metrics.prefill_tokens;
+    settled.metrics.prefill_ms += redriven.metrics.prefill_ms;
+    settled.metrics.decode_ms += redriven.metrics.decode_ms;
+    workspace_patch(workspace).await
+}
+
 async fn workspace_patch(workspace: &str) -> (String, Vec<String>) {
     let git = |args: &[&str]| {
         let mut c = tokio::process::Command::new("git");

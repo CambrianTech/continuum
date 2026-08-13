@@ -21,6 +21,8 @@
 //! no lock held across await — the `watch::Sender` is the only shared state and
 //! its `send` takes `&self`. cbar's pipeline-stage pattern in Rust dress.
 
+use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
+use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::{
     plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingDemand, ServingPlan,
@@ -31,12 +33,10 @@ use crate::inference::llama_server::{
     ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
     LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
 };
-use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
-use crate::capacity::placement::PlacementRequest;
 use crate::model_registry::types::{Capability, Model};
+use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::resources::{LeaseBoard, ResourceDaemon, ResourceKind};
-use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
@@ -44,16 +44,11 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-
-/// Fraction of total VRAM/UMA we treat as ours to serve from — the rest is
-/// OS + non-inference headroom (Bevy avatars, embeddings, the OS itself). A
-/// single source of truth for "how much is actually ours."
-const SERVING_BUDGET_FRACTION: f64 = 0.80;
 
 /// How often the daemon re-evaluates the serving plan. 5s matches the other
 /// pressure-class ticks (pressure-broker, ai_provider) in the runtime. The
@@ -102,6 +97,18 @@ const REHOME_MIN_GAIN_PCT: u32 = 15;
 /// Lowering this to 2 re-admits the entire measured jitter tail. Do not, without
 /// re-running that measurement against fresher receipts.
 const REHOME_SUSTAINED_TICKS: u32 = 3;
+
+/// Consecutive plan ticks a base-model DOWNSHIFT must persist before it is
+/// adopted. #368 (2nd occurrence, 2026-08-08): a ~6-second RAM transient at
+/// agent/solve launch collapsed the planner's budget to zero for ONE tick, the
+/// plan flipped to the 0.5B, reconcile actuated the flip (tore down Devstral,
+/// re-homed every citizen), and the civilization lost 47 minutes to a phantom
+/// model. The tear-down/spin-up/re-home cycle costs minutes, so reacting to a
+/// squeeze shorter than [`TICK`]×this is ALWAYS a net loss — the highest-value
+/// activity in the system must never be evicted by its own setup ripple (Joel:
+/// "system working against rather than for the best activity work").
+/// [[never-thrash-sticky-hysteresis-on-every-lane]]
+const DOWNSHIFT_SUSTAINED_TICKS: u32 = 3;
 
 /// Ticks a re-home must wait before another may fire, enforced INDEPENDENTLY of
 /// the sustained-delta test above.
@@ -183,6 +190,13 @@ type ModelResolver = Arc<dyn Fn(&str) -> Option<Model> + Send + Sync>;
 /// test doing the stamping. Owning the evidence source per-daemon makes each test's answer
 /// its own; production still reads the global, through the default below.
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
+/// since the last success" (#363). Defaults to the llama-server process-global stamped by
+/// the adapter's local-lane error paths; tests inject their own so a parallel test that
+/// stamps the global cannot leak order-dependence in
+/// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
+type RealFailsSource = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// The verdict for force-serving one specific model on this host RIGHT NOW —
 /// what [`ServingDaemonModule::pin_fit_checker`] returns and `serving/pin` gates
@@ -268,6 +282,21 @@ pub struct ServingDaemonModule {
     /// Where the liveness heartbeat gets "how long since a real decode" from. Defaults to
     /// the llama-server process-global; tests own it ([`Self::set_decode_age_source`]).
     decode_age: DecodeAgeSource,
+    /// Where the heartbeat reads the real-turn failure streak (#363). Sustained real
+    /// failure is wedge evidence that OUTRANKS a passing smoke probe — the undersized-slot
+    /// wedge class rejects the fleet's real prompts while a tiny probe still succeeds.
+    real_fails: RealFailsSource,
+    /// The last HEALTHY lane's (window, lanes) — the #363 prevention half. The #175
+    /// sticky floor reads the live snapshot, but declaring a wedge EMPTIES that snapshot
+    /// first, so every wedge-heal relaunch bypassed the floor by construction and spawned
+    /// at whatever the teardown-transient plan said (the dying predecessor still holds
+    /// its memory when the successor's budget samples free RAM — 2026-08-07: plan dipped
+    /// to 9984 mid-teardown, successor spawned undersized, every 12k prompt rejected).
+    /// These survive the empty snapshot; 0 = no healthy lane observed yet. Memory-safe:
+    /// the predecessor's window IS the memory the successor inherits, and the existing
+    /// overflow protection remains the backstop if it genuinely no longer fits.
+    last_healthy_window: Arc<AtomicU32>,
+    last_healthy_lanes: Arc<AtomicU32>,
     /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
     /// command surface mutates. The daemon plans off this snapshot, NOT the
     /// immutable seed registry, so a model acquired at runtime (`models/pull`
@@ -281,7 +310,8 @@ pub struct ServingDaemonModule {
     /// `std::sync::Mutex` because [`Self::reconcile_to_plan`] is synchronous and this is never
     /// held across an await. The pager inside owns the live-hit observer + the gate seed; each
     /// reconcile ticks it to decide the served expert-layer placement.
-    moe_serving: std::sync::Mutex<Option<(String, crate::capacity::moe_serving::MoeServingContext)>>,
+    moe_serving:
+        std::sync::Mutex<Option<(String, crate::capacity::moe_serving::MoeServingContext)>>,
     /// Sticky publisher state for the governed host-cache lease (#287 slice 2) — the
     /// never-thrash layer between the per-tick raw derivation
     /// ([`host_cache_lease_bytes`](crate::capacity::host_cache_lease::host_cache_lease_bytes))
@@ -341,6 +371,13 @@ pub struct ServingDaemonModule {
     /// what separates a real capacity change from memory jitter — see
     /// [`REHOME_SUSTAINED_TICKS`].
     rehome_streak: Arc<std::sync::atomic::AtomicU32>,
+    /// Consecutive ticks the fresh plan has wanted a LESS capable base model
+    /// than the incumbent (a DOWNSHIFT). Reset the moment it stops. See
+    /// [`DOWNSHIFT_SUSTAINED_TICKS`] — #368's second occurrence: a ~6-second
+    /// RAM transient at solve launch read as usable_gb 17→0, one depressed tick
+    /// flipped the PLAN to the 0.5B, and from then on hysteresis defended the
+    /// WRONG incumbent. A brain flip must outlast jitter to be believed.
+    downshift_streak: Arc<std::sync::atomic::AtomicU32>,
     /// Ticks remaining before another window re-home may fire. Charged to
     /// [`REHOME_COOLDOWN_TICKS`] when one fires, decremented every reconcile.
     /// Counted in ticks rather than wall-clock deliberately: the rate limit is on
@@ -372,7 +409,8 @@ pub struct ServingDaemonModule {
     /// the daemon (`EphemeralServingLane` Drop-kills). A tokio Mutex because
     /// [`vision_sidecar::ensure_sidecar`] awaits (spawn + `/props` verify)
     /// inside the reconcile task while holding the slot.
-    vision_sidecar: Arc<tokio::sync::Mutex<Option<crate::inference::llama_server::EphemeralServingLane>>>,
+    vision_sidecar:
+        Arc<tokio::sync::Mutex<Option<crate::inference::llama_server::EphemeralServingLane>>>,
 }
 
 impl ServingDaemonModule {
@@ -427,12 +465,16 @@ impl ServingDaemonModule {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_decode),
+            real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
+            last_healthy_window: Arc::new(AtomicU32::new(0)),
+            last_healthy_lanes: Arc::new(AtomicU32::new(0)),
             catalog,
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            downshift_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             working_set: crate::cognition::working_set::global(),
             moe_serving: std::sync::Mutex::new(None),
             active_artifact: std::sync::Mutex::new(None),
@@ -456,9 +498,97 @@ impl ServingDaemonModule {
     /// persona floor). The boot wiring calls this before the first
     /// [`Self::compute_plan`]; the next tick replans if it changes.
     pub fn set_lane_demand(&self, demand: u32) {
-        self.lane_demand
-            .store(demand.max(1), Ordering::Relaxed);
+        // Register the demand state process-globally the first time boot sets it, so a
+        // measurement preemption lease (quiesce_all / quiesce_others) can drop the
+        // warm-slot demand to the ACTIVE (non-quiesced) count for its duration and
+        // release on drop — without threading a ServingDaemon handle into the persona
+        // registry. Idempotent: `set` after the first call is a no-op.
+        let state = LANE_DEMAND.get_or_init(|| LaneDemandState {
+            cell: self.lane_demand.clone(),
+            base: std::sync::Mutex::new(demand.max(1)),
+            overrides: std::sync::Mutex::new(Vec::new()),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        });
+        *state.base.lock().expect("lane-demand base lock poisoned") = demand.max(1);
+        state.recompute();
     }
+}
+
+/// The lane-demand authority: one BASE (the boot-wired persona floor) plus a registry of
+/// measurement OVERRIDES, with the effective value recomputed on every change — never a
+/// swap/restore pair. The naive swap/restore version had a real interleaving bug: with two
+/// overlapping leases (eval's `quiesce_all` + a solve's `quiesce_others`), the first drop
+/// restored the pre-lease value OVER the still-held second lease, and the second drop then
+/// restored the FIRST lease's override — leaving the whole fleet's demand stuck at 1 with
+/// nobody quiesced until the (boot-only) `set_lane_demand` ever ran again. Order-independent
+/// recompute makes overlap correct by construction: effective = max(overrides) while any are
+/// held (never starve a concurrent measurement below what it asked for), else base.
+struct LaneDemandState {
+    /// The live cell the planner reads (`ServingDaemonModule::lane_demand`).
+    cell: Arc<std::sync::atomic::AtomicU32>,
+    /// The boot-wired persona floor — restored whenever the last override releases.
+    base: std::sync::Mutex<u32>,
+    /// Active measurement overrides as `(lease_id, active_minds)`.
+    overrides: std::sync::Mutex<Vec<(u64, u32)>>,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+impl LaneDemandState {
+    /// Recompute the effective demand from base + overrides and publish it to the cell.
+    fn recompute(&self) {
+        let overrides = self.overrides.lock().expect("lane-demand overrides lock poisoned");
+        let effective = overrides
+            .iter()
+            .map(|(_, active)| *active)
+            .max()
+            .unwrap_or_else(|| *self.base.lock().expect("lane-demand base lock poisoned"));
+        drop(overrides);
+        self.cell.store(effective.max(1), Ordering::Relaxed);
+    }
+
+    /// Add an override and return its lease id.
+    fn acquire(&self, active: u32) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.overrides
+            .lock()
+            .expect("lane-demand overrides lock poisoned")
+            .push((id, active.max(1)));
+        self.recompute();
+        id
+    }
+
+    /// Remove the override with `id` (unknown id = no-op) and recompute.
+    fn release(&self, id: u64) {
+        self.overrides
+            .lock()
+            .expect("lane-demand overrides lock poisoned")
+            .retain(|(oid, _)| *oid != id);
+        self.recompute();
+    }
+}
+
+/// Registered by the first [`ServingDaemonModule::set_lane_demand`] at boot. `None` before
+/// boot (unit tests / tools that never stood a daemon) → every override is a no-op, so the
+/// quiesce lease stays pure and daemon-free-testable.
+/// [[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]
+static LANE_DEMAND: std::sync::OnceLock<LaneDemandState> = std::sync::OnceLock::new();
+
+/// Add a measurement override: the fleet's warm-slot demand becomes `active` (minds that
+/// need a warm slot now; floored at 1 — a measurement still needs one lane) until released.
+/// Returns the lease id to pass to [`release_lane_demand`]; `None` before the daemon booted.
+pub fn quiesce_lane_demand(active: u32) -> Option<u64> {
+    LANE_DEMAND.get().map(|state| state.acquire(active))
+}
+
+/// Release the override acquired by [`quiesce_lane_demand`]. Idempotent (an unknown id is
+/// a no-op) and order-independent — the effective demand is recomputed from what remains.
+pub fn release_lane_demand(id: u64) {
+    if let Some(state) = LANE_DEMAND.get() {
+        state.release(id);
+    }
+}
+
+impl ServingDaemonModule {
 
     /// The current lane demand (≥ 1).
     /// Register serving's autonomic PLANNER to run on the memory authority's tick
@@ -473,11 +603,12 @@ impl ServingDaemonModule {
     /// after the module is Arc-wrapped.
     pub fn register_planner_on_authority_tick(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        self.resource_daemon.on_tick(Arc::new(move |_board: &LeaseBoard| {
-            if let Some(module) = weak.upgrade() {
-                module.recompute();
-            }
-        }));
+        self.resource_daemon
+            .on_tick(Arc::new(move |_board: &LeaseBoard| {
+                if let Some(module) = weak.upgrade() {
+                    module.recompute();
+                }
+            }));
     }
 
     fn lane_demand(&self) -> u32 {
@@ -511,6 +642,14 @@ impl ServingDaemonModule {
     #[cfg(test)]
     fn set_decode_age_source(&mut self, source: DecodeAgeSource) {
         self.decode_age = source;
+    }
+
+    /// Test seam: own the heartbeat's real-turn-failure evidence (#363) instead of
+    /// inheriting the process-global stamped by other tests' adapters. Same rationale
+    /// as [`Self::set_decode_age_source`].
+    #[cfg(test)]
+    fn set_real_fails_source(&mut self, source: RealFailsSource) {
+        self.real_fails = source;
     }
 
     /// Emit the live snapshot on the bus. Routed by topic name (cheap match, no
@@ -595,9 +734,7 @@ impl ServingDaemonModule {
             // capacity down to yield, keep answering" — instead of the whole-lease dark.
             // The autonomic plan grows back up when pressure clears. Falls through to a
             // full unload only when no smaller model frees enough.
-            Arc::new(crate::modules::serving_tier_down::CatalogTierDownPolicy::new(
-                candidates,
-            )),
+            Arc::new(crate::modules::serving_tier_down::CatalogTierDownPolicy::new(candidates)),
         );
         self.resource_daemon.add_consumer(Arc::new(consumer));
     }
@@ -615,13 +752,14 @@ impl ServingDaemonModule {
         // (hard task + room) floors the whole GPU (1.0), Comfort is the everyday 0.80, and
         // Eco (memory starved — a game opened, a crowded call) drops to 0.55 so the base
         // claims less and the rest of the call's KV + render still fit. #56/G8: we do NOT
-        // ALSO apply the static SERVING_BUDGET_FRACTION here — stacking it under the mode
+        // ALSO apply the operator VRAM-headroom fraction here — stacking it under the mode
         // fraction double-discounted the everyday budget to ~0.64 (24.5GB of a 38GB board)
         // and left the more-capable 32B coder + full context unused, WITHOUT buying safety
         // (the concurrent-prefill compute buffer is reserved separately, window-scaled, in
-        // the serving_plan fixpoint). The pin fit-gate still uses `live_host_budget`'s raw
-        // 0.80 directly — "can this model physically fit" is a different question than "how
-        // much should the shared base claim now." [[verify-real-device-numbers-not-a-clamp-premise]]
+        // the serving_plan fixpoint). The pin fit-gate still applies the operator headroom
+        // (`config_env::vram_headroom()`, default 0.80) via `host_budget_from` — "can this
+        // model physically fit" is a different question than "how much should the shared base
+        // claim now." [[verify-real-device-numbers-not-a-clamp-premise]]
         // The governed VRAM board is the ONE authority for available VRAM: its `available`
         // is free-VRAM ALREADY netted over every measured consumer + external pressure AND
         // already ≤ physical VRAM. Trust it directly — do NOT `.min()` it against the raw
@@ -654,7 +792,11 @@ impl ServingDaemonModule {
             static LAST_MODE: AtomicU8 = AtomicU8::new(u8::MAX);
             let m = mode as u8;
             if LAST_MODE.swap(m, Ordering::Relaxed) != m {
-                eprintln!("🎛 serving mode → {:?} ({} GiB free)", mode, available / (1 << 30));
+                eprintln!(
+                    "🎛 serving mode → {:?} ({} GiB free)",
+                    mode,
+                    available / (1 << 30)
+                );
             }
         }
         HostBudget {
@@ -789,27 +931,30 @@ impl ServingDaemonModule {
         // a fits-in-VRAM model spills expert layers to CPU, making the B-gate measurable. Every
         // placement made under it is flagged on the probe below — never mistaken for capacity.
         let forced = self.measure_force_expert_budget_bytes;
-        let budget = forced.unwrap_or_else(|| governed_vram_ceiling_or_report(&self.resource_daemon, "compute_expert_placement"));
+        let budget = forced.unwrap_or_else(|| {
+            governed_vram_ceiling_or_report(&self.resource_daemon, "compute_expert_placement")
+        });
         if budget == 0 {
             return None;
         }
         let mut guard = self.moe_serving.lock().ok()?;
         let stale = guard.as_ref().map(|(id, _)| id.as_str()) != Some(model.id.as_str());
         if stale {
-            let ctx = crate::model_registry::artifacts::resolve_gguf_for_model(model).and_then(|gguf| {
-                crate::capacity::moe_serving::moe_serving_context(
-                    &gguf,
-                    &model.id,
-                    EXPERT_PLACEMENT_MARGIN_BYTES,
-                    RELAUNCH_LAYER_CHURN_THRESHOLD,
-                )
-            });
+            let ctx =
+                crate::model_registry::artifacts::resolve_gguf_for_model(model).and_then(|gguf| {
+                    crate::capacity::moe_serving::moe_serving_context(
+                        &gguf,
+                        &model.id,
+                        EXPERT_PLACEMENT_MARGIN_BYTES,
+                        RELAUNCH_LAYER_CHURN_THRESHOLD,
+                    )
+                });
             *guard = ctx.map(|c| (model.id.clone(), c));
         }
         let (_, ctx) = guard.as_mut()?;
-        let outcome =
-            ctx.pager
-                .tick_layer_placement(budget, ctx.n_experts_per_layer, ctx.n_layers);
+        let outcome = ctx
+            .pager
+            .tick_layer_placement(budget, ctx.n_experts_per_layer, ctx.n_layers);
         // Glass-box the K3 residency decision (Joel: the K3 path is observability-first).
         // Every load-bearing quantity a breakpoint would want: what fit, out of how many, on
         // what budget, and whether it moves the served process this tick.
@@ -828,7 +973,11 @@ impl ServingDaemonModule {
             outcome.request.hot_layers.len(),
             ctx.n_layers,
             budget / (1024 * 1024 * 1024),
-            if forced.is_some() { " [MEASUREMENT-FORCED]" } else { "" },
+            if forced.is_some() {
+                " [MEASUREMENT-FORCED]"
+            } else {
+                ""
+            },
         );
         if outcome.needs_relaunch {
             ctx.pager.mark_layer_relaunched(&outcome.request.hot_layers);
@@ -869,8 +1018,9 @@ impl ServingDaemonModule {
             resident_bytes,
             vram_budget_bytes: budget,
             kv_bytes_per_token: 0, // not consulted for the resident-fit decision — see doc
-            compute_reserve_bytes:
-                crate::capacity::device_fit::default_compute_reserve_bytes(budget),
+            compute_reserve_bytes: crate::capacity::device_fit::default_compute_reserve_bytes(
+                budget,
+            ),
             desired_context: model.context_window,
             model_max_context: model.context_window,
             lanes: 1,
@@ -1048,9 +1198,8 @@ impl ServingDaemonModule {
             let Ok(mut tail_guard) = self.moe_trace_tail.lock() else {
                 return;
             };
-            let tail = tail_guard.get_or_insert_with(|| {
-                crate::capacity::trace_tail::MoeTraceTail::new(n_layers)
-            });
+            let tail = tail_guard
+                .get_or_insert_with(|| crate::capacity::trace_tail::MoeTraceTail::new(n_layers));
             tail.ensure_geometry(n_layers);
             tail.drain(&gb.trace);
             let ceiling = crate::capacity::trace_tail::pin_ceiling(
@@ -1147,6 +1296,37 @@ impl ServingDaemonModule {
     /// Already serving the desired model & ready → no-op. A reconcile already
     /// in flight → skip (the gate). Otherwise spawn the reconcile.
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
+        // External serving pin (misfit / grid design): when the operator pinned an
+        // EXTERNAL OpenAI-compatible endpoint via `LLAMA_SERVER_BASE_URL`, this node
+        // does NOT own a local GPU serving lane — it ADOPTS the pinned endpoint. We
+        // spawn / reclaim NOTHING (that would fight a co-located engine, e.g. a K3
+        // llama-server, for its port), but we MUST publish the endpoint's ready
+        // ServingSnapshot to `SERVING_STATE` so every consumer sees a ready lane:
+        //   - `await_ready_serving` (persona-host gate + adapter factory),
+        //   - the adapter's pre-generate model-guard via `current_serving()` — which
+        //     refuses to generate unless the request's model == the resident model,
+        //     read straight from the published snapshot (an empty snapshot → every
+        //     turn "model is not the active served model", the bug this fixes).
+        // Trust once-ready (a genuine wedge surfaces LOUD on a real turn); re-probe
+        // only while not-yet-ready. The reachability probe is control-plane-fast, so
+        // this publishes within a tick and never overlaps.
+        if crate::inference::llama_server::external_serving_pin().is_some() {
+            if self.serving_tx.borrow().ready {
+                return None;
+            }
+            let serving_tx = self.serving_tx.clone();
+            let bus = self.bus.get().cloned();
+            return Some(tokio::spawn(async move {
+                if let Some(snap) = crate::inference::llama_server::probe_external_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
+                .await
+                {
+                    Self::emit_serving(bus.as_ref(), &snap);
+                    let _ = serving_tx.send_replace(snap);
+                }
+            }));
+        }
         // Pull the desired model id, the host-fit PER-LANE served window, AND
         // the lane count out of the plan in one borrow — both are the planner's
         // single source of truth (task #50). We carry them on the ServingTarget
@@ -1264,7 +1444,9 @@ impl ServingDaemonModule {
                 // overflow a u32 window (`gain * 100` on a 1M-token window is ~1e8).
                 let worth_it = live.served_context_window > 0
                     && gain.saturating_mul(100)
-                        >= live.served_context_window.saturating_mul(REHOME_MIN_GAIN_PCT);
+                        >= live
+                            .served_context_window
+                            .saturating_mul(REHOME_MIN_GAIN_PCT);
                 let streak = if worth_it && cooling == 0 {
                     self.rehome_streak
                         .fetch_add(1, Ordering::Relaxed)
@@ -1385,6 +1567,31 @@ impl ServingDaemonModule {
         // the personas pinned to the earlier, larger slot — keep the incumbent window
         // when lanes are unchanged (memory-safe; a lane change legitimately resizes KV).
         let served_ctx = sticky_served_window(served_ctx, lanes, &self.serving_tx.borrow());
+        // #363 prevention: the WEDGE-HEAL floor. The sticky floor above reads the live
+        // snapshot, but declaring a wedge EMPTIES that snapshot first — so the very
+        // relaunch the detector triggers used to spawn at whatever the teardown-transient
+        // plan said (the dying predecessor still holds its memory when the successor's
+        // budget samples free RAM). Floor the successor to the last HEALTHY lane's window
+        // when the lane count is unchanged; the predecessor's window is exactly the
+        // memory being freed, so the successor inherits it, and the existing overflow
+        // protection stays the backstop if the world genuinely shrank.
+        let floor_w = self.last_healthy_window.load(Ordering::Relaxed);
+        let floor_l = self.last_healthy_lanes.load(Ordering::Relaxed);
+        let live_ready = self.serving_tx.borrow().ready;
+        let floored = wedge_heal_floor(served_ctx, lanes, live_ready, floor_w, floor_l);
+        if floored != served_ctx {
+            crate::probe!(
+                class = "serving.reconcile.window",
+                decision = "wedge-heal-floor",
+                live_window = 0u32,
+                plan_window = served_ctx,
+                floored_to = floored,
+                plan_lanes = lanes,
+                "spawn-at-transient guarded: successor floored to the last healthy \
+                 lane's window instead of a teardown-dip plan (#363)",
+            );
+        }
+        let served_ctx = floored;
 
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
@@ -1449,6 +1656,8 @@ impl ServingDaemonModule {
         let bus = self.bus.get().cloned();
         let sidecar_slot = self.vision_sidecar.clone();
         let system = self.system.clone();
+        let last_healthy_window = self.last_healthy_window.clone();
+        let last_healthy_lanes = self.last_healthy_lanes.clone();
         // RAII gate-clear (#214): the `reconciling` flag was set `true` at the top of this
         // reconcile and MUST clear even if the relaunch task panics or is cancelled
         // mid-await — otherwise ONE failed relaunch (an OOM spawn under a memory squeeze, a
@@ -1507,9 +1716,8 @@ impl ServingDaemonModule {
             // honestly instead of POSTing pixels a text-only lane would drop.
             let vision = match &outcome {
                 EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
-                    let declares_vision = target
-                        .model
-                        .has(crate::model_registry::Capability::Vision);
+                    let declares_vision =
+                        target.model.has(crate::model_registry::Capability::Vision);
                     let mmproj_resolved =
                         crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
                             .is_some();
@@ -1640,10 +1848,23 @@ impl ServingDaemonModule {
                 served_window = snapshot.served_context_window,
                 "serving reconcile complete",
             );
+            // #363: remember the last HEALTHY lane's shape in a record that SURVIVES
+            // the wedge-empty — the wedge-heal floor in the next reconcile reads it.
+            if snapshot.ready && snapshot.served_context_window > 0 {
+                last_healthy_window.store(snapshot.served_context_window, Ordering::Relaxed);
+                last_healthy_lanes.store(snapshot.lanes, Ordering::Relaxed);
+            }
             // Emit on the bus first (fan-out to every subscriber + the grid),
             // then update the in-process watch view.
             Self::emit_serving(bus.as_ref(), &snapshot);
             let _ = serving_tx.send_replace(snapshot);
+            // #350: from here on, an empty snapshot means "we looked and nothing is
+            // serving" — a real fault. BEFORE this first publish it only meant "the
+            // daemon has not finished starting", and readers could not tell the two
+            // apart, so boot noise was indistinguishable from a broken lane. Marked
+            // AFTER the publish so a reader that sees `has_reconciled()` is guaranteed
+            // to also see the published snapshot, never a torn in-between.
+            crate::inference::llama_server::mark_first_reconcile();
             // `_gate` (GateClear) clears `reconciling` on drop here — and, crucially, also
             // on any panic/cancel above, which the explicit store used to miss.
         }))
@@ -1678,6 +1899,36 @@ impl ServingDaemonModule {
         };
         if !believe_ready {
             self.health_fails.store(0, Ordering::Relaxed);
+            return None;
+        }
+        // #363: SUSTAINED REAL-TURN FAILURE OUTRANKS EVERY TRUST PATH BELOW. The
+        // 2026-08-07 blackout (25 min, every citizen turn dead, serving/status
+        // ready:true throughout) was a wedge class neither trust path can see:
+        // an undersized/mid-stream-dying lane REJECTS the fleet's real prompts
+        // while (a) partial streams may stamp recent-decode trust and (b) a tiny
+        // 1-token smoke probe still PASSES — "can generate" is not "can serve the
+        // actual working set". Real failures are the honest evidence, stamped at
+        // the adapter's local-lane error paths, and the same threshold as the
+        // decode heartbeat keeps one hysteresis constant, not two.
+        let real_fails = (self.real_fails)();
+        if real_fails >= HEALTH_FAILS_TO_RELAUNCH as u64 {
+            crate::inference::llama_server::reset_real_decode_failures();
+            self.health_fails.store(0, Ordering::Relaxed);
+            crate::probe!(
+                class = "serving.health",
+                ok = false,
+                via = "real_turn_failures",
+                consecutive = real_fails,
+                threshold = HEALTH_FAILS_TO_RELAUNCH as u64,
+                "consecutive REAL generations failed on the live lane — wedge evidence \
+                 that outranks a passing smoke probe (#363 undersized/mid-stream class)",
+            );
+            Self::declare_lane_wedged(
+                &self.force_relaunch,
+                &self.serving_tx,
+                self.bus.get(),
+                "sustained real-turn failures (smoke probe may still pass)",
+            );
             return None;
         }
         // DELIVERY BEATS PROBING. `decode_smoke_ok` is a real multi-token generation through
@@ -1827,6 +2078,45 @@ impl ServingDaemonModule {
         let demand = self.serving_demand();
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
+                // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
+                // only shields the incumbent from its OWN residency — an external
+                // squeeze deep enough that even the credited budget can't hold it
+                // forces `fresh` through, and `fresh` at a zeroed budget picks the
+                // smallest model on disk. That is correct for a REAL eviction and
+                // catastrophic for a transient (one depressed tick re-brained the
+                // whole citizenry onto the 0.5B, then hysteresis defended the wrong
+                // incumbent). So a downshift only takes effect after it has been
+                // wanted for [`DOWNSHIFT_SUSTAINED_TICKS`] consecutive ticks; until
+                // then the previous plan simply stands. Same shape as the rehome
+                // streak guard above — sustained-ness separates capacity change
+                // from jitter. Upshifts and same-model replans are never held.
+                match downshift_gate(&plan, incumbent.as_deref(), candidates) {
+                    DownshiftVerdict::NotADownshift => {
+                        self.downshift_streak.store(0, Ordering::Relaxed);
+                    }
+                    DownshiftVerdict::Downshift => {
+                        let streak = self
+                            .downshift_streak
+                            .fetch_add(1, Ordering::Relaxed)
+                            .saturating_add(1);
+                        if streak < DOWNSHIFT_SUSTAINED_TICKS {
+                            crate::probe!(
+                                class = "serving.plan",
+                                decision = "downshift-held",
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                wanted = plan.base_model_id.as_str(),
+                                streak,
+                                needs_streak = DOWNSHIFT_SUSTAINED_TICKS,
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                "fresh plan wants a LESS capable base — holding the \
+                                 incumbent plan until the squeeze proves sustained (#368)",
+                            );
+                            return;
+                        }
+                        // Sustained: a real squeeze. Adopt, and re-arm the gate.
+                        self.downshift_streak.store(0, Ordering::Relaxed);
+                    }
+                }
                 crate::probe!(
                     class = "serving.plan",
                     base_model = plan.base_model_id.as_str(),
@@ -1885,6 +2175,47 @@ impl ServingDaemonModule {
     }
 }
 
+/// Verdict of [`downshift_gate`]: does adopting this plan REDUCE the served
+/// base model's capability while the incumbent is still on disk?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DownshiftVerdict {
+    /// Same model, an upshift, no incumbent, or incumbent gone from disk —
+    /// adopt immediately, nothing to debounce.
+    NotADownshift,
+    /// The fresh plan wants a LESS capable base than a still-present incumbent.
+    /// Only a sustained run of these justifies acting (#368).
+    Downshift,
+}
+
+/// Pure classification — split from [`ServingDaemonModule::publish_plan`] so the
+/// debounce decision is unit-testable without a daemon. A downshift requires the
+/// incumbent to still be a candidate (still on disk): if its weights vanished,
+/// holding a plan that names them would be serving a ghost, so that case adopts
+/// `fresh` immediately (mirrors `plan_serving_stable`'s own disk check).
+fn downshift_gate(
+    plan: &ServingPlan,
+    incumbent: Option<&str>,
+    candidates: &[ModelFootprint],
+) -> DownshiftVerdict {
+    let Some(inc_id) = incumbent else {
+        return DownshiftVerdict::NotADownshift;
+    };
+    if plan.base_model_id == inc_id {
+        return DownshiftVerdict::NotADownshift;
+    }
+    let (Some(inc), Some(new)) = (
+        candidates.iter().find(|m| m.model_id == inc_id),
+        candidates.iter().find(|m| m.model_id == plan.base_model_id),
+    ) else {
+        return DownshiftVerdict::NotADownshift;
+    };
+    if new.capability_rank < inc.capability_rank {
+        DownshiftVerdict::Downshift
+    } else {
+        DownshiftVerdict::NotADownshift
+    }
+}
+
 /// The live host readings a serving budget is derived from. A NAMED struct, not
 /// three positional args, so the two byte counts (`available_bytes` and
 /// `total_vram_bytes` are both `u64`) can never be silently transposed at a call
@@ -1902,14 +2233,22 @@ pub struct HostBudgetInputs {
     pub total_vram_bytes: u64,
     /// Performance-core proxy for the lane cap (floored at 1 inside).
     pub perf_cores: u32,
+    /// Fraction of the board this host treats as ours to serve from (`usable =
+    /// live × this`). The operator VRAM-headroom policy: default 0.80 (leave 20%
+    /// for the OS + Bevy + embeddings), a dedicated foundry sets 1.0. Live callers
+    /// pass `config_env::vram_headroom()`; tests pass an explicit fraction so
+    /// `host_budget_from` stays pure + environment-independent.
+    pub budget_fraction: f64,
 }
 
 /// Serving budget from LIVE free memory, capped at physical VRAM, minus headroom.
-/// Pure for tests. Takes [`HostBudgetInputs`] by reference so the byte-count fields
-/// are named at every call site (never transposable).
+/// Pure for tests — the headroom fraction is an INPUT (`budget_fraction`), never
+/// read from config here, so a test can't go environment-dependent. Takes
+/// [`HostBudgetInputs`] by reference so the byte-count fields are named at every
+/// call site (never transposable).
 pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
     let live = inputs.available_bytes.min(inputs.total_vram_bytes);
-    let usable = (live as f64 * SERVING_BUDGET_FRACTION) as u64;
+    let usable = (live as f64 * inputs.budget_fraction) as u64;
     HostBudget {
         usable_bytes: usable,
         perf_cores: inputs.perf_cores.max(1),
@@ -1942,7 +2281,8 @@ fn pin_fit_decision(
     // sizes lanes from demand separately. footprint None → not servable (plan None);
     // footprint Some but over budget → plan_serving degrades with fits_on_gpu=false,
     // which `serving/pin` reads to refuse loud.
-    let plan = candidate.and_then(|f| plan_serving(base, std::slice::from_ref(&f), ServingDemand::new(1, None)));
+    let plan = candidate
+        .and_then(|f| plan_serving(base, std::slice::from_ref(&f), ServingDemand::new(1, None)));
     PinFit {
         plan,
         weights_bytes,
@@ -1964,11 +2304,13 @@ pub fn live_host_budget(
     // available — on UMA that raw vm_stat figure under-reports and would reject a model
     // that physically fits (the same clamp that floored the served window to 2048;
     // glass-boxed 2026-07-20). `_system` stays in the signature for call-site stability.
-    let vram_ceiling = governed_vram_ceiling_or_report(resource_daemon, "board_authoritative_host_budget");
+    let vram_ceiling =
+        governed_vram_ceiling_or_report(resource_daemon, "board_authoritative_host_budget");
     host_budget_from(&HostBudgetInputs {
         available_bytes: vram_ceiling,
         total_vram_bytes: vram_ceiling,
         perf_cores: perf_cores(),
+        budget_fraction: crate::config_env::vram_headroom(),
     })
 }
 
@@ -1996,18 +2338,40 @@ static SERVING_STEADY_HOLDS: AtomicUsize = AtomicUsize::new(0);
 /// "pin the lane for the demand's duration" clause ([[benchmark-is-a-governor-preemption-lease]],
 /// the co-tenant/steady case: no second weight copy, just don't bounce the lane).
 #[must_use = "the hold releases the instant this guard drops — bind it for the eval's lifetime"]
-pub struct ServingSteadyHold(());
+pub struct ServingSteadyHold {
+    /// WHO pinned the lane — a run id, "eval", etc. Carried so the acquire and
+    /// release EVENTS name the holder (Joel 2026-08-08: "emit events for
+    /// everything — need to know"): a suppressed relaunch with no event is
+    /// indistinguishable from a planner that never wanted one, and a leaked
+    /// hold with no holder name is unattributable.
+    holder: String,
+}
 
 impl ServingSteadyHold {
-    pub fn acquire() -> Self {
-        SERVING_STEADY_HOLDS.fetch_add(1, Ordering::AcqRel);
-        Self(())
+    pub fn acquire(holder: impl Into<String>) -> Self {
+        let holder = holder.into();
+        let holds = SERVING_STEADY_HOLDS.fetch_add(1, Ordering::AcqRel) + 1;
+        crate::probe!(
+            class = "serving.lane.hold",
+            action = "acquired",
+            holder = %holder,
+            holds,
+            "serving lane pinned STEADY (optional grow-back re-home suppressed while held)"
+        );
+        Self { holder }
     }
 }
 
 impl Drop for ServingSteadyHold {
     fn drop(&mut self) {
-        SERVING_STEADY_HOLDS.fetch_sub(1, Ordering::AcqRel);
+        let holds = SERVING_STEADY_HOLDS.fetch_sub(1, Ordering::AcqRel) - 1;
+        crate::probe!(
+            class = "serving.lane.hold",
+            action = "released",
+            holder = %self.holder,
+            holds,
+            "serving lane steady-hold released"
+        );
     }
 }
 
@@ -2061,6 +2425,7 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
         available_bytes: available,
         total_vram_bytes: available,
         perf_cores: perf_cores(),
+        budget_fraction: crate::config_env::vram_headroom(),
     })
 }
 
@@ -2071,12 +2436,21 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
 /// serving refuses rather than over-committing blind). A lock-free `watch`
 /// snapshot read, never the governor's accounting lock — safe on the hot tick.
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
+    // Serving budgets from ITS OWN view of the board — global available minus
+    // every OTHER consumer's unmet reservation floor (`available_for`, the same
+    // math `acquire` enforces) — never the reservation-blind global number.
+    // #225 (Joel 2026-08-08: "the budgeter just has all its parts figure it
+    // out"): budgeting from the global figure let the serving window grow over
+    // the embed lane's 1792 MiB floor, leaving 604 MiB governed-available for a
+    // faculty cognition needs every turn — embedding fully dead while serving
+    // sat comfortable. The board row's existence still gates None ("governor
+    // hasn't reported" stays distinct from "zero bytes free").
     resource_daemon
         .board()
         .kinds
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
-        .map(|k| k.available_bytes)
+        .map(|_| resource_daemon.available_for(SERVING_CONSUMER_ID, ResourceKind::Vram))
 }
 
 /// The governed VRAM ceiling for a planner that has no way to represent "unknown",
@@ -2406,6 +2780,28 @@ fn sticky_served_window(plan_window: u32, plan_lanes: u32, live: &ServingSnapsho
     }
 }
 
+/// The #363 wedge-heal floor — [`sticky_served_window`]'s sibling for the case sticky
+/// cannot see: the live snapshot was EMPTIED by a wedge declaration (or a cold boot after
+/// a crash), so `live.ready` is false and sticky passes the plan through untouched. If a
+/// healthy lane with the SAME lane count was observed before, the successor spawns at
+/// least that big — the plan's momentary dip is the dying predecessor's memory not yet
+/// freed, and that memory is precisely what the successor inherits. Applies ONLY when
+/// live is not ready (when it is, sticky already owns the decision) and only same-lanes
+/// (a lane-count change legitimately resizes KV).
+fn wedge_heal_floor(
+    plan_window: u32,
+    plan_lanes: u32,
+    live_ready: bool,
+    last_healthy_window: u32,
+    last_healthy_lanes: u32,
+) -> u32 {
+    if !live_ready && last_healthy_lanes == plan_lanes && last_healthy_window > plan_window {
+        last_healthy_window
+    } else {
+        plan_window
+    }
+}
+
 /// is unit-tested directly. A live/spawned model is `ready` with the served base
 /// url AND the real served window; a degraded reconcile — OR a ready server whose
 /// window we could not read (`served_context_window == 0`) — publishes "nothing
@@ -2476,9 +2872,7 @@ fn snapshot_from_outcome(
         // a ready snapshot with a zero window; that would poison every binding
         // persona's budget. Publish "nothing live"; the server stays up and the
         // next reconcile re-reads /props.
-        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
-            ServingSnapshot::empty()
-        }
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot::empty(),
         // A Degraded reconcile PUBLISHES its reason — the spawn/probe failure
         // (e.g. a missing llama-server binary, its path in the text) reaches
         // `serving/status` instead of dying as an anonymous empty snapshot
@@ -2634,13 +3028,21 @@ mod tests {
         let inputs =
             moe_host_cache_lease_inputs("k3", file, experts, 262_144, 4096, 2, physical, None)
                 .expect("host share is real");
-        assert_eq!(inputs.weights_host_bytes, 23 * GB, "dense/attention share only");
+        assert_eq!(
+            inputs.weights_host_bytes,
+            23 * GB,
+            "dense/attention share only"
+        );
         assert_eq!(
             inputs.live_kv_bytes,
             (23 * GB / 80_000) * 4096 * 2,
             "KV law over the HOST mass × live window × lanes"
         );
-        assert_eq!(inputs.os_floor_bytes, physical / 8, "floor derives from the box");
+        assert_eq!(
+            inputs.os_floor_bytes,
+            physical / 8,
+            "floor derives from the box"
+        );
         let lease = crate::capacity::host_cache_lease::host_cache_lease_bytes(&inputs);
         assert!(
             lease > 20 * GB && lease < 30 * GB,
@@ -2672,9 +3074,68 @@ mod tests {
     // denied (glass-boxed 2026-07-21: pin Devstral 14GB refused while a 20GB 32B
     // teacher was resident, though evicting it frees enough). Regression for the
     // stronger-teacher swap-and-back the Academy needs.
+    // what this catches: the swap/restore interleaving bug in the measurement demand
+    // override (regression for the #2238 follow-up). With TWO overlapping quiesce
+    // leases, releasing in ACQUISITION order under the old swap/restore scheme first
+    // restored the pre-lease base over the still-held second lease, then restored the
+    // FIRST lease's override — leaving the fleet's warm-slot demand stuck at the
+    // measurement value with nobody quiesced. The authority must recompute from what
+    // remains: any-order release, base restored only when the LAST override lifts.
+    #[test]
+    fn overlapping_demand_overrides_release_in_any_order() {
+        let cell = Arc::new(AtomicU32::new(0));
+        let state = LaneDemandState {
+            cell: cell.clone(),
+            base: std::sync::Mutex::new(4),
+            overrides: std::sync::Mutex::new(Vec::new()),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        };
+        state.recompute();
+        assert_eq!(cell.load(Ordering::Relaxed), 4, "base floor before any lease");
+
+        // Overlap: eval quiesce_all (active 0 → floored 1), then a solve's
+        // quiesce_others (active 1) while the first is still held.
+        let eval = state.acquire(0);
+        assert_eq!(cell.load(Ordering::Relaxed), 1);
+        let solve = state.acquire(1);
+        assert_eq!(cell.load(Ordering::Relaxed), 1);
+
+        // The killer interleaving: release in ACQUISITION order. The solve still
+        // holds its lease, so demand must STAY at the measurement value...
+        state.release(eval);
+        assert_eq!(
+            cell.load(Ordering::Relaxed),
+            1,
+            "first release must not restore the base over a still-held lease"
+        );
+        // ...and only the LAST release restores the base floor.
+        state.release(solve);
+        assert_eq!(
+            cell.load(Ordering::Relaxed),
+            4,
+            "last release restores the base — never a stale override"
+        );
+
+        // Idempotent: releasing an unknown/stale id changes nothing.
+        state.release(solve);
+        assert_eq!(cell.load(Ordering::Relaxed), 4);
+
+        // Concurrent measurements with different needs: never starve the larger one.
+        let a = state.acquire(2);
+        let b = state.acquire(1);
+        assert_eq!(cell.load(Ordering::Relaxed), 2, "max of held overrides");
+        state.release(a);
+        assert_eq!(cell.load(Ordering::Relaxed), 1);
+        state.release(b);
+        assert_eq!(cell.load(Ordering::Relaxed), 4);
+    }
+
     #[test]
     fn pin_swap_down_credits_the_evicted_incumbents_weights() {
-        let base = HostBudget { usable_bytes: 12 * GB, perf_cores: 10 };
+        let base = HostBudget {
+            usable_bytes: 12 * GB,
+            perf_cores: 10,
+        };
         let footprint = |id: &str, weights_gb: u64, rank: u8| ModelFootprint {
             model_id: id.into(),
             weights_bytes: weights_gb * GB,
@@ -2714,15 +3175,21 @@ mod tests {
     fn serving_steady_hold_is_refcounted_and_raii() {
         assert!(!serving_held_steady(), "no hold at rest");
         {
-            let _h1 = ServingSteadyHold::acquire();
+            let _h1 = ServingSteadyHold::acquire("test");
             assert!(serving_held_steady(), "one hold ⇒ steady");
             {
-                let _h2 = ServingSteadyHold::acquire();
+                let _h2 = ServingSteadyHold::acquire("test");
                 assert!(serving_held_steady(), "two holds ⇒ still steady");
             }
-            assert!(serving_held_steady(), "inner drop must not release the outer hold");
+            assert!(
+                serving_held_steady(),
+                "inner drop must not release the outer hold"
+            );
         }
-        assert!(!serving_held_steady(), "all holds dropped ⇒ grow-back resumes");
+        assert!(
+            !serving_held_steady(),
+            "all holds dropped ⇒ grow-back resumes"
+        );
     }
 
     // what this catches: the ServingLudicrousHold RAII gauge — while held, serving plans at
@@ -2736,14 +3203,23 @@ mod tests {
         assert!(!serving_ludicrous_active(), "no ludicrous demand at rest");
         {
             let _h1 = ServingLudicrousHold::acquire();
-            assert!(serving_ludicrous_active(), "one hold ⇒ Performance override active");
+            assert!(
+                serving_ludicrous_active(),
+                "one hold ⇒ Performance override active"
+            );
             {
                 let _h2 = ServingLudicrousHold::acquire();
                 assert!(serving_ludicrous_active(), "two holds ⇒ still active");
             }
-            assert!(serving_ludicrous_active(), "inner drop must not release the outer hold");
+            assert!(
+                serving_ludicrous_active(),
+                "inner drop must not release the outer hold"
+            );
         }
-        assert!(!serving_ludicrous_active(), "all holds dropped ⇒ back to pressure-adaptive mode");
+        assert!(
+            !serving_ludicrous_active(),
+            "all holds dropped ⇒ back to pressure-adaptive mode"
+        );
     }
 
     // what this catches: the budget is LIVE (tracks free memory, not capacity),
@@ -2756,17 +3232,26 @@ mod tests {
             available_bytes: 40 * GB,
             total_vram_bytes: 53 * GB,
             perf_cores: 6,
+            budget_fraction: 0.80,
         });
         assert!(b.usable_bytes < 40 * GB, "must reserve headroom");
-        assert!(b.usable_bytes >= 30 * GB, "but most of free is ours: {}", b.usable_bytes);
+        assert!(
+            b.usable_bytes >= 30 * GB,
+            "but most of free is ours: {}",
+            b.usable_bytes
+        );
 
         // Organic: less free memory → smaller budget (a game grabbed memory).
         let busy = host_budget_from(&HostBudgetInputs {
             available_bytes: 6 * GB,
             total_vram_bytes: 53 * GB,
             perf_cores: 6,
+            budget_fraction: 0.80,
         });
-        assert!(busy.usable_bytes < b.usable_bytes, "less free → smaller budget");
+        assert!(
+            busy.usable_bytes < b.usable_bytes,
+            "less free → smaller budget"
+        );
 
         // Never plan above physical VRAM even if the OS reports more free RAM
         // (unified memory: free RAM can exceed the VRAM serving ceiling).
@@ -2774,6 +3259,7 @@ mod tests {
             available_bytes: 100 * GB,
             total_vram_bytes: 53 * GB,
             perf_cores: 6,
+            budget_fraction: 0.80,
         });
         assert!(capped.usable_bytes <= 53 * GB, "capped at physical VRAM");
 
@@ -2782,6 +3268,7 @@ mod tests {
                 available_bytes: 8 * GB,
                 total_vram_bytes: 8 * GB,
                 perf_cores: 0,
+                budget_fraction: 0.80,
             })
             .perf_cores,
             1,
@@ -2798,14 +3285,24 @@ mod tests {
         assert_eq!(fp.model_id, "present");
         assert_eq!(fp.weights_bytes, 3 * GB);
         assert!(fp.kv_per_token > 0);
-        assert_eq!(fp.context_window, 8192, "carries the model's trained ceiling, no clamp");
-        assert!(fp.capability_rank >= 5, "3GB + tool bonus, got {}", fp.capability_rank);
+        assert_eq!(
+            fp.context_window, 8192,
+            "carries the model's trained ceiling, no clamp"
+        );
+        assert!(
+            fp.capability_rank >= 5,
+            "3GB + tool bonus, got {}",
+            fp.capability_rank
+        );
 
         // A leaner non-tool model ranks below the bigger tool-capable one.
         let small = footprint_from_parts("small", 1 * GB, 4096, false).unwrap();
         assert!(small.capability_rank < fp.capability_rank);
 
-        assert!(footprint_from_parts("empty", 0, 8192, false).is_none(), "no weights → not servable");
+        assert!(
+            footprint_from_parts("empty", 0, 8192, false).is_none(),
+            "no weights → not servable"
+        );
     }
 
     // what this catches: an M5 Pro (or any capable silicon) must NOT classify
@@ -2816,7 +3313,10 @@ mod tests {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         assert_eq!(detect_tier("Apple M5 Pro").1, HwTierCategory::MSeriesPro);
         assert_eq!(detect_tier("Apple M2").1, HwTierCategory::MSeries);
-        assert_eq!(detect_tier("NVIDIA GeForce RTX 5090").1, HwTierCategory::Cuda);
+        assert_eq!(
+            detect_tier("NVIDIA GeForce RTX 5090").1,
+            HwTierCategory::Cuda
+        );
         assert_eq!(detect_tier("llvmpipe").1, HwTierCategory::Compat);
     }
 
@@ -2831,7 +3331,10 @@ mod tests {
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
 
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let candidates = vec![
             footprint_from_parts("small", GB, 4096, false).unwrap(),
             footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap(),
@@ -2998,7 +3501,10 @@ mod tests {
     fn test_resource_daemon() -> Arc<ResourceDaemon> {
         use crate::resources::{DaemonConfig, MockCapacitySource};
         ResourceDaemon::start(
-            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 53 * GB))],
+            vec![Arc::new(MockCapacitySource::new(
+                ResourceKind::Vram,
+                53 * GB,
+            ))],
             vec![],
             DaemonConfig::default(),
         )
@@ -3070,10 +3576,9 @@ mod tests {
         // After the pull: the SAME live snapshot now yields it as a candidate,
         // with the footprint reflecting the real on-disk bytes — no reboot.
         let after = candidates_from_snapshot(&catalog.snapshot());
-        let found = after
-            .iter()
-            .find(|f| f.model_id == id)
-            .expect("a freshly-pulled Ready model becomes a serving candidate on the next snapshot");
+        let found = after.iter().find(|f| f.model_id == id).expect(
+            "a freshly-pulled Ready model becomes a serving candidate on the next snapshot",
+        );
         assert_eq!(
             found.weights_bytes, 4096,
             "footprint counts the real bytes that will be loaded"
@@ -3221,7 +3726,10 @@ mod tests {
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
         assert!(up.base_url.ends_with("/v1"));
-        assert_eq!(up.adapters, genes, "live snapshot carries the loaded genome set");
+        assert_eq!(
+            up.adapters, genes,
+            "live snapshot carries the loaded genome set"
+        );
         assert_eq!(
             up.served_context_window, 11008,
             "ready snapshot carries the real per-slot window personas budget to"
@@ -3243,8 +3751,14 @@ mod tests {
         );
         assert_eq!(up.vision_model.as_deref(), Some("vl-7b"));
 
-        let already =
-            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4, None);
+        let already = snapshot_from_outcome(
+            &EnsureOutcome::AlreadyServing,
+            "coder-14b",
+            &genes,
+            11008,
+            4,
+            None,
+        );
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
         assert_eq!(already.served_context_window, 11008);
@@ -3268,7 +3782,10 @@ mod tests {
             4,
             None,
         );
-        assert_eq!(windowless.active_model, None, "ready-but-no-window → nothing live");
+        assert_eq!(
+            windowless.active_model, None,
+            "ready-but-no-window → nothing live"
+        );
         assert!(!windowless.ready);
         assert_eq!(windowless.served_context_window, 0);
         assert_eq!(windowless.lanes, 0, "empty snapshot carries no lanes");
@@ -3312,10 +3829,41 @@ mod tests {
             lanes,
             ..ServingSnapshot::empty()
         };
-        assert_eq!(sticky_served_window(31_744, 2, &live(true, 49_664, 2)), 49_664);
-        assert_eq!(sticky_served_window(31_744, 2, &live(true, 49_664, 1)), 31_744);
-        assert_eq!(sticky_served_window(60_000, 2, &live(true, 49_664, 2)), 60_000);
+        assert_eq!(
+            sticky_served_window(31_744, 2, &live(true, 49_664, 2)),
+            49_664
+        );
+        assert_eq!(
+            sticky_served_window(31_744, 2, &live(true, 49_664, 1)),
+            31_744
+        );
+        assert_eq!(
+            sticky_served_window(60_000, 2, &live(true, 49_664, 2)),
+            60_000
+        );
         assert_eq!(sticky_served_window(31_744, 2, &live(false, 0, 0)), 31_744);
+    }
+
+    // what this catches (#363 wedge-heal floor): a wedge declaration EMPTIES the live
+    // snapshot, which disarms the sticky floor above — so the very relaunch the wedge
+    // detector triggers used to spawn at a teardown-transient plan (measured live: plan
+    // dipped to 9,984 while the dying 34,048 predecessor still held its memory; every
+    // subsequent 12k prompt was rejected). The successor must inherit the last HEALTHY
+    // window when lanes are unchanged; a live-ready lane defers to sticky; a lane-count
+    // change resizes legitimately; and no-history (cold first boot) passes the plan.
+    #[test]
+    fn wedge_heal_floor_holds_the_last_healthy_window_across_the_empty_snapshot() {
+        // The measured blackout shape: not ready (wedge emptied it), same lanes,
+        // transient plan far below the last healthy window → floored.
+        assert_eq!(wedge_heal_floor(9_984, 2, false, 34_048, 2), 34_048);
+        // Live lane still ready → sticky owns the decision; floor stands down.
+        assert_eq!(wedge_heal_floor(9_984, 2, true, 34_048, 2), 9_984);
+        // Lane-count change legitimately resizes KV → plan through.
+        assert_eq!(wedge_heal_floor(9_984, 4, false, 34_048, 2), 9_984);
+        // Plan already >= last healthy → never held down.
+        assert_eq!(wedge_heal_floor(41_216, 2, false, 34_048, 2), 41_216);
+        // No healthy lane ever observed (cold boot) → plan through.
+        assert_eq!(wedge_heal_floor(9_984, 2, false, 0, 0), 9_984);
     }
 
     // what this catches: a published plan drives a reconcile that brings the
@@ -3327,11 +3875,16 @@ mod tests {
         let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
 
         // Publish a plan (most-capable fitting model = coder-14b).
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
 
-        let handle = daemon.reconcile_to_plan().expect("a reconcile should be spawned");
+        let handle = daemon
+            .reconcile_to_plan()
+            .expect("a reconcile should be spawned");
         handle.await.unwrap();
 
         let snap = daemon.subscribe_serving().borrow().clone();
@@ -3363,11 +3916,17 @@ mod tests {
             vision_base_url: None,
             vision_model: None,
         });
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
 
-        assert!(daemon.reconcile_to_plan().is_none(), "already serving → no reconcile");
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "already serving → no reconcile"
+        );
         assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch");
     }
 
@@ -3395,7 +3954,10 @@ mod tests {
         daemon
             .working_set()
             .record_in_memory(uuid::Uuid::new_v4(), plan_model_ctx, 0);
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let candidates =
             vec![footprint_from_parts("coder-14b", 9 * GB, plan_model_ctx, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
@@ -3450,7 +4012,11 @@ mod tests {
                 "tick {tick}: must not re-home before the gain has proven itself sustained"
             );
         }
-        assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch during the streak");
+        assert_eq!(
+            serves.load(Ordering::SeqCst),
+            0,
+            "no relaunch during the streak"
+        );
 
         assert!(
             daemon.reconcile_to_plan().is_some(),
@@ -3468,12 +4034,18 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let (daemon, plan_window) = lane_under_plan(serves.clone(), 65_536, 62);
         let live_window = daemon.serving_tx.borrow().served_context_window;
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
 
         // Alternate: plenty of headroom, then none. Far MORE ticks than the streak
         // needs in total — but never consecutively.
         for _ in 0..(REHOME_SUSTAINED_TICKS * 3) {
-            assert!(daemon.reconcile_to_plan().is_none(), "wanting: still below streak");
+            assert!(
+                daemon.reconcile_to_plan().is_none(),
+                "wanting: still below streak"
+            );
             // A dip: the plan momentarily affords no more than the lane already has.
             let small = vec![footprint_from_parts("coder-14b", 9 * GB, live_window, true).unwrap()];
             daemon.publish_plan(budget, &small);
@@ -3505,8 +4077,15 @@ mod tests {
         for _ in 0..REHOME_SUSTAINED_TICKS {
             decision = daemon.reconcile_to_plan();
         }
-        decision.expect("evidence qualifies by the third tick").await.unwrap();
-        assert_eq!(serves.load(Ordering::SeqCst), 1, "the first re-home fires on evidence");
+        decision
+            .expect("evidence qualifies by the third tick")
+            .await
+            .unwrap();
+        assert_eq!(
+            serves.load(Ordering::SeqCst),
+            1,
+            "the first re-home fires on evidence"
+        );
 
         // Re-pin the lane to its starved window: the relaunch is faked, so nothing
         // actually resized. That makes the gain as compelling on every following tick
@@ -3518,7 +4097,11 @@ mod tests {
                 "cooldown tick {tick}: perfect evidence must still not buy a second relaunch"
             );
         }
-        assert_eq!(serves.load(Ordering::SeqCst), 1, "exactly one relaunch per cooldown window");
+        assert_eq!(
+            serves.load(Ordering::SeqCst),
+            1,
+            "exactly one relaunch per cooldown window"
+        );
 
         // Cooldown spent — the gain must now re-prove itself from zero before firing.
         for tick in 0..(REHOME_SUSTAINED_TICKS - 1) {
@@ -3804,6 +4387,45 @@ mod tests {
         }
     }
 
+    // what this catches: the #363 blackout class — a lane that REJECTS the fleet's
+    // real prompts (undersized slot / mid-stream death) while both trust paths stay
+    // green: recent-decode trust says alive, the 1-token smoke probe would pass.
+    // Sustained REAL-turn failure must outrank both and declare the wedge, flipping
+    // the snapshot not-ready + arming force_relaunch — without ever spending a probe.
+    // Regression for the 2026-08-07 25-minute room blackout (serving/status
+    // ready:true throughout, 4 citizens' turns all dying mid-stream).
+    #[tokio::test]
+    async fn sustained_real_turn_failures_outrank_a_passing_probe() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let mut d = daemon_with(Arc::new(FakeServer {
+            serves,
+            ok: true,
+            // The smoke probe WOULD pass — that is the point: it must not get the
+            // chance to vouch for a lane the real workload proves broken.
+            smoke_ok: Arc::new(AtomicBool::new(true)),
+            wedge: Default::default(),
+        }));
+        // Fresh decode trust too (a partial stream can stamp it) — must ALSO be outranked.
+        let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
+        d.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
+        d.set_real_fails_source(Arc::new(|| HEALTH_FAILS_TO_RELAUNCH as u64));
+        let _ = d.serving_tx.send_replace(ready_snapshot());
+
+        assert!(
+            d.spawn_health_heartbeat_if_due().is_none(),
+            "the wedge verdict is immediate — no probe task is spawned"
+        );
+        assert!(
+            !d.serving_tx.borrow().ready,
+            "sustained real failures must flip the snapshot not-ready even though the \
+             smoke probe would pass and decode trust is fresh"
+        );
+        assert!(
+            d.force_relaunch.load(Ordering::Acquire),
+            "the reconcile must be forced to re-prove the lane, not re-adopt it"
+        );
+    }
+
     // what this catches: a lane whose per-slot window froze at ≤ HALF the
     // currently-planned window gets RE-HOMED (relaunched) even though model +
     // genome match. A server spawned under transient memory pressure (a scratch
@@ -3816,7 +4438,10 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));
 
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
         let plan_window = daemon
@@ -3902,10 +4527,16 @@ mod tests {
             vision_base_url: None,
             vision_model: None,
         });
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         daemon.publish_plan(budget, &[]); // no candidates → plan None
 
-        assert!(daemon.reconcile_to_plan().is_none(), "no plan → no reconcile spawned");
+        assert!(
+            daemon.reconcile_to_plan().is_none(),
+            "no plan → no reconcile spawned"
+        );
         let snap = daemon.subscribe_serving().borrow().clone();
         assert_eq!(snap.active_model, None, "stale snapshot cleared to empty");
         assert!(!snap.ready);
@@ -3920,7 +4551,10 @@ mod tests {
         let serves = Arc::new(AtomicUsize::new(0));
         let daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), false)));
 
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
 
@@ -3928,10 +4562,17 @@ mod tests {
         let snap = daemon.subscribe_serving().borrow().clone();
         assert!(!snap.ready, "degraded → not ready");
         assert_eq!(snap.active_model, None);
-        assert!(!daemon.reconciling.load(Ordering::SeqCst), "gate cleared for retry");
+        assert!(
+            !daemon.reconciling.load(Ordering::SeqCst),
+            "gate cleared for retry"
+        );
 
         // Gate cleared → a retry actually spawns again.
-        daemon.reconcile_to_plan().expect("retry spawned").await.unwrap();
+        daemon
+            .reconcile_to_plan()
+            .expect("retry spawned")
+            .await
+            .unwrap();
         assert_eq!(serves.load(Ordering::SeqCst), 2, "retried after degrade");
     }
 
@@ -3947,7 +4588,10 @@ mod tests {
         let bus = Arc::new(MessageBus::new());
         let _ = daemon.bus.set(bus.clone());
 
-        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
         daemon.publish_plan(budget, &candidates);
         daemon.reconcile_to_plan().expect("spawned").await.unwrap();
@@ -3985,7 +4629,11 @@ mod tests {
 
         // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
         // are the live serving shape; with no weights they resolve to 0 anyway.
-        assert_eq!(resolve(id, 8192, 2), 0, "no weights on disk → nothing to attribute");
+        assert_eq!(
+            resolve(id, 8192, 2),
+            0,
+            "no weights on disk → nothing to attribute"
+        );
         // An id the catalog has never heard of → 0, never a phantom.
         assert_eq!(resolve("never-registered", 8192, 2), 0);
 
@@ -4041,13 +4689,116 @@ mod tests {
         let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
 
         assert!(
-            !daemon.resource_daemon.consumer_ids().contains(&SERVING_CONSUMER_ID.to_string()),
+            !daemon
+                .resource_daemon
+                .consumer_ids()
+                .contains(&SERVING_CONSUMER_ID.to_string()),
             "not registered until the daemon wires itself in"
         );
         daemon.register_as_consumer();
         assert!(
-            daemon.resource_daemon.consumer_ids().contains(&SERVING_CONSUMER_ID.to_string()),
+            daemon
+                .resource_daemon
+                .consumer_ids()
+                .contains(&SERVING_CONSUMER_ID.to_string()),
             "serving must register itself as a measured consumer with the authority"
         );
+    }
+
+    // what this catches (#368, 2nd occurrence): a ONE-tick budget collapse must
+    // classify as a Downshift (so publish_plan HOLDS the incumbent plan until
+    // the squeeze proves sustained) — while same-model, upshift, and
+    // incumbent-gone cases adopt immediately. The live failure: usable_gb hit 0
+    // for ~6 seconds at solve launch, the fresh plan named the 0.5B, and the
+    // reconcile re-brained every citizen onto it before the dip had even passed.
+    #[test]
+    fn downshift_gate_classifies_the_transient_lobotomy() {
+        let footprint = |id: &str, weights_gb: u64, rank: u8| ModelFootprint {
+            model_id: id.into(),
+            weights_bytes: weights_gb * GB,
+            kv_per_token: 100_000,
+            context_window: 32768,
+            capability_rank: rank,
+        };
+        let devstral = footprint("devstral-24b", 14, 8);
+        let tiny = footprint("qwen-0.5b", 1, 1);
+        let plan_for = |id: &str| ServingPlan {
+            base_model_id: id.into(),
+            served_context_window: 2048,
+            lanes: 1,
+            grid_overflow_lanes: 0,
+            resident_models: 1,
+            fits_on_gpu: true,
+            rationale: String::new(),
+        };
+        let both = vec![devstral.clone(), tiny.clone()];
+
+        // The incident shape: incumbent Devstral, fresh wants the 0.5B → HOLD.
+        assert_eq!(
+            downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &both),
+            DownshiftVerdict::Downshift,
+        );
+        // Same model → nothing to debounce.
+        assert_eq!(
+            downshift_gate(&plan_for("devstral-24b"), Some("devstral-24b"), &both),
+            DownshiftVerdict::NotADownshift,
+        );
+        // UPSHIFT (0.5B incumbent, fresh wants Devstral) must adopt immediately —
+        // holding it would have kept the citizens lobotomized on purpose.
+        assert_eq!(
+            downshift_gate(&plan_for("devstral-24b"), Some("qwen-0.5b"), &both),
+            DownshiftVerdict::NotADownshift,
+        );
+        // Incumbent vanished from disk → holding a plan naming a ghost is worse
+        // than any downshift; adopt what is actually present.
+        assert_eq!(
+            downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &[tiny]),
+            DownshiftVerdict::NotADownshift,
+        );
+        // No incumbent (boot) → plain adoption.
+        assert_eq!(
+            downshift_gate(&plan_for("qwen-0.5b"), None, &both),
+            DownshiftVerdict::NotADownshift,
+        );
+    }
+
+    // what this catches (#225, Joel 2026-08-08 "the budgeter just has all its
+    // parts figure it out"): serving's plan budget (`governed_vram_ceiling`)
+    // reads serving's OWN view of the board — global available minus every
+    // OTHER consumer's unmet reservation floor — so the plan can no longer size
+    // the window into the embed lane's slice and starve a faculty cognition
+    // needs every turn. Regression: reading the reservation-blind global
+    // `available_bytes` again would make this budget ignore the floor.
+    #[tokio::test]
+    async fn serving_budget_plans_around_other_consumers_floors() {
+        use crate::resources::{
+            DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon,
+        };
+        let src = Arc::new(MockCapacitySource::new(
+            crate::resources::ResourceKind::Vram,
+            10_000,
+        ));
+        let daemon = ResourceDaemon::start(
+            vec![src],
+            vec![],
+            DaemonConfig {
+                tick_interval: std::time::Duration::from_millis(20),
+                min_reclaim_budget: std::time::Duration::from_millis(100),
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
+            },
+        );
+        // No floors → serving sees the whole board.
+        assert_eq!(governed_vram_ceiling(&daemon), Some(10_000));
+        // The embed lane claims its standing floor → serving's plannable view
+        // shrinks by exactly that slice; the board's Vram row still exists so
+        // the None ("governor hasn't reported") semantics are untouched.
+        daemon.reserve("embed", crate::resources::ResourceKind::Vram, 1_800);
+        assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
+        // Serving's own hypothetical floor would NOT count against itself.
+        daemon.reserve(SERVING_CONSUMER_ID, crate::resources::ResourceKind::Vram, 3_000);
+        assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
     }
 }

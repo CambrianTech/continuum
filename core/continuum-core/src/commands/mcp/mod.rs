@@ -8,7 +8,7 @@
 //! [`MCPModule`](crate::modules::mcp::MCPModule) builds the cache at
 //! `initialize` and contributes these objects via its `commands()`, so they
 //! reach `command_registry()`, the persona tool surface, the ACL, codegen, and
-//! `cu` — the whole point of the migration (the catalog verbs were previously
+//! `uu` — the whole point of the migration (the catalog verbs were previously
 //! invisible to every one of those surfaces).
 //!
 //! - [`McpListTools`](list_tools::McpListTools) (`mcp/list-tools`, AiSafe) — the
@@ -41,7 +41,7 @@ use tool_help::McpToolHelp;
 /// The dep-holding `mcp/*` command objects over the module's shared
 /// [`McpCatalog`]. Called from
 /// [`MCPModule::commands`](crate::modules::mcp::MCPModule) so they reach
-/// `command_registry()`, the ACL, codegen, and `cu`. (`mcp/refresh` is stateless
+/// `command_registry()`, the ACL, codegen, and `uu`. (`mcp/refresh` is stateless
 /// and auto-registers itself — it isn't in this list.)
 pub fn command_objects(catalog: Arc<McpCatalog>) -> Vec<Arc<dyn DynCommand>> {
     vec![

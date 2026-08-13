@@ -24,7 +24,7 @@ thing, not a rigged number. This is an honest, comparable, reproducible baseline
 
 **Reproduce:**
 ```
-cu cognition/eval --personaId <id> --roomId <room> \
+uu cognition/eval --personaId <id> --roomId <room> \
    --evalSet docs/genome/humaneval-rs.jsonl
 ```
 

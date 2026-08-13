@@ -19,6 +19,12 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Default resource-headroom fraction: usable = total × this. 0.8 leaves 20% for
+/// the governor + peer consumers (and, for disk, doubles as the disk-full safety
+/// margin). A dedicated deep-learning FOUNDRY appliance overrides to 1.0.
+const DEFAULT_HEADROOM: f64 = 0.8;
 
 /// Path to `~/.continuum/config.env` (mirrors [`crate::secrets`]).
 pub fn config_path() -> Option<PathBuf> {
@@ -128,6 +134,52 @@ pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ─── Typed policy getters ────────────────────────────────────────────────────
+//
+// These are the SINGLE entry point for operator-tunable resource headroom. The
+// forbidden pattern (CONCURRENCY-STYLE-GUIDE forbidden-move #2) is SCATTERED
+// per-module env/config reads — `config_env::read("KEY").unwrap_or(default)`
+// re-derived at each of 161 call sites. The fix is ONE file everyone goes through:
+// the key name, default, clamp, and cache all live HERE; consumers just call
+// `config_env::vram_headroom()`. Load-once (OnceLock) so budget code on a hot tick
+// never re-reads the file — matching the guide's "config loaded once at boot".
+
+/// Parse an operator-set fraction into `[0.0, 1.0]`, else `default`. Pure +
+/// testable: absent/empty → default; non-finite/garbage → warn + default; valid →
+/// clamped. Clamping means a fat-fingered `1.5` can't over-commit the resource.
+fn parse_fraction(raw: Option<&str>, default: f64) -> f64 {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => default,
+        Some(s) => match s.parse::<f64>() {
+            Ok(f) if f.is_finite() => f.clamp(0.0, 1.0),
+            _ => {
+                tracing::warn!(
+                    target: "config_env",
+                    "invalid headroom fraction {s:?} — using default {default}"
+                );
+                default
+            }
+        },
+    }
+}
+
+/// Headroom fraction for the VRAM/RAM serving budget: `usable = total × this`.
+/// Default 0.8 (leave 20% for the governor + peers); a dedicated foundry sets 1.0.
+/// Read once and cached. Override key: `CONTINUUM_VRAM_HEADROOM`.
+pub fn vram_headroom() -> f64 {
+    static V: OnceLock<f64> = OnceLock::new();
+    *V.get_or_init(|| parse_fraction(read("CONTINUUM_VRAM_HEADROOM").as_deref(), DEFAULT_HEADROOM))
+}
+
+/// Headroom fraction for the disk frozen/cold artifact tier: `usable = drive_free ×
+/// this`. Default 0.8 (the 20% doubles as the disk-full safety guard); a foundry
+/// with a dedicated drive sets 1.0. Read once and cached. Override key:
+/// `CONTINUUM_DISK_HEADROOM`.
+pub fn disk_headroom() -> f64 {
+    static D: OnceLock<f64> = OnceLock::new();
+    *D.get_or_init(|| parse_fraction(read("CONTINUUM_DISK_HEADROOM").as_deref(), DEFAULT_HEADROOM))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +286,28 @@ mod tests {
         fs::write(&p, "# CONTINUUM_LAUNCH_MODE=ui (this is a comment)\n").unwrap();
         assert_eq!(read_from(&p, "CONTINUUM_LAUNCH_MODE"), None);
         let _ = fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// What this catches: the headroom-fraction contract — absent/empty/garbage
+    /// take the default; a foundry's 1.0 passes; and a fat-fingered over-1.0 (or
+    /// negative) is CLAMPED so config can never over-commit the resource. This is
+    /// the single-source getter's behavior, tested on the pure core.
+    #[test]
+    fn parse_fraction_defaults_clamps_and_honors_override() {
+        // absent / empty / whitespace → default
+        assert_eq!(parse_fraction(None, 0.8), 0.8);
+        assert_eq!(parse_fraction(Some(""), 0.8), 0.8);
+        assert_eq!(parse_fraction(Some("   "), 0.8), 0.8);
+        // valid overrides
+        assert_eq!(parse_fraction(Some("1.0"), 0.8), 1.0); // dedicated foundry
+        assert_eq!(parse_fraction(Some(" 0.5 "), 0.8), 0.5); // trimmed
+        assert_eq!(parse_fraction(Some("0.9"), 0.8), 0.9);
+        // out-of-range clamps (can't over-commit / go negative)
+        assert_eq!(parse_fraction(Some("1.5"), 0.8), 1.0);
+        assert_eq!(parse_fraction(Some("-0.3"), 0.8), 0.0);
+        // garbage / non-finite → default
+        assert_eq!(parse_fraction(Some("abc"), 0.8), 0.8);
+        assert_eq!(parse_fraction(Some("NaN"), 0.8), 0.8);
+        assert_eq!(parse_fraction(Some("inf"), 0.8), 0.8);
     }
 }

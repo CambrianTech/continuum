@@ -4,7 +4,7 @@
 //!
 //! These were `GpuModule::handle_command` match arms (Registry A); migrating them
 //! onto the typed registry makes them visible to the persona tool surface, the ACL,
-//! codegen, and `cu` by construction.
+//! codegen, and `uu` by construction.
 //!
 //! ## Access levels reflect the resource-authority boundary
 //!

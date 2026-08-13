@@ -1,0 +1,104 @@
+{
+  "round": "A",
+  "date": "2026-08-11",
+  "suite": "princeton-nlp/SWE-bench_Lite",
+  "claim_shape": "resolved X of N dispatched, every non-resolve classified capability-vs-infra; this is a FIRST FORMAL ROUND on the natural kanban loop, not a leaderboard submission",
+  "config_disclosure": {
+    "harness": "continuum benchmark/dispatch -> kanban card -> citizen agent/solve (whole cognition: genome, memory, tools) -> autograde vs held-out oracle",
+    "base_model": "unsloth/Devstral-Small-2507-GGUF (llama-server, M5 Metal)",
+    "attempts_per_instance": 3,
+    "grader": "fresh clone @ base_commit, apply patch + test_patch, FAIL_TO_PASS and PASS_TO_PASS must all pass; gold gate voids trees where f2p already passes pristine",
+    "oracle": "held out from the solver; verdict feedback names failing tests only",
+    "concurrency": "4 serving lanes, one exclusive warm slot per solve (quiesce_others), waves of 4"
+  },
+  "exclusions": {
+    "django/django (114)": "needs its own test runner (#383) — 114/300 of Lite ungradeable on this grader today",
+    "astropy/astropy (6)": "env build fails (#383)",
+    "psf/requests (6)": "era test suites hit live httpbin.org; gold gate voids them (measured 2026-08-11 on requests-1963)",
+    "matplotlib, scikit-learn, xarray, seaborn (55)": "C-extension/heavy env classes not yet gold-gated on this box — future round"
+  },
+  "instances": {
+    "carried_from_2026-08-11_rounds_1_2_3": [
+      {"id": "sympy__sympy-24152", "citizen": "Anwen", "note": "organic claim path"},
+      {"id": "pallets__flask-4045", "citizen": "Anwen"},
+      {"id": "sympy__sympy-24066", "citizen": "Atlas"},
+      {"id": "pallets__flask-4992", "citizen": "Asha"},
+      {"id": "pytest-dev__pytest-5103", "citizen": "Anon", "note": "first gradeable pytest run — deleted-history env heal (#2245)"},
+      {"id": "sympy__sympy-22714", "citizen": "Anwen"},
+      {"id": "pallets__flask-5063", "citizen": "Anwen"}
+    ],
+    "waves_of_4": [
+      ["sympy__sympy-13480", "sympy__sympy-13647", "sympy__sympy-16988", "sympy__sympy-21055"],
+      ["sympy__sympy-21379", "sympy__sympy-22005", "sympy__sympy-22840", "sympy__sympy-18057"],
+      ["pytest-dev__pytest-11143", "pytest-dev__pytest-11148", "pytest-dev__pytest-5221", "pytest-dev__pytest-5227"],
+      ["pylint-dev__pylint-5859", "pylint-dev__pylint-6506", "pylint-dev__pylint-7080", "pylint-dev__pylint-7114"],
+      ["pylint-dev__pylint-7228", "pylint-dev__pylint-7993", "sphinx-doc__sphinx-10325", "sphinx-doc__sphinx-10451"],
+      ["pytest-dev__pytest-5413", "pytest-dev__pytest-5495", "sphinx-doc__sphinx-11445", "sphinx-doc__sphinx-7686"]
+    ]
+  },
+  "denominator": 31,
+  "projects": ["sympy/sympy", "pallets/flask", "pytest-dev/pytest", "pylint-dev/pylint", "sphinx-doc/sphinx"],
+  "results": {
+    "note": "filled from grade ledgers as verdicts land; every row carries resolved|not_resolved|infra_void with the receipt path",
+    "rows": [
+      {"id": "sympy__sympy-24152", "verdict": "RESOLVED", "f2p": "1/1", "p2p": "6/6", "patch_bytes": 974, "citizen": "Anwen"},
+      {"id": "pallets__flask-4045", "verdict": "not_resolved", "f2p": "0/2", "p2p": "40/40", "patch_bytes": 1299, "citizen": "Anwen", "note": "real partial fix, no regressions"},
+      {"id": "sympy__sympy-24066", "verdict": "not_resolved", "f2p": "0/1", "p2p": "30/30", "patch_bytes": 0, "citizen": "Atlas", "note": "no patch produced; p2p held"},
+      {"id": "pytest-dev__pytest-5103", "verdict": "env_void", "f2p": "0/1", "p2p": "0/40", "patch_bytes": 0, "citizen": "Anon", "note": "2019-pytest era env class, confirmed by 4 sibling voids under the live gate (5221/5413/5227/5495)"},
+      {"id": "pallets__flask-5063", "verdict": "env_void", "f2p": "0/2", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anwen", "note": "CONFIRMED on a freshly rebuilt venv 2026-08-12 09:45 — #2251 gate voided the pristine tree; flask-2.2-era env class is genuinely broken, not a stale venv"},
+      {"id": "pallets__flask-4992", "verdict": "infra", "f2p": "-", "p2p": "-", "patch_bytes": 1192, "citizen": "Asha", "note": "test_patch failed to apply on her tree — she likely edited files the held-out tests touch; her 1192-byte patch persisted for review"},
+      {"id": "sympy__sympy-22714", "verdict": "not_resolved", "f2p": "1/1 best", "p2p": "6/11", "patch_bytes": 2021, "citizen": "Anwen", "note": "best attempt fixed the target test but broke 5 regressions; earlier attempt held p2p 11/11 with no patch"},
+      {"id": "sympy__sympy-13480", "verdict": "RESOLVED", "f2p": "1/1", "p2p": "40/40", "patch_bytes": 592, "citizen": "Atlas", "note": "second citizen resolve of the round — wave 1"},
+      {"id": "sympy__sympy-13647", "verdict": "not_resolved", "f2p": "0/1", "p2p": "40/40", "patch_bytes": 0, "citizen": "Asha"},
+      {"id": "sympy__sympy-16988", "verdict": "not_resolved", "f2p": "0/2", "p2p": "40/40", "patch_bytes": 0, "citizen": "Anon"},
+      {"id": "sympy__sympy-21055", "verdict": "not_resolved", "f2p": "0/1", "p2p": "13/13", "patch_bytes": 0, "citizen": "Anwen"},
+      {"id": "sympy__sympy-21379", "verdict": "not_resolved", "f2p": "0/1", "p2p": "40/40", "patch_bytes": 914, "citizen": "Atlas", "note": "real attempt, no regressions"},
+      {"id": "sympy__sympy-22005", "verdict": "not_resolved", "f2p": "0/1", "p2p": "2/2", "patch_bytes": 489, "citizen": "Asha", "note": "real attempt, no regressions"},
+      {"id": "sympy__sympy-22840", "verdict": "not_resolved", "f2p": "0/2", "p2p": "40/40", "patch_bytes": 0, "citizen": "Anon"},
+      {"id": "sympy__sympy-18057", "verdict": "not_resolved", "f2p": "0/1", "p2p": "40/40", "patch_bytes": 0, "citizen": "Anwen", "note": "the #392 actuator instance; p2p held, no patch committed"},
+      {"id": "pylint-dev__pylint-5859", "verdict": "not_resolved", "f2p": "0/1", "p2p": "10/10", "patch_bytes": 174, "citizen": "Anwen", "note": "first-ever gradeable pylint verdict — #2253 era heal proven end-to-end"},
+      {"id": "pylint-dev__pylint-6506", "verdict": "not_resolved", "f2p": "0/2", "p2p": "6/6", "patch_bytes": 596, "citizen": "Asha", "note": "healthy baseline; targeted config_initialization.py correctly, fix incomplete"},
+      {"id": "pylint-dev__pylint-7080", "verdict": "env_void", "f2p": "0/1", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anon", "note": "FIRST LIVE FIRING of the #2251 p2p-pristine gate: suite does not run in this env, honestly voided instead of a fake capability zero"},
+      {"id": "sphinx-doc__sphinx-10451", "verdict": "infra", "f2p": "-", "p2p": "-", "patch_bytes": 0, "citizen": "Asha", "note": "test_patch failed to apply — tree mismatch class (#383 family)"},
+      {"id": "sphinx-doc__sphinx-10325", "verdict": "not_resolved", "f2p": "0/1", "p2p": "5/5", "patch_bytes": 0, "citizen": "Atlas", "note": "first gradeable sphinx class — env built first-try"},
+      {"id": "sphinx-doc__sphinx-11445", "verdict": "not_resolved", "f2p": "0/2", "p2p": "8/8", "patch_bytes": 0, "citizen": "Anon"},
+      {"id": "pytest-dev__pytest-11143", "verdict": "not_resolved", "f2p": "0/1", "p2p": "40/40", "patch_bytes": 0, "citizen": "Atlas", "note": "modern pytest era: healthy baseline first try"},
+      {"id": "pytest-dev__pytest-11148", "verdict": "not_resolved", "f2p": "0/2", "p2p": "40/40", "patch_bytes": 0, "citizen": "Asha"},
+      {"id": "pytest-dev__pytest-5221", "verdict": "env_void", "f2p": "0/2", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anon", "note": "#2251 gate: 2019-pytest era suite does not run in this env — same class as pytest-5103; expect 5413/5495/5227 to void the same way until the era env is fixed"},
+      {"id": "pytest-dev__pytest-5413", "verdict": "env_void", "f2p": "0/1", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anon", "note": "#2251 gate: 2019-pytest era class, as predicted from 5221"},
+      {"id": "pylint-dev__pylint-7993", "verdict": "not_resolved", "f2p": "0/1", "p2p": "10/10", "patch_bytes": 0, "citizen": "Anon", "note": "re-run on #2254 build: env built clean, healthy baseline, honest capability verdict (first run env-voided)"},
+      {"id": "pylint-dev__pylint-7228", "verdict": "not_resolved", "f2p": "0/2", "p2p": "10/10", "patch_bytes": 0, "citizen": "Asha", "note": "re-run on #2254 build: env built clean (first run env-voided)"},
+      {"id": "pytest-dev__pytest-5227", "verdict": "env_void", "f2p": "0/3", "p2p": "0/34 pristine", "patch_bytes": 0, "citizen": "Anwen", "note": "#2251 gate: 2019-pytest era class (4th confirmation: 5103/5221/5413/5227)"},
+      {"id": "pytest-dev__pytest-5495", "verdict": "env_void", "f2p": "0/2", "p2p": "0/40 pristine", "patch_bytes": 0, "citizen": "Anwen", "note": "#2251 gate: 2019-pytest era class"},
+      {"id": "sphinx-doc__sphinx-7686", "verdict": "not_resolved", "f2p": "0/2", "p2p": "15/15", "patch_bytes": 0, "citizen": "Anwen"},
+      {"id": "pylint-dev__pylint-7114", "verdict": "not_resolved", "f2p": "0/1", "p2p": "39/40", "patch_bytes": 0, "citizen": "Anwen", "note": "re-run on #2254 build: first-ever gradeable run after 4 env failures on the old binary"}
+    ]
+  },
+  "first_pass_tally_2026-08-12_05:51": {
+    "resolved": 2,
+    "denominator": 31,
+    "claim": "resolved 2 of 31 dispatched (SWE-bench Lite, Devstral-Small-2507 local, whole-cognition kanban loop, held-out oracle)",
+    "resolved_ids": ["sympy__sympy-24152 (Anwen, 974B)", "sympy__sympy-13480 (Atlas, 592B)"],
+    "post_rerun_update_07:38": "pylint 7114/7228/7993 re-ran clean on the #2254 build — 3 env_voids converted to gradeable not_resolved (healthy baselines 39/40, 10/10, 10/10). Gradeable verdicts now 22 of 31; env/infra column down to 9.",
+    "not_resolved_gradeable": 20,
+    "infra_test_patch_apply": 2,
+    "env_void": 5,
+    "env_suspect_rerun_owed": 2,
+    "notes": [
+      "19 of 31 produced honest capability verdicts on healthy baselines; 12 of 31 are env/infra classes, each named and receipted — none recorded as fake capability zeros (the #2251 gate fired live 6 times)",
+      "env classes remaining: 2019-pytest era (5103/5221/5413/5227/5495), #2254 setuptools clobber (7114/7228/7993 — fix merged, deploys next reboot), test_patch tree mismatch (flask-4992, sphinx-10451, #383 family)",
+      "dominant capability failure shape: patch_bytes=0 with p2p fully held — write-avoidance (#390), the training target; every non-zero patch this round held regressions except sympy-22714 attempt 2 and sphinx-11445 attempt 3"
+    ],
+    "re_runs_owed_post_reboot": ["pylint-7114", "pylint-7228", "pylint-7993", "pytest-5103 (needs 2019-pytest env fix — NOT covered by any merged PR)", "flask-5063 (env rebuild)"]
+  },
+  "FINAL_2026-08-12_09:48": {
+    "resolved": 2,
+    "denominator": 31,
+    "claim": "ROUND CLOSED — resolved 2 of 31, every instance classified: 22 gradeable capability verdicts (2 RESOLVED + 20 not_resolved, all on healthy baselines), 2 infra (test_patch tree mismatch, #383), 7 env_void (5x 2019-pytest era + flask-5063 confirmed-fresh-venv + pylint-7080), zero unclassified",
+    "round_deltas": [
+      "all re-runs executed: pylint 7114/7228/7993 converted env->gradeable on the #2254 build; flask-5063 confirmed env_void on a fresh venv",
+      "substrate PRs shipped DURING the round from its own failures: #2245 deleted-history heal, #2247 running marker, #2248 claim-follows-card, #2251 p2p-pristine gate (fired live 7 times), #2253 3.10 rung + metadata heal, #2254 setuptools floor, #2255 reset-removes-created-files (live positive control: 7114 attempt-2 suite-break graded capability, not env)",
+      "remaining env debt, named: 2019-pytest era class + flask-2.2 era class + test_patch tree-mismatch pair (#383 family)"
+    ]
+  }
+}

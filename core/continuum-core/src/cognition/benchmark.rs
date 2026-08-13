@@ -5,11 +5,13 @@
 //! The contract, in Joel's words: "any command can run anywhere, so can benchmarks — a
 //! persona in any continuum can bench anywhere." That settles the architecture:
 //!
-//! - The RUNNER is the `benchmark/run` **DynCommand** (see `commands/benchmark/run.rs`).
-//!   Because it is a command, `Commands.execute("benchmark/run", …)` routes local-or-remote
-//!   over airc exactly like every other command — dispatch a heavy SWE-bench sweep to the
-//!   5090, a quick HumanEval pulse to a laptop; a persona self-benchmarks or benchmarks a
-//!   served model on another node. Python scripts can't route the mesh; a command can.
+//! - The RUNNER is `benchmark/dispatch` (see `commands/benchmark.rs`): it adapts a benchmark's
+//!   tasks INTO the work board as claimable cards, and citizens solve them through the ordinary
+//!   kanban loop with their own hands — there is no divergent "run a benchmark" verb. Because
+//!   it is a command, `Commands.execute("benchmark/dispatch", …)` routes local-or-remote over
+//!   airc exactly like every other command — post an SWE-bench sweep to the node hosting the
+//!   citizens, a quick HumanEval pulse to a laptop. Python scripts can't route the mesh; a
+//!   command can.
 //!   ([[commands-are-agency-algs-are-pathways]], [[microkernel-command-event-stream-decomposition-is-why-misfits-beat-cloud]])
 //!
 //! - Each benchmark is an ADAPTER: an OPTIONAL dataset download + a reusable loader + a

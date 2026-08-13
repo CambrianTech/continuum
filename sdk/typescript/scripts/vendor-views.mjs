@@ -32,6 +32,8 @@ const VENDORED = [
   // chat widget closure (positron payloads → views)
   { src: 'positron', dest: 'views', name: 'ChatViewState' },
   { src: 'positron', dest: 'views', name: 'ChatMessageView' },
+  // ChatViewState.acts — the transcript's tool-act receipt stream (#243)
+  { src: 'positron', dest: 'views', name: 'ActReceiptView' },
   { src: 'positron', dest: 'views', name: 'RosterSlotView' },
   // RosterSlotView imports ./Loadout (the model·size·ctx strip, #186)
   { src: 'positron', dest: 'views', name: 'Loadout' },
@@ -55,6 +57,9 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'ServingHeaderView' },
   { src: 'positron', dest: 'views', name: 'ServingArmView' },
   { src: 'positron', dest: 'views', name: 'ServingEventCard' },
+  // bench closure (kind="bench" — the academy's live benchmark board, #329)
+  { src: 'positron', dest: 'views', name: 'BenchViewState' },
+  { src: 'positron', dest: 'views', name: 'BenchRunRow' },
   // kanban closure (kind="kanban" — the work board; the persona home's claims
   // feed renders cards by assignee). Vendored now that a widget renders it.
   { src: 'positron', dest: 'views', name: 'KanbanViewState' },
@@ -64,6 +69,8 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'KanbanLaneState' },
   { src: 'positron', dest: 'views', name: 'KanbanPriority' },
   { src: 'positron', dest: 'views', name: 'KanbanPullRequest' },
+  // KanbanCardView imports ./KanbanHold (lease liveness, #321/#331)
+  { src: 'positron', dest: 'views', name: 'KanbanHold' },
   // Experience / Join Contract manifest closure — mirrored into experience/, keeps
   // its `./Sibling` + `../grid/TrustLevel` relative imports.
   { src: 'experience', dest: 'experience', name: 'Experience' },

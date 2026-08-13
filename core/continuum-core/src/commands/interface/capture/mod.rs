@@ -95,9 +95,9 @@ pub fn capture_root() -> std::io::Result<PathBuf> {
 }
 
 /// Capture-dir scope for a caller: a persona's `peer_id`, or `"local"` for the
-/// owner-by-locality operator. The local Unix-socket `cu` path carries no persona
+/// owner-by-locality operator. The local Unix-socket `uu` path carries no persona
 /// identity ([[handle_client]] stamps `None` — "the operator on the box"), yet the
-/// operator is a first-class caller who can `cu interface/capture` any interface
+/// operator is a first-class caller who can `uu interface/capture` any interface
 /// from a CLI call. A remote (TCP) caller always carries a `peer_id`, so `"local"`
 /// only ever names the trusted local socket. Not a fallback
 /// ([[fallbacks-are-illegal-fail-loud]]): the operator is a real caller, just not a
@@ -128,7 +128,7 @@ impl ActionCommand for Capture {
 
     async fn run(&self, ctx: &Ctx, params: CaptureParams) -> Result<CaptureResult, CommandError> {
         // Scope the capture to the caller — a persona's peer_id, or "local" for the
-        // owner-by-locality operator (`cu interface/capture` from the box).
+        // owner-by-locality operator (`uu interface/capture` from the box).
         let scope = capture_scope(ctx.caller.as_ref());
 
         // Resolve the adapter — fails loud listing valid targets on a typo.
@@ -186,9 +186,9 @@ mod tests {
     }
 
     // what this catches: capture scoping — a persona scopes to its peer_id, and the
-    // owner-by-locality operator (no persona caller, the local `cu` path) scopes to
+    // owner-by-locality operator (no persona caller, the local `uu` path) scopes to
     // "local" instead of being refused. That "local" scope is what lets
-    // `cu interface/capture` screenshot any interface from a CLI call.
+    // `uu interface/capture` screenshot any interface from a CLI call.
     #[test]
     fn caller_scope_is_persona_id_or_local() {
         assert_eq!(capture_scope(None), "local");

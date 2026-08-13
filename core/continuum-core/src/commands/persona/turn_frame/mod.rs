@@ -24,7 +24,7 @@ use execute::TurnExecute;
 /// The dep-holding Lane D turn-frame command objects over the module's shared
 /// [`CognitionState`]. Called from
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
-/// reach `command_registry()`, the ACL, codegen, and `cu`.
+/// reach `command_registry()`, the ACL, codegen, and `uu`.
 ///
 /// - [`DrainTurnFrame`](drain::DrainTurnFrame) (`persona/drain-turn-frame`) stops at the
 ///   replay-stable turn frame.

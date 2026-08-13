@@ -232,7 +232,31 @@ fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
 /// "did you mean" — NOT output steering: it never reads her generated text to
 /// puppet her, it only rewrites what the tool layer hands back when a call she
 /// already made could not run. [[no-hardcoded-heuristics-to-steer-cognition]]
+/// Reserved pseudo-name for "arguments were emitted with NO tool name anywhere".
+/// Namespaced with a space so it can never collide with a real command, and so a
+/// citizen cannot summon this arm by guessing it.
+pub(crate) const NAMELESS_ARGS_SENTINEL: &str = "tools/<no name given>";
+
 fn persona_tool_error(attempted: &str, raw: String) -> String {
+    // The MISSING-name case, which is not the wrong-name case and must not borrow its
+    // sentence. Rendering "`X` is not a tool you can call" here would be actively
+    // misleading: nothing she wrote was wrong, something was absent. Measured live
+    // 2026-08-07 (Sahar): correct intent, correct argument, tool identity carried only in
+    // English — the fence lifted nothing and, before this, reported nothing, so she
+    // repeated the same shape until the deadline. Name the missing piece and show the
+    // form; the args she already wrote are reusable as-is.
+    if attempted == NAMELESS_ARGS_SENTINEL {
+        return format!(
+            "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
+             The arguments look right — they just need a tool in front of them. The form is:\n\
+             `tool/name({{\"arg\": \"value\"}})`\n\n\
+             For example: `code/read({{\"file_path\": \"src/main.rs\"}})`.\n\
+             Naming the tool in prose (\"I will release the card\") does not call it — the \
+             name has to be in the call itself. Call `commands/help` with no arguments for \
+             the list of tools you can name, then retry with the same arguments."
+        );
+    }
+
     // The dispatched (slash) form is what the registry knows; she may have
     // emitted the underscore form, so normalize before matching/suggesting.
     let normalized = attempted.replace('_', "/");

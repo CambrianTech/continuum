@@ -60,6 +60,7 @@ export type {
 export type {
   ChatViewState,
   ChatMessageView,
+  ActReceiptView,
   RosterSlotView,
   RosterViewState,
   SenderKind,
@@ -76,6 +77,8 @@ export type {
   ServingHeaderView,
   ServingArmView,
   ServingEventCard,
+  BenchViewState,
+  BenchRunRow,
   KanbanViewState,
   KanbanCardView,
   KanbanLaneView,

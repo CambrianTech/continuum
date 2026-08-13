@@ -57,6 +57,7 @@ use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use uuid::Uuid;
 
 /// System-level, configurable `PersonaConversation` impl. Public
 /// because every test in the substrate leases it; not behind
@@ -64,7 +65,11 @@ use std::sync::Mutex;
 pub struct ScriptedConversation {
     high_water: u64,
     events: Mutex<VecDeque<Result<Option<IncomingMessage>, String>>>,
-    said: Mutex<Vec<String>>,
+    /// Every reply the loop posted, WITH the room it was posted into.
+    /// The room is recorded because "she answered" and "she answered
+    /// the room that asked" are different claims, and only the second
+    /// one is the contract — see `said_in`.
+    said: Mutex<Vec<(Uuid, String)>>,
     primed: AtomicUsize,
     prime_result: Mutex<Result<(), String>>,
     /// When set, `next_message` returns Err if called before `prime`
@@ -140,9 +145,23 @@ impl ScriptedConversation {
         self.primed.load(Ordering::SeqCst)
     }
 
-    /// Snapshot of every text the loop posted via `say()`. Tests
-    /// assert reply content + count.
+    /// Snapshot of every text the loop posted. Tests assert reply
+    /// content + count. Room-agnostic view of the same storage as
+    /// [`said_in`](Self::said_in) — not a second field.
     pub fn said(&self) -> Vec<String> {
+        self.said
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_room, text)| text.clone())
+            .collect()
+    }
+
+    /// Every reply paired with the room it was posted INTO. This is
+    /// the surface that can catch a persona answering the wrong
+    /// audience — invisible to [`said`](Self::said), which only knows
+    /// that she spoke.
+    pub fn said_in(&self) -> Vec<(Uuid, String)> {
         self.said.lock().unwrap().clone()
     }
 }
@@ -186,8 +205,8 @@ impl PersonaConversation for ScriptedConversation {
             .unwrap_or(Ok(None))
     }
 
-    async fn say(&self, text: &str) -> Result<(), String> {
-        self.said.lock().unwrap().push(text.to_string());
+    async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
+        self.said.lock().unwrap().push((room_id, text.to_string()));
         Ok(())
     }
 }
@@ -195,7 +214,6 @@ impl PersonaConversation for ScriptedConversation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     fn one_msg() -> IncomingMessage {
         IncomingMessage {
@@ -253,11 +271,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn say_records_in_order() {
+    // what this catches: replies are recorded in order AND against the room each
+    // was actually posted into. The room half is the load-bearing one — a
+    // persona answering the wrong room is invisible to `said()`, which only
+    // knows that she spoke, and that blind spot is what let one-room perception
+    // look like inattention for a whole evening (task #64).
+    async fn say_records_in_order_and_remembers_the_room() {
+        let asked_in = Uuid::new_v4();
+        let elsewhere = Uuid::new_v4();
         let c = ScriptedConversation::new();
-        c.say("one").await.unwrap();
-        c.say("two").await.unwrap();
+        c.say_in(asked_in, "one").await.unwrap();
+        c.say_in(elsewhere, "two").await.unwrap();
         assert_eq!(c.said(), vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(
+            c.said_in(),
+            vec![
+                (asked_in, "one".to_string()),
+                (elsewhere, "two".to_string())
+            ],
+            "each reply is attributed to the room it went to, not merely counted"
+        );
     }
 
     #[tokio::test]

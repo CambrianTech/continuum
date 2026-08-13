@@ -3839,7 +3839,7 @@ pub struct AdapterInfo {
 // vector/* typed outputs
 //
 // The vector handlers once returned ad-hoc `json!` blobs. As typed commands
-// they carry real result structs — so the persona surface, codegen, and `cu`
+// they carry real result structs — so the persona surface, codegen, and `uu`
 // all see the shape, and a caller can deserialize without guessing field names.
 // ============================================================================
 

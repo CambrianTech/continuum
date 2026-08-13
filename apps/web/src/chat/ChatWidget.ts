@@ -28,6 +28,7 @@ import {
 import type {
   KanbanViewState,
   NavViewState,
+  BenchViewState,
   ServingViewState,
   StreamDelta,
   SystemMetricsViewState,
@@ -84,6 +85,7 @@ export class ChatWidget extends LitElement {
     nav: { attribute: false },
     sys: { attribute: false },
     serving: { attribute: false },
+    bench: { attribute: false },
     board: { attribute: false },
     arena: { attribute: false },
     version: { attribute: false },
@@ -119,6 +121,10 @@ export class ChatWidget extends LitElement {
   /** The node's live `kind="serving"` view (the serving glass box, #141),
    *  when the host's subscription has delivered. `undefined` = no widget. */
   serving?: ServingViewState;
+
+  /** The node's live `kind="bench"` benchmark board (#329) — fills the academy
+   *  contextual rail with run rows. Honestly absent until the feed delivers. */
+  bench?: BenchViewState;
 
   /** The node's live `kind="kanban"` work board, when the host's subscription
    *  has delivered — feeds the persona home's claims. `undefined` = the claims
@@ -966,6 +972,189 @@ export class ChatWidget extends LitElement {
       border: 1px solid var(--border-subtle);
       border-radius: var(--radius-sm);
       overflow: hidden;
+    }
+    /* BENCH board (#329) — console-grade: scoreboard header, state-dot
+     * cards with a real acts progress bar, patch-forming accent chip, and
+     * the REGRESSION alarm. Working dots pulse (reduced-motion: static). */
+    .bench-board {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: var(--spacing-xs) var(--spacing-md) var(--spacing-sm);
+    }
+    .bench-score {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+    .bench-stat {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 8px 4px 6px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--surface, #0b1220) 60%, transparent);
+    }
+    .bench-stat-n {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      color: var(--content-primary);
+    }
+    .bench-stat-l {
+      margin-top: 3px;
+      font-size: 8.5px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--content-secondary);
+    }
+    .bench-stat-resolved .bench-stat-n { color: var(--status-success, #4caf7d); }
+    .bench-stat-working .bench-stat-n { color: var(--accent-primary); }
+    .bench-stat-failed .bench-stat-n { color: var(--content-secondary); }
+    .bench-stall-banner {
+      padding: 5px 8px;
+      border: 1px solid color-mix(in srgb, var(--status-warning, #e0a458) 45%, transparent);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--status-warning, #e0a458) 12%, transparent);
+      color: var(--status-warning, #e0a458);
+      font-size: 9.5px;
+      font-weight: 600;
+    }
+    .bench-card {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      padding: 8px 10px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--surface, #0b1220) 45%, transparent);
+      font-size: 10px;
+      color: var(--content-secondary);
+    }
+    .bench-state-queued { opacity: 0.65; }
+    .bench-card-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .bench-dot {
+      flex-shrink: 0;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--border-subtle);
+    }
+    .bench-state-working .bench-dot,
+    .bench-state-grading .bench-dot {
+      background: var(--accent-primary);
+      box-shadow: 0 0 6px var(--accent-primary);
+      animation: bench-pulse 1.6s ease-in-out infinite;
+    }
+    .bench-state-stalled .bench-dot { background: var(--status-warning, #e0a458); }
+    .bench-state-resolved .bench-dot { background: var(--status-success, #4caf7d); }
+    .bench-state-failed .bench-dot { background: var(--status-error, #d9534f); }
+    @keyframes bench-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.8); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .bench-dot { animation: none !important; }
+    }
+    .bench-instance {
+      flex: 1;
+      min-width: 0;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 11px;
+      color: var(--content-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bench-attempt {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--content-secondary);
+    }
+    .bench-attempt i { font-style: normal; opacity: 0.5; padding: 0 1px; }
+    .bench-card-meta {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 9.5px;
+    }
+    .bench-persona { font-weight: 700; color: var(--content-primary); }
+    .bench-selfclaimed {
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent-primary);
+    }
+    .bench-pulse { font-variant-numeric: tabular-nums; }
+    .bench-nogen { font-style: italic; opacity: 0.7; }
+    .bench-patch {
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-weight: 800;
+      font-size: 9.5px;
+      color: var(--accent-primary);
+    }
+    .bench-bar {
+      height: 3px;
+      border-radius: 2px;
+      background: color-mix(in srgb, var(--border-subtle) 60%, transparent);
+      overflow: hidden;
+    }
+    .bench-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--accent-primary) 45%, transparent),
+        var(--accent-primary));
+    }
+    .bench-state-resolved .bench-bar-fill { background: var(--status-success, #4caf7d); }
+    .bench-state-stalled .bench-bar-fill { background: var(--status-warning, #e0a458); }
+    .bench-verdict {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 7px;
+      padding-top: 1px;
+      font-size: 9.5px;
+    }
+    .bench-verdict b { color: var(--content-primary); font-variant-numeric: tabular-nums; }
+    .bench-resolved {
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      color: var(--status-success, #4caf7d);
+    }
+    .bench-alarm {
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      color: var(--status-error, #d9534f);
+    }
+    .bench-failed {
+      font-family: var(--font-mono);
+      font-size: 8.5px;
+      opacity: 0.8;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+    .bench-lanes,
+    .bench-snapshot-banner,
+    .bench-awaiting {
+      font-size: 9.5px;
+      font-style: italic;
+      color: var(--content-secondary);
     }
     .serving-arm[data-chosen] {
       border-color: var(--accent-primary);
@@ -1908,6 +2097,65 @@ export class ChatWidget extends LitElement {
       gap: var(--spacing-sm);
       padding: 6px 0;
     }
+    /* Tool-act receipt rows (#243) — the collapsed "Read 2 files, ran a command ›"
+       line between speech, expanding IN PLACE via native <details>. Quiet by
+       design: the work is one gesture away, never shouting over the words. */
+    .messages .act-group {
+      list-style: none;
+      padding: 1px 0;
+      margin-left: calc(28px + var(--spacing-sm));
+      font-size: 11px;
+      color: var(--content-secondary);
+    }
+    .act-group summary {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+      padding: 2px 8px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: color-mix(in srgb, var(--surface, #0b1220) 40%, transparent);
+    }
+    .act-group summary::-webkit-details-marker { display: none; }
+    .act-group summary::after { content: '›'; opacity: 0.6; transition: transform 0.15s; }
+    .act-group details[open] summary::after { transform: rotate(90deg); }
+    .act-gear { opacity: 0.75; }
+    .act-gear.act-failed { color: var(--status-warning, #e0a458); }
+    .act-actor { font-weight: 600; color: var(--content-primary); }
+    .act-count {
+      font-size: 9px;
+      padding: 0 5px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--content-secondary) 18%, transparent);
+      font-variant-numeric: tabular-nums;
+    }
+    .act-list {
+      list-style: none;
+      margin: 4px 0 2px;
+      padding: 0 0 0 14px;
+      border-left: 1px solid var(--border-subtle);
+    }
+    .act-item {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      padding: 1.5px 0;
+      font-family: var(--font-mono, ui-monospace, monospace);
+      font-size: 10.5px;
+    }
+    .act-item .act-mark { color: var(--status-success, #4caf7d); }
+    .act-item.act-failed .act-mark { color: var(--status-error, #e05858); }
+    .act-tool { color: var(--accent-primary); }
+    .act-obj {
+      color: var(--content-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 420px;
+    }
+    .act-time { margin-left: auto; opacity: 0.5; font-size: 9px; }
     /* Continuation rows (same sender, grouped upstream): tuck the body into the
        sender's column — tight runs, the classic chat grouping. */
     .messages .msg.continues {
@@ -3949,6 +4197,7 @@ export class ChatWidget extends LitElement {
         nav: this.nav,
         sys: this.sys,
         serving: this.serving,
+        bench: this.bench,
         board: this.board,
         arena: this.arena,
         version: this.version,

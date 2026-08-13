@@ -21,7 +21,12 @@
  */
 
 import type { ChatState } from './ChatState';
-import type { ChatMessageView, RosterSlotView, SenderKind } from '@continuum/sdk-typescript';
+import type {
+  ActReceiptView,
+  ChatMessageView,
+  RosterSlotView,
+  SenderKind,
+} from '@continuum/sdk-typescript';
 import { messageDigest, type MessageDigestVM } from './messageDigest';
 
 /** The neutral author/member kind discriminant (`'human' | 'agent' | 'system'`). */
@@ -107,6 +112,40 @@ export interface MessageRowVM {
   readonly continues?: boolean;
 }
 
+/** One tool act inside a receipt group — the expanded row (#243). */
+export interface ActReceiptVM {
+  readonly id: string;
+  /** Opaque tool name as executed ("code/read"). */
+  readonly tool: string;
+  /** One-line human object ("sympy/core/mul.py"). Empty = verb-only. */
+  readonly summary: string;
+  readonly ok: boolean;
+  readonly time: string;
+}
+
+/** A COLLAPSED run of consecutive tool acts by one actor — the transcript's
+ *  receipt row (the Claude-iOS pattern: "Ran 3 commands ›" between speech;
+ *  web expands in place, mobile opens a sheet). Grouping lives HERE, in the
+ *  one projection, so web/tui/mobile all collapse identically. */
+export interface ActGroupVM {
+  readonly row: 'acts';
+  /** First receipt's id — the group's stable render key. */
+  readonly id: string;
+  readonly actorId: string;
+  readonly actorName: string;
+  /** The iOS-style collapsed line: "Read 2 files, ran a command". */
+  readonly summaryLine: string;
+  /** Wall-clock of the group's LAST act (the freshest fact). */
+  readonly time: string;
+  /** True when ANY receipt in the group failed — the collapsed line warns. */
+  readonly anyFailed: boolean;
+  readonly receipts: readonly ActReceiptVM[];
+}
+
+/** One transcript row: a spoken message or a collapsed act group, discriminated
+ *  on `row` (`kind` is taken — it's the author kind on message rows). */
+export type TranscriptRowVM = ({ readonly row: 'message' } & MessageRowVM) | ActGroupVM;
+
 /** The full render-ready projection of a chat snapshot. */
 export interface ChatViewModel {
   readonly roomName: string;
@@ -119,6 +158,11 @@ export interface ChatViewModel {
   readonly activeCount: number;
   readonly members: readonly RosterMemberVM[];
   readonly messages: readonly MessageRowVM[];
+  /** The FULL transcript: messages and collapsed act-receipt groups interleaved
+   *  by timestamp (#243 — the room is the activity's full event stream; speech-
+   *  only transcripts hide the work). Renderers draw THIS; `messages` remains
+   *  the speech-only view other consumers (ticker, digests) keep reading. */
+  readonly transcript: readonly TranscriptRowVM[];
   /** No messages yet — the surface renders an honest empty state, not an error. */
   readonly isEmpty: boolean;
   readonly revision?: number;
@@ -209,6 +253,101 @@ function messageVM(msg: ChatMessageView): MessageRowVM {
  *  grouping that turns bubble-per-line sprawl into readable runs. */
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
+/** Classify a tool name into the collapsed line's verb bucket. Read verbs are
+ *  the same deny-list vocabulary the workspace invalidator speaks; everything
+ *  unknown reads as generic "used a tool" — honest, never a guessed verb. */
+function actVerb(tool: string): 'read' | 'searched' | 'edited' | 'ran' | 'used' {
+  if (/^code\/(read|list|tree|glob)$/.test(tool)) return 'read';
+  if (/^code\/search$/.test(tool)) return 'searched';
+  if (/^code\/(write|edit)$/.test(tool)) return 'edited';
+  if (/^(code\/(shell|run)|cargo\/|git\/)/.test(tool)) return 'ran';
+  return 'used';
+}
+
+/** The iOS-style collapsed line: verb buckets with counts, in first-occurrence
+ *  order — "Read 2 files, ran a command", "Edited a file, ran 3 commands". */
+export function actSummaryLine(tools: readonly string[]): string {
+  const nouns: Record<ReturnType<typeof actVerb>, [string, string]> = {
+    read: ['a file', 'files'],
+    searched: ['once', 'times'],
+    edited: ['a file', 'files'],
+    ran: ['a command', 'commands'],
+    used: ['a tool', 'tools'],
+  };
+  const order: ReturnType<typeof actVerb>[] = [];
+  const counts = new Map<ReturnType<typeof actVerb>, number>();
+  for (const t of tools) {
+    const v = actVerb(t);
+    if (!counts.has(v)) order.push(v);
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  const parts = order.map((v) => {
+    const n = counts.get(v) ?? 0;
+    const [one, many] = nouns[v];
+    return n === 1 ? `${v} ${one}` : `${v} ${n} ${many}`;
+  });
+  const line = parts.join(', ');
+  return line.charAt(0).toUpperCase() + line.slice(1);
+}
+
+/** Interleave messages and act receipts by timestamp into the transcript,
+ *  collapsing consecutive same-actor acts (nothing between them) into one
+ *  group row. Pure over the two wire arrays — the one place every client's
+ *  collapse behavior comes from. */
+function buildTranscript(
+  messages: readonly MessageRowVM[],
+  wireMessages: readonly ChatMessageView[],
+  acts: readonly ActReceiptView[],
+): TranscriptRowVM[] {
+  type Ev =
+    | { ts: number; msg: MessageRowVM }
+    | { ts: number; act: ActReceiptView };
+  const events: Ev[] = [
+    ...messages.map((m, i) => ({ ts: wireMessages[i]?.timestamp ?? 0, msg: m })),
+    ...acts.map((a) => ({ ts: a.timestamp, act: a })),
+  ].sort((x, y) => x.ts - y.ts);
+
+  const out: TranscriptRowVM[] = [];
+  for (const ev of events) {
+    if ('msg' in ev) {
+      out.push({ row: 'message', ...ev.msg });
+      continue;
+    }
+    const a = ev.act;
+    const receipt: ActReceiptVM = {
+      id: a.id,
+      tool: a.tool,
+      summary: a.summary,
+      ok: a.ok,
+      time: formatTimeOfDay(a.timestamp),
+    };
+    const last = out[out.length - 1];
+    if (last && last.row === 'acts' && last.actorId === a.actor_id) {
+      // Extend the open group: rebuild the immutable row with the new receipt.
+      const receipts = [...last.receipts, receipt];
+      out[out.length - 1] = {
+        ...last,
+        receipts,
+        summaryLine: actSummaryLine(receipts.map((r) => r.tool)),
+        time: receipt.time,
+        anyFailed: last.anyFailed || !a.ok,
+      };
+    } else {
+      out.push({
+        row: 'acts',
+        id: a.id,
+        actorId: a.actor_id,
+        actorName: a.actor_name,
+        summaryLine: actSummaryLine([a.tool]),
+        time: receipt.time,
+        anyFailed: !a.ok,
+        receipts: [receipt],
+      });
+    }
+  }
+  return out;
+}
+
 /** Project a `ChatState` snapshot into the flat view model the panels render. */
 export function chatViewModel(state: ChatState): ChatViewModel {
   const members = state.roster.map(memberVM);
@@ -243,6 +382,10 @@ export function chatViewModel(state: ChatState): ChatViewModel {
     activeCount: members.filter((m) => m.active).length,
     members,
     messages,
+    // Additive wire field (#243): an older core omits `acts` → the transcript
+    // is just the messages, exactly the pre-receipt surface.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    transcript: buildTranscript(messages, state.messages, state.acts ?? []),
     isEmpty: state.messages.length === 0,
     revision: state.revision,
   };

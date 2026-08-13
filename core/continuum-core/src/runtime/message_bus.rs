@@ -334,6 +334,7 @@ impl MessageBus {
             || event_name.starts_with("presence:")
             || event_name.starts_with("tool:")
             || event_name.starts_with("airc:bridge:")  // !continuum directive/reply control events — must not coalesce-drop (directive & reply share the airc:bridge prefix; coalescing would drop a reply emitted right after its directive)
+            || event_name == "persona:act"  // act RECEIPTS (#243): a batch fires several back-to-back and each is a distinct transcript row — coalescing would silently drop all but the first. Deliberately exact (persona:vitals stays coalesced; it is periodic and tolerant)
             || event_name.contains("chat_messages")  // data:chat_messages:created must not be coalesced
             || event_name.contains("chat_rooms"); // room events are real-time too
 

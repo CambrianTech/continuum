@@ -255,6 +255,31 @@ fn plan_to_fit(
 // weights (`ShareLane`) beats a node with more free bytes every time. `capacity::grid`'s
 // `GridPlacementPolicy` becomes a thin adapter over this once its `GridSnapshot` carries
 // each node's resident models (the integration slice) — NOT a third parallel allocator.
+//
+// ─── STATUS 2026-08-10: THE PARAGRAPH ABOVE IS A PLAN, NOT A DESCRIPTION ───────────
+//
+// Read it as intent. Neither seam is on a live path, and the wording above has now
+// misled two agents in a single day — once into nominating `capacity::grid` as the
+// surviving allocator, and once into building a pricing policy behind
+// `GridPlacementPolicy` because "AffinityFit uses it" implied traffic.
+//
+// Verified by both of us independently, today:
+//   * `GridPlacementPolicy` — zero non-test callers. The ONLY reference outside
+//     `capacity/grid.rs` is this comment. Its impls are exercised solely by the
+//     `GridScenario` sim in that same file, which is what makes them look alive.
+//   * `plan_grid_placement` (below) — zero non-test callers, despite its own doc
+//     calling it "THE grid admission planner".
+//
+// Note the trap in the sentence above: "becomes a thin adapter over this" DEMOTES
+// `GridPlacementPolicy` (the pronoun is `plan_grid_placement`), yet it scans as an
+// endorsement because it names `GridPlacementPolicy` last. If you are choosing a
+// survivor, do not read it as a vote.
+//
+// The seam that IS live is `modules::grid::router::GridRouter::route`, reached via
+// `GridInterceptor → try_route_remote`. Eligibility gating landed there in #2230;
+// ranking/pricing composes onto it AFTER the eligibility filter. Anything built
+// behind the two policy seams above is unreachable in production until something
+// calls them — see #2227 / task #68 for the cleanup decision.
 
 /// One node in the grid's live view: its physical ceiling + what it already serves +
 /// the network's `reachable` verdict THIS instant. An unreachable node is a memory, not

@@ -146,6 +146,7 @@ describe('chatViewModel digest projection', () => {
     room_name: 'general',
     purpose: 'chat',
     roster: [],
+    acts: [],
     messages: [
       {
         id: 'msg-1',

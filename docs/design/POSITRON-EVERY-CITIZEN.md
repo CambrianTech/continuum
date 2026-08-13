@@ -23,7 +23,7 @@ second-class inhabitant of its own world. So:
 - a **perceivable persona surface** — projected into RAG so Asha *sees* the room, the
   roster, the model list, the config, the way a human sees the screen;
 - an **operable affordance surface** — every control is a *command*, so Asha (or Claude,
-  or `cu`, or the web button) *invokes the same thing*. Clicking "load model" and Asha
+  or `uu`, or the web button) *invokes the same thing*. Clicking "load model" and Asha
   choosing "load model" are the identical `Command`.
 
 Humans get the look. AIs get perception + operation. It is the *same interface* — that is
@@ -57,7 +57,7 @@ move is that a control is not just drawn — it **carries its action**, and that
 This unifies two things we already have separately: **commands are agency**
 ([[commands-are-agency-algs-are-pathways]]) and **controls are affordances**. Positron makes
 a control *be* a command projection. `ActionCommand ⟹ DynCommand` with one schemars schema
-already fans a command out to AI + `cu` + web ([[command-infra-self-routing-schema-adapters]]);
+already fans a command out to AI + `uu` + web ([[command-infra-self-routing-schema-adapters]]);
 positron is the *interface* side of that same seam — the control declares the command, and
 each citizen operates it in its modality. **No adapter privileges the human.**
 
@@ -283,5 +283,5 @@ whole app in, once."
 
 Not "the web page looks right." **Done is:** a human on web/mobile sees a gorgeous foundry;
 Asha, given the same room, *sees the models and config* and *pages a model in herself*;
-Claude/`cu` can drive the identical commands headless. One declaration, one interface,
+Claude/`uu` can drive the identical commands headless. One declaration, one interface,
 three modalities, every citizen operating it as a peer. **No one left out.**

@@ -174,6 +174,7 @@ pub mod daemon;
 pub mod governor;
 pub mod ledger;
 pub mod lease;
+pub mod mode_policy;
 pub mod placement;
 
 pub use crate::cognition::{
@@ -196,3 +197,4 @@ pub use consumer::{
 };
 pub use ledger::{KindLedger, LeaseBoard, ResourceLeaseLedger};
 pub use lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
+pub use mode_policy::{ConsumerDemand, ConsumerRole, GovernorMode, PolicyFloor, Price};

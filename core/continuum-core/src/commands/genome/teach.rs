@@ -95,6 +95,15 @@ pub struct GenomeTeachParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub teach_set: Option<String>,
+    /// A citizen's peer id (full UUID or ≥4-char hex prefix): teach from HER LIVED
+    /// FAILURES instead of a static set (#319 — the curriculum drain). Loads her
+    /// durable experience stream (`citizens/peers/<id>/experience.jsonl`, written by
+    /// `benchmark/grade`/`swe-grade`), keeps only the LATEST record per task (a later
+    /// PASS retires the failure — the lesson was learned), and selects the salient,
+    /// test-graded failures as the teach set. Precedence: `tasks` > this > `teach_set`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub from_experience: Option<String>,
     /// Model that writes + fixes. Omit to use the locally-served model (runs with no
     /// external dep); point at a stronger peer/gateway model for higher yield.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -819,10 +828,46 @@ impl GenomeTeach {
         // Bind this pass's run_id so the emit helpers write LIVE progress to its ledger
         // (cross-process, so `teach-status --run_id` and any widget see the bar advance).
         set_current_teach_run(p.run_id.clone());
-        // Task source: inline → teach_set JSONL → committed default. A missing
-        // explicit path is a loud error (don't silently teach an empty set).
+        // Task source: inline → from_experience (the #319 curriculum drain) →
+        // teach_set JSONL → committed default. A missing explicit path is a loud
+        // error (don't silently teach an empty set).
         let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
+        } else if let Some(solver) = p.from_experience.as_deref() {
+            // Her lived, objectively graded failures become her curriculum. Same
+            // citizen layout as the grader that wrote the stream (one resolver),
+            // latest-per-task dedup so a later PASS retires the failure, then the
+            // SAME salience selection every other experience consumer uses.
+            let home = crate::commands::benchmark::continuum_home()?;
+            let (solver_full, solver_dir) =
+                crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
+            let records = crate::cognition::experience::load_experiences(&solver_dir);
+            let latest = crate::cognition::experience::latest_per_task(&records);
+            let teach = crate::cognition::experience::salient_teach_set(
+                &latest,
+                &crate::cognition::experience::ErrorSalience,
+            );
+            crate::probe!(
+                class = "genome.teach.from_experience",
+                solver = solver_full.as_str(),
+                stream_records = records.len() as u64,
+                after_dedup = latest.len() as u64,
+                teachable_failures = teach.len() as u64,
+                "curriculum drained from the citizen's lived experience stream (#319)",
+            );
+            if teach.is_empty() {
+                // An empty drain is a CLEAN state (no salient failures pending —
+                // she has learned everything her grades exposed), distinct from a
+                // misconfigured teach_set. Named so callers/sentinels can tell.
+                return Err(CommandError::Invalid(format!(
+                    "no salient failures pending in {solver_full}'s experience stream \
+                     ({} records, {} after latest-per-task dedup) — nothing to learn \
+                     right now, which is a healthy state, not a fault",
+                    records.len(),
+                    latest.len()
+                )));
+            }
+            teach
         } else {
             let path = p.teach_set.as_deref().unwrap_or(DEFAULT_TEACH_SET);
             let text = std::fs::read_to_string(path).map_err(|e| {

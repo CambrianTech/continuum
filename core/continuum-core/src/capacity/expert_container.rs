@@ -448,13 +448,16 @@ impl ExpertFetcher for ExpertContainer {
     }
 }
 
-#[cfg(test)]
-mod tests {
+/// Foundry stand-ins for tests — the ONE fixture per concern (CLAUDE.md
+/// test-fixtures rule): every test that needs a container on disk uses these,
+/// never a parallel writer. Gated so production binaries cannot link them.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fixtures {
     use super::*;
     use std::io::Write;
 
-    /// Foundry stand-in: write a tiny valid container (record = one page).
-    fn write_container(root: &Path, n_layers: u16, experts: u16) -> ContainerManifest {
+    /// Foundry stand-in: write a tiny valid v1 container (record = one page).
+    pub fn write_container(root: &Path, n_layers: u16, experts: u16) -> ContainerManifest {
         let manifest = ContainerManifest {
             version: 1,
             model: "test-moe".into(),
@@ -486,6 +489,72 @@ mod tests {
         }
         manifest
     }
+
+    /// Foundry stand-in for the TIERED format (`moec_pack_dir_tiered`,
+    /// locked 2026-07-31): manifest v2 with descending-fidelity tiers +
+    /// per-(layer,tier) banks `experts-L{n}-T{t}.bin`.
+    pub fn write_tiered_container(root: &Path, n_layers: u16, experts: u16) -> ContainerManifest {
+        let tiers = vec![
+            TierSpec {
+                id: 0,
+                quant: "IQ2".into(),
+                record_bytes: 2 * RECORD_ALIGN,
+            },
+            TierSpec {
+                id: 1,
+                quant: "IQ1".into(),
+                record_bytes: RECORD_ALIGN,
+            },
+        ];
+        let manifest = ContainerManifest {
+            version: 2,
+            model: "test-moe".into(),
+            fmt: "IQ2".into(),
+            record_bytes: 2 * RECORD_ALIGN,
+            n_layers,
+            experts_per_layer: experts,
+            activated_per_token: 2,
+            top_k_per_layer: Some(1),
+            tiers: tiers.clone(),
+        };
+        std::fs::write(
+            root.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).expect("serialize"),
+        )
+        .expect("write manifest");
+        for layer in 0..n_layers {
+            for tier in &tiers {
+                let mut f = File::create(root.join(format!("experts-L{layer}-T{}.bin", tier.id)))
+                    .expect("bank");
+                for expert in 0..experts {
+                    let mut rec = vec![0u8; tier.record_bytes as usize];
+                    rec[0..4].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
+                    rec[4..6].copy_from_slice(&layer.to_le_bytes());
+                    rec[6..8].copy_from_slice(&expert.to_le_bytes());
+                    // Payload distinguishable by TIER too — a tier-0 read
+                    // must never come back with tier-1 bytes.
+                    rec[HEADER_IDENT_BYTES] = tier.id as u8 ^ 0x5A;
+                    rec[HEADER_IDENT_BYTES + 1] = expert as u8;
+                    f.write_all(&rec).expect("record");
+                }
+            }
+        }
+        manifest
+    }
+
+    /// Assert a fetched v1 record carries ITS OWN payload signature (the
+    /// pattern `write_container` stamps) — shared so depot/pager tests can
+    /// prove round-trips without re-learning the fixture's byte layout.
+    pub fn assert_v1_record_identity(buf: &[u8], layer: u16, expert: u16) {
+        assert_eq!(buf[HEADER_IDENT_BYTES], (layer as u8) ^ 0xA0, "layer payload byte");
+        assert_eq!(buf[HEADER_IDENT_BYTES + 1], expert as u8, "expert payload byte");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::{write_container, write_tiered_container};
+    use super::*;
 
     #[test]
     fn fetch_round_trips_every_expert_in_one_read() {
@@ -595,58 +664,6 @@ mod tests {
             working_set.len(),
             "warm pass must be served entirely from cache — zero new disk reads"
         );
-    }
-
-    /// Foundry stand-in for the TIERED format (`moec_pack_dir_tiered`,
-    /// locked 2026-07-31): manifest v2 with descending-fidelity tiers +
-    /// per-(layer,tier) banks `experts-L{n}-T{t}.bin`.
-    fn write_tiered_container(root: &Path, n_layers: u16, experts: u16) -> ContainerManifest {
-        let tiers = vec![
-            TierSpec {
-                id: 0,
-                quant: "IQ2".into(),
-                record_bytes: 2 * RECORD_ALIGN,
-            },
-            TierSpec {
-                id: 1,
-                quant: "IQ1".into(),
-                record_bytes: RECORD_ALIGN,
-            },
-        ];
-        let manifest = ContainerManifest {
-            version: 2,
-            model: "test-moe".into(),
-            fmt: "IQ2".into(),
-            record_bytes: 2 * RECORD_ALIGN,
-            n_layers,
-            experts_per_layer: experts,
-            activated_per_token: 2,
-            top_k_per_layer: Some(1),
-            tiers: tiers.clone(),
-        };
-        std::fs::write(
-            root.join("manifest.json"),
-            serde_json::to_string_pretty(&manifest).expect("serialize"),
-        )
-        .expect("write manifest");
-        for layer in 0..n_layers {
-            for tier in &tiers {
-                let mut f = File::create(root.join(format!("experts-L{layer}-T{}.bin", tier.id)))
-                    .expect("bank");
-                for expert in 0..experts {
-                    let mut rec = vec![0u8; tier.record_bytes as usize];
-                    rec[0..4].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
-                    rec[4..6].copy_from_slice(&layer.to_le_bytes());
-                    rec[6..8].copy_from_slice(&expert.to_le_bytes());
-                    // Payload distinguishable by TIER too — a tier-0 read
-                    // must never come back with tier-1 bytes.
-                    rec[HEADER_IDENT_BYTES] = tier.id as u8 ^ 0x5A;
-                    rec[HEADER_IDENT_BYTES + 1] = expert as u8;
-                    f.write_all(&rec).expect("record");
-                }
-            }
-        }
-        manifest
     }
 
     // what this catches: the v2 tiered contract end-to-end — the reader mirror

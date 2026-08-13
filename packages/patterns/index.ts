@@ -48,6 +48,11 @@ export type { ServingContentBody, ServingNodeVM } from './servingContent';
 // strip's full activity: every node's resources + serving, SCADA-style.
 export { GRID_PURPOSE } from './gridContent';
 export type { GridContentBody, GridNodeVM } from './gridContent';
+
+// The Academy's live BENCHMARK BOARD (`purpose === BENCH_PURPOSE`) — one row
+// per run (operator + citizen-claimed), progress-not-liveness (#374/#329).
+export { BENCH_PURPOSE } from './benchContent';
+export type { BenchContentBody, BenchRunVM, BenchRunState, BenchVerdictVM } from './benchContent';
 export type {
   LiveContentBody,
   LiveParticipantVM,
@@ -169,6 +174,10 @@ export interface ContentView<Body = unknown> {
  *  kinds join this union as they land. */
 export interface ContextPanelView {
   readonly listings: readonly ListingView[];
+  /** Activity-scoped widgets for the contextual rail (the bench board on an
+   *  academy room, #329) — heterogeneous like the left rail, dispatched by
+   *  `kind` through the same WidgetRegistry. Absent = listings only. */
+  readonly widgets?: readonly PanelWidget<unknown>[];
 }
 
 // ── PanelWidget (the left rail's global widget stack) ────────────────────────

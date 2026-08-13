@@ -84,7 +84,12 @@ mac_write_plist() { # $1=path  $2=bin  $3=extra <dict> entries
   <key>ProgramArguments</key>
   <array><string>/bin/bash</string><string>-lc</string><string>$(core_wrapper "$bin")</string></array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <!-- Crash-only relaunch: survive a CRASH (abnormal exit) + a reboot (RunAtLoad),
+       but honor an explicit `continuum stop` (clean exit 0) so it stays down for dev
+       ([[take-the-core-down-freely]]). Unconditional KeepAlive would instantly
+       relaunch a deliberate stop, fighting the developer AND an operator draining a
+       grid node. Crash + RunAtLoad still satisfies the reliability spine. -->
+  <key>KeepAlive</key><dict><key>Crashed</key><true/></dict>
   <key>WorkingDirectory</key><string>$DATA</string>
   <key>StandardOutPath</key><string>$LOG_DIR/service.out.log</string>
   <key>StandardErrorPath</key><string>$LOG_DIR/service.err.log</string>
@@ -150,7 +155,11 @@ Environment=ORT_DYLIB_PATH=$(ort_dylib)
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.cargo/bin
 WorkingDirectory=$DATA
 ExecStart=$1 $SOCKET
-Restart=always
+# Crash-only relaunch (mirror the macOS KeepAlive.Crashed policy): restart on a
+# CRASH (non-zero exit / signal), but honor a clean `continuum stop` (exit 0) so a
+# deliberate take-down stays down ([[take-the-core-down-freely]]). Boot recovery is
+# the [Install] WantedBy, not Restart. `systemctl stop` also never triggers a relaunch.
+Restart=on-failure
 RestartSec=2
 
 [Install]

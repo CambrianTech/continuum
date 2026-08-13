@@ -5,7 +5,7 @@
 //! artifact (models + avatars + voices…), what's on disk, and — given a demand plan
 //! + a disk budget — what to fetch and what to evict. The `Downloader` (fetch) and
 //! the eviction I/O (delete) are later slices that ACT on the returned decision; a
-//! `cu provision` command drives it, and the core self-provisions on launch.
+//! `uu provision` command drives it, and the core self-provisions on launch.
 
 use super::{
     reconcile, ArtifactSource, AvatarSource, CacheDecision, CacheEntry, DiskState, ModelSource,

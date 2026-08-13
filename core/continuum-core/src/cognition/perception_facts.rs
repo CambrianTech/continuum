@@ -169,11 +169,19 @@ impl PerceptionFact for StepsLedger {
 
     fn render(&self, cx: &FactContext) -> Option<String> {
         let wm = cx.working_memory?;
+        // HEAD LINE ONLY (#324/#211 dedup): a receipt's full text — args AND the
+        // result body — already renders once, in the working-memory TRAILING
+        // channel nearest generation. This ledger's job is the session'S ACT
+        // HISTORY as a fact ("what has actually executed"), so it lists each
+        // step's head line (`[action #n] name(args)`) and nothing more. Before
+        // this, both channels carried the full bodies and every receipt was
+        // paid twice on a 16k window (measured: the ledger was a byte-level
+        // duplicate of the WM tail).
         let steps: Vec<String> = wm
             .recent_entries()
             .into_iter()
             .filter(|e| matches!(e.kind, WmKind::Receipt { .. }))
-            .map(|e| e.text)
+            .map(|e| e.text.lines().next().unwrap_or_default().to_string())
             .collect();
         // Receipts are RARE entries in a chatty capacity-bounded ring, so
         // they age out while the session's act counter keeps counting.

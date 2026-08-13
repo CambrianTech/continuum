@@ -40,6 +40,17 @@ pub struct PingResult {
     /// swapped the file under a still-running old core. `"unknown"` only when the
     /// server was built outside a git tree.
     pub build_sha: String,
+    /// Auto-incrementing build number: the repo's commit count at compile time
+    /// (Joel, 2026-08-08: "versions must always increment and display along with
+    /// sha … stale binaries ruin you"). Monotonic per branch, so two nodes'
+    /// builds can be ORDERED at a glance — "is this node stale?" becomes
+    /// arithmetic instead of SHA archaeology. 0 only outside a git tree.
+    #[ts(type = "number")]
+    pub build_number: u32,
+    /// UTC timestamp this binary was compiled (third leg of the version trio:
+    /// number orders SOURCE, sha names it, built-at dates the BINARY — catching
+    /// a rebuild of old source after a fix landed, which number+sha both miss).
+    pub built_at: String,
 }
 
 /// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
@@ -63,6 +74,8 @@ impl ActionCommand for PingCommand {
             ok: true,
             round_trip_ms: 0,
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+            build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0),
+            built_at: env!("CONTINUUM_BUILD_AT").to_string(),
         })
     }
 }

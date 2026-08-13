@@ -13,6 +13,27 @@ cell to look good; if the setup is wrong, fix the setup, then measure. Each harn
 its BEST shot (its native tool format, its real context window) — then whatever delta remains is
 honestly the harness's, not a config artifact.
 
+## The second rule: coached runs are labelled, never laundered
+
+A persona may be helped during a run — by a human, a peer, or another persona. That is doctrine,
+not an exception: see [docs/cognition/NEVER-ISOLATED.md](../docs/cognition/NEVER-ISOLATED.md).
+Coaching is how we attribute a failure to the right layer (her reasoning vs our substrate), and
+every number here is a joint measurement of both.
+
+What that costs the board is light bookkeeping:
+
+- **Published cells are solo unless the cell says otherwise**, and a coached cell records what
+  was said and when. Both kinds are legitimate; only conflating them isn't.
+- **Every hint means a defect.** A hint says the substrate failed to tell her something it should
+  have. File the card, then fix it — a hint is a symptom report, never the repair. This is the
+  bullet that actually earns its keep; the rest is filing.
+
+We are not trying to out-lawyer ourselves here. Overfitting and stripping-to-pass were settled
+long ago by the charter (*never rig the persona; fix the substrate*), and the online gyms that
+will eventually prove our worth are adversarial by construction — she cannot be coached through
+those at all. The labelling rule exists so our own boards stay readable, not because anyone here
+is trying to cheat.
+
 ## Phase 0 — set the three harnesses up right (preconditions)
 
 | harness | gate | status |

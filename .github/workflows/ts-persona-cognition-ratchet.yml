@@ -20,6 +20,20 @@ on:
       - '.github/workflows/ts-persona-cognition-ratchet.yml'
   push:
     branches: [canary, main]
+    # The push trigger carried NO paths filter while the pull_request trigger
+    # above did — so it fired on EVERY push and died on `src/`, which moved to
+    # `legacy/src/` (e46d968c5, task #83). Result: 100/100 failures, no green
+    # since 2026-07-05, three red X's on every canary push that everyone
+    # correctly learned to ignore. Same filter here means it fires only when
+    # its target actually changes — the guard is intact and resumes the moment
+    # those paths exist again. This deliberately does NOT decide whether the
+    # legacy TS shell should be gated at all; #83 says location is the
+    # CI-exclusion signal, and that call is Joel's.
+    paths:
+      - 'src/system/user/server/**/*.ts'
+      - 'scripts/ratchets/ts-persona-cognition-baseline.json'
+      - 'scripts/ratchets/check-ts-persona-cognition.sh'
+      - '.github/workflows/ts-persona-cognition-ratchet.yml'
 
 jobs:
   ratchet:

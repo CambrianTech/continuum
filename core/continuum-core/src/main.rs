@@ -210,16 +210,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Env-coupling lives at exactly one seam: `from_env(...)`. The
     // installer takes only typed values — tests construct config
     // directly without racing `std::env::set_var`. Setting
-    // `CONTINUUM_PROBE_DIR=/tmp/probes.jsonl` lights up the JSONL
-    // sink with zero binary changes; the boot log below reports
-    // the path so the operator sees it landed.
+    // `CONTINUUM_PROBE_DIR=/tmp/probes` lights up the JSONL sink
+    // with zero binary changes; the boot log below reports the
+    // directory so the operator sees it landed. A DIRECTORY, not a
+    // file — the sink owns the file name because it rotates by size
+    // (#341).
     let probe_install = install_probe_tracing(ProbeTracingConfig::from_env("info"))?;
     if let Some(ref path) = probe_install.probe_log_path {
         // Use println so it appears even when RUST_LOG filters out
         // info-level tracing events — the operator who just set the
         // env var SHOULD see this confirmation.
         eprintln!(
-            "[continuum-core-server] probes landing at {}",
+            "[continuum-core-server] probes landing at {}/continuum-probes.jsonl (size-rotated)",
             path.display()
         );
     }
@@ -280,7 +282,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() >= 2 {
         match args[1].as_str() {
             "-V" | "--version" | "version" => {
-                println!("continuum-core-server {}", env!("CARGO_PKG_VERSION"));
+                // Number + sha together, always (Joel 2026-08-08): the number
+                // orders two builds at a glance, the sha names the source.
+                println!(
+                    "continuum-core-server {} build {} ({}) built {}",
+                    env!("CARGO_PKG_VERSION"),
+                    env!("CONTINUUM_BUILD_NUMBER"),
+                    env!("CONTINUUM_BUILD_GIT_SHA"),
+                    env!("CONTINUUM_BUILD_AT"),
+                );
                 std::process::exit(0);
             }
             "-h" | "--help" | "help" => {

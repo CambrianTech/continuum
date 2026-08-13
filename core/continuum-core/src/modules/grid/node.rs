@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::forge::endpoint::ForgeEndpoint;
+use crate::identity::PeerId;
 
 /// Trust level for a remote node.
 /// Determines what commands the node is allowed to execute on us,
@@ -196,6 +197,18 @@ pub struct GridNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | undefined")]
     pub latency_ms: Option<u64>,
+
+    /// The node's DURABLE airc identity — its `PeerId`, the SAME key the capacity
+    /// gossip (`CapacityOffer`) and the settlement `Reputation` use. `node_id` above is
+    /// a TRANSPORT-derived address (a Tailscale IP) that changes with location; THIS is
+    /// the being's identity that moves with it. Optional because a node found by a
+    /// transport-level scan alone has no `PeerId` until the pairing/gossip correlation
+    /// supplies it (`set_peer_id`). Once set it is the ONE key that joins routing ↔
+    /// capacity ↔ reputation — #2228, the node sibling of the enforced
+    /// `persona_id == peer_id` (`airc_runtime.rs:390`). See GRID-ELASTIC-CAPABILITY §3d.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "string | undefined")]
+    pub peer_id: Option<PeerId>,
 }
 
 /// A node discovered during transport-level discovery (before trust assignment).

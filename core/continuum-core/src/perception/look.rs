@@ -49,9 +49,14 @@ use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 /// band); `Full` is the raw frame for looking closely. A specific pixel size is a
 /// governor concern (the attention-priced resolution field, #173), not something a
 /// persona names — so the persona surface offers only these two intents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/LookDetail.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/LookDetail.ts"
+)]
 pub enum LookDetail {
     /// The cheap ~480w ambient look — a quick glance (default).
     #[default]
@@ -67,7 +72,10 @@ pub enum LookDetail {
 /// this is the persona's own view, composed by intent, not a knob-laden API.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/LookParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/LookParams.ts"
+)]
 pub struct LookParams {
     /// Who to look at — a live-call participant id. Omit to see EVERYONE at once (a
     /// contact sheet of every participant's current frame).
@@ -86,7 +94,10 @@ pub struct LookParams {
 /// `Percept` pixels shape.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/LookView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/LookView.ts"
+)]
 pub struct LookView {
     /// The participant this frame belongs to (the airc roster id).
     pub participant: String,
@@ -107,7 +118,10 @@ pub struct LookView {
 /// [`ObserveResult`](super::ObserveResult)): it carries its own `success`/`error`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/LookResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/LookResult.ts"
+)]
 pub struct LookResult {
     /// The look was satisfied (`views` are your current frames).
     pub success: bool,
@@ -234,10 +248,16 @@ impl ActionCommand for LookCommand {
         // Resolve the caller's OWN perception buffer. `get` (peek, not create): a
         // persona with no buffer has never joined a live call — say so plainly.
         let Some(buffer) = perception_registry().get(&persona_id) else {
+            // #358: this branch used to redirect ONLY to perception/observe — a social
+            // question ("who is here?") answered with a web fetcher. Two citizens spent
+            // a day calling look() "to check for participants", getting this, and having
+            // nowhere left to go. Name the verb that actually answers it FIRST.
             return Ok(LookResult::cannot(
                 "You are not in a live video call, so there is nothing to look at right \
-                 now. perception/look shows the participants in a live call; to look at a \
-                 web page or UI, use perception/observe with a URL.",
+                 now. If you wanted to know WHO IS HERE, use room/members — that lists \
+                 the people and personas present in your room. perception/look is for \
+                 seeing faces on a live call; to look at a web page or UI, use \
+                 perception/observe with a URL.",
             ));
         };
 
@@ -339,7 +359,9 @@ mod tests {
             "look is substrate-served off the in-process buffer, never a Provided eye-node"
         );
         assert!(
-            native_tool_specs().iter().any(|s| s.name == "perception/look"),
+            native_tool_specs()
+                .iter()
+                .any(|s| s.name == "perception/look"),
             "look must be offered natively beside perception/observe"
         );
     }
@@ -375,7 +397,10 @@ mod tests {
         assert!(!r.success, "no buffer → not in a call");
         let msg = r.error.unwrap_or_default();
         assert!(msg.contains("not in a live video call"), "says why");
-        assert!(msg.contains("perception/observe"), "points at the URL alternative");
+        assert!(
+            msg.contains("perception/observe"),
+            "points at the URL alternative"
+        );
     }
 
     // what this catches: THE happy path — a persona looks through its OWN buffer and
@@ -397,16 +422,24 @@ mod tests {
         assert!(r.success, "in a call with frames → satisfied");
         assert_eq!(r.views.len(), 2, "everyone-look = one view per participant");
         assert!(
-            r.views.iter().all(|v| v.image.is_some() && v.error.is_none()),
+            r.views
+                .iter()
+                .all(|v| v.image.is_some() && v.error.is_none()),
             "each view carries a resolved image"
         );
         let alice = r.views.iter().find(|v| v.participant == "alice").unwrap();
         let img = alice.image.as_ref().unwrap();
         assert!(
-            img.data_url.as_deref().unwrap_or("").starts_with("data:image/png;base64,"),
+            img.data_url
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("data:image/png;base64,"),
             "the pixels channel is an inline data URL"
         );
-        assert!(img.width > 0 && img.height > 0, "honest dimensions decoded from the bytes");
+        assert!(
+            img.width > 0 && img.height > 0,
+            "honest dimensions decoded from the bytes"
+        );
 
         // Source-look at one participant → just that view.
         let one = LookCommand
@@ -423,7 +456,11 @@ mod tests {
         assert_eq!(one.views.len(), 1);
         assert_eq!(one.views[0].participant, "alice");
         // Full detail returns the raw source frame (120×90), not the thumbnail.
-        assert_eq!(one.views[0].image.as_ref().unwrap().width, 120, "full = raw frame");
+        assert_eq!(
+            one.views[0].image.as_ref().unwrap().width,
+            120,
+            "full = raw frame"
+        );
 
         perception_registry().remove(&pid);
     }

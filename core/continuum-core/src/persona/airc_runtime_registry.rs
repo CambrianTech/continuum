@@ -112,6 +112,12 @@ pub struct PersonaAircRuntimeRegistry {
 /// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
 pub struct QuiesceLease {
     flags: Vec<Arc<AtomicBool>>,
+    /// The serving lane-demand override this lease holds (released on drop). Held as an
+    /// ID into the demand authority's override registry — NOT a saved prev-value — so
+    /// overlapping leases (eval `quiesce_all` + a solve's `quiesce_others`) release in
+    /// any order and the effective demand recomputes from what remains. `None` when no
+    /// serving daemon was booted (unit tests / tools), keeping the lease pure there.
+    demand_override: Option<u64>,
 }
 
 impl QuiesceLease {
@@ -126,6 +132,12 @@ impl Drop for QuiesceLease {
     fn drop(&mut self) {
         for f in &self.flags {
             f.store(false, Ordering::Relaxed);
+        }
+        // Release this lease's demand override; the authority recomputes the effective
+        // demand from whatever overrides remain (or the base floor if none) — safe under
+        // any release order of overlapping measurements.
+        if let Some(id) = self.demand_override {
+            crate::modules::serving_daemon::release_lane_demand(id);
         }
     }
 }
@@ -211,6 +223,46 @@ impl PersonaAircRuntimeRegistry {
             .map(|entry| entry.value().runtime.clone())
     }
 
+    /// One live citizen chosen DETERMINISTICALLY (lexicographically-lowest
+    /// `agent_name`) — the general "author a curator action through whoever is
+    /// online" pick for ANY repo user's roster. Never keys on a specific name
+    /// (our "Benchy" is not on a fresh clone's grid); a stable choice so the same
+    /// box authors curator actions through the same citizen until the roster
+    /// changes. `None` when nobody is online — the honest signal that a
+    /// curator action (seeding a board, posting a grade) has no author yet and
+    /// the fix is `persona/spawn`, not inventing an identity.
+    /// [[general-by-design-beats-hardcoded-users]]
+    pub fn any_live_citizen(&self) -> Option<Arc<PersonaAircRuntime>> {
+        self.inner
+            .iter()
+            .min_by(|a, b| {
+                a.value()
+                    .runtime
+                    .agent_name()
+                    .cmp(b.value().runtime.agent_name())
+            })
+            .map(|e| e.value().runtime.clone())
+    }
+
+    /// Snapshot of every live citizen as `(agent_name, persona-airc peer_id)`,
+    /// sorted by name for a stable round-robin. This is the roster a directed
+    /// dispatch resolves against — the citizens THIS machine actually has online,
+    /// whoever they are, never a baked-in name list. O(N), N = tens.
+    pub fn roster_snapshot(&self) -> Vec<(String, Uuid)> {
+        let mut out: Vec<(String, Uuid)> = self
+            .inner
+            .iter()
+            .map(|e| {
+                (
+                    e.value().runtime.agent_name().to_string(),
+                    e.value().runtime.airc().peer_id().as_uuid(),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// The persona's autonomic-quiesce flag (a shared handle). The service loop
     /// clones this once at spawn and checks it each self-tick (slice 2); the
     /// setters below flip it. `None` if the persona isn't online. Returning the
@@ -249,12 +301,71 @@ impl PersonaAircRuntimeRegistry {
     #[must_use = "bind the lease to a named `_lease` for the eval's duration; \
                   binding to `_` drops it immediately and resumes the fleet at once"]
     pub fn quiesce_all(&self) -> QuiesceLease {
-        let flags: Vec<Arc<AtomicBool>> =
-            self.inner.iter().map(|e| e.quiesced.clone()).collect();
+        Self::quiesce_lease_over(self.quiesce_pairs(), None)
+    }
+
+    /// Snapshot of every live persona's `(id, quiesce-flag)` — the input both quiesce
+    /// verbs share. O(N), N = tens; taken once so the selector below is a pure function
+    /// over a plain Vec (no DashMap guard held across the store loop).
+    fn quiesce_pairs(&self) -> Vec<(Uuid, Arc<AtomicBool>)> {
+        self.inner
+            .iter()
+            .map(|e| (*e.key(), e.quiesced.clone()))
+            .collect()
+    }
+
+    /// Suspend the self-tick of every persona in `pairs` EXCEPT `except` (`None` = the
+    /// whole fleet), returning the RAII lease. Pulled out of `quiesce_all` /
+    /// `quiesce_others` as a PURE function so the exclusion invariant — a
+    /// `quiesce_others(solver)` must NEVER suspend the solver, or her measured drive
+    /// would deadlock waiting on a warm slot she is forbidden to take — is unit-testable
+    /// without a live airc daemon (a real `PersonaSlot` needs one). One truth for both
+    /// verbs; the only difference is whether `except` is `Some`.
+    fn quiesce_lease_over(
+        pairs: Vec<(Uuid, Arc<AtomicBool>)>,
+        except: Option<Uuid>,
+    ) -> QuiesceLease {
+        let total = pairs.len();
+        let flags: Vec<Arc<AtomicBool>> = pairs
+            .into_iter()
+            .filter(|(id, _)| except != Some(*id))
+            .map(|(_, flag)| flag)
+            .collect();
         for f in &flags {
             f.store(true, Ordering::Relaxed);
         }
-        QuiesceLease { flags }
+        // Drop serving's warm-slot demand to the minds that ACTUALLY need a warm slot
+        // for the measurement's duration — the non-quiesced remainder (`total - flags`,
+        // = 1 for quiesce_others(solver), 0 → floored to 1 for quiesce_all). Without
+        // this the plan keeps budgeting a warm slot for EVERY resident persona and
+        // thrashes recompute→relaunch trying to warm-host a fleet that is deliberately
+        // idle — the exact 4→0→2 oscillation glass-boxed under a dispatched solve
+        // ([[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]). Restored on
+        // drop. A no-op (`None`) before the serving daemon booted — pure in unit tests.
+        let active = (total - flags.len()) as u32;
+        let demand_override = crate::modules::serving_daemon::quiesce_lane_demand(active);
+        QuiesceLease {
+            flags,
+            demand_override,
+        }
+    }
+
+    /// Acquire the same exclusive-measurement lease as [`quiesce_all`] but leave ONE
+    /// persona running — the citizen who is actively doing the measured work. Every
+    /// OTHER online persona's autonomic self-tick suspends now and RESTORES on drop
+    /// (panic-safe, same as `quiesce_all`). This is the seam a headless solve needs:
+    /// on a single-warm-slot box the idle citizens' autonomic turns rotate through
+    /// the shared llama.cpp KV slots and EVICT the solver's prefilled prefix, so
+    /// every act re-prefills the full prompt cold (measured: ~85s for a ~12k-token
+    /// prompt) instead of reusing cache and prefilling only the new delta. Quiescing
+    /// the others lets the solver hold its warm slot turn-to-turn. The solver is
+    /// still a first-class citizen — nothing suspends HER; only the idle contenders
+    /// step back for the duration. [[benchmark-is-a-governor-preemption-lease]]
+    /// [[first-class-citizens-even-during-benchmarks]]
+    #[must_use = "bind the lease to a named `_lease` for the solve's duration; \
+                  binding to `_` drops it immediately and resumes the fleet at once"]
+    pub fn quiesce_others(&self, except: Uuid) -> QuiesceLease {
+        Self::quiesce_lease_over(self.quiesce_pairs(), Some(except))
     }
 
     /// Attach a service-loop `JoinHandle` to the persona's slot. The
@@ -433,7 +544,7 @@ mod tests {
 
         // normal path: held → suspended, dropped → resumed.
         {
-            let _lease = QuiesceLease { flags: flags.clone() };
+            let _lease = QuiesceLease { flags: flags.clone(), demand_override: None };
             assert!(
                 flags.iter().all(|f| f.load(Ordering::Relaxed)),
                 "lease held → fleet suspended"
@@ -450,7 +561,7 @@ mod tests {
         }
         let flags_moved = flags.clone();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _lease = QuiesceLease { flags: flags_moved };
+            let _lease = QuiesceLease { flags: flags_moved, demand_override: None };
             panic!("eval blew up mid-run while holding the lease");
         }));
         assert!(outcome.is_err(), "the leased closure did panic");
@@ -458,6 +569,57 @@ mod tests {
             flags.iter().all(|f| !f.load(Ordering::Relaxed)),
             "fleet resumed despite the panic — restore rode the unwind"
         );
+    }
+
+    #[test]
+    fn quiesce_others_never_suspends_the_solver() {
+        // what this catches: quiesce_others(solver) MUST leave the solver's OWN flag
+        // untouched. If it suspended her too, her measured drive would wait forever on a
+        // warm slot she is forbidden to take — a deadlocked solve — which is the exact
+        // opposite of the exclusive-warm-slot fix's intent (#266/#386 prefill contention).
+        let solver = Uuid::new_v4();
+        let (other_a, other_c) = (Uuid::new_v4(), Uuid::new_v4());
+        let fa = Arc::new(AtomicBool::new(false));
+        let fs = Arc::new(AtomicBool::new(false));
+        let fc = Arc::new(AtomicBool::new(false));
+        let pairs = vec![
+            (other_a, fa.clone()),
+            (solver, fs.clone()),
+            (other_c, fc.clone()),
+        ];
+
+        let lease = PersonaAircRuntimeRegistry::quiesce_lease_over(pairs, Some(solver));
+        assert!(fa.load(Ordering::Relaxed), "other citizen A suspended");
+        assert!(
+            !fs.load(Ordering::Relaxed),
+            "the SOLVER is never suspended — she must keep generating"
+        );
+        assert!(fc.load(Ordering::Relaxed), "other citizen C suspended");
+        assert_eq!(lease.count(), 2, "exactly the two non-solvers were leased");
+
+        drop(lease);
+        assert!(
+            !fa.load(Ordering::Relaxed) && !fc.load(Ordering::Relaxed),
+            "the quiesced others resume on drop"
+        );
+    }
+
+    #[test]
+    fn quiesce_all_selector_suspends_everyone() {
+        // what this catches: the `None` arm of the shared selector must suspend ALL flags —
+        // quiesce_all's whole-fleet-measurement contract must survive the compression of the
+        // two verbs onto quiesce_lease_over (a `filter` bug that leaked the None case would
+        // silently under-quiesce a snapshot eval).
+        let fa = Arc::new(AtomicBool::new(false));
+        let fb = Arc::new(AtomicBool::new(false));
+        let pairs = vec![(Uuid::new_v4(), fa.clone()), (Uuid::new_v4(), fb.clone())];
+
+        let lease = PersonaAircRuntimeRegistry::quiesce_lease_over(pairs, None);
+        assert!(
+            fa.load(Ordering::Relaxed) && fb.load(Ordering::Relaxed),
+            "None → the whole fleet is suspended"
+        );
+        assert_eq!(lease.count(), 2);
     }
 
     /// `attach_service_loop` fails fast when the slot doesn't exist

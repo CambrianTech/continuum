@@ -21,6 +21,11 @@ use std::collections::HashMap;
 pub struct Registry {
     models: HashMap<String, Model>,
     providers: HashMap<String, Provider>,
+    /// Models whose ARTIFACT could not be hydrated, id → why. Kept, never
+    /// silently dropped: a model that exists in the catalog and cannot be used
+    /// is a different fact from a model that was never registered, and an
+    /// operator has to be able to tell them apart. See `from_catalog`.
+    unhydratable: std::collections::BTreeMap<String, String>,
 }
 
 impl Registry {
@@ -47,6 +52,7 @@ impl Registry {
         }
 
         let mut models: HashMap<String, Model> = HashMap::with_capacity(raw_models.len());
+        let mut unhydratable: std::collections::BTreeMap<String, String> = Default::default();
         for mut m in raw_models {
             if models.contains_key(&m.id) {
                 return Err(RegistryError::DuplicateModel { id: m.id });
@@ -58,16 +64,45 @@ impl Registry {
                 });
             }
             resolve_model_artifacts(&mut m);
+            // ONE BAD ARTIFACT MUST NOT TAKE DOWN THE SUBSTRATE (#63).
+            //
+            // This used to `return Err(GgufHydration)`, which aborted the whole registry
+            // and panicked the core at ipc/mod.rs — before a single ServiceModule was
+            // constructed. Measured live 2026-08-07: a catalog entry for an IQ2_XXS GGUF
+            // our reader cannot parse ("unknown dtype for tensor 16") made the core
+            // UNBOOTABLE. `continuum ping` answered "no core running", and nothing
+            // recovered it but editing the catalog — while citizens were mid-work.
+            //
+            // The panic's justification is sound for what it was written about: a missing
+            // registry config IS a boot-order/packaging bug, not a runtime condition. But
+            // "a model's on-disk artifact does not parse" is EXACTLY a runtime condition —
+            // an operator downloaded a file, and files are not our code. Conflating the two
+            // made every acquirable artifact a potential boot-killer on a substrate whose
+            // whole job is keeping citizens alive.
+            //
+            // So: degrade THIS model, keep the core. Deliberately NOT inserted half-
+            // hydrated — a model carrying an unhydrated context_window would hand a
+            // planner a plausible wrong number, which is worse than absent. It is recorded
+            // in `unhydratable` WITH the parser's own words, so the fact surfaces from a
+            // living system instead of being inferred from a dead process.
             if let Err(detail) = super::hydrate::hydrate_model_from_gguf(&mut m) {
-                return Err(RegistryError::GgufHydration {
-                    model_id: m.id,
-                    detail,
-                });
+                unhydratable.insert(m.id.clone(), detail);
+                continue;
             }
             models.insert(m.id.clone(), m);
         }
 
-        Ok(Self { models, providers })
+        Ok(Self {
+            models,
+            providers,
+            unhydratable,
+        })
+    }
+
+    /// Models present in the catalog whose artifact could not be hydrated, id → reason.
+    /// Empty on a healthy node. Non-empty is a REPORTABLE condition, not a fatal one.
+    pub fn unhydratable(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.unhydratable
     }
 
     pub fn model(&self, id: &str) -> Option<&Model> {
@@ -128,6 +163,55 @@ mod tests {
     // supports (artifacts.rs) — one truth, shared by every resolution test.
     use crate::model_registry::artifacts::write_empty_gguf;
     use crate::model_registry::types::{Arch, Capability};
+
+    // what this catches: ONE unparseable artifact must NOT take down the substrate (#63).
+    // Live incident 2026-08-07 — a catalog entry whose GGUF our reader cannot parse
+    // ("unknown dtype for tensor 16") aborted the whole registry and PANICKED the core at
+    // ipc/mod.rs, before any ServiceModule was constructed. `continuum ping` answered "no
+    // core running" and nothing recovered it but editing the catalog, while citizens were
+    // mid-work. A booting core with N-1 usable models is the requirement; a panic is not.
+    //
+    // The degraded model must also be REPORTABLE, not merely skipped: "registered but
+    // unusable" and "never registered" are different facts, and an operator has to be able
+    // to tell them apart. So it lands in `unhydratable` with the parser's own words.
+    #[test]
+    fn one_unparseable_artifact_degrades_that_model_and_never_the_core() {
+        let mut good = catalog::models()
+            .into_iter()
+            .find(|m| m.gguf_local_path.is_none())
+            .expect("a catalog model with no local artifact hydrates trivially");
+        good.id = "healthy/model".to_string();
+
+        // A file that EXISTS and is not a parseable GGUF — the live shape. An absent
+        // artifact is a different (already-tolerated) case; this is bytes we cannot read.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bad_path = dir.path().join("unreadable.gguf");
+        std::fs::write(&bad_path, b"GGUF\x03\x00\x00\x00not-a-real-header").expect("write");
+        let mut bad = good.clone();
+        bad.id = "broken/artifact".to_string();
+        bad.gguf_local_path = Some(bad_path);
+
+        let reg = Registry::from_catalog(vec![good, bad], catalog::providers())
+            .expect("a bad artifact must not abort registry construction");
+
+        assert!(
+            reg.model("healthy/model").is_some(),
+            "every other model stays usable"
+        );
+        assert!(
+            reg.model("broken/artifact").is_none(),
+            "an unhydratable model is NOT served half-hydrated — a plausible wrong \
+             context_window is worse than an absent model"
+        );
+        let why = reg
+            .unhydratable()
+            .get("broken/artifact")
+            .expect("the degraded model is REPORTED, never silently dropped");
+        assert!(
+            !why.is_empty(),
+            "the reason carries the parser's own words: {why}"
+        );
+    }
 
     // what this catches: from_catalog must reject two models sharing an id
     // rather than silently letting the second clobber the first.

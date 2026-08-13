@@ -17,6 +17,7 @@
 //!    sub-second changes only.
 //!
 //! The builder centralizes all three so substrate code calling
+//! `builder.session(ChatViewState { ...
 //! `builder.session(ChatViewState { ... })` can't accidentally
 //! re-stringify a kind or forget a revision bump.
 //!
@@ -218,8 +219,9 @@ mod tests {
                 vitals: BTreeMap::new(),
                 loadout: None,
                 avatar_url: None,
-            genes: Vec::new(),
+                genes: Vec::new(),
             }],
+            acts: vec![],
         }
     }
 

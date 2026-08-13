@@ -54,13 +54,13 @@ use continuum_positron::chat::RosterSlotView;
 use std::sync::Arc;
 use std::time::Duration;
 
-use airc_lib::RoomMember;
 use uuid::Uuid;
 
 use crate::ipc::positron_source::{roster_slot_from_member, AircPresenceUpdate, PRESENCE_UPDATED};
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::runtime::MessageBus;
 use tokio::sync::broadcast::error::RecvError;
+use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 
 /// How often the emitter re-reads the roster. Presence is Session-tier
 /// (a human-perceivable roster delta, not a sub-second signal), and the
@@ -73,8 +73,6 @@ const EMIT_INTERVAL: Duration = Duration::from_secs(2);
 /// Presence recency window + transcript scan depth — mirrors
 /// [`crate::persona::room_roster_source`] so the widget roster and the
 /// persona's grounding roster describe the same population.
-const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
-const ROSTER_SCAN: usize = 200;
 
 /// Membership is DURABLE; presence is live (#258/#262 — "grey, not gone",
 /// Joel 2026-07-30: "Why won't bigmama's persona ever show up?"). A grid
@@ -138,10 +136,7 @@ fn persist_directory(room_id: &Uuid, dir: &HashMap<Uuid, RosterSlotView>) {
 /// provisional `peer-xxxx` label (identity is adopted once; a card that
 /// crossed the mesh yesterday must survive today's card-less sighting).
 /// Returns whether anything changed (persist gate).
-fn fold_into_directory(
-    dir: &mut HashMap<Uuid, RosterSlotView>,
-    live: &[RosterSlotView],
-) -> bool {
+fn fold_into_directory(dir: &mut HashMap<Uuid, RosterSlotView>, live: &[RosterSlotView]) -> bool {
     let mut changed = false;
     for slot in live {
         match dir.get_mut(&slot.member_id) {
@@ -176,8 +171,7 @@ fn union_with_directory(
     mut live: Vec<RosterSlotView>,
     dir: &HashMap<Uuid, RosterSlotView>,
 ) -> Vec<RosterSlotView> {
-    let live_ids: std::collections::HashSet<Uuid> =
-        live.iter().map(|s| s.member_id).collect();
+    let live_ids: std::collections::HashSet<Uuid> = live.iter().map(|s| s.member_id).collect();
     for (id, stored) in dir {
         if !live_ids.contains(id) {
             let mut ghost = stored.clone();
@@ -367,12 +361,14 @@ async fn run_presence_loop(
     // then seed it with ONE deep transcript scan so members whose last event
     // predates the live window exist from the first publish. Disk I/O off
     // the async tick (spawn_blocking) per CONCURRENCY-STYLE-GUIDE.
-    let mut directory: HashMap<Uuid, RosterSlotView> = tokio::task::spawn_blocking(move || {
-        load_directory(&room_id)
-    })
-    .await
-    .unwrap_or_default();
-    match reader.room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN).await {
+    let mut directory: HashMap<Uuid, RosterSlotView> =
+        tokio::task::spawn_blocking(move || load_directory(&room_id))
+            .await
+            .unwrap_or_default();
+    match reader
+        .room_roster_cards(MEMBERSHIP_WINDOW, MEMBERSHIP_SCAN)
+        .await
+    {
         Ok(members) => {
             let seeded = project_presence(members, room_id, room_name.clone(), &HashMap::new());
             if fold_into_directory(&mut directory, &seeded.roster) {
@@ -596,8 +592,9 @@ pub fn spawn_node_presence_emitter(
             );
             return;
         }
-        let reader: Arc<dyn AircRosterReader> =
-            Arc::new(crate::context::airc_adapter::AircHandleAdapter::new(Arc::new(airc)));
+        let reader: Arc<dyn AircRosterReader> = Arc::new(
+            crate::context::airc_adapter::AircHandleAdapter::new(Arc::new(airc)),
+        );
         tracing::info!(
             %room_id,
             room = %room_name,
@@ -610,6 +607,7 @@ pub fn spawn_node_presence_emitter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_lib::RoomMember;
     use airc_core::PeerId;
     use airc_lib::AircError;
     use async_trait::async_trait;
@@ -739,34 +737,67 @@ mod tests {
         let kimi = PeerId::new();
         let local = PeerId::new();
         // Sighting 1: Kimi live, named (her card crossed once).
-        let named = crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", Some("Kimi")));
+        let named = crate::ipc::positron_source::roster_slot_from_card(&member(
+            kimi,
+            "persona",
+            Some("Kimi"),
+        ));
         let mut dir = HashMap::new();
         assert!(fold_into_directory(&mut dir, std::slice::from_ref(&named)));
 
         // Her node drops off: live read has only the local member.
-        let live = vec![crate::ipc::positron_source::roster_slot_from_card(&member(local, "interactive", Some("Joel")))];
+        let live = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
+            local,
+            "interactive",
+            Some("Joel"),
+        ))];
         let published = union_with_directory(live.clone(), &dir);
         let ghost = published
             .iter()
             .find(|s| s.member_id == kimi.as_uuid())
             .expect("remembered member must stay in the roster");
         assert!(!ghost.active, "unreachable member renders grey, not gone");
-        assert_eq!(ghost.display_name, "Kimi", "adopted identity survives the outage");
-        assert!(ghost.availability.is_none() && ghost.vitals.is_empty(),
-            "stale liveness signals cleared — the roster never lies about liveness");
+        assert_eq!(
+            ghost.display_name, "Kimi",
+            "adopted identity survives the outage"
+        );
+        assert!(
+            ghost.availability.is_none() && ghost.vitals.is_empty(),
+            "stale liveness signals cleared — the roster never lies about liveness"
+        );
         assert!(published[0].active, "active members sort before ghosts");
 
         // Later sighting WITHOUT a card (provisional label) must not erase her name.
-        let unnamed = crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", None));
+        let unnamed =
+            crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", None));
         fold_into_directory(&mut dir, std::slice::from_ref(&unnamed));
-        assert_eq!(dir[&kimi.as_uuid()].display_name, "Kimi",
-            "a card-less sighting never regresses an adopted name");
+        assert_eq!(
+            dir[&kimi.as_uuid()].display_name,
+            "Kimi",
+            "a card-less sighting never regresses an adopted name"
+        );
 
         // She reappears live: the ghost is replaced by the live slot.
-        let back = vec![crate::ipc::positron_source::roster_slot_from_card(&member(kimi, "persona", Some("Kimi")))];
+        let back = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
+            kimi,
+            "persona",
+            Some("Kimi"),
+        ))];
         let published = union_with_directory(back, &dir);
-        assert_eq!(published.iter().filter(|s| s.member_id == kimi.as_uuid()).count(), 1);
-        assert!(published.iter().find(|s| s.member_id == kimi.as_uuid()).unwrap().active);
+        assert_eq!(
+            published
+                .iter()
+                .filter(|s| s.member_id == kimi.as_uuid())
+                .count(),
+            1
+        );
+        assert!(
+            published
+                .iter()
+                .find(|s| s.member_id == kimi.as_uuid())
+                .unwrap()
+                .active
+        );
     }
 
     // what this catches: the avatar-image enrichment — a peer with a stored
@@ -811,8 +842,15 @@ mod tests {
         std::fs::write(dir.join(format!("{id}-happy.png")), b"png").expect("write");
         std::fs::create_dir_all(dir.join("emote")).expect("subdir");
         let map = scan_avatar_store(&dir);
-        assert_eq!(map.len(), 1, "only exact <uuid>.png names are member avatars");
-        assert_eq!(map.get(&id).map(String::as_str), Some(format!("/avatars/{id}.png").as_str()));
+        assert_eq!(
+            map.len(),
+            1,
+            "only exact <uuid>.png names are member avatars"
+        );
+        assert_eq!(
+            map.get(&id).map(String::as_str),
+            Some(format!("/avatars/{id}.png").as_str())
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -869,19 +907,51 @@ mod tests {
         let mut dir = HashMap::new();
 
         // First idle emit publishes (roster changed None → Some).
-        emit_once(&reader, room, "general", &bus, &mut last, &HashMap::new(), &mut dir, false).await;
-        let first = rx.try_recv().expect("first emit publishes presence:updated");
+        emit_once(
+            &reader,
+            room,
+            "general",
+            &bus,
+            &mut last,
+            &HashMap::new(),
+            &mut dir,
+            false,
+        )
+        .await;
+        let first = rx
+            .try_recv()
+            .expect("first emit publishes presence:updated");
         assert_eq!(first.name, PRESENCE_UPDATED);
 
         // Second idle emit dedups — nothing published.
-        emit_once(&reader, room, "general", &bus, &mut last, &HashMap::new(), &mut dir, false).await;
+        emit_once(
+            &reader,
+            room,
+            "general",
+            &bus,
+            &mut last,
+            &HashMap::new(),
+            &mut dir,
+            false,
+        )
+        .await;
         assert!(
             rx.try_recv().is_err(),
             "an unchanged roster dedups on the idle path"
         );
 
         // A resync cue forces a re-publish of the unchanged roster.
-        emit_once(&reader, room, "general", &bus, &mut last, &HashMap::new(), &mut dir, true).await;
+        emit_once(
+            &reader,
+            room,
+            "general",
+            &bus,
+            &mut last,
+            &HashMap::new(),
+            &mut dir,
+            true,
+        )
+        .await;
         let forced = rx
             .try_recv()
             .expect("a resync forces a re-publish even when the roster is unchanged");

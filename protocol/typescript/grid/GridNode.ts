@@ -37,4 +37,15 @@ last_seen: number,
 /**
  * Last measured round-trip latency in milliseconds.
  */
-latency_ms: number | undefined, };
+latency_ms: number | undefined, 
+/**
+ * The node's DURABLE airc identity — its `PeerId`, the SAME key the capacity
+ * gossip (`CapacityOffer`) and the settlement `Reputation` use. `node_id` above is
+ * a TRANSPORT-derived address (a Tailscale IP) that changes with location; THIS is
+ * the being's identity that moves with it. Optional because a node found by a
+ * transport-level scan alone has no `PeerId` until the pairing/gossip correlation
+ * supplies it (`set_peer_id`). Once set it is the ONE key that joins routing ↔
+ * capacity ↔ reputation — #2228, the node sibling of the enforced
+ * `persona_id == peer_id` (`airc_runtime.rs:390`). See GRID-ELASTIC-CAPABILITY §3d.
+ */
+peer_id: string | undefined, };

@@ -102,6 +102,23 @@ pub struct SweVerdict {
     /// A verdict with `error` set is NOT a zero — it is an absence, and must never be
     /// tallied as a failed attempt.
     pub error: Option<String>,
+    /// The NAMES of the tests that failed, sorted, so a verdict can teach.
+    /// "PASS_TO_PASS 6/11" is a count with nothing to act on; "your patch broke
+    /// test_arguments and test_unit" is what a human reviewer would say (Joel,
+    /// 2026-08-08: "you or any human could tell him what's wrong — or the grader").
+    /// This is what the experience stream and the room verdict carry forward.
+    #[serde(default)]
+    pub failed_tests: Vec<String>,
+    /// The failing FAIL_TO_PASS run's OUTPUT tail (capped) — the assertion diff a
+    /// human reviewer would paste. Glass-boxed on atlas-sympy-24066-n4 (2026-08-08):
+    /// she synthesized ~90% of the gold patch and missed on one predicate
+    /// (`== Dimension(1)` vs `is_dimensionless`); the retry verdict named the
+    /// failing TEST but not what it PRINTED — the leftover
+    /// `Dimension(impedance*capacitance/time)` in the assertion output is the fact
+    /// that teaches equality isn't enough. Format-agnostic (a report TAIL, not a
+    /// parsed section) so sympy's own runner and pytest both carry it.
+    #[serde(default)]
+    pub failure_excerpt: Option<String>,
 }
 
 /// Where a detached benchmark run journals its state. One file per run, rewritten in place:
@@ -247,15 +264,61 @@ fn urlencoding_encode(s: &str) -> String {
         .collect()
 }
 
-async fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
+/// Ceiling on any single grader subprocess. Nothing legitimate here — a git
+/// mirror fetch, a uv venv build, one instance's full pytest files — takes
+/// this long; the class this kills is INFINITE (task #381: sympy
+/// symbolic-computation hangs orphaned to launchd at 100% CPU for ELEVEN
+/// HOURS, detected by the operator's cooling fan, not by any instrument).
+const SUBPROCESS_CEILING: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+pub(crate) async fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    cmd.output()
-        .await
-        .map_err(|e| format!("could not run `{program}`: {e}"))
+    // #381: the child leads its own PROCESS GROUP so a kill reaches the whole
+    // tree — pytest spawns grandchildren (sympy's own runner, plugins) that
+    // survive a parent-only kill and orphan to launchd. kill_on_drop covers
+    // the drop path (a core reboot cancels this future mid-await); the
+    // explicit killpg below covers the grandchildren the drop-kill misses.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
+    cmd.kill_on_drop(true);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("could not run `{program}`: {e}"))?;
+    let child_pid = child.id();
+    match tokio::time::timeout(SUBPROCESS_CEILING, child.wait_with_output()).await {
+        Ok(out) => out.map_err(|e| format!("could not run `{program}`: {e}")),
+        Err(_elapsed) => {
+            // The timed-out future was just dropped, killing the DIRECT child;
+            // now kill its group (pgid == child pid, it was made group leader
+            // at spawn) so grandchildren die with it. Windows has no process
+            // groups in this shape — kill_on_drop alone is the story there.
+            #[cfg(unix)]
+            if let Some(pid) = child_pid {
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGKILL);
+                }
+            }
+            crate::probe!(
+                class = "benchmark.subprocess.ceiling",
+                program = %program,
+                ceiling_s = SUBPROCESS_CEILING.as_secs(),
+                "grader subprocess exceeded the ceiling — whole process group killed \
+                 (a hung test run is an environment fault, never a verdict)"
+            );
+            Err(format!(
+                "`{program}` exceeded the {}s subprocess ceiling and was killed \
+                 (whole process group) — a hung run is an environment fault, \
+                 never a verdict (task #381)",
+                SUBPROCESS_CEILING.as_secs()
+            ))
+        }
+    }
 }
 
 /// Clone the repo at `base_commit`. The commit is the whole point — a clone left at HEAD is
@@ -354,7 +417,17 @@ pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), 
     let path = repo_dir.join(format!(".{what}.patch"));
     std::fs::write(&path, text).map_err(|e| format!("could not stage {what} patch: {e}"))?;
     let p = path.to_string_lossy().to_string();
-    for extra in [vec![], vec!["--ignore-whitespace"], vec!["--ignore-whitespace", "-C1"]] {
+    // Last arm is --3way: when the candidate patch already edited lines the test_patch's
+    // context touches, exact/relaxed apply fails ("tree is not what the patch expects" —
+    // flask-4992 + sphinx-10451 graded INFRA on this, Round A). 3-way merges against the
+    // blob ids in the patch header instead, succeeding wherever the edits don't genuinely
+    // overlap — and a genuine overlap still fails loudly, which is the honest outcome.
+    for extra in [
+        vec![],
+        vec!["--ignore-whitespace"],
+        vec!["--ignore-whitespace", "-C1"],
+        vec!["--3way"],
+    ] {
         let mut args = vec!["apply"];
         args.extend(extra);
         args.push(&p);
@@ -374,9 +447,18 @@ pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), 
 /// for; uv's own floor is 3.8, so there is no lower rung to offer. Coarse on purpose — the
 /// gold gate is the arbiter, and a wrong guess fails loudly rather than producing a
 /// plausible number.
+///
+/// The 2020..=2022 rung is 3.10, learned live (pylint-5859, 2026-08-11): Python 3.11
+/// removed `inspect.formatargspec`, which era sdist BUILDS still import (wrapt 1.13.3,
+/// pulled by 2022 astroid) — every 2022-era env with such a dep died at build on 3.11.
+/// 3.11 released 2022-10; a March-2022 dependency graph never targeted it. The same
+/// mismatch is the leading suspect for the p2p-0/N broken baselines (flask-5063,
+/// pytest-5103) whose envs were built on 3.11 before this rung existed.
 pub fn interpreter_for_year(year: u32) -> &'static str {
     if year < 2020 {
         "3.9"
+    } else if year <= 2022 {
+        "3.10"
     } else {
         "3.11"
     }
@@ -384,10 +466,63 @@ pub fn interpreter_for_year(year: u32) -> &'static str {
 
 /// Build (or reuse) the per-instance environment. Per-instance rather than per-repo because
 /// instances span years of a repo's history and their dependency graphs genuinely differ.
+/// The repo's declared build-time dependencies, from `[build-system].requires` in its
+/// `pyproject.toml`. Empty when there is no pyproject, no `[build-system]` table, or no
+/// `requires` array. These must be pre-installed into the venv when building with
+/// `--no-build-isolation` (see the call site) — pip won't fetch them for us in that mode.
+fn build_requires(repo_dir: &Path) -> Vec<String> {
+    let text = match std::fs::read_to_string(repo_dir.join("pyproject.toml")) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let parsed: toml::Value = match toml::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    parsed
+        .get("build-system")
+        .and_then(|bs| bs.get("requires"))
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
     let py = env_dir.join("bin").join("python");
     if py.exists() {
+        // THE EDITABLE POINTS SOMEWHERE (root cause of the "2019-pytest era" + "flask-2.2
+        // era" env-void classes, glass-boxed 2026-08-12): the env is cached per INSTANCE,
+        // but its `-e .` install pins the ABSOLUTE PATH of whichever tree built it first —
+        // the solver's workspace. A flat-layout repo (sympy, pylint) survives because the
+        // grade clone's cwd shadows the import; a src/-layout repo (pytest 4.x, flask 2.2)
+        // does not, so the grade imported the persona's DIRTY WORKSPACE code and pristine
+        // p2p read 0/N (six instances voided). Re-point the editable at THIS caller's tree:
+        // `--no-deps` skips dependency resolution (the graph is already in the venv), so
+        // this is a seconds-cheap metadata rebuild, and solve/grade run serially per
+        // instance so there is no cross-tree race.
+        if let Some(uv) = which("uv") {
+            let py_s = py.to_string_lossy().to_string();
+            let out = run(
+                &uv,
+                &["pip", "install", "-q", "--python", &py_s, "--no-build-isolation", "--no-deps", "-e", "."],
+                Some(repo_dir),
+            )
+            .await?;
+            if !out.status.success() {
+                return Err(format!(
+                    "could not re-point {}'s cached env at {}: {}",
+                    instance.instance_id,
+                    repo_dir.display(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+        }
         return Ok(py);
     }
     let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir));
@@ -422,12 +557,61 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     //
     // `--no-build-isolation` is what lets the two coexist: the build runs against the modern
     // setuptools already in the venv instead of pip fetching a date-pinned one.
+    //
+    // setuptools is pinned `<70`, NOT bare-latest. Two era-2020..2022 build requirements fight:
+    // an editable install (`-e .`) needs PEP 660 `build_editable`, which landed in setuptools 64;
+    // and those repos' C-extension setup code imports legacy APIs like `setuptools.dep_util`
+    // (astropy's `wcs/setup_package.py`), which setuptools REMOVED in 70.0. setuptools 69.x is the
+    // only version that has BOTH — bare-latest (>=70) builds the pure-Python repos but dies on
+    // every C-extension instance with `ModuleNotFoundError: setuptools.dep_util`. This is the whole
+    // era class, not one repo (#380 "pin era deps"). pytest/wheel stay latest.
     let _ = run(
         &uv,
-        &["pip", "install", "-q", "--python", &py_s, "pytest", "setuptools", "wheel"],
+        &["pip", "install", "-q", "--python", &py_s, "pytest", "setuptools<70", "wheel"],
         None,
     )
     .await?;
+
+    // BUILD REQUIRES: `--no-build-isolation` means pip will NOT fetch the repo's declared
+    // build-time dependencies — it builds against whatever is already in the venv. A repo whose
+    // setup.py imports a build helper (astropy: `import extension_helpers`; any C-extension repo:
+    // cython, numpy) therefore fails with `ModuleNotFoundError` at the metadata step unless we
+    // pre-install what its own `[build-system].requires` declares. We honor that declaration
+    // rather than hardcoding per-repo build deps — the pyproject IS the source of truth. Installed
+    // MODERN (no date-pin) like pytest/setuptools/wheel above: these are build harness, run on
+    // THIS interpreter, and carry their own version pins where they matter (e.g. cython==0.29.22).
+    let build_reqs = build_requires(repo_dir);
+    if !build_reqs.is_empty() {
+        let mut breq_args = vec!["pip", "install", "-q", "--python", &py_s];
+        breq_args.extend(build_reqs.iter().map(String::as_str));
+        let out = run(&uv, &breq_args, None).await?;
+        if !out.status.success() {
+            // Non-fatal: some declared build deps (e.g. `oldest-supported-numpy` on a fresh
+            // interpreter) may not resolve, yet the build can still succeed against the modern
+            // setuptools already present. Let the `-e .` step below be the real gate; surface this
+            // only as a breadcrumb if that step then fails.
+            tracing::warn!(
+                instance = %instance.instance_id,
+                requires = ?build_reqs,
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "build-system.requires install had non-zero exit — proceeding to -e . anyway"
+            );
+        }
+        // RE-ASSERT THE HARNESS FLOOR (pylint-7114, live 2026-08-12): a repo whose own
+        // `[build-system].requires` pins an OLDER setuptools (pylint 2022 pins ~62.6)
+        // just CLOBBERED the 69.x we installed above — and setuptools <64 predates PEP
+        // 660, so the editable build dies with "build_meta has no attribute
+        // build_editable". Honoring the repo's declaration is right for ITS build
+        // helpers (cython, extension-helpers); setuptools itself is HARNESS, and the
+        // window [64, 70) is the only range with BOTH build_editable (>=64) and
+        // dep_util (<70) — the same two-sided constraint documented above.
+        let _ = run(
+            &uv,
+            &["pip", "install", "-q", "--python", &py_s, "setuptools>=64,<70"],
+            None,
+        )
+        .await?;
+    }
 
     let as_of = if instance.created_at.is_empty() {
         None
@@ -435,13 +619,78 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         Some(instance.created_at.clone())
     };
     let repo_s = repo_dir.to_string_lossy().to_string();
-    let mut args = vec!["pip", "install", "-q", "--python", &py_s];
-    if let Some(ref date) = as_of {
-        args.push("--exclude-newer");
-        args.push(date);
-    }
-    args.extend(["--no-build-isolation", "-e", "."]);
-    let out = run(&uv, &args, Some(Path::new(&repo_s))).await?;
+
+    // DELETED-HISTORY packages: `--exclude-newer <date>` assumes PyPI still carries the
+    // uploads that existed at that date. It does not always — `atomicwrites` had its whole
+    // pre-2022 history deleted by its author, so for any pre-2022 instance the date pin
+    // leaves ZERO candidates and resolution fails outright (pytest-dev__pytest-5103, live
+    // 2026-08-11). uv's error names both the package and the earliest surviving upload, and
+    // its own suggested remedy is a per-package `--exclude-newer-package` cutoff. We heal
+    // exactly as instructed: parse the hint, override ONLY that package to just past its
+    // earliest surviving upload, and retry. The subject stays date-pinned; the override is
+    // the minimum needed for a resolvable graph, discovered from the resolver's own evidence
+    // rather than a hand-maintained package list. Bounded: each round must surface a NEW
+    // package or we stop, and history-holes per graph are few.
+    let mut overrides: Vec<String> = Vec::new();
+    let out = loop {
+        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
+        if let Some(ref date) = as_of {
+            args.push("--exclude-newer");
+            args.push(date);
+        }
+        for pin in &overrides {
+            args.push("--exclude-newer-package");
+            args.push(pin);
+        }
+        args.extend(["--no-build-isolation", "-e", "."]);
+        let out = run(&uv, &args, Some(Path::new(&repo_s))).await?;
+        if out.status.success() || as_of.is_none() {
+            break out;
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // Two heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
+        // candidates, uv's hint names the earliest surviving upload; (2) metadata-mismatch —
+        // an era sdist with no wheel for this platform builds as version 0.0.0
+        // (setuptools_scm without git metadata; live 2026-08-11: lazy-object-proxy 1.7.1 has
+        // no arm64 wheel, pulled by 2022 pylint→astroid), so the ONE unbuildable package's
+        // cutoff is lifted entirely — a modern wheel-shipping release of a shim library, in
+        // an otherwise era-pure graph, disclosed on the probe. Both parse uv's OWN evidence;
+        // no hand-maintained package list.
+        match deleted_history_override(&stderr)
+            .or_else(|| metadata_mismatch_override(&stderr))
+            .or_else(|| setuptools_importlib_clash_override(&stderr))
+        {
+            Some(pin) if !overrides.contains(&pin) && overrides.len() < 8 => {
+                tracing::warn!(
+                    instance = %instance.instance_id,
+                    r#override = %pin,
+                    "date-pinned resolution hit an unresolvable era package — retrying with \
+                     a per-package cutoff derived from uv's own error"
+                );
+                // The setuptools/importlib clash needs MORE than a lifted cutoff: the
+                // broken importlib-metadata 0.x is ALREADY INSTALLED in the venv (2019
+                // pluggy pulled it in the requirements step), and `-e .` won't touch an
+                // already-satisfied package — so the cutoff pin alone retries into the
+                // exact same crash (live: pytest-5413/5495 kickoff, 2026-08-12, the
+                // first run after this arm shipped). Apply the banner's own remedy
+                // directly: upgrade the installed copy, then retry the editable build.
+                if pin.starts_with("importlib-metadata=") {
+                    let up = run(
+                        &uv,
+                        &["pip", "install", "-q", "--python", &py_s, "--upgrade", "importlib-metadata"],
+                        None,
+                    )
+                    .await?;
+                    if !up.status.success() {
+                        // The heal itself failed — no point looping on the same wall.
+                        break out;
+                    }
+                }
+                overrides.push(pin);
+            }
+            _ => break out,
+        }
+    };
     if !out.status.success() {
         // DELETE the half-built env rather than cache it. Keying on "the directory exists"
         // made a failed install sticky: every later run reused a venv with no repo in it and
@@ -454,7 +703,110 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+
+    // PYTEST IS SUBJECT, NOT HARNESS, for date-pinned instances (#380, glass-boxed
+    // 2026-08-12): era test suites import pytest INTERNALS — flask 2.2's test_cli.py does
+    // `from _pytest.monkeypatch import notset`, deleted by modern pytest — so the
+    // latest-pytest installed above voids every such baseline. The era interpreter rungs
+    // (#2253) removed the original reason pytest had to be modern, so downgrade it to the
+    // instance's own date. Skipped when the repo IS pytest: the editable install already
+    // provides the (exactly-era) subject and a PyPI pytest would stomp it.
+    if as_of.is_some() && instance.repo != "pytest-dev/pytest" {
+        let date = instance.created_at.clone();
+        // --reinstall is load-bearing: the modern pytest above already satisfies the bare
+        // requirement, so without it this resolve is a no-op (hand-verified: flask-5063
+        // stayed on 9.1.1 until --reinstall brought it to era 7.3.0, tests then green).
+        let out = run(
+            &uv,
+            &[
+                "pip", "install", "-q", "--python", &py_s, "--exclude-newer", &date,
+                "--reinstall", "pytest",
+            ],
+            None,
+        )
+        .await?;
+        if !out.status.success() {
+            let _ = std::fs::remove_dir_all(&env_dir);
+            return Err(format!(
+                "could not era-pin pytest for {} (cutoff {date}) — env removed rather than \
+                 cached broken: {}",
+                instance.instance_id,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    }
     Ok(py)
+}
+
+/// Parse uv's deleted-history hint into an `--exclude-newer-package` value (`pkg=cutoff`).
+///
+/// The hint shape (uv 0.11):
+/// ```text
+/// hint: `atomicwrites` was filtered by `exclude-newer` to only include packages uploaded
+/// before 2019-04-13T16:17:45Z. The latest version satisfying the requirement is v1.4.1,
+/// published at 2022-07-08T18:31:40.459Z. Consider using `exclude-newer-package` to
+/// override the cutoff for this package.
+/// ```
+/// The cutoff is that surviving upload's timestamp plus one second — `--exclude-newer-package`
+/// is exclusive ("prior to"), so the publish instant itself must land inside the window, and
+/// one second past it admits nothing else.
+fn deleted_history_override(stderr: &str) -> Option<String> {
+    let hint_at = stderr.find("Consider using `exclude-newer-package`")?;
+    let region = &stderr[..hint_at];
+    let pkg = {
+        let rest = &region[region.rfind("hint: `")? + "hint: `".len()..];
+        rest.split('`').next()?
+    };
+    let published = {
+        let rest = &region[region.rfind("published at ")? + "published at ".len()..];
+        &rest[..=rest.find('Z')?]
+    };
+    let ts = chrono::DateTime::parse_from_rfc3339(published).ok()?;
+    let cutoff =
+        (ts + chrono::Duration::seconds(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    if pkg.is_empty() || pkg.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(format!("{pkg}={cutoff}"))
+}
+
+/// Parse uv's metadata-version-mismatch failure into an `--exclude-newer-package` value
+/// that LIFTS the era cutoff for the one unbuildable package.
+///
+/// The failure shape (uv 0.11, live pylint-5859 2026-08-11):
+/// ```text
+/// ╰─▶ Package metadata version `0.0.0` does not match given version `1.7.1`
+/// hint: `lazy-object-proxy` (v1.7.1) was included because `pylint` (v2.13.0.dev0) ...
+/// ```
+/// The `0.0.0` is an sdist built without git metadata (setuptools_scm fallback) — it happens
+/// exactly when the era release ships no wheel for this platform, so no date-pinned retry can
+/// ever succeed. Lifting that ONE package's cutoff (far-future bound) lets uv take a modern
+/// wheel-shipping release; the rest of the graph stays era-pinned. Verified live: pylint
+/// 2.13.0-dev0 + astroid 2.9.3 (era-correct) with only the shim floated.
+fn metadata_mismatch_override(stderr: &str) -> Option<String> {
+    if !stderr.contains("Package metadata version `0.0.0` does not match given version") {
+        return None;
+    }
+    let rest = &stderr[stderr.find("hint: `")? + "hint: `".len()..];
+    let pkg = rest.split('`').next()?;
+    if pkg.is_empty() || pkg.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(format!("{pkg}=9999-01-01T00:00:00Z"))
+}
+
+/// Third heal arm: an era `importlib-metadata` 0.x in the graph (2019 pluggy 0.12 pulls it
+/// unconditionally) crashes the MODERN setuptools that `--no-build-isolation` builds with —
+/// setuptools' own banner names the clash and its own remedy is "install an updated
+/// version" (setuptools/importlib_metadata#396). Lift that one package's cutoff, exactly
+/// the metadata-mismatch shape (live: pytest-5413 fresh env, 2026-08-12; sibling 5221 is
+/// one pluggy release older and never pulls it).
+fn setuptools_importlib_clash_override(stderr: &str) -> Option<String> {
+    if stderr.contains("`importlib-metadata` version is incompatible with `setuptools`") {
+        Some("importlib-metadata=9999-01-01T00:00:00Z".to_string())
+    } else {
+        None
+    }
 }
 
 fn which(bin: &str) -> Option<String> {
@@ -536,22 +888,38 @@ pub fn verdict_for(
 
 /// Run the instance's test files once and resolve every required id against that report.
 /// A test absent from the report counts as failed — but the absence is knowable, not silent.
+/// Restore a grade worktree to its checked-out state: revert tracked edits AND remove
+/// files a candidate patch CREATED (checkout alone leaves those untracked in place, and a
+/// leftover broken module poisons later runs — live: pytest-11143 attempt 3 misread a real
+/// capability regression as an env void, 2026-08-12). No `-x`: gitignored editable-install
+/// artifacts (*.egg-info) must survive.
+pub async fn reset_worktree(repo_dir: &Path) {
+    let _ = run("git", &["checkout", "--quiet", "."], Some(repo_dir)).await;
+    let _ = run("git", &["clean", "-fdq"], Some(repo_dir)).await;
+}
+
 pub async fn run_tests(
     repo_dir: &Path,
     venv_py: &Path,
     ids: &[String],
     test_files: &[String],
-) -> HashMap<String, bool> {
+) -> (HashMap<String, bool>, String) {
     if test_files.is_empty() || ids.is_empty() {
-        return ids.iter().map(|i| (i.clone(), false)).collect();
+        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
     }
     let mut args: Vec<&str> = vec!["-m", "pytest"];
     for f in test_files {
         args.push(f);
     }
-    args.extend(["-v", "--no-header", "-rN", "-p", "no:cacheprovider"]);
+    // Flags must be era-portable: the interpreter under `-m pytest` can be the repo's OWN
+    // pytest (pytest-dev instances: the editable install IS the subject) or an era-pinned
+    // one. `--no-header` (6.1+) and `-rN` (5.1+) made pytest 4.4 exit 4 with "unrecognized
+    // arguments" before running a single test — every id read as failed, and the whole
+    // 2019-pytest class graded p2p 0/N (live: pytest-5221 retry, 2026-08-12). Cosmetic
+    // flags are not worth a version gate; `-v` and no:cacheprovider go back to 2.x.
+    args.extend(["-v", "-p", "no:cacheprovider"]);
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
-        return ids.iter().map(|i| (i.clone(), false)).collect();
+        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
     };
     let report = format!(
         "{}{}",
@@ -559,9 +927,32 @@ pub async fn run_tests(
         String::from_utf8_lossy(&out.stderr)
     );
     let (by_node, by_func) = parse_pytest_report(&report);
-    ids.iter()
+    let verdicts = ids
+        .iter()
         .map(|id| (id.clone(), verdict_for(id, &by_node, &by_func).unwrap_or(false)))
-        .collect()
+        .collect();
+    // The report rides back so the grader can excerpt the FAILURE OUTPUT into the
+    // verdict — the assertion diff is the teaching half a bare test name lacks.
+    (verdicts, report)
+}
+
+/// Cap on the failure-output excerpt a verdict carries. Failures and the short
+/// summary sit at the END of a test run's output (pytest and sympy's own runner
+/// alike), so the TAIL is the format-agnostic excerpt. Bounded so a pathological
+/// run (a runaway traceback, a print loop) can't flood the retry prompt.
+const FAILURE_EXCERPT_MAX: usize = 2000;
+
+/// Tail of a test report, char-capped on a char boundary.
+fn report_tail(report: &str) -> String {
+    let trimmed = report.trim_end();
+    if trimmed.len() <= FAILURE_EXCERPT_MAX {
+        return trimmed.to_string();
+    }
+    let mut start = trimmed.len() - FAILURE_EXCERPT_MAX;
+    while !trimmed.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &trimmed[start..])
 }
 
 /// How many PASS_TO_PASS tests to sample. The full set runs to hundreds on some instances and
@@ -573,6 +964,56 @@ pub const P2P_SAMPLE: usize = 40;
 ///
 /// `model_patch` empty means "grade the tree as the solver left it" — the caller has already
 /// edited `repo_dir` in place and the diff is implicit.
+/// The retry loop's feedback text, composed from BOTH grading reports. The
+/// REGRESSION section leads and is unmissable — glass-boxed 2026-08-08
+/// (atlas-sympy-24066-n7): her attempt-1 edit broke all 30 pass-to-pass tests,
+/// but the old excerpt was built from the fail-to-pass report alone, so the
+/// retries never showed her the breakage — she resubmitted a byte-identical
+/// broken patch twice. A verdict that hides the collateral damage teaches
+/// "my patch just doesn't fix it yet" when the truth is "my patch destroyed
+/// the tree". Pure so the composition is unit-testable without a venv.
+fn compose_failure_excerpt(
+    p2p_broken: &[String],
+    p2p_report: &str,
+    f2p_still_failing: bool,
+    f2p_report: &str,
+) -> Option<String> {
+    let mut sections: Vec<String> = Vec::new();
+    if !p2p_broken.is_empty() {
+        const NAME_CAP: usize = 10;
+        let shown: Vec<&str> = p2p_broken.iter().take(NAME_CAP).map(|s| s.as_str()).collect();
+        let more = p2p_broken.len().saturating_sub(NAME_CAP);
+        let more_note = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+        let tail = if p2p_report.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" Broken-test output tail:\n{}", report_tail(p2p_report))
+        };
+        sections.push(format!(
+            "REGRESSION — your changes BROKE {} test(s) that PASSED before you touched the \
+             tree: {}{}. Fix or revert that breakage FIRST: a patch that destroys working \
+             behavior grades as a failure no matter what else it does. A wrong symbol name or \
+             a deleted line in code you didn't mean to change is the usual cause — re-read \
+             your own diff.{}",
+            p2p_broken.len(),
+            shown.join(", "),
+            more_note,
+            tail
+        ));
+    }
+    // The target-test tail, where every runner puts its failures + summary.
+    // This is what turns "test_issue_24062 failed" into
+    // "AssertionError: Dimension(impedance*capacitance/time) != 1".
+    if f2p_still_failing && !f2p_report.trim().is_empty() {
+        sections.push(report_tail(f2p_report));
+    }
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
+}
+
 pub async fn grade(
     instance: &SweInstance,
     repo_dir: &Path,
@@ -603,7 +1044,7 @@ pub async fn grade(
         verdict.error = Some(e);
         return verdict;
     }
-    let pre = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
+    let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
     let already: Vec<&String> = pre.iter().filter(|(_, ok)| **ok).map(|(id, _)| id).collect();
     verdict.gate_ok = already.is_empty();
     if !verdict.gate_ok {
@@ -615,7 +1056,7 @@ pub async fn grade(
     }
 
     // Reset, then run the real protocol: model patch first, tests second.
-    let _ = run("git", &["checkout", "--quiet", "."], Some(repo_dir)).await;
+    reset_worktree(repo_dir).await;
     if let Some(patch) = model_patch {
         if let Err(e) = apply_patch(repo_dir, patch, "model").await {
             verdict.error = Some(format!("candidate patch did not apply: {e}"));
@@ -627,10 +1068,59 @@ pub async fn grade(
         return verdict;
     }
 
-    let f2p_res = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
-    let p2p_res = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
+    let (f2p_res, f2p_report) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
+    let (p2p_res, p2p_report) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
+
+    // THE GATE'S OTHER HALF (#383 family, live 2026-08-11): PASS_TO_PASS is defined as
+    // "passes before AND after the fix" — so a tree where p2p passes ZERO of N is not a
+    // graded failure, it is a suite that does not run in this environment at all
+    // (pytest-dev__pytest-5103 graded p2p 0/40 with an EMPTY patch: the era env cannot run
+    // pytest's own suite, and that env fault was recorded as a capability verdict). The
+    // f2p half of the gate cannot catch this: f2p "fails on pristine" is exactly what a
+    // broken suite also produces. Distinguish the two the only honest way — re-run p2p on
+    // the PRISTINE tree, paid only when the suspicious all-fail shape appears: pristine
+    // ALSO passes zero → the env is broken, void the tree; pristine passes any → the
+    // candidate patch genuinely broke the suite and the graded numbers stand.
+    if verdict.p2p_total > 0 && verdict.p2p_passed == 0 {
+        reset_worktree(repo_dir).await;
+        if let Err(e) = apply_patch(repo_dir, &instance.test_patch, "p2p-gate").await {
+            verdict.error = Some(e);
+            return verdict;
+        }
+        let (pristine_p2p, _) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
+        if pristine_p2p.values().filter(|ok| **ok).count() == 0 {
+            verdict.gate_ok = false;
+            verdict.error = Some(format!(
+                "UNGRADEABLE — PASS_TO_PASS passes 0 of {} on the PRISTINE tree: the \
+                 suite does not run in this environment, so every score from this tree \
+                 is an env fault, never a capability verdict.",
+                verdict.p2p_total
+            ));
+            return verdict;
+        }
+    }
+
+    verdict.failed_tests = f2p_res
+        .iter()
+        .chain(p2p_res.iter())
+        .filter(|(_, ok)| !**ok)
+        .map(|(id, _)| id.clone())
+        .collect();
+    verdict.failed_tests.sort();
+    let mut p2p_broken: Vec<String> = p2p_res
+        .iter()
+        .filter(|(_, ok)| !**ok)
+        .map(|(id, _)| id.clone())
+        .collect();
+    p2p_broken.sort();
+    verdict.failure_excerpt = compose_failure_excerpt(
+        &p2p_broken,
+        &p2p_report,
+        verdict.f2p_passed < verdict.f2p_total,
+        &f2p_report,
+    );
     verdict.resolved = verdict.f2p_passed == verdict.f2p_total
         && verdict.p2p_passed == verdict.p2p_total
         && verdict.f2p_total > 0;
@@ -640,6 +1130,137 @@ pub async fn grade(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the false-env-void misgrade (pytest-11143 attempt 3, live
+    // 2026-08-12) — a candidate patch that CREATED a file survived `git checkout .`, the
+    // leftover module broke the "pristine" p2p re-run, and a REAL capability regression was
+    // voided as an env fault. reset_worktree must revert tracked edits AND remove untracked
+    // files, while leaving gitignored artifacts (editable-install *.egg-info) untouched.
+    #[tokio::test]
+    async fn reset_worktree_removes_created_files_but_keeps_ignored_artifacts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "t@t"],
+            vec!["config", "user.name", "t"],
+        ] {
+            assert!(run("git", &args, Some(repo)).await.unwrap().status.success());
+        }
+        std::fs::write(repo.join("tracked.py"), "original").unwrap();
+        std::fs::write(repo.join(".gitignore"), "*.egg-info\n").unwrap();
+        run("git", &["add", "."], Some(repo)).await.unwrap();
+        run("git", &["commit", "-qm", "base"], Some(repo)).await.unwrap();
+
+        // The three states a candidate patch leaves behind:
+        std::fs::write(repo.join("tracked.py"), "edited").unwrap(); // tracked edit
+        std::fs::write(repo.join("conftest.py"), "boom").unwrap(); // CREATED file
+        std::fs::write(repo.join("pkg.egg-info"), "install artifact").unwrap(); // ignored
+
+        reset_worktree(repo).await;
+
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.py")).unwrap(), "original");
+        assert!(!repo.join("conftest.py").exists(), "created file must not survive the reset");
+        assert!(repo.join("pkg.egg-info").exists(), "ignored install artifacts must survive");
+    }
+
+    // what this catches: the deleted-history env-build failure (pytest-dev__pytest-5103,
+    // live 2026-08-11) — `atomicwrites`' pre-2022 uploads were deleted from PyPI, so the
+    // date-pinned resolve has ZERO candidates and the env build dies. The heal parses uv's
+    // own hint into an `--exclude-newer-package` value cut one second past the earliest
+    // surviving upload; unrelated errors must parse to None (no retry storm).
+    #[test]
+    fn deleted_history_hint_parses_into_a_per_package_cutoff() {
+        let stderr = "\u{d7} No solution found when resolving dependencies:\n\
+            \u{2570}\u{2500}\u{25b6} Because there are no versions of atomicwrites ...\n\
+            hint: `atomicwrites` was filtered by `exclude-newer` to only include packages \
+            uploaded before 2019-04-13T16:17:45Z. The latest version satisfying the requirement \
+            is v1.4.1, published at 2022-07-08T18:31:40.459Z. Consider using \
+            `exclude-newer-package` to override the cutoff for this package.";
+        assert_eq!(
+            deleted_history_override(stderr).as_deref(),
+            Some("atomicwrites=2022-07-08T18:31:41Z"),
+            "one second past the surviving upload, exclusive-bound safe"
+        );
+
+        assert_eq!(
+            deleted_history_override("error: could not compile `foo` due to previous errors"),
+            None,
+            "a non-resolver failure must not synthesize an override"
+        );
+        assert_eq!(
+            deleted_history_override(
+                "hint: `pkg` was filtered ... Consider using `exclude-newer-package` ..."
+            ),
+            None,
+            "a hint with no parsable publish timestamp must not synthesize an override"
+        );
+    }
+
+    // what this catches: the wheel-less era sdist (pylint-5859, live 2026-08-11) —
+    // lazy-object-proxy 1.7.1 has no arm64 wheel and its sdist stamps 0.0.0, so the
+    // date-pinned install can NEVER succeed; the heal must lift exactly that package's
+    // cutoff. Unrelated errors and mismatches without a named package parse to None.
+    #[test]
+    fn metadata_mismatch_parses_into_a_lifted_cutoff() {
+        let stderr = "\u{2570}\u{2500}\u{25b6} Package metadata version `0.0.0` does not \
+            match given version `1.7.1`\n\nhint: `lazy-object-proxy` (v1.7.1) was included \
+            because `pylint` (v2.13.0.dev0) depends on `astroid` (v2.9.3)";
+        assert_eq!(
+            metadata_mismatch_override(stderr).as_deref(),
+            Some("lazy-object-proxy=9999-01-01T00:00:00Z"),
+        );
+        assert_eq!(metadata_mismatch_override("error: some other failure"), None);
+        assert_eq!(
+            metadata_mismatch_override(
+                "Package metadata version `0.0.0` does not match given version `1.0` (no hint)"
+            ),
+            None,
+            "mismatch without a named package must not synthesize an override"
+        );
+    }
+
+    // what this catches: the setuptools/importlib-metadata build clash (pytest-5413 fresh
+    // env, live 2026-08-12) — a 2019 graph pulls importlib-metadata 0.x, which crashes the
+    // modern setuptools that --no-build-isolation builds with; the heal lifts exactly that
+    // package's cutoff. Unrelated errors parse to None.
+    #[test]
+    fn setuptools_importlib_clash_lifts_that_packages_cutoff() {
+        let stderr = "SetuptoolsWarning: Incompatibility problem.\n\
+            `importlib-metadata` version is incompatible with `setuptools`.\n\
+            This problem is likely to be solved by installing an updated version of \
+            `importlib-metadata`.";
+        assert_eq!(
+            setuptools_importlib_clash_override(stderr).as_deref(),
+            Some("importlib-metadata=9999-01-01T00:00:00Z"),
+        );
+        assert_eq!(setuptools_importlib_clash_override("error: unrelated"), None);
+    }
+
+    // what this catches: the hidden-collateral verdict (atlas-24066-n7) — a patch that
+    // broke 30 pass-to-pass tests produced retry feedback built from the f2p report
+    // alone, so she resubmitted the identical broken patch twice. The REGRESSION
+    // section must lead the excerpt whenever p2p broke, name the broken tests, and
+    // still carry the f2p tail after it; no-breakage keeps the old f2p-only shape.
+    #[test]
+    fn regression_breakage_leads_the_failure_excerpt() {
+        let broken: Vec<String> = (0..12).map(|i| format!("test_p2p_{i}")).collect();
+        let both = compose_failure_excerpt(&broken, "E ImportError: cannot import name 'Exp'", true, "E AssertionError: target still fails")
+            .expect("both sections");
+        assert!(both.starts_with("REGRESSION"), "breakage must LEAD: {both}");
+        assert!(both.contains("BROKE 12 test(s)"));
+        assert!(both.contains("test_p2p_0") && both.contains("(+2 more)"), "names capped at 10: {both}");
+        assert!(both.contains("ImportError") && both.contains("AssertionError"), "both report tails present");
+        let regression_at = both.find("REGRESSION").unwrap();
+        let f2p_at = both.find("AssertionError").unwrap();
+        assert!(regression_at < f2p_at, "regression before target-test tail");
+
+        let clean = compose_failure_excerpt(&[], "", true, "E AssertionError: target still fails")
+            .expect("f2p-only");
+        assert!(!clean.contains("REGRESSION"), "no fabricated regression on a clean tree");
+
+        assert!(compose_failure_excerpt(&[], "", false, "noise").is_none(), "nothing failing → no excerpt");
+    }
 
     // what this catches: the id-shape assumption that mis-scored GOLD as a real failure.
     // sympy's FAIL_TO_PASS entries are bare function names because sympy ships its own runner;
@@ -708,12 +1329,17 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
 
     // what this catches: the INTERPRETER has an era too, not just the dependency graph. A 2014
     // requests vendors a urllib3 doing `from collections import Mapping`, deleted in 3.10 — no
-    // dependency pin can rescue that, the language moved.
+    // dependency pin can rescue that, the language moved. The 3.10 rung for 2020..=2022 is the
+    // same lesson from the other side (pylint-5859, live 2026-08-11): 3.11 removed
+    // `inspect.formatargspec`, which era sdist BUILDS (wrapt 1.13.3) still import — a
+    // March-2022 graph never targeted an interpreter released 2022-10.
     #[test]
     fn the_interpreter_is_chosen_by_the_instances_era() {
         assert_eq!(interpreter_for_year(2014), "3.9");
         assert_eq!(interpreter_for_year(2019), "3.9");
-        assert_eq!(interpreter_for_year(2021), "3.11");
+        assert_eq!(interpreter_for_year(2020), "3.10");
+        assert_eq!(interpreter_for_year(2021), "3.10");
+        assert_eq!(interpreter_for_year(2022), "3.10");
         assert_eq!(interpreter_for_year(2023), "3.11");
     }
 

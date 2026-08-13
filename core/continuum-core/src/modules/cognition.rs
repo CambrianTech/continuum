@@ -189,7 +189,7 @@ impl ServiceModule for CognitionModule {
 
             // NOTE: `cognition/eval` (the test-graded coder gym) is now a typed,
             // registered, Privileged ActionCommand — see `cognition::eval::CognitionEval`.
-            // It dispatches via the central registry (so `cu` and every client can
+            // It dispatches via the central registry (so `uu` and every client can
             // reach it, and it's discoverable + gated), no longer a match-arm here.
             "cognition/calculate-priority" => {
                 let _timer = TimingGuard::new("module", "cognition_calculate_priority");
@@ -277,7 +277,7 @@ impl ServiceModule for CognitionModule {
             // stateless `ActionCommand`s in `crate::commands::cognition` (each calls
             // the same free fn — `evaluate_gating` / `evaluate_redundancy` — over its
             // typed request). `route_object` dispatches them via `command_registry()`,
-            // so they reach the ACL, codegen, `cu`, and grid routing. Both are
+            // so they reach the ACL, codegen, `uu`, and grid routing. Both are
             // `access: Internal`. No match arm here — a second registration would be
             // the only place they could collide, and there is none.
 

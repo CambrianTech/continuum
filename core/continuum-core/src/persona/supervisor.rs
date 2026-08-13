@@ -643,7 +643,7 @@ pub async fn materialize_adapters(
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
         // — the airc-published operating contract. Slice 2.
-        let doctrine_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        let raw_doctrine: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::room_doctrine_source::RoomDoctrineSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
@@ -653,8 +653,6 @@ pub async fn materialize_adapters(
                 // keeps this grounding out of turns in OTHER contexts (another room,
                 // the eval fork's nil room) — the exam-bleed fix (#127).
                 .for_room(identity.default_room));
-        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
-        cognition.set_doctrine_source(doctrine_source.clone());
 
         // Active-work source: grounds the persona in ITS OWN live work across all
         // rooms (claimed cards + states), read from airc's work roster. The dynamic
@@ -666,6 +664,11 @@ pub async fn materialize_adapters(
                 runtime.clone(),
             ));
 
+        // The persona's HANDS, built once here — consumed by the brain config
+        // below AND by the workspace-map cache wire (its command executor's bus
+        // is where write-completion events land).
+        let tool_executor = tool_executor_for(identity.peer_id.as_uuid());
+
         // Workspace map: grounds the persona in WHERE code lives — the real root
         // and top-level layout the code tools resolve against. NOT airc-backed
         // (reads the same cwd-rooted FileEngine as the persona's hands, so it
@@ -674,10 +677,34 @@ pub async fn materialize_adapters(
         // the layout was only ever an echoed error in recall, never standing
         // framing. Grounding, not steering — names the dirs, never which holds
         // the answer. Swaps to the airc-leased root when #49 lands.
-        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        //
+        // Wrapped as an event-invalidated cache (#398): the dir re-walk ran on
+        // EVERY compose, so it serves last-good until a workspace-mutating
+        // command completes on the bus. No wrap without a wire — a speak-only
+        // persona (no hands → no bus) keeps the raw source, because her map
+        // can still be mutated by OTHERS' hands and an unwired cache would be
+        // stale forever.
+        let raw_workspace_map: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
                 identity.peer_id.as_uuid(),
             ));
+        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            match tool_executor
+                .as_ref()
+                .and_then(|t| t.command_executor())
+                .and_then(|c| c.message_bus())
+            {
+                Some(bus) => {
+                    let (cached, dirty) =
+                        crate::persona::cached_source::CachedRagSource::new(raw_workspace_map);
+                    crate::persona::grounding_invalidation::spawn_workspace_invalidator(
+                        bus,
+                        dirty.downgrade(),
+                    );
+                    cached
+                }
+                None => raw_workspace_map,
+            };
 
         // Wall source: grounds the persona in the room's LIVING SHARED
         // DOCUMENTS — the airc-pinned plan, coding instructions, agenda,
@@ -690,7 +717,7 @@ pub async fn materialize_adapters(
         // active-work + workspace-map sources. See
         // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 and
         // [[airc-generic-per-user-room-state]].
-        let wall_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+        let raw_wall: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::wall_source::WallSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
@@ -700,6 +727,45 @@ pub async fn materialize_adapters(
                 // keeps this grounding out of turns in OTHER contexts (another room,
                 // the eval fork's nil room) — the exam-bleed fix (#127).
                 .for_room(identity.default_room));
+
+        // Doctrine + wall as event-invalidated caches (#398): these are pure
+        // event-folds — their projections change ONLY when a peer publishes
+        // (TranscriptKind::DoctrinePublished / WallPostPublished), which is
+        // rare, yet doctrine was the ONE SYNCHRONOUS airc round-trip on every
+        // live compose (ColdStartCritical, never deferred). ONE subscribe
+        // stream per persona marks both caches; the invalidator holds weak
+        // handles and dies with them. No wrap without a wire: if subscribe
+        // fails, both stay raw (correct, just slow) and we log loud. NOTE the
+        // roster is deliberately NOT cached — room_roster(within=120s, …) is
+        // a recency projection that DECAYS with no event firing; a cached
+        // roster shows ghosts.
+        let (doctrine_source, wall_source): (
+            Arc<dyn crate::persona::rag_budget::RagSource>,
+            Arc<dyn crate::persona::rag_budget::RagSource>,
+        ) = match runtime.subscribe_all_rooms().await {
+            Ok(stream) => {
+                let (doctrine_cached, doctrine_dirty) =
+                    crate::persona::cached_source::CachedRagSource::new(raw_doctrine);
+                let (wall_cached, wall_dirty) =
+                    crate::persona::cached_source::CachedRagSource::new(raw_wall);
+                crate::persona::grounding_invalidation::spawn_publish_invalidator(
+                    stream,
+                    vec![doctrine_dirty.downgrade(), wall_dirty.downgrade()],
+                );
+                (doctrine_cached, wall_cached)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    persona = %identity.agent_name,
+                    error = %e,
+                    "doctrine/wall cache UNWIRED (subscribe failed) — serving raw \
+                     airc fetch per compose; slow but never stale"
+                );
+                (raw_doctrine, raw_wall)
+            }
+        };
+        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
+        cognition.set_doctrine_source(doctrine_source.clone());
 
         // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
         // work board — every card, its column, priority, and owner — read live
@@ -886,7 +952,7 @@ pub async fn materialize_adapters(
                 ],
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".
-                tool_executor: tool_executor_for(identity.peer_id.as_uuid()),
+                tool_executor,
                 // The window the gateway actually serves this persona (task #50:
                 // single-sourced; Local → ServingPlan.served_context_window). The
                 // deliberation faculty keeps its prompt inside it so llama-server

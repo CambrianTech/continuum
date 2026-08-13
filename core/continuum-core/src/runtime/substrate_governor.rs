@@ -9,7 +9,7 @@
 //! persona** ([`RegionContext::for_persona`]). It is **algorithmic and runs
 //! itself** — independent of any "fuzzy" persona cognition — and its state is
 //! **observable + tunable by commands** (`governor/status` here; tuning verbs land
-//! as more commands), so a persona, a human widget, or `cu` all steer it the same
+//! as more commands), so a persona, a human widget, or `uu` all steer it the same
 //! way. That is the whole design: control is inherent because it's commands
 //! ([[control-and-collaboration-are-inherent-in-commands]]).
 //!
@@ -492,7 +492,7 @@ impl ServiceModule for SubstrateGovernor {
     }
 
     /// The governor's command surface — observe (and later tune) the daemon. This
-    /// is what makes it steerable by a persona / human / cu identically.
+    /// is what makes it steerable by a persona / human / uu identically.
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
         vec![Arc::new(GovernorStatusCommand {
             snapshot: self.snapshot.subscribe(),

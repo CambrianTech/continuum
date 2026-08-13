@@ -8,7 +8,7 @@
 //! This module no longer routes through the stringly `handle_command` `match` —
 //! every `models/*` verb is a typed [`ActionCommand`](crate::sdk_codegen::ActionCommand)
 //! on the ONE registry, so each appears in the persona tool surface, the grid
-//! ACL, codegen, and `cu`. `command_prefixes` is empty: there is nothing left to
+//! ACL, codegen, and `uu`. `command_prefixes` is empty: there is nothing left to
 //! prefix-route, and an unregistered `models/*` name fails loud at the executor
 //! rather than reaching a legacy arm.
 

@@ -163,6 +163,24 @@ pub struct ToolCall {
     pub input: Value, // Tool parameters as JSON
 }
 
+impl ToolCall {
+    /// Stable identity of THIS call for loop / repeat detection: `name|json(input)`.
+    ///
+    /// The random per-call `id` is deliberately excluded — two calls with the same name
+    /// and arguments ARE the same action regardless of their generated ids. This is the
+    /// SINGLE source of the fingerprint that both the settle loop's stuck-batch signature
+    /// (`act_observe::settle::drive_to_settle`) and `apply_act`'s repeat guard key on;
+    /// two hand-inlined copies of this format drifting apart would silently break loop
+    /// detection, so they share this one method.
+    pub fn loop_fingerprint(&self) -> String {
+        format!(
+            "{}|{}",
+            self.name,
+            serde_json::to_string(&self.input).unwrap_or_default()
+        )
+    }
+}
+
 /// Tool result to send back to AI after execution
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ToolResult.ts")]

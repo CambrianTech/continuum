@@ -243,7 +243,13 @@ where
         return Ok(existing);
     }
     // Slow path: serialize cold-spawns so bringups never fight for the GPU.
+    // The gate wait is PROBED on both sides (n8/n11 stall, 2026-08-08): a fork
+    // queued behind a wedged bringup was indistinguishable from one that never
+    // asked — gate_wait with no matching gate_held IS the "parked on the mutex"
+    // receipt.
+    crate::probe!(class = "eval.lane.acquire", step = "gate_wait", key = %key, "cold-spawn gate: waiting");
     let _gate = EVAL_LANE_SPAWN_GATE.lock().await;
+    crate::probe!(class = "eval.lane.acquire", step = "gate_held", key = %key, "cold-spawn gate: held");
     // Re-check under the gate — a racer for the same key may have spawned it while we
     // waited, in which case we share theirs and skip a redundant cold-load.
     if let Some(existing) = lookup_warm_eval_lane(key) {
@@ -949,7 +955,26 @@ async fn share_live_serving_lane(
     let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
         .with_runtime_base_url(snap.base_url.clone())
         .with_default_model(base.id.clone());
-    adapter.initialize().await.ok()?;
+    // BOUNDED: this initialize is an HTTP round-trip against the LIVE lane, and this
+    // server is documented (the /lora-adapters lesson above) to block non-completion
+    // endpoints while generating. A share CHECK must never park acquisition — if the
+    // busy lane can't answer briefly, fall through to the cold path LOUDLY instead of
+    // hanging the solve prelude (n8/n11, 2026-08-08: 2h+ parked with three candidate
+    // parks and this round-trip among them).
+    const SHARE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+    match tokio::time::timeout(SHARE_CHECK_TIMEOUT, adapter.initialize()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => return None,
+        Err(_) => {
+            crate::probe!(
+                class = "eval.lane.acquire",
+                step = "share_check_timeout",
+                model = %base.id,
+                "live-lane share check blocked past its bound (busy lane) — falling to cold path"
+            );
+            return None;
+        }
+    }
 
     emit_eval_phase(
         "loading_lane",
@@ -1801,9 +1826,17 @@ impl CognitionEval {
         // run, not a prior one's finished numbers (the stale-progress trap).
         let _run_scope = RunIdScope::enter(p.run_id.clone());
 
-        let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
-            CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
-        })?;
+        // Resolve the persona reference at ONE formal boundary (#396): a full UUID,
+        // an 8-char short-id, or a persona name — normalized to the typed id against
+        // the forkable set. A full UUID passes through (race-safe for a persona whose
+        // template is still assembling; the fork wait below absorbs that), while a
+        // garbage or unknown reference fails LOUD HERE naming the online personas,
+        // instead of parsing fine and dying at the fork wait with a misleading
+        // "not assembled at spawn" (the #396 fiasco: a loose-String id fed a dead
+        // reference to a doomed eval).
+        let persona_uuid = crate::cognition::persona_workspace::global()
+            .resolve_persona(&p.persona_id)
+            .map_err(|e| CommandError::Invalid(format!("{e} Or call persona/instances/list.")))?;
         let room = match p.room_id.as_deref() {
             Some(s) => Uuid::parse_str(s)
                 .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?,
@@ -1954,11 +1987,11 @@ impl CognitionEval {
                 let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall, Vec::new())
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
-                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                    "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
                 )))?;
                 _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
@@ -1973,11 +2006,11 @@ impl CognitionEval {
                 let served_ctx = el.served_ctx;
                 let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                     crate::cognition::persona_workspace::global()
-                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
+                        .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall, Vec::new())
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
-                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                    "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
                 )))?;
                 _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
@@ -2057,11 +2090,11 @@ impl CognitionEval {
                         let served_ctx = el.served_ctx;
                         let cycle = fork_eval_cycle_waiting(&persona_uuid, || {
                             crate::cognition::persona_workspace::global()
-                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
+                                .fork_eval_cycle_with_adapter(&persona_uuid, adapter.clone(), served_ctx, needs_tools, eval_workspace_root.as_deref(), suppress_recall, Vec::new())
                         })
                         .await
                         .ok_or_else(|| CommandError::NotFound(format!(
-                            "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                            "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
                         )))?;
                         _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                         cycle
@@ -2076,7 +2109,7 @@ impl CognitionEval {
                         })
                         .await
                         .ok_or_else(|| CommandError::NotFound(format!(
-                            "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                            "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy without measuring her live mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
                         )))?
                     }
                 }

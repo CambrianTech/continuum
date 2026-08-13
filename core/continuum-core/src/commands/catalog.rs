@@ -36,7 +36,7 @@ pub struct CommandsListParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/commands/CommandInfo.ts")]
 pub struct CommandInfo {
-    /// The command name — the routing key you call (`cu <name>`).
+    /// The command name — the routing key you call (`uu <name>`).
     pub name: String,
     /// Model/human-facing description (the command's own `DESCRIPTION`).
     pub description: String,
@@ -49,7 +49,7 @@ pub struct CommandInfo {
     /// The params' JSON Schema (derived from the Rust type), or `null` if the
     /// command hasn't declared one yet. THE single source every SDK/interface
     /// adapts from — CLI flags, web forms, mobile pickers, AI tool `input_schema`,
-    /// and `cu <cmd> --help`.
+    /// and `uu <cmd> --help`.
     #[ts(type = "unknown")]
     pub params_schema: serde_json::Value,
 }
