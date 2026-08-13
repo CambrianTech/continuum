@@ -1072,6 +1072,7 @@ pub fn spawn(
     substrate: Substrate,
     seed: Option<(Arc<crate::runtime::CommandExecutor>, Uuid)>,
     purpose: crate::ipc::room_purpose::SharedRoomPurpose,
+    rooms: Option<Arc<continuum_positron::scoping::PerRoomSubstrates>>,
 ) {
     let mut rx = bus.receiver();
     // Demand the current roster now (#118): the presence emitter dedups and
@@ -1081,7 +1082,7 @@ pub fn spawn(
     // above, so the emitter's re-publish lands in our buffer.
     crate::ipc::positron_presence::request_presence_resync(&bus);
     rt.spawn(async move {
-        let mut projection = ChatProjection::with_purpose(substrate, purpose);
+        let mut projection = ChatProjection::with_rooms(substrate, purpose, rooms);
         if let Some((executor, room)) = seed {
             for payload in fetch_seed_messages(&executor, room).await {
                 if let Some(ProjectionInput::Message(m)) = classify(CHAT_POSTED, &payload) {

@@ -128,6 +128,28 @@ pub mod positron_wall_source;
 pub mod protocol;
 pub mod provider_bridge;
 pub mod recipe_room_purpose;
+
+/// THE per-room substrate registry for this process (#408).
+///
+/// A process-global `OnceLock`, the same shape as
+/// [`positron_nav_source::global_nav_focus`] and the channel-bookmarks singleton —
+/// because the WRITER (the chat projection, in the WS boot block) and the READERS
+/// (a persona's grounding, bound at spawn in `persona::supervisor`) are constructed
+/// in different places and must land on ONE registry. Two registries would be two
+/// stores, which is the exact defect this repair exists to remove.
+///
+/// It is a registry of `Arc`-shared substrates, so this is a handle lookup, not a
+/// cache: cloning it clones `Arc`s.
+pub fn global_room_substrates(
+) -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
+    use std::sync::OnceLock;
+    static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
+        OnceLock::new();
+    G.get_or_init(|| {
+        std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new())
+    })
+    .clone()
+}
 pub mod room_purpose;
 pub mod stream_rail;
 pub mod vitals_emitter;
@@ -3108,6 +3130,12 @@ pub fn start_server(
                         .clone()
                         .map(|(_socket, room)| (Arc::clone(&ws_executor), room.as_uuid())),
                     room_purpose,
+                    // Per-room stores (#408): every per-room envelope is mirrored into
+                    // its OWN room's store, so a consumer that names its room (a
+                    // citizen's grounding) reads THAT room instead of whichever room
+                    // wrote last. The node substrate above still receives everything,
+                    // so the focused-room web session is unchanged.
+                    Some(global_room_substrates()),
                 );
 
                 // Per-citizen substrates for per-user views (nav): each connecting

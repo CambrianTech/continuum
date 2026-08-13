@@ -617,27 +617,22 @@ pub async fn materialize_adapters(
             ));
         cognition.set_airc_source(airc_source);
 
-        // Bind the room-roster source from the SAME runtime — it
-        // upcasts to `AircRosterReader` (a supertrait of AircCitizen)
-        // just as it does to `AircTranscriptReader` above. This is what
-        // grounds the persona in who else is present (and who is NOT
-        // itself). See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md
-        // §5 slice 1.
-        let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
-            crate::persona::room_roster_source::RoomRosterSource::new(
-                identity.peer_id.as_uuid(),
-                runtime.clone(),
-            )
-            // Bound to the room she joined at bootstrap — the room her airc
-            // connection (the reader) answers for. The room gate in deliver then
-            // keeps this grounding out of turns in OTHER contexts (another room,
-            // the eval fork's nil room) — the exam-bleed fix (#127).
-            .for_room(identity.default_room),
-        );
-        // Clone the Arc: the SAME source feeds both the legacy compose path
-        // (set_roster_source) and the brain (as a bridged grounding faculty,
-        // below). One source of truth, two consumers during the cutover
-        // transition — not a parallel allocator.
+        // WHO IS PRESENT, read from the SAME `RosterViewState` the browser renders
+        // (#408 + the RenderTarget pattern). Her room's OWN store, so a citizen in
+        // room B is never handed room A's people and never handed nothing —
+        // `PerRoomSubstrates` keeps each room's view instead of one focused slot.
+        //
+        // This is the repair for the measured defect: a live peer's name appeared
+        // ZERO times in a citizen's prompt while the browser rendered that peer
+        // fine, because the two read different code
+        // ([[citizens-cannot-see-each-other-the-prompt-promises-presence-and-delivers-nothing]]).
+        // One definition, two render targets — eyes and mind cannot drift.
+        let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
+                continuum_positron::RosterViewState,
+            >::new(
+                crate::ipc::global_room_substrates().for_room(identity.default_room),
+            ));
         cognition.set_roster_source(roster_source.clone());
 
         // Bind the room-doctrine source from the same runtime (upcasts to
