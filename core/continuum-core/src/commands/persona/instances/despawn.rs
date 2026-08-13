@@ -47,7 +47,7 @@ use crate::sdk_codegen::Ctx;
 pub struct PersonaDespawnParams {
     /// The persona's id as it appears in `persona/instances/list` (the airc
     /// peer_id Uuid). Fails loud if mal-formed or not currently online.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
 }
 
 /// What `persona/instances/despawn` did: who left, and the roster size after.
@@ -82,7 +82,7 @@ crate::action_command! {
         //    UUID expands against who's online. The ONE shared id_resolve primitive
         //    (#164), candidates = the live runtime registry — same as instances/get.
         let persona_id = crate::id_resolve::resolve(
-            &p.persona_id,
+            p.persona_id.as_str(),
             &this.registry.ids(),
             "persona",
         )
@@ -131,7 +131,7 @@ mod tests {
         let registry = PersonaAircRuntimeRegistry::new();
         let cmd = PersonaDespawn { registry };
         let params = PersonaDespawnParams {
-            persona_id: Uuid::new_v4().to_string(),
+            persona_id: Uuid::new_v4().to_string().into(),
         };
         let err = cmd
             .run(&Ctx::default(), params)
@@ -148,7 +148,7 @@ mod tests {
         let registry = PersonaAircRuntimeRegistry::new();
         let cmd = PersonaDespawn { registry };
         let params = PersonaDespawnParams {
-            persona_id: "not-a-uuid".to_string(),
+            persona_id: "not-a-uuid".to_string().into(),
         };
         let err = cmd
             .run(&Ctx::default(), params)

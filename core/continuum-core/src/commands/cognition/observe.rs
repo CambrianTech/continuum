@@ -51,7 +51,7 @@ pub struct BenchmarkObserveParams {
     /// scoreboard only (no feed history).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// Focus a specific run (its ledger row → scoreboard.complete + pass_rate).
     /// Omit for the live pass + latest history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,7 +157,7 @@ pub struct FeedEvent {
 pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// True when there is no live pass AND no focused-run row — nothing to watch.
     pub idle: bool,
 }
@@ -182,7 +182,7 @@ impl BenchmarkObserveResult {
         progress: Option<EvalPassProgress>,
         ledger_text: Option<&str>,
         run_id: Option<&str>,
-        persona_id: Option<String>,
+        persona_id: Option<crate::identity::PersonaRef>,
         feed_limit: usize,
     ) -> Self {
         let mut scoreboard = Scoreboard::default();
@@ -336,7 +336,7 @@ mod tests {
             progress,
             Some(ledger),
             Some("r2"),
-            Some("asha".to_string()),
+            Some("asha".into()),
             10,
         );
 

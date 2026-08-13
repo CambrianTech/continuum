@@ -535,7 +535,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         .to_string_lossy()
         .to_string();
     let params = crate::commands::agent::solve::AgentSolveParams {
-        persona_id: claimer.to_string(),
+        persona_id: claimer.to_string().into(),
         base_model_id: model,
         workspace,
         task: card.body.clone().unwrap_or_else(|| card.title.clone()),

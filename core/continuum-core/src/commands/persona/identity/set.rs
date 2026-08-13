@@ -53,7 +53,7 @@ pub struct PersonaIdentitySetParams {
     /// Accepts the full id OR the 8-char short form shown in rosters (#164).
     #[serde(default)]
     #[ts(type = "string | null")]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// New gender: `male` | `female` | `neutral` (aka they/them). Presentation facet —
     /// avatar/voice are NOT auto-re-derived (they're independently editable below).
     #[serde(default)]
@@ -143,7 +143,7 @@ crate::action_command! {
         // A short/mistyped id resolves against the personas this process knows
         // (their registered cards) — the ONE id_resolve primitive (#164).
         let caller = ctx.caller.as_ref();
-        let target_id = match p.persona_id.as_deref() {
+        let target_id = match p.persona_id.as_ref().map(|r| r.as_str()) {
             Some(raw) => crate::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
                 .map_err(CommandError::Invalid)?,
             None => caller

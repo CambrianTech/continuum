@@ -42,7 +42,7 @@ const FORK_WAIT_TRIES: u32 = 20;
 #[ts(export, export_to = "../../../protocol/typescript/agent/AgentSolveParams.ts")]
 pub struct AgentSolveParams {
     /// The persona (UUID, spawned) whose FULL cognition works the task.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The model to measure her on — forged into a dedicated measurement lane (her genome pages
     /// in on top). A loadable id from `ai/inference/models`.
     pub base_model_id: String,
@@ -175,7 +175,7 @@ pub enum Deliverable {
 #[derive(Debug, Clone, Serialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/agent/AgentSolveResult.ts")]
 pub struct AgentSolveResult {
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     pub model: String,
     /// How many times she acted (edited / ran / read) before settling.
     #[ts(type = "number")]
@@ -870,7 +870,7 @@ impl AgentSolve {
         // straight through, a short/mistyped form expands against the live persona registry
         // (the ONE shared id_resolve primitive), instead of failing "is not a UUID".
         let persona_uuid = crate::id_resolve::resolve(
-            p.persona_id.trim(),
+            p.persona_id.as_str().trim(),
             &crate::persona::card::ids(),
             "persona",
         )
