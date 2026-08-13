@@ -127,6 +127,7 @@ pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
 pub mod provider_bridge;
+pub mod recipe_room_purpose;
 pub mod room_purpose;
 pub mod stream_rail;
 pub mod vitals_emitter;
@@ -3068,6 +3069,34 @@ pub fn start_server(
                     "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
                      the positron chat projection has no airc source to subscribe to",
                 );
+                // Activity-purpose index (#6/#274/#329): resolve each room to the
+                // recipe it was spawned from, by READING the binding `activity/spawn`
+                // publishes to the room's wall. Until this existed, that binding had
+                // no reader anywhere and every room — benchmark, foundry, video-call
+                // — projected as a plain chat room to every renderer AND to the
+                // citizen standing inside it. Without a daemon (headless / no
+                // bootstrap room) the honest default stands: everything is chat.
+                let room_purpose: crate::ipc::room_purpose::SharedRoomPurpose =
+                    match node_presence_deps
+                        .clone()
+                        .zip(persona_bootstrap_room_name.clone())
+                    {
+                        Some(((socket, _room), room_name)) => {
+                            Arc::new(recipe_room_purpose::spawn_node_purpose_index(
+                                &state.rt_handle,
+                                projection_bus.clone(),
+                                socket,
+                                crate::modules::persona_instance_manager::resolve_continuum_root()
+                                    .join("citizens")
+                                    .join("node")
+                                    .join("purpose")
+                                    .join("airc"),
+                                room_name,
+                            ))
+                        }
+                        None => crate::ipc::room_purpose::default_source(),
+                    };
+
                 positron_source::spawn(
                     &state.rt_handle,
                     projection_bus.clone(),
@@ -3078,6 +3107,7 @@ pub fn start_server(
                     node_presence_deps
                         .clone()
                         .map(|(_socket, room)| (Arc::clone(&ws_executor), room.as_uuid())),
+                    room_purpose,
                 );
 
                 // Per-citizen substrates for per-user views (nav): each connecting

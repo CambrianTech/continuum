@@ -574,12 +574,26 @@ struct ChatProjection {
 }
 
 impl ChatProjection {
+    /// Test / headless constructor: every room resolves to `"chat"`.
+    #[cfg(test)]
     fn new(substrate: Substrate) -> Self {
-        // ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
-        // the Experience manifest's recipe lookup. Default (every room → "chat") until
-        // the recipe-backed source lands; injecting a real one is a one-line change
-        // here, no call-site churn.
-        let purpose_source = crate::ipc::room_purpose::default_source();
+        Self::with_purpose(substrate, crate::ipc::room_purpose::default_source())
+    }
+
+    /// ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
+    /// the Experience manifest's recipe lookup — INJECTED, because the resolver
+    /// that reads a room's recipe binding needs a live airc handle the projection
+    /// has no business owning.
+    ///
+    /// It was constructed inline here as `default_source()` — "every room is a
+    /// chat room" — which meant a benchmark room spawned from a recipe still
+    /// projected as chat, with no scoreboard region, to every renderer and to the
+    /// citizen standing in it. Injection is what lets
+    /// [`crate::ipc::recipe_room_purpose`] answer instead.
+    fn with_purpose(
+        substrate: Substrate,
+        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+    ) -> Self {
         Self {
             substrate,
             // The projection is the SOLE writer of the `chat` kind, so
@@ -1007,11 +1021,17 @@ async fn fetch_seed_messages(
 /// seed room's stored tail, pushed through the SAME `classify` path as wire
 /// events — one message semantics, two sources. `None` (tests, headless
 /// fixtures, no bootstrap room) = wire-fed only, the prior behavior.
+///
+/// `purpose` resolves each room to its activity nature. Pass the live
+/// [`crate::ipc::recipe_room_purpose::RecipeRoomPurpose`] so a recipe-spawned
+/// room projects as what it IS; `room_purpose::default_source()` (every room →
+/// chat) is the honest headless fallback.
 pub fn spawn(
     rt: &tokio::runtime::Handle,
     bus: Arc<MessageBus>,
     substrate: Substrate,
     seed: Option<(Arc<crate::runtime::CommandExecutor>, Uuid)>,
+    purpose: crate::ipc::room_purpose::SharedRoomPurpose,
 ) {
     let mut rx = bus.receiver();
     // Demand the current roster now (#118): the presence emitter dedups and
@@ -1021,7 +1041,7 @@ pub fn spawn(
     // above, so the emitter's re-publish lands in our buffer.
     crate::ipc::positron_presence::request_presence_resync(&bus);
     rt.spawn(async move {
-        let mut projection = ChatProjection::new(substrate);
+        let mut projection = ChatProjection::with_purpose(substrate, purpose);
         if let Some((executor, room)) = seed {
             for payload in fetch_seed_messages(&executor, room).await {
                 if let Some(ProjectionInput::Message(m)) = classify(CHAT_POSTED, &payload) {

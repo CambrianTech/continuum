@@ -66,6 +66,7 @@ use ts_rs::TS;
 use crate::modules::grid::acl::required_trust;
 use crate::modules::grid::node::TrustLevel;
 
+pub mod binding;
 pub mod membership;
 pub mod recipe;
 pub mod source;
