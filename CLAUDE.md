@@ -48,6 +48,38 @@ We already wrote the test infrastructure. The recurring slop pattern is the mode
 
 **The cost of skipping this doc is the model rebuilding `RecordingModule` inline in every test file, refusing to gate stress tests, growing the test surface by N tests per PR without curating any of them, and turning `cargo test` into a 14-minute build for tests that were each individually justified at sign-off but collectively duplicate.** Don't.
 
+## 🛑 STOP — If You Are About To Touch Benchmarks, agent/solve, Grading, Or Run State
+
+**Required first read** before editing ANY of `commands/benchmark.rs`,
+`commands/agent/solve.rs`, `cognition/swe_bench.rs`, or anything that writes run
+state, grades, or benchmark receipts:
+
+→ **[docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md](docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md)**
+
+**Benchmarks are ADAPTERS into recipes/activities. They are NOT a parallel runner.**
+Import task + oracle only; project into a recipe; the ROOM is the runner; grading is
+the activity's outcome score.
+
+**The consequence that makes this law:** the learning flywheel consumes ROOM TURNS
+(L1 lifts tool-traces from captured turns, L2 triggers on turn-completion). A
+detached `agent/solve` writing `progress/<run>.grade.json` produces **no turns**, so
+a citizen can burn 12 acts, write a patch, take a verdict — and **none of it reaches
+the curriculum.** Maximum effort, zero learning. That, not the pass rate, is why
+benchmarks have failed.
+
+**The acceptance test for any change here:** *can a citizen standing in the room
+perceive the run's state through the same ViewState pipe the human's screen uses?*
+If answering needs a file read or a log parse, it is disconnected and it failed.
+
+**The smell to catch yourself on:** if you are adding a field to a benchmark probe so
+an external consumer can parse it better — STOP. The consumer should not be external.
+(Done on 2026-08-13, in good faith, while the real defect was that the subsystem
+exists at all.)
+
+**The cost of skipping this doc is rebuilding the parallel runner — it is locally the
+shortest path to "a number" every single time, and every patch to it deepens the
+hole.** Don't.
+
 ## 📐 Canonical Substrate Docs (read first)
 
 If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:
