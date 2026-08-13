@@ -52,7 +52,16 @@ async fn run() -> Result<(), String> {
             eprintln!("{}", usage());
             Ok(())
         }
-        "start" => start().await,
+        "start" => {
+            // `--from-source` is the EXPLICIT opt-in to compiling before
+            // starting. Without it, `start` execs the installed server; a
+            // build is never the silent default (see `launch_core`).
+            if args.any(|a| a == "--from-source") {
+                // SAFETY: single-threaded CLI startup, before any task spawns.
+                unsafe { std::env::set_var("CONTINUUM_FROM_SOURCE", "1") };
+            }
+            start().await
+        }
         "reboot" | "restart" => {
             let force = args.any(|a| a == "--force");
             reboot(force).await
@@ -70,7 +79,11 @@ async fn run() -> Result<(), String> {
             } else {
                 println!(
                     "live core pid(s): {} — their descendants are in service and excluded",
-                    cores.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+                    cores
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 );
             }
             if orphans.is_empty() {
@@ -110,7 +123,7 @@ async fn run() -> Result<(), String> {
 /// then render it as bash usage. Same single source the AI tool adapter reads;
 /// only the rendering differs by paradigm ("the manual matches the paradigm").
 async fn help_for(command: &str) -> Result<(), String> {
-    ensure_core_running(command).await?;   // the manual comes from the live registry
+    ensure_core_running(command).await?; // the manual comes from the live registry
     let list = connection()
         .commands()
         .execute_value("commands/list", serde_json::json!({ "filter": command }))
@@ -570,7 +583,9 @@ async fn reboot(force: bool) -> Result<(), String> {
     // NO success line before provenance is proven ("core ready" without provenance is a false
     // deploy receipt — the 2026-08-01 Windows-node incident): announce liveness neutrally,
     // then verify, and let "✅ deploy verified" be the ONLY checkmark a reboot prints.
-    println!("core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)");
+    println!(
+        "core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)"
+    );
     verify_deployed_build().await
 }
 
@@ -616,7 +631,12 @@ async fn verify_deployed_build() -> Result<(), String> {
     };
 
     let running_desc = describe_running_core(&socket);
-    match deploy_verdict(actual.as_deref(), &expected, &expected_source, &running_desc) {
+    match deploy_verdict(
+        actual.as_deref(),
+        &expected,
+        &expected_source,
+        &running_desc,
+    ) {
         Ok(line) => {
             println!("{line}");
             Ok(())
@@ -673,8 +693,7 @@ fn deploy_verdict(
 /// `--short` abbreviation length varies over a repo's life). Both must be real hex SHAs of
 /// credible length — never matches `""` or `"unknown"`.
 fn sha_matches(a: &str, b: &str) -> bool {
-    let credible =
-        |s: &str| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit());
+    let credible = |s: &str| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit());
     credible(a) && credible(b) && (a.starts_with(b) || b.starts_with(a))
 }
 
@@ -687,7 +706,10 @@ fn describe_running_core(socket: &str) -> String {
     if !pids.is_empty() {
         desc.push_str(&format!(
             ", pid(s) {}",
-            pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+            pids.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         ));
     }
     if let Some(img) = running_core_binary() {
@@ -971,7 +993,11 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     };
     let owned_root = home.join(".continuum").join("bin");
     let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::everything());
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::everything(),
+    );
 
     // Snapshot child -> parent once, then decide with pure logic. Reading the
     // live table inside the walk would let a process exiting mid-scan change
@@ -979,7 +1005,10 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
     let parents: std::collections::HashMap<i32, i32> = sys
         .processes()
         .values()
-        .filter_map(|p| p.parent().map(|par| (p.pid().as_u32() as i32, par.as_u32() as i32)))
+        .filter_map(|p| {
+            p.parent()
+                .map(|par| (p.pid().as_u32() as i32, par.as_u32() as i32))
+        })
         .collect();
 
     sys.processes()
@@ -1051,7 +1080,6 @@ fn locate_bash() -> Result<PathBuf, String> {
 
 async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
     let socket = socket_path();
-    let script = locate_start_script()?;
     let logfile = start_logfile();
     let log = std::fs::File::create(&logfile)
         .map_err(|e| format!("cannot open start log {logfile}: {e}"))?;
@@ -1059,15 +1087,61 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
         .try_clone()
         .map_err(|e| format!("cannot clone start log handle: {e}"))?;
 
-    // stderr, not stdout: stdout carries the dispatched command's JSON result and has to stay
-    // machine-parseable when a command auto-starts the core on its way through.
-    eprintln!("▶ starting core via {} (log: {logfile})", script.display());
+    // THE INSTALLED BINARY IS THE DEFAULT START PATH.
+    //
+    // `start` used to shell unconditionally into tools/scripts/start-server.sh,
+    // which runs a full cargo build. That made a "governed" lifecycle verb a
+    // wrapper around a bash file that only exists inside a repo checkout, with
+    // three consequences (BigMama, 2026-08-13):
+    //   - a user holding ONLY the installed binary, with no source tree, could
+    //     not start a core at all;
+    //   - the CLI printed one line and went silent for the length of a compile,
+    //     which reads as HUNG and was called hung three separate times;
+    //   - the façade's honesty depended entirely on the script underneath.
+    // Same class as the rest of tonight's defects: a governed surface over a
+    // hand-rolled path.
+    //
+    // So: exec the installed `continuum-core-server` directly when we can find
+    // it. Building is now an EXPLICIT request (`--from-source`), not the
+    // silent default, and the fallback says WHY it fell back rather than
+    // quietly compiling.
+    let from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
+    let server_bin = if from_source {
+        None
+    } else {
+        locate_core_server_binary()
+    };
 
-    // Spawn the pure-Rust start script in its OWN session (setsid) so it survives
-    // `continuum` exiting — a detached daemon, not a child tied to this process.
-    let mut cmd = std::process::Command::new(locate_bash()?);
-    cmd.arg(&script)
-        .env("CONTINUUM_CORE_SOCKET", &socket)
+    let mut cmd = match &server_bin {
+        Some(bin) => {
+            // stderr, not stdout: stdout carries the dispatched command's JSON
+            // result and has to stay machine-parseable when a command
+            // auto-starts the core on its way through.
+            eprintln!("▶ starting core: {} (log: {logfile})", bin.display());
+            std::process::Command::new(bin)
+        }
+        None => {
+            let script = locate_start_script()?;
+            if from_source {
+                eprintln!(
+                    "▶ --from-source: building then starting via {} (log: {logfile}) — \
+                     this compiles and can take minutes",
+                    script.display()
+                );
+            } else {
+                eprintln!(
+                    "▶ no installed continuum-core-server found; falling back to {} \
+                     (log: {logfile}) — this COMPILES FIRST and can take minutes. \
+                     Install the binary to start without a source tree.",
+                    script.display()
+                );
+            }
+            let mut c = std::process::Command::new(locate_bash()?);
+            c.arg(&script);
+            c
+        }
+    };
+    cmd.env("CONTINUUM_CORE_SOCKET", &socket)
         // We ARE the continuum binary. On Windows a running image cannot be
         // replaced, so letting the script `cargo build --bin continuum` fails the
         // whole cargo invocation, skips every later build (including the CORE),
@@ -1104,12 +1178,13 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
-    let mut child = cmd.spawn().map_err(|e| {
-        format!(
-            "failed to spawn `bash {}`: {e}. The start script is bash; on Windows that needs \
-             bash on PATH (Git Bash).",
-            script.display()
-        )
+    let mut child = cmd.spawn().map_err(|e| match &server_bin {
+        Some(bin) => format!("failed to spawn the core server {}: {e}", bin.display()),
+        None => format!(
+            "failed to spawn the source-build start script via bash: {e}. The start script \
+             is bash; on Windows that needs bash on PATH (Git Bash). Installing \
+             continuum-core-server avoids the script entirely."
+        ),
     })?;
 
     // Record the PID so `continuum stop` can find the detached process group.
@@ -1218,7 +1293,11 @@ async fn stop() -> Result<(), String> {
             }
             println!(
                 "stopped continuum-core-server (pid(s) {})",
-                cores.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+                cores
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
             );
         }
     }
@@ -1248,6 +1327,68 @@ fn reap_owned_orphans(keep: &[i32]) {
 
 /// Find `tools/scripts/start-server.sh`: an explicit `CONTINUUM_START_SCRIPT`
 /// override, else walk up from the cwd until the repo's script is found.
+/// Find the INSTALLED `continuum-core-server` binary — the thing `start`
+/// should be launching. Returns `None` when no built server exists, which is
+/// the only case that justifies falling back to a source build.
+///
+/// Search order is "closest to how this binary was invoked" first, so a
+/// developer running out of a target dir gets that server, and an installed
+/// user gets the installed one:
+///   1. `CONTINUUM_CORE_SERVER` — explicit override, same shape as
+///      `CONTINUUM_START_SCRIPT`. Refuses loudly if set and not a file, rather
+///      than silently searching on (a wrong override must not look like an
+///      absent one).
+///   2. next to the running `continuum` executable (how an install lays out).
+///   3. `~/.continuum/bin`.
+///   4. `target/{release,debug}` walking up from cwd — the dev case.
+fn locate_core_server_binary() -> Option<PathBuf> {
+    const BIN: &str = if cfg!(windows) {
+        "continuum-core-server.exe"
+    } else {
+        "continuum-core-server"
+    };
+
+    if let Ok(explicit) = std::env::var("CONTINUUM_CORE_SERVER") {
+        let p = PathBuf::from(&explicit);
+        if p.is_file() {
+            return Some(p);
+        }
+        eprintln!(
+            "continuum: CONTINUUM_CORE_SERVER={explicit} is not a file — ignoring the \
+             override and searching normally"
+        );
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(BIN);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let candidate = home.join(".continuum").join("bin").join(BIN);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        for profile in ["release", "debug"] {
+            let candidate = dir.join("target").join(profile).join(BIN);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 fn locate_start_script() -> Result<PathBuf, String> {
     if let Ok(explicit) = std::env::var("CONTINUUM_START_SCRIPT") {
         let p = PathBuf::from(&explicit);
@@ -1301,7 +1442,10 @@ mod tests {
     fn in_service_descendants_are_never_orphans() {
         // core 100 -> shim 200 -> engine 300
         let parents = ptable(&[(300, 200), (200, 100)]);
-        assert!(descends_from(&parents, 300, &[100]), "grandchild is in service");
+        assert!(
+            descends_from(&parents, 300, &[100]),
+            "grandchild is in service"
+        );
         assert!(descends_from(&parents, 200, &[100]));
         assert!(descends_from(&parents, 100, &[100]), "the core itself");
     }
@@ -1326,7 +1470,10 @@ mod tests {
     #[test]
     fn a_cyclic_parent_chain_terminates() {
         let parents = ptable(&[(1, 2), (2, 3), (3, 1)]);
-        assert!(!descends_from(&parents, 1, &[999]), "must terminate, not hang");
+        assert!(
+            !descends_from(&parents, 1, &[999]),
+            "must terminate, not hang"
+        );
         // A cycle that CONTAINS a kept pid still resolves as in-service.
         assert!(descends_from(&parents, 1, &[3]));
     }
@@ -1487,8 +1634,13 @@ mod tests {
         let running = "socket=/tmp/x.sock, pid(s) 42, image /t/debug/continuum-core-server";
 
         // real match (including short-vs-long SHA abbreviation drift) → the ONE success line
-        let ok = deploy_verdict(Some("abc123f"), "abc123f", "git HEAD of this checkout", running)
-            .expect("matching SHAs verify");
+        let ok = deploy_verdict(
+            Some("abc123f"),
+            "abc123f",
+            "git HEAD of this checkout",
+            running,
+        )
+        .expect("matching SHAs verify");
         assert!(ok.contains("✅ deploy verified"), "got {ok}");
         assert!(ok.contains("abc123f"), "names the build: {ok}");
         assert!(
@@ -1497,16 +1649,30 @@ mod tests {
         );
 
         // mismatch → loud, names BOTH SHAs and BOTH identities, never a success glyph
-        let err = deploy_verdict(Some("dead111"), "beef222", "artifact /usr/local/bin/x", running)
-            .expect_err("mismatch must fail");
-        for needle in ["dead111", "beef222", running, "/usr/local/bin/x", "MISMATCH"] {
+        let err = deploy_verdict(
+            Some("dead111"),
+            "beef222",
+            "artifact /usr/local/bin/x",
+            running,
+        )
+        .expect_err("mismatch must fail");
+        for needle in [
+            "dead111",
+            "beef222",
+            running,
+            "/usr/local/bin/x",
+            "MISMATCH",
+        ] {
             assert!(err.contains(needle), "error names {needle}: {err}");
         }
         assert!(!err.contains('✅'), "no success glyph in a failure: {err}");
 
         // running core has no buildSha at all (pre-#194 binary still serving) → stale, loud
         let err = deploy_verdict(None, "beef222", "src", running).expect_err("no sha = stale");
-        assert!(err.contains("MISMATCH") && err.contains("beef222"), "got {err}");
+        assert!(
+            err.contains("MISMATCH") && err.contains("beef222"),
+            "got {err}"
+        );
 
         // 'unknown' on either side is unverifiable — never a pass
         assert!(deploy_verdict(Some("unknown"), "beef222", "src", running).is_err());
@@ -1541,7 +1707,9 @@ mod tests {
         );
         #[cfg(windows)]
         {
-            assert!(shown.iter().all(|p| p.ends_with("continuum-core-server.exe")));
+            assert!(shown
+                .iter()
+                .all(|p| p.ends_with("continuum-core-server.exe")));
             assert!(
                 !shown.iter().any(|p| p.starts_with("/usr/local/bin")),
                 "no unix-only install location on Windows"
@@ -1550,7 +1718,8 @@ mod tests {
         // explicit CARGO_TARGET_DIR overrides the default cache location
         let c = core_artifact_candidates("/home/u", Some("/tgt"));
         assert!(
-            c.iter().any(|p| p.starts_with("/tgt/release")) && c.iter().any(|p| p.starts_with("/tgt/debug")),
+            c.iter().any(|p| p.starts_with("/tgt/release"))
+                && c.iter().any(|p| p.starts_with("/tgt/debug")),
             "CARGO_TARGET_DIR is honored: {c:?}"
         );
     }
