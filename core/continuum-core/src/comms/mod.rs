@@ -8,34 +8,51 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 use ts_rs::TS;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+use crate::identity::PeerId;
+
+/// A message's identity. A UUID, never a string: an id the substrate MINTS has no
+/// business being free text, and `MessageId::new("msg-1")` let any caller invent a
+/// namespace that collides with every other caller's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/comms/MessageId.ts")]
-pub struct MessageId(pub String);
+#[serde(transparent)]
+pub struct MessageId(#[ts(type = "string")] pub Uuid);
 
 impl MessageId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    /// Mint a fresh message identity. There is no caller-supplied form — the
+    /// substrate owns this id.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+impl fmt::Display for MessageId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Ties a reply back to the exchange that provoked it. Distinct TYPE from
+/// [`MessageId`] even though the root of an exchange carries the same UUID — the
+/// compiler, not a naming convention, is what stops one being passed as the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/comms/CorrelationId.ts")]
-pub struct CorrelationId(pub String);
+#[serde(transparent)]
+pub struct CorrelationId(#[ts(type = "string")] pub Uuid);
 
 impl CorrelationId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    /// The correlation an exchange ROOTED at `id` carries.
+    pub fn of_exchange(id: MessageId) -> Self {
+        Self(id.0)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/comms/EndpointId.ts")]
-pub struct EndpointId(pub String);
-
-impl EndpointId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+impl fmt::Display for CorrelationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -423,8 +440,16 @@ pub struct TransportEnvelope<T> {
     pub id: MessageId,
     pub correlation_id: CorrelationId,
     pub causality: Causality,
-    pub source: EndpointId,
-    pub target: EndpointId,
+    /// WHO sent this — the substrate's one actor identity ([`PeerId`]), not a
+    /// client-kind label. `EndpointId::new("browser")` encoded the assumption that
+    /// the web client is a distinguished endpoint; it is one client among many
+    /// (mobile, SDK, TUI, another node's core), and every one of them addresses as
+    /// a peer.
+    #[ts(type = "string")]
+    pub source: PeerId,
+    /// WHO this is for. Same rule as [`Self::source`].
+    #[ts(type = "string")]
+    pub target: PeerId,
     pub class: PayloadClass,
     pub budget: ResourceBudget,
     pub integrity: IntegrityHint,
@@ -434,14 +459,14 @@ pub struct TransportEnvelope<T> {
 impl<T> TransportEnvelope<T> {
     pub fn new(
         id: MessageId,
-        source: EndpointId,
-        target: EndpointId,
+        source: PeerId,
+        target: PeerId,
         class: PayloadClass,
         budget: ResourceBudget,
         payload: T,
     ) -> Self {
         Self {
-            correlation_id: CorrelationId(id.0.clone()),
+            correlation_id: CorrelationId::of_exchange(id),
             id,
             causality: Causality::root(0),
             source,
@@ -527,22 +552,38 @@ mod tests {
         );
     }
 
+    // what this catches: the envelope's wire shape — ids serialize as plain UUID
+    // strings (transparent newtypes), and an exchange's correlation equals the id
+    // of the message that rooted it.
     #[test]
     fn envelope_serializes_stable_shape() {
+        let id = MessageId::new();
+        let source = PeerId::new();
+        let target = PeerId::new();
         let envelope = TransportEnvelope::new(
-            MessageId::new("msg-1"),
-            EndpointId::new("browser"),
-            EndpointId::new("rust-core"),
+            id,
+            source,
+            target,
             PayloadClass::Command,
             ResourceBudget::control(500),
             serde_json::json!({"command": "ping"}),
         );
 
         let value = serde_json::to_value(&envelope).unwrap();
-        assert_eq!(value["id"], "msg-1");
-        assert_eq!(value["correlation_id"], "msg-1");
+        assert_eq!(value["id"], id.to_string());
+        assert_eq!(value["correlation_id"], id.to_string());
+        assert_eq!(value["source"], source.to_string());
+        assert_eq!(value["target"], target.to_string());
         assert_eq!(value["class"], "command");
         assert_eq!(value["payload"]["command"], "ping");
+    }
+
+    // what this catches (Joel, 2026-08-13 — "UUIDs are NOT strings"): every minted
+    // id is unique by construction. The old `MessageId::new("msg-1")` made two
+    // unrelated messages collide the moment two callers picked the same label.
+    #[test]
+    fn minted_message_ids_are_unique() {
+        assert_ne!(MessageId::new(), MessageId::new());
     }
 
     #[test]

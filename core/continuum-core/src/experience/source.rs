@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
 
-use super::recipe::ExperienceRecipe;
+use super::recipe::{ExperienceRecipe, RecipeId};
 use super::Experience;
 
 /// Resolves a room to its authored [`Experience`] manifest. Membership (live roster)
@@ -82,13 +82,53 @@ impl std::error::Error for RecipeLoadError {
     }
 }
 
+/// Typed names for the recipes that ship IN the binary — the prod-critical set.
+///
+/// Task #274. Constants, deliberately NOT an enum: recipes are open (authored on
+/// disk, installed at runtime, generated on the fly), and an enum is a closed set
+/// that would have to be edited and recompiled for every new activity — the exact
+/// "if authoring an activity requires a compiler, activities get hand-made
+/// instead" failure this module's own header warns about, and which produced a
+/// bring-up room still collecting citizens two weeks after its activity ended.
+///
+/// So: named handles onto an OPEN registry. Core code references a shipped recipe
+/// by constant instead of spelling a magic string, and everything else resolves by
+/// id at runtime. Each constant must equal the `id` authored in its JSON —
+/// `every_shipped_constant_resolves` pins that, so the two can never drift.
+pub mod shipped {
+    use super::RecipeId;
+
+    // Genuine v4 UUIDs, grouped exactly as the canonical form they mirror in the
+    // authored JSON so the two are checkable by eye. Never hand-drawn patterns: an
+    // id with a readable prefix is a name wearing a UUID's costume, and it collides
+    // the moment anyone else picks the same cute stem.
+
+    /// The Rust-coder gym (`benchmark/hard-rs`) — `fed332c3-383c-45bb-a205-b54b02c43916`.
+    pub const BENCHMARK_HARD_RS: RecipeId =
+        RecipeId::from_u128(0xfed332c3_383c_45bb_a205_b54b02c43916);
+    /// Ordinary conversation (`chat`) — `8d0f0435-93be-4468-bd26-4f8cdd4693ee`.
+    pub const CHAT: RecipeId = RecipeId::from_u128(0x8d0f0435_93be_4468_bd26_4f8cdd4693ee);
+    /// A citizen's or user's profile surface (`profile`) — `089ac0da-d65a-4922-8cdc-36e7f589c465`.
+    pub const PROFILE: RecipeId = RecipeId::from_u128(0x089ac0da_d65a_4922_8cdc_36e7f589c465);
+    /// Real-time voice/video (`video-chat`) — `6bc4fc12-a1c3-4482-ab2c-eb48505d52d3`.
+    pub const VIDEO_CHAT: RecipeId = RecipeId::from_u128(0x6bc4fc12_a1c3_4482_ab2c_eb48505d52d3);
+
+    /// Every shipped id, for tests and for enumerating the prod-critical floor.
+    pub const ALL: &[RecipeId] = &[BENCHMARK_HARD_RS, CHAT, PROFILE, VIDEO_CHAT];
+}
+
 /// An [`ExperienceSource`] backed entirely by recipe DATA: a `purpose → recipe`
 /// table, keyed by the room's purpose (resolved through the injected
 /// [`RoomPurposeSource`]). This is the concrete `RoomPurposeSource → Experience`
 /// projection — the manifests are recipe content, not Rust builders.
 pub struct RecipeExperienceSource {
-    /// purpose → authored recipe.
+    /// purpose → authored recipe. Still the RESOLUTION key today: rooms bind by
+    /// purpose on the wall, and #274 migrates that to id in a later slice. This
+    /// slice adds identity without moving resolution, so nothing breaks in flight.
     by_purpose: HashMap<String, ExperienceRecipe>,
+    /// id → authored recipe. The index resolution moves to (#274 step 2), and
+    /// already the honest answer to "which exact recipe is this".
+    by_id: HashMap<RecipeId, ExperienceRecipe>,
     /// room_id → purpose (the existing seam this projection composes on top of).
     purpose: SharedRoomPurpose,
 }
@@ -101,14 +141,34 @@ impl RecipeExperienceSource {
         purpose: SharedRoomPurpose,
         recipes: impl IntoIterator<Item = ExperienceRecipe>,
     ) -> Self {
-        let by_purpose = recipes
+        let by_purpose: HashMap<String, ExperienceRecipe> = recipes
             .into_iter()
             .map(|r| (r.purpose.clone(), r))
             .collect();
+        // Same last-wins semantics as `by_purpose`: an overlay recipe replacing a
+        // built-in replaces it in BOTH indexes, so the two can never disagree about
+        // which recipe won.
+        let by_id = by_purpose
+            .values()
+            .map(|r| (r.id, r.clone()))
+            .collect::<HashMap<_, _>>();
         Self {
             by_purpose,
+            by_id,
             purpose,
         }
+    }
+
+    /// Resolve by identity — what everything moves to in #274 step 2.
+    pub fn by_recipe_id(&self, id: RecipeId) -> Option<&ExperienceRecipe> {
+        self.by_id.get(&id)
+    }
+
+    /// The ids this source can resolve. Companion to [`Self::purposes`]; this is
+    /// the list `activity/spawn` will name when refusing an unknown recipe, so the
+    /// refusal is actionable instead of a silent chat room.
+    pub fn ids(&self) -> impl Iterator<Item = RecipeId> + '_ {
+        self.by_id.keys().copied()
     }
 
     /// The built-in experiences shipped with the core, authored as embedded recipe
@@ -223,6 +283,60 @@ impl ExperienceSource for RecipeExperienceSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// what this catches (#274): every `shipped::` constant must name a recipe that
+    /// actually resolves. The constant and the `id` in the JSON are two hand-authored
+    /// copies of one value; if they drift, core code holds a handle onto nothing and
+    /// the room it spawns projects as plain chat — the exact silent failure that made
+    /// `benchmark` (a purpose that never existed) look plausible for months.
+    #[test]
+    fn every_shipped_constant_resolves() {
+        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
+        for id in shipped::ALL {
+            assert!(
+                source.by_recipe_id(*id).is_some(),
+                "shipped::{id} has no recipe — constant and authored JSON id have drifted"
+            );
+        }
+        assert_eq!(shipped::ALL.len(), 4, "all four shipped recipes are named");
+    }
+
+    /// what this catches (#274): ids must be UNIQUE. Two recipes sharing an id would
+    /// make `by_id` silently drop one — a whole activity type vanishing with no error,
+    /// which is how 24 activity types were lost once already.
+    #[test]
+    fn shipped_ids_are_unique_and_match_their_purposes() {
+        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
+        let ids: std::collections::HashSet<_> = source.ids().collect();
+        assert_eq!(ids.len(), 4, "four distinct ids, none colliding");
+
+        // The id→purpose pairing is the contract core code relies on when it says
+        // `shipped::BENCHMARK_HARD_RS` and means the Rust gym.
+        let bench = source
+            .by_recipe_id(shipped::BENCHMARK_HARD_RS)
+            .expect("benchmark resolves");
+        assert_eq!(bench.purpose, "benchmark/hard-rs");
+        assert_eq!(
+            source
+                .by_recipe_id(shipped::CHAT)
+                .map(|r| r.purpose.as_str()),
+            Some("chat")
+        );
+    }
+
+    /// what this catches (#274): identity is ADDITIVE in this slice. Rooms still bind
+    /// by purpose on the wall, so purpose resolution must keep working exactly as it
+    /// did — the id index is built alongside, not instead. If this breaks, every
+    /// existing room lost its experience.
+    #[test]
+    fn adding_identity_did_not_move_purpose_resolution() {
+        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("benchmark/hard-rs")));
+        let exp = source
+            .experience_for(Uuid::nil())
+            .expect("purpose still resolves after identity was added");
+        assert_eq!(exp.purpose, "benchmark/hard-rs");
+        assert_eq!(exp.regions.len(), 3);
+    }
     use crate::experience::{RegionRole, RegionScope};
     use crate::modules::grid::node::TrustLevel;
 

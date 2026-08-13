@@ -1,8 +1,24 @@
 {
+  "id": "8d0f0435-93be-4468-bd26-4f8cdd4693ee",
+  "version": 1,
   "purpose": "chat",
   "regions": [
-    { "name": "messages", "kind": "chat", "scope": "activity", "role": "primary", "slot": "content", "live": true },
-    { "name": "roster", "kind": "roster", "scope": "activity", "role": "peripheral", "slot": "context", "live": true }
+    {
+      "name": "messages",
+      "kind": "chat",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "content",
+      "live": true
+    },
+    {
+      "name": "roster",
+      "kind": "roster",
+      "scope": "activity",
+      "role": "peripheral",
+      "slot": "context",
+      "live": true
+    }
   ],
   "affordances": []
 }
