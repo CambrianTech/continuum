@@ -807,8 +807,91 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
+
+        // GOLD-GATE THE HARNESS (#380's other half). The era pin above assumes the era
+        // INTERPRETER rung (#2253) found a matching interpreter. When it can't — no
+        // Python 3.5 on a modern macOS — the venv falls back to a modern interpreter
+        // while pytest is still pinned to the instance's year, and that PAIR can be
+        // structurally unable to run. Glass-boxed 2026-08-13 on sympy__sympy-11400
+        // (2016 → pytest 2.9.2 on Python 3.9.6): pytest dies in `pytest_configure`
+        // with INTERNALERROR before collecting anything, on a two-line trivial test
+        // with no conftest and no sympy involved. Every test then "fails", the
+        // pristine p2p reads 0/29, and the whole tree grades UNGRADEABLE — 8 of 36
+        // instances on this box.
+        //
+        // A version pin is a GUESS about compatibility; running it is the evidence. So
+        // prove the harness executes before handing the env to a citizen.
+        //
+        // This REFUSES rather than self-heals, and that is deliberate — measured, not
+        // assumed. The obvious repair (reinstall a modern pytest) was tried against this
+        // exact instance and does NOT work: pytest 8.4.2 loads, then dies in sympy 1.0's
+        // own 2016 conftest on the `py.path` hook API that pytest 7 removed; pytest 6.2.5
+        // dies on `py.test.mark.slow`, removed in pytest 4. The band of pytest versions
+        // that both RUN on Python 3.9 and LOAD a 2016 conftest is EMPTY, so no version
+        // choice rescues this class. What does work — verified on this tree, 30/30 passing
+        // — is sympy's OWN runner (`sympy.test(...)`) on the same interpreter. That is
+        // #383's shape ("django needs its OWN test runner") generalised: the runner is a
+        // property of the repo era, not a pytest version to search for. `run_tests` is
+        // pytest-only today, so until it grows a runner seam, an env in this state cannot
+        // produce a verdict and must say so loudly instead of caching a tree where every
+        // test errors ([[brittleness-is-the-highest-priority-work-there-is]] — heal what is
+        // known-safe, REPORT what needs a human decision; a wrong auto-repair here would
+        // silently trade one void tree for another).
+        if let Err(why) = smoke_test_pytest(&py, &env_dir).await {
+            let _ = std::fs::remove_dir_all(&env_dir);
+            return Err(format!(
+                "{}'s env has no runnable test harness: era-pinned pytest (cutoff {}) \
+                 cannot execute even a trivial test on this venv's interpreter, which \
+                 means the era INTERPRETER rung fell back to a modern one and left an \
+                 incompatible pair. Env removed rather than cached — a cached copy grades \
+                 every attempt UNGRADEABLE. This repo era likely needs its own native \
+                 runner rather than any pytest version (#383). Detail: {why}",
+                instance.instance_id, instance.created_at
+            ));
+        }
     }
     Ok(py)
+}
+
+/// Can this venv's pytest actually RUN? Not "is it installed", not "does `--version`
+/// answer" — both stay true for a pytest that dies in `pytest_configure` (sympy-11400:
+/// `pytest --version` prints 2.9.2 happily, then INTERNALERRORs on any real run).
+///
+/// So: write a trivial passing test to a scratch dir OUTSIDE the repo (no conftest, no
+/// subject imports — a failure here is the harness, never the code under test) and
+/// require a clean exit. This is the smallest honest question, and it is the one the
+/// grader's whole verdict rests on.
+async fn smoke_test_pytest(py: &std::path::Path, env_dir: &std::path::Path) -> Result<(), String> {
+    let smoke_dir = env_dir.join(".harness-smoke");
+    std::fs::create_dir_all(&smoke_dir)
+        .map_err(|e| format!("could not create the harness smoke dir: {e}"))?;
+    std::fs::write(
+        smoke_dir.join("test_harness_smoke.py"),
+        "def test_the_harness_can_run():\n    assert True\n",
+    )
+    .map_err(|e| format!("could not write the harness smoke test: {e}"))?;
+    let out = run(
+        &py.to_string_lossy(),
+        &["-m", "pytest", "-q", "test_harness_smoke.py"],
+        Some(&smoke_dir),
+    )
+    .await?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // stderr carries the INTERNALERROR trace; stdout carries collection errors.
+    let detail = {
+        let e = String::from_utf8_lossy(&out.stderr);
+        let s = if e.trim().is_empty() {
+            String::from_utf8_lossy(&out.stdout).to_string()
+        } else {
+            e.to_string()
+        };
+        s.lines().rev().take(3).collect::<Vec<_>>().join(" | ")
+    };
+    Err(format!(
+        "a trivial one-assert test did not pass under this venv's pytest: {detail}"
+    ))
 }
 
 /// Parse uv's deleted-history hint into an `--exclude-newer-package` value (`pkg=cutoff`).
