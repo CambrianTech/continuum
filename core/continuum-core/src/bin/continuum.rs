@@ -464,7 +464,7 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
         ));
     }
     eprintln!("▶ no core running — starting one for `{command}` (continuum start)");
-    let secs = launch_core(&[]).await.map_err(|e| {
+    let secs = launch_core(&[], LaunchSource::Installed).await.map_err(|e| {
         format!("`{command}` needs a running core and one could not be started: {e}")
     })?;
     eprintln!("✅ core ready after ~{secs}s — dispatching `{command}`");
@@ -481,7 +481,7 @@ async fn start() -> Result<(), String> {
         return Ok(());
     }
 
-    let secs = launch_core(&[]).await?;
+    let secs = launch_core(&[], LaunchSource::Installed).await?;
     println!("✅ core ready (socket={socket}) after ~{secs}s");
     Ok(())
 }
@@ -576,7 +576,7 @@ async fn reboot(force: bool) -> Result<(), String> {
     // script, and one decision belongs in exactly one place. `launch_core`'s
     // `wait_for_death` on `old` is then trivially satisfied on Windows and
     // still does the real work on Unix, where the overlapping build stands.
-    let secs = launch_core(&old).await?;
+    let secs = launch_core(&old, LaunchSource::FromSource).await?;
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
     // answer on the same socket and this reboot would report success while running dead code.
@@ -1078,7 +1078,63 @@ fn locate_bash() -> Result<PathBuf, String> {
     continuum_core::shell_portable::locate_bash()
 }
 
-async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
+/// What the CALLER needs out of a launch — not what happens to be on disk.
+///
+/// `start` needs a core RUNNING. `reboot` needs the core to be built FROM THE
+/// SOURCE IN THIS CHECKOUT, because that is the whole meaning of the deploy
+/// verb. Collapsing the two is what produced a `reboot` that re-ran a
+/// month-old artifact under a banner promising a fresh build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchSource {
+    /// Whatever is already installed is fine — the caller wants a live core.
+    Installed,
+    /// Build first. The caller is deploying source they just edited.
+    FromSource,
+}
+
+/// The resolved launch, given the policy and what actually exists on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchPlan {
+    /// Run the build-and-start script (compiles, then execs).
+    Script,
+    /// Exec the installed artifact — what the caller asked for.
+    Installed,
+    /// Exec the installed artifact even though a source build was wanted, because
+    /// this machine has no source tree. Legal, but it must SAY SO: it is a restart,
+    /// not a deploy.
+    InstalledWithoutRebuild,
+    /// Nothing to run.
+    NoLaunchable,
+}
+
+/// Pure resolution so the policy is testable without a filesystem, a build, or a
+/// process. Every branch below cost a real outage or a false success line at some
+/// point; the table in the tests is the record of which.
+fn plan_launch(
+    policy: LaunchSource,
+    env_from_source: bool,
+    have_script: bool,
+    have_installed: bool,
+) -> LaunchPlan {
+    let want_source = env_from_source || policy == LaunchSource::FromSource;
+    match (want_source, have_script, have_installed) {
+        (true, true, _) => LaunchPlan::Script,
+        // An explicit CONTINUUM_FROM_SOURCE is an operator DEMAND to compile: silently
+        // running a prebuilt binary instead would answer a different question than the
+        // one asked. Fail loud rather than substitute.
+        (true, false, _) if env_from_source => LaunchPlan::NoLaunchable,
+        // `reboot` on an installed node (no checkout): restarting the artifact is the
+        // only meaningful thing reboot can do there, and deploy-verify still proves the
+        // running SHA against that artifact.
+        (true, false, true) => LaunchPlan::InstalledWithoutRebuild,
+        (true, false, false) => LaunchPlan::NoLaunchable,
+        (false, _, true) => LaunchPlan::Installed,
+        (false, true, false) => LaunchPlan::Script,
+        (false, false, false) => LaunchPlan::NoLaunchable,
+    }
+}
+
+async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64, String> {
     let socket = socket_path();
     let logfile = start_logfile();
     let log = std::fs::File::create(&logfile)
@@ -1087,7 +1143,7 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
         .try_clone()
         .map_err(|e| format!("cannot clone start log handle: {e}"))?;
 
-    // THE INSTALLED BINARY IS THE DEFAULT START PATH.
+    // THE INSTALLED BINARY IS THE DEFAULT START PATH — for `start`, not for `reboot`.
     //
     // `start` used to shell unconditionally into tools/scripts/start-server.sh,
     // which runs a full cargo build. That made a "governed" lifecycle verb a
@@ -1098,33 +1154,30 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
     //   - the CLI printed one line and went silent for the length of a compile,
     //     which reads as HUNG and was called hung three separate times;
     //   - the façade's honesty depended entirely on the script underneath.
-    // Same class as the rest of tonight's defects: a governed surface over a
-    // hand-rolled path.
     //
-    // So: exec the installed `continuum-core-server` directly when we can find
-    // it. Building is now an EXPLICIT request (`--from-source`), not the
-    // silent default, and the fallback says WHY it fell back rather than
-    // quietly compiling.
-    let from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
-    let server_bin = if from_source {
-        None
-    } else {
-        locate_core_server_binary()
-    };
+    // All true — but `launch_core` is shared with `reboot`, and reboot is THE
+    // DEPLOY PATH ("edit → reboot → exercise"). Giving it the installed artifact
+    // made the verb structurally unable to ship an edit: it printed "building
+    // fresh binary, then swapping" and then exec'd a MONTH-OLD binary. That is
+    // why the source policy is now an explicit argument instead of an ambient
+    // default — the two callers want opposite things and neither should have to
+    // infer the other's intent.
+    let env_from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
+    let script = locate_start_script().ok();
+    let server_bin = locate_core_server_binary();
+    let plan = plan_launch(
+        policy,
+        env_from_source,
+        script.is_some(),
+        server_bin.is_some(),
+    );
 
-    let mut cmd = match &server_bin {
-        Some(bin) => {
-            // stderr, not stdout: stdout carries the dispatched command's JSON
-            // result and has to stay machine-parseable when a command
-            // auto-starts the core on its way through.
-            eprintln!("▶ starting core: {} (log: {logfile})", bin.display());
-            std::process::Command::new(bin)
-        }
-        None => {
-            let script = locate_start_script()?;
-            if from_source {
+    let mut cmd = match plan {
+        LaunchPlan::Script => {
+            let script = script.expect("plan_launch only picks Script when one was found");
+            if env_from_source || policy == LaunchSource::FromSource {
                 eprintln!(
-                    "▶ --from-source: building then starting via {} (log: {logfile}) — \
+                    "▶ building from source, then starting via {} (log: {logfile}) — \
                      this compiles and can take minutes",
                     script.display()
                 );
@@ -1139,6 +1192,49 @@ async fn launch_core(wait_for_death: &[i32]) -> Result<u64, String> {
             let mut c = std::process::Command::new(locate_bash()?);
             c.arg(&script);
             c
+        }
+        LaunchPlan::Installed | LaunchPlan::InstalledWithoutRebuild => {
+            // borrow: the spawn-failure diagnostic below reports which binary it
+            // tried, so `server_bin` has to outlive this arm.
+            let bin = server_bin
+                .as_ref()
+                .expect("plan_launch only picks Installed when one was found");
+            if plan == LaunchPlan::InstalledWithoutRebuild {
+                // Say it. A reboot that restarts the same artifact is a legitimate
+                // operation on an installed node, but calling it a deploy without
+                // saying "no source tree, nothing was rebuilt" is exactly the false
+                // deploy receipt #194 exists to prevent.
+                eprintln!(
+                    "▶ no source tree here — restarting the installed artifact, NOT rebuilding \
+                     (deploy provenance is still verified below)"
+                );
+            }
+            // stderr, not stdout: stdout carries the dispatched command's JSON
+            // result and has to stay machine-parseable when a command
+            // auto-starts the core on its way through.
+            eprintln!("▶ starting core: {} (log: {logfile})", bin.display());
+            let mut c = std::process::Command::new(bin);
+            // THE SOCKET PATH IS A POSITIONAL ARGUMENT, and this call site is the
+            // only one that ever forgot it. `main.rs` requires argv[1] and exits 1
+            // with its usage text when it is missing — so from the moment the
+            // direct-exec path landed, every `start`/`reboot` on a machine with an
+            // installed binary died in ~2s having printed "Usage:" into the start
+            // log. The env var below is set too (and `endpoint_paths::core_socket`
+            // now honours it server-side), but argv is the binary's documented
+            // contract and is what `ps` shows an operator.
+            c.arg(&socket);
+            c
+        }
+        LaunchPlan::NoLaunchable => {
+            return Err(if env_from_source || policy == LaunchSource::FromSource {
+                "a source build was requested but no start script was found — \
+                 run from a checkout, or set CONTINUUM_START_SCRIPT"
+                    .to_string()
+            } else {
+                "no continuum-core-server binary and no start script — nothing to launch. \
+                 Install the binary (tools/scripts/install-service.sh) or run from a checkout."
+                    .to_string()
+            });
         }
     };
     cmd.env("CONTINUUM_CORE_SOCKET", &socket)
@@ -1431,6 +1527,96 @@ mod tests {
 
     fn ptable(pairs: &[(i32, i32)]) -> std::collections::HashMap<i32, i32> {
         pairs.iter().copied().collect()
+    }
+
+    mod launch_policy {
+        use super::*;
+
+        /// what this catches: `reboot` — THE deploy path — silently running a
+        /// prebuilt artifact instead of the source just edited. Regression for
+        /// 7e0c5469a, which made the installed binary the default for BOTH
+        /// callers of `launch_core`; the reboot banner still promised "building
+        /// fresh binary, then swapping" while exec'ing a month-old binary, so no
+        /// edit could reach the running core at all.
+        #[test]
+        fn reboot_builds_from_source_even_when_an_installed_binary_exists() {
+            assert_eq!(
+                plan_launch(LaunchSource::FromSource, false, true, true),
+                LaunchPlan::Script
+            );
+        }
+
+        /// what this catches: re-breaking `start` for the no-source-tree user
+        /// (the case 7e0c5469a was written for) while fixing reboot. `start`
+        /// wants a RUNNING core, not a fresh one — it must never compile when an
+        /// artifact is sitting right there.
+        #[test]
+        fn start_prefers_the_installed_binary_over_a_compile() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, false, true, true),
+                LaunchPlan::Installed
+            );
+        }
+
+        /// what this catches: a reboot on an installed node (no checkout) either
+        /// dying with "no start script" or — worse — quietly calling itself a
+        /// deploy. It restarts the artifact, and the distinct variant is what
+        /// forces the caller to SAY nothing was rebuilt.
+        #[test]
+        fn reboot_without_a_source_tree_restarts_the_artifact_and_says_so() {
+            assert_eq!(
+                plan_launch(LaunchSource::FromSource, false, false, true),
+                LaunchPlan::InstalledWithoutRebuild
+            );
+        }
+
+        /// what this catches: substituting a prebuilt binary for an explicit
+        /// operator demand to compile. CONTINUUM_FROM_SOURCE asks a specific
+        /// question; answering a different one silently is the fallback class
+        /// this codebase forbids.
+        #[test]
+        fn an_explicit_from_source_request_fails_loud_with_no_script() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, true, false, true),
+                LaunchPlan::NoLaunchable
+            );
+        }
+
+        /// what this catches: the env override being ignored on the `start` path
+        /// once the policy argument existed — two ways to ask for a source build
+        /// and only one honoured.
+        #[test]
+        fn the_env_override_still_forces_a_source_build_on_start() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, true, true, true),
+                LaunchPlan::Script
+            );
+        }
+
+        /// what this catches: a bare machine (no artifact, no checkout) getting a
+        /// launch attempt against nothing instead of one clear error.
+        #[test]
+        fn nothing_installed_and_no_script_is_a_loud_nothing_to_launch() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, false, false, false),
+                LaunchPlan::NoLaunchable
+            );
+            assert_eq!(
+                plan_launch(LaunchSource::FromSource, false, false, false),
+                LaunchPlan::NoLaunchable
+            );
+        }
+
+        /// what this catches: `start` in a fresh checkout before anything is
+        /// installed — the fresh-clone front door (#291). Compiling is correct
+        /// here; refusing is not.
+        #[test]
+        fn start_in_a_checkout_with_no_installed_binary_builds() {
+            assert_eq!(
+                plan_launch(LaunchSource::Installed, false, true, false),
+                LaunchPlan::Script
+            );
+        }
     }
 
     /// what this catches: the orphan classifier deciding to KILL a live serving
