@@ -1795,6 +1795,55 @@ mod swe_setup_tests {
             assert_eq!(card.resolved, None, "no grade yet — never a verdict");
         }
 
+        // what this catches: an UNGRADEABLE grade must fold as an ABSENCE, never
+        // a capability zero. `SweGradeResult.error` documents the contract ("an
+        // ABSENCE, not a zero, and must never be tallied as a failed attempt")
+        // and the grader proves it — for the env class it re-runs the PRISTINE
+        // tree before declaring one. This projection read only the RESULT's
+        // error, so a grade-level fault folded `resolved: false` + phase
+        // `failed`, indistinguishable from a citizen who tried and lost.
+        // Measured 2026-08-13 on sympy__sympy-11400: p2p 0/29 on the pristine
+        // tree, and 8 of 36 instances graded UNGRADEABLE on that box — the
+        // denominator of every rate read off this projection was poisoned.
+        #[test]
+        fn an_ungradeable_grade_folds_as_absence_never_a_capability_zero() {
+            let now: u64 = 10_000_000_000;
+            let fresh = now - 5_000;
+            let result = json!({"persona_id": "asha-uuid", "acts": 12,
+                                "instance": "sympy__sympy-11400", "attempt": 1});
+            let ungradeable = json!({
+                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": false,
+                "passToPassPassed": 0, "passToPassTotal": 29, "patchBytes": 402,
+                "error": "UNGRADEABLE — PASS_TO_PASS passes 0 of 29 on the PRISTINE tree: \
+                          the suite does not run in this environment, so every score from \
+                          this tree is an env fault, never a capability verdict."});
+            let card = fold_run_card("r6", Some(&result), Some(&ungradeable), fresh, now);
+            assert_eq!(
+                card.resolved, None,
+                "an env fault is an ABSENCE — `Some(false)` is the lie that reads as a \
+                 citizen who tried and failed"
+            );
+            assert_eq!(card.phase, "ungradeable", "never `failed`, never `resolved`");
+            assert!(
+                card.infra_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("UNGRADEABLE")),
+                "the REASON rides with the absence — one field means 'no valid verdict, \
+                 and why', fed by both the result's error and the grade's"
+            );
+
+            // Positive control: the SAME shape with no grade error is a real
+            // verdict and must still fold as a capability zero, or this test
+            // would pass by simply never reporting failure.
+            let honest_zero = json!({
+                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": true,
+                "passToPassPassed": 29, "passToPassTotal": 29, "patchBytes": 402});
+            let card = fold_run_card("r7", Some(&result), Some(&honest_zero), fresh, now);
+            assert_eq!(card.resolved, Some(false), "a graded miss IS a zero");
+            assert_ne!(card.phase, "ungradeable");
+            assert!(card.infra_error.is_none());
+        }
+
         // what this catches: the board facts (#329) — instance + attempt N/M
         // projected from the result ledger, and patch_bytes derived LIVE from
         // the result's own diff before any grade exists (the "patch is
@@ -1954,10 +2003,30 @@ fn fold_run_card(
             })
             .unwrap_or_default()
     };
-    let resolved = grade
-        .and_then(|g| g.get("resolved"))
-        .and_then(|x| x.as_bool());
-    let infra_error = s(result, "infra_error").or_else(|| s(result, "error"));
+    // ABSENCE vs ZERO, on the board. A grade carrying `error` is a harness/env
+    // fault the grader PROVED — for the env class it re-runs the PRISTINE tree
+    // first, so a genuinely broken patch is never mislabelled — and
+    // `SweGradeResult.error` documents the contract in its own doc comment: "a
+    // result with `error` is an ABSENCE, not a zero, and must never be tallied
+    // as a failed attempt." This projection honoured that for the RESULT's error
+    // and ignored the GRADE's, so an env fault folded as `resolved: false` +
+    // phase `failed` — indistinguishable from a citizen who tried and lost.
+    // Measured 2026-08-13: 8 of 36 instances (22%) grade UNGRADEABLE on this box.
+    // `infra_error` already means "no valid verdict, and why", so it takes both
+    // sources rather than growing a second field, and `resolved` returns to None
+    // — the same "no verdict" the pre-grade card carries, because that is the truth.
+    let grade_error = s(grade, "error");
+    let ungradeable = grade_error.is_some();
+    let resolved = if ungradeable {
+        None
+    } else {
+        grade
+            .and_then(|g| g.get("resolved"))
+            .and_then(|x| x.as_bool())
+    };
+    let infra_error = s(result, "infra_error")
+        .or_else(|| s(result, "error"))
+        .or(grade_error);
     let failed_marker = result
         .and_then(|r| r.get("failed"))
         .and_then(|x| x.as_bool())
@@ -1965,6 +2034,10 @@ fn fold_run_card(
     let age_secs = now_ms.saturating_sub(last_activity_ms) / 1000;
     let phase = if resolved == Some(true) {
         "resolved"
+    } else if ungradeable {
+        // Ahead of `failed`: a run can carry both a failed marker and an
+        // ungradeable grade, and the absence is the more truthful of the two.
+        "ungradeable"
     } else if failed_marker {
         "failed"
     } else if age_secs < RUN_STALL_WINDOW_SECS {
@@ -2018,7 +2091,8 @@ impl ActionCommand for BenchmarkRuns {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "The benchmark RunProjection: every agent/solve run's live card — phase \
-         (active/quiet/resolved/failed), last-activity age, stall flag, acts, grade summary, \
+         (active/quiet/resolved/failed/ungradeable), last-activity age, stall flag, acts, \
+         grade summary, \
          investigation trail — folded from the run ledgers. ONE projection for every consumer: \
          the exam-room tab bar, a teacher persona's grounding, and the operator's liveness \
          monitor all read THIS instead of scraping files. `quiet` (stalled=true) is the shape \

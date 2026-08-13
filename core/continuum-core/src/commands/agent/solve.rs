@@ -585,6 +585,21 @@ impl ActionCommand for AgentSolve {
                                     // were file-only; every wire consumer (probe router →
                                     // rooms, exam-room widgets, the pulse monitors) had to
                                     // scrape the ledger to learn an attempt's outcome.
+                                    // ABSENCE vs ZERO, carried on the wire. `SweGradeResult.error`
+                                    // documents its own contract — "a result with `error` is an
+                                    // ABSENCE, not a zero, and must never be tallied as a failed
+                                    // attempt" — and the grader earns it honestly (it re-runs the
+                                    // PRISTINE tree before declaring an env fault, so a broken
+                                    // patch is never mislabelled). That classification used to die
+                                    // in the ledger file: attempt.end published `resolved=false
+                                    // gate_ok=false` and nothing else, which every wire consumer
+                                    // reads as a citizen who tried and failed. Measured 2026-08-13:
+                                    // 8 of 36 instances (22%) grade UNGRADEABLE on this box, so the
+                                    // unlabelled zeros were poisoning the denominator of every rate
+                                    // computed off this stream. The flag rides the same event as
+                                    // the verdict so no consumer has to scrape a file to tell a
+                                    // capability zero from an absent measurement.
+                                    let ungradeable = g.error.is_some();
                                     crate::probe!(
                                         class = "benchmark.attempt.end",
                                         run_id = %run_id,
@@ -593,6 +608,8 @@ impl ActionCommand for AgentSolve {
                                         max_attempts,
                                         resolved = g.resolved,
                                         gate_ok = g.gate_ok,
+                                        ungradeable,
+                                        grade_error = %g.error.as_deref().unwrap_or(""),
                                         f2p_passed = g.fail_to_pass_passed,
                                         f2p_total = g.fail_to_pass_total,
                                         p2p_passed = g.pass_to_pass_passed,
@@ -608,6 +625,8 @@ impl ActionCommand for AgentSolve {
                                         instance = %instance,
                                         resolved = g.resolved,
                                         gate_ok = g.gate_ok,
+                                        ungradeable,
+                                        grade_error = %g.error.as_deref().unwrap_or(""),
                                         attempt,
                                         max_attempts,
                                         "solve completion auto-graded"
