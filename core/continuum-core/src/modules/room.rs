@@ -595,10 +595,10 @@ mod tests {
         let s = summarize_rooms(&[
             room("academy", true),
             room("cambriantech", false),
-            room("k3-serving", false),
+            room("bench-swe-run-1", false),
         ]);
         assert!(s.starts_with("You belong to 3 room(s)"), "{s}");
-        assert!(s.contains("academy") && s.contains("k3-serving"), "{s}");
+        assert!(s.contains("academy") && s.contains("bench-swe-run-1"), "{s}");
         assert!(
             s.contains("default room is academy"),
             "the focus must be named, not just implied: {s}"

@@ -365,7 +365,9 @@ impl ActionCommand for WorkClaim {
                         // perception for ten minutes.
                         //
                         // Measured 2026-08-07: ~50 of 61 cards on #general and 4 of 12 on
-                        // #k3-serving carry a stale owner with a lease expired 134h+; three
+                        // #k3-serving (a RETIRED subsystem-named room — do not copy the name;
+                        // rooms are activities WITH LIFETIMES) carried a stale owner with a
+                        // lease expired 134h+; three
                         // of the latter are in Review, where the true refusal is "settled
                         // work is not claimable". Two citizens spent the day quoting this
                         // string back — "expired leases or the cards being held by others"
@@ -1297,6 +1299,8 @@ mod tests {
     ///
     /// Measured on the live boards 2026-08-07: ~50 of 61 cards on #general and
     /// 4 of 12 on #k3-serving carried a stale owner with a lease expired 134h+.
+    /// (#k3-serving is RETIRED — it was named for a SUBSYSTEM, so it had no lifetime
+    /// and outlived its purpose by a month. Kept here only as the incident record.)
     /// Two citizens spent the day quoting the resulting sentence back at us —
     /// "expired leases or the cards being held by others" is BOTH HALVES of that
     /// one format string.
