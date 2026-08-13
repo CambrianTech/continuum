@@ -25,6 +25,8 @@ use parking_lot::Mutex;
 
 use uuid::Uuid;
 
+use crate::identity::{PeerId, PersonaRef};
+
 use super::deferred_faculty::DeferredFaculty;
 use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
@@ -782,8 +784,9 @@ pub(crate) async fn restore_acting_workspace(
 /// from outside, at the command boundary, where "the eval is over" is unambiguous and
 /// covers the error paths for free.
 pub(crate) async fn restore_persona_workspace(
-    persona_id: &str,
+    persona: &PersonaRef,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
+    let persona_id = persona.as_str();
     let uuid = crate::id_resolve::resolve(
         persona_id.trim(),
         &crate::persona::card::ids(),
@@ -855,7 +858,12 @@ impl PersonaWorkspaceRegistry {
     /// resolve against the forkable set that exists at call time. Fails LOUD naming
     /// the online personas — never a silent guess (the loose-`String` id boundary is
     /// exactly the defect class that fed a dead id to a doomed eval).
-    pub fn resolve_persona(&self, id_or_name: &str) -> Result<Uuid, String> {
+    /// The ONE door from a caller's [`PersonaRef`] to a real [`PeerId`]. Taking the
+    /// newtype rather than `&str` is what makes resolution unskippable: a param that
+    /// holds a reference cannot reach a subsystem that wants an identity without
+    /// coming through here.
+    pub fn resolve_persona(&self, reference: &PersonaRef) -> Result<PeerId, String> {
+        let id_or_name = reference.as_str();
         // Snapshot (id, name) once, then drop the lock before resolving.
         let roster: Vec<(Uuid, String)> = {
             let templates = self.templates.lock();
@@ -869,7 +877,7 @@ impl PersonaWorkspaceRegistry {
         // 1. Full UUID (race-safe passthrough) or short-id prefix against the
         //    forkable set — the shared id normalization primitive.
         if let Ok(id) = crate::id_resolve::resolve(id_or_name, &ids, "persona") {
-            return Ok(id);
+            return Ok(PeerId::from_uuid(id));
         }
 
         // 2. Case-insensitive persona NAME.
@@ -880,7 +888,7 @@ impl PersonaWorkspaceRegistry {
             .map(|(id, _)| *id)
             .collect();
         match name_matches.as_slice() {
-            [one] => Ok(*one),
+            [one] => Ok(PeerId::from_uuid(*one)),
             [] => Err(format!(
                 "no persona matches '{id_or_name}' (not a UUID, an 8-char short-id, or a name). {}",
                 Self::roster_hint(&roster)
@@ -1301,23 +1309,29 @@ mod tests {
         registry.register_from_cfg(atlas_cfg);
 
         // full UUID
-        assert_eq!(registry.resolve_persona(&asha.to_string()).unwrap(), asha);
+        assert_eq!(
+            registry.resolve_persona(&asha.to_string().into()).unwrap(),
+            PeerId::from_uuid(asha)
+        );
         // 8-char short-id prefix
         assert_eq!(
-            registry.resolve_persona(&asha.to_string()[..8]).unwrap(),
-            asha
+            registry.resolve_persona(&asha.to_string()[..8].into()).unwrap(),
+            PeerId::from_uuid(asha)
         );
         // case-insensitive name
-        assert_eq!(registry.resolve_persona("atlas").unwrap(), atlas);
-        assert_eq!(registry.resolve_persona("ASHA").unwrap(), asha);
+        assert_eq!(registry.resolve_persona(&"atlas".into()).unwrap(), PeerId::from_uuid(atlas));
+        assert_eq!(registry.resolve_persona(&"ASHA".into()).unwrap(), PeerId::from_uuid(asha));
 
         // (b) a well-formed but NON-live full UUID passes through — race safety. The
         // caller's fork wait, not this boundary, decides liveness.
         let ghost = Uuid::new_v4();
-        assert_eq!(registry.resolve_persona(&ghost.to_string()).unwrap(), ghost);
+        assert_eq!(
+            registry.resolve_persona(&ghost.to_string().into()).unwrap(),
+            PeerId::from_uuid(ghost)
+        );
 
         // (c) garbage fails loud AND names the roster so the operator can fix it.
-        let err = registry.resolve_persona("general").unwrap_err();
+        let err = registry.resolve_persona(&"general".into()).unwrap_err();
         assert!(err.contains("Asha") && err.contains("Atlas"), "roster hint missing: {err}");
     }
 

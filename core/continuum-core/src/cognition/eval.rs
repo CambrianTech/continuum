@@ -1374,9 +1374,12 @@ pub struct EvalGene {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CognitionEvalParams {
-    /// The persona (UUID) to put through the gym. Must be spawned (have a live
-    /// `WorkspaceCycle`) — the eval drives her real cognition, not a stand-in.
-    pub persona_id: String,
+    /// Which persona to put through the gym — a full UUID, an 8-char short-id, or a
+    /// name. Resolved against the live roster before anything runs, so a garbage or
+    /// unknown reference fails loud here instead of dying later as a misleading
+    /// "not assembled at spawn". Must be spawned (have a live `WorkspaceCycle`) —
+    /// the eval drives her real cognition, not a stand-in.
+    pub persona_id: crate::identity::PersonaRef,
     /// Optional gene to MEASURE: when set, the eval runs base vs gene as an A/B and
     /// reports the `lift`. When omitted, a single pass on whatever genome is
     /// currently paged in (base, by default).
@@ -1571,6 +1574,17 @@ pub struct CognitionEvalResult {
     /// The run handle (#86): present on a detached ack AND on the ledger row, so the
     /// two halves of fire-and-poll join on one id.
     pub run_id: Option<String>,
+    /// Who the run is about.
+    ///
+    /// STILL `String`, and deliberately so pending the next slice: this struct
+    /// derives `Default` across 21 fields, and a persona reference has NO sensible
+    /// default — an empty one is a nonsense value that would read as a real answer.
+    /// The fix is to split the fire-and-poll HANDLE from the completed RESULT (they
+    /// are two different things wearing one struct: a handle knows only the
+    /// requested `PersonaRef`, a result knows the resolved `PeerId`), which is a
+    /// bigger change than this one. Fabricating a default to make the type check
+    /// would be the same reflex as `unwrap_or` — it makes the compiler quiet and the
+    /// runtime wrong.
     pub persona_id: String,
     /// True = this is a fire-and-poll JOB HANDLE (#86), NOT a completed run: the eval was
     /// spawned detached and its real result is in the progress ledger, not in these fields
@@ -1737,7 +1751,7 @@ impl ActionCommand for CognitionEval {
             });
             return Ok(CognitionEvalResult {
                 detached: true,
-                persona_id,
+                persona_id: persona_id.to_string(),
                 run_id: Some(run_id),
                 ..Default::default()
             });
@@ -1836,7 +1850,10 @@ impl CognitionEval {
         // reference to a doomed eval).
         let persona_uuid = crate::cognition::persona_workspace::global()
             .resolve_persona(&p.persona_id)
-            .map_err(|e| CommandError::Invalid(format!("{e} Or call persona/instances/list.")))?;
+            .map_err(|e| CommandError::Invalid(format!("{e} Or call persona/instances/list.")))?
+            // The workspace fork machinery below is keyed by bare `Uuid`; unwrap the
+            // resolved identity ONCE, here, rather than threading two types through it.
+            .as_uuid();
         let room = match p.room_id.as_deref() {
             Some(s) => Uuid::parse_str(s)
                 .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?,
@@ -2736,7 +2753,13 @@ fn row_with_run_id(text: &str, run_id: &str) -> Option<serde_json::Value> {
 /// must be able to tell "died" from "still starting" — a detached run that errors before
 /// [`append_progress_ledger`] otherwise reads as an eternal pending. `error` + `failed:true`
 /// mark it; `total:0` keeps the numeric shape valid for consumers.
-fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str) {
+fn append_failed_ledger(
+    persona: &crate::identity::PersonaRef,
+    run_id: &str,
+    note: &str,
+    error: &str,
+) {
+    let persona_id = persona.as_str();
     let Some(home) = std::env::var("HOME").ok() else {
         return;
     };

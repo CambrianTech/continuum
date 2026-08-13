@@ -85,6 +85,80 @@ use uuid::Uuid;
 /// generated TS shape is unchanged.
 pub use airc_core::PeerId;
 
+/// What a CALLER writes when it means "that persona" — a full UUID, an 8-char
+/// short-id, or a name (`"Asha"`). Deliberately NOT an identity.
+///
+/// ## Why this is a separate type from [`PeerId`]
+///
+/// Both were `String`, so nothing stopped an unresolved reference being stored,
+/// compared, or handed to a subsystem as though it were an identity — and that is
+/// not hypothetical. `PersonaWorkspaceRegistry::resolve_persona` exists precisely
+/// to close "the loose-`String` id boundary … the defect class that fed a dead id
+/// to a doomed eval" (its own words), and when this type was introduced it had
+/// **one** production caller against 55 `persona_id: String` fields. The check was
+/// right and almost nothing called it — the nastiest shape a check can have.
+///
+/// A name is not an identity: it is ambiguous (two personas can share one), it is
+/// mutable, and it is only meaningful against a live roster. So the two roles get
+/// two types, and the ONLY bridge between them is resolution:
+///
+/// ```ignore
+/// let id: PeerId = registry.resolve_persona(&params.persona)?;  // the one door
+/// ```
+///
+/// Params carry a `PersonaRef`. Everything downstream carries a [`PeerId`]. Passing
+/// an unresolved reference where an identity belongs is now a type error rather
+/// than a runtime surprise three subsystems away.
+///
+/// Wire shape is unchanged — `#[serde(transparent)]` over the string a caller
+/// already sends, so no client, recipe, or stored payload has to change.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema,
+)]
+#[ts(export, export_to = "../../../protocol/typescript/identity/PersonaRef.ts")]
+#[serde(transparent)]
+#[schemars(description = "A persona reference: full UUID, 8-char short-id, or name")]
+pub struct PersonaRef(pub String);
+
+impl PersonaRef {
+    pub fn new(reference: impl Into<String>) -> Self {
+        Self(reference.into())
+    }
+
+    /// The raw text, for the resolver and for error messages. Deliberately the ONLY
+    /// accessor — there is no `as_peer_id()`, because a reference is not an identity
+    /// until a roster says which one it is.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PersonaRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for PersonaRef {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for PersonaRef {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+/// A resolved identity is always a legal reference to itself — the direction that
+/// is safe. The reverse has no `From` on purpose: it requires a roster.
+impl From<PeerId> for PersonaRef {
+    fn from(id: PeerId) -> Self {
+        Self(id.to_string())
+    }
+}
+
 /// What kind of actor this identity belongs to. The substrate
 /// treats every kind symmetrically — same Identity entity, same
 /// ORM table, same airc-peer routing — but the kind tag lets
