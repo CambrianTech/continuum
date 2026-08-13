@@ -159,6 +159,245 @@ impl From<PeerId> for PersonaRef {
     }
 }
 
+/// Guard: an identity field typed `String` must be DECLARED.
+///
+/// Joel, 2026-08-13, after the `c0de0001-…` fake-UUID incident and the
+/// `MessageId(String)` find: *"eliminate all smell or you will copy it."* That is
+/// literally true here — a model reading this tree learns its conventions from it,
+/// and `persona_id: String` was 55 sites teaching that ids are text. Prose does not
+/// stop that. A failing test does.
+///
+/// The rule: any `<something>_id: String` field in the crate must appear in
+/// [`LOOSE_IDS`] with a category and a reason. A new one fails the build. A declared
+/// one that gets FIXED also fails, so the list cannot rot into a graveyard the way
+/// the comment on `StubAircCitizen::subscribe_all_rooms` did.
+///
+/// Categories:
+/// - **external** — another system owns the string on the wire (LiveKit participants).
+///   Legitimately not ours to type.
+/// - **pending** — ours, but nothing on that path RESOLVES yet. Typing it as an
+///   identity today would assert something the code does not do, which is worse than
+///   leaving it text. Converts in the slice that wires resolution.
+/// - **defect** — should already be typed, with what blocked it.
+///
+/// Deliberately NOT a lint on the type alone: `String` is fine for a name, a label,
+/// a model repo (`unsloth/Devstral-…`). What this catches is the *identity* names.
+#[cfg(test)]
+mod loose_id_guard {
+    struct LooseId {
+        file: &'static str,
+        field: &'static str,
+        why: &'static str,
+    }
+
+    /// Identity-shaped field names. A `String` here is what gets audited; anything
+    /// else in the crate is out of scope on purpose.
+    const ID_NAMES: &[&str] = &[
+        "persona_id", "room_id", "user_id", "card_id", "peer_id", "context_id",
+        "session_id", "message_id", "actor_id", "owner_id", "author_id",
+        "sender_id", "citizen_id", "agent_id",
+    ];
+
+    const LOOSE_IDS: &[LooseId] = &[
+        LooseId { file: "airc/realtime.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
+        LooseId { file: "code/file_engine.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "code/shell_session.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "code/shell_types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "code/shell_types.rs", field: "session_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "code/types.rs", field: "author_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/eval.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/generate_response.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/generate_response.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/prompt_capture.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/prompt_capture.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/replay.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/should_respond.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/should_respond.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/workspace_capture.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/workspace_capture.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/workspace_dashboard.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/workspace_dashboard.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "commands/memory/consciousness_context.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "commands/memory/multi_layer_recall.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "commands/memory/recall_hook.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "commands/persona/wall/pin.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "commands/persona_roster.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
+        LooseId { file: "experience/mod.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
+        LooseId { file: "ipc/protocol.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "ipc/protocol.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "ipc/stream_rail.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "ipc/stream_rail.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "live/audio/mixer.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/audio/router.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/bridge_client.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/call_server.rs", field: "persona_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/call_server.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/media.rs", field: "room_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/transport/media.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/types.rs", field: "persona_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "live/video/source.rs", field: "user_id", why: "external: LiveKit participant/room identity — the media server owns this string on the wire" },
+        LooseId { file: "memory/recall.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "memory/types.rs", field: "actor_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "memory/types.rs", field: "context_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "memory/types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "memory/types.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "modules/activity.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "modules/rag.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "modules/room.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
+        LooseId { file: "modules/room.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "modules/sentinel/escalation.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "modules/work.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
+        LooseId { file: "persona/airc_admission.rs", field: "message_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/airc_admission.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/airc_admission.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/channel_items.rs", field: "context_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/channel_items.rs", field: "persona_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/channel_items.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/channel_items.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/durable_history.rs", field: "message_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/durable_history.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/engram.rs", field: "message_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/engram.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/engram.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
+        LooseId { file: "persona/projection.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "ai/types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "ai/types.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "ai/types.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "airc/realtime.rs", field: "user_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/eval.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "cognition/resolution_compute.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "logging/client.rs", field: "session_id", why: "external: log-envelope correlation fields, written as text to a JSONL sink another tool reads" },
+        LooseId { file: "logging/client.rs", field: "user_id", why: "external: log-envelope correlation fields, written as text to a JSONL sink another tool reads" },
+        LooseId { file: "modules/dataset.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "modules/sentinel/types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "persona/service_loop.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+        LooseId { file: "persona/service_loop.rs", field: "sender_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
+    ];
+
+    fn rs_files() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        let rel = path.strip_prefix(root).unwrap_or(&path);
+                        out.push((rel.to_string_lossy().replace('\\', "/"), text));
+                    }
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        walk(&root, &root, &mut out);
+        out
+    }
+
+    /// `  pub persona_id: String,` / `  room_id: Option<String>,` — field decls only.
+    /// Comments are stripped first so a doc line can never register as a field.
+    fn loose_id_fields(src: &str) -> Vec<&'static str> {
+        let mut found = Vec::new();
+        for raw in src.lines() {
+            let line = match raw.find("//") {
+                Some(idx) => &raw[..idx],
+                None => raw,
+            };
+            let line = line.trim();
+            let line = line.strip_prefix("pub ").unwrap_or(line);
+            for name in ID_NAMES {
+                let with_colon = format!("{name}:");
+                if let Some(rest) = line.strip_prefix(&with_colon) {
+                    let rest = rest.trim();
+                    if rest == "String," || rest == "Option<String>," {
+                        found.push(*name);
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    // what this catches: a NEW `<something>_id: String` landing anywhere in the
+    // crate without a declaration. That is the exact shape that grew to 55
+    // persona_id sites, 5 String peer_ids, and a MessageId whose `new("msg-1")`
+    // let two callers collide — every one of them added one line at a time by
+    // someone (usually me) who did not know the convention.
+    #[test]
+    fn every_string_typed_identity_field_is_declared() {
+        let mut undeclared: Vec<String> = Vec::new();
+        for (file, src) in rs_files() {
+            for field in loose_id_fields(&src) {
+                let declared = LOOSE_IDS
+                    .iter()
+                    .any(|d| d.file == file && d.field == field);
+                if !declared {
+                    undeclared.push(format!("{file}: {field}"));
+                }
+            }
+        }
+        undeclared.sort();
+        undeclared.dedup();
+        assert!(
+            undeclared.is_empty(),
+            "{} identity field(s) typed `String` with no declaration:\n  {}\n\n\
+             An id is not text. Use the typed form — `PeerId` for an actor, \
+             `PersonaRef` for an unresolved caller reference, a `*Id(Uuid)` newtype \
+             otherwise. If it genuinely must stay a String (another system owns the \
+             wire format, or the resolver does not exist yet), add a LOOSE_IDS entry \
+             in identity/mod.rs saying which and why.",
+            undeclared.len(),
+            undeclared.join("\n  ")
+        );
+    }
+
+    // what this catches: the list rotting into a graveyard. A declaration whose
+    // field has actually been fixed must be DELETED, or the next reader believes
+    // a smell is still there and works around it.
+    #[test]
+    fn no_declaration_outlives_its_defect() {
+        let files = rs_files();
+        let mut stale: Vec<String> = Vec::new();
+        for decl in LOOSE_IDS {
+            let still_loose = files.iter().any(|(file, src)| {
+                file == decl.file && loose_id_fields(src).contains(&decl.field)
+            });
+            if !still_loose {
+                stale.push(format!("{}: {}", decl.file, decl.field));
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "{} LOOSE_IDS entr(ies) name a field that is no longer a loose String \
+             — delete them, they are now telling the next reader a lie:\n  {}",
+            stale.len(),
+            stale.join("\n  ")
+        );
+    }
+
+    // what this catches: a declaration used as a silent mute. Every entry states a
+    // category and a real reason, the same bar the module-wiring audit holds.
+    #[test]
+    fn declarations_carry_a_real_reason() {
+        for decl in LOOSE_IDS {
+            let categorized = ["external:", "pending:", "defect:"]
+                .iter()
+                .any(|c| decl.why.starts_with(c));
+            assert!(
+                categorized,
+                "{}: {} — reason must start with external:/pending:/defect:, got {:?}",
+                decl.file, decl.field, decl.why
+            );
+            assert!(
+                decl.why.len() > 40,
+                "{}: {} — reason is too thin to be a decision: {:?}",
+                decl.file, decl.field, decl.why
+            );
+        }
+    }
+}
+
 /// What kind of actor this identity belongs to. The substrate
 /// treats every kind symmetrically — same Identity entity, same
 /// ORM table, same airc-peer routing — but the kind tag lets
