@@ -347,18 +347,38 @@ impl AircCitizen for StubAircCitizen {
     }
 
     async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError> {
-        // No service-loop test drives the stub's subscribe — the
-        // service loop receives messages through StubConversation
-        // directly, never through the citizen's stream. If a future
-        // test ever wires the stub into the conversation, this panics
-        // visibly per [[no-fallbacks-ever]] rather than silently
-        // returning an empty stream or fabricating an AircError
-        // variant that doesn't fit ("Transport"/"Route"/etc).
-        unreachable!(
-            "StubAircCitizen::subscribe_all_rooms must not be called — \
-             service-loop tests should drive the loop through \
-             StubConversation directly, not through the citizen handle"
-        );
+        // A stub citizen HAS no transport, and says so.
+        //
+        // This was `unreachable!()`, on the stated premise that "no
+        // service-loop test drives the stub's subscribe". That premise was
+        // true when written and stopped being true when the supervisor grew
+        // its doctrine/wall cache: `supervisor.rs` now subscribes to wire a
+        // publish-invalidator, so five supervisor tests — which are about
+        // adapter materialization and warmup, and care nothing about event
+        // streams — reached this line and aborted. `cargo test -p
+        // continuum-core --lib` has been red on every canary push since,
+        // which is what makes "canary is green" mean nothing to everyone
+        // else in the repo.
+        //
+        // The guard was right to refuse an EMPTY STREAM: that would hand the
+        // supervisor a wire that never fires, so the cache would go stale
+        // silently and the tests would pass while proving nothing. That is
+        // the masking the original comment correctly rejected, and this does
+        // not do it.
+        //
+        // Returning `Transport` is not the "variant that doesn't fit" the
+        // old comment feared. It is a free-form transport-side variant and
+        // "this citizen has no transport" is a transport-side fact. The call
+        // site already has the matching branch: on `Err` the supervisor
+        // serves raw doctrine/wall sources and logs `cache UNWIRED … slow but
+        // never stale`. So the absence stays LOUD and correct — it travels
+        // the path designed for it instead of killing the process.
+        Err(AircError::Transport(
+            "StubAircCitizen has no transport — nothing subscribes, nothing publishes. \
+             Drive service-loop tests through StubConversation; callers that need a live \
+             stream must use a real citizen."
+                .to_string(),
+        ))
     }
 
     async fn say_in(&self, _room_id: Uuid, _text: &str) -> Result<EventId, AircError> {
@@ -384,11 +404,31 @@ mod tests {
         assert!(events.is_empty());
     }
 
+    /// what this catches: the stub handing back a wire it does not have.
+    ///
+    /// This asserted a PANIC until 2026-08-13, on the premise that nothing
+    /// would ever call subscribe on a stub. The supervisor's doctrine/wall
+    /// cache then did exactly that, and five supervisor tests — about adapter
+    /// materialization, not events — died on it, keeping `cargo test -p
+    /// continuum-core --lib` red on every canary push.
+    ///
+    /// The invariant that actually matters survives, and is what this now
+    /// pins: the stub must report an ERROR, never `Ok` with an empty stream.
+    /// An empty stream is a wire that never fires, so the supervisor's cache
+    /// would go stale in silence and this test would pass while proving
+    /// nothing. Err travels the branch built for it — raw sources, loud warn.
     #[tokio::test]
-    #[should_panic(expected = "service-loop tests should drive the loop")]
-    async fn stub_subscribe_panics_loudly() {
+    async fn stub_subscribe_reports_no_transport_rather_than_faking_a_wire() {
         let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
-        let _ = stub.subscribe_all_rooms().await;
+        let error = stub
+            .subscribe_all_rooms()
+            .await
+            .err()
+            .expect("stub must REFUSE to subscribe — an Ok here is an empty stream nobody fires");
+        assert!(
+            matches!(error, AircError::Transport(_)),
+            "the refusal must name the missing transport, got: {error}"
+        );
     }
 
     // what this catches: a reply addressed to the room that asked, rather than
