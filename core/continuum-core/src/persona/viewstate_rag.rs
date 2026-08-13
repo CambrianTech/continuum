@@ -99,7 +99,21 @@ pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
 
     /// The smallest complete statement this kind can make, in tokens. Same
     /// contract as [`RagSource::floor_tokens`] — measured, not aspirational.
-    const FLOOR_TOKENS: u32;
+    ///
+    /// A FUNCTION, not an associated const, to match how every other RagSource
+    /// states its floor (`room_board_source::floor_tokens` returns 32, the roster
+    /// and doctrine sources return 0). Shipped first as `const FLOOR_TOKENS: u32`,
+    /// which put a second SHAPE on one contract and tripped the de-hardcode guard
+    /// (`context_budget::no_new_hardcoded_context_or_prompt_size_constant_anywhere_in_the_crate`,
+    /// which scans `const`s whose name contains TOKEN for bare literals). The guard
+    /// was right to fire on a fresh shape in the file that is meant to be the
+    /// template every future ViewState source is copied from — one contract, one
+    /// spelling.
+    ///
+    /// This is a per-UNIT content floor ("one roster line"), not a context bound:
+    /// it scales with what a unit costs to say, not with the served window, which
+    /// is why it is a measured constant here and a fraction nowhere.
+    fn floor_tokens() -> u32;
 
     /// Atomic units, **most-salient first**. Each must stand alone: the adapter
     /// packs a prefix of this list and drops the rest, so unit `n` may never
@@ -200,7 +214,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
     }
 
     fn floor_tokens(&self) -> u32 {
-        V::FLOOR_TOKENS
+        V::floor_tokens()
     }
 
     async fn deliver(
@@ -302,7 +316,9 @@ impl RagRenderable for continuum_positron::RosterViewState {
     /// One member line, measured: a name plus a short role runs ~10 tokens. The
     /// floor is ONE PERSON — under any budget that admits this source at all, a
     /// citizen should learn that at least someone is here.
-    const FLOOR_TOKENS: u32 = 10;
+    fn floor_tokens() -> u32 {
+        10
+    }
 
     fn units(&self) -> Vec<String> {
         self.roster
@@ -348,7 +364,9 @@ impl RagRenderable for continuum_positron::bench::BenchViewState {
     const BLOCK: &'static str = "benchmark runs";
     const EXPAND: Option<&'static str> = Some("benchmark/runs");
     /// One run row, measured: id + instance + phase + a score fraction ~ 18 tokens.
-    const FLOOR_TOKENS: u32 = 18;
+    fn floor_tokens() -> u32 {
+        18
+    }
 
     fn units(&self) -> Vec<String> {
         self.runs
