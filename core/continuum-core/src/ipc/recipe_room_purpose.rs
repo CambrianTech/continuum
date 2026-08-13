@@ -235,6 +235,10 @@ pub fn spawn_node_purpose_index(
             );
             return;
         }
+        tracing::info!(
+            room = %room_name,
+            "recipe_room_purpose: node reader attached — resolving room activities"
+        );
         let reader: Arc<dyn RoomRecipeReader> = Arc::new(AircRecipeReader {
             airc: Arc::new(airc),
         });
@@ -256,9 +260,17 @@ async fn run_purpose_loop(
 ) {
     match reader.known_rooms().await {
         Ok(rooms) => {
+            // Probe the SEED ITSELF, not only its interesting outcomes. A fold whose
+            // success is silent is indistinguishable from a fold that never ran —
+            // which is exactly the ambiguity this hit on its first live test, where
+            // "no probes" could equally have meant "never spawned" or "nothing bound"
+            // ([[a-correct-check-that-nothing-calls-is-nastier-than-a-missing-one]]).
+            let total = rooms.len();
+            let mut bound = 0usize;
             for room_id in rooms {
                 let resolved = purpose.refresh(room_id, reader.as_ref()).await;
                 if resolved != UNBOUND_PURPOSE {
+                    bound += 1;
                     crate::probe!(
                         class = "activity.purpose.resolved",
                         room_id = %room_id,
@@ -268,6 +280,13 @@ async fn run_purpose_loop(
                     );
                 }
             }
+            crate::probe!(
+                class = "activity.purpose.seeded",
+                rooms = total,
+                bound,
+                "activity-purpose index seeded — `bound` rooms carry a recipe, the rest are \
+                 plain chat rooms"
+            );
         }
         Err(error) => {
             crate::probe!(
@@ -284,7 +303,17 @@ async fn run_purpose_loop(
                 let Some(room_id) = wall_changed_room(&event.name, &event.payload) else {
                     continue;
                 };
-                purpose.refresh(room_id, reader.as_ref()).await;
+                let resolved = purpose.refresh(room_id, reader.as_ref()).await;
+                // Wall changes are rare (a re-pin, a re-bind), so probing every cue
+                // costs nothing and makes the invalidation path observable instead of
+                // inferred ([[the-whole-system-is-event-based-not-polling]] wants the
+                // EVENT visible, not just its side effect).
+                crate::probe!(
+                    class = "activity.purpose.refreshed",
+                    room_id = %room_id,
+                    purpose = %resolved,
+                    "a wall change re-resolved this room's activity"
+                );
             }
             // Fell behind the broadcast buffer. The index is a cache of a durable
             // wall, not guaranteed delivery — the next change re-establishes it,
