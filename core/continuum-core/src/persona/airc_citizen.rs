@@ -387,11 +387,23 @@ mod tests {
         assert!(events.is_empty());
     }
 
+    // what this catches: the stub must REFUSE to subscribe, and must refuse in the
+    // shape the caller already handles. It used to panic, on the premise that nothing
+    // called it — false since #398 slice 3 gave PersonaSupervisor::materialize a
+    // subscribe call, which killed 5 supervisor tests for as long as that premise
+    // stood. An `Err` keeps the refusal honest AND lets the caller take its documented
+    // degradation path (sources stay uncached, logged loud). What must never happen is
+    // an Ok(empty stream): that would look like a live subscription that silently never
+    // invalidates — the actual fallback.
     #[tokio::test]
-    #[should_panic(expected = "service-loop tests should drive the loop")]
-    async fn stub_subscribe_panics_loudly() {
+    async fn stub_subscribe_refuses_rather_than_faking_a_stream() {
         let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
-        let _ = stub.subscribe_all_rooms().await;
+        // `FilteredEventStream` is not Debug, so match rather than `expect_err`.
+        match stub.subscribe_all_rooms().await {
+            Err(AircError::Transport(_)) => {}
+            Err(other) => panic!("refusal must be Transport (what the caller branches on), got: {other:?}"),
+            Ok(_) => panic!("a stub has no transport — it must not hand back a stream"),
+        }
     }
 
     // what this catches: a reply addressed to the room that asked, rather than
