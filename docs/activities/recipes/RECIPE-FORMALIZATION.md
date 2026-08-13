@@ -211,3 +211,57 @@ citizens get their roles back.
   is by id and exact; a missing suite recipe is an authoring act, not a lookup rule.
 - **No automatic room lifecycle.** Unchanged from `modules/activity.rs`: a room is
   the durable record of its activity, and nothing expires it on a timer.
+
+---
+
+## Appendix A — the legacy corpus (`legacy/src/system/recipes/`, 29 recipes)
+
+Joel: *"Old shit was broken and a mess but many extra recipes we maybe miss."*
+Exactly right, and this appendix exists so they cannot be lost a second time. Port
+the **concept and the field content**, not the implementation — the legacy runtime
+was Node and is retired; the recipes are DATA and survive it.
+
+**The uncomfortable part: several of these describe activities we have OPEN CARDS
+re-deriving from scratch.** The recipe already says what the thing is.
+
+| legacy recipe | what it is | status now |
+|---|---|---|
+| `training-dashboard` | loss curves, LR, GPU usage, historical runs | **#141 in progress** — recipe already describes it |
+| `grid-overview` | topology, health, latency, GPU, routing decisions | **#257 pending** |
+| `universe` | design complete experiences — Tron, Ghibli | **#375 pending** |
+| `research` | parallel investigation, dedup, synthesis to docs | **#93 pending** |
+| `academy-training` | Teacher sets exams → Student answers → Teacher scores | the training loop (#320, #135) |
+| `factory` | forge floor — active forges, published models, leaderboard | forge work (#99, #102) |
+| `inference-sample` | base vs adapter output side-by-side, during/after training | genome eval (#32/#98) |
+| `coding` | read, write, review, ship code as a team | the coder gym |
+| `live` | real-time voice, AIs hear humans AND each other | live mode (#286 beta gate) |
+| `terminal` | tmux-like multiplexer over AI shell sessions | — |
+| `multi-persona-chat` | organic multi-persona w/ resource management, BoW gating | relates #9, #168 |
+| `general-chat` | humans answered thoughtfully, **AI-to-AI loops avoided** | directly relevant to #264 |
+| `newsroom` | current events / world awareness for all personas | — |
+| `outreach` | social engagement + external presence | — |
+| `creative-writing` | one author holds the voice, advisors critique | — |
+| `canvas` | shared drawing, realtime collab + AI | — |
+| `browser` | web browsing with AI assistance | relates #93 |
+| `gan` | GAN training visualization | — |
+| `persona` | a persona's cognitive state, memory, activity | relates #184 |
+| `diagnostics`, `diagnostics-log`, `logs` | health, metrics, per-persona logs, AI-assisted debug | relates #235 |
+| `help` | help, documentation, onboarding | — |
+| `settings` | API keys, preferences, AI-assisted config | — |
+| `dm` | private 1:1 | — |
+| `chat`, `profile` | — | **already ported** |
+
+`general-chat`'s one-line description is worth reading twice given this session:
+*"Natural conversation where AIs respond to humans thoughtfully, avoiding AI-to-AI
+loops."* The avoid-the-loop requirement was recipe-level, authored, and lost — and
+we spent a night watching three citizens loop.
+
+**Also mine the old DESIGN docs for principles, not mechanisms.** `docs/activities/`
+carries RECIPE-SYSTEM-REQUIREMENTS, SCOPE-BASED-RECIPES, RECIPE-DRIVEN-INVENTION,
+RECIPE-LEARNING-DYNAMICS. The scope→training-data→LoRA→instant-expert loop in
+SCOPE-BASED-RECIPES is the reason per-activity scopes matter at all; it is why
+collapsing every run into one commons is destructive rather than merely untidy.
+
+**Port order:** the seven with open cards first — each retires re-derivation
+already underway — then the rest as appetite allows. Each port is a JSON file and
+a test that its purpose resolves. Zero Rust, by design.
