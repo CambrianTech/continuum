@@ -54,6 +54,7 @@ pub mod evaluator;
 pub mod focus;
 pub mod genome_paging;
 pub mod home;
+pub mod grid_overflow_effector;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;

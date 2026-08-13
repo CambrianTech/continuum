@@ -315,6 +315,27 @@ impl ModelFootprint {
         self.resident_bytes(served_window, lanes)
             .saturating_add(self.prefill_compute_reserve(served_window, lanes))
     }
+
+    /// The capacity-fabric [`LeaseRequest`](crate::capacity::LeaseRequest) for serving
+    /// this model at `served_window` with `demand_lanes` concurrent minds — the bridge
+    /// from the serving plan's MODEL-RESIDENCY view (weights + per-lane KV) to the grid's
+    /// CONCURRENCY-SPIKE view, so the grid can place overflow lanes onto peers (#180 spill).
+    /// `want_concurrency` = the minds that want a lane; `spike_bytes` = ONE lane's transient
+    /// prefill compute buffer at this window (the term the 2026-07-14 OOM turned on), so a
+    /// peer is only offered a spill lane it can actually hold. NOTE: this sizes the
+    /// CONCURRENCY spike only; a peer must ALSO already hold this model resident — that
+    /// residency gate is the gossip-side half (capacity::model_residency), NOT this pure map.
+    pub fn grid_lease_request(
+        &self,
+        served_window: u32,
+        demand_lanes: u32,
+    ) -> crate::capacity::LeaseRequest {
+        crate::capacity::LeaseRequest {
+            consumer: self.model_id.clone(),
+            want_concurrency: demand_lanes.max(1),
+            spike_bytes: self.prefill_compute_reserve(served_window, 1),
+        }
+    }
 }
 
 /// The serving decision for this host.

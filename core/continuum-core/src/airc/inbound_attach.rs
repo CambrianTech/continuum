@@ -323,6 +323,31 @@ pub async fn publish_transcript_event(
                 "first capacity offer heard from a grid peer",
             );
         }
+    } else if let Some(beacon) = residency_beacon_from_envelope(&envelope) {
+        // Residency beacon (grid-overflow eligibility): fold the heard beacon into the
+        // process-global residency ledger, keyed on the WIRE's peer id — the orthogonal
+        // sibling of the capacity fold above. Our own echo lands here too (the loopback
+        // proof that publish→hear works before a second node exists).
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let model_count = beacon.resident_models.len();
+        let is_new = crate::capacity::model_residency::global_residency_ledger().hear(
+            event.peer_id.as_uuid(),
+            beacon,
+            now_ms,
+        );
+        if is_new {
+            crate::probe!(
+                class = "grid.residency.heard",
+                from_peer = %event.peer_id.as_uuid(),
+                model_count = model_count,
+                heard_peers =
+                    crate::capacity::model_residency::global_residency_ledger().heard_count(),
+                "first residency beacon heard from a grid peer",
+            );
+        }
     } else if let Some((name, payload)) = chat_posted_from_envelope(&envelope, event) {
         crate::probe!(
             class = "airc.chat.projected",
@@ -395,6 +420,22 @@ fn capacity_offer_from_envelope(
         return None;
     };
     if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
+        return None;
+    }
+    serde_json::from_value(payload.inline.clone()?).ok()
+}
+
+/// Decode a `grid_residency` envelope's inline payload into a [`ResidencyBeacon`].
+/// Returns `None` for any other envelope — the residency sibling of
+/// [`capacity_offer_from_envelope`], same honest schema gate.
+fn residency_beacon_from_envelope(
+    envelope: &AircRealtimeEnvelope,
+) -> Option<crate::capacity::model_residency::ResidencyBeacon> {
+    let crate::airc::realtime::AircRealtimePayload::ExistingSchema { payload } = &envelope.payload
+    else {
+        return None;
+    };
+    if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridResidency {
         return None;
     }
     serde_json::from_value(payload.inline.clone()?).ok()
