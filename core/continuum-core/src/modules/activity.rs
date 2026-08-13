@@ -51,9 +51,7 @@ use ts_rs::TS;
 
 use airc_lib::Airc;
 
-use crate::experience::standing::{
-    project_standing, RoomStanding, STANDING_WALL_CATEGORY,
-};
+use crate::experience::standing::{project_standing, RoomStanding, STANDING_WALL_CATEGORY};
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
@@ -107,10 +105,21 @@ pub struct ActivitySpawnParams {
     /// the room everyone reuses forever.
     pub name: String,
 
-    /// Which recipe to build from — the `purpose` key of an authored recipe
-    /// (`chat`, `benchmark`, `video-chat`, `profile`, or anything dropped into the
-    /// recipes directory). The recipe decides the room's regions, verbs and layout;
-    /// this command only decides that a room exists and which recipe it follows.
+    /// Which recipe to build from — the EXACT `purpose` key of an authored recipe.
+    ///
+    /// Exact, because [`crate::experience::RecipeExperienceSource`] keys on the
+    /// literal string and an unknown purpose resolves to `None`. Family names do
+    /// not work: the authored benchmark recipe's purpose is `benchmark/hard-rs`,
+    /// so `benchmark` matches nothing and the room falls through to rendering as
+    /// plain chat. This doc used to list `chat, benchmark, video-chat, profile`
+    /// and that middle one was never real.
+    ///
+    /// Not enumerated here on purpose: recipes are DATA, overlaid from disk by
+    /// `builtins_with_overlay`, so any list in this comment is stale the moment
+    /// someone authors a new one. Read the catalogue instead.
+    ///
+    /// The recipe decides the room's regions, verbs and layout; this command only
+    /// decides that a room exists and which recipe it follows.
     pub recipe: String,
 
     /// Optional parent activity id — activities spawn activities, and the graph is
@@ -141,11 +150,34 @@ impl ActionCommand for ActivitySpawn {
     /// idea. It takes nothing from anyone — a new room is additive, and every
     /// destructive verb in this module is gated separately.
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    // The recipe names used to be listed inline here as "(chat, benchmark, …)".
+    // Two things were wrong with that. It NAMED A PURPOSE THAT DOES NOT EXIST —
+    // the authored recipe's purpose is `benchmark/hard-rs`, never `benchmark` —
+    // and `RecipeExperienceSource` keys on the exact string, with
+    // `unknown_purpose_yields_none` pinning that an unknown purpose resolves to
+    // None. So a caller following this description got a room bound to a purpose
+    // nothing can project, which (per the binding comment in `run`) then renders
+    // as a plain chat room. A benchmark run that silently becomes a chat room is
+    // precisely the academy failure.
+    //
+    // And a hardcoded list goes stale by construction: recipes are DATA, overlaid
+    // from disk by `builtins_with_overlay`, so the catalogue grows without
+    // touching this file. Naming members here re-hardcodes what the recipe loader
+    // exists to keep dynamic.
+    //
+    // So this points at the live catalogue instead of enumerating it. The real
+    // fix is one layer deeper and is NOT done: spawn does not VALIDATE that the
+    // recipe resolves, so any typo still mints a chat room silently — a fallback,
+    // in a subsystem whose own loader cites [[fallbacks-are-illegal-fail-loud]].
+    // That needs the experience source threaded to this command so it can refuse
+    // with the live `purposes()` list. Tracked on #274.
     const DESCRIPTION: &'static str =
         "Create a new room from a recipe. `name` is what people call this instance; \
-         `recipe` is which template to build from (chat, benchmark, …). Everything is \
-         a room — a chat, a benchmark run, a doc, a settings pane — so spawn one \
-         whenever an idea needs its own shared space. Returns the room_id.";
+         `recipe` is the `purpose` of an authored recipe — use the exact purpose \
+         string from the recipe catalogue (e.g. `benchmark/hard-rs`), not a family \
+         name. Everything is a room — a chat, a benchmark run, a doc, a settings \
+         pane — so spawn one whenever an idea needs its own shared space. \
+         Returns the room_id.";
     type Params = ActivitySpawnParams;
     type Output = ActivitySpawnResult;
 
