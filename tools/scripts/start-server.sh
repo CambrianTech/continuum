@@ -603,6 +603,36 @@ export CONTINUUM_MODELS_DIR="${CONTINUUM_MODELS_DIR:-$REPO_ROOT/tools/models}"
 echo "  models:   $CONTINUUM_MODELS_DIR"
 echo ""
 
+# PUBLISH the verified artifact to the installed location, the same way this script
+# already publishes the CLI a few dozen lines up — and for the identical reason.
+#
+# `continuum start` execs the INSTALLED continuum-core-server (building is reserved
+# for `reboot`), and its resolver checks ~/.continuum/bin BEFORE any cargo target
+# dir. That copy was written once by install.sh and never refreshed by a deploy, so
+# on a machine that has been deploying for a month, `continuum start` silently boots
+# a month-old core while the fresh build sits unused in the cache. Measured on the M5
+# on 2026-08-13: installed artifact dated Jul 13, running build 4705, HEAD 4712 — and
+# a stray auto-start off that stale copy mid-reboot is what tripped the #194 mismatch
+# and cost an hour of misreading.
+#
+# Publishing HERE (after the #194 freshness guard, before exec) means the installed
+# artifact is only ever replaced by a binary we just proved matches source — never a
+# half-built or stale one. Atomic temp+mv so a concurrent `continuum start` never
+# execs a half-written file. Non-fatal: failing to publish doesn't block this boot,
+# which runs $CORE_BIN directly either way.
+# [[managed-product-everything-self-provisions-no-operator-steps]], #194, #291
+CORE_INSTALL_DIR="$HOME/.continuum/bin"
+if mkdir -p "$CORE_INSTALL_DIR" 2>/dev/null; then
+  if cp "$CORE_BIN" "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" 2>/dev/null \
+     && mv -f "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" \
+              "$CORE_INSTALL_DIR/continuum-core-server" 2>/dev/null; then
+    echo "  installed: $CORE_INSTALL_DIR/continuum-core-server (refreshed from this build)"
+  else
+    rm -f "$CORE_INSTALL_DIR/continuum-core-server.tmp.$$" 2>/dev/null || true
+    echo "  ⚠ could not refresh $CORE_INSTALL_DIR/continuum-core-server — \`continuum start\` may boot an OLDER core than this one" >&2
+  fi
+fi
+
 # Run the EXACT binary the freshness guard (#194) just verified — NOT `cargo run`,
 # which re-runs cargo's build logic at launch and could second-guess (or re-stale)
 # what we already verified. We built it, we checked it reflects source, we run it.
