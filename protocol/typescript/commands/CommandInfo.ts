@@ -6,7 +6,7 @@
  */
 export type CommandInfo = { 
 /**
- * The command name — the routing key you call (`cu <name>`).
+ * The command name — the routing key you call (`uu <name>`).
  */
 name: string, 
 /**
@@ -29,6 +29,6 @@ paramsType: string,
  * The params' JSON Schema (derived from the Rust type), or `null` if the
  * command hasn't declared one yet. THE single source every SDK/interface
  * adapts from — CLI flags, web forms, mobile pickers, AI tool `input_schema`,
- * and `cu <cmd> --help`.
+ * and `uu <cmd> --help`.
  */
 paramsSchema: unknown, };

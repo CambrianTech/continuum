@@ -62,7 +62,7 @@ pub(crate) fn caller_id(ctx: &Ctx) -> String {
 }
 
 /// The caller id assigned when a command arrives with NO peer identity — the
-/// substrate-local operator (cu CLI, boot plumbing). The ONE caller whose
+/// substrate-local operator (uu CLI, boot plumbing). The ONE caller whose
 /// workspace is the core's own cwd; every identified peer gets a layer.
 pub(crate) const LOCAL_OWNER: &str = "local-owner";
 

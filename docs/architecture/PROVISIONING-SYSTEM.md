@@ -81,7 +81,7 @@ progress on the bus ([[observability-as-substrate]]). Written once; every
 
 ### 4. `Provisioner` — the orchestrator + the single command
 ```rust
-// cu provision  (or the core self-provisions on launch)
+// uu provision  (or the core self-provisions on launch)
 fn provision(need: &ProvisionPlan) -> ProvisionReport {
     // 1. prerequisites: check all → fail-loud on missing with the remedy
     // 2. artifacts: for each needed {model per persona/tier, avatar, voice, bin}

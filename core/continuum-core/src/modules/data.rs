@@ -695,7 +695,7 @@ impl DataState {
             // driving DataState::{vector_search,index_vector,vector_stats,
             // invalidate_vector_cache,backfill_vectors}. Each carries a real result
             // struct (VectorSearchResults / VectorStats / …) instead of an ad-hoc
-            // json! blob, so the persona surface, codegen, and cu see the shape.
+            // json! blob, so the persona surface, codegen, and uu see the shape.
 
             // migration/* fully migrated to typed ActionCommands (commands/migration/*,
             // contributed via DataModule::commands()); no legacy arm remains.

@@ -495,7 +495,7 @@ mod tests {
 
     // what this catches: the module contributes exactly the three typed airc
     // commands via commands() — the family the persona tool surface, the ACL,
-    // codegen, and cu all read from the one registry.
+    // codegen, and uu all read from the one registry.
     #[test]
     fn contributes_the_three_airc_commands() {
         let module = AircModule::with_queue_client(Arc::new(FakeQueueClient));
