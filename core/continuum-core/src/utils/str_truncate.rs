@@ -131,9 +131,9 @@ mod tests {
         // truncate_at_char_boundary must NOT panic. Pins the
         // contract that this primitive is total over all (s, n).
         let samples = [
-            "\u{1F44B} hello \u{1F30D}",       // emoji + ascii + emoji
-            "café résumé naïve",                 // accented latin
-            "日本語のテスト",                      // CJK
+            "\u{1F44B} hello \u{1F30D}", // emoji + ascii + emoji
+            "café résumé naïve",         // accented latin
+            "日本語のテスト",            // CJK
             "mixed 한국어 with English and emoji 🚀",
         ];
         for s in samples.iter() {

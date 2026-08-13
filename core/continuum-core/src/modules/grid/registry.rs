@@ -121,7 +121,10 @@ impl NodeRegistry {
         }
         let node_id = peer.to_string();
         let capabilities = match vram_mb {
-            Some(mb) => vec![super::node::NodeCapability::Compute { gpu: None, vram_mb: Some(mb) }],
+            Some(mb) => vec![super::node::NodeCapability::Compute {
+                gpu: None,
+                vram_mb: Some(mb),
+            }],
             None => vec![],
         };
         let mut created = false;
@@ -328,9 +331,18 @@ mod tests {
         registry.set_peer_id("100.9.9.9", peer).expect("known node");
 
         // Now the router can find the node by its DURABLE identity — the #2228 join.
-        let found = registry.get_by_peer(&peer).expect("node resolves by PeerId");
-        assert_eq!(found.node_id, "100.9.9.9", "same node, now reachable by its durable id");
-        assert_eq!(found.peer_id, Some(peer), "and it carries the durable identity");
+        let found = registry
+            .get_by_peer(&peer)
+            .expect("node resolves by PeerId");
+        assert_eq!(
+            found.node_id, "100.9.9.9",
+            "same node, now reachable by its durable id"
+        );
+        assert_eq!(
+            found.peer_id,
+            Some(peer),
+            "and it carries the durable identity"
+        );
 
         // Correlating an UNKNOWN node fails loud — never silently invents a node.
         let ghost = PeerId::from_uuid(uuid::Uuid::from_u128(0xdead));
@@ -353,10 +365,18 @@ mod tests {
         let registry = NodeRegistry::new(&dir);
         let peer = PeerId::from_uuid(uuid::Uuid::from_u128(0xbeac04));
 
-        assert!(registry.get_by_peer(&peer).is_none(), "unknown before any beacon");
-        assert!(registry.ensure_peer_node(peer, Some(32768)), "first beacon self-registers the peer");
+        assert!(
+            registry.get_by_peer(&peer).is_none(),
+            "unknown before any beacon"
+        );
+        assert!(
+            registry.ensure_peer_node(peer, Some(32768)),
+            "first beacon self-registers the peer"
+        );
 
-        let node = registry.get_by_peer(&peer).expect("now routable by durable identity");
+        let node = registry
+            .get_by_peer(&peer)
+            .expect("now routable by durable identity");
         assert_eq!(node.peer_id, Some(peer));
         // NOT `!= Owner`. That also passes at Trusted, which is the exact bar
         // `router::find_gpu_node` admits compute candidates on — so the weaker form
@@ -367,9 +387,15 @@ mod tests {
             "a beaconing stranger must not clear the router's admission bar — \
              discovery is not authorization"
         );
-        assert!(!node.capabilities.is_empty(), "carries the beacon's advertised compute");
+        assert!(
+            !node.capabilities.is_empty(),
+            "carries the beacon's advertised compute"
+        );
 
-        assert!(!registry.ensure_peer_node(peer, Some(32768)), "a re-beacon from the same peer is a no-op");
+        assert!(
+            !registry.ensure_peer_node(peer, Some(32768)),
+            "a re-beacon from the same peer is a no-op"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -44,7 +44,10 @@ use crate::sdk_codegen::CommandError;
 
 /// Which persona's citizen publishes the post, and the post itself.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaWallPinParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaWallPinParams.ts"
+)]
 pub struct PersonaWallPinParams {
     /// The persona (airc peer_id Uuid, as in `persona/instances/list`) whose
     /// citizen publishes the post. The post lands on that citizen's current
@@ -67,7 +70,10 @@ pub struct PersonaWallPinParams {
 
 /// The published post's identity, echoed so the caller can later supersede it.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaWallPinResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaWallPinResult.ts"
+)]
 pub struct PersonaWallPinResult {
     /// The new post's `post_id` — pass this back as `supersedes` to edit it.
     pub post_id: String,

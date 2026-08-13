@@ -435,30 +435,26 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         None,
         cfg.context_window,
     );
-    let mut deliberation = LlmDeliberationFaculty::new(
-        cfg.persona_id,
-        cfg.persona_name,
-        cfg.system_prompt,
-        adapter,
-    )
-    .with_working_memory(Arc::clone(&working_memory))
-    .with_genome(Arc::clone(&genome))
-    .with_decoding(Arc::clone(&decoding))
-    .with_model_binding(Arc::clone(&model_binding))
-    // Every mind reports what its turns actually COST into the shared registry the
-    // serving daemon provisions the window from. Without this line the measurement
-    // exists and reaches nobody, and `serving_plan` falls back to the cold-start
-    // constant forever — the exact shape of defect that left every citizen thinking
-    // in 8192 tokens of a 128k model. [[wire-it-into-the-default-path]]
-    .with_working_set({
-        // Re-adopt her measured window demand BEFORE her first turn, so a restart
-        // is a pause and not a demotion — without this the reboot drops her back to
-        // the cold-start window until enough turns re-measure (observed live
-        // 2026-08-06: a measured 24,126 fell to 16,384 across one reboot).
-        let ws = crate::cognition::working_set::global();
-        ws.rehydrate(cfg.persona_id);
-        ws
-    });
+    let mut deliberation =
+        LlmDeliberationFaculty::new(cfg.persona_id, cfg.persona_name, cfg.system_prompt, adapter)
+            .with_working_memory(Arc::clone(&working_memory))
+            .with_genome(Arc::clone(&genome))
+            .with_decoding(Arc::clone(&decoding))
+            .with_model_binding(Arc::clone(&model_binding))
+            // Every mind reports what its turns actually COST into the shared registry the
+            // serving daemon provisions the window from. Without this line the measurement
+            // exists and reaches nobody, and `serving_plan` falls back to the cold-start
+            // constant forever — the exact shape of defect that left every citizen thinking
+            // in 8192 tokens of a 128k model. [[wire-it-into-the-default-path]]
+            .with_working_set({
+                // Re-adopt her measured window demand BEFORE her first turn, so a restart
+                // is a pause and not a demotion — without this the reboot drops her back to
+                // the cold-start window until enough turns re-measure (observed live
+                // 2026-08-06: a measured 24,126 fell to 16,384 across one reboot).
+                let ws = crate::cognition::working_set::global();
+                ws.rehydrate(cfg.persona_id);
+                ws
+            });
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -599,7 +595,8 @@ fn repoint_workspace_map_if_pinned(
         if g.source.source_id() == "workspace-map" {
             let pinned: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
                 crate::persona::workspace_map_source::WorkspaceMapSource::for_pinned_root(
-                    *persona_id, root,
+                    *persona_id,
+                    root,
                 ),
             );
             // Event-invalidated cache (#398): eval forks compose SYNCHRONOUSLY
@@ -737,8 +734,14 @@ pub(crate) async fn root_acting_workspace(
                 .to_string(),
         )
     })?;
-    drive_create_workspace(&hands, root, path_prepend, "root-acting-workspace", refuse_inert_edits)
-        .await?;
+    drive_create_workspace(
+        &hands,
+        root,
+        path_prepend,
+        "root-acting-workspace",
+        refuse_inert_edits,
+    )
+    .await?;
     crate::probe!(
         class = "workspace.rooted",
         persona = %hands.persona_name,
@@ -787,12 +790,9 @@ pub(crate) async fn restore_persona_workspace(
     persona: &PersonaRef,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     let persona_id = persona.as_str();
-    let uuid = crate::id_resolve::resolve(
-        persona_id.trim(),
-        &crate::persona::card::ids(),
-        "persona",
-    )
-    .map_err(crate::sdk_codegen::CommandError::Invalid)?;
+    let uuid =
+        crate::id_resolve::resolve(persona_id.trim(), &crate::persona::card::ids(), "persona")
+            .map_err(crate::sdk_codegen::CommandError::Invalid)?;
     let cycle = global().get(&uuid).ok_or_else(|| {
         crate::sdk_codegen::CommandError::NotFound(format!(
             "persona {uuid} is not resident — cannot return her hands to her own workspace"
@@ -926,9 +926,7 @@ impl PersonaWorkspaceRegistry {
         let persona_id = cfg.persona_id;
         // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock();
-        self.templates
-            .lock()
-            .insert(persona_id, cfg.clone());
+        self.templates.lock().insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
         cycle
@@ -945,9 +943,7 @@ impl PersonaWorkspaceRegistry {
         if let Some(existing) = cycles.get(&persona_id) {
             return existing.clone();
         }
-        self.templates
-            .lock()
-            .insert(persona_id, cfg.clone());
+        self.templates.lock().insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
         cycle
@@ -1079,7 +1075,11 @@ impl PersonaWorkspaceRegistry {
     pub fn reflector_handles(
         &self,
         persona_id: &Uuid,
-    ) -> Option<(Arc<AdmissionState>, Arc<dyn AIProviderAdapter>, Option<String>)> {
+    ) -> Option<(
+        Arc<AdmissionState>,
+        Arc<dyn AIProviderAdapter>,
+        Option<String>,
+    )> {
         // Lock order contract: `cycles` THEN `templates` (see struct docs).
         // `get` takes + releases the cycles lock before we touch templates.
         let cycle = self.get(persona_id)?;
@@ -1315,12 +1315,20 @@ mod tests {
         );
         // 8-char short-id prefix
         assert_eq!(
-            registry.resolve_persona(&asha.to_string()[..8].into()).unwrap(),
+            registry
+                .resolve_persona(&asha.to_string()[..8].into())
+                .unwrap(),
             PeerId::from_uuid(asha)
         );
         // case-insensitive name
-        assert_eq!(registry.resolve_persona(&"atlas".into()).unwrap(), PeerId::from_uuid(atlas));
-        assert_eq!(registry.resolve_persona(&"ASHA".into()).unwrap(), PeerId::from_uuid(asha));
+        assert_eq!(
+            registry.resolve_persona(&"atlas".into()).unwrap(),
+            PeerId::from_uuid(atlas)
+        );
+        assert_eq!(
+            registry.resolve_persona(&"ASHA".into()).unwrap(),
+            PeerId::from_uuid(asha)
+        );
 
         // (b) a well-formed but NON-live full UUID passes through — race safety. The
         // caller's fork wait, not this boundary, decides liveness.
@@ -1332,7 +1340,10 @@ mod tests {
 
         // (c) garbage fails loud AND names the roster so the operator can fix it.
         let err = registry.resolve_persona(&"general".into()).unwrap_err();
-        assert!(err.contains("Asha") && err.contains("Atlas"), "roster hint missing: {err}");
+        assert!(
+            err.contains("Asha") && err.contains("Atlas"),
+            "roster hint missing: {err}"
+        );
     }
 
     // what this catches: ONE cycle per persona — get_or_build is idempotent and
@@ -1524,15 +1535,15 @@ mod tests {
             "classify-stub"
         }
 
-    fn expand_command(&self) -> Option<&'static str> {
-        // Test/stub source — nothing further to fetch.
-        None
-    }
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
 
-    /// Test/stub source — floorless, so it never encodes a production floor.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
+        }
         async fn deliver(
             &self,
             _ctx: &crate::persona::rag_budget::RagContext,
@@ -1615,15 +1626,15 @@ mod tests {
                 "workspace-map"
             }
 
-    fn expand_command(&self) -> Option<&'static str> {
-        // Test/stub source — nothing further to fetch.
-        None
-    }
+            fn expand_command(&self) -> Option<&'static str> {
+                // Test/stub source — nothing further to fetch.
+                None
+            }
 
-    /// Test/stub source — floorless, so it never encodes a production floor.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
+            /// Test/stub source — floorless, so it never encodes a production floor.
+            fn floor_tokens(&self) -> u32 {
+                0
+            }
             async fn deliver(
                 &self,
                 _ctx: &crate::persona::rag_budget::RagContext,
@@ -1731,15 +1742,15 @@ mod tests {
             "slow-grounding"
         }
 
-    fn expand_command(&self) -> Option<&'static str> {
-        // Test/stub source — nothing further to fetch.
-        None
-    }
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
 
-    /// Test/stub source — floorless, so it never encodes a production floor.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
+        }
         async fn deliver(
             &self,
             _ctx: &crate::persona::rag_budget::RagContext,
@@ -1866,9 +1877,9 @@ mod tests {
             let executor = Arc::new(CommandExecutor::new(registry));
             let transport = InProcessTransport::new(
                 executor,
-                Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(
-                    persona,
-                ))),
+                Some(CallerIdentity::local_persona(
+                    crate::identity::PeerId::from_uuid(persona),
+                )),
             );
             ActingHands {
                 persona_id: persona,

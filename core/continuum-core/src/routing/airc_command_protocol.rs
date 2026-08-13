@@ -70,11 +70,9 @@ mod tests {
     fn from_route_decision_peer_packages_correctly() {
         let decision =
             route(&CommandUri::parse("airc://maya/inference/llm/generate").expect("parse"));
-        let req = command_request_from_route_decision(
-            &decision,
-            serde_json::json!({"prompt": "hi"}),
-        )
-        .expect("peer dec produces wire request");
+        let req =
+            command_request_from_route_decision(&decision, serde_json::json!({"prompt": "hi"}))
+                .expect("peer dec produces wire request");
         assert_eq!(req.path, "inference/llm/generate");
         assert_eq!(req.kind, "peer");
         assert_eq!(req.env, None);
@@ -102,8 +100,7 @@ mod tests {
 
     #[test]
     fn from_route_decision_broadcast_packages_correctly() {
-        let decision =
-            route(&CommandUri::parse("airc://maya:*/notification/send").expect("parse"));
+        let decision = route(&CommandUri::parse("airc://maya:*/notification/send").expect("parse"));
         let req = command_request_from_route_decision(&decision, Value::Null)
             .expect("broadcast dec produces wire request");
         assert_eq!(req.kind, "broadcast");

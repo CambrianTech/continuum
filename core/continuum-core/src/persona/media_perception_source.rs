@@ -168,7 +168,10 @@ mod tests {
     use std::io::Cursor;
     use uuid::Uuid;
 
-    const AMBIENT: DestSize = DestSize { width: 32, height: 24 };
+    const AMBIENT: DestSize = DestSize {
+        width: 32,
+        height: 24,
+    };
 
     fn png(w: u32, h: u32) -> Vec<u8> {
         let img = RgbaImage::from_fn(w, h, |x, _| {
@@ -195,16 +198,23 @@ mod tests {
 
     /// Store `alice` with her cells RESOLVED on `compute` (deterministic; in prod the
     /// observe spawn warms them async). Returns (source, ctx, compute).
-    async fn source_with_resolved_alice(
-        pid: Uuid,
-    ) -> (MediaPerceptionSource, Arc<SharedCompute>) {
+    async fn source_with_resolved_alice(pid: Uuid) -> (MediaPerceptionSource, Arc<SharedCompute>) {
         let compute = Arc::new(SharedCompute::new());
         let buffer = Arc::new(PerceptionBuffer::new(AMBIENT));
         let describer: Arc<dyn FrameDescriber> = Arc::new(StubDescriber);
         let frame = MediaFrame::from_bytes(png(60, 40));
         frame.scaled(&compute, None, AMBIENT).await;
-        frame.description(&compute, &StubDescriber, "image/png").await;
-        buffer.observe("alice-peer".into(), frame, compute.clone(), describer, "image/png", 0);
+        frame
+            .description(&compute, &StubDescriber, "image/png")
+            .await;
+        buffer.observe(
+            "alice-peer".into(),
+            frame,
+            compute.clone(),
+            describer,
+            "image/png",
+            0,
+        );
         (
             MediaPerceptionSource::new(pid, buffer, compute.clone()),
             compute,
@@ -222,16 +232,28 @@ mod tests {
 
         let d = src.deliver(&ctx, 10_000, ResolutionPreference::Raw).await;
         assert_eq!(d.items.len(), 1, "one resolved participant → one item");
-        assert!(d.items[0].content.contains("seeing"), "grounds who is seen: {}", d.items[0].content);
+        assert!(
+            d.items[0].content.contains("seeing"),
+            "grounds who is seen: {}",
+            d.items[0].content
+        );
         assert!(d.tokens_used > 0);
         assert!(d.continuation.is_none(), "room-as-now, never paginated");
 
         // Cross-persona → empty (defense in depth).
         let other = RagContext::for_persona(Uuid::new_v4(), 0);
-        assert!(src.deliver(&other, 10_000, ResolutionPreference::Raw).await.items.is_empty());
+        assert!(src
+            .deliver(&other, 10_000, ResolutionPreference::Raw)
+            .await
+            .items
+            .is_empty());
 
         // Zero budget → nothing (must NOT dominate context).
-        assert!(src.deliver(&ctx, 0, ResolutionPreference::Raw).await.items.is_empty());
+        assert!(src
+            .deliver(&ctx, 0, ResolutionPreference::Raw)
+            .await
+            .items
+            .is_empty());
     }
 
     // what this catches: NON-BLOCKING — a participant whose cells haven't resolved yet is
@@ -255,6 +277,9 @@ mod tests {
         let src = MediaPerceptionSource::new(pid, buffer, compute);
         let ctx = RagContext::for_persona(pid, 0);
         let d = src.deliver(&ctx, 10_000, ResolutionPreference::Raw).await;
-        assert!(d.items.is_empty(), "unresolved participant is absent this tick, not awaited");
+        assert!(
+            d.items.is_empty(),
+            "unresolved participant is absent this tick, not awaited"
+        );
     }
 }

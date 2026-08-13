@@ -113,9 +113,22 @@ pub use airc_core::PeerId;
 /// Wire shape is unchanged — `#[serde(transparent)]` over the string a caller
 /// already sends, so no client, recipe, or stored payload has to change.
 #[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    TS,
+    schemars::JsonSchema,
 )]
-#[ts(export, export_to = "../../../protocol/typescript/identity/PersonaRef.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/identity/PersonaRef.ts"
+)]
 #[serde(transparent)]
 #[schemars(description = "A persona reference: full UUID, 8-char short-id, or name")]
 pub struct PersonaRef(pub String);
@@ -193,13 +206,23 @@ mod loose_id_guard {
     /// Identity-shaped field names. A `String` here is what gets audited; anything
     /// else in the crate is out of scope on purpose.
     const ID_NAMES: &[&str] = &[
-        "persona_id", "room_id", "user_id", "card_id", "peer_id", "context_id",
-        "session_id", "message_id", "actor_id", "owner_id", "author_id",
-        "sender_id", "citizen_id", "agent_id",
+        "persona_id",
+        "room_id",
+        "user_id",
+        "card_id",
+        "peer_id",
+        "context_id",
+        "session_id",
+        "message_id",
+        "actor_id",
+        "owner_id",
+        "author_id",
+        "sender_id",
+        "citizen_id",
+        "agent_id",
     ];
 
     const LOOSE_IDS: &[LooseId] = &[
-        LooseId { file: "airc/realtime.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
         LooseId { file: "code/file_engine.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "code/shell_session.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "code/shell_types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
@@ -221,8 +244,6 @@ mod loose_id_guard {
         LooseId { file: "commands/memory/multi_layer_recall.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "commands/memory/recall_hook.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "commands/persona/wall/pin.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "commands/persona_roster.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
-        LooseId { file: "experience/mod.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
         LooseId { file: "ipc/protocol.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
         LooseId { file: "ipc/protocol.rs", field: "sender_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
         LooseId { file: "ipc/stream_rail.rs", field: "room_id", why: "pending: airc wire id, arrives as text from the daemon. Types when the airc-side ids do — #396" },
@@ -243,7 +264,6 @@ mod loose_id_guard {
         LooseId { file: "memory/types.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/activity.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/rag.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "modules/room.rs", field: "peer_id", why: "defect: this IS PeerId. Conversion started 2026-08-13 and was reverted — PeerId lacks JsonSchema and the construction sites hold &str. #396" },
         LooseId { file: "modules/room.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/sentinel/escalation.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/work.rs", field: "card_id", why: "pending: airc work-card id. Needs a CardRef/CardId split with airc's own resolver — #164" },
@@ -276,7 +296,9 @@ mod loose_id_guard {
 
     fn rs_files() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -329,9 +351,7 @@ mod loose_id_guard {
         let mut undeclared: Vec<String> = Vec::new();
         for (file, src) in rs_files() {
             for field in loose_id_fields(&src) {
-                let declared = LOOSE_IDS
-                    .iter()
-                    .any(|d| d.file == file && d.field == field);
+                let declared = LOOSE_IDS.iter().any(|d| d.file == file && d.field == field);
                 if !declared {
                     undeclared.push(format!("{file}: {field}"));
                 }
@@ -360,9 +380,9 @@ mod loose_id_guard {
         let files = rs_files();
         let mut stale: Vec<String> = Vec::new();
         for decl in LOOSE_IDS {
-            let still_loose = files.iter().any(|(file, src)| {
-                file == decl.file && loose_id_fields(src).contains(&decl.field)
-            });
+            let still_loose = files
+                .iter()
+                .any(|(file, src)| file == decl.file && loose_id_fields(src).contains(&decl.field));
             if !still_loose {
                 stale.push(format!("{}: {}", decl.file, decl.field));
             }
@@ -392,7 +412,9 @@ mod loose_id_guard {
             assert!(
                 decl.why.len() > 40,
                 "{}: {} — reason is too thin to be a decision: {:?}",
-                decl.file, decl.field, decl.why
+                decl.file,
+                decl.field,
+                decl.why
             );
         }
     }
@@ -408,7 +430,10 @@ mod loose_id_guard {
 /// first-class substrate citizen; none is "second-class" or "for
 /// internal use."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/identity/IdentityKind.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/identity/IdentityKind.ts"
+)]
 pub enum IdentityKind {
     /// An autonomous persona — has a name, cognition pipeline,
     /// engrams, optional LoRA genome. Bootstraps via
@@ -446,7 +471,10 @@ pub enum IdentityKind {
 /// the universal-kind shape — same enum now applies to every
 /// `IdentityKind`, not just `Persona`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/identity/IdentitySource.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/identity/IdentitySource.ts"
+)]
 pub enum IdentitySource {
     /// Rehydrated from a prior session — keypair loaded from
     /// `home_path/identity.key`, ORM row already existed.
@@ -469,7 +497,10 @@ pub enum IdentitySource {
 /// the struct only declares the kind-specific fields.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, Entity)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/identity/Identity.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/identity/Identity.ts"
+)]
 #[entity(collection = "identities")]
 pub struct Identity {
     /// Primary key AND airc peer_id. The substrate makes no
@@ -550,8 +581,7 @@ mod tests {
     fn identity_schema_is_derived() {
         let schema = Identity::collection_schema();
         assert_eq!(schema.collection, "identities");
-        let field_names: Vec<&str> =
-            schema.fields.iter().map(|f| f.name.as_str()).collect();
+        let field_names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
         // BaseEntity columns auto-injected by the derive when
         // `#[entity(primary_key)]` is on `id: Uuid`.
         assert!(field_names.contains(&"id"), "id missing");
@@ -563,7 +593,10 @@ mod tests {
         assert!(field_names.contains(&"homePath"), "homePath missing");
         assert!(field_names.contains(&"defaultRoom"), "defaultRoom missing");
         assert!(field_names.contains(&"source"), "source missing");
-        assert!(field_names.contains(&"agentProvider"), "agentProvider missing");
+        assert!(
+            field_names.contains(&"agentProvider"),
+            "agentProvider missing"
+        );
     }
 
     /// Identity round-trips through OrmStore: save, find-by-id,
@@ -623,11 +656,17 @@ mod tests {
         // predicate-pushdown layer lands, this becomes a single
         // filter_eq call; until then this proves the data is there
         // and decodable.
-        let personas: Vec<_> = all.iter().filter(|(_, i)| i.kind == IdentityKind::Persona).collect();
+        let personas: Vec<_> = all
+            .iter()
+            .filter(|(_, i)| i.kind == IdentityKind::Persona)
+            .collect();
         assert_eq!(personas.len(), 1);
         assert_eq!(personas[0].1.agent_name, "Maya");
 
-        let agents: Vec<_> = all.iter().filter(|(_, i)| i.kind == IdentityKind::Agent).collect();
+        let agents: Vec<_> = all
+            .iter()
+            .filter(|(_, i)| i.kind == IdentityKind::Agent)
+            .collect();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].1.agent_name, "claude-session-X");
         assert_eq!(agents[0].1.agent_provider.as_deref(), Some("claude"));

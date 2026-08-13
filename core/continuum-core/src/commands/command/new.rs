@@ -24,7 +24,10 @@ use crate::sdk_codegen::{CommandError, Ctx};
 /// Params for `command/new`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/command/CommandNewParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/command/CommandNewParams.ts"
+)]
 pub struct CommandNewParams {
     /// The wire name to create, e.g. `data/list` or `code/git/status`. The file path
     /// and struct name are derived from it (path == namespace).
@@ -63,7 +66,10 @@ pub struct CommandNewParams {
 /// Result of `command/new`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/command/CommandNewResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/command/CommandNewResult.ts"
+)]
 pub struct CommandNewResult {
     /// The wire name created.
     pub name: String,
@@ -221,16 +227,25 @@ mod tests {
         assert!(body.contains("name: \"demo/echo\","));
         // The stateless unit-struct form (no `{ state: ... }`) — `action_command!`
         // expands this to `register_stateless_command!`, wiring descriptor + object.
-        assert!(body.contains("pub struct DemoEcho;"), "stateless unit-struct form");
+        assert!(
+            body.contains("pub struct DemoEcho;"),
+            "stateless unit-struct form"
+        );
         assert!(body.contains("crate::action_command! {"));
 
         // Root mod.rs gained `pub mod demo;`, new category mod.rs has `pub mod echo;`.
         let root_mod = std::fs::read_to_string(commands.join("mod.rs")).unwrap();
         assert!(root_mod.contains("pub mod demo;"), "root wired: {root_mod}");
         let cat_mod = std::fs::read_to_string(commands.join("demo/mod.rs")).unwrap();
-        assert!(cat_mod.contains("pub mod echo;"), "category wired: {cat_mod}");
+        assert!(
+            cat_mod.contains("pub mod echo;"),
+            "category wired: {cat_mod}"
+        );
 
-        assert!(res.next_steps.iter().any(|s| s.contains("Fill the `run` body")));
+        assert!(res
+            .next_steps
+            .iter()
+            .any(|s| s.contains("Fill the `run` body")));
 
         std::fs::remove_dir_all(&tmp).ok();
     }

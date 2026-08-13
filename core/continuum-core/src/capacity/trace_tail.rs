@@ -215,8 +215,7 @@ impl MoeTraceTail {
                 // (no baseline) — honest None, never a fake 100%.
                 if let Some(prev) = self.prev_token_set.take() {
                     let prev_set: HashSet<ExpertId> = prev.iter().copied().collect();
-                    let repeats =
-                        experts.iter().filter(|e| prev_set.contains(e)).count() as u64;
+                    let repeats = experts.iter().filter(|e| prev_set.contains(e)).count() as u64;
                     self.repeat_hits += repeats;
                     self.repeat_total += experts.len() as u64;
                     if let Some(pred) = self.predicted_delta.take() {
@@ -232,14 +231,16 @@ impl MoeTraceTail {
                     self.predictor.predict(&experts).into_iter().collect();
                 scored.sort_by(|a, b| b.1.total_cmp(&a.1));
                 self.predicted_delta = Some(
-                    scored.into_iter().take(experts.len()).map(|(e, _)| e).collect(),
+                    scored
+                        .into_iter()
+                        .take(experts.len())
+                        .map(|(e, _)| e)
+                        .collect(),
                 );
                 self.prev_token_set = Some(experts.clone());
 
                 let ctl = self.controller.get_or_insert_with(|| {
-                    BanditPlanController::new(
-                        experts.len() * BUDGET_FACTOR_NUM / BUDGET_FACTOR_DEN,
-                    )
+                    BanditPlanController::new(experts.len() * BUDGET_FACTOR_NUM / BUDGET_FACTOR_DEN)
                 });
                 ctl.observe_token(&experts);
                 self.tokens_observed += 1;
@@ -291,8 +292,7 @@ impl MoeTraceTail {
         let Some(prev) = &self.prev_token_set else {
             return Vec::new();
         };
-        let mut scored: Vec<(ExpertId, f32)> =
-            self.predictor.predict(prev).into_iter().collect();
+        let mut scored: Vec<(ExpertId, f32)> = self.predictor.predict(prev).into_iter().collect();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.into_iter().take(top_n).map(|(e, _)| e).collect()
     }
@@ -372,8 +372,9 @@ mod tests {
         let pins = tail.pin_list(8);
         assert!(!pins.is_empty());
         assert!(
-            pins.iter().all(|p| (p.layer == 0 && (p.expert == 3 || p.expert == 7))
-                || (p.layer == 1 && p.expert == 9)),
+            pins.iter()
+                .all(|p| (p.layer == 0 && (p.expert == 3 || p.expert == 7))
+                    || (p.layer == 1 && p.expert == 9)),
             "pins must be token A's (layer, expert) set, got {pins:?}"
         );
 
@@ -403,7 +404,10 @@ mod tests {
             tail.tokens_observed, 0,
             "reset: no tokens counted from the fresh open stream yet"
         );
-        assert!(tail.pin_list(8).is_empty(), "stale pins do not survive a new serve");
+        assert!(
+            tail.pin_list(8).is_empty(),
+            "stale pins do not survive a new serve"
+        );
     }
 
     // what this catches: a geometry change (different model) rebuilds
@@ -442,7 +446,11 @@ mod tests {
         std::fs::write(&trace, &buf).expect("write");
         tail.drain(&trace);
         assert!(tail.tokens_observed >= 3);
-        assert_eq!(tail.repeat_recall_x100(), Some(100), "identical tokens = pure recency");
+        assert_eq!(
+            tail.repeat_recall_x100(),
+            Some(100),
+            "identical tokens = pure recency"
+        );
         assert_eq!(
             tail.schedulable_coverage_x100(),
             Some(100),
@@ -460,7 +468,11 @@ mod tests {
         }
         std::fs::write(&trace2, &buf2).expect("write");
         tail2.drain(&trace2);
-        assert_eq!(tail2.repeat_recall_x100(), Some(0), "disjoint tokens = zero recency");
+        assert_eq!(
+            tail2.repeat_recall_x100(),
+            Some(0),
+            "disjoint tokens = zero recency"
+        );
         let delta = tail2
             .predicted_delta_recall_x100()
             .expect("delta scored after warmup");
@@ -468,7 +480,10 @@ mod tests {
             delta >= 50,
             "predictor must learn the alternation (measured {delta}), covering what recency can't"
         );
-        assert!(tail2.predicted_next(4).len() > 0, "a live next-delta prediction exists");
+        assert!(
+            tail2.predicted_next(4).len() > 0,
+            "a live next-delta prediction exists"
+        );
     }
 
     // what this catches: the pin ceiling is HALF the lease over real
@@ -490,10 +505,14 @@ mod tests {
     // a real routing sample, not a synthetic invariant); run with --nocapture to read it.
     #[test]
     fn k3_fixture_measured_schedulable_coverage() {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/architecture/prototypes/expert-pager/fixtures/k3-routed-access.trace");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../docs/architecture/prototypes/expert-pager/fixtures/k3-routed-access.trace",
+        );
         if !fixture.is_file() {
-            eprintln!("[K3-COVERAGE] fixture absent ({}), skipping", fixture.display());
+            eprintln!(
+                "[K3-COVERAGE] fixture absent ({}), skipping",
+                fixture.display()
+            );
             return;
         }
         let mut tail = MoeTraceTail::new(92); // K3: 92 MoE layers

@@ -192,7 +192,11 @@ mod tests {
     #[test]
     fn expired_pinned_lease_is_reclaimable_first() {
         let leases = [
-            lease("expired-pinned", 150, ThroughputLeaseRevocationPolicy::Pinned),
+            lease(
+                "expired-pinned",
+                150,
+                ThroughputLeaseRevocationPolicy::Pinned,
+            ),
             lease("fresh-hard", 9_999, ThroughputLeaseRevocationPolicy::Hard),
         ];
         let map = bytes(&[("expired-pinned", 400), ("fresh-hard", 400)]);
@@ -207,7 +211,11 @@ mod tests {
     /// None (escalate), never "revoke the pinned lease".
     #[test]
     fn active_pinned_lease_never_selected() {
-        let leases = [lease("pinned", 9_999, ThroughputLeaseRevocationPolicy::Pinned)];
+        let leases = [lease(
+            "pinned",
+            9_999,
+            ThroughputLeaseRevocationPolicy::Pinned,
+        )];
         let map = bytes(&[("pinned", 1_000)]);
         assert_eq!(
             select_leases_to_revoke(&leases, &map, PressureTier::Critical, 100, 500),
@@ -222,7 +230,11 @@ mod tests {
     /// the slightest pressure.
     #[test]
     fn warning_tier_excludes_active_graceful_high_includes_it() {
-        let leases = [lease("graceful", 9_999, ThroughputLeaseRevocationPolicy::Graceful)];
+        let leases = [lease(
+            "graceful",
+            9_999,
+            ThroughputLeaseRevocationPolicy::Graceful,
+        )];
         let map = bytes(&[("graceful", 1_000)]);
         assert_eq!(
             select_leases_to_revoke(&leases, &map, PressureTier::Warning, 100, 500),
@@ -243,7 +255,11 @@ mod tests {
     #[test]
     fn hard_drained_before_graceful() {
         let leases = [
-            lease("graceful-big", 9_999, ThroughputLeaseRevocationPolicy::Graceful),
+            lease(
+                "graceful-big",
+                9_999,
+                ThroughputLeaseRevocationPolicy::Graceful,
+            ),
             lease("hard-small", 9_999, ThroughputLeaseRevocationPolicy::Hard),
         ];
         let map = bytes(&[("graceful-big", 900), ("hard-small", 600)]);

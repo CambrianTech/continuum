@@ -88,15 +88,14 @@ fn parse_qwen_metadata_from_content(
     // architecture: required (same posture as backends::read_gguf_metadata).
     // Read through the ONE shared canonical-key reader; this consumer's
     // policy is "refuse if absent".
-    let architecture = crate::inference_capability::gguf_keys::architecture(content).ok_or_else(
-        || {
+    let architecture =
+        crate::inference_capability::gguf_keys::architecture(content).ok_or_else(|| {
             format!(
                 "GGUF {} is missing required 'general.architecture' — refuse rather than \
                  guess. Same rule as backends::read_gguf_metadata (Joel 2026-04-23).",
                 path.display()
             )
-        },
-    )?;
+        })?;
 
     // model_name: optional; fall back to file stem (recoverable, doesn't
     // affect gate correctness; only display).
@@ -108,13 +107,13 @@ fn parse_qwen_metadata_from_content(
     // evidence is missing — refuse rather than fake.
     let layer_count = crate::inference_capability::gguf_keys::block_count(content, &architecture)
         .ok_or_else(|| {
-            format!(
-                "GGUF {} (arch={architecture}) is missing required '{architecture}.block_count' \
+        format!(
+            "GGUF {} (arch={architecture}) is missing required '{architecture}.block_count' \
                  — residency gate cannot report gpu_layer_count without it. Refuse rather \
                  than guess.",
-                path.display()
-            )
-        })?;
+            path.display()
+        )
+    })?;
 
     // file_type: required. Maps to bytes_per_parameter. Unknown enum
     // value returns Err — better to refuse than guess wrong quantization

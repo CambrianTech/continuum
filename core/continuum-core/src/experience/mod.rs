@@ -326,7 +326,8 @@ pub enum ProofSpec {
 pub struct Member {
     /// The canonical who — the airc `PeerId`, stringified for the wire
     /// (`[[identity-context-session-three-axes]]`).
-    pub peer_id: String,
+    #[ts(type = "string")]
+    pub peer_id: crate::identity::PeerId,
     /// This participant's structural role in *this* room.
     pub standing: Standing,
 }
@@ -363,16 +364,19 @@ pub enum Standing {
 /// examinee/owner roster. `who_may` on the observe affordance is COMPUTED from the
 /// ACL at projection, never authored. This is the "manifests are recipe content"
 /// property — the builder is a thin roster-hydrator, not a hand-authored manifest.
-pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Experience {
+pub fn benchmark_experience(
+    examinee_peer_id: crate::identity::PeerId,
+    owner_peer_id: crate::identity::PeerId,
+) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/benchmark.json"))
         .expect("embedded benchmark recipe must be valid JSON")
         .project(vec![
             Member {
-                peer_id: examinee_peer_id.to_string(),
+                peer_id: examinee_peer_id,
                 standing: Standing::Examinee,
             },
             Member {
-                peer_id: owner_peer_id.to_string(),
+                peer_id: owner_peer_id,
                 standing: Standing::Owner,
             },
         ])
@@ -387,16 +391,19 @@ pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Expe
 /// `StateEnvelope` payload it points at. Chat's send verb routes through airc (no
 /// `chat/*` command exists in continuum-core), so the recipe declares no affordance
 /// yet — the airc-routed post affordance is added when that command surfaces here.
-pub fn chat_experience(owner_peer_id: &str, member_peer_id: &str) -> Experience {
+pub fn chat_experience(
+    owner_peer_id: crate::identity::PeerId,
+    member_peer_id: crate::identity::PeerId,
+) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/chat.json"))
         .expect("embedded chat recipe must be valid JSON")
         .project(vec![
             Member {
-                peer_id: owner_peer_id.to_string(),
+                peer_id: owner_peer_id,
                 standing: Standing::Owner,
             },
             Member {
-                peer_id: member_peer_id.to_string(),
+                peer_id: member_peer_id,
                 standing: Standing::Member,
             },
         ])
@@ -405,6 +412,7 @@ pub fn chat_experience(owner_peer_id: &str, member_peer_id: &str) -> Experience 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
 
     // what this catches: the outlier validation itself — if a future change makes
     // the Join Contract fit chat but not benchmark (or vice versa), one of these
@@ -413,8 +421,14 @@ mod tests {
     // is the proof every other experience is interpolation.
     #[test]
     fn both_outliers_fit_one_contract() {
-        let bench = benchmark_experience("examinee-1", "joel");
-        let chat = chat_experience("joel", "asha");
+        let bench = benchmark_experience(
+            crate::identity::PeerId::new(),
+            crate::identity::PeerId::new(),
+        );
+        let chat = chat_experience(
+            crate::identity::PeerId::new(),
+            crate::identity::PeerId::new(),
+        );
 
         // Benchmark: structured, its primary surface is the score — activity-scoped,
         // slotted as context (the desktop shell routes that to the right inspector),
@@ -507,7 +521,10 @@ mod tests {
     // the ACL maps to Provisional; if that mapping regresses, this fails.
     #[test]
     fn observe_affordance_authz_tracks_the_real_acl() {
-        let bench = benchmark_experience("examinee-1", "joel");
+        let bench = benchmark_experience(
+            crate::identity::PeerId::new(),
+            crate::identity::PeerId::new(),
+        );
         let observe = bench
             .affordances
             .iter()

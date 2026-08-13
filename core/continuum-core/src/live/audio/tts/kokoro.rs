@@ -118,7 +118,8 @@ impl KokoroTTS {
     /// Load Kokoro vocab from tokenizer.json (HuggingFace format) or legacy vocab.json
     fn load_vocab() -> Result<HashMap<char, i64>, TTSError> {
         // Try tokenizer.json first (HuggingFace format, downloaded from ONNX community repo)
-        let tokenizer_path = crate::live::audio::model_root::voice_model_path("kokoro/tokenizer.json");
+        let tokenizer_path =
+            crate::live::audio::model_root::voice_model_path("kokoro/tokenizer.json");
         if tokenizer_path.exists() {
             let content = std::fs::read_to_string(&tokenizer_path).map_err(TTSError::IoError)?;
 
@@ -679,8 +680,8 @@ mod tests {
     /// Helper: resolve model directory (tests may run from different CWDs)
     fn find_models_dir() -> Option<PathBuf> {
         let candidates = [
-            crate::live::audio::model_root::voice_model_path("kokoro"),          // from jtag/ CWD
-            PathBuf::from("../../models/kokoro"),    // from workers/continuum-core/
+            crate::live::audio::model_root::voice_model_path("kokoro"), // from jtag/ CWD
+            PathBuf::from("../../models/kokoro"), // from workers/continuum-core/
             PathBuf::from("../../../models/kokoro"), // from workers/continuum-core/src/
         ];
         candidates.into_iter().find(|p| p.is_dir())

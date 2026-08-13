@@ -171,7 +171,10 @@ mod tests {
     }
 
     fn present(bytes: u64) -> DiskState {
-        DiskState::Present { path: PathBuf::from("/x"), bytes }
+        DiskState::Present {
+            path: PathBuf::from("/x"),
+            bytes,
+        }
     }
 
     fn present_at(path: PathBuf, bytes: u64) -> DiskState {
@@ -201,9 +204,20 @@ mod tests {
         };
         // used = 60 (brain-here) + 50 (old-face) = 110; budget 80.
         let d = prov.plan_reconcile(&plan, 80);
-        assert_eq!(d.fetch, vec!["brain-missing".to_string()], "needed+absent → fetch");
-        assert_eq!(d.evict, vec!["old-face".to_string()], "unpinned avatar evicted to fit");
-        assert!(!d.is_shortfall(), "60 pinned fits the 80 budget after eviction");
+        assert_eq!(
+            d.fetch,
+            vec!["brain-missing".to_string()],
+            "needed+absent → fetch"
+        );
+        assert_eq!(
+            d.evict,
+            vec!["old-face".to_string()],
+            "unpinned avatar evicted to fit"
+        );
+        assert!(
+            !d.is_shortfall(),
+            "60 pinned fits the 80 budget after eviction"
+        );
     }
 
     // what this catches: default sources compose without panicking and the coder-14b
@@ -212,8 +226,13 @@ mod tests {
     fn default_provisioner_knows_the_real_catalog() {
         let prov = Provisioner::with_default_sources();
         let ids = prov.all_ids();
-        assert!(ids.iter().any(|i| i == "continuum-ai/qwen2.5-coder-14b-instruct-GGUF"));
-        assert!(ids.iter().any(|i| i.starts_with("vroid-")), "avatars present too");
+        assert!(ids
+            .iter()
+            .any(|i| i == "continuum-ai/qwen2.5-coder-14b-instruct-GGUF"));
+        assert!(
+            ids.iter().any(|i| i.starts_with("vroid-")),
+            "avatars present too"
+        );
     }
 
     // what this catches: eviction ACTS — the evicted artifact's real file is deleted

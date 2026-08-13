@@ -39,7 +39,10 @@ impl fmt::Display for MessageId {
 /// [`MessageId`] even though the root of an exchange carries the same UUID — the
 /// compiler, not a naming convention, is what stops one being passed as the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/comms/CorrelationId.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/comms/CorrelationId.ts"
+)]
 #[serde(transparent)]
 pub struct CorrelationId(#[ts(type = "string")] pub Uuid);
 
@@ -76,7 +79,10 @@ impl Causality {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/comms/PayloadClass.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/comms/PayloadClass.ts"
+)]
 pub enum PayloadClass {
     Control,
     Command,
@@ -265,7 +271,10 @@ impl ResourceBudget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/comms/IntegrityHint.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/comms/IntegrityHint.ts"
+)]
 pub struct IntegrityHint {
     pub content_sha256: Option<String>,
     pub merkle_parent: Option<String>,
@@ -281,7 +290,10 @@ impl IntegrityHint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/comms/ResourceCost.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/comms/ResourceCost.ts"
+)]
 pub struct ResourceCost {
     pub bytes: u64,
     pub heap_bytes: u64,
@@ -362,7 +374,10 @@ pub struct ExternalBufferRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/comms/GpuBufferRef.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/comms/GpuBufferRef.ts"
+)]
 pub struct GpuBufferRef {
     pub device: String,
     pub handle: String,

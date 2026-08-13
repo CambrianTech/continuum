@@ -83,11 +83,7 @@ impl LineWatch for () {
 /// say so once — losing log lines is survivable, stalling serving is not.
 ///
 /// `watch` sees each line as it passes. Pass `Box::new(())` when there is nothing to ask.
-pub fn drain_capped(
-    stderr: tokio::process::ChildStderr,
-    path: PathBuf,
-    watch: Box<dyn LineWatch>,
-) {
+pub fn drain_capped(stderr: tokio::process::ChildStderr, path: PathBuf, watch: Box<dyn LineWatch>) {
     tokio::spawn(async move {
         if let Err(error) = pump(stderr, &path, watch).await {
             tracing::warn!(
@@ -206,7 +202,10 @@ mod tests {
         );
 
         // Every generation, summed, stays inside the absolute bound.
-        let live = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+        let live = tokio::fs::metadata(&path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         let rotated_path = path.with_extension("log.1");
         let rotated = tokio::fs::metadata(&rotated_path)
             .await

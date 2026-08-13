@@ -316,9 +316,7 @@ async fn test_semantic_layer_cooking_query_finds_cooking() {
     let corpus = build_corpus(build_thought_chain().await, vec![]);
     let provider = DeterministicEmbeddingProvider;
 
-    let query_emb = provider
-        .embed("What do I know about cooking pasta?")
-        .await;
+    let query_emb = provider.embed("What do I know about cooking pasta?").await;
 
     let query = RecallQuery {
         query_text: Some("What do I know about cooking pasta?".into()),
@@ -657,8 +655,8 @@ async fn test_recall_performance_with_many_memories() {
                     source: Some("test".into()),
                     last_accessed_at: None,
                     layer: None,
-            origin_node: None,
-            origin_seq: None,
+                    origin_node: None,
+                    origin_seq: None,
                     relevance_score: None,
                 },
                 embedding,
@@ -737,7 +735,9 @@ async fn test_recall_without_corpus_returns_error() {
         layers: None,
     };
 
-    let result = manager.multi_layer_recall("nonexistent-persona", &req).await;
+    let result = manager
+        .multi_layer_recall("nonexistent-persona", &req)
+        .await;
     assert!(result.is_err(), "Recall without loaded corpus should error");
 }
 
@@ -746,7 +746,11 @@ async fn test_recall_without_corpus_returns_error() {
 #[tokio::test]
 async fn test_consciousness_context_with_cross_context_events() {
     let manager = test_manager();
-    load_standard_corpus(&manager, build_thought_chain().await, build_timeline_events().await);
+    load_standard_corpus(
+        &manager,
+        build_thought_chain().await,
+        build_timeline_events().await,
+    );
 
     let req = continuum_core::memory::ConsciousnessContextRequest {
         room_id: "room-general".into(),
@@ -791,9 +795,11 @@ async fn test_corpus_replacement_clears_old_data() {
             origin_seq: None,
             relevance_score: None,
         },
-        embedding: Some(provider
-            .embed("This is the old memory that should disappear")
-            .await),
+        embedding: Some(
+            provider
+                .embed("This is the old memory that should disappear")
+                .await,
+        ),
     }];
     manager.load_corpus(PERSONA_ID, initial, vec![]);
 

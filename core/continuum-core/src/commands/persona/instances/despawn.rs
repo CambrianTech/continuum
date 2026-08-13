@@ -43,7 +43,10 @@ use crate::sdk_codegen::Ctx;
 
 /// Which live persona to take offline.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaDespawnParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaDespawnParams.ts"
+)]
 pub struct PersonaDespawnParams {
     /// The persona's id as it appears in `persona/instances/list` (the airc
     /// peer_id Uuid). Fails loud if mal-formed or not currently online.
@@ -52,7 +55,10 @@ pub struct PersonaDespawnParams {
 
 /// What `persona/instances/despawn` did: who left, and the roster size after.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/DespawnReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/DespawnReport.ts"
+)]
 pub struct DespawnReport {
     /// The agent_name of the persona that was taken offline — echoed back so the
     /// caller can confirm they despawned who they meant to.

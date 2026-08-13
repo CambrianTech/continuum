@@ -131,9 +131,8 @@ impl ServiceModule for TestInferenceModule {
         let request: TextGenerationRequest = serde_json::from_value(params)
             .map_err(|e| format!("TestInferenceModule: decode TextGenerationRequest: {e}"))?;
         let response = self.adapter.generate_text(request).await?;
-        let value = serde_json::to_value(&response).map_err(|e| {
-            format!("TestInferenceModule: serialize TextGenerationResponse: {e}")
-        })?;
+        let value = serde_json::to_value(&response)
+            .map_err(|e| format!("TestInferenceModule: serialize TextGenerationResponse: {e}"))?;
         Ok(CommandResult::Json(value))
     }
 
@@ -238,9 +237,10 @@ async fn spawn_substrate_responder(
             if event.peer_id == self_id {
                 continue;
             }
-            let hint = match event.headers.get(
-                continuum_airc_protocol::HEADER_CONTINUUM_BODY_HINT,
-            ) {
+            let hint = match event
+                .headers
+                .get(continuum_airc_protocol::HEADER_CONTINUUM_BODY_HINT)
+            {
                 Some(h) => h,
                 None => continue,
             };
@@ -321,10 +321,7 @@ async fn end_to_end_heuristic_dispatch_through_substrate_stack() {
     responder_ready.notified().await;
 
     // peer_b builds the cross-grid adapter pointed at peer_a.
-    let transport = AircLiveTransport::new(
-        Arc::clone(loop_back.peer_b()),
-        loop_back.peer_a_id(),
-    );
+    let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     // Dispatch + assert.
@@ -380,10 +377,7 @@ async fn end_to_end_peer_adapter_failure_surfaces_as_typed_error() {
     .await;
     responder_ready.notified().await;
 
-    let transport = AircLiveTransport::new(
-        Arc::clone(loop_back.peer_b()),
-        loop_back.peer_a_id(),
-    );
+    let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let err = adapter
@@ -437,10 +431,7 @@ async fn end_to_end_missing_module_returns_typed_error() {
     .await;
     responder_ready.notified().await;
 
-    let transport = AircLiveTransport::new(
-        Arc::clone(loop_back.peer_b()),
-        loop_back.peer_a_id(),
-    );
+    let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let err = adapter
@@ -470,8 +461,7 @@ async fn end_to_end_missing_module_returns_typed_error() {
     // (200 on nothing) pass undetected.
     let lower = err.to_lowercase();
     assert!(
-        lower.contains("commandrouterserver")
-            || lower.contains("jtag-command-router"),
+        lower.contains("commandrouterserver") || lower.contains("jtag-command-router"),
         "expected the TS-bridge connect-failure surface — the substrate \
          currently falls through to /tmp/jtag-command-router.sock on \
          missing Rust modules. If THIS assertion fired because task #219 \

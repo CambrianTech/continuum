@@ -37,13 +37,25 @@ pub struct ThroughputBaseline {
 pub enum ThroughputVerdict {
     /// At or above expected (ratio ≥ 1.0 − a small over-delivery is still
     /// "on par"; only meaningfully-above trips this).
-    AbovePar { measured_tok_s: f64, expected_tok_s: f64, ratio: f64 },
+    AbovePar {
+        measured_tok_s: f64,
+        expected_tok_s: f64,
+        ratio: f64,
+    },
     /// Within tolerance of expected — healthy.
-    OnPar { measured_tok_s: f64, expected_tok_s: f64, ratio: f64 },
+    OnPar {
+        measured_tok_s: f64,
+        expected_tok_s: f64,
+        ratio: f64,
+    },
     /// Below tolerance — investigate (CPU fallback, thermal throttle, a
     /// scheduler stall, the wrong model loaded, …). This is the signal that
     /// must never sit silent in a log.
-    Degraded { measured_tok_s: f64, expected_tok_s: f64, ratio: f64 },
+    Degraded {
+        measured_tok_s: f64,
+        expected_tok_s: f64,
+        ratio: f64,
+    },
 }
 
 impl ThroughputVerdict {
@@ -173,9 +185,9 @@ pub fn baseline_for(
     quant: &str,
     accelerator: &str,
 ) -> Option<&'static ThroughputBaseline> {
-    SEED_BASELINES.iter().find(|b| {
-        b.model == model && b.quant == quant && b.accelerator == accelerator
-    })
+    SEED_BASELINES
+        .iter()
+        .find(|b| b.model == model && b.quant == quant && b.accelerator == accelerator)
 }
 
 #[cfg(test)]

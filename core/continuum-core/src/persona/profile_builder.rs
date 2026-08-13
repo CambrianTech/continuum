@@ -92,12 +92,12 @@ pub fn build_profile(
 ) -> Result<PersonaInferenceProfile, InferenceProfileError> {
     let _ = role_id; // see module docstring; reserved for cognition_defaults wiring
 
-    let model = registry.model(model_id).ok_or_else(|| {
-        InferenceProfileError::UnknownModel {
+    let model = registry
+        .model(model_id)
+        .ok_or_else(|| InferenceProfileError::UnknownModel {
             model_id: model_id.to_string(),
             role_id: role_id.to_string(),
-        }
-    })?;
+        })?;
 
     // Local-inference models MUST have a resolved gguf_local_path
     // here. Per [[no-fallbacks-ever]], we don't silently substitute a
@@ -110,22 +110,24 @@ pub fn build_profile(
         .map(|p| p.kind)
         .unwrap_or(crate::model_registry::types::ProviderKind::Cloud);
 
-    let gguf_local_path =
-        if matches!(provider_kind, crate::model_registry::types::ProviderKind::Local) {
-            match &model.gguf_local_path {
-                Some(p) => Some(p.clone()),
-                None => {
-                    return Err(InferenceProfileError::NoLocalGguf {
-                        model_id: model_id.to_string(),
-                        gguf_hint: model.gguf_hint.clone(),
-                    });
-                }
+    let gguf_local_path = if matches!(
+        provider_kind,
+        crate::model_registry::types::ProviderKind::Local
+    ) {
+        match &model.gguf_local_path {
+            Some(p) => Some(p.clone()),
+            None => {
+                return Err(InferenceProfileError::NoLocalGguf {
+                    model_id: model_id.to_string(),
+                    gguf_hint: model.gguf_hint.clone(),
+                });
             }
-        } else {
-            // Cloud-routed profiles (Anthropic, OpenAI, etc.) don't need a
-            // local path — the adapter wires to the cloud endpoint directly.
-            None
-        };
+        }
+    } else {
+        // Cloud-routed profiles (Anthropic, OpenAI, etc.) don't need a
+        // local path — the adapter wires to the cloud endpoint directly.
+        None
+    };
 
     // Context length: the model's OWN declared window. No per-tier integer
     // clamp — guessing a tier cap (the old 2048/4096/8192…) silently
@@ -299,8 +301,7 @@ mod tests {
             persona_serving_eligible: true,
         };
         Arc::new(
-            Registry::from_catalog(vec![model], vec![llamacpp_provider])
-                .expect("build registry"),
+            Registry::from_catalog(vec![model], vec![llamacpp_provider]).expect("build registry"),
         )
     }
 
@@ -378,7 +379,10 @@ mod tests {
             &registry,
         )
         .expect("build profile");
-        assert!((profile.sampling.temperature - 0.35).abs() < 1e-6, "row temperature reached the profile");
+        assert!(
+            (profile.sampling.temperature - 0.35).abs() < 1e-6,
+            "row temperature reached the profile"
+        );
         assert_eq!(profile.sampling.top_k, 20);
         assert!((profile.sampling.top_p - 0.9).abs() < 1e-6);
         assert!((profile.sampling.repeat_penalty - 1.15).abs() < 1e-6);

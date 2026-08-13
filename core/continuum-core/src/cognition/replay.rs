@@ -512,7 +512,10 @@ mod tests {
         ];
         let b = build_budget("hello there", &broadcast);
         assert_eq!(b.world_state_tokens, estimate_prompt_tokens("hello there"));
-        assert_eq!(b.context_tokens, b.layers.iter().map(|l| l.tokens).sum::<u32>());
+        assert_eq!(
+            b.context_tokens,
+            b.layers.iter().map(|l| l.tokens).sum::<u32>()
+        );
         assert_eq!(b.total_tokens, b.world_state_tokens + b.context_tokens);
         // sorted most-expensive first → recall (400 chars) leads roster (40).
         assert_eq!(b.layers[0].faculty, "recall");
@@ -520,6 +523,9 @@ mod tests {
         // shares are computed against the total (sum ≈ context share of 100%).
         let layer_share: f32 = b.layers.iter().map(|l| l.share_pct).sum();
         let ws_share = b.world_state_tokens as f32 / b.total_tokens as f32 * 100.0;
-        assert!((layer_share + ws_share - 100.0).abs() < 0.5, "shares must sum to ~100%");
+        assert!(
+            (layer_share + ws_share - 100.0).abs() < 0.5,
+            "shares must sum to ~100%"
+        );
     }
 }

@@ -39,7 +39,10 @@ const DEFAULT_HEIGHT: u32 = 800;
 /// Inputs to `interface/capture`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/interface/CaptureParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/interface/CaptureParams.ts"
+)]
 pub struct CaptureParams {
     /// Which surface to capture: `"web"`, `"ios"`, or `"android"`.
     pub target: String,
@@ -64,7 +67,10 @@ pub struct CaptureParams {
 /// Result of a capture: where the PNG landed and its real dimensions.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/interface/CaptureResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/interface/CaptureResult.ts"
+)]
 pub struct CaptureResult {
     /// Echo of the captured target.
     pub target: String,
@@ -156,7 +162,10 @@ impl ActionCommand for Capture {
             device: params.device.clone(),
             out_path: out_path.clone(),
         };
-        adapter.capture(&req).await.map_err(CommandError::Internal)?;
+        adapter
+            .capture(&req)
+            .await
+            .map_err(CommandError::Internal)?;
 
         let bytes = tokio::fs::read(&out_path)
             .await
@@ -204,7 +213,9 @@ mod tests {
     #[tokio::test]
     async fn unknown_target_fails_loud() {
         let ctx = Ctx {
-            caller: Some(crate::routing::auth_policy::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(Uuid::nil()))),
+            caller: Some(crate::routing::auth_policy::CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(Uuid::nil()),
+            )),
             ..Default::default()
         };
         let err = Capture

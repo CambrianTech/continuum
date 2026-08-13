@@ -307,14 +307,8 @@ fn option_translates_to_nullable() {
     let by_name: std::collections::HashMap<&str, &crate::orm::types::SchemaField> =
         schema.fields.iter().map(|f| (f.name.as_str(), f)).collect();
 
-    assert!(
-        by_name["description"].nullable,
-        "Option<String> → nullable"
-    );
-    assert!(
-        by_name["expiresAtMs"].nullable,
-        "Option<u64> → nullable"
-    );
+    assert!(by_name["description"].nullable, "Option<String> → nullable");
+    assert!(by_name["expiresAtMs"].nullable, "Option<u64> → nullable");
     assert!(!by_name["name"].nullable, "String → not nullable");
     assert!(!by_name["score"].nullable, "u64 → not nullable");
 }

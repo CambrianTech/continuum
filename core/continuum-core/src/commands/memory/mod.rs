@@ -30,29 +30,32 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod append_event;
 pub mod append_memory;
-pub mod consolidate;
 pub mod consciousness_context;
+pub mod consolidate;
+pub mod import;
 pub mod load_corpus;
 pub mod multi_layer_recall;
-pub mod import;
 pub mod recall_hook;
 pub mod remember;
 pub mod share;
 
 use append_event::MemoryAppendEvent;
 use append_memory::MemoryAppendMemory;
-use consolidate::MemoryConsolidate;
 use consciousness_context::MemoryConsciousnessContext;
+use consolidate::MemoryConsolidate;
+use import::MemoryImport;
 use load_corpus::MemoryLoadCorpus;
 use multi_layer_recall::MemoryMultiLayerRecall;
-use import::MemoryImport;
 use recall_hook::MemoryRecallHook;
 use remember::MemoryRemember;
 use share::MemoryShare;
 
 /// Result of an incremental append (`memory/append-memory`, `memory/append-event`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/memory/AppendResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/memory/AppendResult.ts"
+)]
 pub struct AppendResult {
     /// Always true on success (the call fails loud rather than returning false).
     pub appended: bool,
@@ -64,15 +67,33 @@ pub struct AppendResult {
 /// (now-deleted) legacy `memory/` prefix arm.
 pub fn command_objects(state: Arc<MemoryState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(MemoryLoadCorpus { state: state.clone() }),
-        Arc::new(MemoryMultiLayerRecall { state: state.clone() }),
-        Arc::new(MemoryImport { state: state.clone() }),
-        Arc::new(MemoryRecallHook { state: state.clone() }),
-        Arc::new(MemoryRemember { state: state.clone() }),
-        Arc::new(MemoryConsolidate { state: state.clone() }),
-        Arc::new(MemoryShare { state: state.clone() }),
-        Arc::new(MemoryConsciousnessContext { state: state.clone() }),
-        Arc::new(MemoryAppendMemory { state: state.clone() }),
+        Arc::new(MemoryLoadCorpus {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryMultiLayerRecall {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryImport {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryRecallHook {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryRemember {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryConsolidate {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryShare {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryConsciousnessContext {
+            state: state.clone(),
+        }),
+        Arc::new(MemoryAppendMemory {
+            state: state.clone(),
+        }),
         Arc::new(MemoryAppendEvent { state }),
     ]
 }
@@ -193,7 +214,9 @@ pub(crate) async fn hydrate_corpus_if_missing(
     let mut memories: Vec<crate::memory::CorpusMemory> = Vec::with_capacity(items.len());
     for item in &items {
         // Each item is a DataRecord envelope; the memory row is its `data`.
-        let Some(data) = item.get("data") else { continue };
+        let Some(data) = item.get("data") else {
+            continue;
+        };
         // The ORM returns row keys camelCased (TS compatibility); MemoryRecord
         // is snake_case on the wire. Fold TOP-LEVEL keys back — nested objects
         // (`context`) keep their own keys untouched.
@@ -205,8 +228,8 @@ pub(crate) async fn hydrate_corpus_if_missing(
             ),
             other => other.clone(),
         };
-        let record: crate::memory::MemoryRecord = serde_json::from_value(data.clone())
-            .map_err(|e| {
+        let record: crate::memory::MemoryRecord =
+            serde_json::from_value(data.clone()).map_err(|e| {
                 CommandError::Internal(format!(
                     "memory hydrate: row in '{MEMORIES_COLLECTION}' is not a MemoryRecord: {e}"
                 ))
@@ -296,7 +319,8 @@ mod tests {
     // append mutated only the in-process corpus and session 2 recalled nothing.
     #[tokio::test(flavor = "multi_thread")]
     async fn append_memory_survives_a_core_restart() {
-        roundtrip_survives_restart("roundtrip-test-persona", "the grid password is tangerine").await;
+        roundtrip_survives_restart("roundtrip-test-persona", "the grid password is tangerine")
+            .await;
     }
 
     // what this catches (#224): the SAME durable-survival must hold for AGENT and HUMAN
@@ -312,7 +336,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn human_citizen_memory_survives_a_core_restart() {
-        roundtrip_survives_restart("@human:joel", "the raid drives were 420 at microcenter").await;
+        roundtrip_survives_restart("@human:operator", "the raid drives were 420 at microcenter")
+            .await;
     }
 
     /// Shared body: append a memory for `persona_id` through the real dispatch chain, prove the
@@ -336,7 +361,8 @@ mod tests {
         {
             let h = ModuleHarness::with_modules([
                 fresh_memory_module(),
-                Arc::new(crate::modules::data::DataModule::new()) as Arc<dyn crate::runtime::ServiceModule>,
+                Arc::new(crate::modules::data::DataModule::new())
+                    as Arc<dyn crate::runtime::ServiceModule>,
             ])
             .await;
             let appended: AppendResult = h
@@ -372,7 +398,8 @@ mod tests {
         {
             let h = ModuleHarness::with_modules([
                 fresh_memory_module(),
-                Arc::new(crate::modules::data::DataModule::new()) as Arc<dyn crate::runtime::ServiceModule>,
+                Arc::new(crate::modules::data::DataModule::new())
+                    as Arc<dyn crate::runtime::ServiceModule>,
             ])
             .await;
             let recalled: crate::memory::MemoryRecallResponse = h
@@ -451,8 +478,14 @@ mod tests {
         // its OWN bucket, so a Claude Code / Codex agent's /continuum:memory
         // writes land in agents/<name>/ (durable, own-dir — the amnesia fix),
         // and a human's in humans/<name>/.
-        assert_eq!(persona_db_handle(&"@agent:claude-code".into()), "@agent:claude-code");
-        assert_eq!(persona_db_handle(&"@human:joel".into()), "@human:joel");
+        assert_eq!(
+            persona_db_handle(&"@agent:claude-code".into()),
+            "@agent:claude-code"
+        );
+        assert_eq!(
+            persona_db_handle(&"@human:operator".into()),
+            "@human:operator"
+        );
         assert_eq!(persona_db_handle(&"@persona:Asha".into()), "@persona:Asha");
     }
 

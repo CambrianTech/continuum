@@ -92,7 +92,8 @@ pub(super) fn build_agent_record(
         layer: None,
         relevance_score: None,
         origin_node: None,
-        origin_seq: None,    }
+        origin_seq: None,
+    }
 }
 
 crate::action_command! {
@@ -176,9 +177,17 @@ mod tests {
         assert_eq!(r.context["session"], "sess-1");
         // A migrated lesson (no session) still builds a valid record with null session.
         let migrated = build_agent_record(
-            "peer-abc", "old lesson".to_string(), "continuum", None, 0.6,
-            "id-2".to_string(), "2026-07-25T00:00:00Z".to_string(),
+            "peer-abc",
+            "old lesson".to_string(),
+            "continuum",
+            None,
+            0.6,
+            "id-2".to_string(),
+            "2026-07-25T00:00:00Z".to_string(),
         );
-        assert!(migrated.context["session"].is_null(), "no session ⇒ null, still valid");
+        assert!(
+            migrated.context["session"].is_null(),
+            "no session ⇒ null, still valid"
+        );
     }
 }

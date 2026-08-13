@@ -154,9 +154,8 @@ impl CommandInterceptor for AircInterceptor {
                     ));
                 }
 
-                let peer_id = Uuid::parse_str(target).map_err(|e| {
-                    format!("aircPeer must be a peer UUID, got {target:?}: {e}")
-                })?;
+                let peer_id = Uuid::parse_str(target)
+                    .map_err(|e| format!("aircPeer must be a peer UUID, got {target:?}: {e}"))?;
 
                 // For ai/generate the command params ARE the TextGenerationRequest.
                 let text_request: TextGenerationRequest = serde_json::from_value(params.clone())
@@ -169,9 +168,10 @@ impl CommandInterceptor for AircInterceptor {
 
                 let transport = AircLiveTransport::new(airc.clone(), peer_id);
                 let request = RemoteInferenceRequest::new(text_request).with_target_peer(target);
-                let response = transport.send_request(request).await.map_err(|e| {
-                    format!("airc remote inference to peer '{target}' failed: {e}")
-                })?;
+                let response = transport
+                    .send_request(request)
+                    .await
+                    .map_err(|e| format!("airc remote inference to peer '{target}' failed: {e}"))?;
 
                 let result = CommandResult::json(&response.text_response)?;
                 Ok(InterceptorOutcome::Handled(result))

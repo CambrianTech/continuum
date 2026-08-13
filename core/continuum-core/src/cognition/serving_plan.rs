@@ -277,8 +277,10 @@ impl ModelFootprint {
     /// external/contention on the board. `lanes.max(1)` so a snapshot that has
     /// not yet stamped its lane count still charges one lane's KV, never zero.
     pub fn resident_bytes(&self, served_window: u32, lanes: u32) -> u64 {
-        self.weights_bytes
-            .saturating_add(self.kv_at(served_window).saturating_mul(lanes.max(1) as u64))
+        self.weights_bytes.saturating_add(
+            self.kv_at(served_window)
+                .saturating_mul(lanes.max(1) as u64),
+        )
     }
 
     /// The concurrent-prefill compute reserve across all lanes AT the served window —
@@ -319,7 +321,10 @@ impl ModelFootprint {
 
 /// The serving decision for this host.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/serving/ServingPlan.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/serving/ServingPlan.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ServingPlan {
     /// The base model to serve (shared across lanes).
@@ -465,7 +470,8 @@ pub fn plan_serving(
             return model.context_window;
         }
         let after_compute = after_weights.saturating_sub(compute_floor.saturating_mul(l));
-        (((after_compute / l) / per_token_cost).min(u32::MAX as u64) as u32).min(model.context_window)
+        (((after_compute / l) / per_token_cost).min(u32::MAX as u64) as u32)
+            .min(model.context_window)
     };
 
     // THE DAEMON'S PURPOSE, made concrete (#213): serve as many concurrent minds as DEMAND
@@ -559,7 +565,11 @@ pub fn plan_serving(
     // reserve is part of the chosen model's real cost, so packing can't claim it).
     let chosen_cost = model
         .weights_bytes
-        .saturating_add(model.kv_at(served_context_window).saturating_mul(lanes as u64))
+        .saturating_add(
+            model
+                .kv_at(served_context_window)
+                .saturating_mul(lanes as u64),
+        )
         .saturating_add(compute_reserve);
     let mut left = effective.saturating_sub(chosen_cost);
     let mut resident = 1u32;
@@ -719,8 +729,8 @@ mod tests {
 
     fn candidates() -> Vec<ModelFootprint> {
         vec![
-            fp("qwen2.5-0.5b", 1, 4_000, 32_768, 1), // tiny chat
-            fp("qwen3.5-4b", 3, 30_000, 262_144, 2), // good general (47 tok/s on M5)
+            fp("qwen2.5-0.5b", 1, 4_000, 32_768, 1),         // tiny chat
+            fp("qwen3.5-4b", 3, 30_000, 262_144, 2),         // good general (47 tok/s on M5)
             fp("coder-sentinel-14b", 9, 90_000, 262_144, 3), // rich coding model — more RAM each
         ]
     }
@@ -755,8 +765,7 @@ mod tests {
         let lanes = 4u32;
         // The reserve is window-SCALED: floor + compute_rate·C, times lanes.
         let compute_rate = 90_000u64 / PREFILL_COMPUTE_KV_DIVISOR;
-        let expect_reserve =
-            (f.compute_buffer_per_lane() + compute_rate * c as u64) * lanes as u64;
+        let expect_reserve = (f.compute_buffer_per_lane() + compute_rate * c as u64) * lanes as u64;
         assert_eq!(f.prefill_compute_reserve(c, lanes), expect_reserve);
         // Peak = resident + reserve — strictly greater than resident (the pre-G5 report).
         assert_eq!(
@@ -769,9 +778,17 @@ mod tests {
         // against (chosen_cost) — never two figures that drift. Plan a real serving shape
         // and assert peak_resident_bytes at the plan's own (window, lanes) reproduces the
         // budget the fixpoint consumed for the chosen model.
-        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
-        let plan = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
+        let plan = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, None),
+        )
+        .unwrap();
         let chosen_cost = devstral.weights_bytes
             + devstral.kv_at(plan.served_context_window) * plan.lanes as u64
             + devstral.prefill_compute_reserve(plan.served_context_window, plan.lanes);
@@ -797,15 +814,26 @@ mod tests {
     // budget — the exact shape that picked the OOMing 53k window.
     #[test]
     fn served_window_footprint_fits_effective_budget_including_window_scaled_compute() {
-        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3); // ~112 KiB/token KV
-        // Demand = 4 personas. This roomy 48GB host clears the full-turn window floor at 4
-        // slots (#266: a warm slot per resident persona), so all 4 are served — the window is
-        // derived to fit whatever lane count is served, and the fit invariant below holds at
-        // any count.
-        let plan = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
+                                                                       // Demand = 4 personas. This roomy 48GB host clears the full-turn window floor at 4
+                                                                       // slots (#266: a warm slot per resident persona), so all 4 are served — the window is
+                                                                       // derived to fit whatever lane count is served, and the fit invariant below holds at
+                                                                       // any count.
+        let plan = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, None),
+        )
+        .unwrap();
         assert!(plan.fits_on_gpu, "{}", plan.rationale);
-        assert_eq!(plan.lanes, 4, "roomy host gives each of the 4 resident personas its own warm slot");
+        assert_eq!(
+            plan.lanes, 4,
+            "roomy host gives each of the 4 resident personas its own warm slot"
+        );
         let c = plan.served_context_window as u64;
         let lanes = plan.lanes as u64;
         let compute_floor = devstral.compute_buffer_per_lane();
@@ -821,7 +849,10 @@ mod tests {
         // And it's strictly smaller than the compute-blind, headroom-blind math would pick
         // (weights + KV filling the FULL usable budget) — the fix demonstrably shrinks it.
         let naive = (host.usable_bytes - devstral.weights_bytes) / lanes / devstral.kv_per_token;
-        assert!(c < naive, "window-scaled + headroom reserve must shrink the window ({c} < {naive})");
+        assert!(
+            c < naive,
+            "window-scaled + headroom reserve must shrink the window ({c} < {naive})"
+        );
     }
 
     // what this catches: the governor now SURFACES demand it can't serve locally instead
@@ -837,19 +868,41 @@ mod tests {
         // the window floor (#266) caps warm slots at 2, so 2 of the 4 resident personas can't
         // get a persistent slot locally. That excess is the honest overflow, surfaced (not
         // crammed onto shared slots to thrash) for the governor to place off-box.
-        let host = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 26 * GB,
+            perf_cores: 10,
+        };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
-        let over = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
-        assert_eq!(over.lanes, 2, "precondition: the full-turn window floor caps warm slots at 2 here");
+        let over = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, None),
+        )
+        .unwrap();
+        assert_eq!(
+            over.lanes, 2,
+            "precondition: the full-turn window floor caps warm slots at 2 here"
+        );
         assert_eq!(
             over.grid_overflow_lanes,
             4 - over.lanes,
             "demand the local warm slots couldn't absorb must be surfaced for grid placement, not crammed"
         );
         // Demand within local capacity → zero overflow (nothing to place off-box).
-        let fits = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(1, None)).unwrap();
-        assert_eq!(fits.lanes, 1, "precondition: single demand fits one local lane");
-        assert_eq!(fits.grid_overflow_lanes, 0, "demand ≤ local warm slots → no overflow");
+        let fits = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None),
+        )
+        .unwrap();
+        assert_eq!(
+            fits.lanes, 1,
+            "precondition: single demand fits one local lane"
+        );
+        assert_eq!(
+            fits.grid_overflow_lanes, 0,
+            "demand ≤ local warm slots → no overflow"
+        );
     }
 
     // what this catches: #266 — the slot count sizes to the RESIDENT PERSONA POPULATION so
@@ -866,18 +919,43 @@ mod tests {
 
         // (a) Roomy: 48GB clears the full-turn floor at 4 slots → a warm slot per resident mind,
         // zero overflow, no thrash. This is the win the `MAX_LANES = 2` clamp used to forbid.
-        let roomy = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
-        let warm = plan_serving(roomy, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
-        assert_eq!(warm.lanes, 4, "roomy host: one warm slot per resident persona");
-        assert_eq!(warm.grid_overflow_lanes, 0, "all 4 minds hosted locally → nothing over-subscribed");
+        let roomy = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
+        let warm = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, None),
+        )
+        .unwrap();
+        assert_eq!(
+            warm.lanes, 4,
+            "roomy host: one warm slot per resident persona"
+        );
+        assert_eq!(
+            warm.grid_overflow_lanes, 0,
+            "all 4 minds hosted locally → nothing over-subscribed"
+        );
 
         // (b) Floor-limited: 26GB clears the floor at only 2 slots. The plan yields 2 (never 4
         // crammed onto 2), surfaces the 2 unslotted minds as overflow (the non-silent
         // over-subscription signal a probe also names at the decision), and — critically — does
         // NOT drop the per-slot window below the floor to squeeze 4 in.
-        let tight = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
-        let capped = plan_serving(tight, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
-        assert_eq!(capped.lanes, 2, "window floor caps warm slots at 2 — the honest ceiling, not a silent cram");
+        let tight = HostBudget {
+            usable_bytes: 26 * GB,
+            perf_cores: 10,
+        };
+        let capped = plan_serving(
+            tight,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, None),
+        )
+        .unwrap();
+        assert_eq!(
+            capped.lanes, 2,
+            "window floor caps warm slots at 2 — the honest ceiling, not a silent cram"
+        );
         assert_eq!(
             capped.grid_overflow_lanes, 2,
             "the 2 minds that couldn't get a warm slot are SURFACED (probe + grid_overflow), never absorbed"
@@ -900,11 +978,18 @@ mod tests {
     // constant is still silently in charge and this whole seam is decoration.
     #[test]
     fn a_measured_demand_above_the_cold_start_prior_actually_raises_the_window() {
-        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
 
-        let cold = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(1, None))
-            .expect("servable");
+        let cold = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(1, None),
+        )
+        .expect("servable");
         assert_eq!(
             cold.served_context_window, BOOTSTRAP_WORKING_SET,
             "with NO measurement the cold-start prior is the honest answer"
@@ -938,7 +1023,10 @@ mod tests {
     // demand cap exists to prevent in the first place.
     #[test]
     fn demand_beyond_the_host_is_bounded_by_what_actually_fits() {
-        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         let greedy = plan_serving(
             host,
@@ -951,9 +1039,12 @@ mod tests {
             "never above the model's trained ceiling (got {})",
             greedy.served_context_window
         );
-        let unbounded_fit =
-            plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, Some(u32::MAX)))
-                .expect("servable");
+        let unbounded_fit = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, Some(u32::MAX)),
+        )
+        .expect("servable");
         assert_eq!(
             greedy.served_context_window, unbounded_fit.served_context_window,
             "past the host's real fit, MORE demand changes nothing — the fit is the bound"
@@ -971,13 +1062,21 @@ mod tests {
     // (not the ceiling). Regression for M5+BigMama's 94k→swap/wedge.
     #[test]
     fn demand_cap_holds_served_window_at_working_set_not_budget_max() {
-        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 48 * GB,
+            perf_cores: 10,
+        };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
         assert!(
             devstral.context_window > BOOTSTRAP_WORKING_SET,
             "precondition: model ceiling must exceed the demand cap, else the ceiling (not the cap) could explain the result"
         );
-        let plan = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
+        let plan = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, None),
+        )
+        .unwrap();
         assert!(
             plan.served_context_window <= BOOTSTRAP_WORKING_SET,
             "served window {} must be capped to working-set demand ({}), never budget-maxed toward the ceiling",
@@ -989,7 +1088,12 @@ mod tests {
         // whose trained ceiling is below the demand cap is still served at/below its
         // own ceiling (`.min` only ever caps DOWN).
         let tiny = fp("tiny-4k", 3, 30_000, 4_096, 2);
-        let plan_tiny = plan_serving(host, std::slice::from_ref(&tiny), ServingDemand::new(1, None)).unwrap();
+        let plan_tiny = plan_serving(
+            host,
+            std::slice::from_ref(&tiny),
+            ServingDemand::new(1, None),
+        )
+        .unwrap();
         assert!(
             plan_tiny.served_context_window <= 4_096,
             "demand cap must not inflate a 4k-ceiling model past its ceiling; got {}",
@@ -1005,11 +1109,23 @@ mod tests {
     #[test]
     fn lanes_degrade_on_a_tight_host_never_overcommitting() {
         // ~18GB usable — fits the 14GB weights + a couple lanes' KV, not four.
-        let host = HostBudget { usable_bytes: 18 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 18 * GB,
+            perf_cores: 10,
+        };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
-        let plan = plan_serving(host, std::slice::from_ref(&devstral), ServingDemand::new(4, None)).unwrap();
+        let plan = plan_serving(
+            host,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(4, None),
+        )
+        .unwrap();
         assert!(plan.fits_on_gpu, "{}", plan.rationale);
-        assert!(plan.lanes < 4, "tight host must serve fewer than the 4 demanded: got {}", plan.lanes);
+        assert!(
+            plan.lanes < 4,
+            "tight host must serve fewer than the 4 demanded: got {}",
+            plan.lanes
+        );
         assert!(plan.lanes >= 1);
         let lanes = plan.lanes as u64;
         let c = plan.served_context_window as u64;
@@ -1019,7 +1135,10 @@ mod tests {
             + devstral.kv_at(c as u32) * lanes
             + (compute_floor + compute_rate * c) * lanes;
         let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
-        assert!(footprint <= effective, "degraded plan still overcommits: {footprint} > {effective}");
+        assert!(
+            footprint <= effective,
+            "degraded plan still overcommits: {footprint} > {effective}"
+        );
     }
 
     // what this catches: an 8GB Air must NOT be handed the 14B (won't fit) and
@@ -1028,10 +1147,20 @@ mod tests {
     #[test]
     fn tiny_box_picks_most_capable_that_fits_not_the_biggest() {
         // ~5.5GB usable after OS headroom on an 8GB Air.
-        let host = HostBudget { usable_bytes: 5 * GB + 500 * 1_000_000, perf_cores: 4 };
+        let host = HostBudget {
+            usable_bytes: 5 * GB + 500 * 1_000_000,
+            perf_cores: 4,
+        };
         let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert!(plan.fits_on_gpu, "must fit a real model on GPU: {}", plan.rationale);
-        assert_eq!(plan.base_model_id, "qwen3.5-4b", "14B can't fit 5.5GB; 4B is the most capable that does");
+        assert!(
+            plan.fits_on_gpu,
+            "must fit a real model on GPU: {}",
+            plan.rationale
+        );
+        assert_eq!(
+            plan.base_model_id, "qwen3.5-4b",
+            "14B can't fit 5.5GB; 4B is the most capable that does"
+        );
         assert!(plan.lanes >= 1);
     }
 
@@ -1046,10 +1175,22 @@ mod tests {
         // window (Some(u32::MAX)) so the "unneeded lane costs window" invariant is visible:
         // under the default demand cap both counts would hit the same cap and the window
         // difference would be masked — the invariant lives in the budget-bound regime.
-        let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
-        let greedy = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, Some(u32::MAX))).unwrap();
-        let demand2 = plan_serving(host, &candidates(), ServingDemand::new(2, Some(u32::MAX))).unwrap();
-        assert_eq!(demand2.lanes, 2, "2 minds → 2 lanes, never the MAX_LANES ceiling");
+        let host = HostBudget {
+            usable_bytes: 20 * GB,
+            perf_cores: 6,
+        };
+        let greedy = plan_serving(
+            host,
+            &candidates(),
+            ServingDemand::new(MAX_LANES, Some(u32::MAX)),
+        )
+        .unwrap();
+        let demand2 =
+            plan_serving(host, &candidates(), ServingDemand::new(2, Some(u32::MAX))).unwrap();
+        assert_eq!(
+            demand2.lanes, 2,
+            "2 minds → 2 lanes, never the MAX_LANES ceiling"
+        );
         if greedy.lanes > 2 {
             assert!(
                 demand2.served_context_window > greedy.served_context_window,
@@ -1064,7 +1205,12 @@ mod tests {
         let demand99 = plan_serving(host, &candidates(), ServingDemand::new(99, None)).unwrap();
         assert!(demand99.lanes <= MAX_LANES);
         // …and a zero demand is defensively floored at one lane.
-        assert_eq!(plan_serving(host, &candidates(), ServingDemand::new(0, None)).unwrap().lanes, 1);
+        assert_eq!(
+            plan_serving(host, &candidates(), ServingDemand::new(0, None))
+                .unwrap()
+                .lanes,
+            1
+        );
     }
 
     // what this catches: #213 — the daemon must not chase a lane-count target off a cliff.
@@ -1079,9 +1225,20 @@ mod tests {
     fn a_squeeze_sheds_a_lane_rather_than_flooring_every_mind() {
         let devstral = fp("devstral-24b", 14, 175_000, 131_072, 3);
         // Budget where ONE lane serves a real window but TWO would floor (eval lane resident).
-        let squeezed = HostBudget { usable_bytes: 19 * GB, perf_cores: 6 };
-        let plan = plan_serving(squeezed, std::slice::from_ref(&devstral), ServingDemand::new(2, None)).unwrap();
-        assert_eq!(plan.lanes, 1, "2 lanes would floor → shed to 1 real lane, not 2 @ 2048");
+        let squeezed = HostBudget {
+            usable_bytes: 19 * GB,
+            perf_cores: 6,
+        };
+        let plan = plan_serving(
+            squeezed,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(2, None),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.lanes, 1,
+            "2 lanes would floor → shed to 1 real lane, not 2 @ 2048"
+        );
         assert!(
             plan.served_context_window > 4096,
             "the surviving lane gets a window big enough to think in, got {}",
@@ -1091,8 +1248,16 @@ mod tests {
         // mind at a real, DEMAND-sized window — capped at the working-set bootstrap
         // (2026-07-26), NOT maximized to fill RAM (the 94k→swap/wedge bug). A roomy
         // box buys more LANES (concurrent minds), not a bloated per-lane KV cache.
-        let roomy = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
-        let plan2 = plan_serving(roomy, std::slice::from_ref(&devstral), ServingDemand::new(2, None)).unwrap();
+        let roomy = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
+        let plan2 = plan_serving(
+            roomy,
+            std::slice::from_ref(&devstral),
+            ServingDemand::new(2, None),
+        )
+        .unwrap();
         assert_eq!(plan2.lanes, 2, "roomy host serves both minds concurrently");
         assert!(
             plan2.served_context_window > 4096
@@ -1115,10 +1280,20 @@ mod tests {
     #[test]
     fn big_box_picks_most_capable_runs_lanes_but_sizes_window_to_demand() {
         // ~45GB usable on a 64GB M5 Pro after headroom.
-        let host = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let host = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert_eq!(plan.base_model_id, "coder-sentinel-14b", "most capable, fits easily");
-        assert!(plan.lanes >= 2, "M5 Pro has the budget for multiple lanes, got {}", plan.lanes);
+        assert_eq!(
+            plan.base_model_id, "coder-sentinel-14b",
+            "most capable, fits easily"
+        );
+        assert!(
+            plan.lanes >= 2,
+            "M5 Pro has the budget for multiple lanes, got {}",
+            plan.lanes
+        );
         // Window sized to DEMAND (capped at the working-set bootstrap), NOT maximized
         // to fill the 45GB budget — the fix for the cross-node swap/wedge. Still a
         // real window (well above the ~9k persona turn), never exceeds the ceiling.
@@ -1139,7 +1314,10 @@ mod tests {
     // a single node doesn't run unbounded lanes (grid shares load past that).
     #[test]
     fn lanes_capped_at_max() {
-        let host = HostBudget { usable_bytes: 500 * GB, perf_cores: 64 };
+        let host = HostBudget {
+            usable_bytes: 500 * GB,
+            perf_cores: 64,
+        };
         let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
         assert_eq!(plan.lanes, MAX_LANES);
     }
@@ -1155,10 +1333,28 @@ mod tests {
         // (after co-consumer headroom) for (KV + compute buffer) across lanes at a full-turn
         // window: lean (150k/tok) clears the floor at 3 slots; fat (450k/tok, 3× the KV) clears
         // it at only 1. (A 4GB host would floor BOTH to 1 lane — too small to show the effect.)
-        let host = HostBudget { usable_bytes: 16 * GB, perf_cores: 8 };
-        let lean = plan_serving(host, &[fp("lean", 2, 150_000, 32_768, 5)], ServingDemand::new(MAX_LANES, None)).unwrap();
-        let fat = plan_serving(host, &[fp("fat", 2, 450_000, 32_768, 5)], ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert!(lean.lanes > fat.lanes, "lean {} should beat fat {}", lean.lanes, fat.lanes);
+        let host = HostBudget {
+            usable_bytes: 16 * GB,
+            perf_cores: 8,
+        };
+        let lean = plan_serving(
+            host,
+            &[fp("lean", 2, 150_000, 32_768, 5)],
+            ServingDemand::new(MAX_LANES, None),
+        )
+        .unwrap();
+        let fat = plan_serving(
+            host,
+            &[fp("fat", 2, 450_000, 32_768, 5)],
+            ServingDemand::new(MAX_LANES, None),
+        )
+        .unwrap();
+        assert!(
+            lean.lanes > fat.lanes,
+            "lean {} should beat fat {}",
+            lean.lanes,
+            fat.lanes
+        );
     }
 
     // what this catches: the plan CAPS lane count at the binding constraint — the full-turn
@@ -1171,18 +1367,25 @@ mod tests {
     fn lane_count_respects_the_window_floor_and_reserves_compute_buffers() {
         // 24B-class: 13.6GB weights, kv_per_token ~156KB/token (measured), ~26GB usable.
         let m = fp("devstral-24b", 13, 156_000, 131_072, 9);
-        let host = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
+        let host = HostBudget {
+            usable_bytes: 26 * GB,
+            perf_cores: 10,
+        };
 
         // 4 personas demand 4 lanes, but only 2 slots clear the full-turn window floor on this
         // budget — the window floor (below MAX_LANES=8) is the binding cap. The other 2 minds
         // surface as grid_overflow rather than thrashing 4 minds across 2 clobbering slots.
-        let plan = plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, None)).unwrap();
+        let plan =
+            plan_serving(host, std::slice::from_ref(&m), ServingDemand::new(4, None)).unwrap();
         assert_eq!(
             plan.lanes, 2,
             "the full-turn window floor (not the MAX_LANES backstop) caps warm slots here: {}",
             plan.rationale
         );
-        assert_eq!(plan.grid_overflow_lanes, 2, "the 2 unslotted minds are surfaced for grid placement");
+        assert_eq!(
+            plan.grid_overflow_lanes, 2,
+            "the 2 unslotted minds are surfaced for grid placement"
+        );
 
         // The plan FITS: weights + lanes×KV@window + lanes×compute buffer ≤ budget — the
         // invariant the KV-only math violated (it left no room for the buffers).
@@ -1199,17 +1402,29 @@ mod tests {
     // claiming a CPU plan. The caller owns the CPU/grid decision.
     #[test]
     fn nothing_fits_degrades_honestly_no_silent_cpu() {
-        let host = HostBudget { usable_bytes: 300 * 1_000_000, perf_cores: 2 }; // 0.3GB
+        let host = HostBudget {
+            usable_bytes: 300 * 1_000_000,
+            perf_cores: 2,
+        }; // 0.3GB
         let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert!(!plan.fits_on_gpu, "must report the GPU budget can't hold any candidate");
-        assert_eq!(plan.base_model_id, "qwen2.5-0.5b", "names the smallest as the only option");
+        assert!(
+            !plan.fits_on_gpu,
+            "must report the GPU budget can't hold any candidate"
+        );
+        assert_eq!(
+            plan.base_model_id, "qwen2.5-0.5b",
+            "names the smallest as the only option"
+        );
         assert_eq!(plan.lanes, 1);
     }
 
     // what this catches: no candidates → no plan (caller must supply a registry).
     #[test]
     fn no_candidates_is_none() {
-        let host = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let host = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
         assert!(plan_serving(host, &[], ServingDemand::new(MAX_LANES, None)).is_none());
     }
 
@@ -1227,7 +1442,10 @@ mod tests {
     // what this catches: no incumbent → identical to plain plan_serving (boot).
     #[test]
     fn stable_with_no_incumbent_equals_plain() {
-        let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
+        let host = HostBudget {
+            usable_bytes: 20 * GB,
+            perf_cores: 6,
+        };
         assert_eq!(
             plan_serving_stable(host, &pair(), None, ServingDemand::new(MAX_LANES, None)),
             plan_serving(host, &pair(), ServingDemand::new(MAX_LANES, None))
@@ -1240,11 +1458,32 @@ mod tests {
     #[test]
     fn stable_keeps_incumbent_when_upgrade_lacks_headroom() {
         // 10GB: big (9.7GB) fits a lane but exceeds the 0.9*10=9GB headroom bar.
-        let host = HostBudget { usable_bytes: 10 * GB, perf_cores: 6 };
-        assert_eq!(plan_serving(host, &pair(), ServingDemand::new(MAX_LANES, None)).unwrap().base_model_id, "big", "fresh would pick big");
-        let stable = plan_serving_stable(host, &pair(), Some("small"), ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert_eq!(stable.base_model_id, "small", "hysteresis keeps incumbent — no flap");
-        assert!(stable.lanes >= 1, "lanes still re-tracked for the kept model");
+        let host = HostBudget {
+            usable_bytes: 10 * GB,
+            perf_cores: 6,
+        };
+        assert_eq!(
+            plan_serving(host, &pair(), ServingDemand::new(MAX_LANES, None))
+                .unwrap()
+                .base_model_id,
+            "big",
+            "fresh would pick big"
+        );
+        let stable = plan_serving_stable(
+            host,
+            &pair(),
+            Some("small"),
+            ServingDemand::new(MAX_LANES, None),
+        )
+        .unwrap();
+        assert_eq!(
+            stable.base_model_id, "small",
+            "hysteresis keeps incumbent — no flap"
+        );
+        assert!(
+            stable.lanes >= 1,
+            "lanes still re-tracked for the kept model"
+        );
     }
 
     // what this catches: THE LANE FLAP — a serving model self-evicting its own lane.
@@ -1267,14 +1506,19 @@ mod tests {
         // the oscillation, and every flip resizes the live admission semaphore + prefill
         // throttle under in-flight requests.
         let models = vec![fp("big", 9, 90_000, 262_144, 3)];
-        let at_rest = HostBudget { usable_bytes: 18 * GB, perf_cores: 6 };
-        let boot = plan_serving(at_rest, &models, ServingDemand::new(MAX_LANES, None)).expect("servable at rest");
+        let at_rest = HostBudget {
+            usable_bytes: 18 * GB,
+            perf_cores: 6,
+        };
+        let boot = plan_serving(at_rest, &models, ServingDemand::new(MAX_LANES, None))
+            .expect("servable at rest");
 
         let live = HostBudget {
             usable_bytes: at_rest.usable_bytes - models[0].weights_bytes,
             perf_cores: 6,
         };
-        let fresh = plan_serving(live, &models, ServingDemand::new(MAX_LANES, None)).expect("still servable");
+        let fresh = plan_serving(live, &models, ServingDemand::new(MAX_LANES, None))
+            .expect("still servable");
         // Guard the guard: if this ever stops being a flap, the test below proves nothing.
         assert!(
             fresh.lanes < boot.lanes,
@@ -1283,8 +1527,13 @@ mod tests {
             fresh.lanes
         );
 
-        let stable = plan_serving_stable(live, &models, Some("big"), ServingDemand::new(MAX_LANES, None))
-            .expect("incumbent still servable");
+        let stable = plan_serving_stable(
+            live,
+            &models,
+            Some("big"),
+            ServingDemand::new(MAX_LANES, None),
+        )
+        .expect("incumbent still servable");
         assert_eq!(stable.base_model_id, "big");
         assert_eq!(
             stable.lanes, boot.lanes,
@@ -1303,9 +1552,21 @@ mod tests {
     // fits with headroom — hysteresis isn't a permanent lock-in.
     #[test]
     fn stable_upgrades_when_better_model_fits_with_headroom() {
-        let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 }; // big 9.7 << 0.9*20=18
-        let stable = plan_serving_stable(host, &pair(), Some("small"), ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert_eq!(stable.base_model_id, "big", "more capable + ample headroom → upgrade");
+        let host = HostBudget {
+            usable_bytes: 20 * GB,
+            perf_cores: 6,
+        }; // big 9.7 << 0.9*20=18
+        let stable = plan_serving_stable(
+            host,
+            &pair(),
+            Some("small"),
+            ServingDemand::new(MAX_LANES, None),
+        )
+        .unwrap();
+        assert_eq!(
+            stable.base_model_id, "big",
+            "more capable + ample headroom → upgrade"
+        );
     }
 
     // what this catches: forced switch when the incumbent has DROPPED OFF DISK
@@ -1317,10 +1578,22 @@ mod tests {
     // incumbent's tiny KV floor).
     #[test]
     fn stable_forced_down_when_incumbent_gone_from_disk() {
-        let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
+        let host = HostBudget {
+            usable_bytes: 20 * GB,
+            perf_cores: 6,
+        };
         let only_small = vec![fp("small", 1, 4_000, 32_768, 1)]; // "big" no longer on disk
-        let stable = plan_serving_stable(host, &only_small, Some("big"), ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert_eq!(stable.base_model_id, "small", "incumbent gone from disk → serve what's present");
+        let stable = plan_serving_stable(
+            host,
+            &only_small,
+            Some("big"),
+            ServingDemand::new(MAX_LANES, None),
+        )
+        .unwrap();
+        assert_eq!(
+            stable.base_model_id, "small",
+            "incumbent gone from disk → serve what's present"
+        );
     }
 
     // what this catches: THE boot-load flap (this session's live bug). While the
@@ -1334,17 +1607,31 @@ mod tests {
     fn stable_survives_its_own_load_dip_no_flap() {
         // Mid-load the monitor reports only 8GB free because the 9GB incumbent's
         // weights are paging in; steady-state would be far higher.
-        let dipped = HostBudget { usable_bytes: 8 * GB, perf_cores: 6 };
+        let dipped = HostBudget {
+            usable_bytes: 8 * GB,
+            perf_cores: 6,
+        };
         // Plain plan at the depressed budget WOULD flap: big (9GB) no longer "fits"
         // 8GB, so fresh prefers the smaller model.
         assert_eq!(
-            plan_serving(dipped, &pair(), ServingDemand::new(MAX_LANES, None)).unwrap().base_model_id,
+            plan_serving(dipped, &pair(), ServingDemand::new(MAX_LANES, None))
+                .unwrap()
+                .base_model_id,
             "small",
             "depressed-budget plain plan would flap to the smaller model"
         );
         // With the incumbent credited its own weights back, the resident big stays.
-        let stable = plan_serving_stable(dipped, &pair(), Some("big"), ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert_eq!(stable.base_model_id, "big", "incumbent survives its OWN load dip — no flap");
+        let stable = plan_serving_stable(
+            dipped,
+            &pair(),
+            Some("big"),
+            ServingDemand::new(MAX_LANES, None),
+        )
+        .unwrap();
+        assert_eq!(
+            stable.base_model_id, "big",
+            "incumbent survives its OWN load dip — no flap"
+        );
         assert!(stable.lanes >= 1, "kept model still gets ≥1 lane");
     }
 }

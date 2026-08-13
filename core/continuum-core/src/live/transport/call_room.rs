@@ -92,7 +92,11 @@ mod tests {
         let canonical = resolve_call_room(&id, "general");
         assert!(canonical.is_some());
         for spelling in ["general", "General", "#general", "  #GENERAL "] {
-            assert_eq!(resolve_call_room(&id, spelling), canonical, "'{spelling}' == general");
+            assert_eq!(
+                resolve_call_room(&id, spelling),
+                canonical,
+                "'{spelling}' == general"
+            );
         }
     }
 
@@ -108,8 +112,19 @@ mod tests {
             resolve_call_room(&b, "general"),
             "same channel, different mesh identity ⇒ different room"
         );
-        assert_ne!(resolve_call_room(&a, "general"), resolve_call_room(&a, "academy"));
-        assert_eq!(resolve_call_room(&a, ""), None, "empty name ⇒ no invented id");
-        assert_eq!(resolve_call_room(&a, "bad name!"), None, "invalid name ⇒ None");
+        assert_ne!(
+            resolve_call_room(&a, "general"),
+            resolve_call_room(&a, "academy")
+        );
+        assert_eq!(
+            resolve_call_room(&a, ""),
+            None,
+            "empty name ⇒ no invented id"
+        );
+        assert_eq!(
+            resolve_call_room(&a, "bad name!"),
+            None,
+            "invalid name ⇒ None"
+        );
     }
 }

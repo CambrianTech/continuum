@@ -75,12 +75,24 @@ where
 /// shared `Arc<CodeState>`.
 pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(CodeGitStatus { state: state.clone() }),
-        Arc::new(CodeGitDiff { state: state.clone() }),
-        Arc::new(CodeGitLog { state: state.clone() }),
-        Arc::new(CodeGitAdd { state: state.clone() }),
-        Arc::new(CodeGitCommit { state: state.clone() }),
-        Arc::new(CodeGitPush { state: state.clone() }),
+        Arc::new(CodeGitStatus {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitDiff {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitLog {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitAdd {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitCommit {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitPush {
+            state: state.clone(),
+        }),
         Arc::new(CodeGitApply { state }),
     ]
 }

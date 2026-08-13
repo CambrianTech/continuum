@@ -35,7 +35,10 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 /// quiesce state onto the run (slice 2 — the quiesce-verify fix); the field exists
 /// now so the model + the UI layout reserve the chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/BenchmarkProvenance.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/BenchmarkProvenance.ts"
+)]
 pub enum BenchmarkProvenance {
     Clean,
     Contended,
@@ -44,7 +47,10 @@ pub enum BenchmarkProvenance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/BenchmarkObserveParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/BenchmarkObserveParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkObserveParams {
     /// The examinee persona whose ledger holds the run history. Omit for live
@@ -67,7 +73,10 @@ pub struct BenchmarkObserveParams {
 /// layout: a widget renders these fields, this skill returns them, a persona
 /// perceives them.
 #[derive(Debug, Clone, Serialize, TS, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/BenchmarkObserveResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/BenchmarkObserveResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkObserveResult {
     pub scoreboard: Scoreboard,
@@ -78,7 +87,10 @@ pub struct BenchmarkObserveResult {
 
 /// Right-hand region: the at-a-glance number + how much to trust it.
 #[derive(Debug, Clone, Serialize, TS, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/BenchmarkScoreboard.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/BenchmarkScoreboard.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Scoreboard {
     /// Tasks graded / total in the running (or just-finished) pass.
@@ -111,7 +123,10 @@ pub struct Scoreboard {
 
 /// Central region: what she's working on right now.
 #[derive(Debug, Clone, Serialize, TS, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/BenchmarkCentral.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/BenchmarkCentral.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Central {
     /// The task currently being (or just) graded.
@@ -128,7 +143,10 @@ pub struct Central {
 /// per-TASK stream (task_graded, turn) is the next slice, when eval publishes
 /// per-task events onto the bus/room.
 #[derive(Debug, Clone, Serialize, TS, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/BenchmarkFeedEvent.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/BenchmarkFeedEvent.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,7 +170,10 @@ pub struct FeedEvent {
 }
 
 #[derive(Debug, Clone, Serialize, TS, Default)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/BenchmarkMeta.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/BenchmarkMeta.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,7 +213,11 @@ impl BenchmarkObserveResult {
             scoreboard.done = p.done;
             scoreboard.total = p.total;
             scoreboard.pass = p.pass;
-            scoreboard.pass_rate = if p.done > 0 { p.pass as f64 / p.done as f64 } else { 0.0 };
+            scoreboard.pass_rate = if p.done > 0 {
+                p.pass as f64 / p.done as f64
+            } else {
+                0.0
+            };
             scoreboard.vram_free_gb = p.vram_free_gb;
             scoreboard.updated_at_ms = p.updated_at_ms;
             central.current_task = Some(p.current_task.clone());
@@ -344,8 +369,14 @@ mod tests {
         // focused run's final 0.375, and complete flipped true.
         assert_eq!(out.scoreboard.done, 6);
         assert_eq!(out.scoreboard.total, 8);
-        assert!(!out.scoreboard.pass_finished, "6/8 is mid-pass, not finished");
-        assert!(out.scoreboard.complete, "the focused run's ledger row exists");
+        assert!(
+            !out.scoreboard.pass_finished,
+            "6/8 is mid-pass, not finished"
+        );
+        assert!(
+            out.scoreboard.complete,
+            "the focused run's ledger row exists"
+        );
         assert!((out.scoreboard.pass_rate - 0.375).abs() < 1e-9);
         // r2 was stamped cleanLane=true → the focused run's chip is CLEAN.
         assert_eq!(out.scoreboard.provenance, BenchmarkProvenance::Clean);
@@ -357,9 +388,17 @@ mod tests {
         assert_eq!(out.feed.len(), 2);
         assert_eq!(out.feed[0].run_id.as_deref(), Some("r2"));
         assert_eq!(out.feed[0].benchmark.as_deref(), Some("hard-rs"));
-        assert_eq!(out.feed[0].provenance, BenchmarkProvenance::Clean, "r2 stamped clean");
+        assert_eq!(
+            out.feed[0].provenance,
+            BenchmarkProvenance::Clean,
+            "r2 stamped clean"
+        );
         assert_eq!(out.feed[1].run_id.as_deref(), Some("old"));
-        assert_eq!(out.feed[1].provenance, BenchmarkProvenance::Unknown, "unstamped row → unknown");
+        assert_eq!(
+            out.feed[1].provenance,
+            BenchmarkProvenance::Unknown,
+            "unstamped row → unknown"
+        );
         assert!(!out.meta.idle);
     }
 
@@ -368,13 +407,23 @@ mod tests {
     // with an ` on <model>` suffix stripped, and a raw eval run falling back to evalSet.
     #[test]
     fn benchmark_name_reads_clean_from_the_run_note() {
-        assert_eq!(benchmark_name(Some("benchmark/run hard-rs"), Some("inline")).as_deref(), Some("hard-rs"));
         assert_eq!(
-            benchmark_name(Some("benchmark/run humaneval-rs on qwen2.5"), Some("inline")).as_deref(),
+            benchmark_name(Some("benchmark/run hard-rs"), Some("inline")).as_deref(),
+            Some("hard-rs")
+        );
+        assert_eq!(
+            benchmark_name(
+                Some("benchmark/run humaneval-rs on qwen2.5"),
+                Some("inline")
+            )
+            .as_deref(),
             Some("humaneval-rs")
         );
         // Raw cognition/eval with a named set and no benchmark note → fall back to evalSet.
-        assert_eq!(benchmark_name(Some("baseline"), Some("coder-eval")).as_deref(), Some("coder-eval"));
+        assert_eq!(
+            benchmark_name(Some("baseline"), Some("coder-eval")).as_deref(),
+            Some("coder-eval")
+        );
         assert_eq!(benchmark_name(None, None), None);
     }
 
@@ -383,12 +432,22 @@ mod tests {
     #[test]
     fn pass_finished_flips_when_all_tasks_graded() {
         let progress = Some(EvalPassProgress {
-            done: 3, total: 3, pass: 0, current_task: "rle_roundtrip".to_string(),
-            last_ok: false, output_tokens: 0, updated_at_ms: 1, vram_free_gb: None, run_id: None,
+            done: 3,
+            total: 3,
+            pass: 0,
+            current_task: "rle_roundtrip".to_string(),
+            last_ok: false,
+            output_tokens: 0,
+            updated_at_ms: 1,
+            vram_free_gb: None,
+            run_id: None,
         });
         let out = BenchmarkObserveResult::assemble(progress, None, None, None, 10);
         assert!(out.scoreboard.pass_finished);
-        assert!(!out.scoreboard.complete, "no run_id → no durable-row completion");
+        assert!(
+            !out.scoreboard.complete,
+            "no run_id → no durable-row completion"
+        );
     }
 
     // what this catches: nothing running + no run row = honest idle, not a fabricated

@@ -21,7 +21,9 @@
 //! working-set swap) composes on top of this bridge and M5's `cb_eval` executor — that
 //! is the joint next slice, not this one.
 
-use super::expert_residency::{plan_expert_residency, ExpertActivationProfile, ExpertResidencyPlan};
+use super::expert_residency::{
+    plan_expert_residency, ExpertActivationProfile, ExpertResidencyPlan,
+};
 use super::{DeviceCapacity, SystemProfile};
 
 /// Plan expert residency against this box's BUDGETED VRAM (the shared 0.80 serving
@@ -39,15 +41,7 @@ pub fn plan_expert_residency_budgeted(
     expert_bytes: u64,
     margin_bytes: u64,
 ) -> ExpertResidencyPlan {
-    plan_expert_residency_with_resident(
-        profile,
-        activation,
-        expert_bytes,
-        margin_bytes,
-        0,
-        0,
-        0,
-    )
+    plan_expert_residency_with_resident(profile, activation, expert_bytes, margin_bytes, 0, 0, 0)
 }
 
 /// [`plan_expert_residency_budgeted`] with SELF-OCCUPANCY ADD-BACK (#269, the
@@ -108,11 +102,10 @@ pub fn plan_expert_residency_with_resident(
     if expert_bytes > 0 {
         let _ = activation; // profile drives the plan below; cliff uses arch facts
         if activated_per_token > 0 {
-            let one_token_ws =
-                crate::capacity::expert_ecache::EcacheBudget::one_token_working_set(
-                    activated_per_token,
-                    expert_bytes,
-                );
+            let one_token_ws = crate::capacity::expert_ecache::EcacheBudget::one_token_working_set(
+                activated_per_token,
+                expert_bytes,
+            );
             let fast_total = budgeted
                 .gpu_free_bytes_live
                 .saturating_add(budgeted.system_ram_free_bytes);
@@ -169,7 +162,13 @@ mod tests {
         let mut hits = HashMap::new();
         // n experts on layer 0, descending hit counts → a clear hot→cold ranking.
         for e in 0..n {
-            hits.insert(ExpertId { layer: 0, expert: e }, (n - e) as u64 * 100);
+            hits.insert(
+                ExpertId {
+                    layer: 0,
+                    expert: e,
+                },
+                (n - e) as u64 * 100,
+            );
         }
         ExpertActivationProfile {
             gate_magnitude: HashMap::new(),
@@ -206,7 +205,10 @@ mod tests {
             "hot set must fit the BUDGETED VRAM (24 GiB / 4 GiB = ≤6), got {}",
             budgeted.hot.len()
         );
-        assert!(!budgeted.hot.is_empty(), "some experts should be hot with a 24 GiB budget");
+        assert!(
+            !budgeted.hot.is_empty(),
+            "some experts should be hot with a 24 GiB budget"
+        );
     }
 
     // what this catches: unsized experts (expert_bytes = 0, a model whose layout hasn't
@@ -242,8 +244,10 @@ mod tests {
         // Simulate APPLYING the plan: live-free drops by exactly what we
         // promoted. (Budget derives from live-free, so both tiers shrink.)
         let mut applied = profile.clone();
-        applied.capacity.gpu_free_bytes_live =
-            applied.capacity.gpu_free_bytes_live.saturating_sub(hot_bytes);
+        applied.capacity.gpu_free_bytes_live = applied
+            .capacity
+            .gpu_free_bytes_live
+            .saturating_sub(hot_bytes);
         applied.capacity.system_ram_free_bytes = applied
             .capacity
             .system_ram_free_bytes
@@ -268,6 +272,9 @@ mod tests {
         );
         assert_eq!(second.hot, first.hot, "hot set is a fixed point");
         assert_eq!(second.warm, first.warm, "warm set is a fixed point");
-        assert_eq!(second.cold, first.cold, "nothing demoted under unchanged demand");
+        assert_eq!(
+            second.cold, first.cold,
+            "nothing demoted under unchanged demand"
+        );
     }
 }

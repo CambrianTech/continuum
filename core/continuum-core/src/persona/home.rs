@@ -197,14 +197,14 @@ mod tests {
     fn every_citizen_kind_gets_the_same_home_shape() {
         let root = Path::new("/tmp/continuum-test-root");
         let agent = PersonaHome::for_agent(root, "claude-code");
-        let human = PersonaHome::for_human(root, "joel");
+        let human = PersonaHome::for_human(root, "operator");
         assert_eq!(
             agent.engrams_db(),
             Path::new("/tmp/continuum-test-root/agents/claude-code/engrams.sqlite")
         );
         assert_eq!(
             human.engrams_db(),
-            Path::new("/tmp/continuum-test-root/humans/joel/engrams.sqlite")
+            Path::new("/tmp/continuum-test-root/humans/operator/engrams.sqlite")
         );
         // Same layout invariant every kind: airc identity beside engrams.
         assert_eq!(
@@ -258,7 +258,8 @@ mod tests {
         assert!(!home.root().exists(), "fresh tempdir doesn't have it yet");
         home.ensure_exists().expect("first ensure_exists succeeds");
         assert!(home.root().exists(), "directory now exists");
-        home.ensure_exists().expect("second ensure_exists is a no-op");
+        home.ensure_exists()
+            .expect("second ensure_exists is a no-op");
         assert!(home.root().exists(), "still exists after idempotent call");
     }
 

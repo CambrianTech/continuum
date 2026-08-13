@@ -59,7 +59,10 @@ pub mod look;
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObserveViewport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObserveViewport.ts"
+)]
 pub struct ObserveViewport {
     #[ts(type = "number")]
     pub width: u32,
@@ -76,7 +79,10 @@ pub struct ObserveViewport {
 /// can ALL honor this.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObserveParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObserveParams.ts"
+)]
 pub struct ObserveParams {
     /// What to look at. A web adapter treats this as a URL to open; other adapters
     /// map it to their own surface path.
@@ -97,7 +103,10 @@ pub struct ObserveParams {
 /// surface (a DOM layout box, a scene node's projected screen rect).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ProbeBox.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ProbeBox.ts"
+)]
 pub struct ProbeBox {
     #[ts(type = "number")]
     pub x: f32,
@@ -116,7 +125,10 @@ pub struct ProbeBox {
 /// other at the boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ProbeNode.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ProbeNode.ts"
+)]
 pub struct ProbeNode {
     /// Element tag / node type (`div`, `button`; a scene node's payload kind).
     pub tag: String,
@@ -150,7 +162,10 @@ pub struct ProbeNode {
 /// `ScreenshotResult`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObservedImage.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObservedImage.ts"
+)]
 pub struct ObservedImage {
     /// `data:` URL of the encoded frame (usually PNG), when returned inline.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,7 +189,10 @@ pub struct ObservedImage {
 /// `CommandResponse` envelope.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/perception/ObserveResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/perception/ObserveResult.ts"
+)]
 pub struct ObserveResult {
     /// Observation succeeded.
     pub success: bool,
@@ -255,7 +273,9 @@ mod tests {
             "observe is adapter-served (an eye-node), never a substrate ServiceModule"
         );
         assert!(
-            native_tool_specs().iter().any(|s| s.name == "perception/observe"),
+            native_tool_specs()
+                .iter()
+                .any(|s| s.name == "perception/observe"),
             "observe must be offered natively beside interface/screenshot"
         );
     }

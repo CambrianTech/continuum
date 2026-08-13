@@ -62,10 +62,7 @@ use crate::identity::PeerId;
 use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
 use crate::persona::resume_or_mint_provider::now_ms;
 use crate::persona::seed::ensure_seed;
-use crate::persona::{
-    PersonaAircRuntime, PersonaAircRuntimeError,
-    PersonaAircRuntimeRegistry,
-};
+use crate::persona::{PersonaAircRuntime, PersonaAircRuntimeError, PersonaAircRuntimeRegistry};
 use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
@@ -91,7 +88,10 @@ use crate::runtime::{
 /// `personaId` was a duplicate of it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaInstanceInfo.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaInstanceInfo.ts"
+)]
 pub struct PersonaInstanceInfo {
     /// The persona's airc agent_name. NOTE: currently derived from
     /// the historical pre-bootstrap Uuid (before peer_id existed),
@@ -150,7 +150,10 @@ impl PersonaInstanceInfo {
     /// `PersonaIdentity` is cheap to clone, so returning an owned value
     /// is fine on the per-tick service loop.
     pub fn persona_identity(&self) -> crate::persona::persona_identity::PersonaIdentity {
-        crate::persona::persona_identity::PersonaIdentity::new(self.peer_id.as_uuid(), &self.agent_name)
+        crate::persona::persona_identity::PersonaIdentity::new(
+            self.peer_id.as_uuid(),
+            &self.agent_name,
+        )
     }
 }
 
@@ -309,9 +312,8 @@ impl PersonaBirth {
                     .get("bio")
                     .cloned()
                     .or_else(|| {
-                        card.role.map(|r| {
-                            role_bio_template(r).replace("{name}", &card.agent_name)
-                        })
+                        card.role
+                            .map(|r| role_bio_template(r).replace("{name}", &card.agent_name))
                     })
                     // A card minted before role threading (#199 later slice)
                     // carries no role — an honest generic line beats an empty
@@ -701,7 +703,10 @@ mod tests {
         let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
         assert!(names.contains(&"persona/instances/list"), "got {names:?}");
         assert!(names.contains(&"persona/instances/get"), "got {names:?}");
-        assert!(names.contains(&"persona/instances/despawn"), "got {names:?}");
+        assert!(
+            names.contains(&"persona/instances/despawn"),
+            "got {names:?}"
+        );
     }
 
     #[tokio::test]

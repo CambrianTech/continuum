@@ -97,7 +97,7 @@ mod tests {
     fn fixture_ctx() -> RatingContext {
         RatingContext {
             original_message: RatingMessage {
-                sender_name: "joel".into(),
+                sender_name: "operator".into(),
                 content: "what is the meaning of life?".into(),
                 timestamp: 1_700_000_000_000,
             },
@@ -108,7 +108,7 @@ mod tests {
                     timestamp: 1_699_999_900_000,
                 },
                 RatingMessage {
-                    sender_name: "joel".into(),
+                    sender_name: "operator".into(),
                     content: "anyone here philosophical?".into(),
                     timestamp: 1_699_999_950_000,
                 },
@@ -150,7 +150,7 @@ mod tests {
     fn prompt_contains_original_message_section() {
         let ctx = fixture_ctx();
         let p = build_rating_prompt(&ctx, "claude");
-        assert!(p.contains("ORIGINAL MESSAGE (from joel):"));
+        assert!(p.contains("ORIGINAL MESSAGE (from operator):"));
         assert!(p.contains("\"what is the meaning of life?\""));
     }
 
@@ -162,7 +162,7 @@ mod tests {
         let ctx = fixture_ctx();
         let p = build_rating_prompt(&ctx, "claude");
         assert!(p.contains("[alice]: hello everyone"));
-        assert!(p.contains("[joel]: anyone here philosophical?"));
+        assert!(p.contains("[operator]: anyone here philosophical?"));
     }
 
     /// What this catches: each proposal renders with PROPOSAL N: header,

@@ -52,7 +52,10 @@ pub struct AircQueueCardEnvelope {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/airc/AircQueueIssue.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/airc/AircQueueIssue.ts"
+)]
 pub struct AircQueueIssue {
     pub number: u64,
     pub title: String,

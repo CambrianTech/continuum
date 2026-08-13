@@ -93,7 +93,8 @@ impl TransportAddress {
                 // though destination_hash is in practice ASCII-hex — the
                 // safe primitive removes the latent panic by construction
                 // per [[every-error-is-an-opportunity-to-battle-harden]].
-                let short = crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
+                let short =
+                    crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
                 format!("ret:{short}...")
             }
         }
@@ -115,7 +116,10 @@ pub const DEFAULT_GRID_PORT: u16 = 7117;
 /// A capability that a node advertises to the mesh.
 /// Used by the GridRouter to decide where to send commands.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/grid/NodeCapability.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/grid/NodeCapability.ts"
+)]
 #[serde(tag = "type")]
 pub enum NodeCapability {
     /// GPU compute available.

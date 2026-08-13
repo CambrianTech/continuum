@@ -151,10 +151,7 @@ pub trait AircCitizen:
     /// VISIBLE). Default no-op — only the production runtime streams; scripted /
     /// stub citizens don't. Returns `Ok(())` (the event id isn't needed by the
     /// forwarder).
-    async fn publish_stream_chunk(
-        &self,
-        _chunk: &airc_lib::StreamChunk,
-    ) -> Result<(), AircError> {
+    async fn publish_stream_chunk(&self, _chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         Ok(())
     }
 }
@@ -242,11 +239,9 @@ impl StubAircCitizen {
     /// [[test-fixtures-are-system-primitives]] — every supervisor
     /// test that exercises materialize_adapters without a real airc
     /// daemon leases this closure shape.
-    pub fn fresh_lookup(
-    ) -> impl Fn(Uuid) -> Option<std::sync::Arc<dyn AircCitizen>> + Clone {
+    pub fn fresh_lookup() -> impl Fn(Uuid) -> Option<std::sync::Arc<dyn AircCitizen>> + Clone {
         |_pid| {
-            Some(std::sync::Arc::new(Self::new(Uuid::new_v4()))
-                as std::sync::Arc<dyn AircCitizen>)
+            Some(std::sync::Arc::new(Self::new(Uuid::new_v4())) as std::sync::Arc<dyn AircCitizen>)
         }
     }
 }
@@ -300,9 +295,7 @@ impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for StubAircCitizen {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // No daemon in tests → no pinned wall posts. Cognition runs through
         // cleanly with no [room-board] grounding block.
         Ok(vec![])
@@ -401,7 +394,9 @@ mod tests {
         // `FilteredEventStream` is not Debug, so match rather than `expect_err`.
         match stub.subscribe_all_rooms().await {
             Err(AircError::Transport(_)) => {}
-            Err(other) => panic!("refusal must be Transport (what the caller branches on), got: {other:?}"),
+            Err(other) => {
+                panic!("refusal must be Transport (what the caller branches on), got: {other:?}")
+            }
             Ok(_) => panic!("a stub has no transport — it must not hand back a stream"),
         }
     }

@@ -183,7 +183,9 @@ mod tests {
         let mut ctrl = ShareController::new(OrientationShares::new(34, 33, 33));
         for _ in 0..50 {
             let s = ctrl.observe(defer(0, 0, 100)); // growth screaming for tickets
-            assert!(s.tickets(Orientation::Reactive) >= OrientationShares::floor(Orientation::Reactive));
+            assert!(
+                s.tickets(Orientation::Reactive) >= OrientationShares::floor(Orientation::Reactive)
+            );
             assert!(
                 s.tickets(Orientation::SelfDirected)
                     >= OrientationShares::floor(Orientation::SelfDirected)
@@ -275,7 +277,10 @@ mod tests {
     fn largest_remainder_is_exact_and_proportional() {
         let a = largest_remainder(8, &[50.0, 20.0, 8.0]);
         assert_eq!(a.iter().sum::<u32>(), 8, "exact total");
-        assert!(a[0] > a[1] && a[1] >= a[2], "proportional to weights: {a:?}");
+        assert!(
+            a[0] > a[1] && a[1] >= a[2],
+            "proportional to weights: {a:?}"
+        );
 
         // All-zero weights → nothing allocated (no signal).
         assert_eq!(largest_remainder(8, &[0.0, 0.0, 0.0]), [0, 0, 0]);

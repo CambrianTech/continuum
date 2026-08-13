@@ -17,7 +17,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/EnqueueMessageParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/EnqueueMessageParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct EnqueueMessageParams {
     /// Persona whose inbox receives the message.
@@ -28,7 +31,10 @@ pub struct EnqueueMessageParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/EnqueueMessageResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/EnqueueMessageResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct EnqueueMessageResult {
     pub enqueued: bool,

@@ -191,7 +191,13 @@ impl ModelCapabilities {
     /// (`head_dim = n_embd / n_head`, K and V both `head_dim` wide). This IS
     /// the old scalar formula, expressed per-layer — ordinary models price
     /// identically through it.
-    pub fn uniform(n_ctx_train: u32, n_layer: u32, n_head: u32, n_head_kv: u32, n_embd: u32) -> Self {
+    pub fn uniform(
+        n_ctx_train: u32,
+        n_layer: u32,
+        n_head: u32,
+        n_head_kv: u32,
+        n_embd: u32,
+    ) -> Self {
         let head_dim = if n_head == 0 { 0 } else { n_embd / n_head };
         Self {
             n_ctx_train,
@@ -200,7 +206,11 @@ impl ModelCapabilities {
             n_head_kv,
             n_embd,
             kv_layers: (0..n_layer)
-                .map(|_| KvLayer { n_head_kv, k_width: head_dim, v_width: head_dim })
+                .map(|_| KvLayer {
+                    n_head_kv,
+                    k_width: head_dim,
+                    v_width: head_dim,
+                })
                 .collect(),
         }
     }
@@ -1034,7 +1044,10 @@ mod tests {
         // return 0 (caller falls back to the trained ceiling) rather than
         // dividing by zero.
         let bad = ModelCapabilities::uniform(0, 0, 0, 0, 0);
-        assert_eq!(bad.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16), 0);
+        assert_eq!(
+            bad.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16),
+            0
+        );
     }
 
     // what this catches: BigMama's registered 5090 issue 2 (#238) — hybrid
@@ -1105,7 +1118,10 @@ mod tests {
 
         let caps = backend.capabilities();
         assert!(caps.n_ctx_train > 0, "GGUF must report a trained ceiling");
-        assert!(caps.n_layer > 0 && caps.n_head_kv > 0, "real dims populated");
+        assert!(
+            caps.n_layer > 0 && caps.n_head_kv > 0,
+            "real dims populated"
+        );
 
         let ctx = backend.effective_context_length();
         // Derived, not panicked; within the model's real ceiling; usable.

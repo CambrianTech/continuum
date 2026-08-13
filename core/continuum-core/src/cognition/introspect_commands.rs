@@ -33,11 +33,17 @@ const MAX_LIMIT: usize = 100;
 
 /// Read the last `limit` JSONL lines from a per-persona fixture file under
 /// `~/.continuum/fixtures/<subdir>/<persona_id>.jsonl`. Missing file → empty.
-fn tail_persona_jsonl(subdir: &str, persona_id: &str, limit: usize) -> Result<Vec<String>, CommandError> {
+fn tail_persona_jsonl(
+    subdir: &str,
+    persona_id: &str,
+    limit: usize,
+) -> Result<Vec<String>, CommandError> {
     // persona_id is a path component — validate it's a plain UUID-ish token so a
     // caller can't traverse out of the fixtures dir.
     if persona_id.is_empty()
-        || !persona_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        || !persona_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
         return Err(CommandError::Invalid(format!(
             "persona_id '{persona_id}' is not a valid id token"
@@ -53,7 +59,12 @@ fn tail_persona_jsonl(subdir: &str, persona_id: &str, limit: usize) -> Result<Ve
         Ok(b) => b,
         // No trace yet (persona hasn't run, or capture off) is not an error.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(CommandError::Internal(format!("read {}: {e}", path.display()))),
+        Err(e) => {
+            return Err(CommandError::Internal(format!(
+                "read {}: {e}",
+                path.display()
+            )))
+        }
     };
     let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
     let n = limit.min(MAX_LIMIT);
@@ -95,7 +106,11 @@ impl ActionCommand for CognitionTrace {
     type Params = CognitionTraceParams;
     type Output = CognitionTraceResult;
 
-    async fn run(&self, _ctx: &Ctx, p: CognitionTraceParams) -> Result<CognitionTraceResult, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: CognitionTraceParams,
+    ) -> Result<CognitionTraceResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
         let records = tail_persona_jsonl("workspace-traces", p.persona_id.as_str(), limit)?;
         Ok(CognitionTraceResult {
@@ -141,7 +156,11 @@ impl ActionCommand for CognitionPrompt {
     type Params = CognitionPromptParams;
     type Output = CognitionPromptResult;
 
-    async fn run(&self, _ctx: &Ctx, p: CognitionPromptParams) -> Result<CognitionPromptResult, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: CognitionPromptParams,
+    ) -> Result<CognitionPromptResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
         let records = tail_persona_jsonl("prompt-captures", p.persona_id.as_str(), limit)?;
         Ok(CognitionPromptResult {
@@ -234,7 +253,11 @@ mod tests {
     // trace yet" is a normal state (persona hasn't run / capture off).
     #[test]
     fn missing_trace_is_empty_not_error() {
-        let r = tail_persona_jsonl("workspace-traces", "00000000-0000-0000-0000-000000000000", 5);
+        let r = tail_persona_jsonl(
+            "workspace-traces",
+            "00000000-0000-0000-0000-000000000000",
+            5,
+        );
         assert!(matches!(r, Ok(v) if v.is_empty()));
     }
 }

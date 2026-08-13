@@ -119,17 +119,27 @@ impl Transport for NotImplementedRemoteTransport {
                  see this variant."
                     .to_string(),
             ),
-            RouteDecision::Peer { peer, node, env, path, .. } => Err(format!(
+            RouteDecision::Peer {
+                peer,
+                node,
+                env,
+                path,
+                ..
+            } => Err(format!(
                 "Peer dispatch not yet implemented — \
                  AircTransport lands in a subsequent Slice P commit. \
                  Routing was: peer={peer:?}, node={node:?}, env={env:?}, path={path}"
             )),
-            RouteDecision::Room { room_id, env, path, .. } => Err(format!(
+            RouteDecision::Room {
+                room_id, env, path, ..
+            } => Err(format!(
                 "Room broadcast not yet implemented — \
                  AircTransport lands in a subsequent Slice P commit. \
                  Routing was: room={room_id}, env={env:?}, path={path}"
             )),
-            RouteDecision::Broadcast { peer, node, path, .. } => Err(format!(
+            RouteDecision::Broadcast {
+                peer, node, path, ..
+            } => Err(format!(
                 "Env-wildcard broadcast not yet implemented — \
                  AircTransport lands in a subsequent Slice P commit. \
                  Routing was: peer={peer:?}, node={node:?}, path={path}"
@@ -144,20 +154,13 @@ impl Transport for NotImplementedRemoteTransport {
 /// airc transport.
 pub struct ClosureTransport {
     name: &'static str,
-    f: Arc<
-        dyn Fn(RouteDecision, Value) -> Result<CommandResult, String>
-            + Send
-            + Sync,
-    >,
+    f: Arc<dyn Fn(RouteDecision, Value) -> Result<CommandResult, String> + Send + Sync>,
 }
 
 impl ClosureTransport {
     pub fn new(
         name: &'static str,
-        f: impl Fn(RouteDecision, Value) -> Result<CommandResult, String>
-            + Send
-            + Sync
-            + 'static,
+        f: impl Fn(RouteDecision, Value) -> Result<CommandResult, String> + Send + Sync + 'static,
     ) -> Self {
         Self {
             name,
@@ -168,7 +171,9 @@ impl ClosureTransport {
 
 impl std::fmt::Debug for ClosureTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClosureTransport").field("name", &self.name).finish()
+        f.debug_struct("ClosureTransport")
+            .field("name", &self.name)
+            .finish()
     }
 }
 
@@ -224,7 +229,10 @@ mod tests {
             .dispatch(room_decision(), Value::Null)
             .await
             .expect_err("not-implemented must error");
-        assert!(err.contains("Room broadcast"), "error must name Room: {err}");
+        assert!(
+            err.contains("Room broadcast"),
+            "error must name Room: {err}"
+        );
     }
 
     #[tokio::test]

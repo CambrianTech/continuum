@@ -381,7 +381,11 @@ impl WorkingMemory {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string(), acts: Vec::new() });
+        e.push_back(WmEntry {
+            kind: WmKind::Thought,
+            text: r.to_string(),
+            acts: Vec::new(),
+        });
         while e.len() > self.capacity {
             e.pop_front();
         }
@@ -637,7 +641,9 @@ impl WorkingMemory {
     /// counter says otherwise (glass-boxed 2026-07-13: Asha's window held
     /// 3 silence Facts and zero Receipts minutes after real searches ran).
     pub fn actions_taken(&self) -> u64 {
-        self.next_action_seq.load(Ordering::Relaxed).saturating_sub(1)
+        self.next_action_seq
+            .load(Ordering::Relaxed)
+            .saturating_sub(1)
     }
 
     /// TRUE if any entry in the window is a real tool receipt — the kind
@@ -754,7 +760,15 @@ impl WorkingMemory {
         let m = self.dispatched.lock();
         let mut v: Vec<_> = m
             .iter()
-            .map(|(h, a)| (*h, a.label.clone(), a.latest.clone(), a.status.clone(), a.seq))
+            .map(|(h, a)| {
+                (
+                    *h,
+                    a.label.clone(),
+                    a.latest.clone(),
+                    a.status.clone(),
+                    a.seq,
+                )
+            })
             .collect();
         v.sort_by_key(|t| t.4);
         v.into_iter()
@@ -792,7 +806,8 @@ impl WorkingMemory {
         // acted yet (last_action None) → nothing to close. `fetch_max` so it never regresses.
         if let Some((seq, _)) = self.last_action.lock().as_ref() {
             let next_active = seq.saturating_add(1);
-            self.active_from_seq.fetch_max(next_active, Ordering::Relaxed);
+            self.active_from_seq
+                .fetch_max(next_active, Ordering::Relaxed);
         }
     }
 
@@ -1139,17 +1154,24 @@ mod tests {
             1,
             "the repeat must not re-show the full answer:\n{out}"
         );
-        assert!(out.contains("not re-shown"), "stub names the collapse:\n{out}");
+        assert!(
+            out.contains("not re-shown"),
+            "stub names the collapse:\n{out}"
+        );
         assert!(
             out.contains("[action #4]"),
             "non-receipt traces are untouched:\n{out}"
         );
         // Distinct answers both render in full — collapse is repetition-only.
         let varied = vec![
-            format!("{WM_SETTLEMENT_PREFIX} the sha256 digest of the sample file is \
-                     abc123, computed with the standard tool over the exact bytes"),
-            format!("{WM_SETTLEMENT_PREFIX} the benchmark run finished green with twelve \
-                     passing cases and no failures across the entire suite tonight"),
+            format!(
+                "{WM_SETTLEMENT_PREFIX} the sha256 digest of the sample file is \
+                     abc123, computed with the standard tool over the exact bytes"
+            ),
+            format!(
+                "{WM_SETTLEMENT_PREFIX} the benchmark run finished green with twelve \
+                     passing cases and no failures across the entire suite tonight"
+            ),
         ];
         let out = render_trail(&varied);
         assert!(out.contains("sha256") && out.contains("benchmark run finished green"));
@@ -1169,12 +1191,20 @@ mod tests {
     #[test]
     fn action_verb_tally_aggregates_by_tool_name() {
         let wm = WorkingMemory::new(16);
-        for args in ["{\"pattern\":\"a\"}", "{\"pattern\":\"b\"}", "{\"pattern\":\"c\"}"] {
+        for args in [
+            "{\"pattern\":\"a\"}",
+            "{\"pattern\":\"b\"}",
+            "{\"pattern\":\"c\"}",
+        ] {
             wm.note_action_fingerprint(&format!("code/search|{args}"));
         }
         wm.note_action_fingerprint("code/read|{\"file_path\":\"x.py\"}");
         let tally = wm.action_verb_tally();
-        assert_eq!(tally[0], ("code/search".to_string(), 3), "most-used first: {tally:?}");
+        assert_eq!(
+            tally[0],
+            ("code/search".to_string(), 3),
+            "most-used first: {tally:?}"
+        );
         assert_eq!(tally[1], ("code/read".to_string(), 1));
     }
 
@@ -1196,9 +1226,17 @@ mod tests {
         // A dispatched compile still Running at snapshot time — the process
         // dies with the old core; only its LABEL must survive.
         let handle = Uuid::new_v4();
-        wm.record_dispatch_event(handle, "cargo build (dispatched)", "compiling…", DispatchStatus::Running);
+        wm.record_dispatch_event(
+            handle,
+            "cargo build (dispatched)",
+            "compiling…",
+            DispatchStatus::Running,
+        );
         let snap = wm.snapshot();
-        assert_eq!(snap.interrupted_dispatches, vec!["cargo build (dispatched)"]);
+        assert_eq!(
+            snap.interrupted_dispatches,
+            vec!["cargo build (dispatched)"]
+        );
         assert!(snap.saved_at_ms > 0);
         let json = serde_json::to_string(&snap).expect("serializes");
         let back: VolatileSnapshot = serde_json::from_str(&json).expect("deserializes");
@@ -1208,8 +1246,15 @@ mod tests {
         // Everything restored, and the [resumed] fact appended as NEWEST.
         let restored = fresh.recent();
         let (window, resumed) = restored.split_at(restored.len() - 1);
-        assert_eq!(window, wm.recent().as_slice(), "window identical before the marker");
-        assert!(resumed[0].contains("[resumed]"), "interruption is perceivable: {resumed:?}");
+        assert_eq!(
+            window,
+            wm.recent().as_slice(),
+            "window identical before the marker"
+        );
+        assert!(
+            resumed[0].contains("[resumed]"),
+            "interruption is perceivable: {resumed:?}"
+        );
         assert!(
             resumed[0].contains("cargo build (dispatched)")
                 && resumed[0].contains("safe to repeat"),
@@ -1250,7 +1295,10 @@ mod tests {
         let q = quiet.recent();
         assert_eq!(q.len(), 1);
         assert!(q[0].contains("nothing was in flight"), "{q:?}");
-        assert!(!q[0].contains("ago"), "no fabricated gap on legacy snapshots: {q:?}");
+        assert!(
+            !q[0].contains("ago"),
+            "no fabricated gap on legacy snapshots: {q:?}"
+        );
     }
 
     // what this catches (Step 3, run-18057-f1): a receipt recorded via
@@ -1293,7 +1341,9 @@ mod tests {
             "the rendered receipt text is byte-identical to the legacy string path (#205)"
         );
 
-        let active = typed.active_act().expect("the typed act threads through the receipt");
+        let active = typed
+            .active_act()
+            .expect("the typed act threads through the receipt");
         assert_eq!(
             active.call.id, active.output.result.tool_use_id,
             "correlated by id, not positional index"
@@ -1302,7 +1352,11 @@ mod tests {
             active.output.result.content.contains("match at foo.rs:42"),
             "the tool RESULT re-enters by the TYPED field, not a re-parsed [action #n] head"
         );
-        assert_eq!(typed.recent_acts().len(), 1, "the batch's act is in the window");
+        assert_eq!(
+            typed.recent_acts().len(),
+            1,
+            "the batch's act is in the window"
+        );
         assert!(
             legacy.active_act().is_none(),
             "a legacy string receipt carries no typed act — the two channels are distinct"
@@ -1334,7 +1388,9 @@ mod tests {
         // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
         let texts = fresh.recent();
         assert!(
-            texts.iter().any(|t| t.contains("thinking about the tokenizer")),
+            texts
+                .iter()
+                .any(|t| t.contains("thinking about the tokenizer")),
             "the legacy thought restored"
         );
         assert!(
@@ -1349,19 +1405,34 @@ mod tests {
             fresh.recent_acts().is_empty(),
             "a legacy receipt has no typed acts — defaulted empty, never a panic"
         );
-        assert!(fresh.has_receipt(), "the receipt kind still survives the trip");
+        assert!(
+            fresh.has_receipt(),
+            "the receipt kind still survives the trip"
+        );
     }
 
     #[test]
     fn note_action_fingerprint_counts_identical_repeats() {
         let wm = WorkingMemory::new(8);
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 1);
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 2);
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 3);
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            1
+        );
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            2
+        );
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            3
+        );
         // a DIFFERENT call is its own first occurrence, not a repeat of the above
         assert_eq!(wm.note_action_fingerprint("code/read|{\"file\":\"a\"}"), 1);
         // back to the original — still counted across the window
-        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 4);
+        assert_eq!(
+            wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
+            4
+        );
     }
 
     // what this catches: the loop-awareness COUNT must survive a tiny recency window
@@ -1419,7 +1490,10 @@ mod tests {
         // The full result is available whole.
         let (seq, full) = wm.last_action_full().expect("latest act kept");
         assert_eq!(seq, 1);
-        assert_eq!(full, big, "the mind gets the WHOLE result, not a truncated stub");
+        assert_eq!(
+            full, big,
+            "the mind gets the WHOLE result, not a truncated stub"
+        );
 
         // The rolling trail carries only the head (KV-stable proprioception).
         let trail = wm.recent();
@@ -1439,7 +1513,10 @@ mod tests {
             pinned.contains("Full result of your most recent action (#1):"),
             "the whole result reaches the mind"
         );
-        assert!(pinned.contains(&"x".repeat(5_000)), "and it's the FULL body");
+        assert!(
+            pinned.contains(&"x".repeat(5_000)),
+            "and it's the FULL body"
+        );
 
         // A second act replaces the full slot; the first survives only as a trail head.
         wm.record_receipt("small follow-up");
@@ -1582,8 +1659,18 @@ mod tests {
         let sentinel = Uuid::from_u128(2);
 
         // Two sentinels in flight, streaming continuously.
-        wm.record_dispatch_event(compile, "compile core", "building…", DispatchStatus::Running);
-        wm.record_dispatch_event(sentinel, "research task", "searching…", DispatchStatus::Running);
+        wm.record_dispatch_event(
+            compile,
+            "compile core",
+            "building…",
+            DispatchStatus::Running,
+        );
+        wm.record_dispatch_event(
+            sentinel,
+            "research task",
+            "searching…",
+            DispatchStatus::Running,
+        );
         // A progress update on the compile updates IN PLACE (still one handle).
         wm.record_dispatch_event(compile, "compile core", "linking…", DispatchStatus::Running);
         let snap = wm.dispatched_snapshot();
@@ -1593,7 +1680,12 @@ mod tests {
         assert_eq!(c.3, DispatchStatus::Running);
 
         // The compile finishes — terminal Done with its result.
-        wm.record_dispatch_event(compile, "compile core", "0 errors, 0 warnings", DispatchStatus::Done);
+        wm.record_dispatch_event(
+            compile,
+            "compile core",
+            "0 errors, 0 warnings",
+            DispatchStatus::Done,
+        );
         let snap = wm.dispatched_snapshot();
         let c = snap.iter().find(|(h, ..)| *h == compile).unwrap();
         assert_eq!(c.3, DispatchStatus::Done);
@@ -1606,9 +1698,18 @@ mod tests {
             .expect("bids when dispatched work exists")
             .content
             .clone();
-        assert!(rendered.contains("Commands you dispatched"), "the mind sees its sentinels");
-        assert!(rendered.contains("compile core [done]: 0 errors"), "finished result shown");
-        assert!(rendered.contains("research task [running]"), "in-flight shown");
+        assert!(
+            rendered.contains("Commands you dispatched"),
+            "the mind sees its sentinels"
+        );
+        assert!(
+            rendered.contains("compile core [done]: 0 errors"),
+            "finished result shown"
+        );
+        assert!(
+            rendered.contains("research task [running]"),
+            "in-flight shown"
+        );
     }
 
     // what this catches: record/recent round-trips, blank reasoning is ignored, and

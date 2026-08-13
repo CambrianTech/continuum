@@ -355,7 +355,10 @@ mod tests {
             .iter()
             .find(|f| f.name == "category")
             .expect("category field");
-        assert!(cat.indexed, "category must be indexed for tier-bucket queries");
+        assert!(
+            cat.indexed,
+            "category must be indexed for tier-bucket queries"
+        );
     }
 
     /// Registers cleanly + resolves via a fresh registry (no global

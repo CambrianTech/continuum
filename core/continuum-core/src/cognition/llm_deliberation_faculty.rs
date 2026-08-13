@@ -226,11 +226,7 @@ impl LlmDeliberationFaculty {
             // `with_model_binding` (so a `serving/pin` re-home is seen here), and
             // `with_model`/`with_context_window` mutate it for tests. Mirrors how
             // `new` builds an `empty_genome()` that `with_genome` then shares in.
-            binding: model_binding(
-                adapter,
-                None,
-                crate::cognition::serving_plan::MIN_SERVE_CTX,
-            ),
+            binding: model_binding(adapter, None, crate::cognition::serving_plan::MIN_SERVE_CTX),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
             native_specs: Vec::new(),
@@ -349,9 +345,8 @@ impl LlmDeliberationFaculty {
         // onto our namespace, or its trained reflex `read_file` to meet its tuning.
         // Either way calls map back to canonical commands on return (ONE section:
         // [`crate::cognition::tool_dialect`]). [[joel-boundary-design-values]]
-        let style = crate::cognition::tool_dialect::offer_style_for(
-            self.binding.load().model.as_deref(),
-        );
+        let style =
+            crate::cognition::tool_dialect::offer_style_for(self.binding.load().model.as_deref());
         // The native surface is the DERIVED, bounded agentic core — every command that
         // declares `native: true` at its own site (~a dozen tools), projected once by
         // `native_tool_specs()`. It is offered in FULL, always, in the model's wire dialect.
@@ -1021,8 +1016,14 @@ impl LlmDeliberationFaculty {
         // Whole-string form (stable ++ trailing), byte-identical to the pre-split output.
         // Kept for the many framing-shape tests that assert against the composed whole; the
         // LIVE prompt path calls `compose_system_split` and places the two parts separately.
-        let c =
-            self.compose_system_split(context, expanded, directed, self_initiated, now_ms, holds_live_work);
+        let c = self.compose_system_split(
+            context,
+            expanded,
+            directed,
+            self_initiated,
+            now_ms,
+            holds_live_work,
+        );
         let mut s = c.stable;
         s.push_str(&c.trailing);
         s
@@ -1069,9 +1070,7 @@ impl LlmDeliberationFaculty {
         ws.broadcast
             .iter()
             .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| {
-                c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID
-            })
+            .filter(|c| c.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID)
             .any(|c| crate::persona::active_work_source::renders_held_in_progress(&c.content))
     }
 
@@ -1528,11 +1527,7 @@ impl LlmDeliberationFaculty {
     }
 
     /// Fit an already-built conversation to `budget_tokens`.
-    fn fit_messages(
-        &self,
-        messages: Vec<ChatMessage>,
-        budget_tokens: usize,
-    ) -> Vec<ChatMessage> {
+    fn fit_messages(&self, messages: Vec<ChatMessage>, budget_tokens: usize) -> Vec<ChatMessage> {
         // Fit to the served window, NEWEST-first: walk the thread from the most
         // recent message backward, giving each the remaining budget. A whole message
         // that fits is kept intact; the one that straddles the budget boundary is
@@ -1554,10 +1549,8 @@ impl LlmDeliberationFaculty {
                 fitted.push(msg.clone());
             } else {
                 // The straddling message: keep as much of its TAIL as still fits.
-                let trimmed = tail_to_tokens(
-                    &body,
-                    remaining.saturating_sub(per_message_template_tokens),
-                );
+                let trimmed =
+                    tail_to_tokens(&body, remaining.saturating_sub(per_message_template_tokens));
                 if !trimmed.is_empty() {
                     fitted.push(ChatMessage::text(msg.role.clone(), trimmed));
                 }
@@ -1725,7 +1718,11 @@ impl Faculty for LlmDeliberationFaculty {
         // is safe (the room's messages stay queued; next tick re-perceives) —
         // deliberating on a blank prompt is not: that is exactly how every persona
         // greeting-looped for an hour on 2026-07-30 while looking "alive".
-        if view.messages.iter().all(|m| m.content_text().trim().is_empty()) && !ws.turns.is_empty()
+        if view
+            .messages
+            .iter()
+            .all(|m| m.content_text().trim().is_empty())
+            && !ws.turns.is_empty()
         {
             tracing::error!(
                 persona = %self.persona_name,
@@ -1778,20 +1775,14 @@ impl Faculty for LlmDeliberationFaculty {
         };
 
         let request =
-            self.build_request_within(
-            &binding,
-            messages.clone(),
-            tools,
-            view.system.clone(),
-            {
+            self.build_request_within(&binding, messages.clone(), tools, view.system.clone(), {
                 // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
                 // teammates) + reserved-marker stops (#158, don't fabricate
                 // [action]/[recall] receipts). Combined into one stop list.
                 let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
                 stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
-            },
-        );
+            });
         // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
         // wants progressive), generate through `generate_stream` so each decoded chunk
         // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
@@ -1816,10 +1807,9 @@ impl Faculty for LlmDeliberationFaculty {
         // block so every lane releases the instant generation returns — downstream
         // capture/parse/act hold nothing. [[conversational-latency-is-a-misdirection-budget]]
         let gen_result = {
-            let _lane = crate::cognition::resource_admission::acquire_serving_lane(
-                ws.directed_at_self,
-            )
-            .await;
+            let _lane =
+                crate::cognition::resource_admission::acquire_serving_lane(ws.directed_at_self)
+                    .await;
             // #56 prefill throttle: under live external GPU pressure (a game, the browser)
             // fewer than the served lane count may PREFILL concurrently — the instant valve
             // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
@@ -1867,8 +1857,7 @@ impl Faculty for LlmDeliberationFaculty {
         // faculty on the NEXT tick with the result folded into perception, and that
         // tick captures itself. Best-effort; never affects the turn.
         if let Some(cap) = &self.prompt_capture {
-            let offered: Vec<String> =
-                self.native_specs.iter().map(|s| s.name.clone()).collect();
+            let offered: Vec<String> = self.native_specs.iter().map(|s| s.name.clone()).collect();
             cap.record(
                 self.persona_id,
                 ws.room_id,
@@ -1968,8 +1957,7 @@ impl Faculty for LlmDeliberationFaculty {
             // exactly the false positive the coaching negatives guard. Routing the sentinel makes
             // the executor's teacher fire with the missing-name sentence, and `drive_to_settle`
             // hands her another generation — the same mechanism, extended to the case it missed.
-            if let Some(snippet) =
-                crate::ai::json_in_prompt_tools::nameless_args_fence(&resp.text)
+            if let Some(snippet) = crate::ai::json_in_prompt_tools::nameless_args_fence(&resp.text)
             {
                 let call = crate::ai::types::ToolCall {
                     id: "tool-attempt-nameless".to_string(),
@@ -2047,6 +2035,7 @@ mod tests {
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
     use crate::cognition::workspace::BurstTurn;
+    use airc_core::PeerId;
     use serde_json::json;
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -2132,7 +2121,6 @@ mod tests {
                  drop silently (the marker got broadcast to the live room): {thread}"
             );
         }
-
 
         // what this catches: end-to-end through a REAL adapter (the deterministic
         // heuristic stand-in) — the faculty calls inference and produces a verdict
@@ -2326,14 +2314,13 @@ mod tests {
             // Same atomic snapshot the production `contribute` path uses — the model
             // binding carries the served window the request is bounded to.
             let binding = faculty.binding.load_full();
-            let request =
-                faculty.build_request_within(
-                    &binding,
-                    view.messages.clone(),
-                    None,
-                    view.system.clone(),
-                    None,
-                );
+            let request = faculty.build_request_within(
+                &binding,
+                view.messages.clone(),
+                None,
+                view.system.clone(),
+                None,
+            );
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
                 .max_tokens
@@ -2437,14 +2424,16 @@ mod tests {
             // A conversation long enough to swallow the whole window on its own.
             let mut ws = Workspace::new("anything open?");
             for i in 0..40 {
-                ws.turns.push(crate::cognition::workspace::BurstTurn::attributed(
-                    i % 2 == 1,
-                    if i % 2 == 1 { "Ivar" } else { "Asha" },
-                    format!("turn {i}: ").repeat(60),
-                    None,
-                ));
+                ws.turns
+                    .push(crate::cognition::workspace::BurstTurn::attributed(
+                        i % 2 == 1,
+                        if i % 2 == 1 { "Ivar" } else { "Asha" },
+                        format!("turn {i}: ").repeat(60),
+                        None,
+                    ));
             }
-            ws.broadcast.push(board_like(60).with_expand_command(Some("work/list")));
+            ws.broadcast
+                .push(board_like(60).with_expand_command(Some("work/list")));
 
             let view = faculty.prompt_view_within(&ws, 24_128);
             assert!(
@@ -2495,7 +2484,10 @@ mod tests {
             ws.broadcast.push(board_like(60)); // expand_command defaults to None
 
             let block = faculty.render_assembled_context_within(&ws, 120, (0, 0, 0, 0, 0));
-            assert!(block.contains("more not shown"), "still says it truncated\n{block}");
+            assert!(
+                block.contains("more not shown"),
+                "still says it truncated\n{block}"
+            );
             assert!(
                 !block.contains("run `"),
                 "must not point at a verb it was never given\n{block}"
@@ -2657,9 +2649,9 @@ mod tests {
             );
             // …it renders as a trailing user turn.
             let in_tail = |v: &DeliberationPromptView, needle: &str| {
-                v.messages.iter().any(|m| {
-                    matches!(&m.content, MessageContent::Text(t) if t.contains(needle))
-                })
+                v.messages
+                    .iter()
+                    .any(|m| matches!(&m.content, MessageContent::Text(t) if t.contains(needle)))
             };
             assert!(
                 in_tail(&v1, "I wrote login.html first"),
@@ -2778,8 +2770,12 @@ mod tests {
             // enough to clear the trail-head threshold so the pinned block surfaces.
             let wm = Arc::new(WorkingMemory::new(8));
             wm.set_served_window(16_384);
-            let needle = "sympy/core/expr.py:123:        return self == sympify(other)  # _sympify HERE";
-            let grep_result = format!("code/search matches:\n{needle}\n{}", "context line\n".repeat(200));
+            let needle =
+                "sympy/core/expr.py:123:        return self == sympify(other)  # _sympify HERE";
+            let grep_result = format!(
+                "code/search matches:\n{needle}\n{}",
+                "context line\n".repeat(200)
+            );
             wm.record_receipt(&grep_result);
 
             let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter)
@@ -2796,9 +2792,10 @@ mod tests {
             );
 
             let view = faculty.prompt_view(&ws);
-            let in_tail = view.messages.iter().any(|m| {
-                matches!(&m.content, MessageContent::Text(t) if t.contains(needle))
-            });
+            let in_tail = view
+                .messages
+                .iter()
+                .any(|m| matches!(&m.content, MessageContent::Text(t) if t.contains(needle)));
             assert!(
                 in_tail,
                 "the just-fetched result must reach the prompt independent of any faculty bid \
@@ -2931,9 +2928,9 @@ mod tests {
             let expanded = BTreeSet::from(["cat".to_string()]);
             let framing = faculty.compose_system("", &expanded, false, false, None);
             assert!(
-            framing.contains("[Your tools]") && framing.contains("cat: command_0"),
-            "an expanded category must name each verb under its header: {framing}"
-        );
+                framing.contains("[Your tools]") && framing.contains("cat: command_0"),
+                "an expanded category must name each verb under its header: {framing}"
+            );
             assert!(
             !framing.contains("cat/command_0"),
             "the full slash-path form must NOT be dumped — verbs render bare under the category header"
@@ -2983,7 +2980,8 @@ mod tests {
             // bare framing + tools + reply actually closes.
             let needed = faculty.min_window_for_agentic_surface();
             assert!(
-                faculty.describe_tool_tokens() + faculty.framing_floor_tokens() as usize
+                faculty.describe_tool_tokens()
+                    + faculty.framing_floor_tokens() as usize
                     + (needed / 4).max(256) as usize
                     <= needed as usize,
                 "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
@@ -3073,11 +3071,16 @@ mod tests {
             // silently absorbed. A citizen served here can hold her tools and her identity
             // and still not hear the question.
             assert!(
-                !view.user_text().contains("LATEST: did the deploy fix land?"),
+                !view
+                    .user_text()
+                    .contains("LATEST: did the deploy fix land?"),
                 "if this now PASSES at 8192, the surface or framing shrank and #327 is fixed \
                  — delete this assertion and restore the survival check"
             );
-            assert!(view.system.contains("Taking your turn"), "framing survives regardless");
+            assert!(
+                view.system.contains("Taking your turn"),
+                "framing survives regardless"
+            );
 
             // …and at a window that CAN host the surface, the conversation is heard. Same
             // faculty, same burst, same tools — only the window differs, which is what makes
@@ -3121,9 +3124,9 @@ mod tests {
 
             let room = Uuid::new_v4();
             let turns = vec![
-                BurstTurn::attributed(false, "Joel", "can you summarize the thread?", Some(1)),
+                BurstTurn::attributed(false, "Operator", "can you summarize the thread?", Some(1)),
                 BurstTurn::attributed(true, "Asha", "I propose using bart-large-cnn.", Some(2)),
-                BurstTurn::attributed(false, "Joel", "go ahead.", Some(3)),
+                BurstTurn::attributed(false, "Operator", "go ahead.", Some(3)),
             ];
             let ws = Workspace::new(Burst::from_turns(room, turns));
             let view = faculty.prompt_view(&ws);
@@ -3147,7 +3150,6 @@ mod tests {
                 "the [context] bounds fact states the visible window"
             );
 
-
             // The persona's own line is the `assistant` turn and carries NO name prefix
             // (her own voice; the system prompt forbids self-prefixing). Peers' lines are
             // `user` turns prefixed with the author so several speakers stay distinct.
@@ -3158,7 +3160,7 @@ mod tests {
                 !assistant.content_text().contains("Asha:"),
                 "the persona's own turn must not be self-prefixed: {assistant:?}"
             );
-            assert!(view.messages[0].content_text().starts_with("Joel: "));
+            assert!(view.messages[0].content_text().starts_with("Operator: "));
             // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
             // turn), so the ask stays LAST where the model answers it — not the bracketed
             // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
@@ -3170,7 +3172,11 @@ mod tests {
                 view.messages[2]
             );
             assert!(
-                view.messages.last().unwrap().content_text().starts_with("Joel: "),
+                view.messages
+                    .last()
+                    .unwrap()
+                    .content_text()
+                    .starts_with("Operator: "),
                 "the ask (last peer turn) stays LAST, after the grounding facts"
             );
         }
@@ -3203,7 +3209,12 @@ mod tests {
             let v3 = "I apologize for repeating myself earlier. Let's focus on the task \"wordstats\". What approach would you like to take for this task?";
             let turns = vec![
                 BurstTurn::attributed(true, "Casper", v1, Some(1)),
-                BurstTurn::attributed(false, "Anwen", "any specific topics you'd like to work on?", Some(2)),
+                BurstTurn::attributed(
+                    false,
+                    "Anwen",
+                    "any specific topics you'd like to work on?",
+                    Some(2),
+                ),
                 BurstTurn::attributed(true, "Casper", v2, Some(3)),
                 BurstTurn::attributed(false, "Atlas", "shall we outline the steps first?", Some(4)),
                 BurstTurn::attributed(true, "Casper", v3, Some(5)),
@@ -3343,8 +3354,13 @@ mod tests {
             // And an EXPANDED category DOES list its verbs (the fix: she must SEE that a
             // tool exists to call it — glass-box: hidden names → 909 code-fences / 3 native
             // runs). Names ride the expansion, summaries never do.
-            let opened =
-                faculty.compose_system("", &BTreeSet::from(["cat0".to_string()]), false, false, None);
+            let opened = faculty.compose_system(
+                "",
+                &BTreeSet::from(["cat0".to_string()]),
+                false,
+                false,
+                None,
+            );
             // Bare verb names since the 2026-07-10 prompt diet — args live in
             // commands/help + the #1916 inline error-manual, not an 8k menu wall.
             assert!(
@@ -3605,7 +3621,10 @@ mod tests {
             match c.decision {
                 Some(Decision::Act { calls, .. }) => {
                     assert_eq!(calls.len(), 1);
-                    assert_eq!(calls[0].name, "code/read", "the FINAL intention wins, not the discarded exploration");
+                    assert_eq!(
+                        calls[0].name, "code/read",
+                        "the FINAL intention wins, not the discarded exploration"
+                    );
                     assert_eq!(calls[0].input, json!({ "path": "src/main.rs" }));
                 }
                 other => panic!("expected Act lifted from the reasoning tail, got {other:?}"),
@@ -3667,8 +3686,15 @@ mod tests {
             match c.decision {
                 Some(Decision::Act { calls, .. }) => {
                     assert_eq!(calls.len(), 1);
-                    assert_eq!(calls[0].name, "code/list", "wire dialect keeps the canonical name");
-                    assert_eq!(calls[0].input, json!({ "path": "." }), "siblings became the args");
+                    assert_eq!(
+                        calls[0].name, "code/list",
+                        "wire dialect keeps the canonical name"
+                    );
+                    assert_eq!(
+                        calls[0].input,
+                        json!({ "path": "." }),
+                        "siblings became the args"
+                    );
                 }
                 other => panic!("expected Act from the sibling-args text fence, got {other:?}"),
             }
@@ -3703,7 +3729,10 @@ mod tests {
             match c.decision {
                 Some(Decision::Act { calls, .. }) => {
                     assert_eq!(calls.len(), 1, "only the native call rides the verdict");
-                    assert_eq!(calls[0].name, "code/read", "native wins over the text fence");
+                    assert_eq!(
+                        calls[0].name, "code/read",
+                        "native wins over the text fence"
+                    );
                 }
                 other => panic!("expected Act carrying the native call, got {other:?}"),
             }
@@ -3744,7 +3773,9 @@ mod tests {
                  question; a pure pleasantry may rest — the natural spiral-break)"
             );
             assert!(
-                !directed.system.contains("do not need to be addressed by name"),
+                !directed
+                    .system
+                    .contains("do not need to be addressed by name"),
                 "a directed turn never carries the ambient block"
             );
             assert!(
@@ -3832,7 +3863,10 @@ mod tests {
                 .next()
                 .expect("ledger present");
             assert!(ledger.contains("[action #1] I ran code/list"), "{ledger}");
-            assert!(!ledger.contains("[unfulfilled]"), "facts are never steps: {ledger}");
+            assert!(
+                !ledger.contains("[unfulfilled]"),
+                "facts are never steps: {ledger}"
+            );
             assert!(!ledger.contains("nothing has executed yet"));
         }
 

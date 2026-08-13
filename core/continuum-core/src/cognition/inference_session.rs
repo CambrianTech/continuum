@@ -195,7 +195,11 @@ impl ActionCommand for InferenceOpenCommand {
     type Params = InferenceOpenParams;
     type Output = InferenceHandleOutput;
 
-    async fn run(&self, _ctx: &Ctx, p: InferenceOpenParams) -> Result<InferenceHandleOutput, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: InferenceOpenParams,
+    ) -> Result<InferenceHandleOutput, CommandError> {
         let model = resolve_model(p.model).await?;
         let session = global_inference_sessions().open(model);
         Ok(InferenceHandleOutput {
@@ -236,7 +240,11 @@ impl ActionCommand for InferenceFindCommand {
     type Params = InferenceHandleParams;
     type Output = InferenceFindOutput;
 
-    async fn run(&self, _ctx: &Ctx, p: InferenceHandleParams) -> Result<InferenceFindOutput, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: InferenceHandleParams,
+    ) -> Result<InferenceFindOutput, CommandError> {
         Ok(match global_inference_sessions().find(p.handle) {
             Some(s) => InferenceFindOutput {
                 found: true,
@@ -271,7 +279,11 @@ impl ActionCommand for InferenceCloseCommand {
     type Params = InferenceHandleParams;
     type Output = InferenceCloseOutput;
 
-    async fn run(&self, _ctx: &Ctx, p: InferenceHandleParams) -> Result<InferenceCloseOutput, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: InferenceHandleParams,
+    ) -> Result<InferenceCloseOutput, CommandError> {
         Ok(InferenceCloseOutput {
             closed: global_inference_sessions().close(p.handle),
         })
@@ -314,10 +326,17 @@ impl ActionCommand for InferenceGenerateCommand {
     type Params = InferenceGenerateParams;
     type Output = InferenceGenerateOutput;
 
-    async fn run(&self, _ctx: &Ctx, p: InferenceGenerateParams) -> Result<InferenceGenerateOutput, CommandError> {
-        let session = global_inference_sessions()
-            .find(p.handle)
-            .ok_or_else(|| CommandError::NotFound(format!("inference handle {} is not live — re-open", p.handle)))?;
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: InferenceGenerateParams,
+    ) -> Result<InferenceGenerateOutput, CommandError> {
+        let session = global_inference_sessions().find(p.handle).ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "inference handle {} is not live — re-open",
+                p.handle
+            ))
+        })?;
 
         // Round-trip messages through ChatMessage's own serde so we don't hand-encode
         // the MessageContent shape; bind to the session's model; route via the ONE
@@ -385,7 +404,11 @@ impl ActionCommand for InferenceEnsureCommand {
     type Params = InferenceEnsureParams;
     type Output = InferenceEnsureOutput;
 
-    async fn run(&self, _ctx: &Ctx, p: InferenceEnsureParams) -> Result<InferenceEnsureOutput, CommandError> {
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: InferenceEnsureParams,
+    ) -> Result<InferenceEnsureOutput, CommandError> {
         // Reuse-if-live needs no model resolution; only re-resolve a model when we
         // must open fresh (don't probe the gateway on the happy path).
         if let Some(id) = p.handle {
@@ -432,7 +455,10 @@ mod tests {
         assert!(reg.find(s.id).is_some(), "live handle is findable");
         assert_eq!(reg.find(s.id).unwrap().model, "qwen3.5-4b");
         assert!(reg.close(s.id), "close releases the live lease");
-        assert!(reg.find(s.id).is_none(), "lost handle → None, the recover signal");
+        assert!(
+            reg.find(s.id).is_none(),
+            "lost handle → None, the recover signal"
+        );
         assert!(!reg.close(s.id), "double-close is idempotent, not an error");
     }
 
@@ -448,10 +474,16 @@ mod tests {
 
         reg.close(s.id); // node went down / lease lost
         let (fresh, reused2) = reg.ensure(Some(s.id), "m".into());
-        assert!(!reused2 && fresh.id != s.id, "lost handle re-homes onto a fresh lease");
+        assert!(
+            !reused2 && fresh.id != s.id,
+            "lost handle re-homes onto a fresh lease"
+        );
 
         let (cold, reused3) = reg.ensure(None, "m".into());
-        assert!(!reused3 && cold.id != fresh.id, "no prior handle → fresh lease");
+        assert!(
+            !reused3 && cold.id != fresh.id,
+            "no prior handle → fresh lease"
+        );
     }
 
     // what this catches: each open is a distinct lease (distinct handles), and the

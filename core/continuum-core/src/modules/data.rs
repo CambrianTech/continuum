@@ -18,8 +18,8 @@ use crate::orm::{
     types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},
 };
 use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModuleContext,
-    ModulePriority, ServiceModule,
+    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
+    ServiceModule,
 };
 use crate::{log_error, log_info};
 use async_trait::async_trait;
@@ -264,10 +264,11 @@ impl DataState {
                         "resolve_handle('{sentinel}{slug}'): slug must be a single path segment"
                     ));
                 }
-                let home = std::env::var("HOME").map_err(|_| {
-                    format!("resolve_handle('{sentinel}{slug}'): HOME env not set")
-                })?;
-                return Ok(format!("{home}/.continuum/{bucket}/{slug}/data/longterm.db"));
+                let home = std::env::var("HOME")
+                    .map_err(|_| format!("resolve_handle('{sentinel}{slug}'): HOME env not set"))?;
+                return Ok(format!(
+                    "{home}/.continuum/{bucket}/{slug}/data/longterm.db"
+                ));
             }
         }
 
@@ -445,7 +446,11 @@ impl ServiceModule for DataModule {
             ctx.compute.clone(),
             ctx.runtime.clone(),
         ));
-        *self.state.context.write().unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
+        *self
+            .state
+            .context
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
         log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }
@@ -477,8 +482,12 @@ impl ServiceModule for DataModule {
         // commands — each family sharing this module's `Arc<DataState>`.
         let mut objects = crate::commands::data::command_objects(self.state.clone());
         objects.extend(crate::commands::vector::command_objects(self.state.clone()));
-        objects.extend(crate::commands::adapter::command_objects(self.state.clone()));
-        objects.extend(crate::commands::migration::command_objects(self.state.clone()));
+        objects.extend(crate::commands::adapter::command_objects(
+            self.state.clone(),
+        ));
+        objects.extend(crate::commands::migration::command_objects(
+            self.state.clone(),
+        ));
         objects
     }
 
@@ -1398,9 +1407,7 @@ impl DataState {
         // Update the record's embedding field
         let update_data = json!({ "embedding": embedding });
 
-        let result = adapter
-            .update(collection, &id, update_data, false)
-            .await;
+        let result = adapter.update(collection, &id, update_data, false).await;
 
         // Invalidate vector cache for this collection since we modified an embedding
         {
@@ -1766,8 +1773,10 @@ impl DataState {
             created_at: Instant::now(),
         };
 
-        self.paginated_queries
-            .insert(cursor_id_str.clone(), Arc::new(tokio::sync::Mutex::new(state)));
+        self.paginated_queries.insert(
+            cursor_id_str.clone(),
+            Arc::new(tokio::sync::Mutex::new(state)),
+        );
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -2356,7 +2365,7 @@ mod tests {
         for (sentinel, bucket) in [
             ("@persona:Asha", "personas/Asha"),
             ("@agent:claude-code", "agents/claude-code"),
-            ("@human:joel", "humans/joel"),
+            ("@human:operator", "humans/operator"),
         ] {
             let resolved = state.resolve_handle(sentinel).expect("resolves");
             assert_eq!(
@@ -2431,14 +2440,14 @@ mod tests {
 
         // Create with dbPath
         let create_result = create_via_state(
-                &module,
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_users",
-                    "data": { "name": "Alice" }
-                }),
-            )
-            .await;
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_users",
+                "data": { "name": "Alice" }
+            }),
+        )
+        .await;
 
         assert!(
             create_result.is_ok(),
@@ -2452,14 +2461,14 @@ mod tests {
 
             // Read with dbPath
             let read_result = read_via_state(
-                    &module,
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_users",
-                        "id": id
-                    }),
-                )
-                .await;
+                &module,
+                json!({
+                    "dbPath": &db_path,
+                    "collection": "test_users",
+                    "id": id
+                }),
+            )
+            .await;
 
             assert!(read_result.is_ok());
             if let Ok(CommandResult::Json(read)) = read_result {
@@ -2508,14 +2517,14 @@ mod tests {
 
         // Create a record
         let create_result = create_via_state(
-                &module,
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_vectors",
-                    "data": { "content": "Hello world" }
-                }),
-            )
-            .await;
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_vectors",
+                "data": { "content": "Hello world" }
+            }),
+        )
+        .await;
 
         assert!(
             create_result.is_ok(),
@@ -2612,17 +2621,17 @@ mod tests {
 
         for (idx, emb) in embeddings.iter().enumerate() {
             let _ = create_via_state(
-                    &module,
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_search",
-                        "data": {
-                            "content": format!("Document {}", idx),
-                            "embedding": emb
-                        }
-                    }),
-                )
-                .await;
+                &module,
+                json!({
+                    "dbPath": &db_path,
+                    "collection": "test_search",
+                    "data": {
+                        "content": format!("Document {}", idx),
+                        "embedding": emb
+                    }
+                }),
+            )
+            .await;
         }
 
         // Search for similar vectors
@@ -2682,16 +2691,16 @@ mod tests {
 
         // Create a record with embedding
         let _ = create_via_state(
-                &module,
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache",
-                    "data": {
-                        "embedding": vec![1.0; 384]
-                    }
-                }),
-            )
-            .await;
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache",
+                "data": {
+                    "embedding": vec![1.0; 384]
+                }
+            }),
+        )
+        .await;
 
         // First search populates cache
         let query: Vec<f64> = vec![1.0; 384];
@@ -2778,14 +2787,14 @@ mod tests {
         // Create 25 records
         for i in 0..25 {
             let _ = create_via_state(
-                    &module,
-                    json!({
-                        "dbPath": db_path,
-                        "collection": "test_paginated",
-                        "data": { "name": format!("Item {}", i) }
-                    }),
-                )
-                .await;
+                &module,
+                json!({
+                    "dbPath": db_path,
+                    "collection": "test_paginated",
+                    "data": { "name": format!("Item {}", i) }
+                }),
+            )
+            .await;
         }
 
         // Open paginated query with page size 10. Default count_exact=false
@@ -2897,14 +2906,14 @@ mod tests {
 
         for i in 0..7 {
             let _ = create_via_state(
-                    &module,
-                    json!({
-                        "dbPath": db_path,
-                        "collection": "test_count_exact",
-                        "data": { "name": format!("Item {}", i) }
-                    }),
-                )
-                .await;
+                &module,
+                json!({
+                    "dbPath": db_path,
+                    "collection": "test_count_exact",
+                    "data": { "name": format!("Item {}", i) }
+                }),
+            )
+            .await;
         }
 
         let open_result = module
@@ -2973,14 +2982,14 @@ mod tests {
         // Create records without embeddings
         for i in 0..5 {
             let _ = create_via_state(
-                    &module,
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_backfill",
-                        "data": { "content": format!("Test content number {}", i) }
-                    }),
-                )
-                .await;
+                &module,
+                json!({
+                    "dbPath": &db_path,
+                    "collection": "test_backfill",
+                    "data": { "content": format!("Test content number {}", i) }
+                }),
+            )
+            .await;
         }
 
         // Run backfill — VectorBackfillStats serializes at top level (the new
@@ -3104,14 +3113,14 @@ mod tests {
 
         for i in 0..rows {
             let _ = create_via_state(
-                    &module,
-                    json!({
-                        "dbPath": &db_path,
-                        "collection": "test_handle_cursor",
-                        "data": { "name": format!("Item {i}") }
-                    }),
-                )
-                .await;
+                &module,
+                json!({
+                    "dbPath": &db_path,
+                    "collection": "test_handle_cursor",
+                    "data": { "name": format!("Item {i}") }
+                }),
+            )
+            .await;
         }
         (module, tmp, db_path)
     }
@@ -3282,8 +3291,7 @@ mod tests {
             .await
             .expect_err("empty params must surface a typed error");
         assert!(
-            err.contains("neither `handle`")
-                && err.contains("nor `queryId`"),
+            err.contains("neither `handle`") && err.contains("nor `queryId`"),
             "error must name both supported shapes: {err}"
         );
     }
@@ -3427,51 +3435,51 @@ mod tests {
     #[cfg(feature = "stress-tests")]
     mod stress {
         use super::*;
-    //
-    // Per Joel 2026-05-30: "Each persona exists in its own threads."
-    //
-    // The DataModule is registered ONCE; every persona's thread calls
-    // its `&self` handlers concurrently. The paginated-query state
-    // map is a `DashMap` precisely so concurrent cursor activity
-    // doesn't serialize at a module-level mutex. The tests below
-    // pin the invariants the substrate is designed to uphold under
-    // that load — they are not exercising rare paths, they are the
-    // production scenario.
-    //
-    // Every test uses `flavor = "multi_thread", worker_threads = 4`
-    // so tasks actually preempt each other on distinct OS threads.
-    // Single-threaded tokio would silently serialize and pass even
-    // if the substrate had a data race.
+        //
+        // Per Joel 2026-05-30: "Each persona exists in its own threads."
+        //
+        // The DataModule is registered ONCE; every persona's thread calls
+        // its `&self` handlers concurrently. The paginated-query state
+        // map is a `DashMap` precisely so concurrent cursor activity
+        // doesn't serialize at a module-level mutex. The tests below
+        // pin the invariants the substrate is designed to uphold under
+        // that load — they are not exercising rare paths, they are the
+        // production scenario.
+        //
+        // Every test uses `flavor = "multi_thread", worker_threads = 4`
+        // so tasks actually preempt each other on distinct OS threads.
+        // Single-threaded tokio would silently serialize and pass even
+        // if the substrate had a data race.
 
-    /// Build a fresh `Arc<DataModule>` + tempdir + schema + N seeded
-    /// rows for a concurrency test. Returns the Arc so callers can
-    /// `.clone()` it into spawned tasks without lifetime gymnastics.
-    /// The tempdir's lifetime extends past the test body when bound
-    /// to a `let _tmp = ...` binding so the SQLite file stays alive
-    /// for the duration of every spawned task.
-    async fn setup_concurrent(
-        suffix: &str,
-        rows: usize,
-    ) -> (Arc<DataModule>, tempfile::TempDir, String) {
-        let module = Arc::new(DataModule::new());
-        let (tmp, db_path) = test_db_path(suffix);
-        let schema = CollectionSchema {
-            collection: "test_handle_cursor".to_string(),
-            fields: vec![crate::orm::types::SchemaField {
-                name: "name".to_string(),
-                field_type: crate::orm::types::FieldType::String,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            }],
-            indexes: vec![],
-        };
-        let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
-        for i in 0..rows {
-            let _ = create_via_state(
+        /// Build a fresh `Arc<DataModule>` + tempdir + schema + N seeded
+        /// rows for a concurrency test. Returns the Arc so callers can
+        /// `.clone()` it into spawned tasks without lifetime gymnastics.
+        /// The tempdir's lifetime extends past the test body when bound
+        /// to a `let _tmp = ...` binding so the SQLite file stays alive
+        /// for the duration of every spawned task.
+        async fn setup_concurrent(
+            suffix: &str,
+            rows: usize,
+        ) -> (Arc<DataModule>, tempfile::TempDir, String) {
+            let module = Arc::new(DataModule::new());
+            let (tmp, db_path) = test_db_path(suffix);
+            let schema = CollectionSchema {
+                collection: "test_handle_cursor".to_string(),
+                fields: vec![crate::orm::types::SchemaField {
+                    name: "name".to_string(),
+                    field_type: crate::orm::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                    foreign_key: None,
+                }],
+                indexes: vec![],
+            };
+            let adapter = module.state.get_adapter(&db_path).await.unwrap();
+            let _ = adapter.ensure_schema(schema).await;
+            for i in 0..rows {
+                let _ = create_via_state(
                     &module,
                     json!({
                         "dbPath": &db_path,
@@ -3480,262 +3488,259 @@ mod tests {
                     }),
                 )
                 .await;
+            }
+            (module, tmp, db_path)
         }
-        (module, tmp, db_path)
-    }
 
-    /// N personas open their own cursor at the same time. Every cursor
-    /// must mint a DISTINCT HandleRef.id (UUID collision check), every
-    /// cursor must be independently reachable via query-next, and
-    /// closing one must NOT close any other.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn cursors_are_isolated_under_concurrent_open_and_next() {
-        const PARALLEL: usize = 20;
-        // 10 rows seeded → pageSize 3 means each cursor's first page
-        // is a full 3-item page (3 + 3 + 3 + 1 = 4 pages total).
-        let (module, _tmp, db_path) = setup_concurrent("conc_isolated", 10).await;
+        /// N personas open their own cursor at the same time. Every cursor
+        /// must mint a DISTINCT HandleRef.id (UUID collision check), every
+        /// cursor must be independently reachable via query-next, and
+        /// closing one must NOT close any other.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn cursors_are_isolated_under_concurrent_open_and_next() {
+            const PARALLEL: usize = 20;
+            // 10 rows seeded → pageSize 3 means each cursor's first page
+            // is a full 3-item page (3 + 3 + 3 + 1 = 4 pages total).
+            let (module, _tmp, db_path) = setup_concurrent("conc_isolated", 10).await;
 
-        // Phase 1: every persona opens its own cursor in parallel.
-        let mut open_tasks = Vec::with_capacity(PARALLEL);
-        for _ in 0..PARALLEL {
-            let module = module.clone();
-            let db_path = db_path.clone();
-            open_tasks.push(tokio::spawn(async move {
-                let result = module
-                    .handle_command(
-                        "data/query-open",
-                        json!({
-                            "dbPath": db_path,
-                            "collection": "test_handle_cursor",
-                            "pageSize": 3,
-                        }),
-                    )
-                    .await
-                    .expect("query-open must succeed");
-                let CommandResult::Json(v) = result else {
-                    panic!("expected Json")
-                };
-                v["handle"].clone()
-            }));
-        }
-        let handles: Vec<Value> = futures::future::join_all(open_tasks)
-            .await
-            .into_iter()
-            .map(|h| h.expect("task must not panic"))
-            .collect();
+            // Phase 1: every persona opens its own cursor in parallel.
+            let mut open_tasks = Vec::with_capacity(PARALLEL);
+            for _ in 0..PARALLEL {
+                let module = module.clone();
+                let db_path = db_path.clone();
+                open_tasks.push(tokio::spawn(async move {
+                    let result = module
+                        .handle_command(
+                            "data/query-open",
+                            json!({
+                                "dbPath": db_path,
+                                "collection": "test_handle_cursor",
+                                "pageSize": 3,
+                            }),
+                        )
+                        .await
+                        .expect("query-open must succeed");
+                    let CommandResult::Json(v) = result else {
+                        panic!("expected Json")
+                    };
+                    v["handle"].clone()
+                }));
+            }
+            let handles: Vec<Value> = futures::future::join_all(open_tasks)
+                .await
+                .into_iter()
+                .map(|h| h.expect("task must not panic"))
+                .collect();
 
-        // Every minted cursor must have a distinct id.
-        let mut ids: Vec<String> = handles
-            .iter()
-            .map(|h| h["id"].as_str().unwrap().to_string())
-            .collect();
-        ids.sort();
-        let before = ids.len();
-        ids.dedup();
-        assert_eq!(
-            ids.len(),
-            before,
-            "concurrent query-open MUST produce distinct cursor UUIDs ({} dups)",
-            before - ids.len()
-        );
-        assert_eq!(ids.len(), PARALLEL);
-
-        // Phase 2: every persona advances its OWN cursor in parallel.
-        // Each cursor's first query-next must return a full page (3
-        // items); page numbering must be per-cursor (always 1 for the
-        // first call), not cross-contaminated.
-        let mut next_tasks = Vec::with_capacity(PARALLEL);
-        for handle in &handles {
-            let module = module.clone();
-            let handle = handle.clone();
-            next_tasks.push(tokio::spawn(async move {
-                let result = module
-                    .handle_command("data/query-next", json!({ "handle": handle }))
-                    .await
-                    .expect("query-next must succeed");
-                let CommandResult::Json(v) = result else {
-                    panic!("expected Json")
-                };
-                (
-                    v["data"]["items"].as_array().unwrap().len(),
-                    v["data"]["pageNumber"].as_u64().unwrap(),
-                )
-            }));
-        }
-        let next_results: Vec<(usize, u64)> = futures::future::join_all(next_tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        for (i, (items, page)) in next_results.iter().enumerate() {
+            // Every minted cursor must have a distinct id.
+            let mut ids: Vec<String> = handles
+                .iter()
+                .map(|h| h["id"].as_str().unwrap().to_string())
+                .collect();
+            ids.sort();
+            let before = ids.len();
+            ids.dedup();
             assert_eq!(
+                ids.len(),
+                before,
+                "concurrent query-open MUST produce distinct cursor UUIDs ({} dups)",
+                before - ids.len()
+            );
+            assert_eq!(ids.len(), PARALLEL);
+
+            // Phase 2: every persona advances its OWN cursor in parallel.
+            // Each cursor's first query-next must return a full page (3
+            // items); page numbering must be per-cursor (always 1 for the
+            // first call), not cross-contaminated.
+            let mut next_tasks = Vec::with_capacity(PARALLEL);
+            for handle in &handles {
+                let module = module.clone();
+                let handle = handle.clone();
+                next_tasks.push(tokio::spawn(async move {
+                    let result = module
+                        .handle_command("data/query-next", json!({ "handle": handle }))
+                        .await
+                        .expect("query-next must succeed");
+                    let CommandResult::Json(v) = result else {
+                        panic!("expected Json")
+                    };
+                    (
+                        v["data"]["items"].as_array().unwrap().len(),
+                        v["data"]["pageNumber"].as_u64().unwrap(),
+                    )
+                }));
+            }
+            let next_results: Vec<(usize, u64)> = futures::future::join_all(next_tasks)
+                .await
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
+                .collect();
+
+            for (i, (items, page)) in next_results.iter().enumerate() {
+                assert_eq!(
                 *items, 3,
                 "cursor {i}: first page must return pageSize items independently of sibling cursors"
             );
-            assert_eq!(
-                *page, 1,
-                "cursor {i}: first call's pageNumber must be 1 — per-cursor state, not shared"
-            );
-        }
+                assert_eq!(
+                    *page, 1,
+                    "cursor {i}: first call's pageNumber must be 1 — per-cursor state, not shared"
+                );
+            }
 
-        // Phase 3: close half the cursors in parallel. The OTHER half
-        // must still be usable — close MUST be per-cursor.
-        let (to_close, to_keep): (Vec<_>, Vec<_>) = handles
-            .iter()
-            .enumerate()
-            .partition(|(i, _)| i % 2 == 0);
+            // Phase 3: close half the cursors in parallel. The OTHER half
+            // must still be usable — close MUST be per-cursor.
+            let (to_close, to_keep): (Vec<_>, Vec<_>) =
+                handles.iter().enumerate().partition(|(i, _)| i % 2 == 0);
 
-        let mut close_tasks = Vec::with_capacity(to_close.len());
-        for (_, handle) in &to_close {
-            let module = module.clone();
-            let handle = (*handle).clone();
-            close_tasks.push(tokio::spawn(async move {
-                module
-                    .handle_command("data/query-close", json!({ "handle": handle }))
+            let mut close_tasks = Vec::with_capacity(to_close.len());
+            for (_, handle) in &to_close {
+                let module = module.clone();
+                let handle = (*handle).clone();
+                close_tasks.push(tokio::spawn(async move {
+                    module
+                        .handle_command("data/query-close", json!({ "handle": handle }))
+                        .await
+                }));
+            }
+            for r in futures::future::join_all(close_tasks).await {
+                r.unwrap().expect("close must succeed");
+            }
+
+            // Closed cursors fail loud on next.
+            for (_, handle) in &to_close {
+                let err = module
+                    .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
                     .await
-            }));
-        }
-        for r in futures::future::join_all(close_tasks).await {
-            r.unwrap().expect("close must succeed");
-        }
+                    .expect_err("closed cursor's next must Err");
+                assert!(
+                    err.contains("handle not found"),
+                    "closed cursor must surface handle-not-found, got: {err}"
+                );
+            }
 
-        // Closed cursors fail loud on next.
-        for (_, handle) in &to_close {
-            let err = module
-                .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
-                .await
-                .expect_err("closed cursor's next must Err");
-            assert!(
-                err.contains("handle not found"),
-                "closed cursor must surface handle-not-found, got: {err}"
-            );
-        }
-
-        // Kept cursors still serve their next page (page 2).
-        for (i, handle) in &to_keep {
-            let result = module
-                .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
-                .await
-                .unwrap_or_else(|e| panic!("kept cursor {i} must still work: {e}"));
-            let CommandResult::Json(v) = result else {
-                panic!("expected Json")
-            };
-            assert_eq!(
+            // Kept cursors still serve their next page (page 2).
+            for (i, handle) in &to_keep {
+                let result = module
+                    .handle_command("data/query-next", json!({ "handle": (*handle).clone() }))
+                    .await
+                    .unwrap_or_else(|e| panic!("kept cursor {i} must still work: {e}"));
+                let CommandResult::Json(v) = result else {
+                    panic!("expected Json")
+                };
+                assert_eq!(
                 v["data"]["pageNumber"], 2,
                 "kept cursor {i}: page 2 follows page 1 — closing sibling cursors did NOT touch this one's state"
             );
-        }
-    }
-
-    /// Same cursor reached by N concurrent `query-next` calls (whether
-    /// from one persona retrying or two callers sharing a handle): the
-    /// substrate MUST serialize them via the per-cursor mutex so the
-    /// cursor advances atomically. Each non-tail page must be served
-    /// AT MOST ONCE.
-    ///
-    /// Originally caught a real substrate kink: without the per-cursor
-    /// mutex, all N concurrent callers read the same `current_page`
-    /// snapshot and all returned pageNumber=1. The fix wrapped each
-    /// cursor's state in a `tokio::sync::Mutex` so the read-then-
-    /// async-then-write window is atomic per cursor.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn same_cursor_concurrent_next_does_not_corrupt_state() {
-        const PARALLEL: usize = 8;
-        // 30 items at pageSize 5 = 6 pages. With the per-cursor mutex,
-        // each non-tail page (1..=5) is served exactly once and page 6
-        // is the terminal page (hasMore=false); any extra concurrent
-        // calls after that observe the empty-tail response.
-        let (module, _tmp, db_path) = setup_concurrent("conc_same_cursor", 30).await;
-
-        let open = module
-            .handle_command(
-                "data/query-open",
-                json!({
-                    "dbPath": db_path,
-                    "collection": "test_handle_cursor",
-                    "pageSize": 5,
-                }),
-            )
-            .await
-            .expect("open must succeed");
-        let CommandResult::Json(open) = open else {
-            panic!("expected Json")
-        };
-        let handle = open["handle"].clone();
-
-        // Fire PARALLEL concurrent next calls against the SAME handle.
-        let mut tasks = Vec::with_capacity(PARALLEL);
-        for _ in 0..PARALLEL {
-            let module = module.clone();
-            let handle = handle.clone();
-            tasks.push(tokio::spawn(async move {
-                module
-                    .handle_command("data/query-next", json!({ "handle": handle }))
-                    .await
-            }));
-        }
-        let outcomes: Vec<Result<CommandResult, String>> = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .map(|r| r.expect("task must not panic"))
-            .collect();
-
-        // No call should error from concurrency (DashMap's per-shard
-        // locking handles the contention). After the cursor exhausts,
-        // the substrate returns success with `hasMore=false` and an
-        // empty items list — not an error.
-        for (i, outcome) in outcomes.iter().enumerate() {
-            assert!(
-                outcome.is_ok(),
-                "concurrent next call {i} must not Err: {:?}",
-                outcome
-            );
+            }
         }
 
-        // The 6 valid pages + however many empty-tail responses fired
-        // before the cursor exhausted. Page numbers must be monotone
-        // when sorted; no duplicates of a non-tail page (each non-tail
-        // page can only be served ONCE because the cursor advances).
-        let mut page_numbers: Vec<u64> = outcomes
-            .iter()
-            .filter_map(|o| o.as_ref().ok())
-            .filter_map(|r| match r {
-                CommandResult::Json(v) => v["data"]["pageNumber"].as_u64(),
-                _ => None,
-            })
-            .collect();
-        page_numbers.sort();
+        /// Same cursor reached by N concurrent `query-next` calls (whether
+        /// from one persona retrying or two callers sharing a handle): the
+        /// substrate MUST serialize them via the per-cursor mutex so the
+        /// cursor advances atomically. Each non-tail page must be served
+        /// AT MOST ONCE.
+        ///
+        /// Originally caught a real substrate kink: without the per-cursor
+        /// mutex, all N concurrent callers read the same `current_page`
+        /// snapshot and all returned pageNumber=1. The fix wrapped each
+        /// cursor's state in a `tokio::sync::Mutex` so the read-then-
+        /// async-then-write window is atomic per cursor.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn same_cursor_concurrent_next_does_not_corrupt_state() {
+            const PARALLEL: usize = 8;
+            // 30 items at pageSize 5 = 6 pages. With the per-cursor mutex,
+            // each non-tail page (1..=5) is served exactly once and page 6
+            // is the terminal page (hasMore=false); any extra concurrent
+            // calls after that observe the empty-tail response.
+            let (module, _tmp, db_path) = setup_concurrent("conc_same_cursor", 30).await;
 
-        // Every served page number must be in [1, 6] (we have 30 items
-        // at pageSize 5 → 6 real pages, all subsequent calls see page
-        // 6 again because the cursor stays at exhausted).
-        for &pn in &page_numbers {
-            assert!(
-                (1..=6).contains(&pn),
-                "concurrent next produced an out-of-range pageNumber: {pn} (expected 1..=6)"
-            );
-        }
+            let open = module
+                .handle_command(
+                    "data/query-open",
+                    json!({
+                        "dbPath": db_path,
+                        "collection": "test_handle_cursor",
+                        "pageSize": 5,
+                    }),
+                )
+                .await
+                .expect("open must succeed");
+            let CommandResult::Json(open) = open else {
+                panic!("expected Json")
+            };
+            let handle = open["handle"].clone();
 
-        // CRITICAL: each non-tail page (1..=5) must appear AT MOST
-        // once — DashMap's `get_mut` serializes mutators, so the
-        // cursor only advances through each page once. (Page 6 may
-        // appear multiple times because once exhausted the cursor
-        // stops advancing but keeps returning the empty-tail response
-        // — that's the contract.)
-        let mut non_tail_counts = std::collections::HashMap::new();
-        for &pn in page_numbers.iter().filter(|&&pn| pn < 6) {
-            *non_tail_counts.entry(pn).or_insert(0) += 1;
-        }
-        for (page, count) in non_tail_counts {
-            assert_eq!(
+            // Fire PARALLEL concurrent next calls against the SAME handle.
+            let mut tasks = Vec::with_capacity(PARALLEL);
+            for _ in 0..PARALLEL {
+                let module = module.clone();
+                let handle = handle.clone();
+                tasks.push(tokio::spawn(async move {
+                    module
+                        .handle_command("data/query-next", json!({ "handle": handle }))
+                        .await
+                }));
+            }
+            let outcomes: Vec<Result<CommandResult, String>> = futures::future::join_all(tasks)
+                .await
+                .into_iter()
+                .map(|r| r.expect("task must not panic"))
+                .collect();
+
+            // No call should error from concurrency (DashMap's per-shard
+            // locking handles the contention). After the cursor exhausts,
+            // the substrate returns success with `hasMore=false` and an
+            // empty items list — not an error.
+            for (i, outcome) in outcomes.iter().enumerate() {
+                assert!(
+                    outcome.is_ok(),
+                    "concurrent next call {i} must not Err: {:?}",
+                    outcome
+                );
+            }
+
+            // The 6 valid pages + however many empty-tail responses fired
+            // before the cursor exhausted. Page numbers must be monotone
+            // when sorted; no duplicates of a non-tail page (each non-tail
+            // page can only be served ONCE because the cursor advances).
+            let mut page_numbers: Vec<u64> = outcomes
+                .iter()
+                .filter_map(|o| o.as_ref().ok())
+                .filter_map(|r| match r {
+                    CommandResult::Json(v) => v["data"]["pageNumber"].as_u64(),
+                    _ => None,
+                })
+                .collect();
+            page_numbers.sort();
+
+            // Every served page number must be in [1, 6] (we have 30 items
+            // at pageSize 5 → 6 real pages, all subsequent calls see page
+            // 6 again because the cursor stays at exhausted).
+            for &pn in &page_numbers {
+                assert!(
+                    (1..=6).contains(&pn),
+                    "concurrent next produced an out-of-range pageNumber: {pn} (expected 1..=6)"
+                );
+            }
+
+            // CRITICAL: each non-tail page (1..=5) must appear AT MOST
+            // once — DashMap's `get_mut` serializes mutators, so the
+            // cursor only advances through each page once. (Page 6 may
+            // appear multiple times because once exhausted the cursor
+            // stops advancing but keeps returning the empty-tail response
+            // — that's the contract.)
+            let mut non_tail_counts = std::collections::HashMap::new();
+            for &pn in page_numbers.iter().filter(|&&pn| pn < 6) {
+                *non_tail_counts.entry(pn).or_insert(0) += 1;
+            }
+            for (page, count) in non_tail_counts {
+                assert_eq!(
                 count, 1,
                 "page {page} served {count} times — the cursor advanced through it MORE than once, indicating a lost serialization"
             );
+            }
         }
-    }
     } // end mod stress
-
 }
 
 // ── SDK contract: data/list (sdk_codegen) ──────────────────────────
@@ -3762,7 +3767,10 @@ pub enum SortDir {
 
 /// One ordering clause: a field + a direction.
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/data/OrderByClause.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/OrderByClause.ts"
+)]
 pub struct OrderByClause {
     pub field: String,
     pub direction: SortDir,
@@ -3775,7 +3783,10 @@ pub struct OrderByClause {
 /// no database handle to reason about — the shared "main" store is the default.
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataListParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataListParams.ts"
+)]
 pub struct DataListParams {
     /// The collection to read (e.g. "rooms", "users", "messages").
     pub collection: String,
@@ -3811,7 +3822,10 @@ pub struct DataListParams {
 
 /// Result of `data/list` — the matching records + an accurate total.
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataListResult.ts"
+)]
 pub struct DataListResult {
     /// The matching records (each carries id, collection, data, metadata).
     #[ts(type = "Array<unknown>")]
@@ -3863,7 +3877,10 @@ pub struct VectorHit {
 /// corpus means low confidence in the ranking).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorSearchResults.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorSearchResults.ts"
+)]
 pub struct VectorSearchResults {
     /// The ranked hits (highest score first), at most `k`.
     pub results: Vec<VectorHit>,
@@ -3877,7 +3894,10 @@ pub struct VectorSearchResults {
 /// embedding, the vector dimensionality, and the in-memory cache occupancy.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorStats.ts"
+)]
 pub struct VectorStats {
     pub collection: String,
     /// Total records in the collection.
@@ -3896,7 +3916,10 @@ pub struct VectorStats {
 /// collection existed and was dropped.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorCacheInvalidation.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorCacheInvalidation.ts"
+)]
 pub struct VectorCacheInvalidation {
     pub collection: String,
     /// True if a cache entry existed and was removed.
@@ -3908,7 +3931,10 @@ pub struct VectorCacheInvalidation {
 /// failed.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorBackfillStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorBackfillStats.ts"
+)]
 pub struct VectorBackfillStats {
     pub collection: String,
     /// Records examined.
@@ -3928,7 +3954,10 @@ pub struct VectorBackfillStats {
 /// backend to `active`, recording `previous` for a later rollback.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationCutover.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationCutover.ts"
+)]
 pub struct MigrationCutover {
     /// The connection string that was swapped out (stored for rollback).
     pub previous: String,
@@ -3942,7 +3971,10 @@ pub struct MigrationCutover {
 /// previously-active `rolledBackTo` connection.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationRollback.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationRollback.ts"
+)]
 pub struct MigrationRollback {
     /// The connection string that was swapped out by the rollback.
     pub rolled_back_from: String,

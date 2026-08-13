@@ -44,7 +44,11 @@ impl MissionSource {
     pub fn new(persona_id: Uuid, text: impl Into<String>) -> Self {
         let text = text.into();
         let tokens = estimate_prompt_tokens(&text);
-        Self { persona_id, text, tokens }
+        Self {
+            persona_id,
+            text,
+            tokens,
+        }
     }
 }
 
@@ -121,11 +125,21 @@ mod tests {
         assert_eq!(full.items.len(), 1);
         assert!(full.items[0].content.contains("Deliver an edit"));
 
-        let starved = src.deliver(&ctx, src.floor_tokens() - 1, ResolutionPreference::Raw).await;
-        assert!(starved.items.is_empty(), "under-budget must deliver NOTHING, never a truncation");
+        let starved = src
+            .deliver(&ctx, src.floor_tokens() - 1, ResolutionPreference::Raw)
+            .await;
+        assert!(
+            starved.items.is_empty(),
+            "under-budget must deliver NOTHING, never a truncation"
+        );
 
         let other = RagContext::for_persona(Uuid::new_v4(), 0);
-        let cross = src.deliver(&other, u32::MAX, ResolutionPreference::Raw).await;
-        assert!(cross.items.is_empty(), "a mission never leaks across personas");
+        let cross = src
+            .deliver(&other, u32::MAX, ResolutionPreference::Raw)
+            .await;
+        assert!(
+            cross.items.is_empty(),
+            "a mission never leaks across personas"
+        );
     }
 }

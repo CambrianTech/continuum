@@ -490,14 +490,14 @@ async fn serve_persona_loop_inner(
                 // Directed turns still bypass entirely (they were named). Self-tick and
                 // ambient replies share the same ambient pool — both are lowest-priority
                 // non-directed work competing for the same lanes.
-                let _self_tick_permit = match crate::cognition::resource_admission::try_hold_ambient_turn()
-                {
-                    Some(permit) => permit,
-                    None => {
-                        next_beat = (next_beat + next_beat / 2).min(rest_cap);
-                        continue;
-                    }
-                };
+                let _self_tick_permit =
+                    match crate::cognition::resource_admission::try_hold_ambient_turn() {
+                        Some(permit) => permit,
+                        None => {
+                            next_beat = (next_beat + next_beat / 2).min(rest_cap);
+                            continue;
+                        }
+                    };
                 let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
                 drop(_self_tick_permit);
@@ -737,9 +737,9 @@ async fn serve_persona_loop_inner(
             room_id: turn_room,
             sender_id: msg.peer_id,
             sender_name: roster_names
-                    .get(&msg.peer_id)
-                    .cloned()
-                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
+                .get(&msg.peer_id)
+                .cloned()
+                .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
             sender_type: crate::persona::types::SenderType::Persona,
             content: msg.text.clone(),
             timestamp: now_ms,
@@ -809,7 +809,9 @@ async fn serve_persona_loop_inner(
             // Stamp the WHERE axis: this turn is happening INSIDE `turn_room`.
             // Without it every room-scoped source abstains and she perceives no
             // board, no roster, no doctrine, no wall (#331 / #127).
-            cognition.compose_for_turn(&ctx.profile, now_ms, Some(turn_room)).await
+            cognition
+                .compose_for_turn(&ctx.profile, now_ms, Some(turn_room))
+                .await
         };
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
         // Harvest the roster resolution this compose already fetched into the
@@ -875,11 +877,8 @@ async fn serve_persona_loop_inner(
             ctx.identity.peer_id,
             turn_room,
         );
-        let workspace_burst = crate::cognition::workspace::Burst::from_turns_at(
-            turn_room,
-            ws_turns,
-            Some(now_ms),
-        );
+        let workspace_burst =
+            crate::cognition::workspace::Burst::from_turns_at(turn_room, ws_turns, Some(now_ms));
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
@@ -1118,10 +1117,7 @@ async fn serve_persona_loop_inner(
                         outcome.turns_acted += 1;
                         continue;
                     }
-                    crate::cognition::act_observe::SettleStep::ActUnfulfilled {
-                        calls,
-                        intent,
-                    } => {
+                    crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent } => {
                         // No hands or the executor errored. Abstain — never a
                         // fabricated result, never a raw call envelope to the room.
                         tracing::warn!(
@@ -1645,8 +1641,7 @@ pub(crate) fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> us
         if window.is_empty() {
             break;
         }
-        let covered =
-            cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
+        let covered = cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
         if covered >= CONTAINMENT {
             run += 1;
         } else {
@@ -1830,9 +1825,9 @@ fn work_board_anchor(deliveries: &[crate::persona::rag_budget::RagDelivery]) -> 
         .filter(|i| claim_live(i))
         .filter(|i| match state(i) {
             Some(CardState::Claimed | CardState::InProgress | CardState::Review) => true,
-            Some(
-                CardState::Open | CardState::Blocked | CardState::Merged | CardState::Closed,
-            ) => false,
+            Some(CardState::Open | CardState::Blocked | CardState::Merged | CardState::Closed) => {
+                false
+            }
             None => false,
         })
         .map(|i| i.content.trim())
@@ -1917,7 +1912,10 @@ pub(crate) fn build_workspace_turns(
             .last()
             .is_some_and(|t| !t.is_self && t.content == trigger.content);
         if !already_last {
-            let author = names.get(trigger.peer_id).copied().unwrap_or(trigger.peer_id);
+            let author = names
+                .get(trigger.peer_id)
+                .copied()
+                .unwrap_or(trigger.peer_id);
             turns.push(BurstTurn::attributed(
                 false,
                 author,
@@ -2008,9 +2006,9 @@ pub(crate) fn build_workspace_turns(
             const TAIL_CYCLIC: usize = 4; // consecutive low-novelty turns to conclude cycling
             const CONVO_CONTAINMENT: f32 = 0.9; // stricter than self — the floor is lower
             const CONVO_MIN_WORDS: usize = 4; // farewells are short; consecutiveness carries safety
-            // The full run is counted (not capped at TAIL_CYCLIC): every cyclic
-            // turn PAST first-fire depth is a turn the room traded after the
-            // observation was first derivable — the escalation evidence.
+                                              // The full run is counted (not capped at TAIL_CYCLIC): every cyclic
+                                              // turn PAST first-fire depth is a turn the room traded after the
+                                              // observation was first derivable — the escalation evidence.
             let mut cyclic = 0usize;
             let mut authors: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for i in (1..turns.len()).rev() {
@@ -2143,8 +2141,7 @@ pub(crate) fn build_workspace_turns(
         let mut lost_threads: Vec<&str> = Vec::new();
         for d in deliveries.iter().filter(|d| d.source_id == "active-work") {
             for i in &d.items {
-                let Some(first) = i.content.trim().lines().next().filter(|l| !l.is_empty())
-                else {
+                let Some(first) = i.content.trim().lines().next().filter(|l| !l.is_empty()) else {
                     continue;
                 };
                 if i.metadata.get("fact").and_then(|v| v.as_str()) == Some("claim_lost") {
@@ -2435,7 +2432,8 @@ async fn run_self_cycle(
         selftick_turns,
         Some(now_ms),
     );
-    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
+    let Some(cycle) =
+        crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
         return; // no cycle registered (shouldn't happen) — nothing to run
     };
@@ -2597,7 +2595,8 @@ async fn run_self_cycle(
         );
         return;
     }
-    let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
+    let forwarder =
+        spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
@@ -2622,10 +2621,7 @@ async fn run_self_cycle(
             // A self-cycle answers no one — there is no arrival room, so her
             // default IS the correct audience. Same room the cycle framed its
             // context against two lines up.
-            if let Err(e) = conversation
-                .say_in(ctx.identity.default_room, &text)
-                .await
-            {
+            if let Err(e) = conversation.say_in(ctx.identity.default_room, &text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }
@@ -2634,10 +2630,7 @@ async fn run_self_cycle(
             // first ring deploy missed THIS say path entirely (4 verbatim
             // repeats, no [repetition], caught live 2026-07-12 10:20).
             // Every successful say records, whichever path spoke.
-            crate::cognition::deliberation_budget::record_own_speech(
-                ctx.identity.peer_id,
-                &text,
-            );
+            crate::cognition::deliberation_budget::record_own_speech(ctx.identity.peer_id, &text);
             crate::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,
@@ -2700,6 +2693,7 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
 
     // what this catches: the WORK-question burst drifting from its contract — it must
     // name each held card (short id + title) and pose the act-question with passing
@@ -2730,7 +2724,10 @@ mod tests {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let burst = held_work_burst(&[&card]);
         assert!(burst.contains(&id8), "short id must appear: {burst}");
-        assert!(burst.contains("psf__requests-2148"), "title must appear: {burst}");
+        assert!(
+            burst.contains("psf__requests-2148"),
+            "title must appear: {burst}"
+        );
         assert!(
             burst.contains("passing is yours"),
             "the choice stays hers: {burst}"
@@ -2816,7 +2813,10 @@ mod tests {
         // opaque turn is its own kind of noise.
         let mut turns: Vec<crate::cognition::workspace::BurstTurn> = Vec::new();
         push_work_board_anchor(&mut turns, &without_board);
-        assert!(turns.is_empty(), "no anchor means no turn, not an empty one");
+        assert!(
+            turns.is_empty(),
+            "no anchor means no turn, not an empty one"
+        );
 
         // The board source SPOKE and the board really is empty → the honest-empty line is
         // still correct and must survive. Silencing that would trade one lie for another.
@@ -2827,7 +2827,10 @@ mod tests {
         );
 
         // Cards present → the anchor names real work, as before.
-        let with_cards = vec![delivery("room-kanban", vec![card(airc_work::CardState::Claimed)])];
+        let with_cards = vec![delivery(
+            "room-kanban",
+            vec![card(airc_work::CardState::Claimed)],
+        )];
         let anchor = work_board_anchor(&with_cards);
         assert!(
             anchor.contains("Open work exists"),
@@ -2863,7 +2866,12 @@ mod tests {
         let out = collapse_near_duplicate_turns(turns);
         // 3 loop copies → 1 (the NEWEST, Atlas's variant); 2 short acks kept
         // (token floor); opaque observation kept.
-        assert_eq!(out.len(), 4, "{:?}", out.iter().map(|t| &t.author).collect::<Vec<_>>());
+        assert_eq!(
+            out.len(),
+            4,
+            "{:?}",
+            out.iter().map(|t| &t.author).collect::<Vec<_>>()
+        );
         let survivor = out
             .iter()
             .find(|t| t.content.contains("find Rust files"))
@@ -2873,7 +2881,10 @@ mod tests {
             "newest copy, annotated: {}",
             survivor.author
         );
-        assert!(survivor.content.contains("aren't being returned"), "newest copy is the representative");
+        assert!(
+            survivor.content.contains("aren't being returned"),
+            "newest copy is the representative"
+        );
         assert_eq!(out.iter().filter(|t| t.content == "thanks!").count(), 2);
         assert!(out.iter().any(|t| t.content.starts_with("[pattern]")));
     }
@@ -2946,7 +2957,10 @@ mod tests {
         let lost = c.find("no longer held").expect("lost-claim tail present");
         let room = c.find("Nothing has been said").expect("room line present");
         assert!(thread < room, "thread must LEAD the room description: {c}");
-        assert!(lost < room, "lost-claim tail rides before the room line: {c}");
+        assert!(
+            lost < room,
+            "lost-claim tail rides before the room line: {c}"
+        );
         assert!(
             !c.contains("No work of yours is on record"),
             "the no-thread line must not appear when a thread exists: {c}"
@@ -3019,7 +3033,10 @@ mod tests {
             // My active work card appears → fingerprint MUST change (interior drive).
             let with_my_work = vec![
                 delivery("airc", vec![chat("other", "hi")]),
-                delivery("active-work", vec![card("card abc [InProgress] \"impl X\"")]),
+                delivery(
+                    "active-work",
+                    vec![card("card abc [InProgress] \"impl X\"")],
+                ),
             ];
             assert_ne!(
                 fp0,
@@ -3181,13 +3198,13 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-roster",
-                    vec![roster(joel, "Joel"), roster(me, "Asha")],
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
                 ),
                 delivery(
                     "airc",
                     vec![
                         chat(joel, "Asha — are you there?"),
-                        chat(me, "I'm here, Joel!"),
+                        chat(me, "I'm here, Operator!"),
                         chat(stranger, "lurking"),
                     ],
                 ),
@@ -3203,7 +3220,7 @@ mod tests {
             let joel_turn = &turns[0];
             let own_turn = &turns[1];
             let stranger_turn = &turns[2];
-            assert!(!joel_turn.is_self && joel_turn.author == "Joel");
+            assert!(!joel_turn.is_self && joel_turn.author == "Operator");
             assert!(
                 own_turn.is_self && own_turn.author == "Asha",
                 "own post must be attributed to self/agent_name, got {own_turn:?}"
@@ -3218,7 +3235,7 @@ mod tests {
             // peers, own post attributed, unrostered peer honest-by-id.
             let burst = Burst::from_turns(room, turns).rendered;
             assert!(
-                burst.contains("Joel: Asha — are you there?"),
+                burst.contains("Operator: Asha — are you there?"),
                 "remote peer must render with roster name, got:\n{burst}"
             );
             assert!(
@@ -3226,7 +3243,7 @@ mod tests {
                 "the raw peer UUID must NOT leak into the burst, got:\n{burst}"
             );
             assert!(
-                burst.contains("Asha: I'm here, Joel!"),
+                burst.contains("Asha: I'm here, Operator!"),
                 "own post must attribute to agent_name, got:\n{burst}"
             );
             assert!(
@@ -3264,12 +3281,25 @@ mod tests {
             // Two trailing photocopies in her own ring, the source + peers' copies
             // in the room ring → run 2 (escalation threshold reached).
             let own = vec![paraphrase.clone(), intro.clone()];
-            let room = vec![intro.clone(), intro.clone(), paraphrase.clone(), intro.clone()];
-            assert_eq!(super::super::ring_echo_run(&own, &room), 2, "photocopy chain must count each copy");
+            let room = vec![
+                intro.clone(),
+                intro.clone(),
+                paraphrase.clone(),
+                intro.clone(),
+            ];
+            assert_eq!(
+                super::super::ring_echo_run(&own, &room),
+                2,
+                "photocopy chain must count each copy"
+            );
 
             // A novel newest message breaks the run at 0 even with echoes behind it.
             let own_novel = vec![intro.clone(), novel];
-            assert_eq!(super::super::ring_echo_run(&own_novel, &room), 0, "novel work must reset the run");
+            assert_eq!(
+                super::super::ring_echo_run(&own_novel, &room),
+                0,
+                "novel work must reset the run"
+            );
 
             // Her own recorded copy cannot vouch for itself: identical entries are
             // excluded from the containment window, so a lone original counts 0.
@@ -3360,7 +3390,10 @@ mod tests {
                 obs.content
             );
             assert_eq!(
-                turns.iter().filter(|t| t.content.starts_with("[pattern]")).count(),
+                turns
+                    .iter()
+                    .filter(|t| t.content.starts_with("[pattern]"))
+                    .count(),
                 1,
                 "exactly one observation per burst — perception, not nagging"
             );
@@ -3424,7 +3457,12 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("94ad103f", "Fix the widget", airc_work::CardState::Open, None)],
+                    vec![kanban_card(
+                        "94ad103f",
+                        "Fix the widget",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
                 ),
                 delivery("airc", greeting_spiral(me, peer, 3)),
             ];
@@ -3454,7 +3492,12 @@ mod tests {
                 delivery(
                     "room-kanban",
                     vec![
-                        kanban_card("94ad103f", "Fix the lane admission planner", airc_work::CardState::Open, None),
+                        kanban_card(
+                            "94ad103f",
+                            "Fix the lane admission planner",
+                            airc_work::CardState::Open,
+                            None,
+                        ),
                         kanban_card(
                             "21ffe3c0",
                             "Wire the projector",
@@ -3563,10 +3606,9 @@ mod tests {
             let deliveries = vec![delivery("airc", items)];
             let turns = build_workspace_turns(&deliveries, me, "Asha", None);
             assert!(
-                !turns
-                    .iter()
-                    .any(|t| t.content.starts_with("[pattern]")
-                        || t.content.starts_with("[anchor]")),
+                !turns.iter().any(
+                    |t| t.content.starts_with("[pattern]") || t.content.starts_with("[anchor]")
+                ),
                 "a novel last message breaks the run — no description, no anchor, got {turns:?}"
             );
         }
@@ -3587,12 +3629,15 @@ mod tests {
             let me = "me-peer";
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let deliveries = vec![
-                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
+                ),
                 // The lagging thread: her own reply is the last turn; Joel's new
                 // question has NOT yet landed in the delivery.
                 delivery(
                     "airc",
-                    vec![chat(joel, "morning"), chat(me, "morning Joel!")],
+                    vec![chat(joel, "morning"), chat(me, "morning Operator!")],
                 ),
             ];
             let trigger = super::super::TriggerTurn {
@@ -3605,7 +3650,7 @@ mod tests {
             let last = turns.last().expect("at least the anchored trigger");
             assert!(
                 !last.is_self
-                    && last.author == "Joel"
+                    && last.author == "Operator"
                     && last.content == "run commands/list and tell me the count",
                 "the waking message must be anchored as the final peer turn (roster \
                  name resolved), got {last:?}"
@@ -3623,11 +3668,14 @@ mod tests {
             let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
             let question = "run commands/list and tell me the count";
             let deliveries = vec![
-                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Operator"), roster(me, "Asha")],
+                ),
                 // Caught-up thread: the trigger IS the last turn already.
                 delivery(
                     "airc",
-                    vec![chat(me, "morning Joel!"), chat(joel, question)],
+                    vec![chat(me, "morning Operator!"), chat(joel, question)],
                 ),
             ];
             let trigger = super::super::TriggerTurn {
@@ -3697,7 +3745,12 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
+                    vec![kanban_card(
+                        "65fca48d",
+                        "Break the echo loop",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
                 ),
                 delivery("airc", echo_hall(me, anwen, benchy)),
             ];
@@ -3749,10 +3802,9 @@ mod tests {
             )];
             let turns = build_workspace_turns(&deliveries, me, "Asha", None);
             assert!(
-                !turns
-                    .iter()
-                    .any(|t| t.content.starts_with("[pattern]")
-                        || t.content.starts_with("[anchor]")),
+                !turns.iter().any(
+                    |t| t.content.starts_with("[pattern]") || t.content.starts_with("[anchor]")
+                ),
                 "novel multi-speaker work must never trip the mirror, got {turns:?}"
             );
         }
@@ -3777,7 +3829,12 @@ mod tests {
             let deliveries = vec![
                 delivery(
                     "room-kanban",
-                    vec![kanban_card("65fca48d", "Break the echo loop", airc_work::CardState::Open, None)],
+                    vec![kanban_card(
+                        "65fca48d",
+                        "Break the echo loop",
+                        airc_work::CardState::Open,
+                        None,
+                    )],
                 ),
                 delivery("airc", items),
             ];

@@ -211,7 +211,11 @@ impl TrainingCompletionSentinel {
                 }
             };
 
-            let result = match conn.commands().execute_value("cognition/eval", params).await {
+            let result = match conn
+                .commands()
+                .execute_value("cognition/eval", params)
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(
@@ -253,8 +257,7 @@ impl TrainingCompletionSentinel {
 
             // lift > 0: page the gene into the LIVE cycle. A wait-free atomic genome
             // swap — the persona's next generation runs base + this layer.
-            let Some(cycle) =
-                crate::cognition::persona_workspace::global().get(&job.persona_id)
+            let Some(cycle) = crate::cognition::persona_workspace::global().get(&job.persona_id)
             else {
                 // De-spawned between train start and completion — don't adopt into a
                 // ghost. Fail loud; the next time she's live + retrained the loop runs.

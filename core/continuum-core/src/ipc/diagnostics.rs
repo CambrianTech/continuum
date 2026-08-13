@@ -35,7 +35,9 @@ pub(crate) fn current_rss_mb() -> u64 {
         ProcessRefreshKind::nothing().with_memory(),
     );
     // sysinfo reports BYTES for process memory; 0 means "could not read", same as before.
-    sys.process(pid).map(|p| p.memory() / (1024 * 1024)).unwrap_or(0)
+    sys.process(pid)
+        .map(|p| p.memory() / (1024 * 1024))
+        .unwrap_or(0)
 }
 
 /// Total system RAM in MB, or None if it cannot be determined.

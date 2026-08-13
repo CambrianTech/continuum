@@ -344,8 +344,7 @@ impl KanbanProjection {
             lanes,
             cards,
         };
-        self.substrate
-            .store(self.builder.persistent(view));
+        self.substrate.store(self.builder.persistent(view));
     }
 }
 
@@ -529,10 +528,10 @@ pub fn spawn_node_kanban_projector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
     use airc_core::{PeerId, RoomId};
     use airc_work::{LaneId, RepoId, WorkCardId};
     use async_trait::async_trait;
-    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
     use continuum_positron::{Provenance, SenderKind};
     use serde_json::json;
     use std::sync::Mutex;
@@ -668,7 +667,13 @@ mod tests {
         let substrate = Substrate::new();
         let room = RoomId::new();
         let creator = PeerId::new();
-        let c = card(room, creator, "Wire the kanban projector", CardState::Open, None);
+        let c = card(
+            room,
+            creator,
+            "Wire the kanban projector",
+            CardState::Open,
+            None,
+        );
         let reader = StubReader::new(vec![c], vec![]);
         let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
@@ -708,7 +713,10 @@ mod tests {
         let reader = StubReader::new(vec![c], vec![]);
         let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
-        assert_eq!(current_kanban(&substrate).cards[0].creator_kind, SenderKind::Human);
+        assert_eq!(
+            current_kanban(&substrate).cards[0].creator_kind,
+            SenderKind::Human
+        );
 
         // Card arrives via presence: Agent named Asha carrying a badge.
         let presence = presence_one(room.as_uuid(), creator.as_uuid(), "Asha", "agent");
@@ -723,7 +731,10 @@ mod tests {
         assert_eq!(view.cards[0].creator_name, "Asha");
         assert_eq!(view.cards[0].creator_kind, SenderKind::Agent);
         assert_eq!(
-            view.cards[0].integrations.get("continuum.persona_id").map(String::as_str),
+            view.cards[0]
+                .integrations
+                .get("continuum.persona_id")
+                .map(String::as_str),
             Some("asha-1"),
             "opaque badge resolved from the card"
         );
@@ -774,11 +785,23 @@ mod tests {
         let room = RoomId::new();
         let owner = PeerId::new();
 
-        let mut live = card(room, PeerId::new(), "Live hold", CardState::Claimed, Some(owner));
+        let mut live = card(
+            room,
+            PeerId::new(),
+            "Live hold",
+            CardState::Claimed,
+            Some(owner),
+        );
         live.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
         live.claim_expires_at_ms = Some(u64::MAX);
 
-        let mut lapsed = card(room, PeerId::new(), "Lapsed hold", CardState::Claimed, Some(owner));
+        let mut lapsed = card(
+            room,
+            PeerId::new(),
+            "Lapsed hold",
+            CardState::Claimed,
+            Some(owner),
+        );
         lapsed.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()));
         lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
 
@@ -876,13 +899,21 @@ mod tests {
         let reader = StubReader::new(vec![c], vec![]);
         let mut p = KanbanProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
-        let r1 = substrate.cache().get(KanbanViewState::KIND).unwrap().revision;
+        let r1 = substrate
+            .cache()
+            .get(KanbanViewState::KIND)
+            .unwrap()
+            .revision;
         // A presence fold re-projects → a second store, revision advances.
         let presence = presence_one(room.as_uuid(), creator.as_uuid(), "Asha", "agent");
         if let KanbanInput::Presence(_, roster) = classify(PRESENCE_UPDATED, &presence).unwrap() {
             p.apply_roster(roster);
         }
-        let r2 = substrate.cache().get(KanbanViewState::KIND).unwrap().revision;
+        let r2 = substrate
+            .cache()
+            .get(KanbanViewState::KIND)
+            .unwrap()
+            .revision;
         assert!(r2 > r1, "revision must advance: {r1:?} -> {r2:?}");
     }
 
@@ -933,12 +964,13 @@ mod tests {
         assert!(current_kanban(&substrate).cards.is_empty());
 
         // Board gains a card while the loop was behind; a Lagged arrives.
-        reader
-            .board
-            .lock()
-            .unwrap()
-            .cards
-            .push(card(room, creator, "caught up", CardState::Open, None));
+        reader.board.lock().unwrap().cards.push(card(
+            room,
+            creator,
+            "caught up",
+            CardState::Open,
+            None,
+        ));
         let step = fold_recv(&mut p, room.as_uuid(), Err(RecvError::Lagged(3))).await;
         assert_eq!(step, LoopStep::Continue);
         assert_eq!(

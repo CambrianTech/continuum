@@ -507,7 +507,7 @@ mod tests {
             me,
             vec![
                 member(agent, "persona", Some("Anwen")),
-                member(human, "interactive", Some("Joel")),
+                member(human, "interactive", Some("Operator")),
             ],
         ));
         let source = RoomRosterSource::new(persona(), reader);

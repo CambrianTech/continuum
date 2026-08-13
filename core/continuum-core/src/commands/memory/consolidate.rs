@@ -238,10 +238,19 @@ mod tests {
         assert!(is_after_watermark("2026-07-26T00:00:00Z", None));
 
         // A lesson strictly newer than the watermark is admitted...
-        assert!(is_after_watermark("2026-07-26T12:00:00Z", Some("2026-07-26T08:00:00Z")));
+        assert!(is_after_watermark(
+            "2026-07-26T12:00:00Z",
+            Some("2026-07-26T08:00:00Z")
+        ));
         // ...one AT the watermark is not (already consolidated on the run that set it)...
-        assert!(!is_after_watermark("2026-07-26T08:00:00Z", Some("2026-07-26T08:00:00Z")));
+        assert!(!is_after_watermark(
+            "2026-07-26T08:00:00Z",
+            Some("2026-07-26T08:00:00Z")
+        ));
         // ...and an older one is not (a re-run must not re-train it).
-        assert!(!is_after_watermark("2026-07-25T23:59:59Z", Some("2026-07-26T08:00:00Z")));
+        assert!(!is_after_watermark(
+            "2026-07-25T23:59:59Z",
+            Some("2026-07-26T08:00:00Z")
+        ));
     }
 }

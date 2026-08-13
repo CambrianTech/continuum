@@ -90,7 +90,8 @@ pub fn read_from(path: &Path, key: &str) -> Option<String> {
 /// through a temp file + rename so a concurrent reader never sees a half-write.
 pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("config_env: create_dir_all {parent:?}: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("config_env: create_dir_all {parent:?}: {e}"))?;
     }
     let existing = fs::read_to_string(path).unwrap_or_default();
 
@@ -126,7 +127,8 @@ pub fn upsert_in(path: &Path, key: &str, value: &str) -> Result<(), String> {
 
     let tmp = path.with_extension("env.tmp");
     {
-        let mut f = fs::File::create(&tmp).map_err(|e| format!("config_env: create {tmp:?}: {e}"))?;
+        let mut f =
+            fs::File::create(&tmp).map_err(|e| format!("config_env: create {tmp:?}: {e}"))?;
         f.write_all(out.as_bytes())
             .map_err(|e| format!("config_env: write {tmp:?}: {e}"))?;
     }
@@ -209,13 +211,21 @@ mod tests {
             format!("# header\nHF_HOME='{win}'\nCONTINUUM_STORAGE_PATH={win}\nQ=\"{win}\"\n"),
         )
         .unwrap();
-        assert_eq!(read_from(&p, "HF_HOME").as_deref(), Some(win), "single-quoted value");
+        assert_eq!(
+            read_from(&p, "HF_HOME").as_deref(),
+            Some(win),
+            "single-quoted value"
+        );
         assert_eq!(
             read_from(&p, "CONTINUUM_STORAGE_PATH").as_deref(),
             Some(win),
             "bare value from a pre-fix install must still work"
         );
-        assert_eq!(read_from(&p, "Q").as_deref(), Some(win), "double-quoted value");
+        assert_eq!(
+            read_from(&p, "Q").as_deref(),
+            Some(win),
+            "double-quoted value"
+        );
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -240,7 +250,10 @@ mod tests {
         upsert_in(&p, "HTTP_PORT", "9000").unwrap();
         upsert_in(&p, "CONTINUUM_LAUNCH_MODE", "headless").unwrap();
         assert_eq!(read_from(&p, "HTTP_PORT").as_deref(), Some("9000"));
-        assert_eq!(read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(), Some("headless"));
+        assert_eq!(
+            read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(),
+            Some("headless")
+        );
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -257,8 +270,14 @@ mod tests {
             .lines()
             .filter(|l| l.trim_start().starts_with("CONTINUUM_LAUNCH_MODE="))
             .count();
-        assert_eq!(count, 1, "expected exactly one assignment line, got:\n{content}");
-        assert_eq!(read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(), Some("headless"));
+        assert_eq!(
+            count, 1,
+            "expected exactly one assignment line, got:\n{content}"
+        );
+        assert_eq!(
+            read_from(&p, "CONTINUUM_LAUNCH_MODE").as_deref(),
+            Some("headless")
+        );
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
 
@@ -271,8 +290,14 @@ mod tests {
         fs::write(&p, "# Continuum Configuration\n\nHTTP_PORT=9000\n").unwrap();
         upsert_in(&p, "CONTINUUM_LAUNCH_MODE", "headless").unwrap();
         let content = fs::read_to_string(&p).unwrap();
-        assert!(content.contains("# Continuum Configuration"), "comment dropped:\n{content}");
-        assert!(content.contains("HTTP_PORT=9000"), "sibling dropped:\n{content}");
+        assert!(
+            content.contains("# Continuum Configuration"),
+            "comment dropped:\n{content}"
+        );
+        assert!(
+            content.contains("HTTP_PORT=9000"),
+            "sibling dropped:\n{content}"
+        );
         let _ = fs::remove_dir_all(p.parent().unwrap());
     }
 

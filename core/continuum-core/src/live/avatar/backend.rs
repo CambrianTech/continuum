@@ -31,7 +31,10 @@ pub enum AvatarError {
 
 /// Model format — determines which backend handles the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/voice/ModelFormat.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/voice/ModelFormat.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelFormat {
     /// VRM 0.x (VRoid Studio, 52 morph targets, 83 joints)

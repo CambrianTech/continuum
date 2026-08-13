@@ -109,8 +109,7 @@ pub fn spawn_workspace_invalidator(bus: Arc<MessageBus>, dirty: WeakDirtyHandle)
 pub fn is_room_state_publish(kind: &airc_core::TranscriptKind) -> bool {
     matches!(
         kind,
-        airc_core::TranscriptKind::DoctrinePublished
-            | airc_core::TranscriptKind::WallPostPublished
+        airc_core::TranscriptKind::DoctrinePublished | airc_core::TranscriptKind::WallPostPublished
     )
 }
 
@@ -230,8 +229,17 @@ mod tests {
     // verb NOT marking is a stale map — the #346 staleness class.
     #[test]
     fn mutation_predicate_splits_read_from_write() {
-        for read_only in ["code/read", "code/list", "code/tree", "code/search", "git/status"] {
-            assert!(!mutates_workspace(read_only), "{read_only} must not dirty the map");
+        for read_only in [
+            "code/read",
+            "code/list",
+            "code/tree",
+            "code/search",
+            "git/status",
+        ] {
+            assert!(
+                !mutates_workspace(read_only),
+                "{read_only} must not dirty the map"
+            );
         }
         for mutating in [
             "code/write",
@@ -256,7 +264,9 @@ mod tests {
     #[tokio::test]
     async fn bus_mutation_events_dirty_the_cache_read_only_do_not() {
         let bus = Arc::new(MessageBus::new());
-        let inner = Arc::new(CountingSource { fetches: AtomicU32::new(0) });
+        let inner = Arc::new(CountingSource {
+            fetches: AtomicU32::new(0),
+        });
         let (cached, dirty) = CachedRagSource::new(inner.clone());
         spawn_workspace_invalidator(bus.clone(), dirty.downgrade());
         drop(dirty); // wiring done — cache liveness now keys the listener
@@ -269,7 +279,10 @@ mod tests {
         bus.publish_async_only(COMMAND_COMPLETED_TOPIC, completed("code/read"));
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let d = cached.deliver(&ctx, 100, ResolutionPreference::Raw).await;
-        assert_eq!(d.items[0].content, "fetch #1", "read-only completion must not dirty");
+        assert_eq!(
+            d.items[0].content, "fetch #1",
+            "read-only completion must not dirty"
+        );
 
         // Mutating completion → next deliver refetches.
         bus.publish_async_only(COMMAND_COMPLETED_TOPIC, completed("code/write"));
@@ -282,8 +295,15 @@ mod tests {
                 break;
             }
         }
-        assert!(refetched, "a code/write completion must dirty the wrapped map");
-        assert_eq!(inner.fetches.load(Ordering::SeqCst), 2, "exactly one refetch");
+        assert!(
+            refetched,
+            "a code/write completion must dirty the wrapped map"
+        );
+        assert_eq!(
+            inner.fetches.load(Ordering::SeqCst),
+            2,
+            "exactly one refetch"
+        );
     }
 
     // what this catches: the publish predicate — BOTH kinds must dirty (they
@@ -295,8 +315,17 @@ mod tests {
         use airc_core::TranscriptKind as K;
         assert!(is_room_state_publish(&K::DoctrinePublished));
         assert!(is_room_state_publish(&K::WallPostPublished));
-        for benign in [K::Message, K::Attachment, K::Receipt, K::Presence, K::System] {
-            assert!(!is_room_state_publish(&benign), "{benign:?} must not dirty doctrine/wall");
+        for benign in [
+            K::Message,
+            K::Attachment,
+            K::Receipt,
+            K::Presence,
+            K::System,
+        ] {
+            assert!(
+                !is_room_state_publish(&benign),
+                "{benign:?} must not dirty doctrine/wall"
+            );
         }
     }
 
@@ -305,7 +334,9 @@ mod tests {
     // instead of leaking one parked task per ephemeral eval fork.
     #[test]
     fn weak_handle_dies_with_the_cache() {
-        let inner = Arc::new(CountingSource { fetches: AtomicU32::new(0) });
+        let inner = Arc::new(CountingSource {
+            fetches: AtomicU32::new(0),
+        });
         let (cached, dirty): (Arc<CachedRagSource>, DirtyHandle) = CachedRagSource::new(inner);
         let weak = dirty.downgrade();
         assert!(weak.mark(), "alive while the cache lives");

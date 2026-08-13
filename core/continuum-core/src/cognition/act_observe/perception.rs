@@ -60,7 +60,11 @@ pub(super) fn entries_since_last_settlement(recent: &[String]) -> &[String] {
 /// `commands/list` on every act, never converting the result to an answer). A MIXED
 /// batch — any genuinely new call — is NOT a repeat: the new call yields new
 /// perception and must run.
-pub(super) fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall], fold: Option<usize>) -> bool {
+pub(super) fn all_calls_already_satisfied(
+    recent: &[String],
+    calls: &[ToolCall],
+    fold: Option<usize>,
+) -> bool {
     if calls.is_empty() {
         return false;
     }
@@ -134,13 +138,17 @@ pub(super) fn is_redundant_orientation(recent: &[String], calls: &[ToolCall]) ->
 /// scans NEVER fired against a real recency window — `[no-deliverable]` and
 /// `[unobserved]` were structurally dead. Reading `ToolVerb` off the typed
 /// `Observation` is immune to that drift.
-fn acts_in<'a>(entries: &'a [WmEntry]) -> impl Iterator<Item = &'a super::observation::Observation> {
+fn acts_in<'a>(
+    entries: &'a [WmEntry],
+) -> impl Iterator<Item = &'a super::observation::Observation> {
     entries.iter().flat_map(|e| e.acts.iter())
 }
 
 /// Index of the last SETTLEMENT boundary in a typed entry slice, or `None`.
 fn last_settlement(entries: &[WmEntry]) -> Option<usize> {
-    entries.iter().rposition(|e| matches!(e.kind, WmKind::Settlement))
+    entries
+        .iter()
+        .rposition(|e| matches!(e.kind, WmKind::Settlement))
 }
 
 /// TRUE if any entry in this slice is a real tool RECEIPT — the typed kind query
@@ -150,7 +158,9 @@ fn last_settlement(entries: &[WmEntry]) -> Option<usize> {
 /// and the confab backstop went blind after its own first firing (the 2026-07-12
 /// suppression onion). `WmKind::Receipt` cannot be spoofed by prose.
 pub(super) fn any_real_receipt(entries: &[WmEntry]) -> bool {
-    entries.iter().any(|e| matches!(e.kind, WmKind::Receipt { .. }))
+    entries
+        .iter()
+        .any(|e| matches!(e.kind, WmKind::Receipt { .. }))
 }
 
 /// Did this Speak CLAIM completed work on a named file that no tool act backs?
@@ -244,7 +254,10 @@ pub(super) fn wrote_without_observation(recent: &[WmEntry]) -> bool {
 pub(super) fn mutated_workspace(recent: &[WmEntry]) -> bool {
     let is_settle = |e: &WmEntry| matches!(e.kind, WmKind::Settlement);
     let end = recent.iter().rposition(is_settle).unwrap_or(recent.len());
-    let start = recent[..end].iter().rposition(is_settle).map_or(0, |i| i + 1);
+    let start = recent[..end]
+        .iter()
+        .rposition(is_settle)
+        .map_or(0, |i| i + 1);
     acts_in(&recent[start..end]).any(|a| a.output.verb.mutates())
 }
 
@@ -266,9 +279,17 @@ mod tests {
             None => serde_json::json!({}),
         };
         Observation {
-            call: ToolCall { id: "c".into(), name: name.into(), input: input.clone() },
+            call: ToolCall {
+                id: "c".into(),
+                name: name.into(),
+                input: input.clone(),
+            },
             output: ToolOutput {
-                result: ToolResult { tool_use_id: "c".into(), content: "ok".into(), is_error: None },
+                result: ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "ok".into(),
+                    is_error: None,
+                },
                 verb: ToolVerb::classify(name),
                 paths: extract_paths(&input),
             },
@@ -278,7 +299,11 @@ mod tests {
     // A receipt WmEntry carrying the typed acts (text is irrelevant to the typed
     // predicates — they read `acts`, never re-parse the string).
     fn receipt(acts: Vec<Observation>) -> WmEntry {
-        WmEntry { kind: WmKind::Receipt { n: 1 }, text: String::new(), acts }
+        WmEntry {
+            kind: WmKind::Receipt { n: 1 },
+            text: String::new(),
+            acts,
+        }
     }
     fn settle() -> WmEntry {
         WmEntry {
@@ -383,7 +408,10 @@ mod tests {
         // a prior settled concern's write never leaks into this concern
         assert!(!wrote_without_observation(&[w(), settle(), r()]));
         // no mutation at all → nothing to observe
-        assert!(!wrote_without_observation(&[receipt(vec![act("code/tree", None)])]));
+        assert!(!wrote_without_observation(&[receipt(vec![act(
+            "code/tree",
+            None
+        )])]));
     }
 
     // what this catches: the typed receipt-presence query that replaces the
@@ -392,7 +420,10 @@ mod tests {
     // teaching text — read false (the 2026-07-12 suppression onion).
     #[test]
     fn any_real_receipt_reads_the_kind_not_the_prose() {
-        assert!(any_real_receipt(&[receipt(vec![act("code/read", Some("x.py"))])]));
+        assert!(any_real_receipt(&[receipt(vec![act(
+            "code/read",
+            Some("x.py")
+        )])]));
         assert!(!any_real_receipt(&[settle()]));
         let facty = WmEntry {
             kind: WmKind::Fact,

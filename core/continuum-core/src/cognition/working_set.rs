@@ -234,7 +234,10 @@ impl WorkingSetRegistry {
 
     /// Every observation, for reporting. Order is unspecified (a concurrent map).
     pub fn all(&self) -> Vec<(Uuid, PersonaDemand)> {
-        self.observed.iter().map(|e| (*e.key(), *e.value())).collect()
+        self.observed
+            .iter()
+            .map(|e| (*e.key(), *e.value()))
+            .collect()
     }
 
     /// How many minds have been measured.
@@ -313,7 +316,11 @@ mod tests {
 
         // A fresh process: new registry, nothing in memory.
         let after = WorkingSetRegistry::new();
-        assert_eq!(after.ceiling(), None, "a new registry starts genuinely empty");
+        assert_eq!(
+            after.ceiling(),
+            None,
+            "a new registry starts genuinely empty"
+        );
         after.rehydrate(persona);
         assert_eq!(
             after.ceiling(),
@@ -339,6 +346,10 @@ mod tests {
         assert_eq!(reg.observed_personas(), 0);
         // A zero-token turn is a defect signal elsewhere, not an observation here.
         reg.record(p(1), 0, 1_000);
-        assert_eq!(reg.ceiling(), None, "a zero demand must not register as data");
+        assert_eq!(
+            reg.ceiling(),
+            None,
+            "a zero demand must not register as data"
+        );
     }
 }

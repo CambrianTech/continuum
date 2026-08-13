@@ -597,7 +597,11 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // deterministic tie-break — the boot-time output should
         // not depend on slice ordering or hashmap iteration.
         let mut sorted: Vec<&RagSourceBudget> = sources.iter().collect();
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.source_id.cmp(&b.source_id)));
+        sorted.sort_by(|a, b| {
+            b.priority
+                .cmp(&a.priority)
+                .then(a.source_id.cmp(&b.source_id))
+        });
 
         // Working allocation: source_id -> tokens. Use a Vec parallel
         // to sorted for cache-locality + deterministic iteration.
@@ -671,11 +675,16 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // ---- Pass 2: min — top up to min_tokens for sources we
         // haven't dropped, in priority order ----
         for (i, source) in sorted.iter().enumerate() {
-            if matches!(state[i], AllocationState::Dropped | AllocationState::UnderProvisioned) {
+            if matches!(
+                state[i],
+                AllocationState::Dropped | AllocationState::UnderProvisioned
+            ) {
                 continue;
             }
             let needed = source.min_tokens.saturating_sub(alloc[i]);
-            let granted = needed.min(remaining).min(source.max_tokens.saturating_sub(alloc[i]));
+            let granted = needed
+                .min(remaining)
+                .min(source.max_tokens.saturating_sub(alloc[i]));
             alloc[i] += granted;
             remaining -= granted;
             if alloc[i] >= source.min_tokens {
@@ -693,8 +702,10 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
                 .iter()
                 .enumerate()
                 .filter(|(i, s)| {
-                    !matches!(state[*i], AllocationState::Dropped | AllocationState::UnderProvisioned)
-                        && alloc[*i] < s.max_tokens
+                    !matches!(
+                        state[*i],
+                        AllocationState::Dropped | AllocationState::UnderProvisioned
+                    ) && alloc[*i] < s.max_tokens
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -707,7 +718,8 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
             }
             let mut moved = 0u32;
             for &i in &active {
-                let share = ((remaining as u64) * (sorted[i].priority as u64) / (priority_sum as u64)) as u32;
+                let share = ((remaining as u64) * (sorted[i].priority as u64)
+                    / (priority_sum as u64)) as u32;
                 let headroom = sorted[i].max_tokens - alloc[i];
                 let grant = share.min(headroom);
                 if grant > 0 {
@@ -733,8 +745,10 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
 
         // Build result in input order (NOT sorted order) for caller
         // ergonomics.
-        let mut allocations_by_id: std::collections::HashMap<String, (u32, AllocationState, &RagSourceBudget)> =
-            std::collections::HashMap::new();
+        let mut allocations_by_id: std::collections::HashMap<
+            String,
+            (u32, AllocationState, &RagSourceBudget),
+        > = std::collections::HashMap::new();
         for (i, source) in sorted.iter().enumerate() {
             allocations_by_id.insert(source.source_id.clone(), (alloc[i], state[i], *source));
         }
@@ -1132,7 +1146,7 @@ mod tests {
         let tiny = alloc_for(&result, "tiny");
         let big = alloc_for(&result, "big");
         assert_eq!(tiny.allocated_tokens, 100); // capped
-        // Big should absorb whatever the priority-10 cap left behind.
+                                                // Big should absorb whatever the priority-10 cap left behind.
         assert!(big.allocated_tokens >= 5000);
         assert!(big.allocated_tokens <= 9_000);
     }
@@ -1204,7 +1218,10 @@ mod tests {
         let first = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 2);
         let cursor = first.continuation.unwrap();
-        let second = source.deliver_continuation(&ctx(), cursor, 100).await.unwrap();
+        let second = source
+            .deliver_continuation(&ctx(), cursor, 100)
+            .await
+            .unwrap();
         assert_eq!(second.items.len(), 2);
         assert!(second.continuation.is_none());
     }
@@ -1248,23 +1265,17 @@ mod tests {
         let pax_ctx = RagContext::for_persona(pax, 1_000_000);
         let maya_ctx = RagContext::for_persona(maya, 1_000_000);
 
-        let pax_source = StubRagSource::new(
-            "stub",
-            pax,
-            vec![item("a", 10), item("b", 10)],
-        );
-        let pax_first = pax_source.deliver(&pax_ctx, 15, ResolutionPreference::Raw).await;
+        let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10), item("b", 10)]);
+        let pax_first = pax_source
+            .deliver(&pax_ctx, 15, ResolutionPreference::Raw)
+            .await;
         let pax_cursor = pax_first.continuation.unwrap();
         assert_eq!(pax_cursor.persona_id, pax);
 
         // Maya's source must refuse Pax's cursor — both because the
         // cursor's persona_id doesn't match Maya's binding AND because
         // the source verifies its own persona_id against ctx.persona_id.
-        let maya_source = StubRagSource::new(
-            "stub",
-            maya,
-            vec![item("x", 10), item("y", 10)],
-        );
+        let maya_source = StubRagSource::new("stub", maya, vec![item("x", 10), item("y", 10)]);
         let cross = maya_source
             .deliver_continuation(&maya_ctx, pax_cursor, 100)
             .await;
@@ -1279,9 +1290,7 @@ mod tests {
             source_id: "memories".to_string(),
             opaque: serde_json::json!({ "next": 0 }),
         };
-        let cross = source
-            .deliver_continuation(&ctx(), alien_cursor, 100)
-            .await;
+        let cross = source.deliver_continuation(&ctx(), alien_cursor, 100).await;
         assert!(cross.is_none(), "wrong-source cursor must be refused");
     }
 
@@ -1294,7 +1303,9 @@ mod tests {
         let maya = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000def").unwrap();
         let pax_source = StubRagSource::new("stub", pax, vec![item("a", 10)]);
         let maya_ctx = RagContext::for_persona(maya, 1_000_000);
-        let delivery = pax_source.deliver(&maya_ctx, 100, ResolutionPreference::Raw).await;
+        let delivery = pax_source
+            .deliver(&maya_ctx, 100, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 0);
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
@@ -1330,7 +1341,10 @@ mod tests {
         let alloc = adapter.allocate(
             &RagContext::for_persona(uuid::Uuid::nil(), 0),
             214,
-            ReservedTokens { system: 0, completion: 0 },
+            ReservedTokens {
+                system: 0,
+                completion: 0,
+            },
             &sources,
         );
         for (i, s) in sources.iter().enumerate() {

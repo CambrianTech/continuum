@@ -63,7 +63,10 @@ pub struct MemoryImportParams {
 
 /// Counts from one import run.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/memory/ImportResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/memory/ImportResult.ts"
+)]
 pub struct ImportResult {
     pub imported: usize,
     pub skipped: usize,

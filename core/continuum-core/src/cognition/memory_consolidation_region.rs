@@ -210,7 +210,8 @@ impl MemoryConsolidationRegion {
         };
 
         // TAKE the consolidator — no guard may be held across the await below.
-        let Some(mut consolidator) = self.consolidator.lock().ok().and_then(|mut g| g.take()) else {
+        let Some(mut consolidator) = self.consolidator.lock().ok().and_then(|mut g| g.take())
+        else {
             // Another pass owns it; rest rather than queue.
             return sleep();
         };
@@ -361,7 +362,10 @@ mod tests {
         seen.insert("the board is per-room".to_string());
 
         let fresh = MemoryConsolidationRegion::unconsolidated(&entries, &seen);
-        assert_eq!(fresh, vec!["atlas cannot name the prior message".to_string()]);
+        assert_eq!(
+            fresh,
+            vec!["atlas cannot name the prior message".to_string()]
+        );
     }
 
     /// what this catches: consolidating things that are not thoughts. Working
@@ -397,7 +401,10 @@ mod tests {
         // Different thought, or different persona, must NOT collide — one
         // citizen's memory becoming another's would be worse than a duplicate.
         assert_ne!(a, deterministic_thought_id(persona, "a different thought"));
-        assert_ne!(a, deterministic_thought_id(Uuid::from_u128(8), "the board is per-room"));
+        assert_ne!(
+            a,
+            deterministic_thought_id(Uuid::from_u128(8), "the board is per-room")
+        );
     }
 
     /// what this catches: an empty or whitespace thought becoming a corpus row.

@@ -693,7 +693,10 @@ impl std::error::Error for GpuError {}
 
 /// Per-subsystem stats for IPC response.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/gpu/SubsystemStats.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/SubsystemStats.ts"
+)]
 pub struct SubsystemStats {
     #[ts(type = "number")]
     pub budget_mb: f32,

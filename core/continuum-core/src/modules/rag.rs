@@ -103,7 +103,10 @@ pub struct ProjectSourceParams {
 
 /// Custom section for passthrough content
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/rag/CustomSection.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/rag/CustomSection.ts"
+)]
 pub struct CustomSection {
     /// Section type label
     pub section_type: String,
@@ -236,7 +239,10 @@ pub struct ConsciousnessSourceMetadata {
 
 /// Empty metadata for simple sources
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/rag/EmptyMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/rag/EmptyMetadata.ts"
+)]
 pub struct EmptyMetadata {}
 
 // ─── Tagged Union: RagSourceMetadata ─────────────────────────────────────────
@@ -265,7 +271,10 @@ pub enum RagSourceMetadata {
 
 /// Result from a single RAG source.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/rag/RagSourceResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/rag/RagSourceResult.ts"
+)]
 pub struct RagSourceResult {
     /// Which source this result came from
     pub source_type: String,

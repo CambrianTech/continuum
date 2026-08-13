@@ -168,10 +168,7 @@ async fn spawn_flooding_producer(
 /// lag_signal_count, total_skipped). The loop exits early once the
 /// stream returns None or stays Pending past `POLL_TIMEOUT` repeatedly
 /// past the budget.
-async fn drain_with_budget(
-    mut stream: airc_lib::EventStream,
-    budget: Duration,
-) -> (u64, u64, u64) {
+async fn drain_with_budget(mut stream: airc_lib::EventStream, budget: Duration) -> (u64, u64, u64) {
     let deadline = Instant::now() + budget;
     let mut events = 0u64;
     let mut lag_signals = 0u64;
@@ -286,8 +283,7 @@ async fn consumer_makes_progress_after_lag() {
     tokio::time::sleep(SUBSCRIPTION_SETTLE).await;
 
     // First flood: force a lag.
-    let first_producer =
-        spawn_flooding_producer(Arc::clone(loopback.peer_b()), FLOOD_COUNT).await;
+    let first_producer = spawn_flooding_producer(Arc::clone(loopback.peer_b()), FLOOD_COUNT).await;
     first_producer.await.expect("first producer joined");
 
     // Drain until we observe at least one lag signal AND at least one

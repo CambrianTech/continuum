@@ -16,7 +16,10 @@ use super::{card_view, PersonaCardView};
 /// the full id OR the 8-char short form a persona is shown in rosters (#164).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaIdentityGetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaIdentityGetParams.ts"
+)]
 pub struct PersonaIdentityGetParams {
     #[serde(default)]
     #[ts(type = "string | null")]

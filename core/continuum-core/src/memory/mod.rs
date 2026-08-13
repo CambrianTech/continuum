@@ -155,7 +155,10 @@ impl PersonaMemoryManager {
     }
 
     /// Get a persona's cached corpus (Arc<RwLock>). Caller acquires read/write lock as needed.
-    fn get_corpus(&self, persona_id: &crate::identity::PersonaRef) -> Result<Arc<RwLock<MemoryCorpus>>, MemoryError> {
+    fn get_corpus(
+        &self,
+        persona_id: &crate::identity::PersonaRef,
+    ) -> Result<Arc<RwLock<MemoryCorpus>>, MemoryError> {
         self.corpus_access_times
             .insert(persona_id.to_string(), Instant::now());
         self.corpora
@@ -287,10 +290,7 @@ impl PersonaMemoryManager {
     /// lands. A no-op once every memory has a vector (a cheap read-lock scan), so it
     /// is safe to call on every recall. Content is immutable, so a computed vector
     /// never goes stale.
-    async fn ensure_memory_embeddings(
-        &self,
-        corpus_lock: &Arc<RwLock<MemoryCorpus>>,
-    ) -> usize {
+    async fn ensure_memory_embeddings(&self, corpus_lock: &Arc<RwLock<MemoryCorpus>>) -> usize {
         // Bound the work per recall so a SessionStart hook stays responsive:
         // - MAX_PER_CALL caps how many missing memories we embed in one recall, so a
         //   large cold corpus is embedded incrementally across several recalls
@@ -384,7 +384,11 @@ impl PersonaMemoryManager {
 
     /// Append a single memory to the persona's cached corpus.
     /// In-place mutation via write lock — O(1) amortized, zero cloning.
-    pub fn append_memory(&self, persona_id: &crate::identity::PersonaRef, memory: CorpusMemory) -> Result<(), MemoryError> {
+    pub fn append_memory(
+        &self,
+        persona_id: &crate::identity::PersonaRef,
+        memory: CorpusMemory,
+    ) -> Result<(), MemoryError> {
         let corpus_lock = self.get_corpus(persona_id)?;
         let mut corpus = corpus_lock.write().map_err(|e| {
             MemoryError(format!(
@@ -524,7 +528,8 @@ mod tests {
                 layer: None,
                 relevance_score: None,
                 origin_node: None,
-                origin_seq: None,            },
+                origin_seq: None,
+            },
             embedding: Some(vec![0.1; 384]),
         }
     }
@@ -618,8 +623,7 @@ mod tests {
             384
         }
         async fn embed(&self, _text: &str) -> Vec<f32> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Vec::new() // "no signal"
         }
     }
@@ -675,7 +679,10 @@ mod tests {
             layers: None,
         };
 
-        let resp = manager.multi_layer_recall(&"p1".into(), &req).await.unwrap();
+        let resp = manager
+            .multi_layer_recall(&"p1".into(), &req)
+            .await
+            .unwrap();
         assert!(!resp.memories.is_empty());
         assert!(resp.recall_time_ms > 0.0);
         assert!(!resp.layer_timings.is_empty());
@@ -718,7 +725,9 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let result = manager.multi_layer_recall(&"nonexistent".into(), &req).await;
+        let result = manager
+            .multi_layer_recall(&"nonexistent".into(), &req)
+            .await;
         assert!(result.is_err());
     }
 
@@ -727,7 +736,11 @@ mod tests {
         let manager = test_manager();
 
         // Load initial corpus with 1 memory
-        manager.load_corpus(&"p1".into(), vec![make_corpus_memory("m1", "first", 0.9)], vec![]);
+        manager.load_corpus(
+            &"p1".into(),
+            vec![make_corpus_memory("m1", "first", 0.9)],
+            vec![],
+        );
 
         // Load new corpus with 3 memories
         let resp = manager.load_corpus(
@@ -749,7 +762,10 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let recall_resp = manager.multi_layer_recall(&"p1".into(), &req).await.unwrap();
+        let recall_resp = manager
+            .multi_layer_recall(&"p1".into(), &req)
+            .await
+            .unwrap();
         assert!(recall_resp.memories.iter().all(|m| m.id != "m1"));
     }
 
@@ -775,7 +791,10 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let resp = manager.multi_layer_recall(&"p1".into(), &req).await.unwrap();
+        let resp = manager
+            .multi_layer_recall(&"p1".into(), &req)
+            .await
+            .unwrap();
         let ids: Vec<&str> = resp.memories.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"m1"), "Original memory should still exist");
         assert!(ids.contains(&"m2"), "Appended memory should exist");
@@ -841,7 +860,10 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let resp = manager.multi_layer_recall(&"p1".into(), &req).await.unwrap();
+        let resp = manager
+            .multi_layer_recall(&"p1".into(), &req)
+            .await
+            .unwrap();
         assert!(
             resp.memories.len() >= 2,
             "Both embedded memories should be recalled"

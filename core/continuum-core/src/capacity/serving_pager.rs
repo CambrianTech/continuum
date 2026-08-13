@@ -166,7 +166,8 @@ impl ServingExpertPager {
         // Symmetric-difference churn vs the served set — a process respawn reloads every
         // weight, so only a change beyond `relaunch_threshold` layers earns it. First pass
         // (served set empty) relaunches to place any non-empty set.
-        let served: std::collections::BTreeSet<u32> = self.last_hot_layers.iter().copied().collect();
+        let served: std::collections::BTreeSet<u32> =
+            self.last_hot_layers.iter().copied().collect();
         let want: std::collections::BTreeSet<u32> = hot_layers.iter().copied().collect();
         let churn = served.symmetric_difference(&want).count();
         let needs_relaunch = churn > self.relaunch_threshold;
@@ -330,8 +331,14 @@ mod tests {
         let has_a = [0u32, 1, 2]
             .iter()
             .all(|&x| resident.contains(&expert_page_ref(GGUF, eid(0, x))));
-        assert!(has_b, "task-B experts paged into residency after the switch");
-        assert!(!has_a, "task-A experts decayed out of residency (not all still pinned)");
+        assert!(
+            has_b,
+            "task-B experts paged into residency after the switch"
+        );
+        assert!(
+            !has_a,
+            "task-A experts decayed out of residency (not all still pinned)"
+        );
     }
 
     // what this catches: mark_relaunched clears the relaunch signal — after the backend
@@ -372,11 +379,23 @@ mod tests {
         }
         obs.observe(8, &[0], 4);
         let out = sp.tick_layer_placement(24 * GB, 4, 12);
-        assert!(out.request.hot_layers.contains(&2), "hot layer 2 placed on GPU");
-        assert!(out.request.hot_layers.contains(&5), "hot layer 5 placed on GPU");
-        assert_eq!(out.request.n_layers, 12, "carries the total block count for -ot");
+        assert!(
+            out.request.hot_layers.contains(&2),
+            "hot layer 2 placed on GPU"
+        );
+        assert!(
+            out.request.hot_layers.contains(&5),
+            "hot layer 5 placed on GPU"
+        );
+        assert_eq!(
+            out.request.n_layers, 12,
+            "carries the total block count for -ot"
+        );
         assert_eq!(out.request.gguf_id, GGUF);
-        assert!(out.needs_relaunch, "first placement needs a relaunch (served set empty)");
+        assert!(
+            out.needs_relaunch,
+            "first placement needs a relaunch (served set empty)"
+        );
 
         sp.mark_layer_relaunched(&out.request.hot_layers);
         // No new activity → the hot-layer set is stable → no second respawn.

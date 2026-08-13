@@ -47,13 +47,16 @@ pub fn birth_scene_for_identity(
     // default: eye-level, pulled back on -Z, looking at just below the head.
     // Computed with Bevy's `looking_at` then projected to the neutral
     // `TransformDesc` so the framing is baked into the description as data.
-    let camera_xf: TransformDesc =
-        Transform::from_xyz(0.0, skeleton::REFERENCE_HEAD_Y, skeleton::REFERENCE_CAMERA_Z)
-            .looking_at(
-                Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y - 0.02, 0.0),
-                Vec3::Y,
-            )
-            .into();
+    let camera_xf: TransformDesc = Transform::from_xyz(
+        0.0,
+        skeleton::REFERENCE_HEAD_Y,
+        skeleton::REFERENCE_CAMERA_Z,
+    )
+    .looking_at(
+        Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y - 0.02, 0.0),
+        Vec3::Y,
+    )
+    .into();
 
     let scene_entry = select_scene_for_identity(identity);
     let env_asset = scene_model_path(scene_entry.filename)
@@ -132,6 +135,9 @@ mod tests {
             .children
             .iter()
             .any(|n| matches!(n.payload, NodePayload::Light(_)));
-        assert!(!has_light, "birther must emit no light nodes (global rig supplies lighting)");
+        assert!(
+            !has_light,
+            "birther must emit no light nodes (global rig supplies lighting)"
+        );
     }
 }

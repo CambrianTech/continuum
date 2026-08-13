@@ -466,7 +466,9 @@ mod tests {
         registry.register(std::sync::Arc::new(crate::modules::work::WorkModule::new(
             crate::persona::PersonaAircRuntimeRegistry::new(),
         )));
-        registry.register(std::sync::Arc::new(crate::modules::room::RoomModule::new(crate::persona::PersonaAircRuntimeRegistry::new(),)));
+        registry.register(std::sync::Arc::new(crate::modules::room::RoomModule::new(
+            crate::persona::PersonaAircRuntimeRegistry::new(),
+        )));
         // Event-driven SWE grade-on-done: subscribes to work.card.state_changed (emitted
         // by work/state) and grades a finished bench SWE card's workspace against the
         // held-out oracle. No commands, no tick — pure event subscriber.
@@ -525,18 +527,54 @@ mod tests {
     /// - **defect** — known-broken, with the task tracking the fix. Loud on
     ///   purpose: the guard refuses to let it be forgotten.
     const UNWIRED: &[Unwired] = &[
-        Unwired { module: "BarrierModule", why: "fixture: barrier for the command-executor concurrency test" },
-        Unwired { module: "DefaultsModule", why: "fixture: exercises ModuleConfig trait defaults" },
-        Unwired { module: "FaultRecorder", why: "fixture: records genome page-faults in residency tests" },
-        Unwired { module: "GreeterModule", why: "fixture: the module_harness worked example" },
-        Unwired { module: "InferenceRecorder", why: "fixture: captures llm_module_service calls" },
-        Unwired { module: "OptedInModule", why: "fixture: sibling of DefaultsModule, opts into every hook" },
-        Unwired { module: "PageFaultOnly", why: "fixture: genome bus subscriber asserting fault-only delivery" },
-        Unwired { module: "ReadyModule", why: "fixture: runtime readiness-gate test" },
-        Unwired { module: "RecorderModule", why: "fixture: genome local_manager call recorder" },
-        Unwired { module: "StubAircModule", why: "fixture: ChatModule's airc stand-in" },
-        Unwired { module: "StubDataModule", why: "fixture: ChatModule's data stand-in" },
-        Unwired { module: "TestModule", why: "fixture: this file's own routing tests" },
+        Unwired {
+            module: "BarrierModule",
+            why: "fixture: barrier for the command-executor concurrency test",
+        },
+        Unwired {
+            module: "DefaultsModule",
+            why: "fixture: exercises ModuleConfig trait defaults",
+        },
+        Unwired {
+            module: "FaultRecorder",
+            why: "fixture: records genome page-faults in residency tests",
+        },
+        Unwired {
+            module: "GreeterModule",
+            why: "fixture: the module_harness worked example",
+        },
+        Unwired {
+            module: "InferenceRecorder",
+            why: "fixture: captures llm_module_service calls",
+        },
+        Unwired {
+            module: "OptedInModule",
+            why: "fixture: sibling of DefaultsModule, opts into every hook",
+        },
+        Unwired {
+            module: "PageFaultOnly",
+            why: "fixture: genome bus subscriber asserting fault-only delivery",
+        },
+        Unwired {
+            module: "ReadyModule",
+            why: "fixture: runtime readiness-gate test",
+        },
+        Unwired {
+            module: "RecorderModule",
+            why: "fixture: genome local_manager call recorder",
+        },
+        Unwired {
+            module: "StubAircModule",
+            why: "fixture: ChatModule's airc stand-in",
+        },
+        Unwired {
+            module: "StubDataModule",
+            why: "fixture: ChatModule's data stand-in",
+        },
+        Unwired {
+            module: "TestModule",
+            why: "fixture: this file's own routing tests",
+        },
         Unwired {
             module: "HippocampusModule",
             why: "staging: BrainRegion skeleton, command_prefixes is empty by \
@@ -670,11 +708,12 @@ mod tests {
             .map(|(name, _)| name.clone())
             .collect();
 
-        let declared: std::collections::HashSet<&str> =
-            UNWIRED.iter().map(|u| u.module).collect();
+        let declared: std::collections::HashSet<&str> = UNWIRED.iter().map(|u| u.module).collect();
 
-        let undeclared: Vec<&String> =
-            unwired.iter().filter(|n| !declared.contains(n.as_str())).collect();
+        let undeclared: Vec<&String> = unwired
+            .iter()
+            .filter(|n| !declared.contains(n.as_str()))
+            .collect();
         assert!(
             undeclared.is_empty(),
             "these ServiceModules are implemented but never registered, and \

@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::logging::TimingGuard;
 use crate::log_info;
+use crate::logging::TimingGuard;
 use crate::memory::{CorpusMemory, CorpusTimelineEvent, LoadCorpusResponse};
 use crate::modules::memory::MemoryState;
 
@@ -15,7 +15,10 @@ use crate::modules::memory::MemoryState;
 // No `Default`: a persona reference has no sensible default, and an empty one
 // would read as a real answer. Construct these params explicitly.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/memory/MemoryLoadCorpusParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/memory/MemoryLoadCorpusParams.ts"
+)]
 pub struct MemoryLoadCorpusParams {
     /// Which persona's corpus to (re)load — replaces any previously cached corpus.
     pub persona_id: crate::identity::PersonaRef,

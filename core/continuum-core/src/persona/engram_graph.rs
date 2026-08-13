@@ -98,7 +98,10 @@ pub enum EdgeKind {
 /// on whether spreading along this edge surfaces engrams that get
 /// consumed by handlers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/EngramEdge.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/EngramEdge.ts"
+)]
 pub struct EngramEdge {
     /// Target engram id. The source is the map key in `EngramGraph`,
     /// so it's not duplicated on the edge.

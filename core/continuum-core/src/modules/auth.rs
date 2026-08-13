@@ -20,9 +20,7 @@
 //! - auth/oauth/providers — List registered providers
 //! - auth/oauth/register  — Register a new provider at runtime
 
-use crate::runtime::{
-    CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use dashmap::DashMap;
@@ -32,12 +30,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use ts_rs::TS;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex, RwLock};
+use ts_rs::TS;
 
 // ============================================================================
 // Public types
@@ -48,7 +46,10 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 /// Each provider needs at minimum: `client_id`, `auth_url`, `token_url`, `scopes`,
 /// and a `redirect_port` for the temporary localhost callback server.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/OAuthClientConfig.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/OAuthClientConfig.ts"
+)]
 pub struct OAuthClientConfig {
     /// Unique provider identifier, e.g. `"github"`, `"google"`, `"huggingface"`.
     pub provider_id: String,
@@ -80,7 +81,10 @@ impl OAuthClientConfig {
 /// Result of `auth/oauth/start` — the browser flow was initiated and the localhost
 /// redirect-catcher is listening. No secrets: just where the flow is happening.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/AuthFlowStarted.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/AuthFlowStarted.ts"
+)]
 pub struct AuthFlowStarted {
     /// Provider whose flow was started.
     pub provider_id: String,
@@ -128,7 +132,10 @@ pub struct TokenStatus {
 
 /// Public summary of one registered provider (no client secret, no tokens).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/ProviderSummary.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/ProviderSummary.ts"
+)]
 pub struct ProviderSummary {
     /// Unique provider identifier.
     pub provider_id: String,
@@ -145,7 +152,10 @@ pub struct ProviderSummary {
 
 /// Result of `auth/oauth/providers` — every registered provider's public config.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/ProviderList.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/ProviderList.ts"
+)]
 pub struct ProviderList {
     /// Registered providers, public config only.
     pub providers: Vec<ProviderSummary>,
@@ -153,7 +163,10 @@ pub struct ProviderList {
 
 /// Result of `auth/oauth/register` — the provider config was registered.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/AuthRegistered.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/AuthRegistered.ts"
+)]
 pub struct AuthRegistered {
     /// Always `true` on success.
     pub registered: bool,
@@ -161,7 +174,10 @@ pub struct AuthRegistered {
 
 /// Result of `auth/oauth/refresh` — the access token was refreshed and re-persisted.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/TokenRefreshed.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/TokenRefreshed.ts"
+)]
 pub struct TokenRefreshed {
     /// Provider whose token was refreshed.
     pub provider_id: String,
@@ -171,7 +187,10 @@ pub struct TokenRefreshed {
 
 /// Result of `auth/oauth/revoke` — tokens were revoked and deleted from config.env.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/auth/TokenRevoked.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/auth/TokenRevoked.ts"
+)]
 pub struct TokenRevoked {
     /// Provider whose tokens were revoked.
     pub provider_id: String,
@@ -941,11 +960,7 @@ impl ServiceModule for ExternalWebviewAuthModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        _params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         // MIGRATED: every `auth/oauth/*` verb is a typed command object (see
         // `crate::commands::auth`), contributed via `commands()` below and winning at
         // `route_object`. Nothing should reach here. Fail loud — this legacy

@@ -333,10 +333,12 @@ impl AIProviderAdapter for AnthropicAdapter {
             // Undeclared is now representable (it used to silently inherit a 2048 floor), so
             // handle it honestly: this provider's API cannot proceed without the number, and
             // inventing one is the exact defect that floor was. Fail loud.
-            return Err("Anthropic requires max_tokens and this adapter declares no \
+            return Err(
+                "Anthropic requires max_tokens and this adapter declares no \
                         max_output_tokens capability — declare it via \
                         AdapterCapabilities::builder().max_output_tokens(n)"
-                .to_string());
+                    .to_string(),
+            );
         };
 
         // Build request body

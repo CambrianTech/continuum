@@ -16,16 +16,13 @@ use crate::cognition::workspace::{
 
 use super::apply::apply_act;
 use super::perception::{
-    any_real_receipt, claimed_file_without_act, collect_touched_paths,
-    mutated_workspace, wrote_without_observation,
+    any_real_receipt, claimed_file_without_act, collect_touched_paths, mutated_workspace,
+    wrote_without_observation,
 };
 use super::types::{SettleOutcome, SettleStep};
 
 // The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
 // its own truncation). Still used here for the settlement answer-head.
-
-
-
 
 /// Drive the mind to SETTLEMENT: tick → if `Act`, run it + fold the observation
 /// into the next perception → re-tick → until it `Speak`s/`Pass`es or the
@@ -56,10 +53,7 @@ pub async fn drive_to_settle(
     // per-call `id` excluded, sorted so batch order doesn't matter. Two ticks with the same
     // signature emitted the byte-identical action.
     fn calls_signature(calls: &[ToolCall]) -> String {
-        let mut parts: Vec<String> = calls
-            .iter()
-            .map(|c| c.loop_fingerprint())
-            .collect();
+        let mut parts: Vec<String> = calls.iter().map(|c| c.loop_fingerprint()).collect();
         parts.sort();
         parts.join(",")
     }
@@ -303,7 +297,8 @@ pub async fn drive_to_settle(
             // hands / exec error). Either way she did not settle in the observer's
             // window — return the un-driven Act so the grader scores it as unfinished,
             // never a fabricated answer.
-            SettleStep::WouldAct { calls, intent } | SettleStep::ActUnfulfilled { calls, intent } => {
+            SettleStep::WouldAct { calls, intent }
+            | SettleStep::ActUnfulfilled { calls, intent } => {
                 return SettleOutcome {
                     decision: Decision::Act { calls, intent },
                     spoken: None,
@@ -365,8 +360,6 @@ pub async fn drive_to_settle(
         }
     }
 }
-
-
 
 /// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
 /// shared by the live heartbeat (`persona::service_loop`, called ONCE per metronome
@@ -545,8 +538,7 @@ pub async fn settle_step(
                 // executions leave [action #n] lines, so honest reporting is never
                 // taxed. Perception-side fact, never an output gate
                 // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-                let claimed_past =
-                    crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
+                let claimed_past = crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
                 if claimed_past && !any_real_receipt(&pre_settle) {
                     body.working_memory.record_fact(
                         "[confabulation] I described having run a tool, but no \
@@ -634,7 +626,6 @@ pub async fn settle_step(
     };
     (step, metrics)
 }
-
 
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
 /// monotonic tick) so the engram orders correctly against chat messages in recall.

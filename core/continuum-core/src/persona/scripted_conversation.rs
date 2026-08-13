@@ -105,10 +105,7 @@ impl ScriptedConversation {
     ///
     /// When the queue drains, subsequent `next_message` calls yield
     /// `Ok(None)` so the loop never hangs.
-    pub fn with_events(
-        self,
-        events: Vec<Result<Option<IncomingMessage>, String>>,
-    ) -> Self {
+    pub fn with_events(self, events: Vec<Result<Option<IncomingMessage>, String>>) -> Self {
         *self.events.lock().unwrap() = VecDeque::from(events);
         self
     }
@@ -198,11 +195,7 @@ impl PersonaConversation for ScriptedConversation {
                 None => Ok(None),
             };
         }
-        self.events
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(Ok(None))
+        self.events.lock().unwrap().pop_front().unwrap_or(Ok(None))
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<(), String> {
@@ -234,8 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_prime_failure_returns_err() {
-        let mut c = ScriptedConversation::new()
-            .with_prime_failure("simulated daemon unreachable");
+        let mut c = ScriptedConversation::new().with_prime_failure("simulated daemon unreachable");
         let err = c.prime().await.expect_err("must err");
         assert!(err.contains("simulated daemon unreachable"));
         assert_eq!(c.primed_count(), 1, "prime still counts attempts");
@@ -243,8 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_drain_then_yield_none() {
-        let mut c = ScriptedConversation::new()
-            .with_events(vec![Ok(Some(one_msg())), Ok(None)]);
+        let mut c = ScriptedConversation::new().with_events(vec![Ok(Some(one_msg())), Ok(None)]);
         assert!(c.next_message().await.unwrap().is_some());
         assert!(c.next_message().await.unwrap().is_none());
         // Past end → still Ok(None), never hangs.

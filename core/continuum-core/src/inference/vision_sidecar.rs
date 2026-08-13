@@ -135,7 +135,11 @@ pub fn find_candidate(
         };
         let weights_bytes = std::fs::metadata(&gguf).map(|md| md.len()).unwrap_or(0);
         if weights_bytes == 0 {
-            skipped.push(format!("{}: GGUF unreadable/empty at {}", m.id, gguf.display()));
+            skipped.push(format!(
+                "{}: GGUF unreadable/empty at {}",
+                m.id,
+                gguf.display()
+            ));
             continue;
         }
         return Ok(SidecarCandidate {
@@ -173,8 +177,9 @@ pub async fn ensure_sidecar(
         match existing.multimodal_support().await {
             Ok(props) => {
                 let verified = vision_lane_ready(true, true, props).unwrap_or(false);
-                if verified && existing.active_model().await.ok().flatten().as_deref()
-                    == Some(cand.model.id.as_str())
+                if verified
+                    && existing.active_model().await.ok().flatten().as_deref()
+                        == Some(cand.model.id.as_str())
                 {
                     return Ok(SidecarLane {
                         base_url: existing.v1_url(),
@@ -265,7 +270,9 @@ mod tests {
         // Neither resolves artifacts in a test env; the ACTIVE one is skipped
         // for being active, the other for missing artifacts.
         let skipped = out.expect_err("no artifacts on disk in tests");
-        assert!(skipped.iter().any(|s| s.contains("is the main lane's model")));
+        assert!(skipped
+            .iter()
+            .any(|s| s.contains("is the main lane's model")));
         assert!(skipped.iter().any(|s| s.contains("no local GGUF")));
     }
 

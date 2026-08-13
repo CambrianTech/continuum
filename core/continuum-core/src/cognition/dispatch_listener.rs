@@ -99,12 +99,20 @@ pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
 mod tests {
     use super::*;
 
-    fn ev(handle: Option<uuid::Uuid>, success: bool, result: serde_json::Value) -> CommandCompletedEvent {
+    fn ev(
+        handle: Option<uuid::Uuid>,
+        success: bool,
+        result: serde_json::Value,
+    ) -> CommandCompletedEvent {
         CommandCompletedEvent {
             command_name: "cargo/build".to_string(),
             duration_ms: 10,
             success,
-            error: if success { None } else { Some("link error".to_string()) },
+            error: if success {
+                None
+            } else {
+                Some("link error".to_string())
+            },
             handle,
             result: if success { Some(result) } else { None },
         }
@@ -124,9 +132,15 @@ mod tests {
         wm.record_dispatch_event(mine, "cargo build", "dispatched…", DispatchStatus::Running);
 
         // A completion for a handle we never dispatched → ignored.
-        assert!(!fold_completion(&wm, ev(Some(not_mine), true, serde_json::json!("ok"))));
+        assert!(!fold_completion(
+            &wm,
+            ev(Some(not_mine), true, serde_json::json!("ok"))
+        ));
         // A synchronous completion (no handle) → ignored.
-        assert!(!fold_completion(&wm, ev(None, true, serde_json::json!("ok"))));
+        assert!(!fold_completion(
+            &wm,
+            ev(None, true, serde_json::json!("ok"))
+        ));
 
         // Our handle completes → folded in as Done with the result.
         assert!(fold_completion(
@@ -136,10 +150,16 @@ mod tests {
         let snap = wm.dispatched_snapshot();
         let ours = snap.iter().find(|(h, ..)| *h == mine).unwrap();
         assert_eq!(ours.3, DispatchStatus::Done);
-        assert_eq!(ours.2, "0 errors, 0 warnings", "the result streamed back to the mind");
+        assert_eq!(
+            ours.2, "0 errors, 0 warnings",
+            "the result streamed back to the mind"
+        );
 
         // A failure on our handle folds in as Failed with the error.
-        assert!(fold_completion(&wm, ev(Some(mine), false, serde_json::Value::Null)));
+        assert!(fold_completion(
+            &wm,
+            ev(Some(mine), false, serde_json::Value::Null)
+        ));
         let snap = wm.dispatched_snapshot();
         let ours = snap.iter().find(|(h, ..)| *h == mine).unwrap();
         assert_eq!(ours.3, DispatchStatus::Failed);

@@ -79,14 +79,18 @@ pub fn decide_lane(
 ) -> LaneDecision {
     // Gate 1 — the compute-lease boundary. Non-text work never leaves this node.
     if leasability == Leasability::LocalOnly {
-        return LaneDecision::Local { reason: LocalReason::NotLeasable };
+        return LaneDecision::Local {
+            reason: LocalReason::NotLeasable,
+        };
     }
 
     // Gate 2 — local-first. If our own live free GPU fits even one spike, serve here: a
     // network RTT is only worth paying when local genuinely can't.
     let local_fits = fits_one(&snapshot.local, req, safety_margin_bytes);
     if local_fits {
-        return LaneDecision::Local { reason: LocalReason::LocalFits };
+        return LaneDecision::Local {
+            reason: LocalReason::LocalFits,
+        };
     }
 
     // Gate 3 — lease the most-free REACHABLE peer that fits. Most-free-first keeps the busiest
@@ -101,7 +105,9 @@ pub fn decide_lane(
         Some(peer) => LaneDecision::Remote { peer: peer.peer },
         // Gate 4 — nobody fits. Serve local anyway (queue at our lane); NEVER block waiting
         // for grid capacity that may never come, NEVER strand on a peer that can't serve.
-        None => LaneDecision::Local { reason: LocalReason::NoPeerFits },
+        None => LaneDecision::Local {
+            reason: LocalReason::NoPeerFits,
+        },
     }
 }
 
@@ -179,11 +185,21 @@ mod tests {
         }
     }
     fn req() -> LeaseRequest {
-        LeaseRequest { consumer: "serving".into(), want_concurrency: 1, spike_bytes: 2 * GB }
+        LeaseRequest {
+            consumer: "serving".into(),
+            want_concurrency: 1,
+            spike_bytes: 2 * GB,
+        }
     }
     // (constructor kept honest: CapacityOffer→capacity is the same shape the ledger folds)
     fn _offer_shape() -> DeviceCapacity {
-        CapacityOffer { gpu_total_bytes: 32 * GB, gpu_free_bytes_live: 7 * GB, system_ram_free_bytes: 16 * GB, at_ms: 0 }.capacity()
+        CapacityOffer {
+            gpu_total_bytes: 32 * GB,
+            gpu_free_bytes_live: 7 * GB,
+            system_ram_free_bytes: 16 * GB,
+            at_ms: 0,
+        }
+        .capacity()
     }
 
     // what this catches: THE COMPUTE-LEASE BOUNDARY. A request needing local state (a coding
@@ -193,10 +209,15 @@ mod tests {
     // ever routes LocalOnly work remote, the boundary is broken and personas lose their hands.
     #[test]
     fn local_only_work_never_leases_even_with_local_exhausted_and_peers_idle() {
-        let snap = GridSnapshot { local: dev(0), peers: vec![peer(1, 30, true)] };
+        let snap = GridSnapshot {
+            local: dev(0),
+            peers: vec![peer(1, 30, true)],
+        };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::LocalOnly, GB),
-            LaneDecision::Local { reason: LocalReason::NotLeasable },
+            LaneDecision::Local {
+                reason: LocalReason::NotLeasable
+            },
             "local-state work stays local no matter how starved we are or how idle the grid is"
         );
     }
@@ -207,10 +228,15 @@ mod tests {
     // perfectly capable machine (the single-machine-first invariant, violated).
     #[test]
     fn text_work_prefers_local_when_local_fits() {
-        let snap = GridSnapshot { local: dev(13), peers: vec![peer(1, 30, true)] };
+        let snap = GridSnapshot {
+            local: dev(13),
+            peers: vec![peer(1, 30, true)],
+        };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Local { reason: LocalReason::LocalFits },
+            LaneDecision::Local {
+                reason: LocalReason::LocalFits
+            },
         );
     }
 
@@ -226,7 +252,9 @@ mod tests {
         };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Remote { peer: PeerId::from_u128(2) },
+            LaneDecision::Remote {
+                peer: PeerId::from_u128(2)
+            },
             "the roomiest reachable peer takes the leased turn",
         );
     }
@@ -244,7 +272,9 @@ mod tests {
         };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Local { reason: LocalReason::NoPeerFits },
+            LaneDecision::Local {
+                reason: LocalReason::NoPeerFits
+            },
             "no reachable peer fits → serve local (queue), never strand on a dead/too-small peer",
         );
     }
@@ -254,10 +284,15 @@ mod tests {
     // loopback proves this shape live: before any peer joins, the ledger has only self.
     #[test]
     fn lone_node_with_no_peers_decides_local() {
-        let snap = GridSnapshot { local: dev(0), peers: vec![] };
+        let snap = GridSnapshot {
+            local: dev(0),
+            peers: vec![],
+        };
         assert_eq!(
             decide_lane(&snap, &req(), Leasability::TextOnly, GB),
-            LaneDecision::Local { reason: LocalReason::NoPeerFits },
+            LaneDecision::Local {
+                reason: LocalReason::NoPeerFits
+            },
         );
     }
 }

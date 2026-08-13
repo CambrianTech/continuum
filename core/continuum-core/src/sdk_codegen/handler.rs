@@ -253,7 +253,8 @@ where
             if let Some(handle) = outcome.handle {
                 resp = resp.with_handle_ref(handle);
             }
-            resp.into_command_result().map_err(|e| format!("{name}: [internal] {e}"))
+            resp.into_command_result()
+                .map_err(|e| format!("{name}: [internal] {e}"))
         }
         WireShape::Bare | WireShape::Provided => {
             if outcome.handle.is_some() {
@@ -369,8 +370,15 @@ mod tests {
             .expect("dispatch ok");
         match cr {
             CommandResult::Json(v) => {
-                assert_eq!(v, serde_json::json!({ "echoed": "hi" }), "bare output, no envelope");
-                assert!(v.get("success").is_none(), "Bare must NOT add a success field");
+                assert_eq!(
+                    v,
+                    serde_json::json!({ "echoed": "hi" }),
+                    "bare output, no envelope"
+                );
+                assert!(
+                    v.get("success").is_none(),
+                    "Bare must NOT add a success field"
+                );
             }
             other => panic!("expected Json, got {other:?}"),
         }
@@ -427,7 +435,10 @@ mod tests {
         let err = dispatch(&EnvHandler, serde_json::json!({ "text": "x" }))
             .await
             .expect_err("must refuse without a handle");
-        assert!(err.starts_with("test/echo-env:"), "error names the command: {err}");
+        assert!(
+            err.starts_with("test/echo-env:"),
+            "error names the command: {err}"
+        );
         assert!(err.contains("invalid"), "carries the category: {err}");
         assert!(err.contains("handle"), "names what's missing: {err}");
     }
@@ -439,6 +450,9 @@ mod tests {
         let err = dispatch(&BareHandler, serde_json::json!({ "text": 123 }))
             .await
             .expect_err("type mismatch must refuse");
-        assert!(err.starts_with("test/echo-bare: [invalid]"), "named + categorized: {err}");
+        assert!(
+            err.starts_with("test/echo-bare: [invalid]"),
+            "named + categorized: {err}"
+        );
     }
 }

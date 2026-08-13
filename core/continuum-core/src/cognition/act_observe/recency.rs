@@ -97,13 +97,16 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
                 }
                 out.push('\n');
             }
-            if out.is_empty() { raw.to_string() } else { out }
+            if out.is_empty() {
+                raw.to_string()
+            } else {
+                out
+            }
         }
         // Arrays / numbers / bools: compact JSON was already legible.
         _ => raw.to_string(),
     }
 }
-
 
 /// Collapse tool ARGS for the RECENCY channel (working memory).
 ///
@@ -125,7 +128,10 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
 /// `budget` is `None` when the live window is UNKNOWN (no model binding). Then nothing folds.
 /// An unknown window must never become an invented one — that is how a guess turns into a
 /// clamp that outlives the guess.
-pub(super) fn summarize_args_for_recency(args: &serde_json::Value, budget: Option<usize>) -> String {
+pub(super) fn summarize_args_for_recency(
+    args: &serde_json::Value,
+    budget: Option<usize>,
+) -> String {
     let fold_at = budget.unwrap_or(usize::MAX);
     match args {
         serde_json::Value::Object(map) => map
@@ -167,7 +173,10 @@ fn summarize_args_for_recall(args: &serde_json::Value) -> String {
                 serde_json::Value::String(s) if s.chars().count() > 80 => {
                     format!("{k}: {} chars", s.chars().count())
                 }
-                other => format!("{k}={}", truncate_chars(other.to_string().trim_matches('"'), 60)),
+                other => format!(
+                    "{k}={}",
+                    truncate_chars(other.to_string().trim_matches('"'), 60)
+                ),
             })
             .collect::<Vec<_>>()
             .join(", "),
@@ -197,7 +206,10 @@ pub(super) fn render_act_for_recall(
     } else if body.trim().chars().count() <= RECALL_INLINE_MAX {
         body.trim().to_string()
     } else {
-        format!("ok — {}", truncate_chars(body.trim().lines().next().unwrap_or(""), 140))
+        format!(
+            "ok — {}",
+            truncate_chars(body.trim().lines().next().unwrap_or(""), 140)
+        )
     };
     let mark = if is_err { "⚠ " } else { "" };
     // Omit "because …" when there's no real stated reason — an empty intent must
@@ -254,8 +266,14 @@ mod tests {
             "null fields are dropped — `error: null` teaches nothing"
         );
         // Multi-line strings open on their own line so payload column 0 is window column 0.
-        assert!(rendered.contains("content:\ndef iter_content"), "{rendered}");
-        assert!(rendered.contains("file_path: requests/models.py"), "{rendered}");
+        assert!(
+            rendered.contains("content:\ndef iter_content"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("file_path: requests/models.py"),
+            "{rendered}"
+        );
         assert!(rendered.contains("lines: 3"), "{rendered}");
 
         // Non-JSON results (plain shell output) pass through untouched.
@@ -263,10 +281,7 @@ mod tests {
         assert_eq!(humanize_result_content(plain), plain);
 
         // A bare JSON string unwraps to its text.
-        assert_eq!(
-            humanize_result_content("\"line1\\nline2\""),
-            "line1\nline2"
-        );
+        assert_eq!(humanize_result_content("\"line1\\nline2\""), "line1\nline2");
 
         // The DOUBLE-ENCODED shape, live-verified on Benchy's r2 run: the executor
         // wraps the command's JSON doc in a JSON string, so one unwrap still left
@@ -292,19 +307,41 @@ mod tests {
     fn recall_collapses_big_args_and_highlights_errors() {
         let big = "fn main(){}\n".repeat(200); // a whole "file"
         let args = serde_json::json!({ "file_path": "x.rs", "content": big });
-        let ref_ok = render_act_for_recall("code/write", &args, "acting", false, "{\"success\":true}");
-        assert!(ref_ok.contains("content: "), "big content arg must collapse to a size");
+        let ref_ok =
+            render_act_for_recall("code/write", &args, "acting", false, "{\"success\":true}");
+        assert!(
+            ref_ok.contains("content: "),
+            "big content arg must collapse to a size"
+        );
         assert!(ref_ok.contains("chars"), "collapsed arg names its size");
-        assert!(!ref_ok.contains("fn main(){}\nfn main(){}"), "the file must NOT be re-shown verbatim");
+        assert!(
+            !ref_ok.contains("fn main(){}\nfn main(){}"),
+            "the file must NOT be re-shown verbatim"
+        );
 
         // small success → inline
-        let small = render_act_for_recall("code/read", &serde_json::json!({"file_path":"a"}), "acting", false, "hello");
+        let small = render_act_for_recall(
+            "code/read",
+            &serde_json::json!({"file_path":"a"}),
+            "acting",
+            false,
+            "hello",
+        );
         assert!(small.contains("→ hello"), "small result stays inline");
 
         // error → highlighted + shown
-        let err = render_act_for_recall("code/shell", &serde_json::json!({"cmd":"x"}), "acting", true, "error: no such file");
+        let err = render_act_for_recall(
+            "code/shell",
+            &serde_json::json!({"cmd":"x"}),
+            "acting",
+            true,
+            "error: no such file",
+        );
         assert!(err.starts_with("⚠"), "errors are highlighted");
-        assert!(err.contains("FAILED") && err.contains("no such file"), "errors are shown, never hidden");
+        assert!(
+            err.contains("FAILED") && err.contains("no such file"),
+            "errors are shown, never hidden"
+        );
     }
 
     // what this catches: #158 — an EMPTY intent (no `<think>` reasoning) renders NO
@@ -316,10 +353,19 @@ mod tests {
         let args = serde_json::json!({"file_path": "a"});
         let empty = render_act_for_recall("code/read", &args, "", false, "hi");
         assert!(!empty.contains("because"), "no fabricated reason: {empty}");
-        assert!(empty.contains("code/read("), "the act is still recorded by name(args)");
-        assert!(!empty.contains("I ran"), "no imitable 'I ran' opener (#158): {empty}");
+        assert!(
+            empty.contains("code/read("),
+            "the act is still recorded by name(args)"
+        );
+        assert!(
+            !empty.contains("I ran"),
+            "no imitable 'I ran' opener (#158): {empty}"
+        );
         let real = render_act_for_recall("code/read", &args, "checking the header", false, "hi");
-        assert!(real.contains("because checking the header"), "a real intent still shows");
+        assert!(
+            real.contains("because checking the header"),
+            "a real intent still shows"
+        );
     }
 
     // what this catches: the recency-channel result bound (#165) — a huge raw-JSON
@@ -337,13 +383,19 @@ mod tests {
     fn a_whole_file_arg_is_not_echoed_back_ahead_of_the_result() {
         let whole_file = "x = 1\n".repeat(4000); // ~24k chars, a real source file
         let args = serde_json::json!({ "file_path": "sympy/core/basic.py", "content": whole_file });
-        let rendered = summarize_args_for_recency(&args, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
+        let rendered = summarize_args_for_recency(
+            &args,
+            Some(ContextBudget::from_window(16_384).echoed_arg_chars()),
+        );
         assert!(
             rendered.chars().count() < 400,
             "a whole-file arg must collapse, not flood: {} chars",
             rendered.chars().count()
         );
-        assert!(rendered.contains("chars"), "says how big it was: {rendered}");
+        assert!(
+            rendered.contains("chars"),
+            "says how big it was: {rendered}"
+        );
         assert!(
             rendered.contains("sympy/core/basic.py"),
             "the SMALL args stay whole — she still sees WHICH file: {rendered}"
@@ -355,7 +407,10 @@ mod tests {
             "file_path": "a.py",
             "new_content": "def f():\n    return refine_arg(x)\n"
         });
-        let kept = summarize_args_for_recency(&small, Some(ContextBudget::from_window(16_384).echoed_arg_chars()));
+        let kept = summarize_args_for_recency(
+            &small,
+            Some(ContextBudget::from_window(16_384).echoed_arg_chars()),
+        );
         assert!(
             kept.contains("refine_arg"),
             "an ordinary edit stays visible verbatim: {kept}"
@@ -367,7 +422,11 @@ mod tests {
         // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
         // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
         let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
-        assert_eq!(bound_recency_result(&real_file, &ContextBudget::from_window(16_384)), real_file.trim(), "a real file stays whole");
+        assert_eq!(
+            bound_recency_result(&real_file, &ContextBudget::from_window(16_384)),
+            real_file.trim(),
+            "a real file stays whole"
+        );
         // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
         // the ONE result bound (a fraction of the live window), not a tiny hand cap.
         let huge = "x".repeat(50_000);
@@ -377,9 +436,18 @@ mod tests {
             "flood bounded to the fold max: {} chars",
             bounded.chars().count()
         );
-        assert!(bounded.chars().count() > 8_000, "but still generous — not re-choked small");
-        assert!(bounded.contains("truncated"), "cut is announced, not silent");
-        assert!(bounded.contains("narrow"), "teaches how to get a usable result");
+        assert!(
+            bounded.chars().count() > 8_000,
+            "but still generous — not re-choked small"
+        );
+        assert!(
+            bounded.contains("truncated"),
+            "cut is announced, not silent"
+        );
+        assert!(
+            bounded.contains("narrow"),
+            "teaches how to get a usable result"
+        );
         // char-boundary safe on multibyte content (never panics mid-codepoint)
         let multibyte = "日本語".repeat(1_000);
         let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));

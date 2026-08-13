@@ -10,10 +10,10 @@ use std::io::{BufWriter, Write};
 // `connect()` to the worker's filesystem-path socket then fails gracefully at
 // runtime. BEHAVIORAL GAP: the remote logger sink is unavailable on Windows
 // (in-process tracing still works) until a TCP endpoint is wired.
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 #[cfg(windows)]
 use std::net::TcpStream as UnixStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
 
 /// Channel capacity — if this many messages are queued, new ones are silently dropped.

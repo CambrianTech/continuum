@@ -7,7 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::genome::fine_tuning::{coordinator::FineTuningCoordinator, JobHandle, TrainingJobRequest};
+use crate::genome::fine_tuning::{
+    coordinator::FineTuningCoordinator, JobHandle, TrainingJobRequest,
+};
 
 use super::fine_tuning_error_kind;
 
@@ -16,7 +18,10 @@ use super::fine_tuning_error_kind;
 /// honors — or rejects, surfacing the rejection as `success=false` rather than
 /// silently routing elsewhere.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateParams {
     #[serde(flatten)]
@@ -40,7 +45,10 @@ pub struct JobCreateParams {
 /// provider is surfaced for telemetry + operators validating that locality
 /// preference fired.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateResult {
     pub handle: JobHandle,
@@ -52,7 +60,10 @@ pub struct JobCreateResult {
 /// adapter rather than the coordinator). See the module docs for why expected
 /// domain failures are data, not a transport `Err`.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/genome/JobCreateOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/JobCreateOutcome.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct JobCreateOutcome {
     pub success: bool,
@@ -331,7 +342,10 @@ mod tests {
             .unwrap();
         assert!(!out.success);
         let err = out.error.unwrap();
-        assert!(err.contains("no-such-dataset-xyz") && err.contains("dataset/list"), "{err}");
+        assert!(
+            err.contains("no-such-dataset-xyz") && err.contains("dataset/list"),
+            "{err}"
+        );
     }
 
     // what this catches: preferredProvider is honored and surfaced in

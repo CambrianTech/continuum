@@ -5,11 +5,12 @@ use std::sync::Arc;
 use crate::modules::data::{DataState, MigrationCutover};
 
 /// Params for `migration/cutover`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationCutoverParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/migration/MigrationCutoverParams.ts"
+)]
 pub struct MigrationCutoverParams {
     /// The connection string currently in use, to swap out (kept for rollback).
     pub current: String,

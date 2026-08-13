@@ -85,7 +85,8 @@ pub fn to_corpus_memory(memory: &ConsolidatedMemory) -> CorpusMemory {
             layer: None,
             relevance_score: None,
             origin_node: None,
-            origin_seq: None,        },
+            origin_seq: None,
+        },
         embedding: None,
     }
 }

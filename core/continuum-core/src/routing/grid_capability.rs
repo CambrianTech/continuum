@@ -30,12 +30,12 @@ use std::sync::Arc;
 
 use airc_core::PeerId;
 use airc_lib::grid_auth::VerifyContext;
-use airc_lib::grid_auth::{CredentialKind, GrantProof, GrantVerdict, GrantVerifier, SignedCapabilityGrant};
+use airc_lib::grid_auth::{
+    CredentialKind, GrantProof, GrantVerdict, GrantVerifier, SignedCapabilityGrant,
+};
 use airc_lib::subscriptions::MeshIdentity;
 
-use super::epoch_watermark::{
-    EpochWatermarkStore, InMemoryEpochWatermark, WatermarkDecision,
-};
+use super::epoch_watermark::{EpochWatermarkStore, InMemoryEpochWatermark, WatermarkDecision};
 
 /// Why a presented grant did or didn't authorize a command — a TYPED outcome so
 /// the gate + audit see exactly why (never a bare bool).
@@ -318,7 +318,8 @@ mod tests {
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         let a = authorizer(&owner, true);
         assert_eq!(
-            a.authorize_command(&g, &peer, "ai/generate/stream", 100).await,
+            a.authorize_command(&g, &peer, "ai/generate/stream", 100)
+                .await,
             GrantAuthOutcome::Authorized,
             "a capability confers its sub-commands on a / boundary"
         );
@@ -340,21 +341,27 @@ mod tests {
         // wrong issuer → UntrustedIssuer
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &[9u8; 32]);
         assert_eq!(
-            authorizer(&owner, true).authorize_command(&g, &peer, "ai/generate", 100).await,
+            authorizer(&owner, true)
+                .authorize_command(&g, &peer, "ai/generate", 100)
+                .await,
             GrantAuthOutcome::Invalid(GrantVerdict::UntrustedIssuer)
         );
 
         // bad signature → BadSignature (stub returns false)
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         assert_eq!(
-            authorizer(&owner, false).authorize_command(&g, &peer, "ai/generate", 100).await,
+            authorizer(&owner, false)
+                .authorize_command(&g, &peer, "ai/generate", 100)
+                .await,
             GrantAuthOutcome::Invalid(GrantVerdict::BadSignature)
         );
 
         // a DIFFERENT presenting key than the grant is bound to → KeyMismatch.
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         assert_eq!(
-            authorizer(&owner, true).authorize_command(&g, &[7u8; 32], "ai/generate", 100).await,
+            authorizer(&owner, true)
+                .authorize_command(&g, &[7u8; 32], "ai/generate", 100)
+                .await,
             GrantAuthOutcome::Invalid(GrantVerdict::KeyMismatch)
         );
     }
@@ -372,22 +379,26 @@ mod tests {
 
         // accept epoch 5
         assert_eq!(
-            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100).await,
+            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100)
+                .await,
             GrantAuthOutcome::Authorized
         );
         // replayed lower epoch 3 → Superseded
         assert_eq!(
-            a.authorize_command(&mk(&["ai/generate"], 3), &peer, "ai/generate", 100).await,
+            a.authorize_command(&mk(&["ai/generate"], 3), &peer, "ai/generate", 100)
+                .await,
             GrantAuthOutcome::Superseded
         );
         // revocation: higher epoch 6, empty caps → advances watermark, confers nothing
         assert_eq!(
-            a.authorize_command(&mk(&[], 6), &peer, "ai/generate", 100).await,
+            a.authorize_command(&mk(&[], 6), &peer, "ai/generate", 100)
+                .await,
             GrantAuthOutcome::NotGranted
         );
         // the revoked epoch-5 grant is now SUPERSEDED — revocation actually revoked.
         assert_eq!(
-            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100).await,
+            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100)
+                .await,
             GrantAuthOutcome::Superseded,
             "after a higher-epoch revocation, the old grant no longer authorizes"
         );
@@ -413,17 +424,26 @@ mod tests {
             issuer_pubkey: vk.to_bytes().to_vec(),
             signature: sig.to_bytes().to_vec(),
         };
-        assert!(v.verify_signature(&bytes, &good), "genuine signature verifies");
+        assert!(
+            v.verify_signature(&bytes, &good),
+            "genuine signature verifies"
+        );
 
         // tampered message → reject
         let mut tampered = bytes.clone();
         tampered[0] ^= 0xFF;
-        assert!(!v.verify_signature(&tampered, &good), "tampered body rejected");
+        assert!(
+            !v.verify_signature(&tampered, &good),
+            "tampered body rejected"
+        );
 
         // tampered signature → reject
         let mut bad_sig = good.clone();
         bad_sig.signature[0] ^= 0xFF;
-        assert!(!v.verify_signature(&bytes, &bad_sig), "tampered signature rejected");
+        assert!(
+            !v.verify_signature(&bytes, &bad_sig),
+            "tampered signature rejected"
+        );
 
         // wrong-length key → reject, no panic
         let short_key = GrantProof {
@@ -431,7 +451,10 @@ mod tests {
             issuer_pubkey: vec![0u8; 31],
             signature: good.signature.clone(),
         };
-        assert!(!v.verify_signature(&bytes, &short_key), "wrong-length key rejected");
+        assert!(
+            !v.verify_signature(&bytes, &short_key),
+            "wrong-length key rejected"
+        );
 
         // wrong-length signature → reject, no panic
         let short_sig = GrantProof {
@@ -439,7 +462,10 @@ mod tests {
             issuer_pubkey: good.issuer_pubkey.clone(),
             signature: vec![0u8; 10],
         };
-        assert!(!v.verify_signature(&bytes, &short_sig), "wrong-length signature rejected");
+        assert!(
+            !v.verify_signature(&bytes, &short_sig),
+            "wrong-length signature rejected"
+        );
     }
 
     /// Concurrency proof for the atomic epoch watermark (the TOCTOU fix). Gated

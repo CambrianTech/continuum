@@ -58,7 +58,10 @@ pub trait WebSearchProvider: Send + Sync {
 
 /// Params for `web/search`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/web/WebSearchParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/web/WebSearchParams.ts"
+)]
 pub struct WebSearchParams {
     /// What to search the web for.
     pub query: String,
@@ -76,7 +79,10 @@ pub struct WebSearchParams {
 
 /// Result of a `web/search`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/web/WebSearchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/web/WebSearchResult.ts"
+)]
 pub struct WebSearchResult {
     pub query: String,
     /// Which adapter actually ran ("brave" | "duckduckgo") — selection is transparent.
@@ -199,7 +205,10 @@ const MIN_FETCH_CHARS: u32 = 200;
 
 /// Params for `web/fetch`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/web/WebFetchParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/web/WebFetchParams.ts"
+)]
 pub struct WebFetchParams {
     /// The URL to fetch and read (http/https).
     pub url: String,
@@ -212,7 +221,10 @@ pub struct WebFetchParams {
 
 /// Result of a `web/fetch`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/web/WebFetchResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/web/WebFetchResult.ts"
+)]
 pub struct WebFetchResult {
     pub url: String,
     /// The page `<title>`, if any.
@@ -360,8 +372,14 @@ mod tests {
             Err(e) => e,
         };
         let msg = format!("{err:?}");
-        assert!(msg.contains("BRAVE_API_KEY"), "names the missing key: {msg}");
-        assert!(msg.contains("duckduckgo"), "points at the keyless fallback: {msg}");
+        assert!(
+            msg.contains("BRAVE_API_KEY"),
+            "names the missing key: {msg}"
+        );
+        assert!(
+            msg.contains("duckduckgo"),
+            "points at the keyless fallback: {msg}"
+        );
     }
 
     // what this catches: unknown adapter id is rejected with the valid set, and
@@ -396,7 +414,10 @@ mod tests {
         assert_eq!(extract_title(html), "Serde JSON");
         let body = extract_readable(html);
         assert!(body.contains("Parsing"), "keeps heading: {body}");
-        assert!(body.contains("Use serde_json::from_str to parse."), "collapses ws: {body}");
+        assert!(
+            body.contains("Use serde_json::from_str to parse."),
+            "collapses ws: {body}"
+        );
         assert!(!body.contains("noise"), "drops script text: {body}");
         assert!(!body.contains("color:red"), "drops style text: {body}");
     }

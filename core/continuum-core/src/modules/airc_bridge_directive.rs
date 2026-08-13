@@ -270,10 +270,16 @@ mod tests {
     async fn non_chat_events_are_ignored() {
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
-        process_chat_event("presence:updated", &json!({ "text": "!continuum ping" }), &bus);
+        process_chat_event(
+            "presence:updated",
+            &json!({ "text": "!continuum ping" }),
+            &bus,
+        );
         // Nothing emitted (the only thing that could arrive is our own publish).
         assert!(
-            timeout(Duration::from_millis(150), rx.recv()).await.is_err(),
+            timeout(Duration::from_millis(150), rx.recv())
+                .await
+                .is_err(),
             "a non-chat event must not produce a directive"
         );
     }

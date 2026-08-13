@@ -224,8 +224,14 @@ mod tests {
         let freed = pool.evict_at_least(1);
 
         assert_eq!(freed, 100, "one generation satisfies the request");
-        assert!(!root.join("continuum-probes.jsonl.3").exists(), ".3 is oldest");
-        assert!(root.join("continuum-probes.jsonl.1").exists(), ".1 is newest history");
+        assert!(
+            !root.join("continuum-probes.jsonl.3").exists(),
+            ".3 is oldest"
+        );
+        assert!(
+            root.join("continuum-probes.jsonl.1").exists(),
+            ".1 is newest history"
+        );
         assert!(root.join("continuum-probes.jsonl.2").exists());
     }
 

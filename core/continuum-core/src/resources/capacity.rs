@@ -187,7 +187,11 @@ mod tests {
         // UNCHANGED. The oversubscription lives on the used axis now.
         mon.set_free_bytes(9_000);
         assert_eq!(src.ceiling_bytes(), 23_000, "fixed ceiling does not move");
-        assert_eq!(src.used_bytes(), 15_000, "the grab shows up as physical usage");
+        assert_eq!(
+            src.used_bytes(),
+            15_000,
+            "the grab shows up as physical usage"
+        );
     }
 
     // what this catches: the mock is a faithful deterministic stand-in for BOTH
@@ -200,7 +204,11 @@ mod tests {
         let src = MockCapacitySource::new(ResourceKind::Vram, 10_000);
         assert_eq!(src.kind(), ResourceKind::Vram);
         assert_eq!(src.ceiling_bytes(), 10_000);
-        assert_eq!(src.used_bytes(), 0, "usage defaults to 0 (ceiling-only degrade)");
+        assert_eq!(
+            src.used_bytes(),
+            0,
+            "usage defaults to 0 (ceiling-only degrade)"
+        );
         src.set_ceiling(4_000);
         assert_eq!(src.ceiling_bytes(), 4_000);
         src.set_used(3_500);

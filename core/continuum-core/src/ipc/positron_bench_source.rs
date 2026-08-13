@@ -75,7 +75,14 @@ pub fn spawn_bench_emitter(rt: &tokio::runtime::Handle, substrate: Substrate) {
             // age_secs ticks every scan, which would defeat store-on-change;
             // compare with ages zeroed so only REAL row changes publish.
             let comparable = |v: &BenchViewState| BenchViewState {
-                runs: v.runs.iter().map(|r| BenchRunRow { age_secs: 0, ..r.clone() }).collect(),
+                runs: v
+                    .runs
+                    .iter()
+                    .map(|r| BenchRunRow {
+                        age_secs: 0,
+                        ..r.clone()
+                    })
+                    .collect(),
                 sample_interval_ms: v.sample_interval_ms,
             };
             if last.as_ref().map(&comparable) == Some(comparable(&view)) {

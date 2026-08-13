@@ -26,7 +26,10 @@ const OUTPUT_TAIL_BYTES: usize = 4000;
 /// Inputs to `code/cargo/test`. All optional — the bare call runs the whole
 /// workspace's tests with default features.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/CargoTestParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CargoTestParams.ts"
+)]
 pub struct CargoTestParams {
     /// Scope to one workspace package (`cargo test -p <package>`), e.g.
     /// `"continuum-core"`. Omit to test the whole workspace (much slower).
@@ -51,7 +54,10 @@ pub struct CargoTestParams {
 /// Result of a `cargo test` run: the verdict plus the tally, the names of failed
 /// tests, any build-time compiler diagnostics, and a tail of the output for context.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/CargoTestResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CargoTestResult.ts"
+)]
 pub struct CargoTestResult {
     /// `true` iff the build succeeded AND every test passed — "does it work?".
     pub ok: bool,

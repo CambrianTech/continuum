@@ -193,7 +193,12 @@ pub async fn dispatch_to_node(
     // 5 minute timeout for long operations (training, etc.)
     let response = tokio::time::timeout(Duration::from_secs(300), conn.recv_frame())
         .await
-        .map_err(|_| format!("Command '{remote_command}' on {} timed out (300s)", node.node_id))?
+        .map_err(|_| {
+            format!(
+                "Command '{remote_command}' on {} timed out (300s)",
+                node.node_id
+            )
+        })?
         .map_err(|e| format!("Recv from {} failed: {e}", node.node_id))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;

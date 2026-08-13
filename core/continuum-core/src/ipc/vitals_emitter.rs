@@ -112,11 +112,17 @@ pub(crate) fn sample_vitals(
         let genome = cycle.genome();
         let mut vitals = BTreeMap::new();
         vitals.insert("activity".to_string(), pct_u64(delta, ACT_FULL_SCALE_TICKS));
-        vitals.insert("queue".to_string(), pct_usize(queued, QUE_FULL_SCALE_UNREAD));
+        vitals.insert(
+            "queue".to_string(),
+            pct_usize(queued, QUE_FULL_SCALE_UNREAD),
+        );
         // Omit genome entirely when the persona has none paged in — an
         // honest missing meter, not a 0% fabricated one.
         if !genome.is_empty() {
-            vitals.insert("genome".to_string(), pct_usize(genome.len(), GEN_FULL_SCALE_GENES));
+            vitals.insert(
+                "genome".to_string(),
+                pct_usize(genome.len(), GEN_FULL_SCALE_GENES),
+            );
         }
         // #186 COGNITION COMPASS: the decaying per-axis firing levels
         // (Focus/Reason/Recall/Act) the cognition tick + acting seam bumped.
@@ -200,14 +206,9 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
                     for update in updates {
                         // Change-dedup: a stable persona radiates nothing (vitals,
                         // loadout AND genes unchanged).
-                        if last_emitted
-                            .get(&update.member_id)
-                            .map(|(v, l, g)| {
-                                v == &update.vitals
-                                    && l == &update.loadout
-                                    && g == &update.genes
-                            })
-                            == Some(true)
+                        if last_emitted.get(&update.member_id).map(|(v, l, g)| {
+                            v == &update.vitals && l == &update.loadout && g == &update.genes
+                        }) == Some(true)
                         {
                             continue;
                         }
@@ -292,7 +293,11 @@ mod tests {
         let mut last_ticks = HashMap::new();
 
         let updates = sample_vitals(&registry, &DigestBuffer::new(), &mut last_ticks);
-        assert_eq!(updates.len(), 1, "one resident persona → one radiated update");
+        assert_eq!(
+            updates.len(),
+            1,
+            "one resident persona → one radiated update"
+        );
         let update = &updates[0];
         assert_eq!(
             update.member_id, peer_id,
@@ -313,7 +318,10 @@ mod tests {
             "no paged-in genes → no genome meter (honest-absent)"
         );
         assert!(update.genes.is_empty(), "no paged-in genes → no gene names");
-        let loadout = update.loadout.as_ref().expect("a bound cycle radiates a loadout");
+        let loadout = update
+            .loadout
+            .as_ref()
+            .expect("a bound cycle radiates a loadout");
         let expected_model = registry
             .get(&peer_id)
             .unwrap()
@@ -360,7 +368,9 @@ mod tests {
             let events = texts
                 .iter()
                 .enumerate()
-                .map(|(i, t)| crate::cognition::channel_digest::test_event_in(room, t, i as u64 + 1))
+                .map(|(i, t)| {
+                    crate::cognition::channel_digest::test_event_in(room, t, i as u64 + 1)
+                })
                 .collect();
             let digest = builder.build_from_events(persona, room.as_uuid(), events, 0);
             digests.publish((persona, room.as_uuid()), Arc::new(digest));

@@ -101,7 +101,10 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
     match serde_json::to_string(cursor) {
         Ok(json) => {
             if let Err(error) = std::fs::write(&path, json) {
-                warn!("failed to persist airc attach cursor to {}: {error}", path.display());
+                warn!(
+                    "failed to persist airc attach cursor to {}: {error}",
+                    path.display()
+                );
             }
         }
         Err(error) => warn!("failed to serialize airc attach cursor: {error}"),
@@ -309,11 +312,8 @@ pub async fn publish_transcript_event(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let is_new = crate::capacity::gossip::global_ledger().hear(
-            event.peer_id.as_uuid(),
-            offer,
-            now_ms,
-        );
+        let is_new =
+            crate::capacity::gossip::global_ledger().hear(event.peer_id.as_uuid(), offer, now_ms);
         if is_new {
             crate::probe!(
                 class = "grid.capacity.heard",

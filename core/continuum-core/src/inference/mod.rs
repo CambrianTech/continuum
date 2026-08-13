@@ -32,6 +32,7 @@
 pub mod airc_remote;
 pub mod backends;
 pub mod batching_probe;
+pub mod child_log;
 pub mod coordinator;
 pub mod coordinator_pool;
 pub mod footprint_registry;
@@ -42,7 +43,6 @@ pub mod lane;
 pub mod lane_pidfile;
 pub mod lane_process;
 pub mod lane_registry;
-pub mod child_log;
 pub mod llama_server;
 pub mod llamacpp_adapter;
 pub mod llm_module;
@@ -55,8 +55,8 @@ pub mod ort_providers;
 pub mod placement_capture;
 pub mod recipe_budget;
 pub mod throughput_expectation;
-pub mod vision_sidecar;
 pub mod vendored;
+pub mod vision_sidecar;
 pub mod wedge;
 
 // Re-export commonly used types

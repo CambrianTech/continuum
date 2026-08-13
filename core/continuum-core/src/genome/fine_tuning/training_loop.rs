@@ -257,10 +257,10 @@ impl DataLoader {
                 }
             }
 
-            let input_ids =
-                Tensor::from_vec(all_inputs, (batch_size, seq_len), device)?.to_dtype(DType::U32)?;
-            let target_ids =
-                Tensor::from_vec(all_targets, (batch_size, seq_len), device)?.to_dtype(DType::U32)?;
+            let input_ids = Tensor::from_vec(all_inputs, (batch_size, seq_len), device)?
+                .to_dtype(DType::U32)?;
+            let target_ids = Tensor::from_vec(all_targets, (batch_size, seq_len), device)?
+                .to_dtype(DType::U32)?;
             // attention_mask + target_mask both as F32 for
             // loss-scaling math (U8 would need a cast anyway).
             let attention_mask = Tensor::from_vec(
@@ -269,7 +269,10 @@ impl DataLoader {
                 device,
             )?;
             let target_mask = Tensor::from_vec(
-                all_target_masks.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+                all_target_masks
+                    .iter()
+                    .map(|&v| v as f32)
+                    .collect::<Vec<_>>(),
                 (batch_size, seq_len),
                 device,
             )?;
@@ -446,18 +449,17 @@ impl LoRATrainer {
         // (mask_target[0]=0). Using attention_mask here re-inflates
         // the metric by counting pad-targeted samples as
         // gradient-bearing — the exact bug M1 was filed to kill.
-        let tokens_used: u64 = if batch.target_mask.dims().len() >= 2
-            && batch.target_mask.dims()[1] >= 1
-        {
-            let first_col = batch
-                .target_mask
-                .narrow(1, 0, 1)?
-                .squeeze(1)?
-                .contiguous()?;
-            first_col.sum_all()?.to_scalar::<f32>()? as u64
-        } else {
-            batch.input_ids.dim(0)? as u64
-        };
+        let tokens_used: u64 =
+            if batch.target_mask.dims().len() >= 2 && batch.target_mask.dims()[1] >= 1 {
+                let first_col = batch
+                    .target_mask
+                    .narrow(1, 0, 1)?
+                    .squeeze(1)?
+                    .contiguous()?;
+                first_col.sum_all()?.to_scalar::<f32>()? as u64
+            } else {
+                batch.input_ids.dim(0)? as u64
+            };
 
         // Per `[[no-fallbacks-ever]]`: if the whole batch is
         // pad-targeted (tokens_used == 0), skip the backward step
@@ -573,10 +575,9 @@ mod tests {
     #[test]
     fn zero_batch_size_rejected() {
         let tok = FakeTokenizer { vocab: 32 };
-        let err =
-            DataLoader::new(&[example("hi", "ok")], &tok, 0, 4, &Device::Cpu)
-                .err()
-                .expect("must reject");
+        let err = DataLoader::new(&[example("hi", "ok")], &tok, 0, 4, &Device::Cpu)
+            .err()
+            .expect("must reject");
         assert!(matches!(err, TrainingError::InvalidBatchSize(0)));
     }
 
@@ -584,10 +585,9 @@ mod tests {
     #[test]
     fn zero_seq_length_rejected() {
         let tok = FakeTokenizer { vocab: 32 };
-        let err =
-            DataLoader::new(&[example("hi", "ok")], &tok, 1, 0, &Device::Cpu)
-                .err()
-                .expect("must reject");
+        let err = DataLoader::new(&[example("hi", "ok")], &tok, 1, 0, &Device::Cpu)
+            .err()
+            .expect("must reject");
         assert!(matches!(err, TrainingError::InvalidSequenceLength(0)));
     }
 
@@ -605,8 +605,7 @@ mod tests {
             example("ping", "pong"),
             example("aa", "bb"),
         ];
-        let loader =
-            DataLoader::new(&examples, &tok, 2, 6, &Device::Cpu).unwrap();
+        let loader = DataLoader::new(&examples, &tok, 2, 6, &Device::Cpu).unwrap();
         // 4 examples / batch_size 2 = 2 batches.
         assert_eq!(loader.len(), 2);
         for batch in loader.batches() {
@@ -624,10 +623,14 @@ mod tests {
     fn attention_mask_is_1_for_real_0_for_pad() {
         let tok = FakeTokenizer { vocab: 32 };
         let examples = vec![example("a", "b")]; // very short → padded
-        let loader =
-            DataLoader::new(&examples, &tok, 1, 8, &Device::Cpu).unwrap();
+        let loader = DataLoader::new(&examples, &tok, 1, 8, &Device::Cpu).unwrap();
         let batch = loader.batches().next().unwrap();
-        let mask: Vec<f32> = batch.attention_mask.flatten_all().unwrap().to_vec1().unwrap();
+        let mask: Vec<f32> = batch
+            .attention_mask
+            .flatten_all()
+            .unwrap()
+            .to_vec1()
+            .unwrap();
         // First 2 tokens are real (encoded "ab"), rest are pad.
         assert_eq!(mask[0], 1.0);
         assert_eq!(mask[1], 1.0);
@@ -643,15 +646,10 @@ mod tests {
     #[test]
     fn partial_last_batch_is_dropped() {
         let tok = FakeTokenizer { vocab: 32 };
-        let examples = vec![
-            example("a", "b"),
-            example("c", "d"),
-            example("e", "f"),
-        ];
+        let examples = vec![example("a", "b"), example("c", "d"), example("e", "f")];
         // 3 examples, batch_size=2 → 1 full batch + 1 partial,
         // partial is dropped.
-        let loader =
-            DataLoader::new(&examples, &tok, 2, 4, &Device::Cpu).unwrap();
+        let loader = DataLoader::new(&examples, &tok, 2, 4, &Device::Cpu).unwrap();
         assert_eq!(loader.len(), 1);
     }
 
@@ -680,19 +678,13 @@ mod tests {
 
         // Build a fake batch with non-trivial inputs + targets so
         // the loss has gradient.
-        let input_ids = Tensor::from_vec(
-            vec![1u32, 2, 3, 0],
-            (1, 4),
-            &device,
-        )
-        .unwrap();
+        let input_ids = Tensor::from_vec(vec![1u32, 2, 3, 0], (1, 4), &device).unwrap();
         let target_ids = Tensor::from_vec(vec![2u32, 3, 0, 0], (1, 4), &device).unwrap();
         let attn_mask = Tensor::full(1.0f32, (1, 4), &device).unwrap();
         // target_mask reflects target_ids pad status: [2, 3] non-pad
         // (1.0), [0, 0] pad (0.0). First-target IS non-pad here, so
         // train_step gets a gradient-bearing step.
-        let target_mask =
-            Tensor::from_slice(&[1.0f32, 1.0, 0.0, 0.0], (1, 4), &device).unwrap();
+        let target_mask = Tensor::from_slice(&[1.0f32, 1.0, 0.0, 0.0], (1, 4), &device).unwrap();
         let batch = TokenizedBatch {
             input_ids,
             target_ids,
@@ -978,8 +970,7 @@ mod tests {
                 completion: "".into(),
                 metadata: None,
             }];
-            let loader =
-                DataLoader::new(&examples, &ByteTokenizer::new(), 1, 4, &device).unwrap();
+            let loader = DataLoader::new(&examples, &ByteTokenizer::new(), 1, 4, &device).unwrap();
             let batch = loader.batches().next().expect("one batch");
 
             let (_loss, tokens_used) = trainer.train_step(batch).unwrap();

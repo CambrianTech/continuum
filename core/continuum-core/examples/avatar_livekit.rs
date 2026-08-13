@@ -41,7 +41,9 @@ use continuum_core::live::video::bevy_renderer::get_or_init;
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let identity = std::env::args().nth(1).unwrap_or_else(|| "asha".to_string());
+    let identity = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "asha".to_string());
     let room = std::env::args()
         .nth(2)
         .unwrap_or_else(|| "avatar-demo".to_string());
@@ -100,7 +102,10 @@ async fn main() -> Result<(), String> {
     println!(
         "     lk token create --api-key devkey --api-secret secret \\\n         --join --room {room} --identity viewer --valid-for 24h"
     );
-    println!("   then paste token + {} into https://meet.livekit.io", manager.url());
+    println!(
+        "   then paste token + {} into https://meet.livekit.io",
+        manager.url()
+    );
     println!("\n   streaming for {secs}s (Ctrl-C to stop early)…");
 
     // 3) Hold the room open so a client can connect and view. If the pump task

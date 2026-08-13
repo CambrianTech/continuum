@@ -169,7 +169,11 @@ mod tests {
 
         let out = String::from_utf8(output).unwrap();
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 1, "only the ping request gets a response:\n{out}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "only the ping request gets a response:\n{out}"
+        );
         let v: Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(v["id"], 7);
     }
@@ -184,7 +188,10 @@ mod tests {
         use continuum_client::mock::MockTransport;
 
         let mock = MockTransport::new();
-        mock.respond_with("interface/screenshot", json!({ "success": true, "dataUrl": "x" }));
+        mock.respond_with(
+            "interface/screenshot",
+            json!({ "success": true, "dataUrl": "x" }),
+        );
         let conn = Connection::new(mock);
 
         let server = McpServer::new(ConnectionDispatch::new(conn), "continuum-mcp", "0.1.0");
@@ -197,6 +204,9 @@ mod tests {
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["isError"], false);
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("dataUrl"), "command result ferried back: {text}");
+        assert!(
+            text.contains("dataUrl"),
+            "command result ferried back: {text}"
+        );
     }
 }

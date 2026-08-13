@@ -295,7 +295,10 @@ pub fn top_k_similar(
 /// Cluster result from connected components clustering.
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/embedding/Cluster.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/embedding/Cluster.ts"
+)]
 pub struct Cluster {
     /// Indices of items in this cluster
     pub indices: Vec<usize>,
@@ -559,9 +562,9 @@ mod tests {
         // what this catches: threshold filtering + descending sort + truncation.
         let query = vec![1.0, 0.0];
         let targets = vec![
-            vec![1.0, 0.0],   // sim 1.0
-            vec![0.0, 1.0],   // sim 0.0
-            vec![0.7, 0.7],   // sim ~0.707
+            vec![1.0, 0.0], // sim 1.0
+            vec![0.0, 1.0], // sim 0.0
+            vec![0.7, 0.7], // sim ~0.707
         ];
         let got = top_k_similar(&query, &targets, 10, 0.5);
         assert_eq!(got.len(), 2, "only sims >= 0.5 survive the threshold");

@@ -129,9 +129,18 @@ mod tests {
             names.contains(&"serving/load"),
             "its inverse — re-loadable without reboot"
         );
-        assert!(names.contains(&"serving/pin"), "the force-serve verb (promote/demote)");
-        assert!(names.contains(&"serving/unpin"), "its inverse — release to autonomic");
-        assert!(names.contains(&"serving/status"), "the reality read surface");
+        assert!(
+            names.contains(&"serving/pin"),
+            "the force-serve verb (promote/demote)"
+        );
+        assert!(
+            names.contains(&"serving/unpin"),
+            "its inverse — release to autonomic"
+        );
+        assert!(
+            names.contains(&"serving/status"),
+            "the reality read surface"
+        );
         assert!(names.contains(&"serving/plan"), "the intent read surface");
     }
 }

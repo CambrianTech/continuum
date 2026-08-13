@@ -12,7 +12,10 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitLogParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitLogParams.ts"
+)]
 pub struct GitLogParams {
     /// How many recent commits to return. Omit for the last 10.
     #[serde(default)]
@@ -20,7 +23,10 @@ pub struct GitLogParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitLogResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitLogResult.ts"
+)]
 pub struct GitLogResult {
     /// The formatted `git log` text.
     pub log: String,

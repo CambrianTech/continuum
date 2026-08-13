@@ -146,7 +146,7 @@ mod tests {
             temperature: Some(0.7),
             context: RatingContext {
                 original_message: RatingMessage {
-                    sender_name: "joel".into(),
+                    sender_name: "operator".into(),
                     content: "?".into(),
                     timestamp: 0,
                 },
@@ -179,7 +179,7 @@ mod tests {
             "modelProvider": "local",
             "modelId": "qwen",
             "context": {
-                "originalMessage": {"senderName":"joel","content":"?","timestamp":0},
+                "originalMessage": {"senderName":"operator","content":"?","timestamp":0},
                 "recentMessages": [],
                 "proposals": []
             }

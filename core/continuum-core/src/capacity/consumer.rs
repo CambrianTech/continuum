@@ -19,7 +19,12 @@ use super::{grant_would_oom, DeviceCapacity, Grant, LeaseRequest};
 /// pure, so it runs identically in the sim and (later) as the prod reward estimator.
 pub trait QualityModel: Send + Sync {
     /// The faculties that make up THIS consumer's experience under the grant it received.
-    fn faculties(&self, cap: &DeviceCapacity, req: &LeaseRequest, grant: &Grant) -> Vec<FacultyScore>;
+    fn faculties(
+        &self,
+        cap: &DeviceCapacity,
+        req: &LeaseRequest,
+        grant: &Grant,
+    ) -> Vec<FacultyScore>;
     fn name(&self) -> &'static str;
 }
 
@@ -37,7 +42,12 @@ pub trait QualityModel: Send + Sync {
 pub struct LiveRoomServing;
 
 impl QualityModel for LiveRoomServing {
-    fn faculties(&self, cap: &DeviceCapacity, req: &LeaseRequest, grant: &Grant) -> Vec<FacultyScore> {
+    fn faculties(
+        &self,
+        cap: &DeviceCapacity,
+        req: &LeaseRequest,
+        grant: &Grant,
+    ) -> Vec<FacultyScore> {
         // A crashed lane serves nobody — the critical faculties die together.
         let alive = !grant_would_oom(cap, req, grant);
 
@@ -95,11 +105,20 @@ pub fn room_faculties(alive: bool, served_fraction: f32) -> Vec<FacultyScore> {
 pub struct CodeGenBatch;
 
 impl QualityModel for CodeGenBatch {
-    fn faculties(&self, cap: &DeviceCapacity, req: &LeaseRequest, grant: &Grant) -> Vec<FacultyScore> {
+    fn faculties(
+        &self,
+        cap: &DeviceCapacity,
+        req: &LeaseRequest,
+        grant: &Grant,
+    ) -> Vec<FacultyScore> {
         // An OOM kills the job — no code comes out. Otherwise the code is produced; whether it's
         // *correct* is the model's business, assumed good here (correctness is graded elsewhere by
         // the coder gym, not by the allocator). The gate the allocator can move is job-survival.
-        let job_survives = if grant_would_oom(cap, req, grant) { 0.0 } else { 1.0 };
+        let job_survives = if grant_would_oom(cap, req, grant) {
+            0.0
+        } else {
+            1.0
+        };
 
         let want = req.want_concurrency.max(1) as f32;
         let throughput = (grant.concurrency as f32 / want).clamp(0.0, 1.0);
@@ -133,7 +152,11 @@ mod tests {
         }
     }
     fn demand() -> LeaseRequest {
-        LeaseRequest { consumer: "serving".into(), want_concurrency: 4, spike_bytes: 2 * GB }
+        LeaseRequest {
+            consumer: "serving".into(),
+            want_concurrency: 4,
+            spike_bytes: 2 * GB,
+        }
     }
 
     // what this catches: the honest grant→experience mapping the whole gym optimizes. A grant
@@ -147,17 +170,29 @@ mod tests {
         let model = LiveRoomServing;
 
         // Full demand fits calm capacity → excellent.
-        let full = score_experience(&model.faculties(&cap(13), &demand(), &Grant { concurrency: 4 }));
+        let full =
+            score_experience(&model.faculties(&cap(13), &demand(), &Grant { concurrency: 4 }));
 
         // Game ate the GPU; fit shrank to 3 lanes → survives, slightly less responsive.
-        let shrunk = score_experience(&model.faculties(&cap(7), &demand(), &Grant { concurrency: 3 }));
+        let shrunk =
+            score_experience(&model.faculties(&cap(7), &demand(), &Grant { concurrency: 3 }));
 
         // Static held 4 lanes into 7GB free → OOM → the room crashes.
-        let crashed = score_experience(&model.faculties(&cap(7), &demand(), &Grant { concurrency: 4 }));
+        let crashed =
+            score_experience(&model.faculties(&cap(7), &demand(), &Grant { concurrency: 4 }));
 
-        assert!(full > 0.9, "full demand on calm capacity is a great experience, got {full}");
-        assert!(shrunk > 0.7, "a graceful shrink stays a good experience, got {shrunk}");
-        assert!(crashed < 0.05, "an OOM crashes the room — holistic failure, got {crashed}");
+        assert!(
+            full > 0.9,
+            "full demand on calm capacity is a great experience, got {full}"
+        );
+        assert!(
+            shrunk > 0.7,
+            "a graceful shrink stays a good experience, got {shrunk}"
+        );
+        assert!(
+            crashed < 0.05,
+            "an OOM crashes the room — holistic failure, got {crashed}"
+        );
         assert!(
             shrunk > crashed * 10.0,
             "shrinking must be VASTLY better than crashing (shrunk={shrunk}, crashed={crashed}) \
@@ -182,10 +217,20 @@ mod tests {
             "the same throughput starve must hurt a live room MORE than a deep-coder job \
              (room={room}, code={code}) — latency is heavy in a room, near-weightless in code-gen"
         );
-        assert!(code > 0.9, "a slow-but-working code-gen job is still an excellent outcome, got {code}");
+        assert!(
+            code > 0.9,
+            "a slow-but-working code-gen job is still an excellent outcome, got {code}"
+        );
 
         // And the gate still composes for the inverted faculty set: an OOM kills the job.
-        let crashed = score_experience(&CodeGenBatch.faculties(&cap(7), &demand(), &Grant { concurrency: 4 }));
-        assert!(crashed < 0.05, "an OOM kills the code-gen job (working_code gate), got {crashed}");
+        let crashed = score_experience(&CodeGenBatch.faculties(
+            &cap(7),
+            &demand(),
+            &Grant { concurrency: 4 },
+        ));
+        assert!(
+            crashed < 0.05,
+            "an OOM kills the code-gen job (working_code gate), got {crashed}"
+        );
     }
 }

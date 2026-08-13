@@ -18,7 +18,10 @@ use crate::model_registry::types::{Arch, Capability};
 
 /// `models/list` takes no input — it reports the whole live universe.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelsListParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelsListParams.ts"
+)]
 pub struct ModelsListParams {}
 
 /// One model's card in the live universe: the static seed facts a caller picks a
@@ -26,7 +29,10 @@ pub struct ModelsListParams {}
 /// widget/persona-facing DTO — the projection of [`LiveModel`], not the internal
 /// struct (which embeds the full `Model`).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelSummary.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelSummary.ts"
+)]
 pub struct ModelSummary {
     pub id: String,
     #[ts(optional)]
@@ -72,7 +78,10 @@ impl ModelSummary {
 
 /// The whole live universe at one instant, with the generation that produced it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/ModelCatalogView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/ModelCatalogView.ts"
+)]
 pub struct ModelCatalogView {
     /// Snapshot generation — bumped on every mutation. A subscriber compares this
     /// to its last seen value to know the universe changed without diffing.

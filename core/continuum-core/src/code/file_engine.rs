@@ -1521,7 +1521,13 @@ fn inert_insertion_sites(
     if inert.is_empty() {
         return None;
     }
-    Some(inert.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; "))
+    Some(
+        inert
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("; "),
+    )
 }
 
 /// The recovery path, shared by the warning and the refusal so the advice cannot drift between
@@ -2686,7 +2692,10 @@ mod tests {
         let r = engine
             .edit(
                 "src/bp.py",
-                &EditMode::InsertAt { line: 5, content: guard().to_string() },
+                &EditMode::InsertAt {
+                    line: 5,
+                    content: guard().to_string(),
+                },
                 None,
             )
             .expect("a live citizen's edit is never refused for landing in a literal");
@@ -2733,7 +2742,10 @@ mod tests {
         let r = engine
             .edit(
                 "src/bp.py",
-                &EditMode::InsertAt { line: 5, content: guard().to_string() },
+                &EditMode::InsertAt {
+                    line: 5,
+                    content: guard().to_string(),
+                },
                 None,
             )
             .expect("a refusal is a result, not an Err");
@@ -2746,7 +2758,12 @@ mod tests {
         // Diagnosing is not enough — it has to TEACH: name the recovery verbs and the anchor
         // that works. The sympy-21379 refusal was correct and still burned 16 of her 30 acts
         // because the advice ("widen the range") was something she had to act on blind.
-        for must in ["code/read", "code/edit", "method body", "confirm the behavior"] {
+        for must in [
+            "code/read",
+            "code/edit",
+            "method body",
+            "confirm the behavior",
+        ] {
             assert!(
                 err.contains(must),
                 "the refusal must walk her through it — missing `{must}`, got:\n{err}"
@@ -2772,7 +2789,10 @@ mod tests {
         let r = engine
             .edit(
                 "src/bp.py",
-                &EditMode::InsertAt { line: 9, content: guard().to_string() },
+                &EditMode::InsertAt {
+                    line: 9,
+                    content: guard().to_string(),
+                },
                 None,
             )
             .expect("edit");

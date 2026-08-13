@@ -194,19 +194,19 @@ impl AircTransport {
         // routes Local decisions to a remote transport. Surface the
         // invariant breach loudly rather than silently ignore.
         if let RouteDecision::Local { .. } = decision {
-            return Err(
-                "BUG: AircTransport received a Local decision — \
+            return Err("BUG: AircTransport received a Local decision — \
                  CommandExecutor::dispatch handles Local inline; \
                  remote transports never see this variant."
-                    .to_string(),
-            );
+                .to_string());
         }
 
         // Resolve the outbound target before doing any serialization.
         // Cheaper error path for the not-yet-supported cases.
         let target = match decision {
             RouteDecision::Peer { peer, .. } => Self::peer_ref_to_target(peer)?,
-            RouteDecision::Broadcast { peer, node, path, .. } => {
+            RouteDecision::Broadcast {
+                peer, node, path, ..
+            } => {
                 // Per [[no-fallbacks-ever]]: env-wildcard broadcast to a
                 // SPECIFIC peer cannot be silently mapped to
                 // `MentionTarget::All` — that would fan out to every
@@ -260,11 +260,10 @@ impl AircTransport {
             }
         };
 
-        let request = command_request_from_route_decision(decision, params)
-            .ok_or_else(|| {
-                "BUG: command_request_from_route_decision returned None for a non-Local decision"
-                    .to_string()
-            })?;
+        let request = command_request_from_route_decision(decision, params).ok_or_else(|| {
+            "BUG: command_request_from_route_decision returned None for a non-Local decision"
+                .to_string()
+        })?;
 
         Ok((target, request))
     }
@@ -292,9 +291,10 @@ impl AircTransport {
             }
         };
 
-        let response: AircCommandResponse = serde_json::from_value(response_value).map_err(|e| {
-            format!("AircTransport: deserialize reply body as AircCommandResponse: {e}")
-        })?;
+        let response: AircCommandResponse =
+            serde_json::from_value(response_value).map_err(|e| {
+                format!("AircTransport: deserialize reply body as AircCommandResponse: {e}")
+            })?;
 
         response.into_result()
     }
@@ -370,8 +370,14 @@ mod tests {
             params: serde_json::json!({"path": "foo"}),
         };
         let headers = AircTransport::build_headers(&request);
-        assert_eq!(headers.get(HEADER_COMMAND_PATH).map(String::as_str), Some("code/exists"));
-        assert_eq!(headers.get(HEADER_COMMAND_KIND).map(String::as_str), Some("peer"));
+        assert_eq!(
+            headers.get(HEADER_COMMAND_PATH).map(String::as_str),
+            Some("code/exists")
+        );
+        assert_eq!(
+            headers.get(HEADER_COMMAND_KIND).map(String::as_str),
+            Some("peer")
+        );
         assert_eq!(
             headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
             Some(COMMAND_REQUEST_BODY_HINT)
@@ -389,14 +395,17 @@ mod tests {
             params: Value::Null,
         };
         let headers = AircTransport::build_headers(&request);
-        assert_eq!(headers.get(HEADER_COMMAND_ENV).map(String::as_str), Some("vr"));
+        assert_eq!(
+            headers.get(HEADER_COMMAND_ENV).map(String::as_str),
+            Some("vr")
+        );
     }
 
     #[test]
     fn peer_ref_uuid_maps_to_mention_target_peer() {
         let id = Uuid::new_v4();
-        let target = AircTransport::peer_ref_to_target(&PeerRef::Uuid(id))
-            .expect("uuid peer should map");
+        let target =
+            AircTransport::peer_ref_to_target(&PeerRef::Uuid(id)).expect("uuid peer should map");
         match target {
             MentionTarget::Peer(peer_id) => assert_eq!(peer_id.0, id),
             other => panic!("expected MentionTarget::Peer, got {other:?}"),
@@ -407,8 +416,14 @@ mod tests {
     fn peer_ref_name_returns_typed_error_pointing_at_whois() {
         let err = AircTransport::peer_ref_to_target(&PeerRef::Name("maya".to_string()))
             .expect_err("name peer should error until whois lands");
-        assert!(err.contains("whois"), "error must name the missing piece: {err}");
-        assert!(err.contains("maya"), "error must include the peer name: {err}");
+        assert!(
+            err.contains("whois"),
+            "error must name the missing piece: {err}"
+        );
+        assert!(
+            err.contains("maya"),
+            "error must include the peer name: {err}"
+        );
         assert!(
             err.contains("UUID"),
             "error must suggest the working alternative (use a UUID): {err}"
@@ -437,9 +452,8 @@ mod tests {
     #[test]
     fn resolve_outbound_room_returns_typed_not_implemented_error() {
         let room_id = Uuid::new_v4();
-        let decision = route(
-            &CommandUri::parse(&format!("airc://room:{room_id}/chat/post")).expect("parse"),
-        );
+        let decision =
+            route(&CommandUri::parse(&format!("airc://room:{room_id}/chat/post")).expect("parse"));
         let err = AircTransport::resolve_outbound(&decision, Value::Null)
             .expect_err("Room must not silently dispatch");
         assert!(
@@ -454,8 +468,7 @@ mod tests {
 
     #[test]
     fn resolve_outbound_broadcast_refuses_silent_fallback() {
-        let decision =
-            route(&CommandUri::parse("airc://maya:*/notification/send").expect("parse"));
+        let decision = route(&CommandUri::parse("airc://maya:*/notification/send").expect("parse"));
         let err = AircTransport::resolve_outbound(&decision, Value::Null)
             .expect_err("Broadcast must not silently map to MentionTarget::All");
         // PR #1529 reviewer 1 + 2 found the original silent-fallback;
@@ -477,7 +490,10 @@ mod tests {
             route(&CommandUri::parse("airc://maya/inference/llm/generate").expect("parse"));
         let err = AircTransport::resolve_outbound(&decision, Value::Null)
             .expect_err("Name-only peers cannot resolve until whois slice lands");
-        assert!(err.contains("whois"), "error must name the missing slice: {err}");
+        assert!(
+            err.contains("whois"),
+            "error must name the missing slice: {err}"
+        );
     }
 
     #[test]
@@ -566,8 +582,9 @@ mod tests {
     #[test]
     fn peer_uuid_decision_produces_request_with_kind_peer() {
         let id = Uuid::new_v4();
-        let decision =
-            route(&CommandUri::parse(&format!("airc://{id}/inference/llm/generate")).expect("parse"));
+        let decision = route(
+            &CommandUri::parse(&format!("airc://{id}/inference/llm/generate")).expect("parse"),
+        );
         let request =
             command_request_from_route_decision(&decision, serde_json::json!({"prompt": "hi"}))
                 .expect("Peer decision packages");
@@ -578,9 +595,7 @@ mod tests {
 
     #[test]
     fn broadcast_decision_produces_request_with_kind_broadcast() {
-        let decision = route(
-            &CommandUri::parse("airc://maya:*/notification/send").expect("parse"),
-        );
+        let decision = route(&CommandUri::parse("airc://maya:*/notification/send").expect("parse"));
         let request = command_request_from_route_decision(&decision, Value::Null)
             .expect("Broadcast decision packages");
         assert_eq!(request.kind, "broadcast");

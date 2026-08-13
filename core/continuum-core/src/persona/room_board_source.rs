@@ -450,8 +450,7 @@ impl RagSource for RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String =
-                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
                     format!("  {id8}: \"{}\" [{:?}]", c.title, c.state)
                 })
                 .collect::<Vec<_>>()
@@ -507,8 +506,7 @@ impl RagSource for RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String =
-                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
                     format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
                 })
                 .collect::<Vec<_>>()
@@ -719,7 +717,9 @@ mod tests {
 
         let reader = Arc::new(StubReader::new(snapshot(cards)));
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 4_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 4_000, ResolutionPreference::Raw)
+            .await;
         let lead = delivery
             .items
             .iter()
@@ -776,10 +776,7 @@ mod tests {
 
     #[async_trait]
     impl RoomBoardReader for StubReader {
-        async fn work_board(
-            &self,
-            _room: Option<uuid::Uuid>,
-        ) -> Result<BoardSnapshot, AircError> {
+        async fn work_board(&self, _room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }
@@ -809,7 +806,9 @@ mod tests {
             card("Review the PR", CardState::Open, None),
         ])));
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         // Headline first, then the available-work lead, then the card list.
         assert_eq!(delivery.items.len(), 4);
         assert_eq!(delivery.items[0].metadata["kind"], "board-headline");
@@ -845,22 +844,35 @@ mod tests {
     #[tokio::test]
     async fn the_first_board_unit_states_both_counts_so_a_prefix_take_cannot_halve_it() {
         let me = persona();
-        let mut held = card("The card I hold", CardState::Claimed, Some(airc_core::PeerId::from_uuid(me)));
+        let mut held = card(
+            "The card I hold",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        );
         held.claim_expires_at_ms = Some(now_unix_ms() + 60_000);
         let open_a = card("Claimable one", CardState::Open, None);
         let open_b = card("Claimable two", CardState::Open, None);
 
         let reader = Arc::new(StubReader::new(snapshot(vec![held, open_a, open_b])));
         let source = RoomBoardSource::new(me, reader);
-        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
 
         let first = &delivery.items[0];
-        assert_eq!(first.metadata["kind"], "board-headline", "the headline must LEAD");
+        assert_eq!(
+            first.metadata["kind"], "board-headline",
+            "the headline must LEAD"
+        );
         assert!(first.content.contains("hold 1"), "{}", first.content);
         assert!(first.content.contains("2 claimable"), "{}", first.content);
         // Cheap enough that any budget delivering grounding at all delivers BOTH
         // facts — the detailed leads are ~10x this and are what should degrade.
-        assert!(first.tokens <= 32, "headline must stay tiny, was {}", first.tokens);
+        assert!(
+            first.tokens <= 32,
+            "headline must stay tiny, was {}",
+            first.tokens
+        );
     }
 
     // what this catches: THE rule Joel set on 2026-08-06 — "should never say
@@ -881,7 +893,9 @@ mod tests {
         let reader =
             Arc::new(StubReader::new(snapshot(vec![live, lapsed])).with_name(asha, "Asha"));
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
         let cards: Vec<&RagItem> = delivery
             .items
             .iter()
@@ -891,13 +905,21 @@ mod tests {
 
         let asha8: String = asha.as_uuid().to_string().chars().take(8).collect();
         // Live hold: named, and the raw hex is GONE from the line.
-        assert!(cards[0].content.contains("owner Asha"), "{}", cards[0].content);
+        assert!(
+            cards[0].content.contains("owner Asha"),
+            "{}",
+            cards[0].content
+        );
         assert!(!cards[0].content.contains(&asha8), "{}", cards[0].content);
         // Lapsed hold: still names WHO held it (so she can reach out) AND says
         // it is takeable — the two facts that were missing while six citizens
         // read stale claims as active work and announced "no open tasks".
         assert!(cards[1].content.contains("Asha"), "{}", cards[1].content);
-        assert!(cards[1].content.contains("claimable"), "{}", cards[1].content);
+        assert!(
+            cards[1].content.contains("claimable"),
+            "{}",
+            cards[1].content
+        );
         assert!(!cards[1].content.contains(&asha8), "{}", cards[1].content);
     }
 
@@ -914,7 +936,9 @@ mod tests {
             card("Already mine", CardState::InProgress, Some(holder)),
         ])));
         let source = RoomBoardSource::new(persona(), reader);
-        let d = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let d = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
         // Found by KIND, not by index: the headline now leads, and a test that
         // pins position breaks every time the delivery grows a unit.
         let lead = d
@@ -945,7 +969,9 @@ mod tests {
     async fn empty_board_delivers_nothing() {
         let reader = Arc::new(StubReader::new(snapshot(vec![])));
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
         assert!(delivery.continuation.is_none());
@@ -956,13 +982,15 @@ mod tests {
     #[tokio::test]
     async fn read_error_returns_empty_no_panic() {
         let reader = Arc::new(StubReader::new(snapshot(vec![card(
-        "x",
+            "x",
             CardState::Open,
             None,
         )])));
         reader.set_fail(true);
         let source = RoomBoardSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
@@ -1008,7 +1036,9 @@ mod tests {
         );
         let reader = Arc::new(StubReader::new(snapshot(vec![mine, theirs])));
         let source = RoomBoardSource::new(me, reader);
-        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
         let all: String = delivery
             .items
             .iter()
@@ -1052,7 +1082,9 @@ mod tests {
         );
         let reader = Arc::new(StubReader::new(snapshot(vec![stale_mine, live_mine])));
         let source = RoomBoardSource::new(me, reader);
-        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
         let all: String = delivery
             .items
             .iter()
@@ -1089,7 +1121,10 @@ mod tests {
         let reader = Arc::new(StubReader::new(snapshot(cards)));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source.deliver(&ctx(), 40, ResolutionPreference::Raw).await;
-        assert!(!delivery.items.is_empty(), "at least one card fits budget 40");
+        assert!(
+            !delivery.items.is_empty(),
+            "at least one card fits budget 40"
+        );
         assert!(
             delivery.tokens_used <= 40,
             "overspent: {} > 40",
@@ -1119,25 +1154,41 @@ mod tests {
         // Turn stamped with the SAME room → delivers.
         let same = RagContext::for_persona_in_room(p, 1_000, home);
         assert!(
-            !source.deliver(&same, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            !source
+                .deliver(&same, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
             "same-room turn must still receive the board"
         );
         // Turn stamped with a DIFFERENT room → abstains.
         let other = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::new_v4());
         assert!(
-            source.deliver(&other, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            source
+                .deliver(&other, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
             "another room's turn must NOT receive this room's board"
         );
         // The eval fork's synthetic nil context → abstains (the exam-bleed fix).
         let exam = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::nil());
         assert!(
-            source.deliver(&exam, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            source
+                .deliver(&exam, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
             "a synthetic exam context must NOT receive the room board"
         );
         // Unstamped ctx (None) → pre-gate behavior (delivers).
         let unstamped = RagContext::for_persona(p, 1_000);
         assert!(
-            !source.deliver(&unstamped, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            !source
+                .deliver(&unstamped, 500, ResolutionPreference::Raw)
+                .await
+                .items
+                .is_empty(),
             "an unstamped ctx keeps legacy behavior"
         );
     }

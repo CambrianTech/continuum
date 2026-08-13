@@ -220,7 +220,7 @@ pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, S
                      graded on the file her hands produced; check the act trail for whether she \
                      acted at all or acted without ever calling a write."
                 ),
-            )
+            );
         }
     };
     let _ = std::fs::remove_file(path);
@@ -269,7 +269,12 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
     std::fs::write(&src, full).map_err(|e| format!("temp write failed: {e}"))?;
 
     let mut rustc = tokio::process::Command::new("rustc");
-    rustc.arg("--edition").arg("2021").arg("-o").arg(&bin).arg(&src);
+    rustc
+        .arg("--edition")
+        .arg("2021")
+        .arg("-o")
+        .arg(&bin)
+        .arg(&src);
     let compiled = run_capped(&mut rustc, "compile").await?;
     if !compiled.status.success() {
         return Err(format!("compile error: {}", trunc_stderr(&compiled.stderr)));
@@ -306,7 +311,11 @@ async fn run_capped(
 /// First 180 chars of trimmed stderr — enough of the compiler/panic message to
 /// diagnose without flooding the grade field.
 fn trunc_stderr(stderr: &[u8]) -> String {
-    String::from_utf8_lossy(stderr).trim().chars().take(180).collect()
+    String::from_utf8_lossy(stderr)
+        .trim()
+        .chars()
+        .take(180)
+        .collect()
 }
 
 /// [`Verifier`](crate::cognition::resolution::Verifier) over the real code grader
@@ -367,7 +376,10 @@ mod tests {
             "#[test]\nfn t() { assert_eq!(sum_evens(&[2,4]), 6); }",
         )
         .await;
-        assert!(!ok, "a #[test]-wrapped test must NOT pass — that is the false-pass bug");
+        assert!(
+            !ok,
+            "a #[test]-wrapped test must NOT pass — that is the false-pass bug"
+        );
         assert!(
             msg.contains("format error") && msg.contains("#[test]"),
             "must fail LOUD naming the bad format, got: {msg}"
@@ -379,7 +391,10 @@ mod tests {
             "assert_eq!(sum_evens(&[2,4]), 6);",
         )
         .await;
-        assert!(!ok2, "wrong code with a bare-assert test must fail on the assertion");
+        assert!(
+            !ok2,
+            "wrong code with a bare-assert test must fail on the assertion"
+        );
     }
 
     // what this catches (#168): CodeVerifier bridges the REAL rustc grader to the
@@ -402,7 +417,10 @@ mod tests {
 
         let bad = "```rust\nfn add(a: i32, b: i32) -> i32 { a - b }\n```".to_string();
         let bad_verdict = v.verify(&bad).await;
-        assert!(!bad_verdict.passed, "wrong code must FAIL to trigger escalation");
+        assert!(
+            !bad_verdict.passed,
+            "wrong code must FAIL to trigger escalation"
+        );
         assert!(
             !bad_verdict.detail.is_empty(),
             "a failure must carry a reason to escalate on"
@@ -443,7 +461,10 @@ mod tests {
                       Then the logic:\n```rust\nfn read_it(p: &str) -> String {\n    \
                       fs::read_to_string(p).unwrap()\n}\n```";
         let code = extract_code_block(answer);
-        assert!(code.contains("use std::fs;"), "keeps the imports fence: {code}");
+        assert!(
+            code.contains("use std::fs;"),
+            "keeps the imports fence: {code}"
+        );
         assert!(code.contains("fn read_it"), "keeps the logic fence: {code}");
     }
 
@@ -545,7 +566,8 @@ mod tests {
     // leaves the rest of the candidate (and a nested `main` inside another fn) intact.
     #[test]
     fn strip_top_level_main_removes_module_main_only() {
-        let stripped = strip_top_level_main("fn f() -> i32 { 1 }\nfn main() {\n  let _ = f();\n}\n");
+        let stripped =
+            strip_top_level_main("fn f() -> i32 { 1 }\nfn main() {\n  let _ = f();\n}\n");
         assert_eq!(stripped, "fn f() -> i32 { 1 }");
         // a `main` nested in another fn body is not a module-level collision — keep it.
         let nested = "fn wrap() { fn main() { } }";
@@ -558,6 +580,9 @@ mod tests {
     async fn unsupported_lang_fails_loud() {
         let (ok, grade) = test_grade("print('x')", "python", "// test").await;
         assert!(!ok);
-        assert!(grade.contains("unsupported lang 'python'"), "grade was: {grade}");
+        assert!(
+            grade.contains("unsupported lang 'python'"),
+            "grade was: {grade}"
+        );
     }
 }

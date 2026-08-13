@@ -39,10 +39,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 // runtime. BEHAVIORAL GAP: the explicit TS-bridge (`execute_ts*`) is
 // unavailable on Windows until a TCP endpoint is wired; the Rust dispatch chain
 // (the primary path) is unaffected.
-#[cfg(unix)]
-use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::TcpStream as UnixStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tracing::Instrument;
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
@@ -428,7 +428,10 @@ impl CommandExecutor {
         //    A migrated command lives here and beats its module's legacy
         //    handle_command arm; see docs/architecture/COMMAND-ORGANIZATION.md.
         if let Some(cmd) = self.registry.route_object(command) {
-            log.debug(&format!("Routing '{}' to DynCommand object (typed path)", command));
+            log.debug(&format!(
+                "Routing '{}' to DynCommand object (typed path)",
+                command
+            ));
             // Thread the gated caller into the command's Ctx — the SAME identity
             // the policy gate just saw (persona / cross-grid airc sender), so the
             // handler can gate/scope/compose by identity.
@@ -712,8 +715,8 @@ mod tests {
     #[test]
     fn with_interceptor_grows_chain_in_insertion_order() {
         let registry = Arc::new(ModuleRegistry::new());
-        let executor = CommandExecutor::new(registry)
-            .with_interceptor(Arc::new(AircInterceptor::new()));
+        let executor =
+            CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
         assert_eq!(
             executor.interceptor_count(),
             1,
@@ -813,7 +816,9 @@ mod tests {
         use crate::routing::{CallerIdentity, GridTrustAuthPolicy};
         use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 
-        #[derive(Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+        #[derive(
+            Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
+        )]
         struct NoParams {}
         #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
         struct Out {
@@ -839,19 +844,27 @@ mod tests {
                     )
                     .await;
                 Ok(Out {
-                    forbidden: r.as_ref().err().map(|e| e.contains("forbidden")).unwrap_or(false),
+                    forbidden: r
+                        .as_ref()
+                        .err()
+                        .map(|e| e.contains("forbidden"))
+                        .unwrap_or(false),
                 })
             }
         }
 
         let registry = Arc::new(ModuleRegistry::new());
-        let exec =
-            Arc::new(CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new())));
+        let exec = Arc::new(
+            CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new())),
+        );
         let composer = Composer { exec: exec.clone() };
 
         // Composed as the local owner (ctx.caller None) → sub-call NOT gate-forbidden.
         let owner = composer.run(&Ctx::default(), NoParams {}).await.unwrap();
-        assert!(!owner.forbidden, "owner composing data/delete is not forbidden");
+        assert!(
+            !owner.forbidden,
+            "owner composing data/delete is not forbidden"
+        );
 
         // Composed as an airc/Provisional caller → identity propagated → FORBIDDEN.
         let airc_ctx = Ctx {
@@ -939,10 +952,7 @@ mod tests {
             CommandExecutor::new(registry).with_interceptor(Arc::new(AircInterceptor::new()));
 
         let result = executor
-            .execute(
-                "test/cmd",
-                serde_json::json!({ "ordinaryParam": "value" }),
-            )
+            .execute("test/cmd", serde_json::json!({ "ordinaryParam": "value" }))
             .await;
 
         // Failure must be the CommandNotFound shape (no Rust module),
@@ -1087,10 +1097,7 @@ mod tests {
                 tick_interval: None,
             }
         }
-        async fn initialize(
-            &self,
-            _ctx: &crate::runtime::ModuleContext,
-        ) -> Result<(), String> {
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
             Ok(())
         }
         async fn handle_command(
@@ -1160,8 +1167,14 @@ mod tests {
         );
         // A synchronous dispatch stays thin: no handle, no result on the event (the caller
         // already holds the return value).
-        assert_eq!(event.handle, None, "sync command carries no dispatch handle");
-        assert_eq!(event.result, None, "sync command's result is not duplicated onto the event");
+        assert_eq!(
+            event.handle, None,
+            "sync command carries no dispatch handle"
+        );
+        assert_eq!(
+            event.result, None,
+            "sync command's result is not duplicated onto the event"
+        );
     }
 
     // what this catches: dispatch_background returns a handle IMMEDIATELY (fire-and-poll)
@@ -1185,7 +1198,11 @@ mod tests {
         let event = next_command_completed(&mut rx).await;
         assert_eq!(event.command_name, "canned/ping");
         assert!(event.success);
-        assert_eq!(event.handle, Some(handle), "completion carries the dispatch handle");
+        assert_eq!(
+            event.handle,
+            Some(handle),
+            "completion carries the dispatch handle"
+        );
         assert_eq!(
             event.result,
             Some(serde_json::json!({ "built": true, "warnings": 0 })),
@@ -1232,9 +1249,7 @@ mod tests {
         assert!(!executor.has_message_bus(), "no bus wired");
 
         // Must succeed; no events emitted (nothing to subscribe to).
-        let r = executor
-            .execute("canned/ping", serde_json::json!({}))
-            .await;
+        let r = executor.execute("canned/ping", serde_json::json!({})).await;
         assert!(r.is_ok());
     }
 
@@ -1426,17 +1441,19 @@ mod tests {
         let captured_path: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let captured_path_clone = captured_path.clone();
 
-        let transport = ClosureTransport::new("test-peer-transport", move |decision, _params| {
-            match &decision {
-                RouteDecision::Peer { path, .. } => {
-                    *captured_path_clone.lock().unwrap() = Some(path.clone());
-                    Ok(CommandResult::Json(serde_json::json!({
-                        "routed-through": "test-peer-transport",
-                    })))
-                }
-                other => panic!("expected Peer, got {other:?}"),
-            }
-        });
+        let transport =
+            ClosureTransport::new(
+                "test-peer-transport",
+                move |decision, _params| match &decision {
+                    RouteDecision::Peer { path, .. } => {
+                        *captured_path_clone.lock().unwrap() = Some(path.clone());
+                        Ok(CommandResult::Json(serde_json::json!({
+                            "routed-through": "test-peer-transport",
+                        })))
+                    }
+                    other => panic!("expected Peer, got {other:?}"),
+                },
+            );
 
         let registry = Arc::new(ModuleRegistry::new());
         let executor = CommandExecutor::new(registry).with_remote_transport(Arc::new(transport));

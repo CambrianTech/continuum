@@ -1,17 +1,17 @@
 //! ServiceModule adapter for Rust-native AIRC commands.
 
 use crate::airc::{
-    spawn_daemon_attach, AircEventTransport, AircQueueClient, AircRealtimeStore, CliAircQueueClient,
-    DaemonAircEventTransport, InMemoryAircRealtimeStore, StoreAircEventTransport,
-    TokioAircCommandRunner,
+    spawn_daemon_attach, AircEventTransport, AircQueueClient, AircRealtimeStore,
+    CliAircQueueClient, DaemonAircEventTransport, InMemoryAircRealtimeStore,
+    StoreAircEventTransport, TokioAircCommandRunner,
 };
 // `default_socket_path_in` retained for back-compat callers; deprecated,
 // see `crate::airc::daemon_endpoint` module docs.
 #[allow(deprecated)]
 use crate::airc::default_socket_path_in;
-use airc_core::RoomId;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::DynCommand;
+use airc_core::RoomId;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -218,10 +218,7 @@ impl ServiceModule for AircModule {
         // the module + the broader continuum-core boot — the operator
         // sees one of the warnings from `discover_and_construct` so the
         // remedy path is obvious.
-        match (
-            self.attach_socket_path.clone(),
-            self.attach_channel,
-        ) {
+        match (self.attach_socket_path.clone(), self.attach_channel) {
             (Some(socket_path), Some(channel)) => {
                 spawn_daemon_attach(socket_path, channel, ctx.bus.clone(), &ctx.runtime);
             }
@@ -322,10 +319,7 @@ mod from_discovery_tests {
     fn degraded_with_partial_socket_collapses_to_queue_only() {
         let stale_socket = PathBuf::from("/tmp/stale.sock");
         let discovery = AircDiscovery::Degraded {
-            reason: DiscoveryFailure::StaleSocket(
-                stale_socket.clone(),
-                "ECONNREFUSED".into(),
-            ),
+            reason: DiscoveryFailure::StaleSocket(stale_socket.clone(), "ECONNREFUSED".into()),
             partial: PartialDiscovery {
                 socket: Some(stale_socket.clone()),
                 peer_id: None,
@@ -506,7 +500,11 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["airc/queue-scan", "airc/realtime-publish", "airc/realtime-replay"]
+            vec![
+                "airc/queue-scan",
+                "airc/realtime-publish",
+                "airc/realtime-replay"
+            ]
         );
     }
 }

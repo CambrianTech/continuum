@@ -109,11 +109,7 @@ pub fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) {
 /// before boot installs the registry (tests, tools) — callers treat that
 /// as "class not under management," never a default path guess.
 pub fn tracked_dir(name: &str) -> Option<Arc<TrackedDir>> {
-    TRACKED_DIRS
-        .get()?
-        .iter()
-        .find(|d| d.name == name)
-        .cloned()
+    TRACKED_DIRS.get()?.iter().find(|d| d.name == name).cloned()
 }
 
 impl DiskReporter for TrackedDir {
@@ -391,7 +387,13 @@ mod tests {
     fn standard_dirs_cover_the_incident_cache_classes() {
         let dirs = standard_tracked_dirs(std::path::Path::new("/home/u"));
         let names: Vec<&str> = dirs.iter().map(|d| d.name).collect();
-        for must in ["cargo-target", "genome-models", "hf-hub", "citizens", "forge"] {
+        for must in [
+            "cargo-target",
+            "genome-models",
+            "hf-hub",
+            "citizens",
+            "forge",
+        ] {
             assert!(names.contains(&must), "missing cache class: {must}");
         }
     }

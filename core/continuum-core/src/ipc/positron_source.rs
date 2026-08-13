@@ -832,8 +832,10 @@ impl ChatProjection {
             if !unchanged {
                 let payload = serde_json::to_value(&exp)
                     .expect("Experience must serialize — substrate bug, not a runtime error");
-                self.substrate
-                    .store(self.experience_builder.session_raw(Experience::KIND, payload));
+                self.substrate.store(
+                    self.experience_builder
+                        .session_raw(Experience::KIND, payload),
+                );
                 *self.last_experience.borrow_mut() = Some(exp);
             }
         }
@@ -843,10 +845,11 @@ impl ChatProjection {
         // names/kinds/vitals — the display data the manifest's minimal Member omits.
         // Emit-on-change (roster only shifts on presence, not per message).
         if self.last_roster.borrow().as_deref() != Some(roster.as_slice()) {
-            self.substrate.store(
-                self.roster_builder
-                    .session(RosterViewState { room_id, roster: roster.clone() }),
-            );
+            self.substrate
+                .store(self.roster_builder.session(RosterViewState {
+                    room_id,
+                    roster: roster.clone(),
+                }));
             *self.last_roster.borrow_mut() = Some(roster.clone());
         }
 
@@ -878,7 +881,7 @@ impl ChatProjection {
         let membership: Vec<Member> = roster
             .iter()
             .map(|slot| Member {
-                peer_id: slot.member_id.to_string(),
+                peer_id: crate::identity::PeerId::from_uuid(slot.member_id),
                 standing: Standing::Member,
             })
             .collect();
@@ -974,7 +977,12 @@ async fn fetch_seed_messages(
                 let mut entities: Vec<serde_json::Value> = result
                     .get("data")
                     .and_then(|d| d.as_array())
-                    .map(|records| records.iter().filter_map(|r| r.get("data").cloned()).collect())
+                    .map(|records| {
+                        records
+                            .iter()
+                            .filter_map(|r| r.get("data").cloned())
+                            .collect()
+                    })
                     .unwrap_or_default();
                 entities.reverse(); // desc query → chronological apply order
                 return entities.iter().filter_map(entity_to_posted).collect();
@@ -1048,10 +1056,17 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
     use serde_json::json;
 
     /// A `persona:act` payload — one executed tool receipt (#243).
-    fn act_payload(room: Uuid, act: Uuid, actor: Uuid, tool: &str, summary: &str) -> serde_json::Value {
+    fn act_payload(
+        room: Uuid,
+        act: Uuid,
+        actor: Uuid,
+        tool: &str,
+        summary: &str,
+    ) -> serde_json::Value {
         json!({
             "actId": act,
             "roomId": room,
@@ -1093,7 +1108,13 @@ mod tests {
         // Room switch clears the receipt ring with the rest of the state.
         if let Some(ProjectionInput::Act(a)) = classify(
             PERSONA_ACT,
-            &act_payload(Uuid::from_u128(0x9), Uuid::from_u128(0xa), actor, "code/shell", "pytest -x"),
+            &act_payload(
+                Uuid::from_u128(0x9),
+                Uuid::from_u128(0xa),
+                actor,
+                "code/shell",
+                "pytest -x",
+            ),
         ) {
             p.apply_act(a);
         }
@@ -1113,20 +1134,35 @@ mod tests {
         let room = Uuid::from_u128(0x1);
         if let Some(ProjectionInput::Act(a)) = classify(
             PERSONA_ACT,
-            &act_payload(room, Uuid::from_u128(0x2), Uuid::from_u128(0x3), "code/read", "a.py"),
+            &act_payload(
+                room,
+                Uuid::from_u128(0x2),
+                Uuid::from_u128(0x3),
+                "code/read",
+                "a.py",
+            ),
         ) {
             p.apply_act(a);
         }
         assert_eq!(current_chat(&substrate).acts.len(), 1);
         if let Some(ProjectionInput::Act(a)) = classify(
             PERSONA_ACT,
-            &act_payload(Uuid::nil(), Uuid::from_u128(0x4), Uuid::from_u128(0x3), "code/shell", "pytest"),
+            &act_payload(
+                Uuid::nil(),
+                Uuid::from_u128(0x4),
+                Uuid::from_u128(0x3),
+                "code/shell",
+                "pytest",
+            ),
         ) {
             p.apply_act(a);
         }
         let view = current_chat(&substrate);
         assert_eq!(view.acts.len(), 1, "nil-room act must not fold or clear");
-        assert_eq!(view.acts[0].tool, "code/read", "real room's receipts survive");
+        assert_eq!(
+            view.acts[0].tool, "code/read",
+            "real room's receipts survive"
+        );
     }
 
     /// A thin `chat:posted` payload — core message facts only, sender
@@ -1283,9 +1319,11 @@ mod tests {
         let mut p = ChatProjection::new(substrate.clone());
         let room = Uuid::from_u128(0xa);
         let asha = Uuid::from_u128(0xd);
-        if let ProjectionInput::Presence(u) =
-            classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({})))
-                .unwrap()
+        if let ProjectionInput::Presence(u) = classify(
+            PRESENCE_UPDATED,
+            &presence_one(room, asha, "Asha", "agent", json!({})),
+        )
+        .unwrap()
         {
             p.apply_presence(u);
         }
@@ -1427,7 +1465,7 @@ mod tests {
                 },
                 RosterSlotView {
                     active: false,
-                    ..test_roster_slot(Uuid::from_u128(0xe), "Joel", SenderKind::Human)
+                    ..test_roster_slot(Uuid::from_u128(0xe), "Operator", SenderKind::Human)
                 },
             ],
         );
@@ -1689,7 +1727,10 @@ mod tests {
         }
         let view = current_chat(&substrate);
         assert_eq!(view.room_id, quiet);
-        assert!(view.messages.is_empty(), "quiet room renders empty, honestly");
+        assert!(
+            view.messages.is_empty(),
+            "quiet room renders empty, honestly"
+        );
         assert!(view.roster.is_empty());
         assert_eq!(view.room_name, "", "no fabricated name before presence");
     }
@@ -1721,7 +1762,10 @@ mod tests {
             p.apply_presence(u);
         }
         let view = current_chat(&substrate);
-        assert_eq!(view.room_id, room_b, "pinned focus survives other rooms' events");
+        assert_eq!(
+            view.room_id, room_b,
+            "pinned focus survives other rooms' events"
+        );
         assert!(view.messages.is_empty());
         assert!(view.roster.is_empty());
         // The selected room's own events fold in normally.

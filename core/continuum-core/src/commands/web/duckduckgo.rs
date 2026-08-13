@@ -38,10 +38,7 @@ impl WebSearchProvider for DuckDuckGoProvider {
     }
 
     async fn search(&self, query: &str, count: u32) -> Result<Vec<WebHit>, CommandError> {
-        let url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            url_encode(query)
-        );
+        let url = format!("https://html.duckduckgo.com/html/?q={}", url_encode(query));
         let dom = browser::render_dom(&url, SEARCH_SETTLE_MS).await?;
         let hits = parse_ddg_html(&dom, count);
         if hits.is_empty() && dom.contains("anomaly") {
@@ -86,7 +83,11 @@ fn parse_ddg_html(html: &str, count: u32) -> Vec<WebHit> {
             continue;
         }
         let snippet = snippets.get(i).cloned().unwrap_or_default();
-        hits.push(WebHit { title, url, snippet });
+        hits.push(WebHit {
+            title,
+            url,
+            snippet,
+        });
         if hits.len() >= count as usize {
             break;
         }
@@ -200,9 +201,18 @@ mod tests {
         let hits = parse_ddg_html(SAMPLE, 10);
         assert_eq!(hits.len(), 2, "two organic results");
         assert_eq!(hits[0].title, "serde_json - Rust");
-        assert_eq!(hits[0].url, "https://docs.rs/serde_json", "uddg redirect decoded");
-        assert_eq!(hits[0].snippet, "Serde JSON provides efficient parsing of JSON.");
-        assert_eq!(hits[1].title, "Example & Guide", "entities decoded in title");
+        assert_eq!(
+            hits[0].url, "https://docs.rs/serde_json",
+            "uddg redirect decoded"
+        );
+        assert_eq!(
+            hits[0].snippet,
+            "Serde JSON provides efficient parsing of JSON."
+        );
+        assert_eq!(
+            hits[1].title, "Example & Guide",
+            "entities decoded in title"
+        );
         assert_eq!(hits[1].url, "https://example.com/x");
     }
 
@@ -223,7 +233,9 @@ mod tests {
     #[test]
     fn url_helpers() {
         assert_eq!(
-            decode_ddg_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F&rut=z"),
+            decode_ddg_url(
+                "//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F&rut=z"
+            ),
             "https://doc.rust-lang.org/book/"
         );
         assert_eq!(decode_ddg_url("//example.org/a"), "https://example.org/a");

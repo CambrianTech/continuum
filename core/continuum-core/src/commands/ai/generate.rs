@@ -36,7 +36,10 @@ use crate::utils::params::Params;
 /// runtime renders as a failure result); the optional blocks are omitted when absent.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiGenerateResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiGenerateResult.ts"
+)]
 pub struct AiGenerateResult {
     pub success: bool,
     pub text: String,

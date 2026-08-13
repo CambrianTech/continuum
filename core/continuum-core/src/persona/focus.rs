@@ -511,8 +511,15 @@ mod tests {
                 .unwrap()
                 .weight
         };
-        let (low, mid, high) = (weight_on_cursor(0.1), weight_on_cursor(0.5), weight_on_cursor(0.9));
-        assert!(low < mid && mid < high, "concentration rises: {low} < {mid} < {high}");
+        let (low, mid, high) = (
+            weight_on_cursor(0.1),
+            weight_on_cursor(0.5),
+            weight_on_cursor(0.9),
+        );
+        assert!(
+            low < mid && mid < high,
+            "concentration rises: {low} < {mid} < {high}"
+        );
     }
 
     // what this catches: a HARD-muted lane is excluded from the kernel (weight 0,

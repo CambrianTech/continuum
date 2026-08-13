@@ -536,7 +536,10 @@ struct LaneDemandState {
 impl LaneDemandState {
     /// Recompute the effective demand from base + overrides and publish it to the cell.
     fn recompute(&self) {
-        let overrides = self.overrides.lock().expect("lane-demand overrides lock poisoned");
+        let overrides = self
+            .overrides
+            .lock()
+            .expect("lane-demand overrides lock poisoned");
         let effective = overrides
             .iter()
             .map(|(_, active)| *active)
@@ -589,7 +592,6 @@ pub fn release_lane_demand(id: u64) {
 }
 
 impl ServingDaemonModule {
-
     /// The current lane demand (≥ 1).
     /// Register serving's autonomic PLANNER to run on the memory authority's tick
     /// (MEMORY-AUTHORITY-DAEMON slice 1b). The lane plan — which model, how many lanes,
@@ -3091,7 +3093,11 @@ mod tests {
             next_id: std::sync::atomic::AtomicU64::new(1),
         };
         state.recompute();
-        assert_eq!(cell.load(Ordering::Relaxed), 4, "base floor before any lease");
+        assert_eq!(
+            cell.load(Ordering::Relaxed),
+            4,
+            "base floor before any lease"
+        );
 
         // Overlap: eval quiesce_all (active 0 → floored 1), then a solve's
         // quiesce_others (active 1) while the first is still held.
@@ -4771,9 +4777,7 @@ mod tests {
     // `available_bytes` again would make this budget ignore the floor.
     #[tokio::test]
     async fn serving_budget_plans_around_other_consumers_floors() {
-        use crate::resources::{
-            DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon,
-        };
+        use crate::resources::{DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon};
         let src = Arc::new(MockCapacitySource::new(
             crate::resources::ResourceKind::Vram,
             10_000,
@@ -4798,7 +4802,11 @@ mod tests {
         daemon.reserve("embed", crate::resources::ResourceKind::Vram, 1_800);
         assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
         // Serving's own hypothetical floor would NOT count against itself.
-        daemon.reserve(SERVING_CONSUMER_ID, crate::resources::ResourceKind::Vram, 3_000);
+        daemon.reserve(
+            SERVING_CONSUMER_ID,
+            crate::resources::ResourceKind::Vram,
+            3_000,
+        );
         assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
     }
 }

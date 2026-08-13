@@ -17,7 +17,10 @@ use ts_rs::TS;
 /// An optional echo message round-trips so a caller can correlate.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/health/PingParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/health/PingParams.ts"
+)]
 pub struct PingParams {
     /// Optional message echoed back (for correlation / a hello).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,7 +31,10 @@ pub struct PingParams {
 /// Result of `ping` — the substrate is alive.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/health/PingResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/health/PingResult.ts"
+)]
 pub struct PingResult {
     /// Always true on a successful round-trip.
     pub ok: bool,

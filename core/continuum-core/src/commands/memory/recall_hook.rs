@@ -187,18 +187,33 @@ mod tests {
         let out = SessionStartHookOutput {
             hook_specific_output: HookSpecificOutput {
                 hook_event_name: "SessionStart".to_string(),
-                additional_context: "## Relevant memories\n- use continuum, not ctm\n- a \"quoted\" bit"
-                    .to_string(),
+                additional_context:
+                    "## Relevant memories\n- use continuum, not ctm\n- a \"quoted\" bit".to_string(),
             },
         };
         let json = serde_json::to_string(&out).unwrap();
-        assert!(json.contains("\"hookSpecificOutput\""), "camelCase envelope key: {json}");
-        assert!(json.contains("\"hookEventName\":\"SessionStart\""), "event name: {json}");
-        assert!(json.contains("\"additionalContext\""), "context key: {json}");
+        assert!(
+            json.contains("\"hookSpecificOutput\""),
+            "camelCase envelope key: {json}"
+        );
+        assert!(
+            json.contains("\"hookEventName\":\"SessionStart\""),
+            "event name: {json}"
+        );
+        assert!(
+            json.contains("\"additionalContext\""),
+            "context key: {json}"
+        );
         // The literal newline + quote are escaped by serde, not left raw — the fragility a
         // shell here-string / jq hand-build would have to get exactly right.
-        assert!(json.contains("\\n- use continuum"), "newline escaped by serde: {json}");
-        assert!(json.contains("\\\"quoted\\\""), "inner quotes escaped by serde: {json}");
+        assert!(
+            json.contains("\\n- use continuum"),
+            "newline escaped by serde: {json}"
+        );
+        assert!(
+            json.contains("\\\"quoted\\\""),
+            "inner quotes escaped by serde: {json}"
+        );
         // Round-trips back to the same struct.
         let back: SessionStartHookOutput = serde_json::from_str(&json).unwrap();
         assert_eq!(back.hook_specific_output.hook_event_name, "SessionStart");

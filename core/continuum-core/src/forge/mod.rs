@@ -27,8 +27,8 @@ pub mod recipe;
 
 pub use artifact::{ForgeArtifact, HardwareProfile};
 pub use endpoint::{can_accept_gguf_lora, ForgeEndpoint, ForgeHealth, ForgeLocator};
-pub use grid_custodian::{GridDispatch, GridDispatchError, GridForgeCustodian};
 pub use gene_handle::{AlloyHash, GeneHandle, GeneLocator};
+pub use grid_custodian::{GridDispatch, GridDispatchError, GridForgeCustodian};
 pub use recipe::{
     AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, ForgeRecipe, PriorBaseline, QuantTier,
 };

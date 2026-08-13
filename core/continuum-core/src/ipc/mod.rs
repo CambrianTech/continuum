@@ -118,10 +118,10 @@ pub mod positron_bench_source;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
+pub mod positron_live_source;
 pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
-pub mod positron_live_source;
 pub mod positron_serving_source;
 pub mod positron_source;
 pub mod positron_wall_source;
@@ -2016,7 +2016,9 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
             registry.clone(),
         )));
-        runtime.register(Arc::new(crate::modules::room::RoomModule::new(registry.clone(),)));
+        runtime.register(Arc::new(crate::modules::room::RoomModule::new(
+            registry.clone(),
+        )));
         // activity/* (#274) — the verb that turns a recipe into a room. Same
         // registry: creating a room acts as the CALLER's own airc identity, so the
         // creator is a real peer rather than the substrate acting anonymously.
@@ -3137,10 +3139,7 @@ pub fn start_server(
                 // Benchmark board (#329): fold the run-ledger projection into
                 // kind="bench" — the academy right-rail's live rows (who is
                 // solving what, attempt N/M, patch forming, verdicts).
-                positron_bench_source::spawn_bench_emitter(
-                    &state.rt_handle,
-                    ws_substrate.clone(),
-                );
+                positron_bench_source::spawn_bench_emitter(&state.rt_handle, ws_substrate.clone());
 
                 // Live-call glass box (#58): folds the TRANSPORT's calls against
                 // the ORCHESTRATOR's registered sessions. Their disagreement is

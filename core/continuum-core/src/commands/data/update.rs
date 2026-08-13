@@ -6,11 +6,12 @@ use crate::modules::data::DataState;
 use crate::orm::types::{DataRecord, StorageResult, UUID};
 
 /// Params for `data/update`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataUpdateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataUpdateParams.ts"
+)]
 pub struct DataUpdateParams {
     /// The collection holding the record.
     pub collection: String,

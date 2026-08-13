@@ -297,9 +297,11 @@ pub async fn evaluate_response(
             // multi-model gateway is the next slice. Fail loud if nothing serves.
             let served = crate::cognition::inference_session::resolve_model(None)
                 .await
-                .map_err(|e| GenerateResponseError::Generation(format!(
-                    "inference model resolve failed (unsloth gateway): {e:?}"
-                )))?;
+                .map_err(|e| {
+                    GenerateResponseError::Generation(format!(
+                        "inference model resolve failed (unsloth gateway): {e:?}"
+                    ))
+                })?;
             sessions.ensure_for_persona(persona_uuid, served)
         }
     };

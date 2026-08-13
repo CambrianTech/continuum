@@ -19,7 +19,10 @@ use crate::persona::genome_paging::CoverageReport;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeCoverageReportParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeCoverageReportParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeCoverageReportParams {
     /// Persona whose coverage ledger is read.

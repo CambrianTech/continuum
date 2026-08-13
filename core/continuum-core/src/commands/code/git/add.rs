@@ -12,7 +12,10 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitAddParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitAddParams.ts"
+)]
 pub struct GitAddParams {
     /// Paths to stage, relative to the workspace root. Empty stages nothing.
     #[serde(default)]
@@ -20,7 +23,10 @@ pub struct GitAddParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/GitAddResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/GitAddResult.ts"
+)]
 pub struct GitAddResult {
     /// Raw `git add` output (usually empty on success).
     pub output: String,

@@ -110,10 +110,7 @@ impl NvidiaMonitor {
             utilization_x1000: AtomicU32::new((sample.utilization * 1000.0) as u32),
             temperature_mc: AtomicI32::new(to_milli(sample.temperature_c)),
             power_mw: AtomicI32::new(to_milli(sample.power_watts)),
-            channel: DaemonChannel::ungated(derive_pressure(
-                sample.free_bytes,
-                sample.total_bytes,
-            )),
+            channel: DaemonChannel::ungated(derive_pressure(sample.free_bytes, sample.total_bytes)),
         });
 
         // The shared runner owns the interval + per-tick catch_unwind: a
@@ -235,7 +232,11 @@ fn parse_gpu_csv_line(line: &str) -> Option<GpuSample> {
     let mib_to_bytes = |s: &str| -> Option<u64> { s.parse::<u64>().ok().map(|m| m * 1024 * 1024) };
     let free_bytes = mib_to_bytes(cols[0])?;
     let total_bytes = mib_to_bytes(cols[1])?;
-    let utilization = cols[2].parse::<f32>().ok().map(|p| p / 100.0).unwrap_or(0.0);
+    let utilization = cols[2]
+        .parse::<f32>()
+        .ok()
+        .map(|p| p / 100.0)
+        .unwrap_or(0.0);
     let temperature_c = cols[3].parse::<f32>().ok();
     let power_watts = cols[4].parse::<f32>().ok();
     Some(GpuSample {
@@ -280,7 +281,10 @@ const QUERY_GPU_ARGS: [&str; 2] = [
 /// decide "is this an NVIDIA host" before committing a daemon task.
 fn probe_blocking() -> Option<(String, GpuSample)> {
     use std::process::Command;
-    let out = Command::new("nvidia-smi").args(QUERY_GPU_ARGS).output().ok()?;
+    let out = Command::new("nvidia-smi")
+        .args(QUERY_GPU_ARGS)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -377,10 +381,23 @@ mod tests {
     /// on, so the boundaries matter.
     #[test]
     fn pressure_derivation_is_sane_and_clamped() {
-        assert!((derive_pressure(0, 100) - 1.0).abs() < 1e-6, "no free → full pressure");
-        assert!((derive_pressure(100, 100) - 0.0).abs() < 1e-6, "all free → zero pressure");
-        assert!((derive_pressure(25, 100) - 0.75).abs() < 1e-6, "25% free → 0.75 pressure");
-        assert_eq!(derive_pressure(50, 0), 0.0, "total 0 must not divide-by-zero");
+        assert!(
+            (derive_pressure(0, 100) - 1.0).abs() < 1e-6,
+            "no free → full pressure"
+        );
+        assert!(
+            (derive_pressure(100, 100) - 0.0).abs() < 1e-6,
+            "all free → zero pressure"
+        );
+        assert!(
+            (derive_pressure(25, 100) - 0.75).abs() < 1e-6,
+            "25% free → 0.75 pressure"
+        );
+        assert_eq!(
+            derive_pressure(50, 0),
+            0.0,
+            "total 0 must not divide-by-zero"
+        );
         // free briefly exceeding total (driver reporting race) clamps, not negative.
         assert_eq!(derive_pressure(200, 100), 0.0);
     }

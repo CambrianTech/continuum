@@ -135,7 +135,11 @@ pub enum ContainerError {
         source: serde_json::Error,
     },
     #[error("container manifest {path}: unknown version {found} (reader knows ≤ {known})")]
-    ManifestVersion { path: PathBuf, found: u32, known: u32 },
+    ManifestVersion {
+        path: PathBuf,
+        found: u32,
+        known: u32,
+    },
     #[error(
         "container manifest {path}: record_bytes {record_bytes} is not a multiple of \
          {align} — misaligned records make every O_DIRECT read fail EINVAL"
@@ -270,20 +274,16 @@ impl ExpertBank {
         }
         debug_assert_eq!(buf.len() as u64, self.record_bytes);
         let offset = expert as u64 * self.record_bytes;
-        crate::fs_portable::read_exact_at(&self.file, buf, offset)
-            .map_err(|source| ContainerError::BankIo {
+        crate::fs_portable::read_exact_at(&self.file, buf, offset).map_err(|source| {
+            ContainerError::BankIo {
                 path: self.path.clone(),
                 source,
-            })?;
+            }
+        })?;
         self.verify_identity(buf, offset, expert)
     }
 
-    fn verify_identity(
-        &self,
-        buf: &[u8],
-        offset: u64,
-        expert: u16,
-    ) -> Result<(), ContainerError> {
+    fn verify_identity(&self, buf: &[u8], offset: u64, expert: u16) -> Result<(), ContainerError> {
         let found_magic = u32::from_le_bytes(buf[0..4].try_into().expect("8-byte header"));
         let found_layer = u16::from_le_bytes(buf[4..6].try_into().expect("8-byte header"));
         let found_expert = u16::from_le_bytes(buf[6..8].try_into().expect("8-byte header"));
@@ -546,8 +546,16 @@ pub mod fixtures {
     /// pattern `write_container` stamps) — shared so depot/pager tests can
     /// prove round-trips without re-learning the fixture's byte layout.
     pub fn assert_v1_record_identity(buf: &[u8], layer: u16, expert: u16) {
-        assert_eq!(buf[HEADER_IDENT_BYTES], (layer as u8) ^ 0xA0, "layer payload byte");
-        assert_eq!(buf[HEADER_IDENT_BYTES + 1], expert as u8, "expert payload byte");
+        assert_eq!(
+            buf[HEADER_IDENT_BYTES],
+            (layer as u8) ^ 0xA0,
+            "layer payload byte"
+        );
+        assert_eq!(
+            buf[HEADER_IDENT_BYTES + 1],
+            expert as u8,
+            "expert payload byte"
+        );
     }
 }
 
@@ -566,7 +574,8 @@ mod tests {
         let mut buf = vec![0u8; c.manifest().record_bytes as usize];
         for layer in 0..3u16 {
             for expert in 0..4u16 {
-                c.fetch(ExpertKey::sharp(layer, expert), &mut buf).expect("fetch");
+                c.fetch(ExpertKey::sharp(layer, expert), &mut buf)
+                    .expect("fetch");
                 assert_eq!(buf[HEADER_IDENT_BYTES], (layer as u8) ^ 0xA0);
                 assert_eq!(buf[HEADER_IDENT_BYTES + 1], expert as u8);
             }
@@ -599,7 +608,10 @@ mod tests {
         )
         .expect("rewrite manifest");
         let err = ExpertContainer::open(dir.path()).expect_err("misaligned must refuse");
-        assert!(matches!(err, ContainerError::RecordMisaligned { .. }), "{err}");
+        assert!(
+            matches!(err, ContainerError::RecordMisaligned { .. }),
+            "{err}"
+        );
     }
 
     #[test]
@@ -620,7 +632,10 @@ mod tests {
         let err = c
             .fetch(ExpertKey::sharp(0, 1), &mut buf)
             .expect_err("identity mismatch must refuse");
-        assert!(matches!(err, ContainerError::RecordIdentity { .. }), "{err}");
+        assert!(
+            matches!(err, ContainerError::RecordIdentity { .. }),
+            "{err}"
+        );
     }
 
     #[test]
@@ -681,8 +696,15 @@ mod tests {
             let mut buf = vec![0u8; record_bytes as usize];
             for layer in 0..2u16 {
                 for expert in 0..3u16 {
-                    c.fetch(ExpertKey { layer, expert, tier }, &mut buf)
-                        .expect("tiered fetch");
+                    c.fetch(
+                        ExpertKey {
+                            layer,
+                            expert,
+                            tier,
+                        },
+                        &mut buf,
+                    )
+                    .expect("tiered fetch");
                     assert_eq!(buf[HEADER_IDENT_BYTES], tier as u8 ^ 0x5A);
                     assert_eq!(buf[HEADER_IDENT_BYTES + 1], expert as u8);
                 }
@@ -729,9 +751,19 @@ mod tests {
         let mut c = ExpertContainer::open(dir.path()).expect("open");
         let mut buf = vec![0u8; RECORD_ALIGN as usize];
         let err = c
-            .fetch(ExpertKey { layer: 0, expert: 0, tier: 2 }, &mut buf)
+            .fetch(
+                ExpertKey {
+                    layer: 0,
+                    expert: 0,
+                    tier: 2,
+                },
+                &mut buf,
+            )
             .expect_err("tier 2 of 2 must refuse");
-        assert!(matches!(err, ContainerError::TierOutOfRange { .. }), "{err}");
+        assert!(
+            matches!(err, ContainerError::TierOutOfRange { .. }),
+            "{err}"
+        );
 
         manifest.tiers.swap(0, 1); // ids no longer equal their index
         std::fs::write(
@@ -740,7 +772,10 @@ mod tests {
         )
         .expect("rewrite");
         let err = ExpertContainer::open(dir.path()).expect_err("id/index drift must refuse");
-        assert!(matches!(err, ContainerError::TierIdMismatch { .. }), "{err}");
+        assert!(
+            matches!(err, ContainerError::TierIdMismatch { .. }),
+            "{err}"
+        );
     }
 
     #[test]
@@ -756,6 +791,9 @@ mod tests {
         )
         .expect("rewrite");
         let err = ExpertContainer::open(dir.path()).expect_err("future version must refuse");
-        assert!(matches!(err, ContainerError::ManifestVersion { .. }), "{err}");
+        assert!(
+            matches!(err, ContainerError::ManifestVersion { .. }),
+            "{err}"
+        );
     }
 }

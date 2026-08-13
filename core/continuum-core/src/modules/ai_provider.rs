@@ -445,7 +445,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("deepseek");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 0),
-                Err(e) => self.log().warn(&format!("DeepSeek initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("DeepSeek initialize failed: {e} — not registered")),
             }
         }
 
@@ -454,7 +456,9 @@ impl AIProviderModule {
             let mut a = AnthropicAdapter::new();
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 1),
-                Err(e) => self.log().warn(&format!("Anthropic initialize failed: {e} — not registered")),
+                Err(e) => self.log().warn(&format!(
+                    "Anthropic initialize failed: {e} — not registered"
+                )),
             }
         }
 
@@ -463,7 +467,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("openai");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 2),
-                Err(e) => self.log().warn(&format!("OpenAI initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("OpenAI initialize failed: {e} — not registered")),
             }
         }
 
@@ -472,7 +478,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("groq");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 3),
-                Err(e) => self.log().warn(&format!("Groq initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Groq initialize failed: {e} — not registered")),
             }
         }
 
@@ -481,7 +489,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("together");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 4),
-                Err(e) => self.log().warn(&format!("Together initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Together initialize failed: {e} — not registered")),
             }
         }
 
@@ -490,7 +500,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("fireworks");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 5),
-                Err(e) => self.log().warn(&format!("Fireworks initialize failed: {e} — not registered")),
+                Err(e) => self.log().warn(&format!(
+                    "Fireworks initialize failed: {e} — not registered"
+                )),
             }
         }
 
@@ -499,7 +511,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("xai");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 6),
-                Err(e) => self.log().warn(&format!("XAI initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("XAI initialize failed: {e} — not registered")),
             }
         }
 
@@ -508,7 +522,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("google");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 7),
-                Err(e) => self.log().warn(&format!("Google initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Google initialize failed: {e} — not registered")),
             }
         }
 
@@ -517,7 +533,9 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("mistral");
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 8),
-                Err(e) => self.log().warn(&format!("Mistral initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("Mistral initialize failed: {e} — not registered")),
             }
         }
 
@@ -561,9 +579,9 @@ impl AIProviderModule {
                     gateway_registered = true;
                     gateway_synced = Some((snap.base_url, snap.active_model));
                 }
-                Err(e) => self
-                    .log()
-                    .warn(&format!("llama-server initialize failed: {e} — not registered")),
+                Err(e) => self.log().warn(&format!(
+                    "llama-server initialize failed: {e} — not registered"
+                )),
             }
         }
         // Persistent gateway SYNC (card ed3661c4): the adapter must TRACK the
@@ -623,9 +641,7 @@ impl AIProviderModule {
         // get papered over with local inference ([[no-fallbacks-ever]]).
         let local_llama_opt_in =
             crate::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() == Some("1");
-        if let Some(reg_arc) =
-            crate::model_registry::try_global().filter(|_| local_llama_opt_in)
-        {
+        if let Some(reg_arc) = crate::model_registry::try_global().filter(|_| local_llama_opt_in) {
             for model_meta in reg_arc.models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID) {
                 let Some(gguf_path) = model_meta.gguf_local_path.clone() else {
                     self.log().info(&format!(
@@ -841,11 +857,12 @@ impl AIProviderModule {
         if ds4_up {
             self.log()
                 .info("Registering DwarfStar (ds4) sidecar adapter (localhost:8901)");
-            let mut ds4 =
-                Box::new(OpenAICompatibleAdapter::from_registry("ds4")) as Box<dyn AIProviderAdapter>;
+            let mut ds4 = Box::new(OpenAICompatibleAdapter::from_registry("ds4"))
+                as Box<dyn AIProviderAdapter>;
             if let Err(e) = ds4.initialize().await {
-                self.log()
-                    .warn(&format!("ds4 adapter initialize failed: {e} — not registered"));
+                self.log().warn(&format!(
+                    "ds4 adapter initialize failed: {e} — not registered"
+                ));
             } else {
                 registry.register(Arc::from(ds4), 2);
             }

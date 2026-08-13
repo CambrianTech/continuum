@@ -127,8 +127,13 @@ impl Default for FacultyPulse {
 impl FacultyPulse {
     pub fn new() -> Self {
         let now = Instant::now();
-        let seed = Cell { level_at_bump: 0.0, bumped: now };
-        Self { cells: Mutex::new([seed; 4]) }
+        let seed = Cell {
+            level_at_bump: 0.0,
+            bumped: now,
+        };
+        Self {
+            cells: Mutex::new([seed; 4]),
+        }
     }
 
     /// Bump an axis toward `level` (0..=100). Takes the MAX of the current decayed
@@ -186,14 +191,27 @@ mod tests {
         assert_eq!(l[0] + l[2] + l[3], 0, "no other axis lit");
 
         // faculty → axis mapping the tick seam relies on
-        assert_eq!(CognitionAxis::of(&FacultyId::Recall), Some(CognitionAxis::Recall));
-        assert_eq!(CognitionAxis::of(&FacultyId::Deliberation), Some(CognitionAxis::Reason));
-        assert_eq!(CognitionAxis::of(&FacultyId::WorldModel), Some(CognitionAxis::Focus));
+        assert_eq!(
+            CognitionAxis::of(&FacultyId::Recall),
+            Some(CognitionAxis::Recall)
+        );
+        assert_eq!(
+            CognitionAxis::of(&FacultyId::Deliberation),
+            Some(CognitionAxis::Reason)
+        );
+        assert_eq!(
+            CognitionAxis::of(&FacultyId::WorldModel),
+            Some(CognitionAxis::Focus)
+        );
         assert_eq!(CognitionAxis::of(&FacultyId::Affect), None);
 
         // max-not-overwrite: a weaker note never dims a brighter live axis
         pulse.note(CognitionAxis::Reason, 20);
-        assert_eq!(pulse.levels()[1], 100, "weaker note does not dim the bright axis");
+        assert_eq!(
+            pulse.levels()[1],
+            100,
+            "weaker note does not dim the bright axis"
+        );
 
         // decays toward dark as an AFTERGLOW (~17s full fade at 6/s): still
         // clearly lit shortly after the turn, honestly dark within a minute.
@@ -207,7 +225,11 @@ mod tests {
                 bumped: Instant::now() - Duration::from_secs(3),
             };
         }
-        assert_eq!(past.levels()[1], 82, "100 eases to 82 after 3s at 6/s — visible afterglow");
+        assert_eq!(
+            past.levels()[1],
+            82,
+            "100 eases to 82 after 3s at 6/s — visible afterglow"
+        );
         {
             let mut cells = past.cells.lock().unwrap();
             cells[1] = Cell {
@@ -215,7 +237,11 @@ mod tests {
                 bumped: Instant::now() - Duration::from_secs(20),
             };
         }
-        assert_eq!(past.levels()[1], 0, "fully dark by 20s — an idle mind reads as resting");
+        assert_eq!(
+            past.levels()[1],
+            0,
+            "fully dark by 20s — an idle mind reads as resting"
+        );
     }
 
     // what this catches: the vital-key vocabulary must match what the tile's

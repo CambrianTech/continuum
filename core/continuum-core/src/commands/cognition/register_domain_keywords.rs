@@ -14,7 +14,10 @@ use uuid::Uuid;
 use crate::modules::cognition::CognitionState;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RegisterDomainKeywordsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RegisterDomainKeywordsParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterDomainKeywordsParams {
     /// Persona whose classifier vocabulary is extended.
@@ -27,7 +30,10 @@ pub struct RegisterDomainKeywordsParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RegisterDomainKeywordsResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RegisterDomainKeywordsResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterDomainKeywordsResult {
     pub registered: bool,

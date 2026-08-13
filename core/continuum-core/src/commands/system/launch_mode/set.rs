@@ -12,7 +12,10 @@ use crate::sdk_codegen::CommandError;
 /// Params for `system/launch-mode/set` — the mode to persist.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/system/LaunchModeSetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/LaunchModeSetParams.ts"
+)]
 pub struct LaunchModeSetParams {
     /// One of `headless`, `ui`, `auto`. Anything else is rejected (deny-by-default).
     pub mode: String,
@@ -21,7 +24,10 @@ pub struct LaunchModeSetParams {
 /// What `set` applied — the new mode and the one it replaced.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/system/LaunchModeSetResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/LaunchModeSetResult.ts"
+)]
 pub struct LaunchModeSetResult {
     /// The canonical mode now stored in config.env.
     pub mode: String,
@@ -69,7 +75,7 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk_codegen::{Ctx, ActionCommand};
+    use crate::sdk_codegen::{ActionCommand, Ctx};
 
     // what this catches: `set` rejects any value outside the three modes BEFORE it
     // touches config.env — the deny-by-default guard the write path leans on so a
@@ -80,12 +86,20 @@ mod tests {
             state: Arc::new(LaunchModeState::new()),
         };
         let err = cmd
-            .run(&Ctx::default(), LaunchModeSetParams { mode: "sideways".into() })
+            .run(
+                &Ctx::default(),
+                LaunchModeSetParams {
+                    mode: "sideways".into(),
+                },
+            )
             .await
             .expect_err("invalid mode must error");
         match err {
             CommandError::Invalid(msg) => {
-                assert!(msg.contains("headless"), "error should name valid modes: {msg}")
+                assert!(
+                    msg.contains("headless"),
+                    "error should name valid modes: {msg}"
+                )
             }
             other => panic!("expected Invalid, got {other:?}"),
         }

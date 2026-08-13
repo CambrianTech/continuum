@@ -209,11 +209,7 @@ impl ChannelDigestBuilder {
 /// channel events (this file's split tests, the vitals radiator's QUE test)
 /// — never re-built per test file (CLAUDE.md test-fixture rule 5).
 #[cfg(test)]
-pub(crate) fn test_event_in(
-    room: airc_core::RoomId,
-    text: &str,
-    lamport: u64,
-) -> TranscriptEvent {
+pub(crate) fn test_event_in(room: airc_core::RoomId, text: &str, lamport: u64) -> TranscriptEvent {
     use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, TranscriptKind};
     TranscriptEvent {
         event_id: EventId::new(),
@@ -271,7 +267,14 @@ mod tests {
     #[async_trait]
     impl AircTranscriptReader for StubReader {
         async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
-            Ok(self.events.lock().unwrap().iter().take(limit).cloned().collect())
+            Ok(self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 
@@ -296,7 +299,10 @@ mod tests {
             test_event_in(room, "c", 3),
         ]);
         let (b, _) = builder();
-        let d = b.build(persona, room.as_uuid(), &reader, 100, 0).await.unwrap();
+        let d = b
+            .build(persona, room.as_uuid(), &reader, 100, 0)
+            .await
+            .unwrap();
         assert_eq!(d.unread().len(), 3);
         assert!(d.grounding().is_empty());
         assert!(d.has_unread());
@@ -316,7 +322,10 @@ mod tests {
         ]);
         let (b, marks) = builder();
         marks.advance(persona, room.as_uuid(), 2); // read through lamport 2
-        let d = b.build(persona, room.as_uuid(), &reader, 100, 0).await.unwrap();
+        let d = b
+            .build(persona, room.as_uuid(), &reader, 100, 0)
+            .await
+            .unwrap();
         assert_eq!(d.unread().len(), 1);
         assert_eq!(d.unread()[0].text(), Some("c"));
     }
@@ -334,7 +343,10 @@ mod tests {
         ]);
         let (b, marks) = builder();
         marks.advance(persona, room.as_uuid(), 2);
-        let d = b.build(persona, room.as_uuid(), &reader, 100, 1).await.unwrap();
+        let d = b
+            .build(persona, room.as_uuid(), &reader, 100, 1)
+            .await
+            .unwrap();
         assert_eq!(d.grounding().len(), 1, "one before-bookmark for context");
         assert_eq!(d.grounding()[0].text(), Some("b"));
         assert_eq!(d.unread().len(), 1);
@@ -354,7 +366,10 @@ mod tests {
         ]);
         let (b, marks) = builder();
         marks.advance(persona, room.as_uuid(), 3); // read everything
-        let d = b.build(persona, room.as_uuid(), &reader, 100, 2).await.unwrap();
+        let d = b
+            .build(persona, room.as_uuid(), &reader, 100, 2)
+            .await
+            .unwrap();
         assert!(!d.has_unread());
         assert_eq!(d.grounding().len(), 2, "last 2 read messages as context");
     }
@@ -384,7 +399,10 @@ mod tests {
             test_event_in(room_a, "a-two", 2),
         ]);
         let (b, _) = builder();
-        let d = b.build(persona, room_a.as_uuid(), &reader, 100, 0).await.unwrap();
+        let d = b
+            .build(persona, room_a.as_uuid(), &reader, 100, 0)
+            .await
+            .unwrap();
         assert_eq!(d.elements.len(), 2);
         assert!(d.elements.iter().all(|e| e.event().room_id == room_a));
     }
@@ -410,17 +428,28 @@ mod tests {
         // Digest at this point still shows the operator message as unread.
         let (b, _) = builder();
         let reader = StubReader::new(events.clone());
-        let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
-        assert!(d.unread().iter().any(|e| e.text().unwrap().contains("OPERATOR")));
-        b.bookmarks().advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
+        let d = b
+            .build(persona, room.as_uuid(), &reader, 100, 5)
+            .await
+            .unwrap();
+        assert!(d
+            .unread()
+            .iter()
+            .any(|e| e.text().unwrap().contains("OPERATOR")));
+        b.bookmarks()
+            .advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
 
         // Peers flood: 6 newer messages (> grounding=5), persona engages again.
         for (i, l) in (11..=16).enumerate() {
             events.push(test_event_in(room, &format!("peer chatter {i}"), l));
         }
         let reader = StubReader::new(events.clone());
-        let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
-        b.bookmarks().advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
+        let d = b
+            .build(persona, room.as_uuid(), &reader, 100, 5)
+            .await
+            .unwrap();
+        b.bookmarks()
+            .advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
 
         // Next build: the operator message is GONE — not in unread (read long
         // ago), not in grounding (displaced by 5 newer read peer messages).
@@ -428,9 +457,14 @@ mod tests {
             events.push(test_event_in(room, &format!("more chatter {i}"), l));
         }
         let reader = StubReader::new(events);
-        let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
+        let d = b
+            .build(persona, room.as_uuid(), &reader, 100, 5)
+            .await
+            .unwrap();
         assert!(
-            !d.elements.iter().any(|e| e.text().unwrap_or("").contains("OPERATOR")),
+            !d.elements
+                .iter()
+                .any(|e| e.text().unwrap_or("").contains("OPERATOR")),
             "documents the starvation: operator message evicted from the persona's \
              entire perceivable window while durably present in the store — #146"
         );

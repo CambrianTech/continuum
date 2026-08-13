@@ -39,9 +39,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use airc_core::{MentionTarget, RoomId};
-use airc_ipc::{
-    DaemonClient, InboxRequest, IpcDelivery, PublishRequest, PublishResponse,
-};
+use airc_ipc::{DaemonClient, InboxRequest, IpcDelivery, PublishRequest, PublishResponse};
 use airc_lib::decode_wire_event;
 use async_trait::async_trait;
 use uuid::Uuid;

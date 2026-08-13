@@ -103,8 +103,16 @@ mod tests {
     #[test]
     fn cadence_light_smooth_heavy_throttles_idle_never_speaker() {
         // Under budget → everything smooth (cadence 1).
-        assert_eq!(adaptive_idle_cadence(2, 1), 1, "1 speaker, small call → full fps");
-        assert_eq!(adaptive_idle_cadence(4, 0), 1, "4 idle within budget → smooth");
+        assert_eq!(
+            adaptive_idle_cadence(2, 1),
+            1,
+            "1 speaker, small call → full fps"
+        );
+        assert_eq!(
+            adaptive_idle_cadence(4, 0),
+            1,
+            "4 idle within budget → smooth"
+        );
         // Crowded call → idle faces throttle.
         assert!(
             adaptive_idle_cadence(14, 2) > 1,

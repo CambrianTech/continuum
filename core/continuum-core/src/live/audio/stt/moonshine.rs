@@ -95,7 +95,9 @@ impl MoonshineStt {
 
     /// Search directories for model files
     fn model_search_dirs() -> Vec<PathBuf> {
-        let mut dirs = vec![crate::live::audio::model_root::voice_model_path("moonshine")];
+        let mut dirs = vec![crate::live::audio::model_root::voice_model_path(
+            "moonshine",
+        )];
         if let Some(data_dir) = dirs::data_dir() {
             dirs.push(data_dir.join("moonshine"));
         }

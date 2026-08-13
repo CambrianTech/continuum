@@ -43,7 +43,10 @@ fn known_key_envs() -> Vec<(String, String)> {
 /// Params for `keys/list` — none.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/keys/KeysListParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/keys/KeysListParams.ts"
+)]
 pub struct KeysListParams {}
 
 /// One provider key slot: which env name, which provider it unlocks, and
@@ -63,7 +66,10 @@ pub struct KeyStatus {
 /// Result of `keys/list`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/keys/KeysListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/keys/KeysListResult.ts"
+)]
 pub struct KeysListResult {
     pub keys: Vec<KeyStatus>,
 }
@@ -91,8 +97,14 @@ impl ActionCommand for KeysList {
                 let present = crate::config_env::read(&name)
                     .filter(|v| !v.trim().is_empty())
                     .is_some()
-                    || std::env::var(&name).map(|v| !v.trim().is_empty()).unwrap_or(false);
-                KeyStatus { name, provider, present }
+                    || std::env::var(&name)
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false);
+                KeyStatus {
+                    name,
+                    provider,
+                    present,
+                }
             })
             .collect();
         Ok(KeysListResult { keys })
@@ -106,7 +118,10 @@ crate::register_stateless_command!(KeysList);
 /// Params for `keys/set`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/keys/KeysSetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/keys/KeysSetParams.ts"
+)]
 pub struct KeysSetParams {
     /// The key-env name to set — must be one the registry's provider rows
     /// declare (see `keys/list`). Unknown names fail loud with the known set.
@@ -119,7 +134,10 @@ pub struct KeysSetParams {
 /// Result of `keys/set` — confirmation without the value.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/keys/KeysSetResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/keys/KeysSetResult.ts"
+)]
 pub struct KeysSetResult {
     /// The key name that was stored.
     pub name: String,

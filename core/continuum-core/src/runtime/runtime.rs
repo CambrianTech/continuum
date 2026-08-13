@@ -190,7 +190,8 @@ impl Runtime {
         let mut failures: Vec<String> = Vec::new();
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
-                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await {
+                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await
+                {
                     Ok(Ok(_)) => {
                         info!("  {} initialized", name);
                     }
@@ -269,9 +270,8 @@ impl Runtime {
         crate::probe!(class = "ready.awaiting", module = module_name);
         loop {
             if rx.changed().await.is_err() {
-                let err = format!(
-                    "module '{module_name}' ready watch closed before publishing ready"
-                );
+                let err =
+                    format!("module '{module_name}' ready watch closed before publishing ready");
                 crate::probe!(class = "ready.watch_closed", module = module_name);
                 return Err(err);
             }
@@ -516,8 +516,7 @@ impl Runtime {
                 },
                 None => None,
             };
-            let result =
-                dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
+            let result = dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
             drop(permit);
             let _ = tx.send(result);
         });
@@ -873,7 +872,10 @@ pub(crate) async fn dispatch_object_with_panic_guard(
         Ok(r) => r,
         Err(panic) => {
             let panic_msg = panic_message(&*panic);
-            error!("Command '{}' panicked in DynCommand object: {}", name, panic_msg);
+            error!(
+                "Command '{}' panicked in DynCommand object: {}",
+                name, panic_msg
+            );
             crate::probe!(
                 class = "command.dispatch.panicked",
                 command = name,
@@ -982,17 +984,37 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("data", ServiceGroup::RuntimeShell, ModuleCategory::Core),
     // ResourceGov — hardware governance
     ModuleSpec::new("gpu", ServiceGroup::ResourceGov, ModuleCategory::Core),
-    ModuleSpec::new("resource-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
-    ModuleSpec::new("pressure-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
+    ModuleSpec::new(
+        "resource-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "pressure-broker",
+        ServiceGroup::ResourceGov,
+        ModuleCategory::Core,
+    ),
     // Inference — the engine. (The bare `inference` shell module was deleted in
     // 89519a899 when its sole command `inference/capacity` became a stateless
     // self-routing command; this MODULES entry is dropped to match — leaving it
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [inference]". The engine is now carried by
     // the coordinator / handle / llm / ai_provider modules below.)
-    ModuleSpec::new("inference-coordinator", ServiceGroup::Inference, ModuleCategory::Core),
-    ModuleSpec::new("ai-inference-handle", ServiceGroup::Inference, ModuleCategory::Core),
-    ModuleSpec::new("inference-llm", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new(
+        "inference-coordinator",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "ai-inference-handle",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
+    ModuleSpec::new(
+        "inference-llm",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("ai_provider", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("embedding", ServiceGroup::Inference, ModuleCategory::Core),
     // (`search` was retired here: its commands migrated onto the DynCommand
@@ -1002,7 +1024,11 @@ pub const MODULES: &[ModuleSpec] = &[
     // made `required_modules()` demand a module that no longer registers, which
     // hard-failed boot with "missing [search]" — the same trap as the retired
     // `inference` shell above.)
-    ModuleSpec::new("tool-parsing", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new(
+        "tool-parsing",
+        ServiceGroup::Inference,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
     // Cognition — the brain (always-built modules + the persona-host conditionals)
@@ -1010,7 +1036,11 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("rag", ServiceGroup::Cognition, ModuleCategory::Core),
     ModuleSpec::new("cognition", ServiceGroup::Cognition, ModuleCategory::Core),
     ModuleSpec::new("channel", ServiceGroup::Cognition, ModuleCategory::Core),
-    ModuleSpec::new("persona_allocator", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new(
+        "persona_allocator",
+        ServiceGroup::Cognition,
+        ModuleCategory::Core,
+    ),
     ModuleSpec::new("agent", ServiceGroup::Cognition, ModuleCategory::Core),
     // Cognition — AIRC-Healthy-conditional persona hosting (registers only when
     // discovery succeeded across all four sub-steps)
@@ -1352,7 +1382,11 @@ mod conditional_modules_tests {
             ServiceGroup::ResourceGov,
         ] {
             for name in modules_in_group(g) {
-                assert!(!req.contains(&name), "excluded {:?} module {name:?} must NOT be hosted", g);
+                assert!(
+                    !req.contains(&name),
+                    "excluded {:?} module {name:?} must NOT be hosted",
+                    g
+                );
             }
         }
     }
@@ -1379,7 +1413,10 @@ mod conditional_modules_tests {
         assert!(p.hosts(ServiceGroup::RuntimeShell)); // always
         assert!(!p.hosts(ServiceGroup::Live));
 
-        assert_eq!(ServiceProfile::from_str("all").unwrap(), ServiceProfile::all());
+        assert_eq!(
+            ServiceProfile::from_str("all").unwrap(),
+            ServiceProfile::all()
+        );
         assert_eq!(ServiceProfile::from_str("").unwrap(), ServiceProfile::all());
 
         let err = ServiceProfile::from_str("grid,bogus").unwrap_err();
@@ -1418,10 +1455,16 @@ mod conditional_modules_tests {
             "group sizes must sum to the total — every module grouped exactly once"
         );
         for name in all_known_modules() {
-            assert!(group_of(name).is_some(), "module {name:?} has no ServiceGroup");
+            assert!(
+                group_of(name).is_some(),
+                "module {name:?} has no ServiceGroup"
+            );
         }
         for g in all_groups {
-            assert!(!modules_in_group(g).is_empty(), "ServiceGroup {g:?} is empty");
+            assert!(
+                !modules_in_group(g).is_empty(),
+                "ServiceGroup {g:?} is empty"
+            );
         }
     }
 
@@ -1436,7 +1479,10 @@ mod conditional_modules_tests {
             "auth", "data", "events", "health", "logger", "mcp", "runtime", "system",
         ];
         expected.sort();
-        assert_eq!(shell, expected, "RuntimeShell must be exactly the addressable core");
+        assert_eq!(
+            shell, expected,
+            "RuntimeShell must be exactly the addressable core"
+        );
     }
 
     /// Live = Bevy render + LiveKit SFU — the CO-LOCATED group (must share the
@@ -1445,7 +1491,11 @@ mod conditional_modules_tests {
     fn live_group_is_the_colocated_gpu_pair() {
         let mut live = modules_in_group(ServiceGroup::Live);
         live.sort();
-        assert_eq!(live, vec!["avatar", "live"], "Live = the co-located Bevy+LiveKit pair");
+        assert_eq!(
+            live,
+            vec!["avatar", "live"],
+            "Live = the co-located Bevy+LiveKit pair"
+        );
     }
 
     /// ServiceGroup (concern) and ModuleCategory (conditionality) are
@@ -1454,7 +1504,10 @@ mod conditional_modules_tests {
     #[test]
     fn group_and_category_are_orthogonal() {
         let cognition = modules_in_group(ServiceGroup::Cognition);
-        assert!(cognition.contains(&"cognition"), "Cognition holds the always-on brain");
+        assert!(
+            cognition.contains(&"cognition"),
+            "Cognition holds the always-on brain"
+        );
         assert!(
             cognition.contains(&"persona_instance_manager"),
             "Cognition also holds the PersonaHosting-conditional modules"
@@ -1945,9 +1998,14 @@ mod piece_2_pr3_dispatch_tests {
         {
             Some(Ok(CommandResult::Json(v))) => {
                 assert_eq!(v["success"], true);
-                assert_eq!(v["echoedTarget"], "https://x", "forwarded params reached the eye-node");
+                assert_eq!(
+                    v["echoedTarget"], "https://x",
+                    "forwarded params reached the eye-node"
+                );
             }
-            _ => panic!("the socket route must forward a Provided command to its connected provider"),
+            _ => {
+                panic!("the socket route must forward a Provided command to its connected provider")
+            }
         }
     }
 }
@@ -2038,10 +2096,12 @@ mod ready_edge_tests {
     async fn default_ready_edge_resolves_immediately() {
         let runtime = Runtime::new();
         runtime.register(ReadyModule::without_ready_edge("no-edge"));
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(50), runtime.wait_for_ready("no-edge"))
-                .await
-                .expect("default ready_edge must NOT block");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            runtime.wait_for_ready("no-edge"),
+        )
+        .await
+        .expect("default ready_edge must NOT block");
         assert!(result.is_ok());
     }
 

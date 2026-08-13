@@ -31,7 +31,10 @@ use std::path::PathBuf;
     ts_rs::TS,
     schemars::JsonSchema,
 )]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/Arch.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/Arch.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Arch {
     Qwen2,

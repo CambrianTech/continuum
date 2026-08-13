@@ -30,7 +30,10 @@ use crate::persona::redaction::{
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RedactMemoryParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RedactMemoryParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RedactMemoryParams {
     /// Persona whose memory is being scrubbed.
@@ -58,7 +61,10 @@ pub struct RedactMemoryParams {
 
 /// What was scrubbed, per class, and how much memory remains intact.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RedactMemoryResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RedactMemoryResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RedactMemoryResult {
     /// Exam-key spans excised across all engrams.

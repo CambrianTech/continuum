@@ -71,7 +71,11 @@ impl LiveExpertObserver {
         &self,
     ) -> (HashMap<ExpertId, u64>, HashMap<(ExpertId, ExpertId), u64>) {
         let seen = self.seen.iter().map(|e| (*e.key(), *e.value())).collect();
-        let cooccur = self.cooccur.iter().map(|e| (*e.key(), *e.value())).collect();
+        let cooccur = self
+            .cooccur
+            .iter()
+            .map(|e| (*e.key(), *e.value()))
+            .collect();
         (seen, cooccur)
     }
 
@@ -88,7 +92,8 @@ impl LiveExpertObserver {
         if cooccur.is_empty() {
             return HashMap::new(); // no cross-layer signal yet — nothing to prefetch
         }
-        let predictor = super::expert_predictor::CrossLayerExpertPredictor::from_cooccurrence(seen, cooccur);
+        let predictor =
+            super::expert_predictor::CrossLayerExpertPredictor::from_cooccurrence(seen, cooccur);
         let hot: Vec<ExpertId> = self.hits.iter().map(|e| *e.key()).collect();
         predictor.predict(&hot)
     }
@@ -103,7 +108,10 @@ impl llama::ExpertObserver for LiveExpertObserver {
             if e < 0 {
                 continue;
             }
-            let id = ExpertId { layer, expert: e as u32 };
+            let id = ExpertId {
+                layer,
+                expert: e as u32,
+            };
             *self.hits.entry(id).or_insert(0) += 1;
         }
 
@@ -148,11 +156,41 @@ mod tests {
         // layer 6: a -1 padding slot must be skipped, never keyed.
         obs.observe(6, &[0, -1, 2], 3);
         let snap = obs.snapshot_hits();
-        assert_eq!(snap.get(&ExpertId { layer: 5, expert: 3 }), Some(&2));
-        assert_eq!(snap.get(&ExpertId { layer: 5, expert: 7 }), Some(&1));
-        assert_eq!(snap.get(&ExpertId { layer: 5, expert: 1 }), Some(&1));
-        assert_eq!(snap.get(&ExpertId { layer: 6, expert: 0 }), Some(&1));
-        assert_eq!(snap.get(&ExpertId { layer: 6, expert: 2 }), Some(&1));
+        assert_eq!(
+            snap.get(&ExpertId {
+                layer: 5,
+                expert: 3
+            }),
+            Some(&2)
+        );
+        assert_eq!(
+            snap.get(&ExpertId {
+                layer: 5,
+                expert: 7
+            }),
+            Some(&1)
+        );
+        assert_eq!(
+            snap.get(&ExpertId {
+                layer: 5,
+                expert: 1
+            }),
+            Some(&1)
+        );
+        assert_eq!(
+            snap.get(&ExpertId {
+                layer: 6,
+                expert: 0
+            }),
+            Some(&1)
+        );
+        assert_eq!(
+            snap.get(&ExpertId {
+                layer: 6,
+                expert: 2
+            }),
+            Some(&1)
+        );
         // 4 valid + 2 valid; the -1 contributed nothing.
         assert_eq!(obs.total_hits(), 6);
         assert_eq!(snap.len(), 5);
@@ -170,21 +208,33 @@ mod tests {
         // One token (n_expert_used = full width). Pass 1: layer0 expert 3 → layer1 expert 7.
         obs.observe(0, &[3], 1);
         obs.observe(1, &[7], 1); // 1>0 → learn (0,3)→(1,7)
-        // Pass 2 begins (layer resets to 0): must NOT learn (1,7)→(0,3) across the boundary.
+                                 // Pass 2 begins (layer resets to 0): must NOT learn (1,7)→(0,3) across the boundary.
         obs.observe(0, &[3], 1);
         obs.observe(1, &[7], 1); // learn (0,3)→(1,7) again
 
         let (seen, cooccur) = obs.snapshot_cooccurrence();
         let predictor = CrossLayerExpertPredictor::from_cooccurrence(seen, cooccur);
-        let pred = predictor.predict(&[ExpertId { layer: 0, expert: 3 }]);
+        let pred = predictor.predict(&[ExpertId {
+            layer: 0,
+            expert: 3,
+        }]);
         assert_eq!(
-            pred.get(&ExpertId { layer: 1, expert: 7 }).copied(),
+            pred.get(&ExpertId {
+                layer: 1,
+                expert: 7
+            })
+            .copied(),
             Some(1.0),
             "(0,3) preceded (1,7) in both passes → prefetch it with full confidence"
         );
         // The cross-pass bleed (1,7)→(0,3) must not exist.
         assert!(
-            predictor.predict(&[ExpertId { layer: 1, expert: 7 }]).is_empty(),
+            predictor
+                .predict(&[ExpertId {
+                    layer: 1,
+                    expert: 7
+                }])
+                .is_empty(),
             "layer-decrease reset prevents trajectories bleeding across forward passes"
         );
     }
@@ -198,7 +248,10 @@ mod tests {
     fn predicted_builds_from_live_cooccurrence_and_is_empty_when_cold() {
         let obs = LiveExpertObserver::default();
         // Cold: no transitions observed → nothing to prefetch, not a panic or a phantom entry.
-        assert!(obs.predicted().is_empty(), "no cross-layer signal → no prefetch");
+        assert!(
+            obs.predicted().is_empty(),
+            "no cross-layer signal → no prefetch"
+        );
 
         // Learn (0,3)→(1,7) over two passes; expert 3 is now hot (it fired).
         obs.observe(0, &[3], 1);
@@ -215,7 +268,10 @@ mod tests {
             assert!((0.0..=1.0).contains(p), "confidence stays in [0,1]");
         }
         assert!(
-            !predicted.contains_key(&ExpertId { layer: 1, expert: 7 }),
+            !predicted.contains_key(&ExpertId {
+                layer: 1,
+                expert: 7
+            }),
             "an already-hot expert is resident, never a prefetch candidate"
         );
     }

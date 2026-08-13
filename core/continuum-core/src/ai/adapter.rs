@@ -694,10 +694,7 @@ impl std::fmt::Display for AdapterSelectionError {
                 registered_providers,
                 non_production_adapters_present,
             } => {
-                write!(
-                    f,
-                    "no production-capable adapter found for "
-                )?;
+                write!(f, "no production-capable adapter found for ")?;
                 if let Some(p) = preferred_provider {
                     write!(f, "preferred_provider='{}' ", p)?;
                 }
@@ -857,17 +854,14 @@ impl AdapterRegistry {
     /// layer's evaluate_response holds the Arc across the inference
     /// call so the read lock can drop). Cheap reference count bump.
     pub fn get_arc(&self, provider_id: &str) -> Option<Arc<dyn AIProviderAdapter>> {
-        self.adapters
-            .get(provider_id)
-            .cloned()
-            .or_else(|| {
-                self.priority_order.iter().find_map(|key| {
-                    self.adapters
-                        .get(key)
-                        .filter(|adapter| adapter.provider_id() == provider_id)
-                        .cloned()
-                })
+        self.adapters.get(provider_id).cloned().or_else(|| {
+            self.priority_order.iter().find_map(|key| {
+                self.adapters
+                    .get(key)
+                    .filter(|adapter| adapter.provider_id() == provider_id)
+                    .cloned()
             })
+        })
     }
 
     /// Get available adapters (those that initialized successfully)
@@ -1214,16 +1208,26 @@ mod tests {
     fn builder_seeds_floor_and_native_protocols_pair_coherently() {
         // builder() with no overrides == the text-only floor.
         let floor = AdapterCapabilities::builder().build();
-        assert_eq!(floor.capabilities, AdapterCapabilities::text_only().capabilities);
+        assert_eq!(
+            floor.capabilities,
+            AdapterCapabilities::text_only().capabilities
+        );
         assert!(floor.has(Capability::TextGeneration) && floor.has(Capability::Chat));
         assert!(!floor.has(Capability::ToolUse));
         assert!(!floor.is_local);
         assert_eq!(floor.tool_call_protocol, ToolProtocol::None);
-        assert_eq!(floor.structured_output_protocol, StructuredOutputProtocol::None);
+        assert_eq!(
+            floor.structured_output_protocol,
+            StructuredOutputProtocol::None
+        );
 
         // A rich declaration adds only the deltas on top of the floor.
         let rich = AdapterCapabilities::builder()
-            .capabilities([Capability::TextGeneration, Capability::Chat, Capability::ToolUse])
+            .capabilities([
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+            ])
             .local()
             .context_window(200_000)
             .max_output_tokens(8_192)
@@ -1236,7 +1240,11 @@ mod tests {
         // Each protocol profile maps to its coherent pair — the whole point of
         // NativeProtocols (an incoherent combo is unrepresentable).
         for (profile, tool, structured) in [
-            (NativeProtocols::None, ToolProtocol::None, StructuredOutputProtocol::None),
+            (
+                NativeProtocols::None,
+                ToolProtocol::None,
+                StructuredOutputProtocol::None,
+            ),
             (
                 NativeProtocols::PromptEmulated,
                 ToolProtocol::None,

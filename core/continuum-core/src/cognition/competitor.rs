@@ -85,7 +85,11 @@ pub struct SolveRequest {
 
 impl SolveRequest {
     /// Build a request, applying the default endpoint location when `endpoint` is None.
-    pub fn new(prompt: impl Into<String>, model: impl Into<String>, endpoint: Option<&str>) -> Self {
+    pub fn new(
+        prompt: impl Into<String>,
+        model: impl Into<String>,
+        endpoint: Option<&str>,
+    ) -> Self {
         Self {
             prompt: prompt.into(),
             model: model.into(),
@@ -398,8 +402,11 @@ struct ChatUsage {
 /// internals, and the native path still scores on the SAME runner + grader + events as
 /// every external arm. The closure typically forwards to [`crate::cognition::eval`]'s
 /// per-task drive (`drive_to_settle` → `settled.spoken`).
-pub type ContinuumSolver =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<SolveOutcome, String>> + Send>> + Send + Sync>;
+pub type ContinuumSolver = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<SolveOutcome, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Continuum's native cognition as a competitor arm — the "home" arm the external
 /// harnesses are measured against. Always available (it is us); its endpoint is
@@ -550,7 +557,11 @@ pub async fn run_competition(
         let name = arm.name();
         let kind = arm.kind();
         if !arm.available() {
-            crate::probe!(class = "benchmark.arm", arm = name, "skipped: arm unavailable in this environment");
+            crate::probe!(
+                class = "benchmark.arm",
+                arm = name,
+                "skipped: arm unavailable in this environment"
+            );
             emit_arm(
                 "benchmark:arm:skipped",
                 serde_json::json!({ "arm": name, "reason": "unavailable (CLI/dep not present)", "atMs": now_ms() }),
@@ -698,8 +709,14 @@ mod tests {
         assert_eq!(args[0], "-z");
         assert_eq!(args[1], "write two_sum", "prompt must directly follow -z");
         let joined = args.join(" ");
-        assert!(joined.contains("--provider lmstudio"), "must use the local provider: {joined}");
-        assert!(joined.contains("-m qwen-coder-1.5b"), "must pass the served model: {joined}");
+        assert!(
+            joined.contains("--provider lmstudio"),
+            "must use the local provider: {joined}"
+        );
+        assert!(
+            joined.contains("-m qwen-coder-1.5b"),
+            "must pass the served model: {joined}"
+        );
     }
 
     // what this catches: grade_answer REUSES the shared bar rather than a parallel one —
@@ -719,7 +736,10 @@ mod tests {
         assert!(!ok, "missing substring must miss");
         task.expect = String::new();
         let (ok, msg) = grade_answer(&task, "anything").await;
-        assert!(!ok && msg.contains("neither"), "ungradeable must fail loud: {msg}");
+        assert!(
+            !ok && msg.contains("neither"),
+            "ungradeable must fail loud: {msg}"
+        );
     }
 
     // what this catches: the raw one-shot arm is always available (it is just HTTP), so
@@ -793,15 +813,31 @@ mod tests {
         suspect.insert("Q2".to_string(), outcome("PASS", 2)); // decline: ≤4 tokens, wrong
 
         let arms: Vec<Box<dyn CompetitorAgent>> = vec![
-            Box::new(FakeArm { name: "clean-arm", avail: true, responses: clean }),
-            Box::new(FakeArm { name: "suspect-arm", avail: true, responses: suspect }),
-            Box::new(FakeArm { name: "absent-arm", avail: false, responses: Default::default() }),
+            Box::new(FakeArm {
+                name: "clean-arm",
+                avail: true,
+                responses: clean,
+            }),
+            Box::new(FakeArm {
+                name: "suspect-arm",
+                avail: true,
+                responses: suspect,
+            }),
+            Box::new(FakeArm {
+                name: "absent-arm",
+                avail: false,
+                responses: Default::default(),
+            }),
         ];
 
         let board = run_competition("m", Some("http://x:1/v1"), &tasks, arms).await;
 
         assert_eq!(board.endpoint, "http://x:1/v1", "endpoint threads through");
-        assert_eq!(board.skipped, vec!["absent-arm"], "unavailable arm is skipped, not faked");
+        assert_eq!(
+            board.skipped,
+            vec!["absent-arm"],
+            "unavailable arm is skipped, not faked"
+        );
         assert_eq!(board.arms.len(), 2, "only available arms score");
 
         let clean = board.arms.iter().find(|a| a.arm == "clean-arm").unwrap();
@@ -825,10 +861,17 @@ mod tests {
             responses: std::collections::HashMap::new(), // no canned → every solve Err
         })];
         let board = run_competition("m", None, &tasks, arm).await;
-        assert_eq!(board.endpoint, DEFAULT_ENDPOINT, "None endpoint → default location");
+        assert_eq!(
+            board.endpoint, DEFAULT_ENDPOINT,
+            "None endpoint → default location"
+        );
         let cell = &board.arms[0];
         assert_eq!(cell.score, 0);
-        assert!(matches!(cell.class, ArmClass::Void { .. }), "all-errored cell is VOID: {:?}", cell.class);
+        assert!(
+            matches!(cell.class, ArmClass::Void { .. }),
+            "all-errored cell is VOID: {:?}",
+            cell.class
+        );
     }
 
     // what this catches: ContinuumArm threads a caller-provided native-cognition solver

@@ -239,7 +239,8 @@ impl SemanticDistiller {
         persona_id: Option<Uuid>,
         sources: &[Engram],
     ) -> Result<DistilledFact, DistillError> {
-        self.distill_reviewing(LENS_CONSOLIDATOR, persona_id, sources, &[]).await
+        self.distill_reviewing(LENS_CONSOLIDATOR, persona_id, sources, &[])
+            .await
     }
 
     /// Distill through a specific [`Lens`] — the generalized wanderer pass.
@@ -781,7 +782,15 @@ impl DreamConsolidationRegion {
         let in_flight = Arc::clone(&self.in_flight);
         let reviewed = Arc::clone(&self.reviewed);
         tokio::spawn(async move {
-            dream_pass(reflector, persona_id, clusters, fresh, consolidated, reviewed).await;
+            dream_pass(
+                reflector,
+                persona_id,
+                clusters,
+                fresh,
+                consolidated,
+                reviewed,
+            )
+            .await;
             in_flight.lock().unwrap().remove(&persona_id);
         });
 
@@ -864,7 +873,12 @@ impl DreamConsolidationRegion {
     fn try_consolidate_received(&self, persona_id: Uuid) -> Option<TickOutcome> {
         // Rest gate — trickle, never storm (a pass launches a training job).
         let now = now_ms();
-        let last = self.last_consolidated_ms.lock().unwrap().get(&persona_id).copied();
+        let last = self
+            .last_consolidated_ms
+            .lock()
+            .unwrap()
+            .get(&persona_id)
+            .copied();
         if !consolidate_cooldown_elapsed(last, now) {
             return None;
         }
@@ -881,7 +895,10 @@ impl DreamConsolidationRegion {
 
         // Mark the cooldown + in_flight BEFORE spawning so a governor re-tick during the
         // pass is a cheap no-op (single caller → mark-then-spawn is race-free).
-        self.last_consolidated_ms.lock().unwrap().insert(persona_id, now);
+        self.last_consolidated_ms
+            .lock()
+            .unwrap()
+            .insert(persona_id, now);
         self.in_flight.lock().unwrap().insert(persona_id);
         let in_flight = Arc::clone(&self.in_flight);
         let watermark = Arc::clone(&self.consolidated_watermark);
@@ -911,10 +928,7 @@ impl DreamConsolidationRegion {
                 Ok(v) => {
                     // Advance the watermark from the receipt so the next pass only sees
                     // lessons newer than this — idempotent self-consolidation.
-                    if let Some(ts) = v
-                        .get("latest_consolidated_ts")
-                        .and_then(|t| t.as_str())
-                    {
+                    if let Some(ts) = v.get("latest_consolidated_ts").and_then(|t| t.as_str()) {
                         watermark.lock().unwrap().insert(persona_id, ts.to_string());
                     }
                     crate::probe!(
@@ -973,135 +987,133 @@ async fn dream_pass(
     let distiller = distiller_for(&reflector);
     let mut published = 0usize;
     for cluster in &clusters {
-            // #221 slice 2 — SUPERSESSION REVIEW: alongside the cluster, show
-            // the distiller the persona's most related PRIOR beliefs (lexical
-            // recall-key retrieval — mechanics; the model judges). Its verdict
-            // rides the same single generation, so supersession costs zero
-            // extra inference.
-            let mut prior_beliefs = reflector.admission.semantic_beliefs_matching(
-                &SemanticDistiller::union_recall_keys(cluster),
-                SUPERSESSION_REVIEW_LIMIT,
-            );
-            // ROTATING WINDOW (#221 slice 2b): lexical overlap can't reach
-            // beliefs that share no tokens with new experience (the stale
-            // Rust-era beliefs vs python lessons, glass-boxed live). Each pass
-            // therefore ALSO re-examines a few of her oldest not-yet-reviewed
-            // beliefs — eventual coverage of the whole belief store, a few
-            // beliefs per dream, marked reviewed regardless of verdict.
-            {
-                let already: HashSet<Uuid> = {
-                    let seen = reviewed.lock().unwrap();
-                    let mut set = seen.get(&persona_id).cloned().unwrap_or_default();
-                    set.extend(prior_beliefs.iter().map(|e| e.id));
-                    set
-                };
-                let rotating = reflector
-                    .admission
-                    .semantic_beliefs_oldest_excluding(
-                        &already,
-                        now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
-                        ROTATING_REVIEW_PER_PASS,
-                    );
-                let mut seen = reviewed.lock().unwrap();
-                let entry = seen.entry(persona_id).or_default();
-                for b in &rotating {
-                    entry.insert(b.id);
-                }
-                prior_beliefs.extend(rotating);
-            }
-            // Distill the cluster into one durable fact. Fail LOUD per cluster:
-            // a distillation error is logged and the cluster's episodics stay
-            // un-consolidated (so a future dream retries them), never silently
-            // swallowed (`[[fallbacks-are-illegal-fail-loud]]`).
-            let fact = match distiller
-                .distill_reviewing(LENS_CONSOLIDATOR, Some(persona_id), cluster, &prior_beliefs)
-                .await
-            {
-                Ok(fact) => fact,
-                Err(err) => {
-                    tracing::warn!(
-                        persona = %persona_id,
-                        error = %err,
-                        "dream: distillation failed; leaving cluster for a future dream"
-                    );
-                    continue;
-                }
+        // #221 slice 2 — SUPERSESSION REVIEW: alongside the cluster, show
+        // the distiller the persona's most related PRIOR beliefs (lexical
+        // recall-key retrieval — mechanics; the model judges). Its verdict
+        // rides the same single generation, so supersession costs zero
+        // extra inference.
+        let mut prior_beliefs = reflector.admission.semantic_beliefs_matching(
+            &SemanticDistiller::union_recall_keys(cluster),
+            SUPERSESSION_REVIEW_LIMIT,
+        );
+        // ROTATING WINDOW (#221 slice 2b): lexical overlap can't reach
+        // beliefs that share no tokens with new experience (the stale
+        // Rust-era beliefs vs python lessons, glass-boxed live). Each pass
+        // therefore ALSO re-examines a few of her oldest not-yet-reviewed
+        // beliefs — eventual coverage of the whole belief store, a few
+        // beliefs per dream, marked reviewed regardless of verdict.
+        {
+            let already: HashSet<Uuid> = {
+                let seen = reviewed.lock().unwrap();
+                let mut set = seen.get(&persona_id).cloned().unwrap_or_default();
+                set.extend(prior_beliefs.iter().map(|e| e.id));
+                set
             };
+            let rotating = reflector.admission.semantic_beliefs_oldest_excluding(
+                &already,
+                now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+                ROTATING_REVIEW_PER_PASS,
+            );
+            let mut seen = reviewed.lock().unwrap();
+            let entry = seen.entry(persona_id).or_default();
+            for b in &rotating {
+                entry.insert(b.id);
+            }
+            prior_beliefs.extend(rotating);
+        }
+        // Distill the cluster into one durable fact. Fail LOUD per cluster:
+        // a distillation error is logged and the cluster's episodics stay
+        // un-consolidated (so a future dream retries them), never silently
+        // swallowed (`[[fallbacks-are-illegal-fail-loud]]`).
+        let fact = match distiller
+            .distill_reviewing(LENS_CONSOLIDATOR, Some(persona_id), cluster, &prior_beliefs)
+            .await
+        {
+            Ok(fact) => fact,
+            Err(err) => {
+                tracing::warn!(
+                    persona = %persona_id,
+                    error = %err,
+                    "dream: distillation failed; leaving cluster for a future dream"
+                );
+                continue;
+            }
+        };
 
-            match reflector.admission.admit_reflection(semantic_engram(&fact)) {
-                Ok(AdmissionDecision::Admit { .. }) => {
-                    published += 1;
-                    mark_consolidated(&consolidated, persona_id, cluster);
-                    // Apply the model's supersession verdict (#221 slice 2):
-                    // the replaced beliefs drop to the salience floor NOW —
-                    // the new fact out-ranks them in recall immediately, and
-                    // the decay drain owns them from here. Applied ONLY on a
-                    // successful admit: if the new fact didn't land, the old
-                    // beliefs keep their standing (never orphan her knowledge).
-                    apply_supersessions(&reflector, persona_id, &fact.supersedes);
-                }
-                Ok(AdmissionDecision::Drop { .. }) => {
-                    // Content-hash dedup already has this fact (e.g. a
-                    // post-restart re-distillation). Mark the sources
-                    // consolidated so we stop re-spending inference on them.
-                    mark_consolidated(&consolidated, persona_id, cluster);
-                }
-                Ok(AdmissionDecision::Quarantine { .. }) => {
-                    // Self-produced facts are SelfTrust and do not route through
-                    // the quarantine gate; reaching here is a contract change in
-                    // `admit_reflection`. Surface it rather than hide it.
-                    tracing::warn!(
-                        persona = %persona_id,
-                        "dream: self-reflection unexpectedly quarantined"
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        persona = %persona_id,
-                        error = %err,
-                        "dream: admit_reflection failed"
-                    );
-                }
+        match reflector.admission.admit_reflection(semantic_engram(&fact)) {
+            Ok(AdmissionDecision::Admit { .. }) => {
+                published += 1;
+                mark_consolidated(&consolidated, persona_id, cluster);
+                // Apply the model's supersession verdict (#221 slice 2):
+                // the replaced beliefs drop to the salience floor NOW —
+                // the new fact out-ranks them in recall immediately, and
+                // the decay drain owns them from here. Applied ONLY on a
+                // successful admit: if the new fact didn't land, the old
+                // beliefs keep their standing (never orphan her knowledge).
+                apply_supersessions(&reflector, persona_id, &fact.supersedes);
+            }
+            Ok(AdmissionDecision::Drop { .. }) => {
+                // Content-hash dedup already has this fact (e.g. a
+                // post-restart re-distillation). Mark the sources
+                // consolidated so we stop re-spending inference on them.
+                mark_consolidated(&consolidated, persona_id, cluster);
+            }
+            Ok(AdmissionDecision::Quarantine { .. }) => {
+                // Self-produced facts are SelfTrust and do not route through
+                // the quarantine gate; reaching here is a contract change in
+                // `admit_reflection`. Surface it rather than hide it.
+                tracing::warn!(
+                    persona = %persona_id,
+                    "dream: self-reflection unexpectedly quarantined"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    persona = %persona_id,
+                    error = %err,
+                    "dream: admit_reflection failed"
+                );
             }
         }
+    }
 
-        // The wander pass (#145 outlier A): when the dream actually digested
-        // something, the historian takes ONE look across the same fresh window
-        // and leaves ONE provenance-tagged thought about the pattern in her own
-        // recent history. Gated on `published > 0` so it fires at most once per
-        // dreaming tick and never on already-consolidated material (the next
-        // tick finds nothing fresh and sleeps) — bounded interiority, not a
-        // second automaton.
-        if published > 0 {
-            match distiller
-                .distill_with(LENS_HISTORIAN, Some(persona_id), &fresh)
-                .await
-            {
-                Ok(thought) => {
-                    match reflector
-                        .admission
-                        .admit_reflection(thought_engram(&thought, LENS_HISTORIAN))
-                    {
-                        Ok(AdmissionDecision::Admit { .. }) => published += 1,
-                        Ok(_) => {}
-                        Err(err) => {
-                            tracing::warn!(
-                                persona = %persona_id,
-                                error = %err,
-                                "wander: admit_reflection failed for historian thought"
-                            );
-                        }
+    // The wander pass (#145 outlier A): when the dream actually digested
+    // something, the historian takes ONE look across the same fresh window
+    // and leaves ONE provenance-tagged thought about the pattern in her own
+    // recent history. Gated on `published > 0` so it fires at most once per
+    // dreaming tick and never on already-consolidated material (the next
+    // tick finds nothing fresh and sleeps) — bounded interiority, not a
+    // second automaton.
+    if published > 0 {
+        match distiller
+            .distill_with(LENS_HISTORIAN, Some(persona_id), &fresh)
+            .await
+        {
+            Ok(thought) => {
+                match reflector
+                    .admission
+                    .admit_reflection(thought_engram(&thought, LENS_HISTORIAN))
+                {
+                    Ok(AdmissionDecision::Admit { .. }) => published += 1,
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!(
+                            persona = %persona_id,
+                            error = %err,
+                            "wander: admit_reflection failed for historian thought"
+                        );
                     }
                 }
-                Err(err) => {
-                    tracing::warn!(
-                        persona = %persona_id,
-                        error = %err,
-                        "wander: historian distillation failed; no thought this dream"
-                    );
-                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    persona = %persona_id,
+                    error = %err,
+                    "wander: historian distillation failed; no thought this dream"
+                );
             }
         }
+    }
 
     // BUSY-DREAM review tail (#221 slice 2c'): drain one belief batch per dream
     // even when fresh material kept the dream busy — an active persona never
@@ -1170,7 +1182,10 @@ fn apply_supersessions(reflector: &PersonaReflector, persona_id: Uuid, supersede
     }
     let now = crate::persona::trace::now_ms();
     for id in superseded {
-        reflector.admission.recall_metadata().demote_to_floor(*id, now);
+        reflector
+            .admission
+            .recall_metadata()
+            .demote_to_floor(*id, now);
     }
     crate::probe!(
         class = "hippocampus.supersede",
@@ -1471,6 +1486,7 @@ mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::persona::engram::{Engram, EngramKind, EngramOrigin, TrustState};
+    use airc_core::PeerId;
 
     /// Build an episodic engram with a given id, content, and recall keys.
     fn episodic(id: Uuid, content: &str, recall_keys: &[&str]) -> Engram {
@@ -1496,10 +1512,14 @@ mod tests {
     #[test]
     fn observations_block_budgets_by_dropping_whole_trailing_engrams() {
         let big = "x".repeat(100);
-        let sources: Vec<Engram> =
-            (0..10).map(|i| episodic(Uuid::from_u128(i + 1), &big, &["k"])).collect();
+        let sources: Vec<Engram> = (0..10)
+            .map(|i| episodic(Uuid::from_u128(i + 1), &big, &["k"]))
+            .collect();
         let (block, kept) = SemanticDistiller::observations_block(&sources, 350);
-        assert!(kept >= 1 && kept < 10, "dropped the tail to fit; kept {kept}");
+        assert!(
+            kept >= 1 && kept < 10,
+            "dropped the tail to fit; kept {kept}"
+        );
         // The LAST kept engram is present whole (not truncated mid-content).
         assert!(block.contains(&format!("{}. {}", kept, big)));
     }
@@ -1535,7 +1555,10 @@ mod tests {
         let sources = vec![episodic(Uuid::from_u128(1), &huge, &["k"])];
         let (block, kept) = SemanticDistiller::observations_block(&sources, 100);
         assert_eq!(kept, 1);
-        assert!(block.contains(&huge), "the one engram is included whole, never sliced");
+        assert!(
+            block.contains(&huge),
+            "the one engram is included whole, never sliced"
+        );
     }
 
     // what this catches: the distiller actually invokes the inference adapter,
@@ -1549,7 +1572,7 @@ mod tests {
         let id2 = Uuid::from_u128(2);
         let id3 = Uuid::from_u128(3);
         let sources = vec![
-            episodic(id1, "Joel prefers Rust for the core", &["rust", "core"]),
+            episodic(id1, "Operator prefers Rust for the core", &["rust", "core"]),
             episodic(id2, "Node is only the shell", &["core", "node"]),
             episodic(id3, "Headless core, many clients", &["node", "clients"]),
         ];
@@ -1748,15 +1771,30 @@ mod tests {
             let decayable = Uuid::from_u128(99);
             admission.recall_metadata().admit(
                 decayable,
-                RecallMetadata { salience: 0.8, last_decayed_ms: 0, protected_until_ms: 0, ..Default::default() },
+                RecallMetadata {
+                    salience: 0.8,
+                    last_decayed_ms: 0,
+                    protected_until_ms: 0,
+                    ..Default::default()
+                },
             );
             let region = region_over(persona, admission.clone());
 
             region.tick(&RegionContext::for_persona(0, persona)).await;
 
-            let after = admission.recall_metadata().get(decayable).expect("engram still tracked");
-            assert!(after.last_decayed_ms > 0, "the dream tick must have run the decay sweep");
-            assert!(after.salience < 0.8, "salience must have decayed, got {}", after.salience);
+            let after = admission
+                .recall_metadata()
+                .get(decayable)
+                .expect("engram still tracked");
+            assert!(
+                after.last_decayed_ms > 0,
+                "the dream tick must have run the decay sweep"
+            );
+            assert!(
+                after.salience < 0.8,
+                "salience must have decayed, got {}",
+                after.salience
+            );
         }
 
         #[tokio::test]
@@ -1843,7 +1881,10 @@ mod tests {
             // Second dream: the episodics are already consolidated, so nothing
             // fresh remains — it rests, spawns nothing, asks to sleep.
             let second = region.tick(&RegionContext::for_persona(1, persona)).await;
-            assert_eq!(second.published, 0, "no re-distillation of consolidated material");
+            assert_eq!(
+                second.published, 0,
+                "no re-distillation of consolidated material"
+            );
             assert!(!region.dreaming(), "nothing fresh → no pass spawned");
             assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
             assert_eq!(
@@ -1882,7 +1923,10 @@ mod tests {
             // Quiet day: no fresh episodics at all — yet the dream launches a
             // review pass instead of sleeping.
             region.tick(&RegionContext::for_persona(0, persona)).await;
-            assert!(region.dreaming(), "review-only pass launched with zero fresh material");
+            assert!(
+                region.dreaming(),
+                "review-only pass launched with zero fresh material"
+            );
             drain(&region).await;
 
             // Queue drained (the belief is marked reviewed; the refreshed
@@ -1899,13 +1943,20 @@ mod tests {
         #[tokio::test]
         async fn dream_waits_below_min_cluster() {
             let persona = Uuid::from_u128(7);
-            let seeds = vec![episodic(Uuid::from_u128(1), "a lone observation", &["solo"])];
+            let seeds = vec![episodic(
+                Uuid::from_u128(1),
+                "a lone observation",
+                &["solo"],
+            )];
             let admission = seeded_admission(&seeds);
             let region = region_over(persona, admission.clone());
 
             let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
 
-            assert_eq!(outcome.published, 0, "a singleton is not a pattern to distill");
+            assert_eq!(
+                outcome.published, 0,
+                "a singleton is not a pattern to distill"
+            );
             assert_eq!(outcome.cadence_hint, Some(CadenceHint::Sleep));
         }
 
@@ -1987,8 +2038,7 @@ mod tests {
         assert!(ids.is_empty());
 
         // Out-of-range + junk indices are ignored, valid ones kept.
-        let (_body, ids) =
-            parse_supersedes_line("fact\nSUPERSEDES: 0, 2, 9, banana", &priors);
+        let (_body, ids) = parse_supersedes_line("fact\nSUPERSEDES: 0, 2, 9, banana", &priors);
         assert_eq!(ids, vec![priors[1].id], "only the in-range index maps");
     }
 }

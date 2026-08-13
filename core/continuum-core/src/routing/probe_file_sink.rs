@@ -403,9 +403,7 @@ where
         // Class filter applies to timing spans just as it does to
         // event-shape probes; an operator filtering to
         // `persona.render.exit` shouldn't see timing noise.
-        if !self.allowed_classes.is_empty()
-            && !self.allowed_classes.contains(&probe_event.class)
-        {
+        if !self.allowed_classes.is_empty() && !self.allowed_classes.contains(&probe_event.class) {
             return;
         }
 
@@ -449,7 +447,10 @@ pub(crate) fn class_passes_filter(class: &str, filter: &HashSet<String>) -> bool
         return true;
     }
     filter.iter().any(|f| {
-        class == f || (class.len() > f.len() + 1 && class.starts_with(f) && class[f.len()..].starts_with('.'))
+        class == f
+            || (class.len() > f.len() + 1
+                && class.starts_with(f)
+                && class[f.len()..].starts_with('.'))
     })
 }
 
@@ -559,7 +560,10 @@ mod tests {
         assert_eq!(lines.len(), 2);
 
         let classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
-        assert_eq!(classes, vec!["persona.render.exit", "cognition.analyze.cache_hit"]);
+        assert_eq!(
+            classes,
+            vec!["persona.render.exit", "cognition.analyze.cache_hit"]
+        );
 
         // The first line should preserve the message + fields the
         // probe! call carried, so an operator reading the log can
@@ -593,9 +597,12 @@ mod tests {
         });
 
         let lines = read_jsonl(&path);
-        assert_eq!(lines.len(), 2, "namespace prefix must drop both non-matching classes");
-        let kept_classes: Vec<&str> =
-            lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "namespace prefix must drop both non-matching classes"
+        );
+        let kept_classes: Vec<&str> = lines.iter().map(|l| l["class"].as_str().unwrap()).collect();
         assert!(kept_classes.contains(&"persona.turn.spoke"));
         assert!(kept_classes.contains(&"persona.response.render.prompt"));
     }

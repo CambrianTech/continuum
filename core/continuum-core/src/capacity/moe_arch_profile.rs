@@ -53,10 +53,16 @@ impl std::fmt::Display for MoeProfileError {
                 write!(f, "GGUF has no general.architecture — broken export")
             }
             Self::NotMoe { arch } => {
-                write!(f, "{arch} declares no experts — dense model, nothing to page")
+                write!(
+                    f,
+                    "{arch} declares no experts — dense model, nothing to page"
+                )
             }
             Self::MissingKey { arch, key } => {
-                write!(f, "{arch} is MoE but missing required key {key} — refusing to guess")
+                write!(
+                    f,
+                    "{arch} is MoE but missing required key {key} — refusing to guess"
+                )
             }
             Self::Inconsistent { arch, detail } => {
                 write!(f, "{arch} self-description inconsistent: {detail}")
@@ -128,14 +134,11 @@ impl MoeArchProfile {
         if top_k == 0 || top_k > experts_per_layer {
             return Err(MoeProfileError::Inconsistent {
                 arch,
-                detail: format!(
-                    "expert_used_count {top_k} vs expert_count {experts_per_layer}"
-                ),
+                detail: format!("expert_used_count {top_k} vs expert_count {experts_per_layer}"),
             });
         }
-        let uniform_offload_required =
-            gguf_keys::attention_head_count_kv_per_layer(ct, &arch)
-                .is_some_and(|per_layer| per_layer.contains(&0));
+        let uniform_offload_required = gguf_keys::attention_head_count_kv_per_layer(ct, &arch)
+            .is_some_and(|per_layer| per_layer.contains(&0));
 
         Ok(Self {
             n_moe_layers: n_layers - leading_dense,
@@ -162,7 +165,12 @@ impl MoeArchProfile {
     ///
     /// Container layer indices are MoE-layer ordinals: dense leading blocks
     /// have no banks, so `experts-L0.bin` is the FIRST ROUTED layer.
-    pub fn manifest(&self, model: impl Into<String>, fmt: impl Into<String>, record_bytes: u64) -> ContainerManifest {
+    pub fn manifest(
+        &self,
+        model: impl Into<String>,
+        fmt: impl Into<String>,
+        record_bytes: u64,
+    ) -> ContainerManifest {
         ContainerManifest {
             version: 1,
             model: model.into(),
@@ -246,7 +254,9 @@ mod tests {
             ),
         ]);
         assert!(
-            MoeArchProfile::from_gguf(&hybrid).unwrap().uniform_offload_required,
+            MoeArchProfile::from_gguf(&hybrid)
+                .unwrap()
+                .uniform_offload_required,
             "zeros in the per-layer KV-head array declare recurrent layers → \
              partial layer offload must be refused"
         );
@@ -259,7 +269,9 @@ mod tests {
             ("qwen3moe.attention.head_count_kv", Value::U32(8)),
         ]);
         assert!(
-            !MoeArchProfile::from_gguf(&uniform).unwrap().uniform_offload_required,
+            !MoeArchProfile::from_gguf(&uniform)
+                .unwrap()
+                .uniform_offload_required,
             "a scalar head_count_kv (uniform GQA) must not forbid partial offload"
         );
     }
@@ -300,7 +312,9 @@ mod tests {
         ]);
         assert_eq!(
             MoeArchProfile::from_gguf(&dense),
-            Err(MoeProfileError::NotMoe { arch: "llama".into() })
+            Err(MoeProfileError::NotMoe {
+                arch: "llama".into()
+            })
         );
 
         let missing_topk = content_with(vec![

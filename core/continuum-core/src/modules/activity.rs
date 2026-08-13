@@ -51,9 +51,7 @@ use ts_rs::TS;
 
 use airc_lib::Airc;
 
-use crate::experience::standing::{
-    project_standing, RoomStanding, STANDING_WALL_CATEGORY,
-};
+use crate::experience::standing::{project_standing, RoomStanding, STANDING_WALL_CATEGORY};
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};

@@ -56,12 +56,12 @@ use crate::cognition::throughput_lease::ThroughputLease;
 use crate::governor::classify_hardware;
 use crate::governor::types::TargetSilicon as GovernorSilicon;
 use crate::identity::PeerId;
-use crate::inference_capability::hw_probe::probe_hardware_profile;
 use crate::inference::footprint_registry::{FootprintKey, FootprintRegistry, ResourceType};
 use crate::inference::handle_store::{InferenceHandleStore, OpenSessionRequest};
 use crate::inference::kv_quant::Residency;
 use crate::inference::lane::{Lane, LaneClass};
 use crate::inference::recipe_budget::TaskKind;
+use crate::inference_capability::hw_probe::probe_hardware_profile;
 use crate::paging::lease_revocation::disruption_rank;
 use crate::runtime::cell_shapes::HandleRef;
 
@@ -213,7 +213,11 @@ pub enum AdmissionDenyReason {
 impl std::fmt::Display for CoordinatorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CoordinatorError::AdmissionDenied { reason, task, persona } => write!(
+            CoordinatorError::AdmissionDenied {
+                reason,
+                task,
+                persona,
+            } => write!(
                 f,
                 "coordinator: admission denied (reason: {reason:?}, task: {task:?}, persona: {})",
                 persona.as_uuid()
@@ -440,10 +444,7 @@ impl InferenceCoordinator {
     /// errors after the handle was already opened — that doesn't
     /// happen in the current code path because we open the handle
     /// LAST, but the invariant should hold even after Step 4.
-    pub fn open_lane(
-        &self,
-        req: OpenLaneRequest,
-    ) -> Result<HandleRef, CoordinatorError> {
+    pub fn open_lane(&self, req: OpenLaneRequest) -> Result<HandleRef, CoordinatorError> {
         let class = req
             .class_override
             .unwrap_or_else(|| LaneClass::default_for_task(req.task));
@@ -547,9 +548,7 @@ impl InferenceCoordinator {
             holder_id: req.persona.as_uuid().to_string(),
             cost_units,
             acquired_at_ms: req.now_ms,
-            expires_at_ms: req
-                .now_ms
-                .saturating_add(self.config.lease_duration_ms),
+            expires_at_ms: req.now_ms.saturating_add(self.config.lease_duration_ms),
             revocation_policy: class.revocation_policy(),
         };
         let key = FootprintKey::for_persona(
@@ -796,7 +795,9 @@ impl InferenceCoordinator {
     /// Snapshot of one lane (clone) — used by tests + the handle
     /// module for delegation.
     pub fn lane_for_handle(&self, handle: &HandleRef) -> Option<Lane> {
-        self.lanes.get(&handle.id.as_uuid()).map(|e| e.value().clone())
+        self.lanes
+            .get(&handle.id.as_uuid())
+            .map(|e| e.value().clone())
     }
 
     pub fn lane_count(&self) -> usize {
@@ -849,8 +850,7 @@ impl InferenceCoordinator {
             .iter()
             .map(|entry| {
                 let lane = entry.value();
-                let size_bytes =
-                    (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token);
+                let size_bytes = (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token);
                 crate::paging::pool::ResourcePoolEntry {
                     key: lane.handle_id().to_string(),
                     size_bytes,
@@ -945,7 +945,10 @@ mod tests {
         // realistic_floor_default is now just for_silicon(UnifiedMemory).
         let floor = CoordinatorConfig::realistic_floor_default();
         assert_eq!(floor.default_target_silicon, TargetSilicon::UnifiedMemory);
-        assert_eq!(floor.lane_budgets[0].target_silicon, TargetSilicon::UnifiedMemory);
+        assert_eq!(
+            floor.lane_budgets[0].target_silicon,
+            TargetSilicon::UnifiedMemory
+        );
     }
 
     /// what this catches: `detected()` runs to completion without panicking
@@ -957,7 +960,8 @@ mod tests {
     fn detected_config_runs_without_panicking() {
         let cfg = CoordinatorConfig::detected();
         assert_eq!(
-            cfg.default_target_silicon, cfg.lane_budgets[0].target_silicon
+            cfg.default_target_silicon,
+            cfg.lane_budgets[0].target_silicon
         );
     }
 
@@ -987,9 +991,11 @@ mod tests {
         InferenceCoordinator::new(footprint, handle_store, small_budget_config())
     }
 
-    fn open_chat(c: &InferenceCoordinator, persona_id: u128, now_ms: u64)
-        -> Result<HandleRef, CoordinatorError>
-    {
+    fn open_chat(
+        c: &InferenceCoordinator,
+        persona_id: u128,
+        now_ms: u64,
+    ) -> Result<HandleRef, CoordinatorError> {
         c.open_lane(OpenLaneRequest {
             persona: persona(persona_id),
             task: TaskKind::Chat,
@@ -1056,16 +1062,18 @@ mod tests {
     fn admission_denies_when_cost_units_exceeded() {
         // Two CodingLarge (128K each) blows past 20K max_cost_units.
         let c = build_coordinator();
-        let _ = c.open_lane(OpenLaneRequest {
-            persona: persona(1),
-            task: TaskKind::CodingLarge,
-            adapter: Arc::new(HeuristicInferenceAdapter::new()),
-            model: None,
-            system_prompt: None,
-            active_adapters: None,
-            class_override: None,
-            now_ms: 1_000_000,
-        }).unwrap_err();
+        let _ = c
+            .open_lane(OpenLaneRequest {
+                persona: persona(1),
+                task: TaskKind::CodingLarge,
+                adapter: Arc::new(HeuristicInferenceAdapter::new()),
+                model: None,
+                system_prompt: None,
+                active_adapters: None,
+                class_override: None,
+                now_ms: 1_000_000,
+            })
+            .unwrap_err();
         // Even the FIRST CodingLarge fails because its cost_units
         // (128K) exceeds the lane's max_cost_units (20K).
         assert_eq!(c.lane_count(), 0);
@@ -1225,7 +1233,12 @@ mod tests {
         let events = sink.snapshot();
         assert_eq!(events.len(), 3); // 2 opened + 1 denied
         match &events[2] {
-            LaneCaptureEvent::LaneAdmissionDenied { reason, persona: p, task, .. } => {
+            LaneCaptureEvent::LaneAdmissionDenied {
+                reason,
+                persona: p,
+                task,
+                ..
+            } => {
                 assert_eq!(*reason, AdmissionDenyReason::ResourcePressure);
                 assert_eq!(*p, persona(3));
                 assert_eq!(*task, TaskKind::Chat);
@@ -1384,7 +1397,13 @@ mod tests {
         let c = build_eviction_coordinator();
         // 1 realtime (pinned), 1 background — evict 100MB of pressure.
         let realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
-        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+        let _background = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        );
         let result = c.evict_under_pressure(100_000_000, 1_500_000);
         assert_eq!(result.evicted.len(), 1);
         assert_eq!(result.evicted[0].class, LaneClass::Background);
@@ -1399,9 +1418,22 @@ mod tests {
     fn evict_under_pressure_prefers_hard_then_graceful() {
         let c = build_eviction_coordinator();
         // 1 Interactive (Graceful) + 1 Background (Hard) + 1 Sentinel (Hard).
-        let _interactive = open_with_class(&c, 1, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
-        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
-        let _sentinel = open_with_class(&c, 3, TaskKind::SentinelEasy, LaneClass::Sentinel, 1_000_000);
+        let _interactive =
+            open_with_class(&c, 1, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
+        let _background = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        );
+        let _sentinel = open_with_class(
+            &c,
+            3,
+            TaskKind::SentinelEasy,
+            LaneClass::Sentinel,
+            1_000_000,
+        );
         // Evict just one lane's worth (small budget).
         let result = c.evict_under_pressure(1, 1_500_000);
         assert_eq!(result.evicted.len(), 1);
@@ -1420,8 +1452,20 @@ mod tests {
     fn evict_under_pressure_picks_oldest_within_same_tier() {
         let c = build_eviction_coordinator();
         // Two Background lanes, different acquired_at_ms.
-        let _old = open_with_class(&c, 1, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
-        let _new = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 2_000_000);
+        let _old = open_with_class(
+            &c,
+            1,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        );
+        let _new = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            2_000_000,
+        );
         let result = c.evict_under_pressure(1, 3_000_000);
         assert_eq!(result.evicted.len(), 1);
         // Older lane (persona 1, acquired at 1M) gets evicted first.
@@ -1437,7 +1481,13 @@ mod tests {
         // Realtime opens at 1M with 5M lease → expires at 6M.
         let _realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
         // Background opens at 5M with 5M lease → expires at 10M.
-        let _background = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 5_000_000);
+        let _background = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            5_000_000,
+        );
         // Evict at 7M: realtime expired, background still active.
         let result = c.evict_under_pressure(1, 7_000_000);
         assert_eq!(result.evicted.len(), 1);
@@ -1451,7 +1501,13 @@ mod tests {
         // 3 Background lanes, each 32K tokens = 32K bytes (with
         // bytes_per_token=1).
         for i in 1..=3 {
-            open_with_class(&c, i, TaskKind::CodingSmall, LaneClass::Background, 1_000_000);
+            open_with_class(
+                &c,
+                i,
+                TaskKind::CodingSmall,
+                LaneClass::Background,
+                1_000_000,
+            );
         }
         // Target 33K bytes — enough for 2 lanes but not 3.
         let result = c.evict_under_pressure(33_000, 1_500_000);
@@ -1487,13 +1543,24 @@ mod tests {
         )
         .with_capture_sink(sink.clone());
         let _ = open_chat_now(&c, 1, 1_000_000); // Interactive (Graceful)
-        let _ = open_with_class(&c, 2, TaskKind::CodingSmall, LaneClass::Background, 1_000_000); // Hard
+        let _ = open_with_class(
+            &c,
+            2,
+            TaskKind::CodingSmall,
+            LaneClass::Background,
+            1_000_000,
+        ); // Hard
         sink.drain(); // forget the LaneOpened events
         let _result = c.evict_under_pressure(1, 1_500_000);
         let events = sink.snapshot();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            LaneCaptureEvent::LaneEvicted { reason, class, bytes_freed, .. } => {
+            LaneCaptureEvent::LaneEvicted {
+                reason,
+                class,
+                bytes_freed,
+                ..
+            } => {
                 assert_eq!(*reason, EvictionReason::PressureHard);
                 assert_eq!(*class, LaneClass::Background);
                 assert_eq!(*bytes_freed, 32 * 1024);
@@ -1534,7 +1601,13 @@ mod tests {
         let c = build_eviction_coordinator();
         let realtime = open_with_class(&c, 1, TaskKind::VoiceChat, LaneClass::Realtime, 1_000_000);
         let interactive = open_with_class(&c, 2, TaskKind::Chat, LaneClass::Interactive, 1_000_000);
-        let _background = open_with_class(&c, 3, TaskKind::GameNpcIdle, LaneClass::Background, 1_000_000);
+        let _background = open_with_class(
+            &c,
+            3,
+            TaskKind::GameNpcIdle,
+            LaneClass::Background,
+            1_000_000,
+        );
         let result = c.evict_under_pressure(4 * 1024, 1_500_000);
         assert_eq!(result.evicted.len(), 1);
         assert_eq!(result.evicted[0].class, LaneClass::Background);

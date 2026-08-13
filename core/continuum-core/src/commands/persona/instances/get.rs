@@ -25,7 +25,10 @@ use crate::sdk_codegen::CommandError;
 
 /// Which online persona to fetch.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaInstancesGetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaInstancesGetParams.ts"
+)]
 pub struct PersonaInstancesGetParams {
     /// The persona's id as it appears in `persona/instances/list` (the airc
     /// peer_id Uuid). Fails loud if mal-formed or not currently online.

@@ -79,16 +79,25 @@ pub enum SettleStep {
     /// (live: next metronome tick; eval: next loop step). The calls+intent ride
     /// along so a caller that paces acting (the eval budget) can report the final
     /// Act if its budget runs out on the following step.
-    Acted { calls: Vec<ToolCall>, intent: String },
+    Acted {
+        calls: Vec<ToolCall>,
+        intent: String,
+    },
     /// She decided to act but the caller's budget said no this step (`may_act =
     /// false`) — the act was NOT executed. Only the eval driver passes `may_act =
     /// false`; the live heartbeat always permits its one act, so it never sees this.
-    WouldAct { calls: Vec<ToolCall>, intent: String },
+    WouldAct {
+        calls: Vec<ToolCall>,
+        intent: String,
+    },
     /// She chose silence (`Pass`) — honored as a turn that produces no utterance.
     Passed,
     /// She reached for an act that could NOT be carried out (no hands / executor
     /// error). No utterance; the intent rides along for honest logging/grading.
-    ActUnfulfilled { calls: Vec<ToolCall>, intent: String },
+    ActUnfulfilled {
+        calls: Vec<ToolCall>,
+        intent: String,
+    },
     /// The deliberation model call itself FAILED — a timeout, a 5xx, or the serving
     /// lane refusing a model it isn't hosting (the swept-model bug). NO verdict was
     /// produced. This is NOT a `Passed`: a failed model is not a chosen silence
@@ -147,9 +156,7 @@ mod tests {
     fn outcome_with(decision: Decision, inference_error: Option<String>) -> SettleOutcome {
         SettleOutcome {
             spoken: match &decision {
-                Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
-                    Some(text.clone())
-                }
+                Decision::Speak { text } | Decision::RaiseUnprompted { text } => Some(text.clone()),
                 _ => None,
             },
             decision,

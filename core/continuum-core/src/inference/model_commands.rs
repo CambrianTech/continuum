@@ -97,11 +97,7 @@ impl ActionCommand for AiInferenceStatus {
     type Params = StatusParams;
     type Output = InferenceStatusView;
 
-    async fn run(
-        &self,
-        _ctx: &Ctx,
-        _p: StatusParams,
-    ) -> Result<InferenceStatusView, CommandError> {
+    async fn run(&self, _ctx: &Ctx, _p: StatusParams) -> Result<InferenceStatusView, CommandError> {
         Ok(current_status())
     }
 }
@@ -312,19 +308,33 @@ mod tests {
         assert!(matches!(blank, CommandError::Invalid(_)));
         // real id → delegated, error names serving/pin
         let load = AiInferenceLoad
-            .run(&ctx, ModelRef { model: "some/model-GGUF".into() })
+            .run(
+                &ctx,
+                ModelRef {
+                    model: "some/model-GGUF".into(),
+                },
+            )
             .await
             .unwrap_err();
         match load {
-            CommandError::Invalid(m) => assert!(m.contains("serving/pin"), "names the authority: {m}"),
+            CommandError::Invalid(m) => {
+                assert!(m.contains("serving/pin"), "names the authority: {m}")
+            }
             other => panic!("expected Invalid delegating to serving/pin, got {other:?}"),
         }
         let unload = AiInferenceUnload
-            .run(&ctx, ModelRef { model: "some/model-GGUF".into() })
+            .run(
+                &ctx,
+                ModelRef {
+                    model: "some/model-GGUF".into(),
+                },
+            )
             .await
             .unwrap_err();
         match unload {
-            CommandError::Invalid(m) => assert!(m.contains("serving/unpin"), "names the authority: {m}"),
+            CommandError::Invalid(m) => {
+                assert!(m.contains("serving/unpin"), "names the authority: {m}")
+            }
             other => panic!("expected Invalid delegating to serving/unpin, got {other:?}"),
         }
     }

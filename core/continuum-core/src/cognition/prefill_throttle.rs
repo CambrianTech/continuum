@@ -146,7 +146,10 @@ impl PrefillThrottle {
             want_concurrency: want as u32,
             spike_bytes: spike,
         };
-        let grant = FitPolicy { safety_margin_bytes: spike }.grant(&cap, &req);
+        let grant = FitPolicy {
+            safety_margin_bytes: spike,
+        }
+        .grant(&cap, &req);
         self.apply(grant.concurrency as usize)
     }
 
@@ -171,7 +174,10 @@ impl PrefillThrottle {
     /// work, never thrashes on a boundary-riding live number.
     fn apply(&self, target: usize) -> usize {
         let target = target.max(1); // a resident model may always run ONE prefill (residency decision)
-        let _g = self.reconcile_lock.lock().expect("prefill reconcile lock never poisoned");
+        let _g = self
+            .reconcile_lock
+            .lock()
+            .expect("prefill reconcile lock never poisoned");
         let installed = self.installed.load(Ordering::Acquire);
         if target > installed {
             // The recovery direction: deliberate. One tick of headroom is often UMA cache
@@ -187,7 +193,8 @@ impl PrefillThrottle {
             if target < installed {
                 // The safety direction: instant, always.
                 let forgotten = self.sem.forget_permits(installed - target);
-                self.installed.store(installed - forgotten, Ordering::Release);
+                self.installed
+                    .store(installed - forgotten, Ordering::Release);
             }
         }
         let now = self.installed.load(Ordering::Acquire);
@@ -262,13 +269,21 @@ mod tests {
         assert_eq!(t.reconcile(7 * GB), 2, "shrink is instant: (7−2)/2 = 2");
 
         // Game closes: one good reading does NOT regrow (boundary-riding wobble)…
-        assert_eq!(t.reconcile(13 * GB), 2, "one optimistic tick is not recovery");
+        assert_eq!(
+            t.reconcile(13 * GB),
+            2,
+            "one optimistic tick is not recovery"
+        );
         assert_eq!(t.reconcile(13 * GB), 2, "nor two");
         // …and a dip in between resets the streak — the signal must be SUSTAINED.
         assert_eq!(t.reconcile(7 * GB), 2, "a relapse resets the grow streak");
         assert_eq!(t.reconcile(13 * GB), 2);
         assert_eq!(t.reconcile(13 * GB), 2);
-        assert_eq!(t.reconcile(13 * GB), 4, "three consecutive good ticks → regrown to demand");
+        assert_eq!(
+            t.reconcile(13 * GB),
+            4,
+            "three consecutive good ticks → regrown to demand"
+        );
 
         // The applied grant is enforced, not advisory: under pressure only 2 slots grant.
         assert_eq!(t.reconcile(7 * GB), 2);
@@ -299,12 +314,20 @@ mod tests {
         let b = t.acquire_prefill_slot().await;
         let c = t.acquire_prefill_slot().await;
         // (4−2)/2 = 1: only the 1 idle permit is collectable now → installed 4→3, debt 2.
-        assert_eq!(t.reconcile(4 * GB), 3, "collects the idle permit; in-flight can't be revoked");
+        assert_eq!(
+            t.reconcile(4 * GB),
+            3,
+            "collects the idle permit; in-flight can't be revoked"
+        );
 
         drop(a); // one prefill finishes → its permit returns → collectable
         assert_eq!(t.reconcile(4 * GB), 2, "debt drains as calls finish");
         drop(b);
-        assert_eq!(t.reconcile(4 * GB), 1, "down to the target — one lane always runs");
+        assert_eq!(
+            t.reconcile(4 * GB),
+            1,
+            "down to the target — one lane always runs"
+        );
 
         // Floor: even under absurd pressure the gate never goes below 1 (a resident model
         // may always run one prefill — going below is a residency decision, not admission).
