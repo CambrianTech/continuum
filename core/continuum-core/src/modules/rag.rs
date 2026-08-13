@@ -317,7 +317,7 @@ pub struct RagSection {
 )]
 pub struct RagComposeRequest {
     /// Persona ID for memory/persona-specific sources
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
 
     /// Room/context ID
     pub room_id: String,
@@ -386,7 +386,7 @@ impl RagState {
     /// before its sync Rayon recall layers run.
     async fn load_memory_source(
         &self,
-        persona_id: &str,
+        persona_id: &crate::identity::PersonaRef,
         room_id: &str,
         query_text: Option<&str>,
         params: &MemorySourceParams,
@@ -409,7 +409,7 @@ impl RagState {
 
         match self
             .memory_manager
-            .multi_layer_recall(&persona_id.into(), &req)
+            .multi_layer_recall(persona_id, &req)
             .await
         {
             Ok(resp) => {
@@ -468,7 +468,7 @@ impl RagState {
     /// Load consciousness context (cross-context awareness, intentions, etc.)
     fn load_consciousness_source(
         &self,
-        persona_id: &str,
+        persona_id: &crate::identity::PersonaRef,
         room_id: &str,
         query_text: Option<&str>,
         params: &ConsciousnessSourceParams,
@@ -484,7 +484,7 @@ impl RagState {
             skip_semantic_search: params.skip_semantic_search,
         };
 
-        match self.memory_manager.consciousness_context(&persona_id.into(), &req) {
+        match self.memory_manager.consciousness_context(persona_id, &req) {
             Ok(resp) => {
                 let sections = if let Some(prompt) = resp.formatted_prompt {
                     vec![RagSection {
@@ -684,7 +684,7 @@ impl RagState {
     pub(crate) async fn load_source(
         &self,
         source: &RagSourceRequest,
-        persona_id: &str,
+        persona_id: &crate::identity::PersonaRef,
         room_id: &str,
         query_text: Option<&str>,
     ) -> RagSourceResult {

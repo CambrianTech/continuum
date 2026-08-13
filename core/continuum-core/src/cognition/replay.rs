@@ -80,7 +80,7 @@ pub struct CognitionReplayParams {
     /// The persona (UUID) whose faculties + live cycle to replay. Must be
     /// spawned (have a live `WorkspaceCycle`) — replay drives a measured COPY of
     /// her real cognition, never a stand-in.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Isolate ONE faculty by kebab tag (`recall`, `salience`, `world-model`,
     /// `deliberation`, …). Omit to replay every faculty in her cycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,7 +172,7 @@ pub struct PromptBudget {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CognitionReplayResult {
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Where the burst came from: `"supplied"` or `"capture@<turn> (<ms>)"`.
     pub source: String,
     /// The exact burst replayed — echoed back so the result is self-explaining.
@@ -329,7 +329,7 @@ impl ActionCommand for CognitionReplay {
         _ctx: &Ctx,
         p: CognitionReplayParams,
     ) -> Result<CognitionReplayResult, CommandError> {
-        let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
+        let persona_uuid = Uuid::parse_str(p.persona_id.as_str()).map_err(|_| {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
 
@@ -427,7 +427,7 @@ impl ActionCommand for CognitionReplay {
             .collect();
 
         Ok(CognitionReplayResult {
-            persona_id: persona_uuid.to_string(),
+            persona_id: persona_uuid.to_string().into(),
             source: burst.source,
             world_state: burst.world_state,
             room_id: room.to_string(),
@@ -453,7 +453,7 @@ mod tests {
         // No world_state supplied; nil persona has no trace file → must error,
         // and the error must name the missing input (point the operator at the fix).
         let p = CognitionReplayParams {
-            persona_id: persona.to_string(),
+            persona_id: persona.to_string().into(),
             faculty: None,
             world_state: None,
             turn: None,
@@ -473,7 +473,7 @@ mod tests {
     fn resolve_burst_uses_supplied_world_state() {
         let persona = Uuid::nil();
         let p = CognitionReplayParams {
-            persona_id: persona.to_string(),
+            persona_id: persona.to_string().into(),
             faculty: Some("recall".to_string()),
             world_state: Some("what was the auth migration codename?".to_string()),
             turn: None,

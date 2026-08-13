@@ -164,7 +164,7 @@ pub struct FromTurnsParams {
     /// Only convert turns from this persona id.
     #[serde(default)]
     #[ts(optional)]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// Only convert turns from this room id.
     #[serde(default)]
     #[ts(optional)]
@@ -196,7 +196,7 @@ pub struct FromCapturesParams {
     /// Only convert captures from this persona id.
     #[serde(default)]
     #[ts(optional)]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// Only convert captures from this room id.
     #[serde(default)]
     #[ts(optional)]
@@ -400,7 +400,7 @@ impl DatasetService {
                 continue;
             };
 
-            if let Some(pid) = p.persona_id.as_deref() {
+            if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {
                 if turn.get("personaId").and_then(|v| v.as_str()) != Some(pid) {
                     continue;
                 }
@@ -481,7 +481,7 @@ impl DatasetService {
                 let Ok(cap) = serde_json::from_str::<Value>(line) else {
                     continue;
                 };
-                if let Some(pid) = p.persona_id.as_deref() {
+                if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {
                     if cap.get("persona_id").and_then(|v| v.as_str()) != Some(pid) {
                         continue;
                     }

@@ -69,7 +69,7 @@ pub struct CognitionTrace;
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CognitionTraceParams {
     /// The persona (UUID) whose cognition to inspect — yours or a peer's.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// How many recent ticks to return (newest last). Default 10, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -77,7 +77,7 @@ pub struct CognitionTraceParams {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CognitionTraceResult {
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     pub count: u32,
     /// Each entry is one tick's JSON record: world_state, bids (faculty +
     /// salience + content), context (what the decider saw), decision.
@@ -97,7 +97,7 @@ impl ActionCommand for CognitionTrace {
 
     async fn run(&self, _ctx: &Ctx, p: CognitionTraceParams) -> Result<CognitionTraceResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
-        let records = tail_persona_jsonl("workspace-traces", &p.persona_id, limit)?;
+        let records = tail_persona_jsonl("workspace-traces", p.persona_id.as_str(), limit)?;
         Ok(CognitionTraceResult {
             persona_id: p.persona_id,
             count: records.len() as u32,
@@ -114,7 +114,7 @@ pub struct CognitionPrompt;
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CognitionPromptParams {
     /// The persona (UUID) whose verbatim LLM I/O to inspect.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// How many recent LLM calls to return (newest last). Default 10, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -122,7 +122,7 @@ pub struct CognitionPromptParams {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CognitionPromptResult {
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     pub count: u32,
     /// Each entry is one LLM call's JSON record: the exact system prompt, the
     /// message thread sent, and the raw response (text/reasoning/finish_reason/
@@ -143,7 +143,7 @@ impl ActionCommand for CognitionPrompt {
 
     async fn run(&self, _ctx: &Ctx, p: CognitionPromptParams) -> Result<CognitionPromptResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
-        let records = tail_persona_jsonl("prompt-captures", &p.persona_id, limit)?;
+        let records = tail_persona_jsonl("prompt-captures", p.persona_id.as_str(), limit)?;
         Ok(CognitionPromptResult {
             persona_id: p.persona_id,
             count: records.len() as u32,
@@ -163,7 +163,7 @@ pub struct CognitionPersonasParams {}
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct PersonaRosterEntry {
     /// The persona's UUID — pass this to `cognition/eval`, `cognition/trace`, etc.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The persona's display name (`None` for a pure-cognition mind with no hands).
     #[ts(optional)]
     pub name: Option<String>,
@@ -198,7 +198,7 @@ impl ActionCommand for CognitionPersonas {
             .roster()
             .into_iter()
             .map(|(id, name)| PersonaRosterEntry {
-                persona_id: id.to_string(),
+                persona_id: id.to_string().into(),
                 name,
             })
             .collect();
