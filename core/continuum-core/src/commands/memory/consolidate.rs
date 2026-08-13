@@ -47,7 +47,7 @@ use continuum_client::Connection;
 )]
 pub struct MemoryConsolidateParams {
     /// The persona whose received lessons to consolidate — its airc peer id / corpus key.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Display name carried into training provenance. Defaults to the persona id.
     #[serde(default)]
     #[ts(optional)]
@@ -113,12 +113,12 @@ crate::action_command! {
         // #164: accept the short-form persona id rosters display, not just a full UUID —
         // the same id_resolve primitive persona/* and work/* already use.
         let persona_uuid = crate::id_resolve::resolve(
-            &p.persona_id,
+            p.persona_id.as_str(),
             &crate::persona::card::ids(),
             "persona",
         )
         .map_err(CommandError::Invalid)?;
-        let persona_name = p.persona_name.clone().unwrap_or_else(|| p.persona_id.clone());
+        let persona_name = p.persona_name.clone().unwrap_or_else(|| p.persona_id.to_string());
 
         let executor = this.state.executor().map_err(CommandError::Internal)?;
 

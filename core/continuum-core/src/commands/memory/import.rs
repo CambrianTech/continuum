@@ -40,7 +40,7 @@ fn default_importance() -> f64 {
 )]
 pub struct MemoryImportParams {
     /// The corpus to import into (for an agent: its airc peer id).
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Directory of files to import — one memory per matching file.
     pub source_dir: String,
     /// Project / room scope for the imported memories (recall `room_id` + a tag).
@@ -150,7 +150,7 @@ crate::action_command! {
             let id = uuid::Uuid::new_v4().to_string();
             let timestamp = chrono::Utc::now().to_rfc3339();
             let record = build_agent_record(
-                &p.persona_id,
+                p.persona_id.as_str(),
                 content,
                 &p.scope,
                 p.session.clone(),

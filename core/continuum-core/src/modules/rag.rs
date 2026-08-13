@@ -409,7 +409,7 @@ impl RagState {
 
         match self
             .memory_manager
-            .multi_layer_recall(persona_id, &req)
+            .multi_layer_recall(&persona_id.into(), &req)
             .await
         {
             Ok(resp) => {
@@ -484,7 +484,7 @@ impl RagState {
             skip_semantic_search: params.skip_semantic_search,
         };
 
-        match self.memory_manager.consciousness_context(persona_id, &req) {
+        match self.memory_manager.consciousness_context(&persona_id.into(), &req) {
             Ok(resp) => {
                 let sections = if let Some(prompt) = resp.formatted_prompt {
                     vec![RagSection {

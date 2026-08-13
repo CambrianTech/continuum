@@ -12,11 +12,13 @@ use crate::memory::{CorpusMemory, CorpusTimelineEvent, LoadCorpusResponse};
 use crate::modules::memory::MemoryState;
 
 /// Params for `memory/load-corpus`. Wire keys are snake_case (the ORM IPC contract).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+// No `Default`: a persona reference has no sensible default, and an empty one
+// would read as a real answer. Construct these params explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/memory/MemoryLoadCorpusParams.ts")]
 pub struct MemoryLoadCorpusParams {
     /// Which persona's corpus to (re)load — replaces any previously cached corpus.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Memories with optional precomputed embedding vectors (sent from the ORM).
     #[serde(default)]
     pub memories: Vec<CorpusMemory>,

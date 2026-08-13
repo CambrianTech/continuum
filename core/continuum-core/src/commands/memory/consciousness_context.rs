@@ -13,14 +13,16 @@ use crate::modules::memory::MemoryState;
 use crate::sdk_codegen::CommandError;
 
 /// Params for `memory/consciousness-context`. Wire keys are snake_case.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+// No `Default`: a persona reference has no sensible default, and an empty one
+// would read as a real answer. Construct these params explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/memory/MemoryConsciousnessContextParams.ts"
 )]
 pub struct MemoryConsciousnessContextParams {
     /// Which persona to build consciousness context for.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Room scope for the context.
     pub room_id: String,
     /// The message currently being considered (focuses cross-context retrieval).

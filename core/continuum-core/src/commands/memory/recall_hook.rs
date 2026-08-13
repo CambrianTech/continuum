@@ -62,7 +62,7 @@ fn cap_memory_text(text: &str, max_chars: usize) -> String {
 )]
 pub struct MemoryRecallHookParams {
     /// Which persona's corpus to recall from (for an agent: its airc peer id).
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The semantic query. Absent ⇒ the semantic layer degrades to non-semantic recall.
     #[serde(default)]
     #[ts(optional)]

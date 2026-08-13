@@ -44,7 +44,7 @@ fn default_importance() -> f64 {
 pub struct MemoryRememberParams {
     /// The authoring agent's persona id — its airc peer id. Also the corpus key and the
     /// `agent_peer_id` provenance (agent = its own peer).
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// The lesson to remember. Free text; serde escapes it into the record.
     pub content: String,
     /// Project / room scope — becomes the recall `room_id`, a tag, and part of context.
@@ -118,7 +118,7 @@ crate::action_command! {
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now().to_rfc3339();
         let record = build_agent_record(
-            &p.persona_id,
+            p.persona_id.as_str(),
             p.content,
             &p.scope,
             p.session,

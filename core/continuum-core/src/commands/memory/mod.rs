@@ -107,7 +107,8 @@ const EMBEDDING_KEY: &str = "embedding";
 ///  - a UUID-shaped id passes through → the live `personas/<uuid>/` layout;
 ///  - a bare slug defaults to `@persona:<slug>` (back-compat — the unchanged
 ///    persona contract).
-pub(crate) fn persona_db_handle(persona_id: &str) -> String {
+pub(crate) fn persona_db_handle(persona_id: &crate::identity::PersonaRef) -> String {
+    let persona_id = persona_id.as_str();
     if persona_id.starts_with("@agent:")
         || persona_id.starts_with("@human:")
         || persona_id.starts_with("@persona:")
@@ -124,7 +125,7 @@ pub(crate) fn persona_db_handle(persona_id: &str) -> String {
 /// that only landed in cache is the exact lie this seam exists to kill.
 pub(crate) async fn persist_memory(
     state: &MemoryState,
-    persona_id: &str,
+    persona_id: &crate::identity::PersonaRef,
     memory: &crate::memory::CorpusMemory,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     use crate::sdk_codegen::CommandError;
@@ -161,7 +162,7 @@ pub(crate) async fn persist_memory(
 /// were loaded, or `None` when the corpus was already cached.
 pub(crate) async fn hydrate_corpus_if_missing(
     state: &MemoryState,
-    persona_id: &str,
+    persona_id: &crate::identity::PersonaRef,
 ) -> Result<Option<usize>, crate::sdk_codegen::CommandError> {
     use crate::sdk_codegen::CommandError;
     if state.memory_manager.has_corpus(persona_id) {
@@ -356,7 +357,7 @@ mod tests {
                     "data/list",
                     serde_json::json!({
                         "collection": MEMORIES_COLLECTION,
-                        "dbPath": persona_db_handle(persona_id),
+                        "dbPath": persona_db_handle(&persona_id.into()),
                     }),
                 )
                 .await
@@ -442,17 +443,17 @@ mod tests {
     #[test]
     fn persona_db_handle_maps_uuid_and_slug() {
         assert_eq!(
-            persona_db_handle("90e758b2-3cf3-45c1-b100-de7c4ab5a549"),
+            persona_db_handle(&"90e758b2-3cf3-45c1-b100-de7c4ab5a549".into()),
             "90e758b2-3cf3-45c1-b100-de7c4ab5a549"
         );
-        assert_eq!(persona_db_handle("helper"), "@persona:helper");
+        assert_eq!(persona_db_handle(&"helper".into()), "@persona:helper");
         // First-class citizenship: an explicit kind sentinel passes through to
         // its OWN bucket, so a Claude Code / Codex agent's /continuum:memory
         // writes land in agents/<name>/ (durable, own-dir — the amnesia fix),
         // and a human's in humans/<name>/.
-        assert_eq!(persona_db_handle("@agent:claude-code"), "@agent:claude-code");
-        assert_eq!(persona_db_handle("@human:joel"), "@human:joel");
-        assert_eq!(persona_db_handle("@persona:Asha"), "@persona:Asha");
+        assert_eq!(persona_db_handle(&"@agent:claude-code".into()), "@agent:claude-code");
+        assert_eq!(persona_db_handle(&"@human:joel".into()), "@human:joel");
+        assert_eq!(persona_db_handle(&"@persona:Asha".into()), "@persona:Asha");
     }
 
     // what this catches: the five memory commands carry their `memory/<verb>` wire
