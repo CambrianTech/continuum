@@ -347,18 +347,21 @@ impl AircCitizen for StubAircCitizen {
     }
 
     async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError> {
-        // No service-loop test drives the stub's subscribe — the
-        // service loop receives messages through StubConversation
-        // directly, never through the citizen's stream. If a future
-        // test ever wires the stub into the conversation, this panics
-        // visibly per [[no-fallbacks-ever]] rather than silently
-        // returning an empty stream or fabricating an AircError
-        // variant that doesn't fit ("Transport"/"Route"/etc).
-        unreachable!(
-            "StubAircCitizen::subscribe_all_rooms must not be called — \
-             service-loop tests should drive the loop through \
-             StubConversation directly, not through the citizen handle"
-        );
+        // This USED to `unreachable!()` on the premise that nothing drives the
+        // stub's subscribe — true when it was written, false since #398 slice 3
+        // (bf11a66a7) gave `PersonaSupervisor::materialize` a subscribe call to
+        // wire the doctrine/wall cache invalidators. Five supervisor tests have
+        // been panicking here ever since; the assertion outlived its premise.
+        //
+        // Returning `Transport` rather than an empty stream is the honest answer
+        // and NOT a fallback: a stub has no transport, and that is exactly the
+        // condition the caller already handles explicitly — it keeps both sources
+        // uncached ("correct, just slow") and logs loud. So the supervisor tests
+        // now exercise the real degradation branch instead of dying, and a stub
+        // still never pretends to carry a live stream.
+        Err(AircError::Transport(
+            "StubAircCitizen has no transport — no event stream to subscribe to".to_string(),
+        ))
     }
 
     async fn say_in(&self, _room_id: Uuid, _text: &str) -> Result<EventId, AircError> {
