@@ -506,6 +506,19 @@ pub(crate) fn resolve_identity(roster: &[RosterSlotView], id: Uuid) -> ResolvedS
 /// consume loop owns it.
 struct ChatProjection {
     substrate: Substrate,
+    /// Per-ROOM stores (#408). The node `substrate` above holds ONE room's view at
+    /// a time — the focused room's — which is correct for today's web session and
+    /// useless to a citizen standing in a different room. Every per-room envelope
+    /// is ALSO written to its room's own store here, so a consumer that knows which
+    /// room it means (a persona's grounding via `ViewStateRagSource`) can read THAT
+    /// room instead of whichever wrote last.
+    ///
+    /// ONE fold, TWO sinks — not two folds. The projection computes the view once;
+    /// the same `StateEnvelope` (same revision) lands in both. A second FOLD is what
+    /// goes stale (#346); a second SINK of one fold cannot.
+    ///
+    /// `None` in tests/headless — the node substrate alone, today's behavior.
+    rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
     builder: StateBuilder,
     /// The room this accumulator currently describes. `None` before the
     /// first recognized event.
@@ -594,7 +607,18 @@ impl ChatProjection {
         substrate: Substrate,
         purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
     ) -> Self {
+        Self::with_rooms(substrate, purpose_source, None)
+    }
+
+    /// As [`Self::with_purpose`], plus the per-room stores every per-room envelope
+    /// is mirrored into (#408).
+    fn with_rooms(
+        substrate: Substrate,
+        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+        rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
+    ) -> Self {
         Self {
+            rooms,
             substrate,
             // The projection is the SOLE writer of the `chat` kind, so
             // its own standalone `Revisions` well is the authoritative
@@ -846,7 +870,8 @@ impl ChatProjection {
             if !unchanged {
                 let payload = serde_json::to_value(&exp)
                     .expect("Experience must serialize — substrate bug, not a runtime error");
-                self.substrate.store(
+                self.store_room_scoped(
+                    room_id,
                     self.experience_builder
                         .session_raw(Experience::KIND, payload),
                 );
@@ -859,11 +884,13 @@ impl ChatProjection {
         // names/kinds/vitals — the display data the manifest's minimal Member omits.
         // Emit-on-change (roster only shifts on presence, not per message).
         if self.last_roster.borrow().as_deref() != Some(roster.as_slice()) {
-            self.substrate
-                .store(self.roster_builder.session(RosterViewState {
+            self.store_room_scoped(
+                room_id,
+                self.roster_builder.session(RosterViewState {
                     room_id,
                     roster: roster.clone(),
-                }));
+                }),
+            );
             *self.last_roster.borrow_mut() = Some(roster.clone());
         }
 
@@ -880,7 +907,20 @@ impl ChatProjection {
             acts: self.acts.iter().cloned().collect(),
             roster,
         };
-        self.substrate.store(self.builder.session(view));
+        self.store_room_scoped(room_id, self.builder.session(view));
+    }
+
+    /// Store one per-room envelope to BOTH sinks: the node substrate (what the
+    /// focused-room web session reads today) and the room's own store (what a
+    /// consumer that names its room reads).
+    ///
+    /// ONE place decides the dual-sink rule, so a future kind cannot be added to one
+    /// sink and forgotten in the other — the compression law applied to a write path.
+    fn store_room_scoped(&self, room_id: Uuid, envelope: continuum_positron::StateEnvelope) {
+        if let Some(rooms) = &self.rooms {
+            rooms.for_room(room_id).store(envelope.clone());
+        }
+        self.substrate.store(envelope);
     }
 
     /// Assemble this room's [`Experience`] manifest: recipe (by the room's purpose)
@@ -1231,6 +1271,54 @@ mod tests {
             .get(ChatViewState::KIND)
             .expect("a chat envelope must be stored");
         serde_json::from_value(env.payload.clone()).expect("payload is a ChatViewState")
+    }
+
+    // what this catches (#408): the per-room sink actually receiving data. The node
+    // substrate holds ONE room's view — whichever wrote last — so a citizen standing
+    // in an EARLIER room reads the wrong room or nothing. With the dual sink, each
+    // room's own store keeps ITS view, which is what `ViewStateRagSource` reads.
+    // If this regresses, per-room substrates exist but stay empty and every citizen
+    // is blind again with nothing failing.
+    #[tokio::test]
+    async fn each_rooms_view_lands_in_that_rooms_own_store() {
+        use continuum_positron::scoping::PerRoomSubstrates;
+        let node = Substrate::new();
+        let rooms = std::sync::Arc::new(PerRoomSubstrates::new());
+        let mut p = ChatProjection::with_rooms(
+            node.clone(),
+            crate::ipc::room_purpose::default_source(),
+            Some(rooms.clone()),
+        );
+
+        let room_a = Uuid::from_u128(0xa);
+        let room_b = Uuid::from_u128(0xb);
+        // Two rooms speak, B last — so the node substrate ends on B.
+        for (room, msg, text) in [
+            (room_a, Uuid::from_u128(0x1), "hello from A"),
+            (room_b, Uuid::from_u128(0x2), "hello from B"),
+        ] {
+            match classify(CHAT_POSTED, &posted(room, msg, text)).unwrap() {
+                ProjectionInput::Message(m) => p.apply_message(m),
+                _ => panic!("chat:posted must classify as a Message"),
+            }
+        }
+
+        // The node holds the LAST room — today's focused-room behavior, unchanged.
+        assert_eq!(current_chat(&node).room_id, room_b);
+
+        // But each room's OWN store kept its own view: room A is not lost.
+        let read = |room: Uuid| -> ChatViewState {
+            let env = rooms
+                .for_room(room)
+                .cache()
+                .get(ChatViewState::KIND)
+                .expect("each room keeps its own chat view");
+            serde_json::from_value(env.payload.clone()).expect("a ChatViewState")
+        };
+        assert_eq!(read(room_a).room_id, room_a);
+        assert_eq!(read(room_b).room_id, room_b);
+        assert!(read(room_a).messages.iter().any(|m| m.content == "hello from A"));
+        assert!(read(room_b).messages.iter().any(|m| m.content == "hello from B"));
     }
 
     #[test]
