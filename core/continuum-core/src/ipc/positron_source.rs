@@ -715,7 +715,11 @@ impl ChatProjection {
     /// joined); a rostered actor re-resolves so display identity stays
     /// single-sourced.
     fn apply_act(&mut self, act: PersonaActUpdate) {
-        if self.pinned_away_from(act.room_id) {
+        // A nil room is not a room: headless solves radiate acts with
+        // Uuid::nil() (guarded at the producer, kept here as defense in
+        // depth) — folding one would switch_room(nil) and wipe the live
+        // room's view onto a phantom (observed live 2026-08-12).
+        if act.room_id.is_nil() || self.pinned_away_from(act.room_id) {
             return;
         }
         self.switch_room(act.room_id);
@@ -1096,6 +1100,33 @@ mod tests {
         let view = current_chat(&substrate);
         assert_eq!(view.acts.len(), 1);
         assert_eq!(view.acts[0].tool, "code/shell");
+    }
+
+    #[test]
+    fn nil_room_act_never_steals_the_projection() {
+        // what this catches: regression for the 2026-08-12 live find — a
+        // headless solve's act carries Uuid::nil() as its room, and folding
+        // it switch_room(nil)'d the projection off the real room, wiping the
+        // live view onto a phantom. A nil-room act must be a no-op.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0x1);
+        if let Some(ProjectionInput::Act(a)) = classify(
+            PERSONA_ACT,
+            &act_payload(room, Uuid::from_u128(0x2), Uuid::from_u128(0x3), "code/read", "a.py"),
+        ) {
+            p.apply_act(a);
+        }
+        assert_eq!(current_chat(&substrate).acts.len(), 1);
+        if let Some(ProjectionInput::Act(a)) = classify(
+            PERSONA_ACT,
+            &act_payload(Uuid::nil(), Uuid::from_u128(0x4), Uuid::from_u128(0x3), "code/shell", "pytest"),
+        ) {
+            p.apply_act(a);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.acts.len(), 1, "nil-room act must not fold or clear");
+        assert_eq!(view.acts[0].tool, "code/read", "real room's receipts survive");
     }
 
     /// A thin `chat:posted` payload — core message facts only, sender
