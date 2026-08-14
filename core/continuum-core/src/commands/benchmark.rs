@@ -579,6 +579,16 @@ pub struct BenchmarkDispatchParams {
     /// leads swe-bench-lite). Ignored for gym-class benchmarks.
     #[serde(default)]
     pub instances: Option<Vec<String>>,
+    /// Also CLOSE this benchmark's redundant duplicate cards, converging the board
+    /// to one live card per task. Off by default — a dispatch that silently closed
+    /// cards would be a surprising verb.
+    ///
+    /// A card someone is genuinely working (a live claim) is never closed; if two
+    /// citizens hold the SAME task, both are kept and the contention is reported
+    /// rather than resolved by cancelling one of them. Pair with `limit=0` to prune
+    /// without dispatching anything new.
+    #[serde(default)]
+    pub prune: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -599,6 +609,29 @@ pub struct BenchmarkDispatchResult {
     /// full coverage is the lie this field exists to prevent.
     #[ts(type = "number")]
     pub skipped_needs_setup: u32,
+    /// Tasks NOT dispatched because a LIVE card for that exact task is already on
+    /// the board (same `[bench <name>] <task_id>:` key, in any non-terminal state).
+    /// Dispatch is idempotent per task: re-running it tops the board up to one card
+    /// per task instead of posting a second copy.
+    ///
+    /// Why this exists: without it, every re-dispatch re-posted the dataset head as
+    /// brand-new cards. Measured on the live board 2026-08-13 — 124 bench cards for
+    /// 51 distinct tasks, `sympy__sympy-24152` alone holding 15 copies, with two
+    /// citizens solving the SAME instance in parallel. That wastes scarce lanes and
+    /// leaves the pass rate with no honest denominator.
+    #[ts(type = "number")]
+    pub skipped_already_on_board: u32,
+    /// Redundant duplicate cards CLOSED by this call (only when `prune` was set).
+    /// Cards under a live claim are never counted here because they are never
+    /// closed — see `contended_tasks`.
+    #[ts(type = "number")]
+    pub pruned_duplicates: u32,
+    /// Tasks where MORE THAN ONE citizen holds a live claim on a duplicate card.
+    /// The prune leaves all of them alone: cancelling one would destroy real
+    /// in-flight work, so this is surfaced as a coordination fact for the room to
+    /// settle rather than resolved silently.
+    #[ts(type = "number")]
+    pub contended_tasks: u32,
     /// Addressed kickoff messages actually delivered (one per dispatched card —
     /// every card is directed at a live citizen). A kickoff that failed to send is
     /// reported via `kickoff_errors`, never silently counted as delivered.
@@ -616,6 +649,64 @@ pub struct BenchmarkDispatchResult {
     pub kickoff_errors: Vec<String>,
 }
 
+/// The IDENTITY of a benchmark card: which task of which benchmark it is.
+///
+/// This is the ONE definition of "same task" on the board, and it is a strict
+/// prefix of the rendered title — so the key a dispatch computes and the key
+/// parsed back off a live card can never drift (pinned by
+/// `a_rendered_title_yields_back_its_own_key`). `dispatch_card_title` builds on
+/// it rather than re-forming the marker, per the compression rule: one logical
+/// decision, one place.
+pub(crate) fn dispatch_card_key(bench: &str, task_id: &str) -> String {
+    format!("[bench {bench}] {task_id}:")
+}
+
+/// Recover the identity key from a rendered card title, or `None` when the
+/// title is not a benchmark card at all (a hand-written card on the same board
+/// must never collide with a task key). Reads the prefix through the FIRST `:`
+/// after the `]` marker — a gist containing colons cannot widen the key.
+pub(crate) fn bench_card_key(title: &str) -> Option<&str> {
+    if !title.starts_with("[bench ") {
+        return None;
+    }
+    let marker_end = title.find("] ")? + 2;
+    let colon = title[marker_end..].find(':')? + marker_end;
+    Some(&title[..=colon])
+}
+
+/// Which of a task's duplicate cards to CLOSE, and whether the duplication is
+/// contended. Pure over the claim states so the rule is testable without a
+/// board — the caller maps the returned indices back to cards.
+///
+/// The rule, in priority order:
+///  • A card someone is genuinely ON (`Hold::Held`) is NEVER closed. Duplicates
+///    are board litter; an in-flight claim is a citizen's work, and destroying
+///    it to tidy up would cost more than the duplication does.
+///  • If no card is held, keep the FIRST and close the rest — they are
+///    interchangeable, so the choice only has to be deterministic.
+///  • If MORE THAN ONE card is held, every held card is kept and the caller is
+///    told (`contended`). Two citizens really are on the same task; that is a
+///    coordination fact for them to settle, not something a prune should
+///    silently resolve by cancelling someone.
+fn duplicates_to_close(holds: &[crate::persona::card_holder::Hold]) -> (Vec<usize>, bool) {
+    use crate::persona::card_holder::Hold;
+    if holds.len() <= 1 {
+        return (Vec::new(), false);
+    }
+    let held: Vec<usize> = holds
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| matches!(h, Hold::Held))
+        .map(|(i, _)| i)
+        .collect();
+    let to_close = if held.is_empty() {
+        (1..holds.len()).collect()
+    } else {
+        (0..holds.len()).filter(|i| !held.contains(i)).collect()
+    };
+    (to_close, held.len() > 1)
+}
+
 /// Compose the card TITLE for one benchmark task. `[bench <name>]` is the
 /// machine-findable marker the (future) grading sentinel keys on; the rest is
 /// for the citizen scanning the board.
@@ -626,7 +717,7 @@ pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> S
     } else {
         ""
     };
-    format!("[bench {bench}] {task_id}: {gist}{ellipsis}")
+    format!("{} {gist}{ellipsis}", dispatch_card_key(bench, task_id))
 }
 
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
@@ -883,17 +974,42 @@ impl ActionCommand for BenchmarkDispatch {
         // ARE their work). See `curator_airc`.
         let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
 
+        // ONE board read serves BOTH the repo inference below and the idempotence
+        // gate that follows — the board is the authority on what is already being
+        // worked, so read it once and answer both questions from the same snapshot.
+        let board = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+            .snapshot();
+
+        // Tasks that ALREADY have a live card. A card in a terminal state (Closed /
+        // Merged) is finished work and must NOT block a re-dispatch — that is how a
+        // benchmark gets legitimately re-run. Everything else (Open, Claimed,
+        // InProgress, Blocked, Review) is live work; posting a second card for it
+        // just splits effort across duplicates.
+        // Grouped by task key, because the same map answers BOTH questions: "does
+        // this task already have a card?" (the idempotence gate) and "which of its
+        // cards are redundant?" (the optional prune below).
+        let mut live_by_task: std::collections::HashMap<&str, Vec<&airc_lib::WorkCard>> =
+            std::collections::HashMap::new();
+        for c in board.cards.iter().filter(|c| {
+            !matches!(
+                c.state,
+                airc_lib::CardState::Closed | airc_lib::CardState::Merged
+            )
+        }) {
+            if let Some(k) = bench_card_key(&c.title) {
+                live_by_task.entry(k).or_default().push(c);
+            }
+        }
+
         // Repo: caller-supplied, else the repo the board already uses. No
         // baked-in default — an empty board with no repo argument is a real
         // question only the operator can answer.
         let repo_key = match p.repo {
             Some(r) => r,
             None => {
-                let board = airc
-                    .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                    .await
-                    .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
-                    .snapshot();
                 board
                     .cards
                     .first()
@@ -924,10 +1040,19 @@ impl ActionCommand for BenchmarkDispatch {
         let roster = resolve_dispatch_roster(&self.registry.roster_snapshot(), &requested)?;
 
         let take = p.limit.map(|l| l as usize).unwrap_or(prepared.len());
+        // Every task key THIS benchmark owns — captured before the loop consumes
+        // `prepared`, and deliberately NOT limited by `take`: a prune must be able
+        // to clean duplicates for tasks outside the current dispatch window, which
+        // is what makes `limit=0 prune=true` a pure board-cleanup call.
+        let planned_keys: Vec<String> = prepared
+            .iter()
+            .filter_map(|pc| bench_card_key(&pc.title).map(str::to_string))
+            .collect();
         // Continuum home under which each citizen's workspace lives (for SWE staging).
         let stage_home = continuum_home().ok();
         let mut card_ids = Vec::new();
         let mut skipped_needs_setup = 0u32;
+        let mut skipped_already_on_board = 0u32;
         let mut kickoffs = 0u32;
         let mut solves_fired = 0u32;
         let mut kickoff_errors = Vec::new();
@@ -960,6 +1085,21 @@ impl ActionCommand for BenchmarkDispatch {
             // than the benchmark holds; the count rides on the result instead.
             if pc.needs_setup {
                 skipped_needs_setup += 1;
+                continue;
+            }
+
+            // IDEMPOTENCE: this exact task already has a live card. Re-dispatching
+            // would post a duplicate, and duplicates are not free — two citizens
+            // claiming two cards for one instance burn two of a 2-4 lane box on the
+            // same problem, and the resulting board has no honest denominator to
+            // compute a pass rate from. The key comes from `pc.title` itself, so the
+            // string we match on is the string that would have been posted.
+            //
+            // Skipping is REPORTED (`skipped_already_on_board`), never silent — same
+            // contract as `skipped_needs_setup` above: a partial dispatch that reads
+            // as full coverage is the lie these counters exist to prevent.
+            if bench_card_key(&pc.title).is_some_and(|k| live_by_task.contains_key(k)) {
+                skipped_already_on_board += 1;
                 continue;
             }
 
@@ -1079,11 +1219,60 @@ impl ActionCommand for BenchmarkDispatch {
             card_ids.push(short);
         }
 
+        // PRUNE (opt-in): converge the board to one live card per task for THIS
+        // benchmark. Scoped to the keys this dispatch planned, so pruning one
+        // benchmark can never touch another's cards — or a hand-written one.
+        //
+        // Runs AFTER dispatch so a card just posted for a task is already in the
+        // group and cannot be orphaned by a prune that ran against a stale read.
+        let mut pruned_duplicates = 0u32;
+        let mut contended_tasks = 0u32;
+        if p.prune.unwrap_or(false) {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            for key in planned_keys.iter() {
+                let Some(group) = live_by_task.get(key.as_str()) else {
+                    continue;
+                };
+                let holds: Vec<_> = group
+                    .iter()
+                    .map(|c| crate::persona::card_holder::hold_of(c, now_ms))
+                    .collect();
+                let (to_close, contended) = duplicates_to_close(&holds);
+                if contended {
+                    contended_tasks += 1;
+                }
+                for idx in to_close {
+                    let card_id = group[idx].card_id;
+                    match airc
+                        .change_work_card_state(airc_lib::ChangeWorkCardState {
+                            card_id,
+                            state: airc_lib::CardState::Closed,
+                        })
+                        .await
+                    {
+                        Ok(_) => pruned_duplicates += 1,
+                        // A close that fails is REPORTED, never silently dropped —
+                        // the caller must not read a partial prune as a clean board.
+                        Err(e) => kickoff_errors.push(format!(
+                            "prune {}: {e}",
+                            card_id.as_uuid().simple().to_string()[..8].to_string()
+                        )),
+                    }
+                }
+            }
+        }
+
         Ok(BenchmarkDispatchResult {
             benchmark: spec.name.to_string(),
             dispatched: card_ids.len() as u32,
             card_ids,
             skipped_needs_setup,
+            skipped_already_on_board,
+            pruned_duplicates,
+            contended_tasks,
             kickoffs,
             solves_fired,
             kickoff_errors,
@@ -1119,6 +1308,155 @@ mod tests {
             crate::cognition::gym::resolve_gym(b.eval_set.unwrap()).unwrap_or_else(|e| {
                 panic!("benchmark '{}' eval_set does not resolve: {e}", b.name)
             });
+        }
+    }
+
+    // The dispatch idempotence key (#417). These pin the ONE property the gate
+    // rests on: the key a dispatch computes for a task and the key parsed back
+    // off that task's own live card are the same string. If they ever diverge,
+    // dedupe silently stops working and the board refills with duplicates —
+    // which is exactly the state these tests were written from (124 bench cards
+    // for 51 distinct tasks, sympy__sympy-24152 holding 15 of them).
+    mod dispatch_identity {
+        use super::*;
+
+        // what this catches: key/title drift. The key MUST be a prefix of the
+        // rendered title, so a card on the board can be matched back to the task
+        // that would produce it. A future edit to either function that breaks the
+        // prefix relation fails here instead of silently duplicating cards.
+        #[test]
+        fn a_rendered_title_yields_back_its_own_key() {
+            for (bench, task, prompt) in [
+                ("swe-bench-lite", "sympy__sympy-24152", "Bug in expand of TensorProduct"),
+                ("hard-rs", "rle_roundtrip", "Implement run-length encoding and decoding"),
+                // A prompt long enough to be truncated with an ellipsis.
+                ("frontier-rs", "dijkstra", &"x".repeat(200)),
+                // A prompt containing colons must not widen the key past the FIRST one.
+                ("hard-rs", "spiral_order", "note: returns Vec<i32>: in spiral order"),
+            ] {
+                let title = dispatch_card_title(bench, task, prompt);
+                let key = dispatch_card_key(bench, task);
+                assert!(
+                    title.starts_with(&key),
+                    "key must be a prefix of its own title\n  title: {title}\n  key:   {key}"
+                );
+                assert_eq!(
+                    bench_card_key(&title),
+                    Some(key.as_str()),
+                    "parsing a rendered title must recover exactly the constructed key ({title})"
+                );
+            }
+        }
+
+        // what this catches: two DIFFERENT tasks (or the same task id under two
+        // different benchmarks) must never collide onto one key — a collision
+        // would suppress a legitimate card as a false duplicate.
+        #[test]
+        fn distinct_tasks_never_share_a_key() {
+            let a = dispatch_card_key("swe-bench-lite", "sympy__sympy-24152");
+            let b = dispatch_card_key("swe-bench-lite", "sympy__sympy-24066");
+            let c = dispatch_card_key("swe-bench-verified", "sympy__sympy-24152");
+            assert_ne!(a, b, "different task ids must differ");
+            assert_ne!(a, c, "same task under a different benchmark must differ");
+        }
+
+        // what this catches: a hand-written card sharing the board must never be
+        // read as a benchmark task key. `bench_card_key` returning Some for an
+        // ordinary card would let unrelated work suppress a real dispatch.
+        #[test]
+        fn a_non_benchmark_card_has_no_task_key() {
+            for title in [
+                "Stage-on-claim: SWE checkout follows the CLAIMER",
+                "[not-a-bench] whatever: text",
+                "",
+                // Marker present but no colon at all — not a dispatchable card.
+                "[bench swe-bench-lite] malformed title with no colon",
+            ] {
+                assert_eq!(
+                    bench_card_key(title),
+                    None,
+                    "non-benchmark title must yield no key: {title:?}"
+                );
+            }
+        }
+    }
+
+    // The prune's selection rule. These guard a DESTRUCTIVE operation, so the
+    // bar is: never close work someone is doing, and never resolve a genuine
+    // two-citizen collision by cancelling one of them.
+    mod duplicate_selection {
+        use super::*;
+        use crate::persona::card_holder::Hold;
+
+        // what this catches: THE unacceptable failure — closing a card a citizen
+        // is actively working. Every arrangement of a held card among duplicates
+        // must leave that card open.
+        #[test]
+        fn a_held_card_is_never_closed() {
+            for holds in [
+                vec![Hold::Held, Hold::Unclaimed],
+                vec![Hold::Unclaimed, Hold::Held],
+                vec![Hold::Unclaimed, Hold::Held, Hold::Lapsed],
+                vec![Hold::Lapsed, Hold::Lapsed, Hold::Held],
+            ] {
+                let held: Vec<usize> = holds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, h)| matches!(h, Hold::Held))
+                    .map(|(i, _)| i)
+                    .collect();
+                let (to_close, _) = duplicates_to_close(&holds);
+                for h in held {
+                    assert!(
+                        !to_close.contains(&h),
+                        "index {h} is HELD and must never be closed (holds={holds:?}, \
+                         to_close={to_close:?})"
+                    );
+                }
+                // And the prune must actually do something about the rest.
+                assert_eq!(
+                    to_close.len(),
+                    holds.len() - 1,
+                    "exactly one card survives when a single card is held"
+                );
+            }
+        }
+
+        // what this catches: two citizens genuinely on the same task. Cancelling
+        // either would destroy real in-flight work, so BOTH survive and the caller
+        // is told it is contended.
+        #[test]
+        fn a_contended_task_keeps_every_holder_and_is_reported() {
+            let holds = vec![Hold::Held, Hold::Held, Hold::Unclaimed, Hold::Lapsed];
+            let (to_close, contended) = duplicates_to_close(&holds);
+            assert!(contended, "two live claims on one task must report contention");
+            assert_eq!(
+                to_close,
+                vec![2, 3],
+                "only the unheld duplicates are closed; both holders survive"
+            );
+        }
+
+        // what this catches: the ordinary case — nobody is on any of them, so the
+        // choice only has to be deterministic. Keep the first.
+        #[test]
+        fn unheld_duplicates_collapse_to_the_first() {
+            let holds = vec![Hold::Unclaimed, Hold::Unclaimed, Hold::Lapsed];
+            let (to_close, contended) = duplicates_to_close(&holds);
+            assert_eq!(to_close, vec![1, 2]);
+            assert!(!contended);
+        }
+
+        // what this catches: a task with ONE card is not a duplicate and must be
+        // left completely alone — a prune that closed singletons would empty the
+        // board instead of deduplicating it.
+        #[test]
+        fn a_single_card_is_never_touched() {
+            for holds in [vec![], vec![Hold::Unclaimed], vec![Hold::Held], vec![Hold::Lapsed]] {
+                let (to_close, contended) = duplicates_to_close(&holds);
+                assert!(to_close.is_empty(), "singleton/empty must yield no closes: {holds:?}");
+                assert!(!contended);
+            }
         }
     }
 }
