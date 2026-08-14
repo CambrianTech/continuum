@@ -1360,36 +1360,74 @@ async fn stop() -> Result<(), String> {
     let socket = socket_path();
     let pidfile = pidfile_for(&socket);
 
-    let mut stopped = false;
+    let mut pidfile_core: Option<i32> = None;
     if let Ok(contents) = std::fs::read_to_string(&pidfile) {
         if let Ok(pid) = contents.trim().parse::<i32>() {
             kill_pid_tree(pid);
-            stopped = true;
+            pidfile_core = Some(pid);
             println!("stopping core (pid {pid})");
         }
         let _ = std::fs::remove_file(&pidfile);
     }
+    let stopped = pidfile_core.is_some();
 
-    if !stopped {
-        // No pidfile (started another way). This fallback WAS `pkill -f
-        // continuum-core-server`, which does not exist on Windows: the spawn
-        // failed, `.unwrap_or(false)` swallowed it, and stop printed "no
-        // running core found" while the core was running — the identical bug,
-        // in the identical shape, to the `pgrep` one documented on
-        // `processes_named` a few hundred lines up. That fix ported the finder
-        // to sysinfo and missed this sibling call site, so a repaired function
-        // sat directly above an unrepaired twin. Same enumerator now, one
-        // implementation, both platforms.
-        let cores = running_core_pids();
-        if cores.is_empty() {
+    // The pidfile names ONE core. It is not evidence that only one is running.
+    //
+    // This sweep used to be gated behind `if !stopped` — a pidfile present meant
+    // "handled, nothing else to look for". Measured 2026-08-14: two cores were
+    // alive at once, both with /tmp/continuum-core.sock open (a debug build at
+    // 23:51 and the installed release at 23:54, the second having unlinked and
+    // re-bound the path). `stop` printed "stopping core (pid 70240)" — singular —
+    // reaped that one, and left the other serving. The `reap_owned_orphans` sweep
+    // below could not catch it either: ownership there is keyed on
+    // `~/.continuum/bin`, and a core built into the project's mandated
+    // CARGO_TARGET_DIR is not under that root, so a dev-built core is invisible to
+    // it by construction.
+    //
+    // A second core on this machine is never benign — whichever one the kernel
+    // hands a connection to is the one that answers, so a shipped fix can look
+    // intermittently broken and an unshipped one intermittently fixed. `stop`
+    // must therefore always enumerate, and must be LOUD about a survivor: an
+    // extra core is evidence of a lifecycle bug, exactly as an orphan is.
+    //
+    // (The enumerator itself was `pkill -f continuum-core-server`, which does not
+    // exist on Windows: the spawn failed, `.unwrap_or(false)` swallowed it, and
+    // stop printed "no running core found" while the core was running — the same
+    // shape as the `pgrep` bug documented on `processes_named` above. That fix
+    // ported the finder to sysinfo and missed this sibling call site.)
+    // Exclude the pidfile core: SIGTERM is asynchronous, so it is very likely
+    // still in the process table on the next line. Counting it here would report
+    // a SPLIT BRAIN on every ordinary stop — a false alarm on a message whose
+    // whole value is that it only fires when something is genuinely wrong.
+    let survivors: Vec<i32> = running_core_pids()
+        .into_iter()
+        .filter(|pid| Some(*pid) != pidfile_core)
+        .filter(|pid| pid_alive(*pid))
+        .collect();
+    if survivors.is_empty() {
+        if !stopped {
             println!("no running core found");
-        } else {
-            for pid in &cores {
-                kill_pid_tree(*pid);
-            }
+        }
+    } else {
+        if stopped {
+            println!(
+                "  SPLIT BRAIN: {} core(s) still running after the pidfile core was stopped \
+                 — reaping (pid(s) {})",
+                survivors.len(),
+                survivors
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        for pid in &survivors {
+            kill_pid_tree(*pid);
+        }
+        if !stopped {
             println!(
                 "stopped continuum-core-server (pid(s) {})",
-                cores
+                survivors
                     .iter()
                     .map(|p| p.to_string())
                     .collect::<Vec<_>>()
