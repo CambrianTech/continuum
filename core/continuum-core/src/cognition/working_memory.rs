@@ -192,6 +192,24 @@ pub struct WorkingMemory {
     /// per session are naturally modest (a persona issues dozens of distinct calls,
     /// not millions), so it is left unbounded within the per-spawn lifetime.
     action_fp_counts: Mutex<HashMap<String, usize>>,
+    /// The PROPRIOCEPTION RECEIPT ARCHIVE — receipts-ONLY, head lines only (#414 option b).
+    ///
+    /// `entries` above is a SHARED ring: thoughts, facts, settlements and receipts all
+    /// compete for the same `capacity` slots, and receipts are the RARE kind, so they age
+    /// out while the act counter climbs. Measured 2026-08-14: Asha had executed 2,863
+    /// acts and her window rendered ONE (`+2862 earlier steps aged out`) — and with her
+    /// history invisible she concluded she had nothing to contribute (the withdrawal
+    /// loop's deprivation mechanism). Tool-origin engrams hold the durable copy but are
+    /// deliberately gated OUT of semantic recall (#166), so there was NO persona-facing
+    /// path back to her own acts.
+    ///
+    /// This ring is that path: every receipt's `[action #n]` FIRST LINE, in order,
+    /// bounded by CHARS ([`ContextBudget::receipt_archive_chars`] — window-derived,
+    /// never a bare count) instead of sharing the chatty ring's entry slots. The
+    /// steps-taken ledger renders from here, so act history survives conversation.
+    /// Persisted in [`VolatileSnapshot`] like the ring itself
+    /// ([[act-results-need-a-recency-channel-not-semantic-recall]]).
+    receipt_heads: Mutex<VecDeque<String>>,
     /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
     /// still inside the act→observe loop that produced it and hasn't yet spoken. The
     /// full raw result exists to answer "what next" the moment the hands fetch it; once
@@ -273,6 +291,13 @@ pub struct VolatileSnapshot {
     /// then says nothing rather than guessing a change it cannot see (#165).
     #[serde(default)]
     pub build_sha: String,
+    /// The proprioception receipt archive (#414) — act-history head lines that must
+    /// survive a reboot exactly as the ring entries do (the counter already did; a
+    /// counter without its lines is the deprivation this field exists to end). Empty
+    /// on snapshots written before this field (serde default): restore starts the
+    /// archive fresh and the ledger's counter-only arm stays honest about the gap.
+    #[serde(default)]
+    pub receipt_heads: Vec<String>,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -305,6 +330,7 @@ impl WorkingMemory {
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
+            receipt_heads: Mutex::new(VecDeque::new()),
             active_from_seq: AtomicU64::new(0),
         }
     }
@@ -434,15 +460,43 @@ impl WorkingMemory {
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
         // trail's KV-cache prefix byte-stable across a settle-act.
         let head: String = a.chars().take(self.budget().trail_head_chars()).collect();
+        let text = format!("[action #{seq}] {head}");
+        // Receipts-own archive (#414): the FIRST LINE of every receipt, kept beyond the
+        // shared ring's lifetime so the steps ledger can show act HISTORY, not just the
+        // last few conversation beats. Char-bounded by the window-derived archive share.
+        self.push_receipt_head(text.lines().next().unwrap_or_default().to_string());
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
             kind: WmKind::Receipt { n: seq },
-            text: format!("[action #{seq}] {head}"),
+            text,
             acts,
         });
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// Append one receipt head line to the proprioception archive and evict oldest-first
+    /// down to the window-derived char share. One body for the live write and the
+    /// snapshot restore, so both obey the same bound.
+    fn push_receipt_head(&self, head_line: String) {
+        let cap = self.budget().receipt_archive_chars();
+        let mut heads = self.receipt_heads.lock();
+        heads.push_back(head_line);
+        let mut total: usize = heads.iter().map(|h| h.chars().count() + 1).sum();
+        while total > cap && heads.len() > 1 {
+            if let Some(evicted) = heads.pop_front() {
+                total -= evicted.chars().count() + 1;
+            }
+        }
+    }
+
+    /// The proprioception receipt archive, oldest → newest: every act's `[action #n]`
+    /// head line that still fits the archive share. The steps-taken ledger renders its
+    /// newest tail from here — the persona-facing path back to her own act history that
+    /// semantic recall deliberately refuses to be (#166 / #414).
+    pub fn receipt_archive(&self) -> Vec<String> {
+        self.receipt_heads.lock().iter().cloned().collect()
     }
 
     /// The TYPED acts still in the recency window, oldest → newest — the parallel
@@ -507,6 +561,7 @@ impl WorkingMemory {
             entries: self.entries.lock().iter().cloned().collect(),
             last_action: self.last_action.lock().clone(),
             action_fps: self.action_fps.lock().iter().cloned().collect(),
+            receipt_heads: self.receipt_heads.lock().iter().cloned().collect(),
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
             saved_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -541,6 +596,14 @@ impl WorkingMemory {
             e.extend(snap.entries);
             while e.len() > self.capacity {
                 e.pop_front();
+            }
+        }
+        {
+            // Same re-clamp contract as `entries`: refill through the one bounded push so
+            // a snapshot from a bigger-window life evicts down to THIS life's share.
+            self.receipt_heads.lock().clear();
+            for head in snap.receipt_heads {
+                self.push_receipt_head(head);
             }
         }
         *self.last_action.lock() = snap.last_action;
@@ -1291,6 +1354,7 @@ mod tests {
             saved_at_ms: 0, // pre-field snapshot: no gap guessed
             interrupted_dispatches: Vec::new(),
             build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
+            receipt_heads: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
         });
         let q = quiet.recent();
         assert_eq!(q.len(), 1);
@@ -1367,6 +1431,52 @@ mod tests {
     // the WmEntry.acts field existed — restores WITHOUT panic, the `acts` defaulting
     // to empty via `#[serde(default)]` (the same contract as saved_at_ms/build_sha).
     // A grid-sync peer or a pre-deploy snapshot must never wedge the mind on restore.
+    #[test]
+    // what this catches: the #414 deprivation regressing — receipts must survive
+    // the shared ring's churn via the receipts-only archive, the archive must stay
+    // within its window-derived CHAR share (never a bare count, never unbounded),
+    // and it must round-trip the volatile snapshot exactly as the ring does. The
+    // measured failure: a 2,863-act citizen whose window showed ONE act read her
+    // own starved history as "I have nothing to contribute".
+    #[test]
+    fn receipt_archive_survives_ring_churn_and_roundtrips_the_snapshot() {
+        let wm = WorkingMemory::new(2);
+        wm.set_served_window(16_384);
+        wm.record_receipt("I ran code/shell(ls) Result: ok");
+        for i in 0..10 {
+            wm.record_fact(&format!("chatty fact {i}"));
+        }
+        assert!(
+            !wm.has_receipt(),
+            "precondition: the ring entry must age out under churn"
+        );
+        let archive = wm.receipt_archive();
+        assert_eq!(archive.len(), 1, "the archive must survive the churn");
+        assert!(archive[0].contains("code/shell(ls)"));
+
+        // Char-bound eviction: flood with receipts; the archive keeps its
+        // NEWEST within the share and never grows unbounded.
+        for i in 0..2000 {
+            wm.record_receipt(&format!("I ran code/read(f{i}) Result: ok"));
+        }
+        let archive = wm.receipt_archive();
+        let cap = wm.budget().receipt_archive_chars();
+        let total: usize = archive.iter().map(|h| h.chars().count() + 1).sum();
+        assert!(total <= cap, "archive exceeded its share: {total} > {cap}");
+        assert!(
+            archive.last().unwrap().contains("f1999"),
+            "eviction must drop oldest, keep newest: {:?}",
+            archive.last()
+        );
+
+        // Snapshot round-trip: the archive persists like the ring.
+        let snap = wm.snapshot();
+        let fresh = WorkingMemory::new(2);
+        fresh.set_served_window(16_384);
+        fresh.restore(snap);
+        assert_eq!(fresh.receipt_archive(), archive);
+    }
+
     #[test]
     fn an_old_snapshot_without_acts_restores_without_panic() {
         // A hand-authored legacy snapshot: entries have NO `acts` key at all.

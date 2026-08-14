@@ -229,6 +229,37 @@ impl ContextBudget {
     pub fn echoed_arg_chars(&self) -> usize {
         self.fraction(64)
     }
+
+    /// Total char share of the PROPRIOCEPTION RECEIPT ARCHIVE — the receipts-ONLY ring in
+    /// [`WorkingMemory`](super::working_memory::WorkingMemory) that makes act history
+    /// survive the chatty shared window (#414 option b). The shared trail evicts by entry
+    /// count and receipts are RARE entries in it, so a citizen with thousands of executed
+    /// acts perceived ONE (measured 2026-08-14: Asha, 2,863 acts, one visible, "+2862
+    /// aged out" — and she read that starvation as "I have nothing to contribute"). The
+    /// archive stores each receipt's HEAD LINE only, so 1/16 of the window holds tens of
+    /// acts on a 16k lane and hundreds on a big one.
+    ///
+    /// Unknown window → the `MIN_SERVE_CTX` floor share, not "no bound": this bounds a
+    /// STORED buffer, and (per [`Self::working_memory_steps`]'s precedent) an unbounded
+    /// buffer is not an honest no-bound — it is a leak.
+    pub fn receipt_archive_chars(&self) -> usize {
+        match self.total_chars {
+            Some(_) => self.fraction(16),
+            None => {
+                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(16)
+            }
+        }
+    }
+
+    /// The steps-taken LEDGER's rendered share — how much of the receipt archive the
+    /// perception fact re-injects per turn. One trail-head-equivalent (`1/64`): head
+    /// lines only, newest first to fit, so the ledger shows a citizen her recent act
+    /// HISTORY without re-creating the double-payment the #324 dedup removed. Render
+    /// bound, not storage: unknown window keeps the honest no-bound (the deliberation
+    /// guard trims downstream), same contract as [`Self::trail_head_chars`].
+    pub fn steps_ledger_chars(&self) -> usize {
+        self.fraction(TRAIL_HEAD_DENOM)
+    }
 }
 
 #[cfg(test)]
