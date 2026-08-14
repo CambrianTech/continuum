@@ -31,23 +31,31 @@ Continuum personas are **citizens**, not query handlers. The README has the full
 
 ## 2. The Brain Pipeline — the verbs that exist
 
-This is the cognition cycle PER PERSONA, PER TURN. **All verbs already exist** in `core/continuum-core/src/cognition/` and `core/continuum-core/src/persona/`. Do not re-implement. Do not parallel. Use them.
+This is the cognition cycle PER PERSONA, PER TURN. The verbs exist in `core/continuum-core/src/cognition/` and `core/continuum-core/src/persona/`. Do not re-implement. Do not parallel.
 
-| # | Verb | Location | Purpose |
-|---|------|----------|---------|
-| 1 | `admission.admit(message)` | `persona/admission_state.rs` | Memory forms — engram lands in L2, dedup + replay-protection enforced. |
-| 2 | `full_evaluate(...)` | `persona/evaluator/mod.rs` | Fast-path gates: sleep mode, undirected-persona chatter, self-message dedup, fast-path priority. Sub-1ms. Silence = first-class outcome. |
-| 3 | `cognition::analyze(AnalysisInput)` | `cognition/shared_analysis/mod.rs` | ONE inference per chat message via single-flight DashMap cache. N personas analyzing the same message coalesce into one inference. Returns `SharedAnalysis` with `suggested_angles` per specialty. **Cache is the optimization; each persona still calls.** |
-| 4 | `score_persona(slot, analysis)` | `cognition/response_orchestrator.rs` | Per-persona relevance via specialty match. Returns `ResponderDecision { is_responder, score, is_lead, reason }`. |
-| 5 | `genome_engine.activate_skill(domain, now_ms)` | `persona/genome_paging.rs` | L1-L5 LoRA paging — page in the adapter for this domain. LRU evicts under pressure. |
-| 6 | `PersonaCognition::compose_for_turn(profile, now_ms)` | `persona/unified.rs` | Brain RAG composition: `engram_source + airc_source + ...` via `FlexboxRagBudgetAdapter` (PR #8 / task #93 — no-clipping, source-owned units, full allocation telemetry). |
-| 7 | `cognition::generate_response::evaluate_response(GenerateResponseRequest)` | `cognition/generate_response.rs` | The agent inference. Takes `AIDecisionContext` (system_prompt + history + trigger). Routes through the provider registry. Typed errors (no silent fallback). |
-| 8 | `cognition::clean_and_validate(...)` | `cognition/response_validator.rs` | Output cleaning + validation. `ValidationOutcome`. |
-| 9 | `cognition::ToolExecutor` | `cognition/tool_executor/` | Executes any `ContentPart::ToolUse` in the response. Multi-modal aware: `MediaItemLite`, `ParsedToolBatch`. Threads results back; may re-call `evaluate_response`. |
-| 10 | `cognition::audit::*` | `cognition/audit.rs` | Audit trail. The substrate's forensic record of what the brain did. |
-| 11 | `cognition::check_redundancy::*` | `cognition/check_redundancy.rs` | Avoid posting echoes the room already covered. |
-| 12 | Brain state updates | `persona/unified.rs` fields | `rate_limiter.track_response`, `content_dedup.record`, `message_cache.push`, `genome_engine.record_activity`, `recall_metadata.*`. |
-| 13 | Post via `ctx.runtime.say(...)` | `persona/airc_citizen.rs` | The persona posts under HER identity (her airc citizen, her peer_id). |
+**Status column added 2026-08-14 (citizenship audit):** the LIVE turn path is the
+WorkspaceCycle in `service_loop.rs` (admit → `build_workspace_turns` → `Burst` →
+faculties → act→observe drive_to_settle). Several verbs below are today reachable
+only from diagnostic commands or from `persona::response::respond`, whose sole
+caller (`PersonaServiceModule`) the module-wiring audit declares UNWIRED/shadowed
+(`runtime/registry.rs`). "dormant" means: exists, tested, NOT on the live per-turn
+path — reuse it when the capability returns, do not write a parallel one.
+
+| # | Verb | Location | Status | Purpose |
+|---|------|----------|--------|---------|
+| 1 | `admission.admit(message)` | `persona/admission_state.rs` | **live** (service_loop) | Memory forms — engram lands in L2, dedup + replay-protection enforced. |
+| 2 | `full_evaluate(...)` | `persona/evaluator/mod.rs` | dormant (command `cognition/full-evaluate` only) | Fast-path gates: sleep mode, undirected-persona chatter, self-message dedup, fast-path priority. Sub-1ms. Silence = first-class outcome. |
+| 3 | `cognition::analyze(AnalysisInput)` | `cognition/shared_analysis/mod.rs` | dormant (respond path only) | ONE inference per chat message via single-flight DashMap cache. N personas analyzing the same message coalesce into one inference. |
+| 4 | `score_persona(slot, analysis)` | `cognition/response_orchestrator.rs` | dormant (respond path only) | Per-persona relevance via specialty match. Returns `ResponderDecision`. |
+| 5 | `genome_engine.activate_skill(domain, now_ms)` | `persona/genome_paging.rs` | dormant (command `cognition/genome-activate-skill` only) | L1-L5 LoRA paging — page in the adapter for this domain. LRU evicts under pressure. |
+| 6 | `PersonaCognition::compose_for_turn(profile, now_ms)` | `persona/unified.rs` | **live** (WorkspaceCycle RAG) | Brain RAG composition: `engram_source + airc_source + roster/doctrine/bench sources` via `FlexboxRagBudgetAdapter`. |
+| 7 | `cognition::generate_response::evaluate_response(...)` | `cognition/generate_response.rs` | dormant (command wrapper + respond path; the live turn infers via `llm_deliberation_faculty`) | Agent inference through the provider registry. Typed errors (no silent fallback). |
+| 8 | `cognition::clean_and_validate(...)` | `cognition/response_validator.rs` | dormant (test-only today) | Output cleaning + validation. `ValidationOutcome`. |
+| 9 | `cognition::ToolExecutor` | `cognition/tool_executor/` | **live** (act→observe) | Executes tool calls. Multi-modal aware. Results re-enter as working-memory receipts + engrams. |
+| 10 | `cognition::audit::*` | `cognition/audit.rs` | dormant (types used by threat_detector; no turn-cycle caller) | Audit trail. The substrate's forensic record of what the brain did. |
+| 11 | `cognition::check_redundancy::*` | `cognition/check_redundancy.rs` | dormant (`self_repeat.rs` notes it "isn't wired into the live loop"; live repetition perception is the WM repetition brick) | Avoid posting echoes the room already covered. |
+| 12 | Brain state updates | `persona/unified.rs` fields | **live** (partial: dedup/speech rings on the cycle) | `rate_limiter.track_response`, `content_dedup.record`, `message_cache.push`, `recall_metadata.*`. |
+| 13 | Post via `ctx.runtime.say(...)` | `persona/airc_citizen.rs` | **live** | The persona posts under HER identity (her airc citizen, her peer_id). |
 
 **Multi-modal is not a flag.** The input projection (the future `TurnInput` shape) carries `Vec<MediaItemRequest>`. Each item has `kind`, `mime_type`, `blob_hash`, `url`, and a pre-computed `description` from `VisionDescriptionService`. Vision-capable personas get `ContentPart::Image` in the inference request; incapable personas get the description in `ContentPart::Text`. The prompt builder picks.
 
