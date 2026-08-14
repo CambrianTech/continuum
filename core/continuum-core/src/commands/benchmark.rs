@@ -599,6 +599,18 @@ pub struct BenchmarkDispatchResult {
     /// full coverage is the lie this field exists to prevent.
     #[ts(type = "number")]
     pub skipped_needs_setup: u32,
+    /// Tasks NOT dispatched because a LIVE card for that exact task is already on
+    /// the board (same `[bench <name>] <task_id>:` key, in any non-terminal state).
+    /// Dispatch is idempotent per task: re-running it tops the board up to one card
+    /// per task instead of posting a second copy.
+    ///
+    /// Why this exists: without it, every re-dispatch re-posted the dataset head as
+    /// brand-new cards. Measured on the live board 2026-08-13 — 124 bench cards for
+    /// 51 distinct tasks, `sympy__sympy-24152` alone holding 15 copies, with two
+    /// citizens solving the SAME instance in parallel. That wastes scarce lanes and
+    /// leaves the pass rate with no honest denominator.
+    #[ts(type = "number")]
+    pub skipped_already_on_board: u32,
     /// Addressed kickoff messages actually delivered (one per dispatched card —
     /// every card is directed at a live citizen). A kickoff that failed to send is
     /// reported via `kickoff_errors`, never silently counted as delivered.
@@ -616,6 +628,31 @@ pub struct BenchmarkDispatchResult {
     pub kickoff_errors: Vec<String>,
 }
 
+/// The IDENTITY of a benchmark card: which task of which benchmark it is.
+///
+/// This is the ONE definition of "same task" on the board, and it is a strict
+/// prefix of the rendered title — so the key a dispatch computes and the key
+/// parsed back off a live card can never drift (pinned by
+/// `a_rendered_title_yields_back_its_own_key`). `dispatch_card_title` builds on
+/// it rather than re-forming the marker, per the compression rule: one logical
+/// decision, one place.
+pub(crate) fn dispatch_card_key(bench: &str, task_id: &str) -> String {
+    format!("[bench {bench}] {task_id}:")
+}
+
+/// Recover the identity key from a rendered card title, or `None` when the
+/// title is not a benchmark card at all (a hand-written card on the same board
+/// must never collide with a task key). Reads the prefix through the FIRST `:`
+/// after the `]` marker — a gist containing colons cannot widen the key.
+pub(crate) fn bench_card_key(title: &str) -> Option<&str> {
+    if !title.starts_with("[bench ") {
+        return None;
+    }
+    let marker_end = title.find("] ")? + 2;
+    let colon = title[marker_end..].find(':')? + marker_end;
+    Some(&title[..=colon])
+}
+
 /// Compose the card TITLE for one benchmark task. `[bench <name>]` is the
 /// machine-findable marker the (future) grading sentinel keys on; the rest is
 /// for the citizen scanning the board.
@@ -626,7 +663,7 @@ pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> S
     } else {
         ""
     };
-    format!("[bench {bench}] {task_id}: {gist}{ellipsis}")
+    format!("{} {gist}{ellipsis}", dispatch_card_key(bench, task_id))
 }
 
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
@@ -883,17 +920,38 @@ impl ActionCommand for BenchmarkDispatch {
         // ARE their work). See `curator_airc`.
         let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
 
+        // ONE board read serves BOTH the repo inference below and the idempotence
+        // gate that follows — the board is the authority on what is already being
+        // worked, so read it once and answer both questions from the same snapshot.
+        let board = airc
+            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+            .await
+            .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
+            .snapshot();
+
+        // Tasks that ALREADY have a live card. A card in a terminal state (Closed /
+        // Merged) is finished work and must NOT block a re-dispatch — that is how a
+        // benchmark gets legitimately re-run. Everything else (Open, Claimed,
+        // InProgress, Blocked, Review) is live work; posting a second card for it
+        // just splits effort across duplicates.
+        let live_task_keys: std::collections::HashSet<&str> = board
+            .cards
+            .iter()
+            .filter(|c| {
+                !matches!(
+                    c.state,
+                    airc_lib::CardState::Closed | airc_lib::CardState::Merged
+                )
+            })
+            .filter_map(|c| bench_card_key(&c.title))
+            .collect();
+
         // Repo: caller-supplied, else the repo the board already uses. No
         // baked-in default — an empty board with no repo argument is a real
         // question only the operator can answer.
         let repo_key = match p.repo {
             Some(r) => r,
             None => {
-                let board = airc
-                    .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                    .await
-                    .map_err(|e| CommandError::Internal(format!("board read: {e}")))?
-                    .snapshot();
                 board
                     .cards
                     .first()
@@ -928,6 +986,7 @@ impl ActionCommand for BenchmarkDispatch {
         let stage_home = continuum_home().ok();
         let mut card_ids = Vec::new();
         let mut skipped_needs_setup = 0u32;
+        let mut skipped_already_on_board = 0u32;
         let mut kickoffs = 0u32;
         let mut solves_fired = 0u32;
         let mut kickoff_errors = Vec::new();
@@ -960,6 +1019,21 @@ impl ActionCommand for BenchmarkDispatch {
             // than the benchmark holds; the count rides on the result instead.
             if pc.needs_setup {
                 skipped_needs_setup += 1;
+                continue;
+            }
+
+            // IDEMPOTENCE: this exact task already has a live card. Re-dispatching
+            // would post a duplicate, and duplicates are not free — two citizens
+            // claiming two cards for one instance burn two of a 2-4 lane box on the
+            // same problem, and the resulting board has no honest denominator to
+            // compute a pass rate from. The key comes from `pc.title` itself, so the
+            // string we match on is the string that would have been posted.
+            //
+            // Skipping is REPORTED (`skipped_already_on_board`), never silent — same
+            // contract as `skipped_needs_setup` above: a partial dispatch that reads
+            // as full coverage is the lie these counters exist to prevent.
+            if bench_card_key(&pc.title).is_some_and(|k| live_task_keys.contains(k)) {
+                skipped_already_on_board += 1;
                 continue;
             }
 
@@ -1084,6 +1158,7 @@ impl ActionCommand for BenchmarkDispatch {
             dispatched: card_ids.len() as u32,
             card_ids,
             skipped_needs_setup,
+            skipped_already_on_board,
             kickoffs,
             solves_fired,
             kickoff_errors,
@@ -1119,6 +1194,76 @@ mod tests {
             crate::cognition::gym::resolve_gym(b.eval_set.unwrap()).unwrap_or_else(|e| {
                 panic!("benchmark '{}' eval_set does not resolve: {e}", b.name)
             });
+        }
+    }
+
+    // The dispatch idempotence key (#417). These pin the ONE property the gate
+    // rests on: the key a dispatch computes for a task and the key parsed back
+    // off that task's own live card are the same string. If they ever diverge,
+    // dedupe silently stops working and the board refills with duplicates —
+    // which is exactly the state these tests were written from (124 bench cards
+    // for 51 distinct tasks, sympy__sympy-24152 holding 15 of them).
+    mod dispatch_identity {
+        use super::*;
+
+        // what this catches: key/title drift. The key MUST be a prefix of the
+        // rendered title, so a card on the board can be matched back to the task
+        // that would produce it. A future edit to either function that breaks the
+        // prefix relation fails here instead of silently duplicating cards.
+        #[test]
+        fn a_rendered_title_yields_back_its_own_key() {
+            for (bench, task, prompt) in [
+                ("swe-bench-lite", "sympy__sympy-24152", "Bug in expand of TensorProduct"),
+                ("hard-rs", "rle_roundtrip", "Implement run-length encoding and decoding"),
+                // A prompt long enough to be truncated with an ellipsis.
+                ("frontier-rs", "dijkstra", &"x".repeat(200)),
+                // A prompt containing colons must not widen the key past the FIRST one.
+                ("hard-rs", "spiral_order", "note: returns Vec<i32>: in spiral order"),
+            ] {
+                let title = dispatch_card_title(bench, task, prompt);
+                let key = dispatch_card_key(bench, task);
+                assert!(
+                    title.starts_with(&key),
+                    "key must be a prefix of its own title\n  title: {title}\n  key:   {key}"
+                );
+                assert_eq!(
+                    bench_card_key(&title),
+                    Some(key.as_str()),
+                    "parsing a rendered title must recover exactly the constructed key ({title})"
+                );
+            }
+        }
+
+        // what this catches: two DIFFERENT tasks (or the same task id under two
+        // different benchmarks) must never collide onto one key — a collision
+        // would suppress a legitimate card as a false duplicate.
+        #[test]
+        fn distinct_tasks_never_share_a_key() {
+            let a = dispatch_card_key("swe-bench-lite", "sympy__sympy-24152");
+            let b = dispatch_card_key("swe-bench-lite", "sympy__sympy-24066");
+            let c = dispatch_card_key("swe-bench-verified", "sympy__sympy-24152");
+            assert_ne!(a, b, "different task ids must differ");
+            assert_ne!(a, c, "same task under a different benchmark must differ");
+        }
+
+        // what this catches: a hand-written card sharing the board must never be
+        // read as a benchmark task key. `bench_card_key` returning Some for an
+        // ordinary card would let unrelated work suppress a real dispatch.
+        #[test]
+        fn a_non_benchmark_card_has_no_task_key() {
+            for title in [
+                "Stage-on-claim: SWE checkout follows the CLAIMER",
+                "[not-a-bench] whatever: text",
+                "",
+                // Marker present but no colon at all — not a dispatchable card.
+                "[bench swe-bench-lite] malformed title with no colon",
+            ] {
+                assert_eq!(
+                    bench_card_key(title),
+                    None,
+                    "non-benchmark title must yield no key: {title:?}"
+                );
+            }
         }
     }
 }

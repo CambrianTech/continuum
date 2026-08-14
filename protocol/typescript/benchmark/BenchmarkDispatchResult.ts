@@ -17,6 +17,19 @@ card_ids: Array<string>,
  */
 skipped_needs_setup: number, 
 /**
+ * Tasks NOT dispatched because a LIVE card for that exact task is already on
+ * the board (same `[bench <name>] <task_id>:` key, in any non-terminal state).
+ * Dispatch is idempotent per task: re-running it tops the board up to one card
+ * per task instead of posting a second copy.
+ *
+ * Why this exists: without it, every re-dispatch re-posted the dataset head as
+ * brand-new cards. Measured on the live board 2026-08-13 — 124 bench cards for
+ * 51 distinct tasks, `sympy__sympy-24152` alone holding 15 copies, with two
+ * citizens solving the SAME instance in parallel. That wastes scarce lanes and
+ * leaves the pass rate with no honest denominator.
+ */
+skipped_already_on_board: number, 
+/**
  * Addressed kickoff messages actually delivered (one per dispatched card —
  * every card is directed at a live citizen). A kickoff that failed to send is
  * reported via `kickoff_errors`, never silently counted as delivered.
