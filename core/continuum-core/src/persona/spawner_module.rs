@@ -213,6 +213,15 @@ impl PersonaSpawnerModule {
         self
     }
 
+    /// Mutating sibling of [`Self::with_population`], for the boot task that
+    /// only learns the REAL population after constructing the identity
+    /// provider (#432: the plan must be sized to what the provider will
+    /// yield — every resumed citizen — not to the mint floor alone). Same
+    /// ≥1 clamp; same homogeneous-replication safety as the builder form.
+    pub fn set_population(&mut self, population: usize) {
+        self.population = population.max(1);
+    }
+
     /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
     /// every desired role runs the plan's base model, lane count, and host-fit
     /// served context window. The daemon makes the honest per-host decision
@@ -479,6 +488,22 @@ pub async fn bootstrap_planned(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#432): the boot task re-sizing the plan to the
+    // identity provider's real yield. set_population must grow plan() the same
+    // way with_population does (with the same ≥1 clamp) — if it silently
+    // no-opped, every resumed citizen beyond the mint floor would stay
+    // unhosted on disk again.
+    #[test]
+    fn set_population_resizes_the_plan() {
+        let mut spawner =
+            PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        assert_eq!(spawner.plan().len(), 1);
+        spawner.set_population(3);
+        assert_eq!(spawner.plan().len(), 3);
+        spawner.set_population(0);
+        assert_eq!(spawner.plan().len(), 1, "clamped to >=1, same as the builder");
+    }
 
     /// Compat tier produces the LCD roster: Helper + Coder both on
     /// Qwen2.5-0.5B. The canonical Intel-Mac startup state #133

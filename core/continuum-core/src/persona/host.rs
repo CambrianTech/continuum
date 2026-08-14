@@ -240,6 +240,15 @@ impl PersonaSpawnSupervisor {
         }
     }
 
+    /// Re-size the roster plan to the identity provider's REAL yield (#432).
+    /// Called by the boot task after constructing `ResumeOrMintProvider`,
+    /// whose `identities_available()` counts every resumed citizen on disk —
+    /// the plan must have a slot for each of them, or resumed citizens beyond
+    /// the mint floor sit on disk unhosted forever.
+    pub fn set_population(&mut self, population: usize) {
+        self.spawner.set_population(population);
+    }
+
     /// Run the full boot pipeline:
     ///
     /// 1. `bootstrap_planned`: provider intents → airc-bootstrapped

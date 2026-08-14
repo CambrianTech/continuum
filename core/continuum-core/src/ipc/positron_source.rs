@@ -611,11 +611,28 @@ impl ChatProjection {
     }
 
     /// As [`Self::with_purpose`], plus the per-room stores every per-room envelope
-    /// is mirrored into (#408).
+    /// is mirrored into (#408). Experiences resolve from the EMBEDDED recipe set
+    /// only — the right floor for tests and headless fixtures. Production goes
+    /// through [`Self::with_experience`] so on-disk authored recipes resolve too
+    /// (#432).
     fn with_rooms(
         substrate: Substrate,
         purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
         rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
+    ) -> Self {
+        let experience_source = RecipeExperienceSource::builtins(purpose_source.clone());
+        Self::with_experience(substrate, purpose_source, rooms, experience_source)
+    }
+
+    /// As [`Self::with_rooms`], with the experience source INJECTED (#432).
+    /// `spawn` builds it via `builtins_with_overlay` so a recipe authored on
+    /// disk projects without recompiling — the module's own "new experience is
+    /// a new recipe entry, zero code" promise, finally true in production.
+    fn with_experience(
+        substrate: Substrate,
+        purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+        rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
+        experience_source: RecipeExperienceSource,
     ) -> Self {
         Self {
             rooms,
@@ -633,7 +650,7 @@ impl ChatProjection {
             vitals: HashMap::new(),
             loadout: HashMap::new(),
             genes: HashMap::new(),
-            experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
+            experience_source,
             experience_builder: StateBuilder::standalone(),
             last_experience: std::cell::RefCell::new(None),
             roster_builder: StateBuilder::standalone(),
@@ -1081,8 +1098,35 @@ pub fn spawn(
     // roster-empty view until presence next changes. `rx` is subscribed
     // above, so the emitter's re-publish lands in our buffer.
     crate::ipc::positron_presence::request_presence_resync(&bus);
+    // #432: production resolves experiences from the embedded floor PLUS the
+    // on-disk overlay (`<continuum_root>/recipes`) — authoring an activity is a
+    // JSON file, zero code, the module's own promise. A malformed overlay file
+    // is REFUSED loudly here, and the projection keeps the embedded floor so
+    // chat itself never goes dark over one bad recipe; the author gets the
+    // second, harder surface at `activity/spawn`, whose validation reads the
+    // SAME directory and returns the parse error naming the file.
+    let overlay_dir = RecipeExperienceSource::overlay_dir(
+        &crate::modules::persona_instance_manager::resolve_continuum_root(),
+    );
+    let experience_source = match RecipeExperienceSource::builtins_with_overlay(
+        purpose.clone(),
+        &overlay_dir,
+    ) {
+        Ok(source) => source,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                dir = %overlay_dir.display(),
+                "recipe overlay REFUSED — an authored recipe failed to load; \
+                 serving EMBEDDED recipes only until the named file is fixed \
+                 or removed (#432)"
+            );
+            RecipeExperienceSource::builtins(purpose.clone())
+        }
+    };
     rt.spawn(async move {
-        let mut projection = ChatProjection::with_rooms(substrate, purpose, rooms);
+        let mut projection =
+            ChatProjection::with_experience(substrate, purpose, rooms, experience_source);
         if let Some((executor, room)) = seed {
             for payload in fetch_seed_messages(&executor, room).await {
                 if let Some(ProjectionInput::Message(m)) = classify(CHAT_POSTED, &payload) {

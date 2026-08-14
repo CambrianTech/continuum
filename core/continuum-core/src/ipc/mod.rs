@@ -1914,17 +1914,20 @@ pub fn start_server(
         boot_status("airc", kind, &detail);
     }
     let airc_module = Arc::new(AircModule::from_discovery(&discovery));
-    let persona_bootstrap_deps = airc_module
-        .daemon_socket()
-        .map(|p| p.to_path_buf())
-        .zip(airc_module.default_room());
+    // #432 (was the vestigial gate): persona hosting needs the DAEMON SOCKET
+    // only — #298 removed the operator room from birth deps, but the zip here
+    // still required a discovered default room, so "no default room ⇒ no
+    // citizens, for no reason". The room stays a dep ONLY for the consumers
+    // that genuinely ride it: GridCapacityModule (gossip channel) and the
+    // node-level presence emitter.
+    let persona_bootstrap_deps = airc_module.daemon_socket().map(|p| p.to_path_buf());
+    let discovered_default_room = airc_module.default_room();
     let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
-    // The node-level presence emitter (WS seam below) needs the same
-    // (daemon_socket, default_room) the persona block consumes. Clone the
-    // deps here BEFORE that `if let Some(...)` moves them, so the emitter
-    // can attach a heartbeat-less node reader against the same daemon +
-    // room the citizens attach to.
-    let node_presence_deps = persona_bootstrap_deps.clone();
+    // The node-level presence emitter (WS seam below) needs BOTH the daemon
+    // socket and the default room. Build its pair here, BEFORE the persona
+    // block moves the socket, so the emitter can attach a heartbeat-less node
+    // reader against the same daemon + room the citizens attach to.
+    let node_presence_deps = persona_bootstrap_deps.clone().zip(discovered_default_room);
 
     // AircInterceptor's late-bind Arc<Airc>: the interceptor is built ~800 lines
     // below (inside the executor), synchronously, but `Airc::attach_as` is async and
@@ -1937,7 +1940,7 @@ pub fn start_server(
     let interceptor_airc_deps = persona_bootstrap_deps.clone();
     let airc_interceptor_cell: Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>> =
         Arc::new(tokio::sync::OnceCell::new());
-    if let Some((interceptor_daemon_socket, _room)) = interceptor_airc_deps {
+    if let Some(interceptor_daemon_socket) = interceptor_airc_deps {
         let cell = airc_interceptor_cell.clone();
         let root = crate::modules::persona_instance_manager::resolve_continuum_root();
         // `rt_handle.spawn`, NOT bare `tokio::spawn` — this runs in the SYNCHRONOUS boot
@@ -2023,17 +2026,29 @@ pub fn start_server(
         tokio::sync::oneshot::Sender<Arc<crate::runtime::CommandExecutor>>,
     > = None;
 
-    if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
+    if let Some(daemon_socket) = persona_bootstrap_deps {
         // Grid capacity gossip (#56 step 4): this node offers its live capacity to
         // the grid on the module tick and hears every peer's offers (its own echo
         // included — the loopback proof) via inbound_attach → gossip::global_ledger.
-        // Rides the DISCOVERED default room, same dep the citizens attach to.
-        runtime.register(Arc::new(
-            crate::modules::grid_capacity::GridCapacityModule::new(
-                resource_daemon.clone(),
-                default_room,
-            ),
-        ));
+        // Rides the DISCOVERED default room — the ONE consumer in this block that
+        // genuinely needs it (#432: the room is a gossip channel, not a birth dep;
+        // citizens must come online whether or not a default room was discovered).
+        match discovered_default_room {
+            Some(default_room) => {
+                runtime.register(Arc::new(
+                    crate::modules::grid_capacity::GridCapacityModule::new(
+                        resource_daemon.clone(),
+                        default_room,
+                    ),
+                ));
+            }
+            None => {
+                tracing::warn!(
+                    "no default room discovered — grid capacity gossip is NOT \
+                     registered this run; citizens still boot (#432)"
+                );
+            }
+        }
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -2406,6 +2421,25 @@ pub fn start_server(
                         return;
                     }
                 };
+            // #432: size the roster plan to what the provider WILL yield —
+            // every resumed citizen, floored by the mint floor. Before this,
+            // plan slots == floor while the provider held all resumed seeds,
+            // so with 5 citizens on disk and floor=1 only the alphabetically
+            // first came online; the other four sat unhosted forever. The
+            // floor remains a MINT floor only ([[benchmarks-use-our-citizens-never-spawn-disposable-solvers]]:
+            // the durable population is the asset — leaving members unhosted
+            // on disk breaks the contract).
+            let mut supervisor = supervisor;
+            let population = provider.identities_available();
+            if population > persona_floor {
+                tracing::info!(
+                    resumed_plus_floor = population,
+                    persona_floor,
+                    "resumed citizens exceed the mint floor — plan re-sized so \
+                     EVERY citizen on disk comes online (#432)"
+                );
+            }
+            supervisor.set_population(population);
             // Event-driven spawn: the persona host reacts to the serving
             // daemon's published plan (its watch channel) instead of probing
             // the gateway once at boot. The serving daemon ticks every 5s; the
