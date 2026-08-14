@@ -1140,16 +1140,42 @@ impl ActionCommand for BenchmarkDispatch {
         // Repo: caller-supplied, else the repo the board already uses. No
         // baked-in default — an empty board with no repo argument is a real
         // question only the operator can answer.
+        // Repo key, most-explicit-first:
+        //   1. what the caller named;
+        //   2. what the room they came from already uses (unchanged legacy behaviour —
+        //      matches existing cards so a re-dispatch never splits a live board);
+        //   3. THE CHECKOUT'S OWN `origin` — the repo key is a fact about this clone,
+        //      not a string to retype.
+        //
+        // (3) exists because per-run rooms removed (2)'s source by construction: the
+        // FIRST dispatch leaves the curator standing in a fresh empty bench room, so the
+        // SECOND one had nothing to infer from and failed asking for `--repo`. Deriving
+        // it from `origin` fixes that at the root and is right for any repo user on a
+        // fresh clone, the same way `resolve_dispatch_roster` refuses to bake in names.
         let repo_key = match p.repo.clone() {
             Some(r) => r,
-            None => repo_hint.ok_or_else(|| {
-                CommandError::Invalid(
-                    "no `repo` was given and the room you dispatched from has no cards to \
-                     infer one from — pass repo=<owner/name> so the cards land under a real \
-                     board key"
-                        .to_string(),
-                )
-            })?,
+            None => repo_hint
+                .or_else(|| {
+                    // Process cwd, because `git` walks UP to find `.git` — any directory
+                    // inside the checkout answers. The core is launched from the repo by
+                    // start-server.sh, and cognition/eval + gym resolve their roots the
+                    // same way. That is a real cwd dependency of the #195 class, not a
+                    // pretence otherwise: if the core is ever launched from elsewhere this
+                    // returns None and the caller is asked for `repo` — a loud fallback,
+                    // never a wrong board key.
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| crate::code::git_bridge::origin_repo_slug(&cwd))
+                })
+                .ok_or_else(|| {
+                    CommandError::Invalid(
+                        "no `repo` was given, the room you dispatched from has no cards to \
+                         infer one from, and this checkout has no `origin` remote to derive \
+                         one from — pass repo=<owner/name> so the cards land under a real \
+                         board key"
+                            .to_string(),
+                    )
+                })?,
         };
         let repo = RepoId::new(repo_key)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
