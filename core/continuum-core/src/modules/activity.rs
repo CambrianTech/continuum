@@ -152,7 +152,28 @@ impl ActionCommand for ActivitySpawn {
         p: ActivitySpawnParams,
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
+        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent.as_deref()).await
+    }
+}
 
+/// Birth a room from a recipe on an ALREADY-RESOLVED airc handle.
+///
+/// This is the whole of `activity/spawn` minus the caller-identity lookup, split
+/// out because **`activity/spawn` is not the only thing that needs to make a
+/// room**. A benchmark run needs its own room too, and the alternative — a second
+/// creator inside `benchmark/dispatch` — is exactly the parallel-birth-path this
+/// module's header warns about: rooms made by hand carry no recipe and no purpose,
+/// and then every client projects them as plain chat.
+///
+/// One birth path, two callers. A third (activity templates, scheduled runs) slots
+/// in here rather than growing its own.
+pub async fn spawn_activity_room(
+    airc: &Airc,
+    name: &str,
+    recipe: &str,
+    parent: Option<&str>,
+) -> Result<ActivitySpawnResult, CommandError> {
+    {
         // `join` IS room creation in airc: it derives the channel from the name,
         // subscribes this peer, and publishes presence. Reusing it keeps ONE room
         // birth path instead of a parallel creator that would drift from it.
@@ -170,8 +191,8 @@ impl ActionCommand for ActivitySpawn {
         // becomes the separate focusing verb it should be (#290, NavIntent). Until
         // that lands, callers who must not move focus have to restore the pointer
         // themselves, and this doc is the receipt saying why.
-        let room = airc.join(&p.name).await.map_err(|source| {
-            CommandError::Invalid(format!("could not create room {:?}: {source}", p.name))
+        let room = airc.join(name).await.map_err(|source| {
+            CommandError::Invalid(format!("could not create room {name:?}: {source}"))
         })?;
 
         // Bind the room to its recipe ON THE WALL, where every participant sees the
@@ -184,8 +205,8 @@ impl ActionCommand for ActivitySpawn {
         // long as the binding had no reader at all, which is exactly how a field-name
         // typo here would have cost nothing and been noticed by nobody.
         let binding = RoomRecipeBinding {
-            recipe: p.recipe.clone(),
-            parent: p.parent.clone(),
+            recipe: recipe.to_string(),
+            parent: parent.map(str::to_string),
         };
         let body = serde_json::to_string(&binding).map_err(|source| {
             CommandError::Internal(format!("encode recipe binding: {source}"))
@@ -205,7 +226,7 @@ impl ActionCommand for ActivitySpawn {
         Ok(ActivitySpawnResult {
             room_id: room.channel.to_string(),
             name: room.name,
-            recipe: p.recipe,
+            recipe: recipe.to_string(),
             binding_post_id: post_id.to_string(),
         })
     }

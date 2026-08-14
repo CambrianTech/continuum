@@ -579,6 +579,26 @@ pub struct BenchmarkDispatchParams {
     /// leads swe-bench-lite). Ignored for gym-class benchmarks.
     #[serde(default)]
     pub instances: Option<Vec<String>>,
+    /// The room this run lives in. Omit to get a FRESH one per run, named
+    /// `bench-<benchmark>-<epoch>`.
+    ///
+    /// **A run is an activity, and an activity is a room.** Before this existed,
+    /// dispatch had no way to say where — so every suite, every run, forever, piled
+    /// into whichever room the curator happened to be standing in. Measured on one
+    /// 37-minute window of that pile: 136 cards with 66 already CLOSED and still
+    /// resident, and 5,336 of 5,345 inbound events discarded as bookkeeping —
+    /// ~48 wake-ups per minute per citizen, of which NINE in 37 minutes were
+    /// something a mind could actually read. Claim heartbeats scale as
+    /// `O(claims × citizens)`, so the more work a citizen held, the less capacity
+    /// it had to do any of it.
+    ///
+    /// A fresh room per run makes the run's board its OWN denominator, lets the
+    /// round END, and puts the assignees somewhere they can hear each other. Pass
+    /// an explicit name to join an existing run (it must already exist — dispatch
+    /// spawns a room it names, and never silently adopts a stranger's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub room: Option<String>,
     /// Also CLOSE this benchmark's redundant duplicate cards, converging the board
     /// to one live card per task. Off by default — a dispatch that silently closed
     /// cards would be a surprising verb.
@@ -598,6 +618,11 @@ pub struct BenchmarkDispatchParams {
 )]
 pub struct BenchmarkDispatchResult {
     pub benchmark: String,
+    /// The room this run lives in — where its board, its kickoffs and its citizens are.
+    /// Returned so the caller never has to guess where the work went.
+    pub room: String,
+    /// That room's airc channel id, for anything addressing it by id.
+    pub room_id: String,
     /// Cards actually posted to the board.
     #[ts(type = "number")]
     pub dispatched: u32,
@@ -804,6 +829,41 @@ pub struct BenchmarkDispatch {
 ///   and never silently skips SWE staging). Order is preserved for a stable round-robin.
 /// - roster empty → `Denied` (nobody online — `persona/spawn` first; the fix is a citizen,
 ///   not an invented identity).
+/// Seconds since the epoch — the only impurity `default_run_room_name` needs, kept out
+/// of it so the name itself is a pure function with a real unit test.
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The room a run lands in when the caller names none: `bench-<benchmark>-<epoch>`.
+///
+/// Named for the ACTIVITY and stamped so it is THIS run — the naming rule
+/// `activity/spawn` documents, and the reason it matters here specifically: a room named
+/// for a SUBSYSTEM (`#academy`, `#benchmarks`) never finishes, so it reads as a permanent
+/// place and quietly becomes the room every run reuses forever. That is precisely the
+/// 136-card pile this parameter exists to end.
+///
+/// Flattened with `-` rather than the `academy/bench/<run>` path form the design of record
+/// uses, because airc channel names accept only `[a-z0-9_-]` (`ChannelName::new` rejects
+/// `/`). The tree is a naming convention waiting on a channel-name grammar, not something
+/// this function can invent unilaterally.
+fn default_run_room_name(benchmark: &str, epoch_secs: u64) -> String {
+    let slug: String = benchmark
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("bench-{slug}-{epoch_secs}")
+}
+
 fn resolve_dispatch_roster(
     live: &[(String, uuid::Uuid)],
     requested: &[String],
@@ -974,9 +1034,80 @@ impl ActionCommand for BenchmarkDispatch {
         // ARE their work). See `curator_airc`.
         let airc = curator_airc(&self.registry, ctx, "benchmark/dispatch")?;
 
-        // ONE board read serves BOTH the repo inference below and the idempotence
-        // gate that follows — the board is the authority on what is already being
-        // worked, so read it once and answer both questions from the same snapshot.
+        let requested = p.assignees.clone().unwrap_or_default();
+        if requested.iter().any(|a| a.trim().is_empty()) {
+            return Err(CommandError::Invalid(
+                "assignees contains an empty name — every kickoff must address a real citizen"
+                    .to_string(),
+            ));
+        }
+        // Resolve the dispatch roster against THIS machine's live citizens (never our
+        // names): empty request → the whole live roster; explicit names → validated or
+        // fail-loud. This is the generalization for all repo users — dispatch targets the
+        // citizens they actually spawned, whoever those are.
+        //
+        // Resolved BEFORE the room exists because the roster decides WHO gets moved into
+        // it: a run room nobody is standing in is the other half of the bug this verb is
+        // fixing ("old rooms flooded, or ones with nothing").
+        let roster = resolve_dispatch_roster(&self.registry.roster_snapshot(), &requested)?;
+
+        // Repo hint, read from the board the curator is standing in RIGHT NOW — before we
+        // move her, and ONLY when the caller named no repo. The run room is fresh, so its
+        // board is empty and cannot answer "what repo key do cards use here"; the room she
+        // came from can. Keeps `repo` optional exactly as before, and is the ONLY thing the
+        // old room still contributes to a run.
+        let repo_hint = match &p.repo {
+            Some(_) => None,
+            None => airc
+                .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+                .await
+                .ok()
+                .and_then(|b| {
+                    b.snapshot()
+                        .cards
+                        .first()
+                        .map(|c| c.repo.as_str().to_string())
+                }),
+        };
+
+        // ── THE RUN'S OWN ROOM ────────────────────────────────────────────────────
+        // A benchmark run is an ACTIVITY, and an activity is a ROOM. Spawned through the
+        // same `activity/spawn` path a citizen uses, so the room carries its recipe binding
+        // and projects as a benchmark rather than a plain chat — a hand-made room would
+        // carry neither ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+        //
+        // The `join` inside also MOVES the curator's current-room pointer, which is exactly
+        // what makes the rest of this function land in the run room: the board read, every
+        // `create_work_card`, and every kickoff `say` are all current-room operations. That
+        // pointer move is a documented gap for other callers (activity.rs) and the mechanism
+        // for this one.
+        let room_name = match &p.room {
+            Some(r) => r.trim().to_string(),
+            None => default_run_room_name(spec.name, epoch_secs()),
+        };
+        let room = crate::modules::activity::spawn_activity_room(
+            &airc, &room_name, "benchmark", None,
+        )
+        .await?;
+
+        // Move every assignee INTO the run — a citizen who is not subscribed never sees the
+        // board, the kickoff, or the peers working beside her. This is the members[] half
+        // of #274, done for the one activity that needs it most.
+        let mut room_join_errors: Vec<String> = Vec::new();
+        for (who, peer) in &roster {
+            match self.registry.get(*peer) {
+                Some(rt) => {
+                    if let Err(e) = rt.airc().join(&room_name).await {
+                        room_join_errors.push(format!("{who}: {e}"));
+                    }
+                }
+                None => room_join_errors.push(format!("{who}: no live airc runtime")),
+            }
+        }
+
+        // The RUN ROOM's board — fresh, so the idempotence gate and prune below reason
+        // about THIS run and nothing else. That is the point: a run's board is finally its
+        // own honest denominator instead of a shared pile 136 cards deep.
         let board = airc
             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
             .await
@@ -1007,37 +1138,19 @@ impl ActionCommand for BenchmarkDispatch {
         // Repo: caller-supplied, else the repo the board already uses. No
         // baked-in default — an empty board with no repo argument is a real
         // question only the operator can answer.
-        let repo_key = match p.repo {
+        let repo_key = match p.repo.clone() {
             Some(r) => r,
-            None => {
-                board
-                    .cards
-                    .first()
-                    .map(|c| c.repo.as_str().to_string())
-                    .ok_or_else(|| {
-                        CommandError::Invalid(
-                            "board is empty and no `repo` was given — pass repo=<owner/name> \
-                             so the cards land under a real board key"
-                                .to_string(),
-                        )
-                    })?
-            }
+            None => repo_hint.ok_or_else(|| {
+                CommandError::Invalid(
+                    "no `repo` was given and the room you dispatched from has no cards to \
+                     infer one from — pass repo=<owner/name> so the cards land under a real \
+                     board key"
+                        .to_string(),
+                )
+            })?,
         };
         let repo = RepoId::new(repo_key)
             .map_err(|e| CommandError::Invalid(format!("invalid repo: {e:?}")))?;
-
-        let requested = p.assignees.unwrap_or_default();
-        if requested.iter().any(|a| a.trim().is_empty()) {
-            return Err(CommandError::Invalid(
-                "assignees contains an empty name — every kickoff must address a real citizen"
-                    .to_string(),
-            ));
-        }
-        // Resolve the dispatch roster against THIS machine's live citizens (never our
-        // names): empty request → the whole live roster; explicit names → validated or
-        // fail-loud. This is the generalization for all repo users — dispatch targets the
-        // citizens they actually spawned, whoever those are.
-        let roster = resolve_dispatch_roster(&self.registry.roster_snapshot(), &requested)?;
 
         let take = p.limit.map(|l| l as usize).unwrap_or(prepared.len());
         // Every task key THIS benchmark owns — captured before the loop consumes
@@ -1265,8 +1378,15 @@ impl ActionCommand for BenchmarkDispatch {
             }
         }
 
+        // Room-join failures ride the SAME reported channel as kickoff failures — a
+        // citizen who never made it into the run is exactly as invisible as a kickoff
+        // that never landed, and neither may be silent.
+        kickoff_errors.extend(room_join_errors.into_iter().map(|e| format!("join room: {e}")));
+
         Ok(BenchmarkDispatchResult {
             benchmark: spec.name.to_string(),
+            room: room.name,
+            room_id: room.room_id,
             dispatched: card_ids.len() as u32,
             card_ids,
             skipped_needs_setup,
@@ -1289,6 +1409,30 @@ crate::register_command!(BenchmarkDispatch);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a derived run-room name that airc REFUSES. `ChannelName::new` accepts
+    // only `[a-z0-9_-]`, so a benchmark named with a `/`, a `.` or a capital (`swe-bench/lite`,
+    // `humaneval-rs.v2`) would build a name that fails at `join` — dispatch would die at the
+    // room, AFTER the caller believes a run started. Asserting through airc's own constructor
+    // rather than a hand-copied charset, so the two can never drift.
+    #[test]
+    fn a_derived_run_room_name_is_always_a_name_airc_accepts() {
+        for bench in [
+            "humaneval-rs",
+            "swe-bench/lite",       // the `/` the design-of-record path form wants
+            "HumanEval.Rs v2",      // capitals, a dot, and a space
+            "tool_bugfix_rs",
+        ] {
+            let name = default_run_room_name(bench, 1_786_000_000);
+            airc_lib::ChannelName::new(&name)
+                .unwrap_or_else(|e| panic!("derived room {name:?} from {bench:?} is unusable: {e}"));
+        }
+        // Stamped, so two runs of one benchmark are two rooms — the whole point.
+        assert_ne!(
+            default_run_room_name("humaneval-rs", 1),
+            default_run_room_name("humaneval-rs", 2),
+        );
+    }
 
     // what this catches: the catalog is non-empty, humaneval-rs is present + runnable (has an
     // eval_set the grader understands), and every runnable benchmark names a real committed gym.
