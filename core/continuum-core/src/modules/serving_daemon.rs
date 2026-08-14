@@ -1336,7 +1336,7 @@ impl ServingDaemonModule {
         // match exactly what was planned: each slot gets one full served window.
         let (desired, served_ctx, lanes) = match self.plan_tx.borrow().as_ref() {
             Some(plan) => (
-                plan.base_model_id.clone(),
+                plan.base_model.model_id.clone(),
                 plan.served_context_window,
                 plan.lanes,
             ),
@@ -2076,7 +2076,7 @@ impl ServingDaemonModule {
             .plan_tx
             .borrow()
             .as_ref()
-            .map(|p| p.base_model_id.clone());
+            .map(|p| p.base_model.model_id.clone());
         let demand = self.serving_demand();
         match plan_serving_stable(budget, candidates, incumbent.as_deref(), demand) {
             Some(plan) => {
@@ -2106,7 +2106,7 @@ impl ServingDaemonModule {
                                 class = "serving.plan",
                                 decision = "downshift-held",
                                 incumbent = incumbent.as_deref().unwrap_or("<none>"),
-                                wanted = plan.base_model_id.as_str(),
+                                wanted = plan.base_model.model_id.as_str(),
                                 streak,
                                 needs_streak = DOWNSHIFT_SUSTAINED_TICKS,
                                 usable_gb = (budget.usable_bytes / 1_000_000_000),
@@ -2130,11 +2130,11 @@ impl ServingDaemonModule {
                 // inconsistency, not "this model has no compute buffer".
                 let spike_of_served = candidates
                     .iter()
-                    .find(|c| c.model_id == plan.base_model_id)
+                    .find(|c| c.model_id == plan.base_model.model_id)
                     .map(|f| f.compute_buffer_per_lane());
                 crate::probe!(
                     class = "serving.plan",
-                    base_model = plan.base_model_id.as_str(),
+                    base_model = plan.base_model.model_id.as_str(),
                     lanes = plan.lanes,
                     resident = plan.resident_models,
                     fits_on_gpu = plan.fits_on_gpu,
@@ -2185,7 +2185,7 @@ impl ServingDaemonModule {
                 if spike_of_served.is_none() {
                     crate::probe!(
                         class = "serving.plan.spike_missing",
-                        base_model = plan.base_model_id.as_str(),
+                        base_model = plan.base_model.model_id.as_str(),
                         candidates = candidates.len(),
                         "served base model absent from its own candidate list — per-prefill \
                          spike unknown, publishing 0, which DISABLES the prefill deadband",
@@ -2235,12 +2235,14 @@ fn downshift_gate(
     let Some(inc_id) = incumbent else {
         return DownshiftVerdict::NotADownshift;
     };
-    if plan.base_model_id == inc_id {
+    if plan.base_model.model_id == inc_id {
         return DownshiftVerdict::NotADownshift;
     }
     let (Some(inc), Some(new)) = (
         candidates.iter().find(|m| m.model_id == inc_id),
-        candidates.iter().find(|m| m.model_id == plan.base_model_id),
+        candidates
+            .iter()
+            .find(|m| m.model_id == plan.base_model.model_id),
     ) else {
         return DownshiftVerdict::NotADownshift;
     };
@@ -3380,7 +3382,10 @@ mod tests {
         ];
         daemon.publish_plan(budget, &candidates);
         let plan = rx.borrow().clone().expect("plan published");
-        assert_eq!(plan.base_model_id, "coder-14b", "most capable that fits");
+        assert_eq!(
+            plan.base_model.model_id, "coder-14b",
+            "most capable that fits"
+        );
         assert!(plan.fits_on_gpu);
 
         // No candidates → None published (no silent serve).
@@ -4762,7 +4767,7 @@ mod tests {
         let devstral = footprint("devstral-24b", 14, 8);
         let tiny = footprint("qwen-0.5b", 1, 1);
         let plan_for = |id: &str| ServingPlan {
-            base_model_id: id.into(),
+            base_model: footprint(id, 1, 1),
             served_context_window: 2048,
             lanes: 1,
             grid_overflow_lanes: 0,

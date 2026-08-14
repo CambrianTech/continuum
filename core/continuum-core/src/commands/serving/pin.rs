@@ -201,7 +201,13 @@ mod tests {
 
     fn plan(fits: bool) -> ServingPlan {
         ServingPlan {
-            base_model_id: "x".into(),
+            base_model: crate::cognition::serving_plan::ModelFootprint {
+                model_id: "x".into(),
+                weights_bytes: 0,
+                kv_per_token: 0,
+                context_window: 8192,
+                capability_rank: 0,
+            },
             served_context_window: 8192,
             lanes: 1,
             grid_overflow_lanes: 0,
