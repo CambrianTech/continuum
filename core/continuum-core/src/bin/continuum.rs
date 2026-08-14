@@ -1237,6 +1237,26 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
             });
         }
     };
+    // ~/.continuum/config.env reaches the core on EVERY launch path, not just the
+    // scripted one.
+    //
+    // start-server.sh `source`s this file under `set -a`, so a core launched through
+    // the script inherits every key. The direct-exec path set none of them — the child
+    // simply inherited the calling CLI's environment. Measured 2026-08-14: a core
+    // auto-started by a dispatched command was running with the agent session's env
+    // (CLAUDECODE=1, CLAUDE_CODE_SESSION_ID=…) and NO `CONTINUUM_PROBE_DIR`, while
+    // config.env sets it on line 24 — so the glass box was OFF, silently, on an
+    // installed node. `ping`, `serving/status` and `deploy-verify` all read healthy;
+    // only `debug/probes/query` said otherwise, and only when asked.
+    //
+    // Applied BEFORE the explicit `.env()` calls below so per-launch facts (the socket
+    // this invocation is binding, the self-build guard) still win over the file, and in
+    // file order so duplicate assignments resolve last-wins exactly as `source` would.
+    // On the Script path the script re-sources the same file afterwards — same values,
+    // so this is idempotent there rather than a second source of truth.
+    for (k, v) in continuum_core::config_env::read_all() {
+        cmd.env(k, v);
+    }
     cmd.env("CONTINUUM_CORE_SOCKET", &socket)
         // We ARE the continuum binary. On Windows a running image cannot be
         // replaced, so letting the script `cargo build --bin continuum` fails the
