@@ -1527,9 +1527,12 @@ mod tests {
     // again be read as an empty board.
     #[test]
     fn a_column_filter_can_never_again_report_an_empty_board_as_no_work() {
-        // A realistic epoch-ms clock: the 134h subtraction below is a real
-        // observed lease age, and a toy `now` would underflow it.
-        let now = 1_786_000_000_000u64;
+        // No clock here: this test asserts over the FILTER axes, and states its
+        // lease outcomes directly as `claimable_flags`. (It previously carried a
+        // `now` and a comment about "the 134h subtraction below" — both copied
+        // from its sibling `a_lapsed_lease_is_not_a_person_holding_the_card`,
+        // which is the one that actually ages a lease. Dead variable, stale
+        // comment; the compiler was right to warn.)
         // The live shape: nothing in the Open column, every claim lapsed.
         let claimable_flags = [true, true, true]; // 3 claimed cards, all leases expired
         let states = [CardState::Claimed, CardState::Claimed, CardState::Claimed];
