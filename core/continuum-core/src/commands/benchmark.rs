@@ -1087,8 +1087,23 @@ impl ActionCommand for BenchmarkDispatch {
             Some(r) => r.trim().to_string(),
             None => default_run_room_name(spec.name, epoch_secs()),
         };
+        // The room binds to the SHIPPED benchmark recipe's declared purpose,
+        // resolved from its constant — never a re-typed string. The old literal
+        // here was "benchmark" while the recipe declares "benchmark/hard-rs",
+        // so every run room resolved to no manifest and rendered as plain chat
+        // (#431 — the scoreboard region was the whole point of the recipe).
+        let bench_recipe = crate::experience::source::RecipeExperienceSource::shipped_purpose(
+            crate::experience::source::shipped::BENCHMARK_HARD_RS,
+        )
+        .ok_or_else(|| {
+            CommandError::Internal(
+                "shipped benchmark recipe missing from the embedded set — \
+                 build-time authoring bug"
+                    .into(),
+            )
+        })?;
         let room = crate::modules::activity::spawn_activity_room(
-            &airc, &room_name, "benchmark", None,
+            &airc, &room_name, &bench_recipe, None,
         )
         .await?;
 

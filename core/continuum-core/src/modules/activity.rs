@@ -179,6 +179,27 @@ impl ActionCommand for ActivitySpawn {
     }
 }
 
+/// Refuse a recipe string that names no known recipe purpose (#431).
+///
+/// A recipe string is a reference into the recipe REGISTRY, not free text.
+/// Before this gate, an unknown one "worked" — the room got made, the binding
+/// published — and then resolved to no manifest, so every client projected the
+/// room as plain chat. That silent downgrade is how every benchmark run room
+/// rendered as chat for a full campaign: dispatch bound `"benchmark"` while the
+/// shipped recipe's purpose is `"benchmark/hard-rs"`. The refusal names the
+/// actionable set, per the registry's own `ids()`/`purposes()` design note.
+pub fn validate_recipe(recipe: &str) -> Result<(), CommandError> {
+    let known = crate::experience::source::RecipeExperienceSource::shipped_purposes();
+    if known.iter().any(|k| k == recipe) {
+        return Ok(());
+    }
+    Err(CommandError::Invalid(format!(
+        "unknown recipe {recipe:?} — no recipe declares that purpose, so the room \
+         would project as plain chat. Known recipes: {}",
+        known.join(", ")
+    )))
+}
+
 /// Birth a room from a recipe on an ALREADY-RESOLVED airc handle.
 ///
 /// This is the whole of `activity/spawn` minus the caller-identity lookup, split
@@ -196,6 +217,7 @@ pub async fn spawn_activity_room(
     recipe: &str,
     parent: Option<RoomId>,
 ) -> Result<ActivitySpawnResult, CommandError> {
+    validate_recipe(recipe)?;
     {
         // `join` IS room creation in airc: it derives the channel from the name,
         // subscribes this peer, and publishes presence. Reusing it keeps ONE room
@@ -468,6 +490,43 @@ impl ServiceModule for ActivityModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the exact live bug that made EVERY benchmark run room
+    // render as plain chat — dispatch bound the recipe string "benchmark" while
+    // the shipped recipe declares purpose "benchmark/hard-rs", and nothing
+    // validated the string against the registry. The gate must refuse the bad
+    // string LOUDLY (naming the actionable set) and pass every shipped purpose.
+    // regression for #431 / commit at benchmark.rs:1091
+    #[test]
+    fn validate_recipe_refuses_unknown_and_passes_every_shipped_purpose() {
+        for purpose in crate::experience::source::RecipeExperienceSource::shipped_purposes() {
+            assert!(
+                validate_recipe(&purpose).is_ok(),
+                "shipped purpose {purpose:?} must validate"
+            );
+        }
+        let err = validate_recipe("benchmark").expect_err("the old dispatch literal must refuse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("benchmark/hard-rs"),
+            "refusal must name the actionable set, got: {msg}"
+        );
+    }
+
+    // what this catches: core call sites bind rooms by shipped CONSTANT; the
+    // purpose string must come from the recipe JSON, resolved through
+    // shipped_purpose — if the mapping breaks, dispatch would silently bind a
+    // wrong (or no) purpose again.
+    #[test]
+    fn shipped_benchmark_constant_resolves_to_its_declared_purpose() {
+        assert_eq!(
+            crate::experience::source::RecipeExperienceSource::shipped_purpose(
+                crate::experience::source::shipped::BENCHMARK_HARD_RS
+            )
+            .as_deref(),
+            Some("benchmark/hard-rs")
+        );
+    }
 
     // what this catches: the recipe binding riding a category every reader agrees
     // on. If this constant drifts from what the purpose resolver filters for, a
