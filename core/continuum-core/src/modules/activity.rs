@@ -845,5 +845,42 @@ mod tests {
                 resolved.params.keys().collect::<Vec<_>>()
             );
         }
+
+        // what this catches (#433): the SHIPPED benchmark recipe's declared
+        // param types drifting from what benchmark dispatch actually sends
+        // (suite: string, instances: array, team: array). Dispatch builds
+        // this exact map shape at benchmark.rs — if a decl's default changed
+        // JSON type, every run-room spawn would refuse at the type gate and
+        // no unit test on either side alone would say why.
+        #[test]
+        fn shipped_benchmark_recipe_accepts_dispatchs_targeting_map() {
+            let empty_overlay = tempfile::tempdir().expect("tempdir");
+            let recipe = resolve_recipe("benchmark/hard-rs", empty_overlay.path())
+                .expect("shipped benchmark recipe resolves");
+            for declared in ["suite", "instances", "team", "budget"] {
+                assert!(
+                    recipe.params.contains_key(declared),
+                    "shipped benchmark recipe must declare {declared:?} (the catalog's \
+                     targeting set), got: {:?}",
+                    recipe.params.keys().collect::<Vec<_>>()
+                );
+            }
+            let dispatch_shaped = std::collections::BTreeMap::from([
+                ("suite".to_string(), serde_json::json!("swe-bench-lite")),
+                (
+                    "instances".to_string(),
+                    serde_json::json!(["sympy__sympy-24152"]),
+                ),
+                ("team".to_string(), serde_json::json!(["Asha", "Anwen"])),
+            ]);
+            let resolved = resolve_params(&recipe, &dispatch_shaped)
+                .expect("dispatch's targeting map must type-check against the decls");
+            assert_eq!(resolved["suite"], serde_json::json!("swe-bench-lite"));
+            assert_eq!(
+                resolved["budget"],
+                serde_json::json!("4h"),
+                "unset budget rides the declared default onto the binding"
+            );
+        }
     }
 }

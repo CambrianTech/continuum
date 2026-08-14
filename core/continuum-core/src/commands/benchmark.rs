@@ -1102,16 +1102,26 @@ impl ActionCommand for BenchmarkDispatch {
                     .into(),
             )
         })?;
-        // Empty params = the recipe's declared defaults (#433). Threading the
-        // run's REAL targeting (suite/instances/team/budget) through here is
-        // the remaining #433 slice for dispatch — until then the binding
-        // carries the defaults honestly rather than nothing.
+        // The run's REAL targeting rides the binding (#433): suite is the
+        // resolved spec's name, instances the caller's explicit selection,
+        // team the resolved roster. Anything not set here (budget) stays at
+        // the recipe's declared default — the binding is the room's honest
+        // self-description, readable through the same pipe as everything else.
+        let mut run_params = std::collections::BTreeMap::new();
+        run_params.insert("suite".to_string(), serde_json::json!(spec.name));
+        if let Some(instances) = &p.instances {
+            run_params.insert("instances".to_string(), serde_json::json!(instances));
+        }
+        run_params.insert(
+            "team".to_string(),
+            serde_json::json!(roster.iter().map(|(who, _)| who).collect::<Vec<_>>()),
+        );
         let room = crate::modules::activity::spawn_activity_room(
             &airc,
             &room_name,
             &bench_recipe,
             None,
-            &Default::default(),
+            &run_params,
         )
         .await?;
 
