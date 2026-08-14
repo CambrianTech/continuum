@@ -52,7 +52,18 @@ fn row_of(card: BenchRunCard) -> BenchRunRow {
 }
 
 /// Spawn the bench-board emitter: scan → fold → publish `kind="bench"`.
-pub fn spawn_bench_emitter(rt: &tokio::runtime::Handle, substrate: Substrate) {
+///
+/// Dual render targets from ONE fold (#426): `substrate` is the websocket
+/// store human eyes read; `mind_substrate` is `global_bench_substrate()`,
+/// the store a citizen's `ViewStateRagSource::<BenchViewState>` reads. The
+/// SAME `builder.session(view)` revision lands in both, so a mind and a
+/// screen can never disagree about the board — the roster repair's
+/// one-definition-two-targets contract applied to the bench outlier.
+pub fn spawn_bench_emitter(
+    rt: &tokio::runtime::Handle,
+    substrate: Substrate,
+    mind_substrate: Substrate,
+) {
     rt.spawn(async move {
         // Sole writer of the "bench" kind → its own standalone Revisions well.
         let builder = StateBuilder::standalone();
@@ -89,7 +100,9 @@ pub fn spawn_bench_emitter(rt: &tokio::runtime::Handle, substrate: Substrate) {
                 continue;
             }
             last = Some(view.clone());
-            substrate.store(builder.session(view));
+            let envelope = builder.session(view);
+            substrate.store(envelope.clone());
+            mind_substrate.store(envelope);
         }
     });
 }
