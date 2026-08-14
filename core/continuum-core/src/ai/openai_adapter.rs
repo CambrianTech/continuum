@@ -2335,10 +2335,39 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!(
-                "{} returned {}: {}",
-                self.config.name, status, body
-            ));
+            // Classify ONCE, here, where the status code and the raw body still
+            // exist. Downstream this is still carried as a String (the trait's
+            // error type has not moved yet — that is the threading commit), so
+            // the CLASSIFICATION is emitted as a probe rather than lost: an
+            // operator reading the receipt now sees WHICH kind of failure this
+            // was, and for an overflow, both token counts.
+            //
+            // Why that matters: settle.rs retries every fault blind, which is
+            // right for a transient wedge (#386, ~2/3 recover) and useless for
+            // ContextExceeded — same prompt, same slot, same 400, forever.
+            // Until the type reaches settle, this probe is the only place the
+            // difference is visible at all.
+            let classified = crate::ai::inference_error::InferenceError::from_http(
+                status.as_u16(),
+                &body,
+            );
+            let (requested, available) = match &classified {
+                crate::ai::inference_error::InferenceError::ContextExceeded {
+                    requested,
+                    available,
+                } => (*requested, *available),
+                _ => (0, 0),
+            };
+            crate::probe!(
+                class = "ai.request.rejected",
+                provider = %self.config.name,
+                status = status.as_u16(),
+                retryable_unchanged = classified.is_retryable_unchanged(),
+                requested_tokens = requested,
+                available_tokens = available,
+                "backend rejected the request — classified at the seam"
+            );
+            return Err(format!("{} returned {}: {}", self.config.name, status, body));
         }
 
         // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
