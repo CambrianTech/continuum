@@ -292,8 +292,26 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             let n = persisted.wm.entries.len();
             working_memory.restore(persisted.wm);
             let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
-            for utterance in &persisted.own_speech {
-                super::deliberation_budget::record_own_speech(peer, utterance);
+            match &persisted.own_speech {
+                OwnSpeechPersisted::ByRoom(by_room) => {
+                    for (room, utterances) in by_room {
+                        for utterance in utterances {
+                            super::deliberation_budget::record_own_speech(peer, *room, utterance);
+                        }
+                    }
+                }
+                // Pre-room-scoping file: unattributable, so dropped rather than
+                // mis-filed into a room she may never have spoken in. See
+                // OwnSpeechPersisted — hydrate_speech_rings re-seeds with rooms.
+                OwnSpeechPersisted::Legacy(flat) => {
+                    crate::probe!(
+                        class = "persona.volatile.own_speech_legacy_dropped",
+                        persona = %cfg.persona_name,
+                        dropped = flat.len(),
+                        "pre-room-scoping own-speech ring carried no room — dropped, \
+                         durable-transcript hydration re-seeds it"
+                    );
+                }
             }
             crate::probe!(
                 class = "persona.volatile.restored",
@@ -1158,7 +1176,34 @@ pub fn global() -> Arc<PersonaWorkspaceRegistry> {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedVolatile {
     wm: super::working_memory::VolatileSnapshot,
-    own_speech: Vec<String>,
+    own_speech: OwnSpeechPersisted,
+}
+
+/// Her own-speech rings on disk. Room-keyed since 2026-08-14 — a ring restored
+/// without its room would re-create the cross-room repetition fact the keying
+/// fix exists to kill.
+///
+/// `Legacy` is the pre-room-scoping shape (a flat `Vec<String>`) and exists so
+/// an older `volatile.json` still PARSES: a torn mind-file that fails to
+/// deserialize is a silent blank wake, which is strictly worse than a dropped
+/// scratchpad. Legacy utterances carry no room, so they cannot be attributed
+/// and are discarded on load — covered by `hydrate_speech_rings`, which
+/// re-seeds from the durable transcript where every message HAS a room (#265).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum OwnSpeechPersisted {
+    ByRoom(Vec<(Uuid, Vec<String>)>),
+    Legacy(Vec<String>),
+}
+
+impl OwnSpeechPersisted {
+    /// Total utterances across every room — what the restore probe reports.
+    fn len(&self) -> usize {
+        match self {
+            Self::ByRoom(by_room) => by_room.iter().map(|(_, u)| u.len()).sum(),
+            Self::Legacy(flat) => flat.len(),
+        }
+    }
 }
 
 fn volatile_path(persona_id: Uuid) -> std::path::PathBuf {
@@ -1176,9 +1221,9 @@ fn volatile_path(persona_id: Uuid) -> std::path::PathBuf {
 fn save_volatile(persona_id: Uuid, wm: &super::working_memory::WorkingMemory) {
     let persisted = PersistedVolatile {
         wm: wm.snapshot(),
-        own_speech: super::deliberation_budget::recent_own_speech(
+        own_speech: OwnSpeechPersisted::ByRoom(super::deliberation_budget::own_speech_by_room(
             crate::identity::PeerId::from_uuid(persona_id),
-        ),
+        )),
     };
     let path = volatile_path(persona_id);
     let write = || -> std::io::Result<()> {

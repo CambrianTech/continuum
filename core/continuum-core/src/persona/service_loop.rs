@@ -1348,6 +1348,7 @@ async fn serve_persona_loop_inner(
         // depend on the room's context budget.
         crate::cognition::deliberation_budget::record_own_speech(
             ctx.identity.peer_id,
+            turn_room,
             &response_text,
         );
 
@@ -1665,7 +1666,7 @@ fn append_ring_anchor_if_starved(
     if turns.iter().any(|t| t.content.starts_with("[anchor]")) {
         return;
     }
-    let own = crate::cognition::deliberation_budget::recent_own_speech(peer);
+    let own = crate::cognition::deliberation_budget::recent_own_speech(peer, room);
     let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
     let run = ring_echo_run(&own, &room_recent);
     if run >= PATTERN_FIRES_BEFORE_ANCHOR {
@@ -2630,7 +2631,11 @@ async fn run_self_cycle(
             // first ring deploy missed THIS say path entirely (4 verbatim
             // repeats, no [repetition], caught live 2026-07-12 10:20).
             // Every successful say records, whichever path spoke.
-            crate::cognition::deliberation_budget::record_own_speech(ctx.identity.peer_id, &text);
+            crate::cognition::deliberation_budget::record_own_speech(
+                ctx.identity.peer_id,
+                ctx.identity.default_room,
+                &text,
+            );
             crate::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,

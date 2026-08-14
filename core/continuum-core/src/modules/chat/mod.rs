@@ -551,6 +551,7 @@ impl ChatModule {
             {
                 crate::cognition::deliberation_budget::record_own_speech(
                     crate::identity::PeerId::from_uuid(sender),
+                    room,
                     text,
                 );
             }
@@ -2249,12 +2250,25 @@ mod tests {
 
         let own_ring = crate::cognition::deliberation_budget::recent_own_speech(
             crate::identity::PeerId::from_uuid(persona),
+            room,
         );
         assert_eq!(
             own_ring.len(),
             2,
             "the sender's own-speech ring must carry her durable lines — this is \
              what lets own_repetition/inbound_restates fire on a post-boot re-greeting"
+        );
+        // …and they must be filed under the room they were SAID in: hydration that
+        // dumped every line into one undifferentiated ring would re-create the
+        // cross-room repetition fact (a citizen entering a fresh room told she is
+        // "circling" about utterances from elsewhere).
+        assert!(
+            crate::cognition::deliberation_budget::recent_own_speech(
+                crate::identity::PeerId::from_uuid(persona),
+                uuid::Uuid::new_v4(),
+            )
+            .is_empty(),
+            "hydration must key by room — a room she never spoke in reads as silent"
         );
     }
 }
