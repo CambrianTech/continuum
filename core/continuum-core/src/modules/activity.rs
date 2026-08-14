@@ -49,6 +49,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use airc_core::RoomId;
 use airc_lib::Airc;
 
 use crate::experience::standing::{project_standing, RoomStanding, STANDING_WALL_CATEGORY};
@@ -120,7 +121,16 @@ pub struct ActivitySpawnParams {
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ActivitySpawnResult {
     /// The airc channel id of the new room — the id every surface addresses it by.
-    pub room_id: String,
+    ///
+    /// The TYPE, not a string that happens to hold a uuid: `RoomId` is a
+    /// `uuid_newtype!` and a room id must never be interchangeable with a peer id,
+    /// a card id, or free text ([[uuids-are-not-strings-and-never-hand-drawn]]).
+    /// `#[ts(type = "string")]` because airc's id newtypes carry no `TS` derive by
+    /// design (identity/mod.rs:83) and `#[serde(transparent)]` already puts the bare
+    /// hyphenated uuid on the wire — so the TS side is unchanged while Rust keeps
+    /// the distinction the compiler can enforce.
+    #[ts(type = "string")]
+    pub room_id: RoomId,
     /// The room's name, as created.
     pub name: String,
     /// The recipe this room follows.
@@ -224,7 +234,7 @@ pub async fn spawn_activity_room(
             })?;
 
         Ok(ActivitySpawnResult {
-            room_id: room.channel.to_string(),
+            room_id: room.channel,
             name: room.name,
             recipe: recipe.to_string(),
             binding_post_id: post_id.to_string(),

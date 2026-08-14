@@ -621,8 +621,10 @@ pub struct BenchmarkDispatchResult {
     /// The room this run lives in — where its board, its kickoffs and its citizens are.
     /// Returned so the caller never has to guess where the work went.
     pub room: String,
-    /// That room's airc channel id, for anything addressing it by id.
-    pub room_id: String,
+    /// That room's airc channel id — the TYPE, not a uuid-shaped string. See
+    /// `ActivitySpawnResult::room_id`; this field is that value passed through.
+    #[ts(type = "string")]
+    pub room_id: airc_core::RoomId,
     /// Cards actually posted to the board.
     #[ts(type = "number")]
     pub dispatched: u32,
