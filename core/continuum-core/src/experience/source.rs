@@ -178,6 +178,25 @@ impl RecipeExperienceSource {
         Self::new(purpose, Self::embedded())
     }
 
+    /// Every purpose the SHIPPED recipe set declares — the validation list
+    /// `activity/spawn` refuses against (#431). Derived from the SAME
+    /// [`Self::embedded`] iterator the registry is built from, so the
+    /// validation set and the resolution set cannot drift. When the disk
+    /// overlay is wired into production (#432), this must grow the overlay
+    /// too — they are the same set by definition.
+    pub fn shipped_purposes() -> Vec<String> {
+        Self::embedded().map(|r| r.purpose).collect()
+    }
+
+    /// The declared purpose of a shipped recipe, by its [`shipped`] handle.
+    /// Lets core call sites bind rooms by CONSTANT (`shipped::BENCHMARK_HARD_RS`)
+    /// while the purpose string stays authored in exactly one place — the
+    /// recipe JSON. `None` only if the handle names no embedded recipe, which
+    /// is a build-time authoring bug the shipped-constants test pins.
+    pub fn shipped_purpose(id: RecipeId) -> Option<String> {
+        Self::embedded().find(|r| r.id == id).map(|r| r.purpose)
+    }
+
     /// The embedded seed set. These ship IN the binary so a fresh clone has working
     /// experiences with zero files on disk — the same self-provisioning contract the
     /// rest of the substrate holds. They are a FLOOR, not the catalogue: anything on
