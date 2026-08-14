@@ -157,8 +157,11 @@ impl CommandInterceptor for AircInterceptor {
                 let peer_id = Uuid::parse_str(target)
                     .map_err(|e| format!("aircPeer must be a peer UUID, got {target:?}: {e}"))?;
 
-                // For ai/generate the command params ARE the TextGenerationRequest.
-                let text_request: TextGenerationRequest = serde_json::from_value(params.clone())
+                // For ai/generate the command params ARE the TextGenerationRequest —
+                // which carries the WHOLE PROMPT. `params` is already `&Value`, so
+                // borrow-decode it; `from_value(params.clone())` deep-copied the
+                // largest payload in the system on every single generation.
+                let text_request: TextGenerationRequest = serde::Deserialize::deserialize(params)
                     .map_err(|e| {
                         format!(
                             "aircPeer '{AIRC_ROUTED_GENERATE}' params aren't a \

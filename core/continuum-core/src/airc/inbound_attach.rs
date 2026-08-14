@@ -397,7 +397,9 @@ fn capacity_offer_from_envelope(
     if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
         return None;
     }
-    serde_json::from_value(payload.inline.clone()?).ok()
+    // Borrow-decode: this runs per inbound event, and `.clone()?` copied the
+    // whole inline payload just to hand `from_value` an owned Value.
+    serde::Deserialize::deserialize(payload.inline.as_ref()?).ok()
 }
 
 /// Project a plain airc chat message into the THIN `chat:posted` bus
