@@ -111,11 +111,17 @@ pub struct ActivitySpawnParams {
     /// this command only decides that a room exists and which recipe it follows.
     pub recipe: String,
 
-    /// Optional parent activity id — activities spawn activities, and the graph is
+    /// Optional parent activity — activities spawn activities, and the graph is
     /// POINTERS (parent id here, child ids on the parent), never nested blobs.
+    /// A `RoomId`, because that is what a parent activity IS. `schemars(with =
+    /// "String")` describes the WIRE (a uuid string, per `#[serde(transparent)]`) to
+    /// the tool schema while Rust keeps the type — the caller sends text, the command
+    /// receives a parsed id, and an unparseable one is rejected at the boundary
+    /// instead of flowing inward as a plausible-looking String.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub parent: Option<String>,
+    #[ts(optional, type = "string")]
+    #[schemars(with = "Option<String>")]
+    pub parent: Option<RoomId>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -136,7 +142,14 @@ pub struct ActivitySpawnResult {
     /// The recipe this room follows.
     pub recipe: String,
     /// The wall post that binds room → recipe, so the binding is auditable.
-    pub binding_post_id: String,
+    ///
+    /// A bare `Uuid` rather than a newtype because airc's `publish_wall_post` returns
+    /// one — there is no `WallPostId` upstream to borrow. Carrying the `Uuid` instead
+    /// of stringifying it at least keeps the value in the type system on this side;
+    /// the missing newtype is an airc-side gap, named here so it is not mistaken for
+    /// a choice.
+    #[ts(type = "string")]
+    pub binding_post_id: uuid::Uuid,
 }
 
 #[async_trait]
@@ -162,7 +175,7 @@ impl ActionCommand for ActivitySpawn {
         p: ActivitySpawnParams,
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
-        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent.as_deref()).await
+        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent).await
     }
 }
 
@@ -181,7 +194,7 @@ pub async fn spawn_activity_room(
     airc: &Airc,
     name: &str,
     recipe: &str,
-    parent: Option<&str>,
+    parent: Option<RoomId>,
 ) -> Result<ActivitySpawnResult, CommandError> {
     {
         // `join` IS room creation in airc: it derives the channel from the name,
@@ -216,7 +229,7 @@ pub async fn spawn_activity_room(
         // typo here would have cost nothing and been noticed by nobody.
         let binding = RoomRecipeBinding {
             recipe: recipe.to_string(),
-            parent: parent.map(str::to_string),
+            parent,
         };
         let body = serde_json::to_string(&binding).map_err(|source| {
             CommandError::Internal(format!("encode recipe binding: {source}"))
@@ -237,7 +250,7 @@ pub async fn spawn_activity_room(
             room_id: room.channel,
             name: room.name,
             recipe: recipe.to_string(),
-            binding_post_id: post_id.to_string(),
+            binding_post_id: post_id,
         })
     }
 }
