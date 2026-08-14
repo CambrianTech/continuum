@@ -140,15 +140,12 @@ pub mod recipe_room_purpose;
 ///
 /// It is a registry of `Arc`-shared substrates, so this is a handle lookup, not a
 /// cache: cloning it clones `Arc`s.
-pub fn global_room_substrates(
-) -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
+pub fn global_room_substrates() -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
     use std::sync::OnceLock;
     static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
         OnceLock::new();
-    G.get_or_init(|| {
-        std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new())
-    })
-    .clone()
+    G.get_or_init(|| std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new()))
+        .clone()
 }
 pub mod room_purpose;
 pub mod stream_rail;
@@ -2293,7 +2290,7 @@ pub fn start_server(
         match &serving_plan {
             Some(p) if p.fits_on_gpu => {
                 tracing::info!(
-                    base_model = %p.base_model_id,
+                    base_model = %p.base_model.model_id,
                     lanes = p.lanes,
                     served_context_window = p.served_context_window,
                     resident = p.resident_models,

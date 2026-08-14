@@ -444,18 +444,25 @@ impl ChannelBookmarksNavReader {
 
 impl NavReader for ChannelBookmarksNavReader {
     fn nav_snapshot(&self, user: Uuid) -> NavSnapshot {
-        use crate::cognition::channel_substrate::{
-            global_channel_bookmarks, global_channel_digest_buffer,
-        };
+        use crate::cognition::channel_substrate::global_channel_digest_buffer;
         use crate::runtime::ready_buffer::ReadyBuffer;
-        let bookmarks = global_channel_bookmarks();
+        // The cursor comes off the STAGED DIGEST, not a separate store: a digest
+        // carries the exact `bookmark` it split on, so the projection and the
+        // reader's window agree by construction. (The durable cursor itself is
+        // airc's `runtime_cursor`, read async at build time; this projection is
+        // sync, and the staged digest is the sync-side truth it already has.)
         let digests = global_channel_digest_buffer();
         let rooms = self.rooms.borrow().clone();
         let activities = rooms
             .iter()
             .map(|(room, title)| {
-                // REAL cursor — the same (user, room) mark advance()/markRead writes.
-                let last = bookmarks.last_read(user, *room);
+                // REAL cursor — the split point of the digest this citizen was
+                // last built. No staged digest → 0 (nothing known yet), the same
+                // honest "no info" the unread branch below reports.
+                let last = digests
+                    .peek(&(user, *room))
+                    .map(|d| d.bookmark)
+                    .unwrap_or(0);
                 // REAL unread from the pre-staged digest when one is staged for
                 // this (citizen, room); no staged digest → no unread info yet (an
                 // honestly-absent badge, never a fabricated "all read").
@@ -707,18 +714,29 @@ mod tests {
         assert_eq!(view.bookmarks.len(), 1);
     }
 
-    // what this catches: the LIVE reader reads the real ChannelBookmarks cursor
-    // — advancing the mark the persona's grounding uses (its markRead write path)
-    // is exactly what the nav's last_read reflects. The dual-consumer atom: one
-    // (user, room) mark, read by both the persona and the nav view.
+    // what this catches: the LIVE reader surfaces the SAME split point the
+    // citizen's own window was built at — the digest's `bookmark`. One value, two
+    // consumers (her perception and the nav view), so they cannot disagree. The
+    // durable cursor behind it is airc's `runtime_cursor`; the staged digest is
+    // what this sync projection can see of it.
     #[test]
     fn live_reader_reflects_the_real_shared_bookmark() {
-        use crate::cognition::channel_substrate::global_channel_bookmarks;
-        // Unique ids so the process-global bookmark store can't collide with
-        // another test advancing a different (user, room).
+        use crate::cognition::channel_substrate::global_channel_digest_buffer;
+        use crate::runtime::ready_buffer::ReadyBuffer;
+        // Unique ids so the process-global digest buffer can't collide with
+        // another test staging a different (user, room).
         let asha = Uuid::from_u128(0xa54a_u128);
         let room = Uuid::from_u128(0x9e21_u128);
-        global_channel_bookmarks().advance(asha, room, 42);
+        global_channel_digest_buffer().publish(
+            (asha, room),
+            std::sync::Arc::new(crate::cognition::channel_digest::ChannelDigest {
+                room_id: room,
+                persona_id: asha,
+                bookmark: 42,
+                elements: Vec::new(),
+                unread_start: 0,
+            }),
+        );
         let reader = ChannelBookmarksNavReader::fixed(vec![(room, "General".into())]);
         let snap = reader.nav_snapshot(asha);
         let view = project_nav(asha, snap);

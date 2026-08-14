@@ -197,8 +197,19 @@ impl PerceptionFact for StepsLedger {
             if taken == 0 {
                 "[steps taken this session]\n(nothing has executed yet — anything described as already run, created, tested, committed, or merged does not exist, whether in the messages you can see or before them; running a tool is what makes it real)".to_string()
             } else {
+                // NO RECALL PROMISE HERE. This line used to end "recall can
+                // retrieve them" — provably false: every act becomes an
+                // `EngramOrigin::Tool` engram (act_observe/apply.rs), and
+                // `recall_candidates` carries an EXECUTING assertion that a
+                // Tool-origin receipt is NEVER in the semantic recall pool
+                // (admission_state.rs) — through the only production caller the
+                // persona's recall has (recall_faculty.rs). So it told her to
+                // reach for what the substrate had put out of reach: a lying
+                // receipt of the #151/#357 class, in the fact whose whole job is
+                // ground truth. State the loss plainly instead; an honest gap she
+                // can plan around beats a door that isn't there (#414).
                 format!(
-                    "[steps taken this session]\n({taken} step{} executed earlier this session — the details have aged out of working memory; recall can retrieve them. Nothing NEW has executed since.)",
+                    "[steps taken this session]\n({taken} step{} executed earlier this session — you did that work; the details aged out of working memory and cannot be retrieved, so re-check the workspace or the board rather than trusting memory of them. Nothing NEW has executed since.)",
                     if taken == 1 { "" } else { "s" }
                 )
             }
@@ -366,5 +377,16 @@ mod tests {
             "must explain the void: {l}"
         );
         assert!(l.contains("1 step executed earlier"));
+        // what this catches: the all-aged branch must never again promise that
+        // recall can retrieve the aged receipts. It is FALSE by construction —
+        // acts become `EngramOrigin::Tool` engrams and `recall_candidates`
+        // carries an executing assertion that a Tool-origin receipt is NEVER in
+        // the semantic recall pool, through the persona's only production recall
+        // caller. The old wording sent her after a door that does not exist
+        // (#414); this pins the honest form so a future edit can't restore it.
+        assert!(
+            !l.to_lowercase().contains("recall can retrieve"),
+            "the ledger must not promise a retrieval path the substrate does not have: {l}"
+        );
     }
 }

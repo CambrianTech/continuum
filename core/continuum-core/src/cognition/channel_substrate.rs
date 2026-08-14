@@ -1,5 +1,10 @@
 //! Process-global shared channel substrate — the ONE place the shared element
-//! cache, bookmarks, digest builder, and pre-staged digest buffer live.
+//! cache, digest builder, and pre-staged digest buffer live.
+//!
+//! NOT the read cursor. That is durable airc state (`runtime_cursor`) reached
+//! through `AircTranscriptReader::read_cursor` / `advance_read_cursor`; a
+//! process-global copy of it was a second source of truth that also died on
+//! restart.
 //!
 //! These are singletons because the whole point of the consolidation design
 //! (CONCURRENT-MIND §3.3) is that an element's artifacts are computed ONCE and
@@ -15,7 +20,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use crate::cognition::channel_digest::{ChannelBookmarks, ChannelDigestBuilder};
+use crate::cognition::channel_digest::ChannelDigestBuilder;
 use crate::cognition::channel_digest_region::DigestBuffer;
 use crate::cognition::channel_element::ChannelElementCache;
 use crate::cognition::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
@@ -37,24 +42,14 @@ pub fn global_channel_element_cache() -> Arc<ChannelElementCache> {
     .clone()
 }
 
-/// The shared per-persona-per-channel bookmark store (Slack unread markers).
-pub fn global_channel_bookmarks() -> Arc<ChannelBookmarks> {
-    static G: OnceLock<Arc<ChannelBookmarks>> = OnceLock::new();
-    G.get_or_init(|| Arc::new(ChannelBookmarks::new())).clone()
-}
-
-/// The shared digest builder over the global cache + bookmarks. Both the region
+/// The shared digest builder over the global element cache. Both the region
 /// (pre-staging) and any on-demand consumer build through THIS, so a pre-staged
-/// digest and an on-demand one come from the same cache/bookmarks — one shape.
+/// digest and an on-demand one come from the same cache — one shape. The cursor is
+/// NOT here: it is read per-build from airc, so the builder holds no reader state.
 pub fn global_channel_digest_builder() -> Arc<ChannelDigestBuilder> {
     static G: OnceLock<Arc<ChannelDigestBuilder>> = OnceLock::new();
-    G.get_or_init(|| {
-        Arc::new(ChannelDigestBuilder::new(
-            global_channel_element_cache(),
-            global_channel_bookmarks(),
-        ))
-    })
-    .clone()
+    G.get_or_init(|| Arc::new(ChannelDigestBuilder::new(global_channel_element_cache())))
+        .clone()
 }
 
 /// The shared pre-staged-digest ready-buffer. `ChannelDigestRegion` publishes here;

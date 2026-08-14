@@ -194,10 +194,14 @@ async function main(): Promise<void> {
   // "reconnecting" status over last-known state — the app holds ZERO resilience
   // logic ([[one-logical-decision-one-place]]).
   let gotState = false;
+  // The watchdog names the LAST feed status it saw, so a stuck boot says WHERE:
+  // `none` = hydrate never finished; `connecting` = hydrate done, socket stuck.
+  let lastFeedStatus = 'none';
   const state = new StateConnection(scopedWsUrl, undefined, {
     storage: new IndexedDbStateStorage(),
   });
   state.onStatus((status, detail) => {
+    lastFeedStatus = status;
     if (status === 'live') {
       banner.remove();
       gotState = true;
@@ -243,16 +247,26 @@ async function main(): Promise<void> {
   state.onStreamDelta((delta) => {
     widget.applyStreamDelta(delta);
   });
+  // The boot watchdog is armed BEFORE the await, never after. A promise that
+  // never settles inside `connect()` (storage hydrate, socket open) would
+  // otherwise leave the banner frozen on the pre-connect string with no
+  // diagnostic ever registered — the app cannot report the one failure that
+  // stops it from reporting. Arming first makes a hung connect SAY SO, and
+  // separating the two flags names WHICH half hung.
+  let connectReturned = false;
+  setTimeout(() => {
+    if (gotState) return;
+    setStatus(
+      connectReturned
+        ? `connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`
+        : `connect() has not returned after 4s (${config.wsUrl}) — last feed status: ${lastFeedStatus} (none=hydrate never finished, connecting=socket stuck)`,
+      true,
+    );
+  }, 4000);
   // Connect: never throws with reconnect enabled — a dead core means cached
   // state + a loud `reconnecting` chip, and the SDK self-heals when it returns.
   await state.connect();
-  // Opened but no snapshot ⇒ a subscribe/snapshot problem, not a connect one
-  // (the status chip would misleadingly read `connecting` forever without this).
-  setTimeout(() => {
-    if (!gotState) {
-      setStatus(`connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`, true);
-    }
-  }, 4000);
+  connectReturned = true;
 }
 
 main().catch((err: unknown) => {

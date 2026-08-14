@@ -1431,6 +1431,7 @@ impl LlmDeliberationFaculty {
         // bisect: ask-last → clean code; facts-last → parrot loop.
         let spoken = super::deliberation_budget::recent_own_speech(
             crate::identity::PeerId::from_uuid(self.persona_id),
+            ws.room_id,
         );
         let room_speech = super::deliberation_budget::recent_room_speech(ws.room_id);
         let fact_cx = super::perception_facts::FactContext {

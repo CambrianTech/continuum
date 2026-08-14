@@ -49,6 +49,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use airc_core::RoomId;
 use airc_lib::Airc;
 
 use crate::experience::standing::{project_standing, RoomStanding, STANDING_WALL_CATEGORY};
@@ -110,23 +111,45 @@ pub struct ActivitySpawnParams {
     /// this command only decides that a room exists and which recipe it follows.
     pub recipe: String,
 
-    /// Optional parent activity id — activities spawn activities, and the graph is
+    /// Optional parent activity — activities spawn activities, and the graph is
     /// POINTERS (parent id here, child ids on the parent), never nested blobs.
+    /// A `RoomId`, because that is what a parent activity IS. `schemars(with =
+    /// "String")` describes the WIRE (a uuid string, per `#[serde(transparent)]`) to
+    /// the tool schema while Rust keeps the type — the caller sends text, the command
+    /// receives a parsed id, and an unparseable one is rejected at the boundary
+    /// instead of flowing inward as a plausible-looking String.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub parent: Option<String>,
+    #[ts(optional, type = "string")]
+    #[schemars(with = "Option<String>")]
+    pub parent: Option<RoomId>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ActivitySpawnResult {
     /// The airc channel id of the new room — the id every surface addresses it by.
-    pub room_id: String,
+    ///
+    /// The TYPE, not a string that happens to hold a uuid: `RoomId` is a
+    /// `uuid_newtype!` and a room id must never be interchangeable with a peer id,
+    /// a card id, or free text ([[uuids-are-not-strings-and-never-hand-drawn]]).
+    /// `#[ts(type = "string")]` because airc's id newtypes carry no `TS` derive by
+    /// design (identity/mod.rs:83) and `#[serde(transparent)]` already puts the bare
+    /// hyphenated uuid on the wire — so the TS side is unchanged while Rust keeps
+    /// the distinction the compiler can enforce.
+    #[ts(type = "string")]
+    pub room_id: RoomId,
     /// The room's name, as created.
     pub name: String,
     /// The recipe this room follows.
     pub recipe: String,
     /// The wall post that binds room → recipe, so the binding is auditable.
-    pub binding_post_id: String,
+    ///
+    /// A bare `Uuid` rather than a newtype because airc's `publish_wall_post` returns
+    /// one — there is no `WallPostId` upstream to borrow. Carrying the `Uuid` instead
+    /// of stringifying it at least keeps the value in the type system on this side;
+    /// the missing newtype is an airc-side gap, named here so it is not mistaken for
+    /// a choice.
+    #[ts(type = "string")]
+    pub binding_post_id: uuid::Uuid,
 }
 
 #[async_trait]
@@ -152,7 +175,28 @@ impl ActionCommand for ActivitySpawn {
         p: ActivitySpawnParams,
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
+        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent).await
+    }
+}
 
+/// Birth a room from a recipe on an ALREADY-RESOLVED airc handle.
+///
+/// This is the whole of `activity/spawn` minus the caller-identity lookup, split
+/// out because **`activity/spawn` is not the only thing that needs to make a
+/// room**. A benchmark run needs its own room too, and the alternative — a second
+/// creator inside `benchmark/dispatch` — is exactly the parallel-birth-path this
+/// module's header warns about: rooms made by hand carry no recipe and no purpose,
+/// and then every client projects them as plain chat.
+///
+/// One birth path, two callers. A third (activity templates, scheduled runs) slots
+/// in here rather than growing its own.
+pub async fn spawn_activity_room(
+    airc: &Airc,
+    name: &str,
+    recipe: &str,
+    parent: Option<RoomId>,
+) -> Result<ActivitySpawnResult, CommandError> {
+    {
         // `join` IS room creation in airc: it derives the channel from the name,
         // subscribes this peer, and publishes presence. Reusing it keeps ONE room
         // birth path instead of a parallel creator that would drift from it.
@@ -170,8 +214,8 @@ impl ActionCommand for ActivitySpawn {
         // becomes the separate focusing verb it should be (#290, NavIntent). Until
         // that lands, callers who must not move focus have to restore the pointer
         // themselves, and this doc is the receipt saying why.
-        let room = airc.join(&p.name).await.map_err(|source| {
-            CommandError::Invalid(format!("could not create room {:?}: {source}", p.name))
+        let room = airc.join(name).await.map_err(|source| {
+            CommandError::Invalid(format!("could not create room {name:?}: {source}"))
         })?;
 
         // Bind the room to its recipe ON THE WALL, where every participant sees the
@@ -184,8 +228,8 @@ impl ActionCommand for ActivitySpawn {
         // long as the binding had no reader at all, which is exactly how a field-name
         // typo here would have cost nothing and been noticed by nobody.
         let binding = RoomRecipeBinding {
-            recipe: p.recipe.clone(),
-            parent: p.parent.clone(),
+            recipe: recipe.to_string(),
+            parent,
         };
         let body = serde_json::to_string(&binding).map_err(|source| {
             CommandError::Internal(format!("encode recipe binding: {source}"))
@@ -203,10 +247,10 @@ impl ActionCommand for ActivitySpawn {
             })?;
 
         Ok(ActivitySpawnResult {
-            room_id: room.channel.to_string(),
+            room_id: room.channel,
             name: room.name,
-            recipe: p.recipe,
-            binding_post_id: post_id.to_string(),
+            recipe: recipe.to_string(),
+            binding_post_id: post_id,
         })
     }
 }

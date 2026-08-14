@@ -262,7 +262,6 @@ mod loose_id_guard {
         LooseId { file: "memory/types.rs", field: "context_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "memory/types.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "memory/types.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
-        LooseId { file: "modules/activity.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/rag.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/room.rs", field: "room_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
         LooseId { file: "modules/sentinel/escalation.rs", field: "persona_id", why: "pending: ours, but nothing on this path RESOLVES yet. Typing it as an identity today would assert something the code does not do — #164/#396" },
@@ -341,6 +340,133 @@ mod loose_id_guard {
         found
     }
 
+    /// Replace the contents of every `"…"` span with spaces, preserving byte
+    /// offsets so the caller's index arithmetic still lines up. Escaped quotes
+    /// (`\"`) do not close a span.
+    fn blank_string_literals(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut in_string = false;
+        let mut escaped = false;
+        for ch in line.chars() {
+            if in_string {
+                let closes = ch == '"' && !escaped;
+                escaped = ch == '\\' && !escaped;
+                out.push(if closes { '"' } else { ' ' });
+                if closes {
+                    in_string = false;
+                }
+            } else {
+                if ch == '"' {
+                    in_string = true;
+                    escaped = false;
+                }
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    /// `fn f(peer_id: &str, …)` — identity names in PARAMETER position.
+    ///
+    /// The field audit above never saw these: its predicate is
+    /// `line.strip_prefix("<name>:")` with the whole remainder equal to
+    /// `String,`, which by construction cannot match a signature. So every
+    /// `&str` id in the crate was invisible to a guard that reported clean.
+    ///
+    /// Non-overlapping with [`loose_id_fields`] on purpose:
+    /// - a BORROWED form (`&str` / `&String`) is never a struct field here — it
+    ///   would need a lifetime — so it is always a parameter;
+    /// - an OWNED form counts only when it is NOT the whole line, because a
+    ///   whole-line `peer_id: String,` is exactly what the field audit claims.
+    ///
+    /// Without that split both guards would report the same site, and fixing it
+    /// once would leave the other one red with nothing left to fix.
+    fn loose_id_params(src: &str) -> Vec<&'static str> {
+        let mut found = Vec::new();
+        for raw in src.lines() {
+            let line = match raw.find("//") {
+                Some(idx) => &raw[..idx],
+                None => raw,
+            };
+            // Blank out double-quoted spans. Without this the audit reports
+            // its OWN positive-control fixtures (`"peer_id: &str,"` a few
+            // lines below) as three real findings in identity/mod.rs — a
+            // detector that cannot tell code from a string about code.
+            // `loose_id_fields` needs no equivalent: it demands the WHOLE
+            // trimmed line be `name: String,`, which a quoted literal never is.
+            let line = blank_string_literals(line);
+            let line = line.trim();
+            let line = line.strip_prefix("pub ").unwrap_or(line);
+            for name in ID_NAMES {
+                let mut from = 0;
+                while let Some(rel) = line[from..].find(name) {
+                    let at = from + rel;
+                    from = at + name.len();
+                    // Left boundary: `signer_peer_id` must not register as
+                    // `peer_id`. `char::is_alphanumeric` alone does NOT do this
+                    // — `_` is not alphanumeric, so the underscore-joined
+                    // prefix would slip straight through.
+                    let left_ok = at == 0
+                        || !matches!(line.as_bytes()[at - 1], b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9');
+                    if !left_ok {
+                        continue;
+                    }
+                    let Some(rest) = line[at + name.len()..].strip_prefix(':') else {
+                        continue;
+                    };
+                    let rest = rest.trim_start();
+                    let borrowed = rest.starts_with("&str") || rest.starts_with("&String");
+                    let owned = rest.starts_with("String") || rest.starts_with("Option<String>");
+                    if borrowed || (owned && at > 0) {
+                        found.push(*name);
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    // what this catches: a predicate that silently matches NOTHING. A guard
+    // whose detector is broken does not go quiet — it reports the codebase
+    // clean, which is strictly worse than having no guard, because it converts
+    // an open defect into a green claim that the work is done.
+    //
+    // Written because exactly that happened while building this: a throwaway
+    // scan of this same shape returned 0 twice in a row, and 0 was not the
+    // answer — the detector was broken both times. A predicate is not trusted
+    // until it has been shown to fire on a known-true input AND stay silent on
+    // the near-misses that surround it.
+    #[test]
+    fn the_param_predicate_fires_and_does_not_over_fire() {
+        assert_eq!(
+            loose_id_params("    peer_id: &str,"),
+            vec!["peer_id"],
+            "must fire on the plain borrowed param — if this is empty the audit below is decorative"
+        );
+        assert_eq!(
+            loose_id_params("fn f(persona_id: &str, x: u8)"),
+            vec!["persona_id"],
+            "must fire mid-signature, not only on its own line"
+        );
+        assert!(
+            loose_id_params("    signer_peer_id: String,").is_empty(),
+            "a `_`-joined SUFFIX is a different name and must not register as peer_id"
+        );
+        assert!(
+            loose_id_params("    pub room_id: String,").is_empty(),
+            "whole-line owned decl belongs to the FIELD audit — double-reporting makes one of them unfixable"
+        );
+        assert!(
+            loose_id_params("    // peer_id: &str,").is_empty(),
+            "a commented example must not register, same as the field audit"
+        );
+        assert!(
+            loose_id_params("    assert_eq!(f(\"peer_id: &str,\"), x);").is_empty(),
+            "an id inside a STRING LITERAL is text about code, not code — this audit \
+             reported its own fixtures three times before the blanking step existed"
+        );
+    }
+
     // what this catches: a NEW `<something>_id: String` landing anywhere in the
     // crate without a declaration. That is the exact shape that grew to 55
     // persona_id sites, 5 String peer_ids, and a MessageId whose `new("msg-1")`
@@ -370,6 +496,25 @@ mod loose_id_guard {
             undeclared.len(),
             undeclared.join("\n  ")
         );
+    }
+
+    // TEMPORARY: dumps the real param-position list so LOOSE_ID_PARAMS can be
+    // filled from a COMPILED run against the real tree, not from a scratch
+    // script. Deleted in the same commit that lands the table.
+    #[test]
+    #[ignore = "scaffolding: run with --ignored to regenerate LOOSE_ID_PARAMS"]
+    fn dump_param_positions() {
+        let mut rows: Vec<String> = Vec::new();
+        for (file, src) in rs_files() {
+            let mut names = loose_id_params(&src);
+            names.sort();
+            names.dedup();
+            for name in names {
+                rows.push(format!("{file} | {name}"));
+            }
+        }
+        rows.sort();
+        panic!("{} (file,param) pairs:\n{}", rows.len(), rows.join("\n"));
     }
 
     // what this catches: the list rotting into a graveyard. A declaration whose

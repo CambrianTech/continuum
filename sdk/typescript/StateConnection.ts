@@ -168,6 +168,48 @@ const ALL_LAYERS: StateLayer[] = ['ephemeral', 'session', 'persistent', 'semanti
 const reconnectDelayMs = (attempt: number): number =>
   Math.min(1000 * 2 ** Math.min(attempt - 1, 3), 10_000);
 
+/**
+ * How long the cache gets to answer before boot proceeds live-only.
+ *
+ * Generous against a real local read (IndexedDB answers in single-digit ms) and
+ * far under any human patience threshold, because a MISSED cache costs only
+ * first-paint latency — the substrate re-sends every kind's full snapshot on
+ * subscribe, so nothing is lost but a head start.
+ */
+const HYDRATE_BUDGET_MS = 1_500;
+
+/**
+ * How long a WS handshake gets to complete (`open` or `error`) before the
+ * attempt is treated as failed and handed to the retry ladder. Generous
+ * against a healthy local core (measured 14 ms to first state envelope), and
+ * strict enough that a silently-unresponsive ingress costs one visible retry,
+ * never a hung boot.
+ */
+const OPEN_BUDGET_MS = 5_000;
+
+/**
+ * Resolve `work`, or REJECT at `budgetMs` — the piece a bare try/catch cannot
+ * supply. `catch` covers a promise that rejects; a promise that never settles
+ * has no failure to catch, so the awaiting code waits forever. Any await on an
+ * external resource inside a boot path needs one of these.
+ *
+ * The timer is always cleared, so a slow-but-successful `work` leaves nothing
+ * pending (a dangling handle would keep a node process alive at exit).
+ */
+async function withTimeout<T>(work: Promise<T>, budgetMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), budgetMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export class StateConnection {
   private readonly ctor: WebSocketCtor;
   private socket?: WebSocketLike;
@@ -248,7 +290,20 @@ export class StateConnection {
     if (!this.storage || this.hydrated) return;
     this.hydrated = true;
     try {
-      const rows = await this.storage.load(this.scope);
+      // BOUNDED, not just try/caught. A `catch` covers a load that REJECTS; it
+      // cannot cover one that never SETTLES, and a never-settling load is not
+      // hypothetical — it took the whole web client down on 2026-08-14 (blank
+      // page, banner frozen pre-connect, no diagnostic reachable because the
+      // boot watchdog was armed after this await). Storage is declared an
+      // ACCELERANT, never a dependency (see StateStorage.ts header); a bound is
+      // what makes that declaration TRUE rather than aspirational. On timeout we
+      // proceed live-only — the substrate re-sends full snapshots on subscribe,
+      // so a skipped cache costs first-paint latency and nothing else.
+      const rows = await withTimeout(
+        this.storage.load(this.scope),
+        HYDRATE_BUDGET_MS,
+        `storage.load did not answer in ${HYDRATE_BUDGET_MS}ms`,
+      );
       let delivered = 0;
       for (const row of rows) {
         const sink = this.sinks.get(row.envelope.kind);
@@ -415,13 +470,27 @@ export class StateConnection {
 
     this.connecting = new Promise<WebSocketLike>((resolve, reject) => {
       const socket = new this.ctor(this.url);
+      // BOUNDED handshake — the hydrate lesson (2026-08-14), one seam over. A
+      // socket that errors feeds the retry ladder; a socket that answers with
+      // SILENCE (ingress accepted TCP but never completes the WS upgrade —
+      // measured live: `last feed status: connecting`, boot hung, 1-in-5 boots)
+      // fires neither `open` nor `error`, and an unbounded wait hangs connect()
+      // forever. On timeout: reject like any handshake failure, so the same
+      // ladder retries and the UI stays painted under a loud `reconnecting`.
+      const openTimer = setTimeout(() => {
+        this.connecting = undefined;
+        reject(new Error(`StateConnection: ${this.url} did not complete the WS handshake in ${OPEN_BUDGET_MS}ms`));
+        socket.close();
+      }, OPEN_BUDGET_MS);
       socket.onopen = () => {
+        clearTimeout(openTimer);
         this.socket = socket;
         resolve(socket);
       };
       socket.onerror = (ev) => {
         // Before open → connect failure; after open → onclose handles teardown.
         // Reject the handshake either way (a settled promise ignores a 2nd reject).
+        clearTimeout(openTimer);
         this.connecting = undefined;
         reject(new Error(`StateConnection: connection to ${this.url} failed: ${String(ev)}`));
       };

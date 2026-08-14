@@ -218,7 +218,12 @@ pub struct HostBudget {
 /// per-lane KV at some assumed window: the served window is DERIVED in
 /// [`plan_serving`] from `(context_window ∩ host budget / lanes / kv_per_token)`,
 /// never a hardcoded constant ([[pass-the-model-struct-no-param-hell]]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/serving/ModelFootprint.ts"
+)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelFootprint {
     pub model_id: String,
     /// On-device weight bytes (the GGUF quant resident on GPU/UMA).
@@ -327,8 +332,27 @@ impl ModelFootprint {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ServingPlan {
-    /// The base model to serve (shared across lanes).
-    pub base_model_id: String,
+    /// The base model to serve (shared across lanes) — the RESOLVED
+    /// [`ModelFootprint`], not a name.
+    ///
+    /// This was `base_model_id: String`, cloned out of the chosen candidate at
+    /// plan time. That clone was the bug: the planner HELD the footprint, threw
+    /// it away, kept the name, and every consumer that needed a real fact
+    /// (capability_rank, weights_bytes, context_window) had to search the
+    /// candidate list back by string equality — and got `None` when the name
+    /// referred to a model nothing had loaded. A citizen homed that way calls a
+    /// model the gateway isn't serving, the call fails with 0 tokens in 0ms, the
+    /// turn is skipped "retries next tick", and it retries forever because the
+    /// stale name can never self-correct. Measured 2026-08-14: two citizens
+    /// (Asha, Anwen) silent on `bartowski/Qwen2.5-Coder-7B-Instruct-GGUF`
+    /// against a gateway serving only Devstral, while a third homed correctly
+    /// spoke a full 339s turn.
+    ///
+    /// Carrying the struct makes that state unrepresentable rather than merely
+    /// detectable: a plan cannot name a model it does not hold
+    /// ([[pass-the-model-struct-no-param-hell]] — the rule this file's own
+    /// `ModelFootprint` doc already cited three lines above the clone).
+    pub base_model: ModelFootprint,
     /// The host-fit served window for the chosen model: the largest context that
     /// fits `(budget − weights) / lanes` worth of KV, capped at the model's own
     /// trained `context_window`, floored at [`MIN_SERVE_CTX`]. THE single source
@@ -416,7 +440,7 @@ pub fn plan_serving(
             })
             .expect("candidates non-empty checked above");
         return Some(ServingPlan {
-            base_model_id: smallest.model_id.clone(),
+            base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
             lanes: 1,
             // Nothing fits the GPU budget → the WHOLE demand is off-box work (the
@@ -591,7 +615,7 @@ pub fn plan_serving(
     }
 
     Some(ServingPlan {
-        base_model_id: model.model_id.clone(),
+        base_model: model.clone(),
         served_context_window,
         lanes,
         // Demand the local lanes couldn't absorb (2 slots < N personas is the misfit
@@ -684,13 +708,14 @@ pub fn plan_serving_stable(
     // free memory, so this test uses `host`, not `at_rest`, and the headroom stops
     // a transient budget bump from flapping up.
     let headroom_budget = (host.usable_bytes as f64 * (1.0 - SWITCH_UP_HEADROOM)) as u64;
-    let upgrade_worth_it = fresh
-        .as_ref()
-        .and_then(|f| candidates.iter().find(|c| c.model_id == f.base_model_id))
-        .is_some_and(|f| {
-            f.capability_rank > inc.capability_rank
-                && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= headroom_budget
-        });
+    // The plan HOLDS its model, so this is a field read, not a search. It used to be
+    // `candidates.iter().find(|c| c.model_id == f.base_model_id)` — a name lookup that
+    // returned None whenever the planned name wasn't in the candidate list, silently
+    // making `is_some_and` false and suppressing a legitimate switch-up.
+    let upgrade_worth_it = fresh.as_ref().map(|f| &f.base_model).is_some_and(|f| {
+        f.capability_rank > inc.capability_rank
+            && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= headroom_budget
+    });
     if upgrade_worth_it {
         return fresh;
     }
@@ -1158,7 +1183,7 @@ mod tests {
             plan.rationale
         );
         assert_eq!(
-            plan.base_model_id, "qwen3.5-4b",
+            plan.base_model.model_id, "qwen3.5-4b",
             "14B can't fit 5.5GB; 4B is the most capable that does"
         );
         assert!(plan.lanes >= 1);
@@ -1286,7 +1311,7 @@ mod tests {
         };
         let plan = plan_serving(host, &candidates(), ServingDemand::new(MAX_LANES, None)).unwrap();
         assert_eq!(
-            plan.base_model_id, "coder-sentinel-14b",
+            plan.base_model.model_id, "coder-sentinel-14b",
             "most capable, fits easily"
         );
         assert!(
@@ -1412,7 +1437,7 @@ mod tests {
             "must report the GPU budget can't hold any candidate"
         );
         assert_eq!(
-            plan.base_model_id, "qwen2.5-0.5b",
+            plan.base_model.model_id, "qwen2.5-0.5b",
             "names the smallest as the only option"
         );
         assert_eq!(plan.lanes, 1);
@@ -1465,7 +1490,8 @@ mod tests {
         assert_eq!(
             plan_serving(host, &pair(), ServingDemand::new(MAX_LANES, None))
                 .unwrap()
-                .base_model_id,
+                .base_model
+                .model_id,
             "big",
             "fresh would pick big"
         );
@@ -1477,7 +1503,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            stable.base_model_id, "small",
+            stable.base_model.model_id, "small",
             "hysteresis keeps incumbent — no flap"
         );
         assert!(
@@ -1534,7 +1560,7 @@ mod tests {
             ServingDemand::new(MAX_LANES, None),
         )
         .expect("incumbent still servable");
-        assert_eq!(stable.base_model_id, "big");
+        assert_eq!(stable.base_model.model_id, "big");
         assert_eq!(
             stable.lanes, boot.lanes,
             "a model's OWN residency must not shrink its OWN lane count (stable={} boot={} \
@@ -1564,7 +1590,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            stable.base_model_id, "big",
+            stable.base_model.model_id, "big",
             "more capable + ample headroom → upgrade"
         );
     }
@@ -1591,7 +1617,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            stable.base_model_id, "small",
+            stable.base_model.model_id, "small",
             "incumbent gone from disk → serve what's present"
         );
     }
@@ -1616,7 +1642,8 @@ mod tests {
         assert_eq!(
             plan_serving(dipped, &pair(), ServingDemand::new(MAX_LANES, None))
                 .unwrap()
-                .base_model_id,
+                .base_model
+                .model_id,
             "small",
             "depressed-budget plain plan would flap to the smaller model"
         );
@@ -1629,7 +1656,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            stable.base_model_id, "big",
+            stable.base_model.model_id, "big",
             "incumbent survives its OWN load dip — no flap"
         );
         assert!(stable.lanes >= 1, "kept model still gets ≥1 lane");

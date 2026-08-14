@@ -226,7 +226,7 @@ impl PersonaSpawnerModule {
         plan: Option<&crate::cognition::serving_plan::ServingPlan>,
     ) -> Self {
         if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
-            self.serving_base_model = Some(p.base_model_id.clone());
+            self.serving_base_model = Some(p.base_model.model_id.clone());
             self.serving_lanes = p.lanes.max(1);
             self.serving_context_window = p
                 .served_context_window

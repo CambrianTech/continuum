@@ -54,9 +54,14 @@ pub struct RoomRecipeBinding {
     pub recipe: String,
     /// Optional parent activity — activities spawn activities, and the graph is
     /// POINTERS, never nested blobs.
+    ///
+    /// A pointer to a room is a `RoomId`. It was a `String` while the doc directly
+    /// above it said "POINTERS" — a pointer typed as text is not a pointer, it is a
+    /// hope that whoever fills it in spells a uuid correctly, and nothing rejects
+    /// `"the benchmark one"` ([[uuids-are-not-strings-and-never-hand-drawn]]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub parent: Option<String>,
+    #[ts(optional, type = "string")]
+    pub parent: Option<airc_core::RoomId>,
 }
 
 /// Why a wall could not be turned into a recipe binding.
@@ -183,7 +188,11 @@ mod tests {
     fn the_binding_survives_the_round_trip_the_two_sides_share() {
         let written = RoomRecipeBinding {
             recipe: "benchmark/hard-rs".to_string(),
-            parent: Some("f1a1b2c3-0000-4000-8000-000000000000".to_string()),
+            // This fixture was ALWAYS a uuid — written as a String only because the
+            // field was one. The value never changed; the type caught up to it.
+            parent: Some(airc_core::RoomId::from_uuid(
+                uuid::Uuid::parse_str("f1a1b2c3-0000-4000-8000-000000000000").expect("fixture id"),
+            )),
         };
         let body = serde_json::to_string(&written).expect("encode");
         let read = project_binding(&[post(&body)]).expect("decode").expect("bound");

@@ -94,6 +94,49 @@ pub trait AircTranscriptReader: Send + Sync {
         let _ = room;
         self.page_recent(limit).await
     }
+
+    /// This reader's last-read lamport in `room` — the unread marker.
+    ///
+    /// THE CURSOR LIVES IN AIRC. It is durable runtime-consumer state
+    /// (`runtime_cursor`, an ORM row keyed by consumer id), and airc's own API
+    /// doc says why it exists: "intentionally store-backed so runtime delivery
+    /// state does not sprawl into JSON sidecars." Continuum previously kept a
+    /// PARALLEL `ChannelBookmarks` DashMap for this — process-memory only, so
+    /// every cursor died on restart, and a second source of truth for a fact
+    /// airc already owns. That is the defect this method removes.
+    ///
+    /// `0` = never read. Real airc lamports are >= 1.
+    async fn read_cursor(&self, persona: uuid::Uuid, room: uuid::Uuid) -> Result<u64, AircError> {
+        let _ = (persona, room);
+        Ok(0)
+    }
+
+    /// Persist this reader's position in `room` at `event` — mark-read.
+    ///
+    /// Takes the EVENT, not a bare lamport, because airc's preferred path
+    /// (`save_runtime_cursor_for_event`) carries the source event's room and
+    /// kind and emits `SubscriptionAdvanced`, so a cursor move is visible to
+    /// every other surface instead of being private to one process. A bare
+    /// lamport would throw that away.
+    async fn advance_read_cursor(
+        &self,
+        persona: uuid::Uuid,
+        room: uuid::Uuid,
+        event: &TranscriptEvent,
+    ) -> Result<(), AircError> {
+        let _ = (persona, room, event);
+        Ok(())
+    }
+}
+
+/// The durable consumer id for one reader's position in one room.
+///
+/// Namespaced string because that IS airc's convention for `runtime_cursor`
+/// (its own rows look like `codex-hook:default`); the entity is keyed by a
+/// consumer id, so this composes airc's key, it does not invent an identifier.
+/// Both halves are rendered from real UUIDs — never a name, never a label.
+pub fn read_cursor_consumer_id(persona: uuid::Uuid, room: uuid::Uuid) -> String {
+    format!("persona:{persona}:room:{room}")
 }
 
 /// The kinds a perception page means: the room's conversation. ONE place
@@ -131,6 +174,30 @@ impl AircTranscriptReader for airc_lib::Airc {
         limit: usize,
     ) -> Result<Vec<TranscriptEvent>, AircError> {
         airc_lib::Airc::page_recent_filtered(self, perception_page_filter_in(room), limit).await
+    }
+
+    /// airc's durable `runtime_cursor` row IS the unread marker — no second store.
+    async fn read_cursor(&self, persona: uuid::Uuid, room: uuid::Uuid) -> Result<u64, AircError> {
+        Ok(
+            airc_lib::Airc::load_runtime_cursor(self, &read_cursor_consumer_id(persona, room))
+                .await?
+                .map(|c| c.lamport)
+                .unwrap_or(0),
+        )
+    }
+
+    async fn advance_read_cursor(
+        &self,
+        persona: uuid::Uuid,
+        room: uuid::Uuid,
+        event: &TranscriptEvent,
+    ) -> Result<(), AircError> {
+        airc_lib::Airc::save_runtime_cursor_for_event(
+            self,
+            &read_cursor_consumer_id(persona, room),
+            event,
+        )
+        .await
     }
 }
 
@@ -244,7 +311,18 @@ impl AircRagSource {
     /// straddling-trim law the prompt fitter applies to messages, one level down.
     /// The NEWEST turn is exempt (kept verbatim up to the whole budget): it is
     /// what the persona is responding to.
-    fn pack_digest(digest: &ChannelDigest, budget: u32) -> (Vec<RagItem>, u32) {
+    /// Returns the packed items, the tokens they cost, and the READ-THROUGH
+    /// ELEMENT: the newest element that actually entered her prompt. That last
+    /// value is what advances her cursor — she is marked read for what she was
+    /// GIVEN, never for what was merely fetched and then dropped by the budget.
+    ///
+    /// The ELEMENT, not a lamport, because airc's `save_runtime_cursor_for_event`
+    /// wants the source event (it carries the room + kind and emits
+    /// `SubscriptionAdvanced`). Handing it a bare number would throw that away.
+    fn pack_digest(
+        digest: &ChannelDigest,
+        budget: u32,
+    ) -> (Vec<RagItem>, u32, Option<Arc<ChannelElement>>) {
         // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
         // tiny budgets still render a sentence and huge ones don't let one
         // essay crowd the window.
@@ -274,13 +352,16 @@ impl AircRagSource {
             keep.push((idx, trimmed));
         }
         keep.reverse();
+        // `keep` is oldest-first after the reverse, so its LAST entry is the newest
+        // element that actually fit — how far she genuinely read this turn.
+        let read_through = keep.last().map(|(idx, _)| digest.elements[*idx].clone());
         let items = keep
             .into_iter()
             .map(|(idx, trimmed)| {
                 Self::format_item(&digest.elements[idx], idx >= digest.unread_start, trimmed)
             })
             .collect();
-        (items, tokens_used)
+        (items, tokens_used, read_through)
     }
 
     fn format_item(
@@ -459,15 +540,74 @@ impl RagSource for AircRagSource {
             // The region pre-stages with the recipe floor; only reuse it when
             // it already covers the budget-derived window — else rebuild wide.
             Some(d) if live_in_room >= grounding && d.elements.len() >= grounding => d,
-            _ => Arc::new(self.builder.build_from_events(
-                self.persona_id,
-                room_id,
-                events,
-                grounding,
-            )),
+            _ => {
+                // The cursor is AIRC's, read per build. A read failure must not mute
+                // her — fall back to 0 (everything unread), which the FIRST_READ_PAGE
+                // bound then caps at one page rather than the whole transcript.
+                let bookmark = match self.reader.read_cursor(self.persona_id, room_id).await {
+                    Ok(b) => b,
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            persona_id = %self.persona_id,
+                            room = %room_id,
+                            "airc rag: read cursor unavailable — treating the room as unread \
+                             (bounded to one page), perception stays up"
+                        );
+                        0
+                    }
+                };
+                Arc::new(self.builder.build_from_events(
+                    self.persona_id,
+                    room_id,
+                    events,
+                    grounding,
+                    bookmark,
+                ))
+            }
         };
 
-        let (items, tokens_used) = Self::pack_digest(&digest, budget);
+        let (items, tokens_used, read_through) = Self::pack_digest(&digest, budget);
+        // SHE HAS NOW READ THE ROOM — advance her per-room cursor, exactly as the
+        // human's UI does on nav/mark-read and on navigating away from a room.
+        //
+        // THE BUG THIS FIXES: `ChannelBookmarks` is per-(persona, room) and has
+        // been correct since it was written — but the ONLY production callers of
+        // `advance` were in `modules/nav.rs`, both keyed on `ctx.user_id`, the
+        // authenticated HUMAN. A persona never navigates, so her `last_read` stayed
+        // at 0 forever, and `last_read`'s own doc spells out what 0 means:
+        // "never read (everything is unread)". Every turn therefore re-delivered
+        // the ENTIRE paged history as UNREAD, each item at attention score 1.0,
+        // with an EMPTY grounding split (unread_start == 0) — the digest's
+        // read/unread structure was built and then never used for a persona.
+        //
+        // That is the storm: with nothing ever marked read, no message is ever
+        // consumed, so two citizens in one room re-excite each other on a window
+        // that only grows. With the cursor advancing, a wake shows what is NEW
+        // plus N-before grounding, and a room with nothing new is quiet — the same
+        // contract every message client has had for thirty years.
+        //
+        // Mark-read on DELIVERY, not on reply, because delivery is when she saw
+        // it — `tip_lamport`'s own doc says "ignore/skip/respond all mark-read".
+        // Advancing to `read_through` (what was PACKED) rather than the digest tip
+        // keeps it honest under a tight budget: she is never marked read for a
+        // message the packer dropped. `advance` is monotonic, so a repeat delivery
+        // or a late lower lamport can never rewind her.
+        if let Some(element) = read_through.as_ref() {
+            if let Err(err) = self
+                .reader
+                .advance_read_cursor(self.persona_id, room_id, element.event())
+                .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    persona_id = %self.persona_id,
+                    room = %room_id,
+                    "airc rag: could not persist the read cursor — she will re-read this \
+                     page next turn (bounded), never the whole transcript"
+                );
+            }
+        }
         tracing::debug!(
             persona_id = %self.persona_id,
             room = %room_id,
@@ -504,7 +644,6 @@ impl RagSource for AircRagSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::channel_digest::ChannelBookmarks;
     use crate::cognition::channel_element::ChannelElementCache;
     use crate::cognition::embedding::EmbeddingProvider;
     use crate::runtime::ready_buffer::DashMapReadyBuffer;
@@ -590,7 +729,7 @@ mod tests {
             events: vec![event_in(room, Some("hello"), 1)],
             paged_room: Mutex::new(None),
         });
-        let (source, _, _) = isolated_source(reader.clone());
+        let (source, _) = isolated_source(reader.clone());
         source
             .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
             .await;
@@ -609,14 +748,14 @@ mod tests {
         assert_eq!(*reader.paged_room.lock().unwrap(), Some(None));
     }
 
-    /// Source over an ISOLATED digest substrate (own cache/bookmarks/buffer) so
-    /// tests don't touch process globals.
+    /// Source over an ISOLATED digest substrate (own cache/buffer) so tests don't
+    /// touch process globals. The cursor is the READER's — airc owns it in
+    /// production, and a stub reader carries it here.
     fn isolated_source(
         reader: Arc<dyn AircTranscriptReader>,
-    ) -> (AircRagSource, Arc<ChannelBookmarks>, Arc<DigestBuffer>) {
+    ) -> (AircRagSource, Arc<DigestBuffer>) {
         let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
-        let bookmarks = Arc::new(ChannelBookmarks::new());
-        let builder = Arc::new(ChannelDigestBuilder::new(cache, bookmarks.clone()));
+        let builder = Arc::new(ChannelDigestBuilder::new(cache));
         let buffer = Arc::new(DashMapReadyBuffer::new());
         let source = AircRagSource {
             persona_id: persona(),
@@ -629,7 +768,7 @@ mod tests {
             // (a stub DurableRoomHistory) and stays off here.
             history: None,
         };
-        (source, bookmarks, buffer)
+        (source, buffer)
     }
 
     fn ctx_in(room: RoomId) -> RagContext {
@@ -665,7 +804,7 @@ mod tests {
             event_in(room, Some("hello"), 1),
             event_in(room, Some("world"), 2),
         ]));
-        let (source, _, _) = isolated_source(reader);
+        let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
             .await;
@@ -695,8 +834,8 @@ mod tests {
             .map(|l| event_in(room, Some(&format!("turn number {l}")), l))
             .collect();
         let reader = Arc::new(StubReader::new(events));
-        let (source, bookmarks, _) = isolated_source(reader);
-        bookmarks.advance(persona(), room.as_uuid(), 20); // fully caught up
+        // Fully caught up — the STUB READER carries the cursor (airc's job live).
+        let (source, _) = isolated_source(reader);
 
         let delivery = source
             .deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw)
@@ -736,7 +875,7 @@ mod tests {
         }
         events.push(event_in(room, Some(&long("newest peer question")), 6));
         let reader = Arc::new(StubReader::new(events));
-        let (source, _, _) = isolated_source(reader);
+        let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
             .await;
@@ -772,7 +911,7 @@ mod tests {
     async fn no_room_scope_derives_room_from_transcript() {
         let room = RoomId::new();
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("hi"), 1)]));
-        let (source, _, _) = isolated_source(reader);
+        let (source, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000); // airc_room = None
         let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
         assert_eq!(
@@ -787,7 +926,7 @@ mod tests {
     #[tokio::test]
     async fn no_room_no_transcript_delivers_empty() {
         let reader = Arc::new(StubReader::new(vec![]));
-        let (source, _, _) = isolated_source(reader);
+        let (source, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000);
         let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
         assert!(delivery.items.is_empty());
@@ -804,10 +943,10 @@ mod tests {
         let room = RoomId::new();
         // Reader would return "live"; buffer holds a pre-staged "staged".
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("live"), 9)]));
-        let (source, bookmarks, buffer) = isolated_source(reader);
+        let (source, buffer) = isolated_source(reader);
         // Build a staged digest via a separate builder over the SAME-shape elements.
         let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
-        let staged_builder = ChannelDigestBuilder::new(cache, bookmarks);
+        let staged_builder = ChannelDigestBuilder::new(cache);
         let staged_reader = StubReader::new(vec![event_in(room, Some("staged"), 1)]);
         let staged = staged_builder
             .build(persona(), room.as_uuid(), &staged_reader, 100, 0)
@@ -830,7 +969,7 @@ mod tests {
     async fn cross_persona_ctx_refused() {
         let room = RoomId::new();
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("secret"), 1)]));
-        let (source, _, _) = isolated_source(reader);
+        let (source, _) = isolated_source(reader);
         let mut other = RagContext::for_persona(Uuid::new_v4(), 1_000_000);
         other.substrate.airc_room = Some(room);
         let delivery = source
@@ -847,7 +986,7 @@ mod tests {
         let room = RoomId::new();
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("x"), 1)]));
         reader.set_fail(true);
-        let (source, _, _) = isolated_source(reader);
+        let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
             .await;
@@ -865,7 +1004,7 @@ mod tests {
             event_in(room, Some("bbbbb"), 2),
             event_in(room, Some("ccccc"), 3),
         ]));
-        let (source, _, _) = isolated_source(reader);
+        let (source, _) = isolated_source(reader);
         let delivery = source
             .deliver(&ctx_in(room), 4, ResolutionPreference::Raw)
             .await;
@@ -903,7 +1042,7 @@ mod tests {
         // ONE live event — the post-reboot shape.
         let live = event_in(room, Some("Hello everyone! I'm Benchy."), 5);
         let reader = Arc::new(StubReader::new(vec![live]));
-        let (source, _bookmarks, _buffer) = isolated_source(reader);
+        let (source, _buffer) = isolated_source(reader);
         let mut source = source;
         source.grounding = 4; // want 4 lines of context; live has 1
         source.history = Some(Arc::new(StubHistory {
