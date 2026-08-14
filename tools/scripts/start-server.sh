@@ -91,17 +91,35 @@ source "$SCRIPT_DIR/lib/windows-build-env.sh"
 # ── Per-platform feature flags ───────────────────────────────────────
 # Mac Intel can't use Metal (task #131 — ggml_metal_device_init hangs on
 # Intel + AMD discrete). Force mac-cpu-only on Intel Mac.
+#
+# CONTINUUM_CLI_FEATURES is the GPU-FREE set for the `continuum` CLI, which is a
+# socket client and must never link a GPU runtime (see the CLI build below for why
+# that made it unlaunchable on Windows). It is platform-shaped for the same reason
+# the core's set is: a bare `--no-default-features` is NOT GPU-free-and-buildable
+# everywhere. On macOS the unconditional `llama` dependency fires
+#
+#   compile_error!("llama crate built on macOS WITHOUT `--features metal`")
+#
+# so the plain flag has NEVER produced a CLI on a Mac — every `npm start` since it
+# landed has hit the loud "⚠ GPU-free continuum build failed — retrying with the
+# full feature set … Please report this" fallback, and shipped a GPU-linked CLI
+# while reporting an anomaly nobody reported. `llama/mac-cpu-only` is that guard's
+# OWN declared opt-in for a deliberately CPU-only build, which is exactly what a
+# socket client wants.
 case "$(uname -sm)" in
   "Darwin x86_64")
     CONTINUUM_FEATURES="--no-default-features --features livekit-webrtc,llama/mac-cpu-only"
+    CONTINUUM_CLI_FEATURES="--no-default-features --features llama/mac-cpu-only"
     ;;
   "Darwin arm64")
     CONTINUUM_FEATURES="--features metal,accelerate"
+    CONTINUUM_CLI_FEATURES="--no-default-features --features llama/mac-cpu-only"
     ;;
   *)
     # Source the existing detector for Linux/Windows.
     source "$SCRIPT_DIR/shared/cargo-features.sh"
     CONTINUUM_FEATURES="$CARGO_GPU_FEATURES"
+    CONTINUUM_CLI_FEATURES="--no-default-features"
     ;;
 esac
 
@@ -330,9 +348,15 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $
 # is why reboot has never worked on Windows — the verb was trying to overwrite
 # itself mid-run. (On Unix it silently works: unlink leaves the running inode.)
 #
-# The caller sets CONTINUUM_SKIP_SELF_BUILD when it IS the continuum binary.
-# reboot's contract is "rebuild + relaunch the CORE"; the CLI on PATH is installed
-# by `npm start` / install.sh, which do not run from inside it. Skipping is stated
+# The caller sets CONTINUUM_SKIP_SELF_BUILD when it IS the continuum binary AND the
+# platform locks a running image — `runtime::deploy_provenance::cli_self_build` owns
+# that decision and is unit-tested on both rows. It used to be set unconditionally,
+# which charged this Windows-only constraint to every operator and made `reboot`
+# structurally unable to ship a fix living in the CLI (#422): proven on a Mac
+# 2026-08-14, when `stop`'s split-brain reap had merged and the installed CLI still
+# did not have it, leaving a core alive and silent under a green deploy-verify.
+# Where the image is replaceable the build below runs and the install further down
+# swaps it in, so the deploy loop closes with no operator step. Skipping is stated
 # out loud, never silent — a skipped build that looks like a completed one is how
 # stale binaries survive a "successful" deploy.
 if [ -n "${CONTINUUM_SKIP_SELF_BUILD:-}" ]; then
@@ -368,7 +392,7 @@ else
   # platform, the featured build still produces a working CLI on that platform,
   # and the warning names exactly what the user gets instead.
   echo "▶ building continuum (Rust CLI client — GPU-free: it is a socket client)"
-  if ! cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG --no-default-features; then
+  if ! cargo build --manifest-path "$CORE_MANIFEST" --bin continuum $PROFILE_FLAG $CONTINUUM_CLI_FEATURES; then
     echo "⚠ GPU-free continuum build failed — retrying with the full feature set." >&2
     echo "  The CLI will then carry GPU link deps and may fail to launch on a box" >&2
     echo "  without a matching CUDA runtime on PATH. Please report this." >&2
@@ -393,7 +417,7 @@ CONTINUUM_CLI_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum"
 # disk — restore it so the copy below has real bytes. Non-fatal (matches the
 # build's own warn): a missing CLI doesn't block core boot, and the installed
 # ~/.local/bin copy from the last deploy keeps working.
-if ! ensure_unswept_bin "$CONTINUUM_CLI_BIN" continuum "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_FEATURES; then
+if ! ensure_unswept_bin "$CONTINUUM_CLI_BIN" continuum "$CORE_MANIFEST" $PROFILE_FLAG $CONTINUUM_CLI_FEATURES; then
   echo "⚠ continuum CLI still missing after swept-cache rebuild — CLI install skipped (core still launches)" >&2
 fi
 if [ -x "$CONTINUUM_CLI_BIN" ]; then

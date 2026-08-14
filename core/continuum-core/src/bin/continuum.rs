@@ -28,7 +28,9 @@ use std::time::Duration;
 use continuum_client::Connection;
 use continuum_core::runtime::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
-use continuum_core::runtime::deploy_provenance::{cli_staleness_note, deploy_verdict};
+use continuum_core::runtime::deploy_provenance::{
+    cli_self_build, cli_staleness_note, deploy_verdict, CliSelfBuild,
+};
 use serde_json::Value;
 
 /// Where `continuum start` records the detached core's PID so `continuum stop` can find it.
@@ -1324,14 +1326,23 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource) -> Result<u64
     for (k, v) in continuum_core::config_env::read_all() {
         cmd.env(k, v);
     }
+    // We ARE the continuum binary — may this deploy rebuild our own image?
+    //
+    // The guard below used to be unconditional, and that is the whole of #422: a
+    // Windows file-locking accommodation charged to every platform, which made the
+    // documented deploy path structurally unable to ship a fix living in the CLI.
+    // The decision now names the ONE platform it is for; everywhere else the script
+    // builds the CLI and installs it with the temp+mv swap it already performs.
+    match cli_self_build(std::env::consts::OS) {
+        CliSelfBuild::Rebuild => {}
+        CliSelfBuild::Skip { reason } => {
+            // Say it out loud. A skipped build that looks like a completed one is how
+            // stale binaries survive a "successful" deploy — #194, one tier up.
+            eprintln!("▶ {reason}");
+            cmd.env("CONTINUUM_SKIP_SELF_BUILD", "1");
+        }
+    }
     cmd.env("CONTINUUM_CORE_SOCKET", &socket)
-        // We ARE the continuum binary. On Windows a running image cannot be
-        // replaced, so letting the script `cargo build --bin continuum` fails the
-        // whole cargo invocation, skips every later build (including the CORE),
-        // and `reboot` dies after its full timeout having rebuilt nothing —
-        // measured 772s to that failure on BIGMAMA. Tell the script to leave our
-        // own image alone; it still rebuilds the core, which is reboot's contract.
-        .env("CONTINUUM_SKIP_SELF_BUILD", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
