@@ -36,6 +36,7 @@ pub mod command_events;
 pub mod command_executor;
 pub mod command_interceptor;
 pub mod control;
+pub mod core_bind_guard;
 pub mod core_ipc_transport;
 pub mod daemon;
 pub mod governor_bus;

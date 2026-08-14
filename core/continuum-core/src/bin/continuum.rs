@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! continuum start            # build + run the headless Rust core (detached), wait until ready
+//!                     # refuses if a core is running but not answering — `--force` reclaims it
 //! continuum reboot           # rebuild + relaunch, replacing any running core (~0 downtime)
 //!                     # refuses while training (mlx_lm) is live — `--force` overrides
 //! continuum stop             # stop the running core
@@ -25,6 +26,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use continuum_client::Connection;
+use continuum_core::runtime::core_bind_guard::BindDecision;
 use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
 use serde_json::Value;
 
@@ -53,14 +55,17 @@ async fn run() -> Result<(), String> {
             Ok(())
         }
         "start" => {
+            // Collect once: `args.any(..)` consumes the iterator, so reading a
+            // second flag off it afterwards would silently always be false.
+            let flags: Vec<String> = args.collect();
             // `--from-source` is the EXPLICIT opt-in to compiling before
             // starting. Without it, `start` execs the installed server; a
             // build is never the silent default (see `launch_core`).
-            if args.any(|a| a == "--from-source") {
+            if flags.iter().any(|a| a == "--from-source") {
                 // SAFETY: single-threaded CLI startup, before any task spawns.
                 unsafe { std::env::set_var("CONTINUUM_FROM_SOURCE", "1") };
             }
-            start().await
+            start(flags.iter().any(|a| a == "--force")).await
         }
         "reboot" | "restart" => {
             let force = args.any(|a| a == "--force");
@@ -434,16 +439,43 @@ fn connection() -> Connection<CoreIpcTransport> {
     Connection::new(CoreIpcTransport::new(socket_path()))
 }
 
+/// How long a `ping` may take before we call the core "not answering".
+///
+/// Measured on a healthy local core: 20ms, five samples, no variance — this is a
+/// unix-socket round trip, not a network call. 5s is 250× that, so it cannot fire on
+/// a merely-busy core; it exists solely to bound a core that will NEVER answer.
+const PING_BUDGET: Duration = Duration::from_secs(5);
+
 /// Is a core already answering on the socket? A real ping round-trip, not just a
-/// socket-file existence check (a stale socket file lies).
+/// socket-file existence check (a stale socket file lies) — and BOUNDED, which is
+/// load-bearing rather than defensive.
+///
+/// An unbounded ping does not fail against an unresponsive core, it HANGS: the kernel
+/// completes `connect()` into the listen backlog whether or not the process is
+/// scheduled, the write succeeds, and the read then waits for a reply that never comes.
+/// A timeout counts as NOT answering, which is the safe direction — paired with a
+/// visible core process it yields `Occupied`, so the caller refuses and names the pids
+/// rather than launching a competitor.
+///
+/// This bound is what makes the [`BindDecision::Occupied`] arm REACHABLE, not a
+/// nicety. Glass-boxed 2026-08-14 on this box, both directions:
+///
+/// - unbounded: SIGSTOP every core, run `start` → no output, no decision, still hung
+///   at 90s. The guard was green in unit tests and dead on the live path.
+/// - bounded:   same setup → exits 1 in 8s with the refusal naming both live pids
+///   (5s here plus the process-table read), and the cores resume unharmed on SIGCONT.
+///
+/// The 90s figure came from a binary whose build had failed, so it measures the
+/// unbounded path either way — but it is the OLD behaviour, not evidence against the
+/// timeout, which the 8s run then confirmed directly.
 async fn core_is_up() -> bool {
-    matches!(
-        connection()
-            .commands()
-            .execute_value("ping", Value::Object(Default::default()))
-            .await,
-        Ok(_)
-    )
+    // Bound to locals: `connection()` and `.commands()` yield temporaries that the
+    // future borrows, so building the future inline drops them at the end of the
+    // statement (E0716).
+    let conn = connection();
+    let cmds = conn.commands();
+    let ping = cmds.execute_value("ping", Value::Object(Default::default()));
+    matches!(tokio::time::timeout(PING_BUDGET, ping).await, Ok(Ok(_)))
 }
 
 /// Make sure a core is answering before dispatching, launching one if not. See the
@@ -453,8 +485,25 @@ async fn core_is_up() -> bool {
 /// machine-parseable) so an operator who typed one command and got a 60s pause knows
 /// exactly what is happening instead of assuming it hung.
 async fn ensure_core_running(command: &str) -> Result<(), String> {
-    if core_is_up().await {
-        return Ok(());
+    // Same reclaim-or-refuse guard `start` uses, minus the reclaim: an implicit
+    // autostart exists to get the caller a live core, and killing someone else's
+    // core is never part of that errand. Occupied therefore always refuses here.
+    match bind_decision().await {
+        BindDecision::AlreadyServing { .. } => return Ok(()),
+        BindDecision::Occupied { pids } => {
+            return Err(format!(
+                "`{command}` needs a running core, and {} core process(es) are running \
+                 (pid(s) {}) but NONE is answering on {}. Starting another would bind a \
+                 second core on the same socket — whichever one the kernel hands a \
+                 connection to would answer, so results would be non-deterministic. \
+                 Either wait (a core that is still booting answers shortly), or clear it \
+                 with `continuum stop`.",
+                pids.len(),
+                pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(","),
+                socket_path()
+            ));
+        }
+        BindDecision::Free => {}
     }
     if std::env::var("CONTINUUM_NO_AUTOSTART").is_ok_and(|v| v != "0") {
         return Err(format!(
@@ -471,14 +520,69 @@ async fn ensure_core_running(command: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Gather the two observations [`BindDecision`] is a function of — a real `ping`
+/// round-trip and the core process table — and hand them to the shared truth table.
+///
+/// The observation half lives here because it is platform- and transport-shaped; the
+/// DECISION half lives in the lib so it is unit-tested by the `--lib` CI gate. Both
+/// `start` and `ensure_core_running` go through this one seam, which is the point:
+/// the split brain existed because each launch path had its own ad-hoc guard.
+async fn bind_decision() -> BindDecision {
+    let ping_ok = core_is_up().await;
+    let running: Vec<i32> = running_core_pids().into_iter().filter(|p| pid_alive(*p)).collect();
+    continuum_core::runtime::core_bind_guard::decide(ping_ok, &running)
+}
+
 /// `continuum start` — build + run the headless Rust core (detached), wait until it
 /// answers `ping`. Idempotent: a no-op if a core is already up.
-async fn start() -> Result<(), String> {
+///
+/// Reclaim-or-refuse, never blind-bind. The old guard was `core_is_up()` alone, so a
+/// core that was RUNNING but not answering (wedged, mid-boot, bound where this CLI
+/// cannot reach) was invisible and `start` launched a second one on top of it. That is
+/// the same missing constraint `stop` got in #2287, on the other side of the lifecycle.
+async fn start(force: bool) -> Result<(), String> {
     let socket = socket_path();
 
-    if core_is_up().await {
-        println!("core already running (socket={socket})");
-        return Ok(());
+    match bind_decision().await {
+        BindDecision::AlreadyServing { .. } => {
+            println!("core already running (socket={socket})");
+            return Ok(());
+        }
+        BindDecision::Free => {}
+        BindDecision::Occupied { pids } => {
+            let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+            if !force {
+                return Err(format!(
+                    "{} core process(es) are running (pid(s) {list}) but NONE is answering on \
+                     {socket}. Refusing to start a second core: both would hold the same socket \
+                     and whichever one the kernel hands a connection to would answer, which is \
+                     how a shipped fix comes to look intermittently broken.\n  \
+                     • still booting? wait — a healthy core answers shortly, then `continuum start` \
+                     is a no-op\n  \
+                     • wedged? `continuum stop` reaps every core, then start\n  \
+                     • sure it is dead weight? `continuum start --force` reclaims it here",
+                    pids.len()
+                ));
+            }
+            // Explicit reclaim. `reboot` guards destructive restarts behind live-training
+            // and live-benchmark leases; `start --force` deliberately carries no such
+            // lease check, so say plainly what is being killed rather than implying a
+            // vetted teardown.
+            println!(
+                "⚠ --force: reclaiming {} unresponsive core(s) (pid(s) {list}) — no training or \
+                 benchmark lease is checked on this path; use `continuum reboot` if those matter",
+                pids.len()
+            );
+            for pid in &pids {
+                kill_pid_tree(*pid);
+            }
+            // Hand the reaped pids to launch_core as its death-wait set, so readiness is
+            // only reported once the OLD cores are gone and the ping provably came from
+            // the NEW one — the same honesty check reboot relies on.
+            let secs = launch_core(&pids, LaunchSource::Installed).await?;
+            println!("✅ core ready (socket={socket}) after ~{secs}s");
+            return Ok(());
+        }
     }
 
     let secs = launch_core(&[], LaunchSource::Installed).await?;
@@ -1973,7 +2077,8 @@ fn usage() -> String {
     "usage: continuum <start|reboot|stop|command> [json | --key value ...]\n\
      \n\
      Lifecycle:\n  \
-       continuum start                 build + run the headless Rust core (detached), wait until ready\n  \
+       continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
+       continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
        continuum reboot                rebuild + relaunch, replacing any running core (~0 downtime);\n                                       verifies the RUNNING core's build SHA before reporting success\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n\
