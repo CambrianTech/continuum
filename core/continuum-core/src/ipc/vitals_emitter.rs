@@ -348,7 +348,7 @@ mod tests {
     // unread(), the tile's QUE bar silently lies about load.
     #[test]
     fn queue_vital_sums_staged_unread_across_the_personas_channels() {
-        use crate::cognition::channel_digest::{ChannelBookmarks, ChannelDigestBuilder};
+        use crate::cognition::channel_digest::ChannelDigestBuilder;
         use crate::cognition::channel_element::ChannelElementCache;
         use crate::cognition::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
         use crate::runtime::ready_buffer::ReadyBuffer as _;
@@ -362,7 +362,7 @@ mod tests {
         let cache = Arc::new(ChannelElementCache::new(Arc::new(
             CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())),
         )));
-        let builder = ChannelDigestBuilder::new(cache, Arc::new(ChannelBookmarks::new()));
+        let builder = ChannelDigestBuilder::new(cache);
         let digests = DigestBuffer::new();
         let stage = |persona: Uuid, room: RoomId, texts: &[&str]| {
             let events = texts
@@ -372,7 +372,7 @@ mod tests {
                     crate::cognition::channel_digest::test_event_in(room, t, i as u64 + 1)
                 })
                 .collect();
-            let digest = builder.build_from_events(persona, room.as_uuid(), events, 0);
+            let digest = builder.build_from_events(persona, room.as_uuid(), events, 0, 0);
             digests.publish((persona, room.as_uuid()), Arc::new(digest));
         };
         stage(peer_id, RoomId::new(), &["a", "b", "c"]);

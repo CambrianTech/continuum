@@ -60,37 +60,16 @@ pub const DEFAULT_GROUNDING: usize = 5;
 /// case.
 pub const FIRST_READ_PAGE: usize = 20;
 
-/// Per-persona, per-channel last-read cursor — the Slack unread marker. Keyed by
-/// (persona, room); the value is the lamport of the newest message the persona has
-/// read. Cheap per-persona state (a relationship property), lock-free.
-#[derive(Default)]
-pub struct ChannelBookmarks {
-    marks: DashMap<(Uuid, Uuid), u64>,
-}
-
-impl ChannelBookmarks {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The persona's last-read lamport for a channel. `0` = never read (everything
-    /// is unread). Real airc lamports are >= 1, so `unread = lamport > bookmark`
-    /// surfaces all messages for a fresh channel.
-    pub fn last_read(&self, persona: Uuid, room: Uuid) -> u64 {
-        self.marks.get(&(persona, room)).map(|m| *m).unwrap_or(0)
-    }
-
-    /// Advance the bookmark to `lamport` — MONOTONIC: it never moves backward, so a
-    /// late-arriving lower lamport or a redundant advance can't "unread" messages.
-    /// This is the command behind ignore / skip-to-end / mark-read (advance to the
-    /// channel tip); pause/revisit simply does NOT advance.
-    pub fn advance(&self, persona: Uuid, room: Uuid, lamport: u64) {
-        let mut e = self.marks.entry((persona, room)).or_insert(0);
-        if lamport > *e {
-            *e = lamport;
-        }
-    }
-}
+// THE UNREAD MARKER LIVES IN AIRC — there is no `ChannelBookmarks` here any more.
+//
+// It used to be a `DashMap<(persona, room), lamport>` in this file: a SECOND cursor
+// store next to the durable one airc already owns (`runtime_cursor`, an ORM row;
+// `Airc::load_runtime_cursor` / `save_runtime_cursor_for_event`). Being
+// process-memory it also died on every restart, so no reader ever resumed.
+//
+// Read it through `AircTranscriptReader::read_cursor`, move it with
+// `advance_read_cursor`. One cursor per (reader, room), durable, and shared with
+// every other surface — airc emits `SubscriptionAdvanced` when it moves.
 
 /// A consolidated, per-persona view of a channel's recent activity: the unread
 /// elements (since the persona's bookmark) plus up to N-before-bookmark elements
@@ -138,27 +117,24 @@ impl ChannelDigest {
 /// per build.
 pub struct ChannelDigestBuilder {
     cache: Arc<ChannelElementCache>,
-    bookmarks: Arc<ChannelBookmarks>,
 }
 
 impl ChannelDigestBuilder {
-    pub fn new(cache: Arc<ChannelElementCache>, bookmarks: Arc<ChannelBookmarks>) -> Self {
-        Self { cache, bookmarks }
-    }
-
-    /// The shared bookmark store (so callers advance the same cursors this builder
-    /// splits on).
-    pub fn bookmarks(&self) -> &Arc<ChannelBookmarks> {
-        &self.bookmarks
+    pub fn new(cache: Arc<ChannelElementCache>) -> Self {
+        Self { cache }
     }
 
     /// Build the consolidated digest for `persona_id` on `room_id`.
     ///
     /// ONE batch read (`page_recent`), filtered to the channel, resolved to shared
-    /// elements, sorted lamport-ascending, then split at the persona's bookmark:
+    /// elements, sorted lamport-ascending, then split at the reader's cursor:
     /// everything after it is unread; up to `grounding` elements before it are kept
     /// for context. `grounding` is the recipe-defined N (use [`DEFAULT_GROUNDING`]
     /// absent a recipe).
+    ///
+    /// The cursor comes from AIRC (`read_cursor`), which owns it durably. This
+    /// builder holds no cursor state of its own — there is exactly one unread
+    /// marker per (reader, room) in the system, and airc has it.
     pub async fn build(
         &self,
         persona_id: Uuid,
@@ -168,20 +144,28 @@ impl ChannelDigestBuilder {
         grounding: usize,
     ) -> Result<ChannelDigest, AircError> {
         let events = reader.page_recent(fetch_limit).await?;
-        Ok(self.build_from_events(persona_id, room_id, events, grounding))
+        let bookmark = reader.read_cursor(persona_id, room_id).await?;
+        Ok(self.build_from_events(persona_id, room_id, events, grounding, bookmark))
     }
 
-    /// Build a digest from PRE-FETCHED events — lets a caller that already paged
-    /// the transcript (e.g. to DERIVE the room when the context didn't carry it)
-    /// reuse those events instead of paging twice. The room split logic is identical.
+    /// Build a digest from PRE-FETCHED events and an ALREADY-LOADED cursor — lets a
+    /// caller that already paged the transcript (e.g. to DERIVE the room when the
+    /// context didn't carry it) reuse those events instead of paging twice. The room
+    /// split logic is identical.
+    ///
+    /// `bookmark` is passed IN rather than looked up, because the cursor is durable
+    /// airc state behind an async read and this is the sync half. Explicit input
+    /// beats hidden global lookup anyway: the split point is now visible at every
+    /// call site instead of arriving from a process-wide map.
     pub fn build_from_events(
         &self,
         persona_id: Uuid,
         room_id: Uuid,
         events: Vec<TranscriptEvent>,
         grounding: usize,
+        bookmark: u64,
     ) -> ChannelDigest {
-        let mut bookmark = self.bookmarks.last_read(persona_id, room_id);
+        let mut bookmark = bookmark;
 
         // Filter to THIS channel — lamport is per-room, so mixing rooms would make
         // the bookmark split meaningless. Resolve to shared elements (consolidation:
@@ -203,17 +187,17 @@ impl ChannelDigestBuilder {
         // PERCEPTION, every element at full attention, with no grounding split
         // (`unread_start` lands at 0 because `first_unread` does).
         //
-        // Seeding is PERSISTED via `advance` — "you joined here" is a fact about
-        // this reader's relationship to this room, and persisting it is what makes
-        // the room quiet on the next turn instead of re-delivering the same page.
-        // Monotonic, so it can only ever move a never-read cursor forward.
+        // This is a WINDOWING decision only — it does not write anything. The cursor
+        // moves exactly once, when the caller marks read what the reader was actually
+        // SHOWN (`advance_read_cursor`). Seeding used to self-persist here, which
+        // hid a write inside a builder and could mark a page read that the budget
+        // then dropped.
         if bookmark == 0 && elements.len() > FIRST_READ_PAGE {
             let page_start = elements[elements.len() - FIRST_READ_PAGE]
                 .event()
                 .lamport;
             // Everything strictly older than the page start counts as already seen.
             bookmark = page_start.saturating_sub(1);
-            self.bookmarks.advance(persona_id, room_id, bookmark);
         }
 
         // Split: first element strictly newer than the bookmark begins the unread
@@ -288,16 +272,41 @@ mod tests {
     /// events without a daemon.
     struct StubReader {
         events: Mutex<Vec<TranscriptEvent>>,
+        /// The reader's cursor — in production this is airc's durable
+        /// `runtime_cursor`; here it is a plain cell, because the digest only
+        /// ever READS it through the port.
+        cursor: Mutex<u64>,
     }
     impl StubReader {
         fn new(events: Vec<TranscriptEvent>) -> Self {
             Self {
                 events: Mutex::new(events),
+                cursor: Mutex::new(0),
             }
+        }
+        /// Start this reader already read through `lamport`.
+        fn read_through(self, lamport: u64) -> Self {
+            *self.cursor.lock().unwrap() = lamport;
+            self
         }
     }
     #[async_trait]
     impl AircTranscriptReader for StubReader {
+        async fn read_cursor(&self, _p: Uuid, _r: Uuid) -> Result<u64, AircError> {
+            Ok(*self.cursor.lock().unwrap())
+        }
+        async fn advance_read_cursor(
+            &self,
+            _p: Uuid,
+            _r: Uuid,
+            event: &TranscriptEvent,
+        ) -> Result<(), AircError> {
+            let mut c = self.cursor.lock().unwrap();
+            if event.lamport > *c {
+                *c = event.lamport;
+            }
+            Ok(())
+        }
         async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
             Ok(self
                 .events
@@ -310,13 +319,8 @@ mod tests {
         }
     }
 
-    fn builder() -> (ChannelDigestBuilder, Arc<ChannelBookmarks>) {
-        let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
-        let bookmarks = Arc::new(ChannelBookmarks::new());
-        (
-            ChannelDigestBuilder::new(cache, bookmarks.clone()),
-            bookmarks,
-        )
+    fn builder() -> ChannelDigestBuilder {
+        ChannelDigestBuilder::new(Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder))))
     }
 
     // what this catches: a fresh channel (never read) surfaces ALL messages as
@@ -330,7 +334,7 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, _) = builder();
+        let b = builder();
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 0)
             .await
@@ -352,8 +356,8 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, marks) = builder();
-        marks.advance(persona, room.as_uuid(), 2); // read through lamport 2
+        let b = builder();
+        let reader = reader.read_through(2);
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 0)
             .await
@@ -377,17 +381,16 @@ mod tests {
             .map(|n| test_event_in(room, "msg", n))
             .collect();
         let tip = FIRST_READ_PAGE as u64 * 3;
-        let (b, marks) = builder();
-        assert_eq!(marks.last_read(persona, room.as_uuid()), 0, "never read");
+        let b = builder();
+        let reader = StubReader::new(events.clone());
+        assert_eq!(
+            reader.read_cursor(persona, room.as_uuid()).await.unwrap(),
+            0,
+            "never read"
+        );
 
         let d = b
-            .build(
-                persona,
-                room.as_uuid(),
-                &StubReader::new(events.clone()),
-                500,
-                0,
-            )
+            .build(persona, room.as_uuid(), &reader, 500, 0)
             .await
             .unwrap();
 
@@ -400,9 +403,10 @@ mod tests {
         assert_eq!(d.tip_lamport(), Some(tip));
         // And the seed PERSISTED — this is what makes the room quiet next turn
         // rather than re-delivering the same page forever.
-        assert!(
-            marks.last_read(persona, room.as_uuid()) > 0,
-            "first sight must persist a cursor, else every turn re-reads the page"
+        assert_eq!(
+            d.bookmark,
+            d.elements[0].event().lamport.saturating_sub(1),
+            "first sight splits one page back — the seed the caller then persists"
         );
 
         // Now the DELIVERY step marks what she was shown as read — what
@@ -410,9 +414,9 @@ mod tests {
         // seed bounds the page; the advance consumes it. Both halves are needed,
         // and together the room goes QUIET with nothing new. Before the fix, the
         // whole transcript came back as unread on every single turn forever.
-        marks.advance(persona, room.as_uuid(), tip);
+        let reader = StubReader::new(events).read_through(tip);
         let d2 = b
-            .build(persona, room.as_uuid(), &StubReader::new(events), 500, 0)
+            .build(persona, room.as_uuid(), &reader, 500, 0)
             .await
             .unwrap();
         assert!(
@@ -432,8 +436,8 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, marks) = builder();
-        marks.advance(persona, room.as_uuid(), 2);
+        let b = builder();
+        let reader = reader.read_through(2);
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 1)
             .await
@@ -455,8 +459,8 @@ mod tests {
             test_event_in(room, "b", 2),
             test_event_in(room, "c", 3),
         ]);
-        let (b, marks) = builder();
-        marks.advance(persona, room.as_uuid(), 3); // read everything
+        let b = builder();
+        let reader = reader.read_through(3);
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 2)
             .await
@@ -465,16 +469,26 @@ mod tests {
         assert_eq!(d.grounding().len(), 2, "last 2 read messages as context");
     }
 
-    // what this catches: bookmark advance is MONOTONIC — a lower lamport never
-    // moves it backward, so messages can't be re-surfaced as unread.
+    // what this catches: cursor advance is MONOTONIC through the READER PORT — a
+    // lower lamport never moves it backward, so messages can't be re-surfaced as
+    // unread. (Production monotonicity is airc's `runtime_cursor`; this pins that
+    // the port we call it through preserves the contract.)
     #[tokio::test]
     async fn advance_is_monotonic() {
-        let marks = ChannelBookmarks::new();
+        let room = RoomId::new();
         let persona = Uuid::new_v4();
-        let room = Uuid::new_v4();
-        marks.advance(persona, room, 5);
-        marks.advance(persona, room, 2); // older — must not move it back
-        assert_eq!(marks.last_read(persona, room), 5);
+        let reader = StubReader::new(vec![]);
+        let newer = test_event_in(room, "n", 5);
+        let older = test_event_in(room, "o", 2);
+        reader
+            .advance_read_cursor(persona, room.as_uuid(), &newer)
+            .await
+            .unwrap();
+        reader
+            .advance_read_cursor(persona, room.as_uuid(), &older)
+            .await
+            .unwrap();
+        assert_eq!(reader.read_cursor(persona, room.as_uuid()).await.unwrap(), 5);
     }
 
     // what this catches: the digest is PER-CHANNEL — events from another room are
@@ -489,7 +503,7 @@ mod tests {
             test_event_in(room_b, "b-only", 1),
             test_event_in(room_a, "a-two", 2),
         ]);
-        let (b, _) = builder();
+        let b = builder();
         let d = b
             .build(persona, room_a.as_uuid(), &reader, 100, 0)
             .await
@@ -517,7 +531,7 @@ mod tests {
         let mut events = vec![test_event_in(room, "OPERATOR: your card is 0b1a6230", 10)];
         // Tick 1: persona engages (even a silent PASS marks read to tip).
         // Digest at this point still shows the operator message as unread.
-        let (b, _) = builder();
+        let b = builder();
         let reader = StubReader::new(events.clone());
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 5)
@@ -527,27 +541,25 @@ mod tests {
             .unread()
             .iter()
             .any(|e| e.text().unwrap().contains("OPERATOR")));
-        b.bookmarks()
-            .advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
+        let read_to = d.tip_lamport().unwrap();
 
         // Peers flood: 6 newer messages (> grounding=5), persona engages again.
         for (i, l) in (11..=16).enumerate() {
             events.push(test_event_in(room, &format!("peer chatter {i}"), l));
         }
-        let reader = StubReader::new(events.clone());
+        let reader = StubReader::new(events.clone()).read_through(read_to);
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 5)
             .await
             .unwrap();
-        b.bookmarks()
-            .advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
+        let read_to = d.tip_lamport().unwrap();
 
         // Next build: the operator message is GONE — not in unread (read long
         // ago), not in grounding (displaced by 5 newer read peer messages).
         for (i, l) in (17..=18).enumerate() {
             events.push(test_event_in(room, &format!("more chatter {i}"), l));
         }
-        let reader = StubReader::new(events);
+        let reader = StubReader::new(events).read_through(read_to);
         let d = b
             .build(persona, room.as_uuid(), &reader, 100, 5)
             .await
@@ -570,7 +582,7 @@ mod tests {
         let p1 = Uuid::new_v4();
         let p2 = Uuid::new_v4();
         let reader = StubReader::new(vec![test_event_in(room, "shared", 1)]);
-        let (b, _) = builder();
+        let b = builder();
         let d1 = b.build(p1, room.as_uuid(), &reader, 100, 0).await.unwrap();
         let d2 = b.build(p2, room.as_uuid(), &reader, 100, 0).await.unwrap();
         assert!(
