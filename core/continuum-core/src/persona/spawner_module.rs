@@ -96,54 +96,66 @@ pub fn plan_for_tier(
     hw_capability: HwCapabilityTier,
     tier_category: HwTierCategory,
 ) -> Vec<DesiredRole> {
-    // Slice 13 ships SINGLE-PERSONA-per-plan. The Coder slot is
-    // deferred to slice 14 because ResumeOrMintProvider's
-    // scan_personas_dir sorts alphabetically (line 200 of
-    // resume_or_mint_provider.rs), so on boot 2 the
-    // position-pairing of [Helper, Coder] against the disk-yielded
-    // alphabetic persona order flips role assignments — Bart
-    // (random-derived from peer_id) becomes Helper when he was
-    // bootstrapped as Coder, etc. PR #1510 review caught this; the
-    // load-bearing fix is role-in-seed.json (slice 14).
-    //
-    // Re-enable [Helper, Coder] (and richer rosters for higher
-    // tiers) when slice 14 lands. Until then the substrate hosts ONE
-    // Helper persona per tier — the demo-binary level of coverage,
-    // but through the substrate-managed path.
-    let _ = hw_capability; // currently informational; future per-tier
-                           // role_template selection consumes it
-    let _ = tier_category; // all tiers produce the same single-Helper
-                           // plan until slice 14 ships role-aware
-                           // mapping + multi-role-per-tier rosters
-    let plan = vec![DesiredRole {
-        role: RoleId::Helper,
-        // Fallback model when no ServingPlan is published yet (safe LCD). The
-        // serving daemon's plan overrides this via with_serving — that's the
-        // real, honest, GPU-residency-aware pick.
-        model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-        // Default single lane; with_serving overrides from the live plan.
-        lanes: 1,
-        // Runnable floor until the serving daemon publishes a host-fit window.
-        served_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
-    }];
-    // P2 invariant tripwire (PR #1511 review advisory): if a future
-    // refactor adds a second role here without atomically updating
-    // ResumeOrMintProvider's role mapping, position-pairing will
-    // silently mis-pair roles on boot 2 (alphabetic disk order vs
-    // plan order). The debug_assert catches the regression at the
-    // producer in debug + test builds. Slice 14 removes this when
-    // role-in-seed.json makes multi-role plans safe.
-    debug_assert!(
-        plan.len() <= 1,
-        "plan_for_tier returned {} roles before slice 14's role-in-seed.json \
-         landed — position-pairing against ResumeOrMintProvider's alphabetic \
-         disk order would flip role identity on boot 2. See #133 slice 14.",
-        plan.len()
-    );
-    plan
-    // TODO #133 slice 14: restore tier-shaped rosters after
-    // RoleAwareProvider + role-in-seed.json land. Remove the
-    // debug_assert above as part of that change.
+    // The data-absent floor: one Helper, the same roster the embedded chat
+    // recipe declares. Production does NOT take this path with a hardcoded
+    // roster anymore — boot reads `RecipeExperienceSource::resident_roles`
+    // (the DEFAULT experience's `citizens`, #430) and injects it via
+    // `with_citizens`; this wrapper serves tests/fixtures that construct a
+    // spawner without recipe data.
+    plan_for_roles(&[RoleId::Helper], hw_capability, tier_category)
+}
+
+/// Compose the desired roster from RECIPE-DECLARED roles (#430). The roles
+/// come from authored data (the default experience's `citizens`); this
+/// function maps each onto the serving scaffold — LCD fallback model until
+/// the serving daemon's plan overrides it via `with_serving`, single lane,
+/// runnable-floor window.
+///
+/// SLICE-14 GUARD, now enforced on DATA: heterogeneous multi-role plans are
+/// unsafe until role-in-seed.json lands — ResumeOrMintProvider's
+/// alphabetic-disk-order position-pairing would flip role identity on boot 2
+/// (PR #1510/#1511). A recipe may legally AUTHOR several citizens; until
+/// slice 14, everything after the first role is DEFERRED with a loud error
+/// naming each dropped role — never a silent cap, never a debug-only assert
+/// (an author can hit this in release).
+pub fn plan_for_roles(
+    roles: &[RoleId],
+    hw_capability: HwCapabilityTier,
+    tier_category: HwTierCategory,
+) -> Vec<DesiredRole> {
+    let _ = hw_capability; // informational; future per-tier role_template
+                           // selection consumes it
+    let _ = tier_category; // roster shape now comes from recipe data, not
+                           // the tier; the tier drives MODEL selection via
+                           // the serving plan
+    if roles.len() > 1 {
+        tracing::error!(
+            hosted = ?roles[0],
+            deferred = ?&roles[1..],
+            "recipe declares a multi-role roster before role-in-seed.json \
+             (#133 slice 14) — hosting the FIRST role only; the rest are \
+             deferred until role identity survives a reboot"
+        );
+    }
+    roles
+        .iter()
+        .take(1)
+        .map(|role| DesiredRole {
+            role: role.clone(),
+            // Fallback model when no ServingPlan is published yet (safe LCD).
+            // The serving daemon's plan overrides this via with_serving —
+            // that's the real, honest, GPU-residency-aware pick.
+            model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            // Default single lane; with_serving overrides from the live plan.
+            lanes: 1,
+            // Runnable floor until the serving daemon publishes a host-fit
+            // window.
+            served_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+        })
+        .collect()
+    // TODO #133 slice 14: host every declared role after RoleAwareProvider +
+    // role-in-seed.json land. Remove the take(1) + error above as part of
+    // that change.
 }
 
 /// Substrate ServiceModule that surfaces the spawner's roster plan.
@@ -172,6 +184,11 @@ pub struct PersonaSpawnerModule {
     /// that defers heterogeneous multi-role plans (#133 slice 14) cannot
     /// mis-pair identical roles. Two-solver cooperation needs ≥2.
     population: usize,
+    /// The RECIPE-DECLARED resident roles (#430) — production injects the
+    /// default experience's `citizens` via [`Self::with_citizens`]; the
+    /// constructor default (single Helper, matching the embedded chat
+    /// recipe) serves tests/fixtures built without recipe data.
+    citizens: Vec<RoleId>,
 }
 
 impl PersonaSpawnerModule {
@@ -202,7 +219,19 @@ impl PersonaSpawnerModule {
             serving_lanes: 1,
             serving_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
             population: 1,
+            citizens: vec![RoleId::Helper],
         }
+    }
+
+    /// Inject the RECIPE-DECLARED resident roles (#430) — the default
+    /// experience's `citizens`, read by boot from
+    /// `RecipeExperienceSource::resident_roles`. An EMPTY list is a
+    /// legitimate authored state (a headless serving node with no resident
+    /// personas) and produces an empty plan; `plan_for_roles` guards the
+    /// slice-14 multi-role hazard.
+    pub fn with_citizens(mut self, citizens: Vec<RoleId>) -> Self {
+        self.citizens = citizens;
+        self
     }
 
     /// Set how many citizens of the tier's role template to host. Clamped to
@@ -247,7 +276,8 @@ impl PersonaSpawnerModule {
     /// Currently-planned desired roster. Pure over the module's configured
     /// tier + the serving overrides; no async, no lock — safe anywhere.
     pub fn plan(&self) -> Vec<DesiredRole> {
-        let mut template = plan_for_tier(self.hw_capability, self.tier_category);
+        let mut template =
+            plan_for_roles(&self.citizens, self.hw_capability, self.tier_category);
         for role in &mut template {
             if let Some(ref base) = self.serving_base_model {
                 role.model_id = base.clone();
@@ -488,6 +518,30 @@ pub async fn bootstrap_planned(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#430): the roster is DATA. with_citizens drives the
+    // plan; an EMPTY authored roster (headless serving node) legitimately
+    // plans nobody, and the slice-14 guard hosts only the FIRST of a
+    // multi-role roster (loud error, never a silent flip on boot 2).
+    #[test]
+    fn recipe_citizens_drive_the_plan() {
+        let base = || PersonaSpawnerModule::new(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        assert!(base().with_citizens(vec![]).plan().is_empty());
+
+        let coder = base().with_citizens(vec![RoleId::Coder]).plan();
+        assert_eq!(coder.len(), 1);
+        assert_eq!(coder[0].role, RoleId::Coder);
+
+        let multi = base()
+            .with_citizens(vec![RoleId::Helper, RoleId::Coder])
+            .plan();
+        assert_eq!(
+            multi.len(),
+            1,
+            "multi-role rosters host the FIRST role only until #133 slice 14"
+        );
+        assert_eq!(multi[0].role, RoleId::Helper);
+    }
 
     // what this catches (#432): the boot task re-sizing the plan to the
     // identity provider's real yield. set_population must grow plan() the same

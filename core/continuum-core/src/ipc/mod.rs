@@ -2347,8 +2347,34 @@ pub fn start_server(
         // signal (rooms → recorder → dataset → genome). Config-owned
         // ([[config-env-single-owner]]); once minted, citizens persist + resume
         // even if the floor is later lowered.
+        // #430: the resident roster is RECIPE DATA — the default experience's
+        // `citizens`, embedded floor + disk overlay. A malformed overlay file
+        // refuses loudly and the shipped floor still stands (same #432 arm as
+        // the positron projection); the author's actionable error surfaces at
+        // `activity/spawn`, which validates the same directory.
+        let resident_roles = {
+            use crate::experience::source::RecipeExperienceSource;
+            let overlay_dir = RecipeExperienceSource::overlay_dir(
+                &crate::modules::persona_instance_manager::resolve_continuum_root(),
+            );
+            match RecipeExperienceSource::resident_roles(&overlay_dir) {
+                Ok(roles) => roles,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        dir = %overlay_dir.display(),
+                        "recipe overlay REFUSED while reading the resident \
+                         roster — hosting the EMBEDDED default recipe's \
+                         citizens until the named file is fixed or removed \
+                         (#430)"
+                    );
+                    RecipeExperienceSource::resident_roles_embedded()
+                }
+            }
+        };
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
+                .with_citizens(resident_roles)
                 .with_serving(serving_plan.as_ref())
                 .with_population(persona_floor),
             instance_manager.clone(),
