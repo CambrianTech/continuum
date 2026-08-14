@@ -39,4 +39,15 @@ roomId?: string,
  * chat-prose bridge passes `"domain"`; the dev-task/self-verify loop passes
  * `"operational"`.
  */
-skillAxis?: string, };
+skillAxis?: string, 
+/**
+ * Include nil-room captures (benchmark/eval FORK ticks). Default `false`:
+ * forks share the persona's capture file (`fork_eval_cycle` keeps
+ * `persona_id`, the sink path is `<dir>/<persona_id>.jsonl`), so without
+ * this guard a default dataset run silently ingests measurement-fork turns
+ * as if they were her lived room experience — unlabeled benchmark work
+ * entering L1 while the SAME work is deliberately excluded from L2
+ * (2026-08-14 citizenship audit, AXIS 3). Set `true` only when a fork
+ * corpus is the explicit goal.
+ */
+includeForks: boolean, };
