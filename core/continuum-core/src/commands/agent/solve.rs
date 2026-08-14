@@ -461,11 +461,6 @@ impl ActionCommand for AgentSolve {
                                     let _ = std::fs::write(path, json);
                                 }
                             }
-                            if let Some(bus) = crate::runtime::MessageBus::global() {
-                                if let Ok(v) = serde_json::to_value(&r) {
-                                    bus.publish_async_only("agent:solve:complete", v);
-                                }
-                            }
                             tracing::info!(run_id = %run_id, acts = r.acts, attempt, "agent/solve detached run complete");
                             // #384: ZERO acts + NO error + EMPTY patch = she never
                             // worked at all — the serving-transition signature (F1:
