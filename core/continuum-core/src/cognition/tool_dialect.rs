@@ -320,7 +320,11 @@ mod tests {
         use super::*;
 
         fn call(name: &str, input: serde_json::Value) -> crate::ai::types::ToolCall {
-            crate::ai::types::ToolCall { id: "t1".into(), name: name.into(), input }
+            crate::ai::types::ToolCall {
+                id: "t1".into(),
+                name: name.into(),
+                input,
+            }
         }
 
         // what this catches: THE live #326 defect. Before the adapter handled this,
@@ -331,22 +335,34 @@ mod tests {
         fn a_name_carrying_its_arguments_resolves_and_keeps_the_arguments() {
             let mut c = call("work/list(state=open)", serde_json::json!({}));
             let note = normalize_call(&mut c).expect("repaired, so it must explain itself");
-            assert_eq!(c.name, "work/list", "the head must resolve to the real command");
+            assert_eq!(
+                c.name, "work/list",
+                "the head must resolve to the real command"
+            );
             assert_eq!(
                 c.input.get("state").and_then(|v| v.as_str()),
                 Some("open"),
                 "arguments welded into the name are real intent — they must survive"
             );
-            assert!(note.contains("work/list"), "the note names the canonical form: {note}");
+            assert!(
+                note.contains("work/list"),
+                "the note names the canonical form: {note}"
+            );
         }
 
         // what this catches: silently clobbering a well-formed call. Explicit input is
         // authoritative; the name is only a fallback source.
         #[test]
         fn explicit_input_always_wins_over_arguments_echoed_in_the_name() {
-            let mut c = call("work/list(state=open)", serde_json::json!({"state": "claimed"}));
+            let mut c = call(
+                "work/list(state=open)",
+                serde_json::json!({"state": "claimed"}),
+            );
             normalize_call(&mut c);
-            assert_eq!(c.input.get("state").and_then(|v| v.as_str()), Some("claimed"));
+            assert_eq!(
+                c.input.get("state").and_then(|v| v.as_str()),
+                Some("claimed")
+            );
         }
 
         // what this catches: an alias that ALSO carries args — both halves of the adapter
@@ -424,7 +440,11 @@ mod tests {
                 reflex,
                 "TrainedReflex offers {canonical} as {reflex}"
             );
-            assert_eq!(from_wire_name(reflex), canonical, "map {reflex} back to {canonical}");
+            assert_eq!(
+                from_wire_name(reflex),
+                canonical,
+                "map {reflex} back to {canonical}"
+            );
             // Canonical offers OUR name charset-legal; it maps back to canonical too.
             let canon_wire = canonical.replace('/', "_");
             assert_eq!(

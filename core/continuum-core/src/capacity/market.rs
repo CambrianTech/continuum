@@ -131,7 +131,11 @@ impl Participant {
     fn fulfill_one(&mut self) {
         let met = self.delivers_now();
         self.assigned += 1;
-        let verdict = if met { Verdict::Honored } else { Verdict::Failed };
+        let verdict = if met {
+            Verdict::Honored
+        } else {
+            Verdict::Failed
+        };
         self.reputation.record(&Settlement {
             seller: BudgetSource::Peer(self.name.clone()),
             verdict,
@@ -149,7 +153,10 @@ pub fn run_market(participants: &mut [Participant], jobs: usize) {
     for _ in 0..jobs {
         let Some(w) = (0..participants.len()).min_by(|&a, &b| {
             expected_cost(&participants[a].specs, &participants[a].reputation)
-                .partial_cmp(&expected_cost(&participants[b].specs, &participants[b].reputation))
+                .partial_cmp(&expected_cost(
+                    &participants[b].specs,
+                    &participants[b].reputation,
+                ))
                 .expect("entry prices and trust bounds are finite")
         }) else {
             break;
@@ -168,7 +175,10 @@ pub fn run_paid_market(participants: &mut [Participant], jobs: usize, probe_quot
             .filter(|&i| graduated(&participants[i].reputation, probe_quota))
             .min_by(|&a, &b| {
                 expected_cost(&participants[a].specs, &participants[a].reputation)
-                    .partial_cmp(&expected_cost(&participants[b].specs, &participants[b].reputation))
+                    .partial_cmp(&expected_cost(
+                        &participants[b].specs,
+                        &participants[b].reputation,
+                    ))
                     .expect("entry prices and trust bounds are finite")
             })
         else {
@@ -183,7 +193,11 @@ mod tests {
     use super::*;
 
     fn specs(vram_gb: u64, compute: u64, eff: u64) -> Specs {
-        Specs { vram_gb, compute_score: compute, power_efficiency: eff }
+        Specs {
+            vram_gb,
+            compute_score: compute,
+            power_efficiency: eff,
+        }
     }
 
     /// A pre-seeded settlement reputation: `honored` honored + `failed` failed settled transactions.
@@ -192,10 +206,16 @@ mod tests {
     fn with_record(honored: u32, failed: u32) -> Reputation {
         let mut r = Reputation::default();
         for _ in 0..honored {
-            r.record(&Settlement { seller: BudgetSource::Local, verdict: Verdict::Honored });
+            r.record(&Settlement {
+                seller: BudgetSource::Local,
+                verdict: Verdict::Honored,
+            });
         }
         for _ in 0..failed {
-            r.record(&Settlement { seller: BudgetSource::Local, verdict: Verdict::Failed });
+            r.record(&Settlement {
+                seller: BudgetSource::Local,
+                verdict: Verdict::Failed,
+            });
         }
         r
     }
@@ -208,8 +228,14 @@ mod tests {
         let small = specs(16, 100, 50);
         let big = specs(64, 400, 50);
         let efficient = specs(16, 100, 90);
-        assert!(entry_price(&big) > entry_price(&small), "more VRAM+compute → higher entry");
-        assert!(entry_price(&efficient) > entry_price(&small), "better perf/watt → higher entry");
+        assert!(
+            entry_price(&big) > entry_price(&small),
+            "more VRAM+compute → higher entry"
+        );
+        assert!(
+            entry_price(&efficient) > entry_price(&small),
+            "better perf/watt → higher entry"
+        );
     }
 
     // what this catches: A LIAR IS EXPOSED AND DELISTED. Same specs as the honest node (isolating the
@@ -221,15 +247,21 @@ mod tests {
     fn a_liar_wins_the_opening_tie_then_delists() {
         let s = specs(24, 150, 50);
         let mut m = vec![
-            Participant::new("liar", s, 1),   // index 0: wins the fresh-vs-fresh tie, ALWAYS fails
+            Participant::new("liar", s, 1), // index 0: wins the fresh-vs-fresh tie, ALWAYS fails
             Participant::new("honest", s, 0), // reliable
         ];
         run_market(&mut m, 20);
         let liar = &m[0];
         let honest = &m[1];
         assert_eq!(liar.earned, 0, "a node that never delivers is never paid");
-        assert_eq!(liar.reputation.settled, 1, "it wins the opening tie ONCE, then its failure prices it out");
-        assert_eq!(liar.reputation.honored, 0, "and that one settled job was a failure");
+        assert_eq!(
+            liar.reputation.settled, 1,
+            "it wins the opening tie ONCE, then its failure prices it out"
+        );
+        assert_eq!(
+            liar.reputation.honored, 0,
+            "and that one settled job was a failure"
+        );
         assert!(honest.earned > 0, "the reliable node takes over and earns");
     }
 
@@ -277,10 +309,21 @@ mod tests {
         ];
         run_market(&mut m, 40);
         for shell in &m[0..3] {
-            assert_eq!(shell.earned, 0, "a shell that never delivers never earns ({})", shell.name);
-            assert_eq!(shell.reputation.settled, 0, "and it never even wins a job to settle ({})", shell.name);
+            assert_eq!(
+                shell.earned, 0,
+                "a shell that never delivers never earns ({})",
+                shell.name
+            );
+            assert_eq!(
+                shell.reputation.settled, 0,
+                "and it never even wins a job to settle ({})",
+                shell.name
+            );
         }
-        assert!(m[3].earned > 0, "the proven incumbent captures the whole market");
+        assert!(
+            m[3].earned > 0,
+            "the proven incumbent captures the whole market"
+        );
     }
 
     // ── The sybil-CHURN attack, and the real settlement defense (BigMama's lane, now WIRED) ──
@@ -348,16 +391,16 @@ mod tests {
     fn a_stayer_locks_out_churn_from_job_one() {
         let s = specs(24, 150, 50);
         let mut stayer = Participant::new("stayer", s, 0); // starts fresh — no incumbency handed to it
-        let absorbed = shells_absorbed_under_churn(
-            &mut stayer,
-            || Participant::new("shell", s, 1),
-            100,
-        );
+        let absorbed =
+            shells_absorbed_under_churn(&mut stayer, || Participant::new("shell", s, 1), 100);
         assert_eq!(
             absorbed, 0,
             "a node that stays and delivers wins the opening tie and compounds; churn never gets in (absorbed={absorbed}/100)"
         );
-        assert_eq!(stayer.reputation.honored, 100, "the stayer delivered every job it kept");
+        assert_eq!(
+            stayer.reputation.honored, 100,
+            "the stayer delivered every job it kept"
+        );
     }
 
     // ── The mint stake (my #396 lane): the graduation gate on the PAID market ──
@@ -384,8 +427,14 @@ mod tests {
         );
         let mut m = vec![shell, incumbent];
         run_paid_market(&mut m, 100, PROBE_QUOTA);
-        assert_eq!(m[0].earned, 0, "an ungraduated cheap shell is INELIGIBLE for paid work — cheap specs can't buy in");
-        assert!(m[1].earned > 0, "the graduated incumbent takes the paid market");
+        assert_eq!(
+            m[0].earned, 0,
+            "an ungraduated cheap shell is INELIGIBLE for paid work — cheap specs can't buy in"
+        );
+        assert!(
+            m[1].earned > 0,
+            "the graduated incumbent takes the paid market"
+        );
     }
 
     // what this catches: THE GATE IS A DOORWAY, NOT A WALL — it admits a proven newcomer, never excludes
@@ -396,7 +445,10 @@ mod tests {
     fn the_gate_admits_a_proven_newcomer_it_never_excludes() {
         const PROBE_QUOTA: u32 = 3;
         let mut newcomer = Participant::new("newcomer", specs(24, 150, 50), 0);
-        assert!(!graduated(&newcomer.reputation, PROBE_QUOTA), "a fresh identity starts OUTSIDE the paid market");
+        assert!(
+            !graduated(&newcomer.reputation, PROBE_QUOTA),
+            "a fresh identity starts OUTSIDE the paid market"
+        );
         newcomer.reputation = with_record(PROBE_QUOTA, 0); // it DELIVERED its probe jobs — earned its way in
         assert!(graduated(&newcomer.reputation, PROBE_QUOTA));
         let mut m = vec![newcomer];

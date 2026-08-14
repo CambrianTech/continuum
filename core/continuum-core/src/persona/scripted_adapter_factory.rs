@@ -60,9 +60,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 type BuildFn =
-    dyn Fn(&PersonaInferenceProfile) -> Result<Arc<dyn AIProviderAdapter>, String>
-        + Send
-        + Sync;
+    dyn Fn(&PersonaInferenceProfile) -> Result<Arc<dyn AIProviderAdapter>, String> + Send + Sync;
 
 /// Closure-based factory. Public, system-level, ubiquitous.
 pub struct ScriptedPersonaAdapterFactory {
@@ -99,7 +97,9 @@ impl ScriptedPersonaAdapterFactory {
     /// actual wall-clock.
     pub fn heuristic_with_delay_ms(delay_ms: u64) -> Self {
         Self::custom(move |_profile| {
-            Ok(Arc::new(HeuristicInferenceAdapter::new().with_delay_ms(delay_ms)))
+            Ok(Arc::new(
+                HeuristicInferenceAdapter::new().with_delay_ms(delay_ms),
+            ))
         })
     }
 

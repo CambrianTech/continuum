@@ -16,11 +16,14 @@ use super::{card_view, PersonaCardView};
 /// the full id OR the 8-char short form a persona is shown in rosters (#164).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaIdentityGetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaIdentityGetParams.ts"
+)]
 pub struct PersonaIdentityGetParams {
     #[serde(default)]
     #[ts(type = "string | null")]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
 }
 
 crate::action_command! {
@@ -37,7 +40,7 @@ crate::action_command! {
         // A short/mistyped id a caller quotes back resolves against the personas
         // this process knows (their registered cards) — the ONE id_resolve
         // primitive (#164). Omitted → your own card (the authenticated caller).
-        let target_id = match p.persona_id.as_deref() {
+        let target_id = match p.persona_id.as_ref().map(|r| r.as_str()) {
             Some(raw) => crate::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
                 .map_err(CommandError::Invalid)?,
             None => ctx

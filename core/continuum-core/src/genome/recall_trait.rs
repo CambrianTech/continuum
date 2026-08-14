@@ -94,7 +94,10 @@ pub struct EngramRef(pub ArtifactId);
 /// consumers narrow by `kind` and read `ref` for the artifact id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "ref", rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/ArtifactRef.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/ArtifactRef.ts"
+)]
 pub enum ArtifactRef {
     LoRALayer(LoRALayerRef),
     MoEExpert(MoEExpertRef),
@@ -126,7 +129,10 @@ impl DomainHint {
 /// (e.g. don't include a 4GB layer if budget is 1GB).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RecallBudget.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RecallBudget.ts"
+)]
 pub struct RecallBudget {
     /// Maximum bytes the composition is allowed to consume.
     #[ts(type = "number")]
@@ -299,7 +305,10 @@ pub struct RecallTrace(pub ArtifactId);
 /// so the persona can make the cost trade-off explicit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/genome/RankedPool.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/RankedPool.ts"
+)]
 pub struct RankedPool {
     pub layers: Vec<(LoRALayerRef, RecallScore, ResidencyHint)>,
     pub experts: Vec<(MoEExpertRef, RecallScore, ResidencyHint)>,

@@ -200,7 +200,9 @@ impl PersonaAircRuntimeRegistry {
     /// or already shut down). Preserves the pre-slice-13 contract —
     /// callers get the `Arc<PersonaAircRuntime>` directly.
     pub fn get(&self, persona_id: Uuid) -> Option<Arc<PersonaAircRuntime>> {
-        self.inner.get(&persona_id).map(|entry| entry.runtime.clone())
+        self.inner
+            .get(&persona_id)
+            .map(|entry| entry.runtime.clone())
     }
 
     /// Every live persona's id — the set the SubstrateGovernor ticks cognitive
@@ -539,12 +541,14 @@ mod tests {
         // measurement. Regression guard for [[benchmark-is-a-governor-preemption-lease]].
         // Tests the RAII invariant directly on the flags `quiesce_all` collects,
         // since a live `PersonaSlot` needs a real airc daemon (see clone_shares_roster).
-        let flags: Vec<Arc<AtomicBool>> =
-            (0..2).map(|_| Arc::new(AtomicBool::new(true))).collect();
+        let flags: Vec<Arc<AtomicBool>> = (0..2).map(|_| Arc::new(AtomicBool::new(true))).collect();
 
         // normal path: held → suspended, dropped → resumed.
         {
-            let _lease = QuiesceLease { flags: flags.clone(), demand_override: None };
+            let _lease = QuiesceLease {
+                flags: flags.clone(),
+                demand_override: None,
+            };
             assert!(
                 flags.iter().all(|f| f.load(Ordering::Relaxed)),
                 "lease held → fleet suspended"
@@ -561,7 +565,10 @@ mod tests {
         }
         let flags_moved = flags.clone();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _lease = QuiesceLease { flags: flags_moved, demand_override: None };
+            let _lease = QuiesceLease {
+                flags: flags_moved,
+                demand_override: None,
+            };
             panic!("eval blew up mid-run while holding the lease");
         }));
         assert!(outcome.is_err(), "the leased closure did panic");

@@ -9,17 +9,14 @@ use crate::ai::types::{ToolCall, ToolResult};
 use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
-use super::observation::{
-    extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb,
-};
-use super::settle::now_ms;
+use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 use super::perception::{all_calls_already_satisfied, is_redundant_orientation};
+use super::settle::now_ms;
 
 /// Recall salience for an action-observation receipt (#166). Below the neutral
 /// default (0.5) so genuine findings/facts win recall, but well above zero so the
 /// receipt stays recallable for "what did I just do" when nothing better matches.
 const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
-
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
 /// the outcome as an Episodic engram (the result becomes memory), and return the
@@ -228,8 +225,7 @@ pub async fn apply_act(
             calls = calls.len(),
             "orientation call with a discovery receipt already in the concern — recorded redundant-orientation proprioception, skipped re-execution"
         );
-        let acts =
-            short_circuit_acts(calls, &nudge, ActStatus::RedundantOrientation { repeat: n });
+        let acts = short_circuit_acts(calls, &nudge, ActStatus::RedundantOrientation { repeat: n });
         return ActOutcome::Acted { acts };
     }
 
@@ -412,7 +408,11 @@ pub async fn apply_act(
     if room_id.is_nil() {
         // fall through to the working-memory record below — the receipt is
         // transcript-only observability; her own proprioception is unaffected.
-    } else if let Some(bus) = body.executor.command_executor().and_then(|e| e.message_bus()) {
+    } else if let Some(bus) = body
+        .executor
+        .command_executor()
+        .and_then(|e| e.message_bus())
+    {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -446,7 +446,9 @@ pub async fn apply_act(
             };
             match serde_json::to_value(&update) {
                 Ok(payload) => bus.publish_async_only("persona:act", payload),
-                Err(e) => tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected")
+                }
             }
         }
     }
@@ -577,7 +579,8 @@ pub async fn apply_act(
     // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
-    body.working_memory.record_receipt_typed(&acts, &observation);
+    body.working_memory
+        .record_receipt_typed(&acts, &observation);
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }
@@ -623,8 +626,14 @@ mod tests {
         assert!(is_long_running("code/cargo/test"));
         assert!(is_long_running("code/cargo/check"));
         assert!(is_long_running("cognition/full-evaluate"));
-        assert!(!is_long_running("code/read"), "a file read stays synchronous");
+        assert!(
+            !is_long_running("code/read"),
+            "a file read stays synchronous"
+        );
         assert!(!is_long_running("chat/send"));
-        assert!(!is_long_running("cargo/test"), "the wrong short name must NOT match");
+        assert!(
+            !is_long_running("cargo/test"),
+            "the wrong short name must NOT match"
+        );
     }
 }

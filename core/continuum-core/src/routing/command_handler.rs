@@ -208,7 +208,8 @@ impl CommandRequestHandler {
             Body::Json(v) => v.clone(),
             Body::Binary(_) => {
                 return Err(AdapterError::Consumer(
-                    "inbound command body was Binary; expected Json(AircCommandRequest)".to_string(),
+                    "inbound command body was Binary; expected Json(AircCommandRequest)"
+                        .to_string(),
                 ));
             }
         };
@@ -260,8 +261,7 @@ impl CommandRequestHandler {
         // key; on success its conferred capabilities ride into the gate. Absent /
         // invalid grant → empty caps → pure tier gating (unchanged behavior).
         let granted = self.verify_presented_grant(parsed).await;
-        let caller =
-            CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
+        let caller = CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
         Self::dispatch_request(&self.executor, parsed, caller).await
     }
 
@@ -275,9 +275,10 @@ impl CommandRequestHandler {
     /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
     /// confers nothing; the caller then falls back to tier gating.
     async fn verify_presented_grant(&self, parsed: &ParsedEnvelope) -> Vec<String> {
-        let (Some(authorizer), Some(grant)) =
-            (self.grant_authorizer.as_ref(), parsed.presented_grant.as_ref())
-        else {
+        let (Some(authorizer), Some(grant)) = (
+            self.grant_authorizer.as_ref(),
+            parsed.presented_grant.as_ref(),
+        ) else {
             return Vec::new();
         };
         let Some(presenting) = self.airc.peer_public_key(parsed.caller_peer_id) else {
@@ -420,9 +421,8 @@ impl CommandRequestHandler {
         parsed: &ParsedEnvelope,
         response: &AircCommandResponse,
     ) -> Result<(), AdapterError> {
-        let body_value = serde_json::to_value(response).map_err(|e| {
-            AdapterError::Consumer(format!("serialize AircCommandResponse: {e}"))
-        })?;
+        let body_value = serde_json::to_value(response)
+            .map_err(|e| AdapterError::Consumer(format!("serialize AircCommandResponse: {e}")))?;
         let body = Body::Json(body_value);
 
         let mut headers = airc_core::Headers::new();
@@ -576,8 +576,12 @@ mod tests {
     // to present a grant; we don't pretend they didn't.
     #[test]
     fn parse_envelope_rejects_malformed_grant_header() {
-        let mut envelope =
-            make_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &sample_request());
+        let mut envelope = make_envelope(
+            PeerId::new(),
+            PeerId::new(),
+            Uuid::new_v4(),
+            &sample_request(),
+        );
         envelope.headers.insert(
             HEADER_AIRC_CAPABILITY_GRANT.to_string(),
             "!!!not-base64!!!".to_string(),
@@ -644,11 +648,14 @@ mod tests {
         let mut envelope = make_envelope(sender, reply_to, correlation, &request);
         envelope.body = None;
 
-        let err = CommandRequestHandler::parse_envelope(&envelope)
-            .expect_err("missing body should fail");
+        let err =
+            CommandRequestHandler::parse_envelope(&envelope).expect_err("missing body should fail");
         match err {
             AdapterError::Consumer(msg) => {
-                assert!(msg.contains("no body"), "error must name missing body: {msg}");
+                assert!(
+                    msg.contains("no body"),
+                    "error must name missing body: {msg}"
+                );
             }
             other => panic!("expected Consumer error, got {other:?}"),
         }
@@ -663,8 +670,8 @@ mod tests {
         let mut envelope = make_envelope(sender, reply_to, correlation, &request);
         envelope.body = Some(Body::Binary(vec![1, 2, 3]));
 
-        let err = CommandRequestHandler::parse_envelope(&envelope)
-            .expect_err("binary body should fail");
+        let err =
+            CommandRequestHandler::parse_envelope(&envelope).expect_err("binary body should fail");
         match err {
             AdapterError::Consumer(msg) => {
                 assert!(msg.contains("Binary"));
@@ -933,10 +940,7 @@ mod tests {
                     tick_interval: None,
                 }
             }
-            async fn initialize(
-                &self,
-                _ctx: &crate::runtime::ModuleContext,
-            ) -> Result<(), String> {
+            async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
                 Ok(())
             }
             async fn handle_command(

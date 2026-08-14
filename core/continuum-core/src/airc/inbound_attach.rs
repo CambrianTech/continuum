@@ -101,7 +101,10 @@ fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
     match serde_json::to_string(cursor) {
         Ok(json) => {
             if let Err(error) = std::fs::write(&path, json) {
-                warn!("failed to persist airc attach cursor to {}: {error}", path.display());
+                warn!(
+                    "failed to persist airc attach cursor to {}: {error}",
+                    path.display()
+                );
             }
         }
         Err(error) => warn!("failed to serialize airc attach cursor: {error}"),
@@ -309,11 +312,8 @@ pub async fn publish_transcript_event(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let is_new = crate::capacity::gossip::global_ledger().hear(
-            event.peer_id.as_uuid(),
-            offer,
-            now_ms,
-        );
+        let is_new =
+            crate::capacity::gossip::global_ledger().hear(event.peer_id.as_uuid(), offer, now_ms);
         if is_new {
             crate::probe!(
                 class = "grid.capacity.heard",
@@ -397,7 +397,9 @@ fn capacity_offer_from_envelope(
     if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
         return None;
     }
-    serde_json::from_value(payload.inline.clone()?).ok()
+    // Borrow-decode: this runs per inbound event, and `.clone()?` copied the
+    // whole inline payload just to hand `from_value` an owned Value.
+    serde::Deserialize::deserialize(payload.inline.as_ref()?).ok()
 }
 
 /// Project a plain airc chat message into the THIN `chat:posted` bus

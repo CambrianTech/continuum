@@ -1485,6 +1485,29 @@ struct OpenAIStreamChunk {
     timings: Option<OpenAITimings>,
     #[serde(default)]
     model: String,
+    /// PREFILL progress (llama.cpp `return_progress` extension). Present only on
+    /// frames emitted while the slot is still ingesting the prompt — before any
+    /// token exists. This is the ONLY evidence a client has that a long prefill
+    /// is advancing rather than wedged; see the liveness rule in
+    /// [`OpenAIAdapter::stream_completion`].
+    #[serde(default)]
+    prompt_progress: Option<OpenAIPromptProgress>,
+}
+
+/// llama.cpp's `prompt_progress` frame — the slot's ingest counter.
+///
+/// `processed` climbs toward `total` as prefill proceeds; `cache` is the prefix
+/// the KV cache served for free. A slot that is genuinely wedged holds
+/// `processed` FROZEN, which is exactly what makes this a liveness signal and
+/// not merely a keepalive.
+#[derive(Debug, Deserialize)]
+struct OpenAIPromptProgress {
+    #[serde(default)]
+    total: u64,
+    #[serde(default)]
+    cache: u64,
+    #[serde(default)]
+    processed: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1869,6 +1892,26 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // maximal. Same typed capability gate as repeat_penalty/lora: cloud
                 // OpenAI-compat providers reject the non-standard field.
                 obj.insert("cache_prompt".to_string(), json!(true));
+                // PREFILL VISIBILITY — the llama.cpp `return_progress` extension.
+                // MEASURED 2026-08-13 on the live lane: with this field absent
+                // (its server-side default), a ~20k-token prompt produced ZERO
+                // bytes for 286 SECONDS — the server says nothing at all between
+                // accepting the request and emitting the first token. Both stream
+                // watchdogs below budget 90s, so any prompt whose prefill exceeds
+                // that was killed by US mid-ingest, and the server log shows
+                // exactly that: `progress = 0.73 … 145 tok/s` immediately followed
+                // by `srv stop: cancel task`. The retry then re-prefills from
+                // scratch (the cancel also evicts the slot's prompt cache), so the
+                // turn could never succeed — a citizen at full window occupancy was
+                // structurally incapable of producing a token.
+                //
+                // With the field set, the slot emits a `prompt_progress` frame per
+                // batch iteration (server-context.cpp:3703) — bytes AND a rising
+                // `processed` counter, which is what makes the watchdog able to
+                // tell healthy prefill from the #385 wedge instead of failing both.
+                // Same typed capability gate as cache_prompt/repeat_penalty: cloud
+                // OpenAI-compat providers reject non-standard fields.
+                obj.insert("return_progress".to_string(), json!(true));
             }
             // Persona→slot pinning (`id_slot`, llama.cpp extension): keep each
             // persona's long static prefix warm in ITS OWN slot instead of
@@ -2335,10 +2378,39 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!(
-                "{} returned {}: {}",
-                self.config.name, status, body
-            ));
+            // Classify ONCE, here, where the status code and the raw body still
+            // exist. Downstream this is still carried as a String (the trait's
+            // error type has not moved yet — that is the threading commit), so
+            // the CLASSIFICATION is emitted as a probe rather than lost: an
+            // operator reading the receipt now sees WHICH kind of failure this
+            // was, and for an overflow, both token counts.
+            //
+            // Why that matters: settle.rs retries every fault blind, which is
+            // right for a transient wedge (#386, ~2/3 recover) and useless for
+            // ContextExceeded — same prompt, same slot, same 400, forever.
+            // Until the type reaches settle, this probe is the only place the
+            // difference is visible at all.
+            let classified = crate::ai::inference_error::InferenceError::from_http(
+                status.as_u16(),
+                &body,
+            );
+            let (requested, available) = match &classified {
+                crate::ai::inference_error::InferenceError::ContextExceeded {
+                    requested,
+                    available,
+                } => (*requested, *available),
+                _ => (0, 0),
+            };
+            crate::probe!(
+                class = "ai.request.rejected",
+                provider = %self.config.name,
+                status = status.as_u16(),
+                retryable_unchanged = classified.is_retryable_unchanged(),
+                requested_tokens = requested,
+                available_tokens = available,
+                "backend rejected the request — classified at the seam"
+            );
+            return Err(format!("{} returned {}: {}", self.config.name, status, body));
         }
 
         // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
@@ -2346,7 +2418,25 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // silence means the backend died, NOT that generation is simply long.
         use futures::StreamExt;
         let mut byte_stream = response.bytes_stream();
-        let idle = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
+        // QUEUE WAIT IS NOT SILENCE. Two different things were being policed by one
+        // budget. MEASURED 2026-08-13 on the live 1-slot lane: a TINY (2,237-token)
+        // request got its first byte of any kind at t=115.2s — not because prefill
+        // was slow (it finished within the same second) but because the slot was
+        // busy with a co-tenant's turn for 115s first. llama-server says nothing
+        // while a task is queued; there is no frame to send until a slot picks it
+        // up. So the 90s liveness budget was being spent on CONTENTION, and with
+        // total_slots=1 and four citizens it expires routinely on a healthy lane.
+        //
+        // Split by what the silence MEANS. Before the server shows any sign of
+        // working on THIS request, the bound is the same one the header wait
+        // already uses and justifies — queue wait is a capacity fact, minutes are
+        // legitimate, and the job is releasing eternal holds, not policing slow
+        // ones. Once the slot IS working (a prefill-progress frame or a token),
+        // the tight liveness budget applies: from then on, silence really is the
+        // backend dying, which is what #385 was always about.
+        let queue_budget = std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS);
+        let live_budget = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
+        let mut idle = queue_budget;
         // #363: real-delivery accounting for the LOCAL lane only. A terminal stream
         // death on the local lane is wedge evidence the smoke probe cannot see (an
         // undersized slot passes a tiny probe while rejecting real prompts); a
@@ -2370,8 +2460,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // when a parsed event yields an actual delta (content / reasoning / tool /
         // finish). Bytes without progress for the same idle budget = the
         // keepalive-masked wedge, failed as loudly as transport silence.
-        let mut last_progress = Instant::now();
+        //
+        // PREFILL IS PROGRESS (2026-08-13). The rule above was right about the
+        // wedge and wrong about what "progress" means: it counted only DECODED
+        // tokens, so a slot legitimately ingesting a long prompt looked identical
+        // to a frozen one. It isn't: prefill has a rising counter. We now request
+        // `return_progress` (see the body builder) and treat a rising `processed`
+        // as progress — the slot is doing the work we asked for. A genuinely
+        // wedged slot holds that counter FROZEN and still fails in the same 90s,
+        // so the #385 detector keeps its teeth while healthy work stops being
+        // executed for the crime of having a big prompt.
+        let mut last_prefill_processed: u64 = 0;
+        let stream_opened = Instant::now();
+        let mut last_progress = stream_opened;
         loop {
+            // `last_progress` only ever moves when the SERVER did something for us
+            // (prefill advanced, token, tool delta, finish). So "has it moved since
+            // we opened the stream" is exactly "has the slot started our work" —
+            // no extra flag to keep in sync with the activity sites below.
+            let idle = if last_progress > stream_opened {
+                live_budget
+            } else {
+                queue_budget
+            };
             let next = tokio::time::timeout(idle, byte_stream.next())
                 .await
                 .map_err(|_| {
@@ -2379,10 +2490,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         crate::inference::llama_server::note_real_decode_failure();
                     }
                     format!(
-                        "{}: inference lane went silent for {}s mid-stream (no token \
-                         produced) — backend stuck or dead; refusing to wait on a dead \
-                         stream",
-                        self.config.name, STREAM_IDLE_TIMEOUT_SECS
+                        "{}: inference lane went silent for {}s (no bytes at all) — {}; \
+                         refusing to wait on a dead stream",
+                        self.config.name,
+                        idle.as_secs(),
+                        if last_progress > stream_opened {
+                            "the slot HAD started our work and then stopped mid-stream, \
+                             so the backend is stuck or dead"
+                        } else {
+                            "the slot never started our work — either the backend is dead \
+                             or the queue is oversubscribed far beyond this budget"
+                        }
                     )
                 })?;
             if last_progress.elapsed() >= idle {
@@ -2390,10 +2508,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     crate::inference::llama_server::note_real_decode_failure();
                 }
                 return Err(format!(
-                    "{}: no TOKEN progress for {}s despite the stream carrying bytes — \
-                     keepalive-masked wedge (slot processing with frozen n_decoded); \
-                     refusing to wait on a stream that is alive but not generating (#385)",
-                    self.config.name, STREAM_IDLE_TIMEOUT_SECS
+                    "{}: no PROGRESS for {}s despite the stream carrying bytes — \
+                     keepalive-masked wedge (neither prefill nor decode advanced); \
+                     refusing to wait on a stream that is alive but not working (#385)",
+                    self.config.name,
+                    idle.as_secs()
                 ));
             }
             let Some(chunk) = next else {
@@ -2438,6 +2557,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     }
                     if let Some(t) = parsed.timings {
                         stream_timings = Some(t);
+                    }
+                    // Prefill advanced → the slot is alive and working. Strictly
+                    // `>` so a REPEATED frame carrying the same count (the wedge
+                    // signature) cannot hold the watchdog open forever.
+                    if let Some(p) = parsed.prompt_progress {
+                        if p.processed > last_prefill_processed {
+                            last_prefill_processed = p.processed;
+                            last_progress = Instant::now();
+                            let _ = sink.send(GenerationChunk::Prefill {
+                                processed: p.processed,
+                                total: p.total,
+                                cached: p.cache,
+                            });
+                        }
                     }
                     if let Some(choice) = parsed.choices.into_iter().next() {
                         if let Some(fr) = choice.finish_reason {
@@ -2892,6 +3025,66 @@ mod tests {
     use super::*;
 
     use crate::ai::types::ImageInput;
+
+    mod prefill_progress_is_liveness {
+        use super::*;
+
+        /// what this catches: the SSE frame llama-server emits during PREFILL
+        /// silently failing to decode, which would restore the 2026-08-13 defect —
+        /// the watchdog seeing no progress and killing a slot that was healthily
+        /// ingesting a long prompt. If `prompt_progress` stops parsing, a citizen
+        /// with a big prompt can never produce a token.
+        #[test]
+        fn prefill_frame_decodes_with_no_choices_and_no_tokens() {
+            let frame = r#"{"choices":[],"created":1,"model":"m","object":"x",
+                "prompt_progress":{"total":16800,"cache":0,"processed":12288,"time_ms":84380}}"#;
+            let parsed: OpenAIStreamChunk =
+                serde_json::from_str(frame).expect("a prefill frame must decode");
+            let p = parsed
+                .prompt_progress
+                .expect("prompt_progress must survive deserialization");
+            assert_eq!(p.processed, 12288);
+            assert_eq!(p.total, 16800);
+            assert!(
+                parsed.choices.is_empty(),
+                "a prefill frame carries NO choices — this is exactly why the \
+                 token-only watchdog could not see it"
+            );
+        }
+
+        /// what this catches: a REPEATED progress frame being treated as fresh
+        /// progress. The wedge signature (#385) is a slot that keeps emitting while
+        /// its counter is frozen; if a non-advancing frame reset the watchdog, the
+        /// detector would never fire again and we would be back to the 5-hour hang.
+        #[test]
+        fn a_frozen_counter_is_not_progress() {
+            let mut last: u64 = 12288;
+            let repeated: u64 = 12288;
+            assert!(
+                !(repeated > last),
+                "a frame carrying the SAME processed count must NOT count as progress"
+            );
+            let advanced: u64 = 14336;
+            assert!(advanced > last, "a rising count is progress");
+            last = advanced;
+            assert_eq!(last, 14336);
+        }
+
+        /// what this catches: the two silences collapsing back into one budget.
+        /// Queue wait (measured 115s on a 1-slot lane for a 2,237-token prompt) is
+        /// contention, not death; only silence AFTER the slot starts working is a
+        /// wedge. If these budgets are ever made equal, healthy turns die under
+        /// normal multi-citizen load.
+        #[test]
+        fn queue_budget_outlives_the_liveness_budget() {
+            assert!(
+                PRE_STREAM_HEADER_TIMEOUT_SECS > STREAM_IDLE_TIMEOUT_SECS,
+                "the pre-start (queue) budget must be strictly larger than the \
+                 post-start liveness budget: {PRE_STREAM_HEADER_TIMEOUT_SECS} vs \
+                 {STREAM_IDLE_TIMEOUT_SECS}"
+            );
+        }
+    }
 
     mod unguaranteed_model_refusal_says_which_situation {
         use super::*;

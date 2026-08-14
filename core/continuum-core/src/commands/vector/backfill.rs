@@ -12,11 +12,12 @@ fn default_batch_size() -> usize {
 }
 
 /// Params for `vector/backfill`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/vector/VectorBackfillParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vector/VectorBackfillParams.ts"
+)]
 pub struct VectorBackfillParams {
     /// The collection to backfill embeddings for.
     pub collection: String,

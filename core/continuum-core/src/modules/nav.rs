@@ -44,12 +44,7 @@ impl NavShared {
     /// not yet wired — the cursor advance already persisted to the shared store,
     /// so the write is not lost (only the live re-project is deferred).
     fn publish_nav_changed(&self, user: Uuid) {
-        if let Some(bus) = self
-            .bus
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
+        if let Some(bus) = self.bus.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
             bus.publish_async_only(NAV_CHANGED, serde_json::json!({ "user_id": user }));
         }
     }
@@ -62,12 +57,7 @@ impl NavShared {
     /// construction, never a hand JSON. Honest no-op without a bus, same as
     /// [`Self::publish_nav_changed`].
     fn publish_chat_focused(&self, room: Uuid) {
-        if let Some(bus) = self
-            .bus
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
+        if let Some(bus) = self.bus.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
             let payload = serde_json::to_value(AircChatFocused { room_id: room })
                 .expect("AircChatFocused serializes — wire-struct bug, not a runtime error");
             bus.publish_async_only(CHAT_FOCUSED, payload);
@@ -152,7 +142,10 @@ impl ServiceModule for NavModule {
 /// message the caller has seen). Monotonic: the cursor never moves backward.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/MarkReadParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/MarkReadParams.ts"
+)]
 pub struct MarkReadParams {
     /// The room whose read cursor to advance.
     #[ts(type = "string")]
@@ -166,7 +159,10 @@ pub struct MarkReadParams {
 /// the human unread badge and the persona RAG grounding both read.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/MarkReadResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/MarkReadResult.ts"
+)]
 pub struct MarkReadResult {
     /// The cursor value after the advance (`>=` the requested lamport, monotonic).
     #[ts(type = "number")]
@@ -215,7 +211,10 @@ impl ActionCommand for MarkRead {
 /// command envelope, same as `nav/mark-read`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavSelectParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavSelectParams.ts"
+)]
 pub struct NavSelectParams {
     /// The activity to switch to (an airc room id, or a citizen id for a
     /// persona-kind tab).
@@ -236,7 +235,10 @@ pub struct NavSelectParams {
 /// Result of `nav/select` — the citizen's focus after the switch.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavSelectResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavSelectResult.ts"
+)]
 pub struct NavSelectResult {
     /// The current tab after the select (the target, echoed as the stored ref).
     pub current: String,
@@ -267,11 +269,17 @@ impl ActionCommand for Select {
     type Params = NavSelectParams;
     type Output = NavSelectResult;
 
-    async fn run(&self, ctx: &Ctx, params: NavSelectParams) -> Result<NavSelectResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        params: NavSelectParams,
+    ) -> Result<NavSelectResult, CommandError> {
         // WHO is navigating — the authenticated caller. No identity → fail loud
         // (a focus with no owner is meaningless), never a silent default user.
         let user = ctx.user_id.ok_or_else(|| {
-            CommandError::Invalid("nav/select requires an authenticated caller (user_id)".to_string())
+            CommandError::Invalid(
+                "nav/select requires an authenticated caller (user_id)".to_string(),
+            )
         })?;
         use continuum_positron::nav::NavTargetKind;
         let target = params.target.to_string();
@@ -284,9 +292,7 @@ impl ActionCommand for Select {
         // nothing to advance (never a fabricated cursor). Cursor is monotonic,
         // so a re-select can never rewind it. A non-room previous focus (a
         // persona tab) has no read cursor — nothing to advance.
-        if let Some((prev, NavTargetKind::Room)) =
-            previous.as_ref().filter(|(p, _)| *p != target)
-        {
+        if let Some((prev, NavTargetKind::Room)) = previous.as_ref().filter(|(p, _)| *p != target) {
             if let Ok(prev_room) = Uuid::parse_str(prev) {
                 if let Some(tip) = global_channel_digest_buffer()
                     .peek(&(user, prev_room))
@@ -327,7 +333,10 @@ impl ActionCommand for Select {
 /// close — the room set is membership, not tab state.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavCloseParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavCloseParams.ts"
+)]
 pub struct NavCloseParams {
     /// The open activity to close (the tab's target ref).
     #[ts(type = "string")]
@@ -337,7 +346,10 @@ pub struct NavCloseParams {
 /// Result of `nav/close` — the closed target, echoed.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/nav/NavCloseResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/nav/NavCloseResult.ts"
+)]
 pub struct NavCloseResult {
     /// The tab that was closed.
     pub closed: String,
@@ -364,7 +376,9 @@ impl ActionCommand for Close {
 
     async fn run(&self, ctx: &Ctx, params: NavCloseParams) -> Result<NavCloseResult, CommandError> {
         let user = ctx.user_id.ok_or_else(|| {
-            CommandError::Invalid("nav/close requires an authenticated caller (user_id)".to_string())
+            CommandError::Invalid(
+                "nav/close requires an authenticated caller (user_id)".to_string(),
+            )
         })?;
         let target = params.target.to_string();
         global_nav_focus().close(user, &target);
@@ -468,21 +482,39 @@ mod tests {
 
         // First select: no previous focus, cursor untouched.
         let first = cmd
-            .run(&ctx, NavSelectParams { target: room_a, kind: Default::default() })
+            .run(
+                &ctx,
+                NavSelectParams {
+                    target: room_a,
+                    kind: Default::default(),
+                },
+            )
             .await
             .expect("select ok");
         assert_eq!(first.current, room_a.to_string());
-        assert_eq!(first.previous, None, "a fresh citizen has no previous focus");
+        assert_eq!(
+            first.previous, None,
+            "a fresh citizen has no previous focus"
+        );
         assert_eq!(
             global_nav_focus().current(user),
-            Some((room_a.to_string(), continuum_positron::nav::NavTargetKind::Room)),
+            Some((
+                room_a.to_string(),
+                continuum_positron::nav::NavTargetKind::Room
+            )),
             "the explicit focus (target + kind) landed in the shared store the reader surfaces"
         );
         assert_eq!(global_channel_bookmarks().last_read(user, room_a), 0);
 
         // Second select: leaving room_a advances its cursor to the digest tip.
         let second = cmd
-            .run(&ctx, NavSelectParams { target: room_b, kind: Default::default() })
+            .run(
+                &ctx,
+                NavSelectParams {
+                    target: room_b,
+                    kind: Default::default(),
+                },
+            )
             .await
             .expect("select ok");
         assert_eq!(second.current, room_b.to_string());
@@ -514,9 +546,15 @@ mod tests {
             user_id: Some(user),
             ..Ctx::default()
         };
-        cmd.run(&ctx, NavSelectParams { target: room, kind: Default::default() })
-            .await
-            .expect("select ok");
+        cmd.run(
+            &ctx,
+            NavSelectParams {
+                target: room,
+                kind: Default::default(),
+            },
+        )
+        .await
+        .expect("select ok");
 
         let mut saw_focus = false;
         let mut saw_nav = false;
@@ -588,7 +626,10 @@ mod tests {
             !saw_focus,
             "a persona select must NOT refocus the chat projection — the room stays put"
         );
-        assert!(saw_nav, "nav:changed still reaches the bus for the rail/tab bar");
+        assert!(
+            saw_nav,
+            "nav:changed still reaches the bus for the rail/tab bar"
+        );
     }
 
     // what this catches: no caller identity → fail loud, never a silent
@@ -609,7 +650,10 @@ mod tests {
                 },
             )
             .await;
-        assert!(out.is_err(), "no user_id must fail, not write a default focus");
+        assert!(
+            out.is_err(),
+            "no user_id must fail, not write a default focus"
+        );
     }
 
     // what this catches: no caller identity → fail loud, never a silent default-user
@@ -629,6 +673,9 @@ mod tests {
                 },
             )
             .await;
-        assert!(out.is_err(), "no user_id must fail, not write a default cursor");
+        assert!(
+            out.is_err(),
+            "no user_id must fail, not write a default cursor"
+        );
     }
 }

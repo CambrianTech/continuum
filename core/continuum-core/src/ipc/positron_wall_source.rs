@@ -71,9 +71,7 @@ use airc_core::doctrine::WallPostPublished;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
-use continuum_positron::{
-    RosterSlotView, StateBuilder, Substrate, WallPostView, WallViewState,
-};
+use continuum_positron::{RosterSlotView, StateBuilder, Substrate, WallPostView, WallViewState};
 use serde::Deserialize;
 
 use crate::ipc::positron_source::{resolve_identity, AircPresenceUpdate, PRESENCE_UPDATED};
@@ -198,8 +196,7 @@ impl WallProjection {
             room_id: self.room_id,
             posts,
         };
-        self.substrate
-            .store(self.builder.persistent(view));
+        self.substrate.store(self.builder.persistent(view));
     }
 }
 
@@ -381,9 +378,9 @@ pub fn spawn_node_wall_projector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
     use airc_core::{PeerId, RoomId};
     use async_trait::async_trait;
-    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
     use continuum_positron::{Provenance, SenderKind};
     use serde_json::json;
     use std::sync::Mutex;
@@ -502,7 +499,10 @@ mod tests {
         let reader = StubReader::new(vec![post(room, author, "rules", "Fail loud.")]);
         let mut p = WallProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
-        assert_eq!(current_wall(&substrate).posts[0].author_kind, SenderKind::Human);
+        assert_eq!(
+            current_wall(&substrate).posts[0].author_kind,
+            SenderKind::Human
+        );
 
         // Card arrives via presence: Agent named Asha carrying a badge.
         let presence = presence_one(room.as_uuid(), author.as_uuid(), "Asha", "agent");
@@ -517,7 +517,10 @@ mod tests {
         assert_eq!(view.posts[0].author_name, "Asha");
         assert_eq!(view.posts[0].author_kind, SenderKind::Agent);
         assert_eq!(
-            view.posts[0].integrations.get("continuum.persona_id").map(String::as_str),
+            view.posts[0]
+                .integrations
+                .get("continuum.persona_id")
+                .map(String::as_str),
             Some("asha-1"),
             "opaque badge resolved from the card"
         );
@@ -628,7 +631,11 @@ mod tests {
         assert!(current_wall(&substrate).posts.is_empty());
 
         // Board gains a post while the loop was behind; a Lagged arrives.
-        reader.posts.lock().unwrap().push(post(room, author, "plan", "caught up"));
+        reader
+            .posts
+            .lock()
+            .unwrap()
+            .push(post(room, author, "plan", "caught up"));
         let step = fold_recv(&mut p, room.as_uuid(), Err(RecvError::Lagged(3))).await;
         assert_eq!(step, LoopStep::Continue);
         assert_eq!(

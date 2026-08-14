@@ -389,12 +389,16 @@ impl PersonaCognition {
                 // they never starve airc's recent_history or compete for
                 // grow headroom with the heavyweight engram/airc sources.
                 let (floor, min, max) = match s.source_id() {
-                    "room-roster" => {
-                        (0, 0, (context_window / ROSTER_WINDOW_FRACTION).min(per_source_max))
-                    }
-                    "room-doctrine" => {
-                        (0, 0, (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max))
-                    }
+                    "room-roster" => (
+                        0,
+                        0,
+                        (context_window / ROSTER_WINDOW_FRACTION).min(per_source_max),
+                    ),
+                    "room-doctrine" => (
+                        0,
+                        0,
+                        (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max),
+                    ),
                     _ => {
                         // FLOOR is what the source needs to say ONE true thing;
                         // MIN is what it wants when there is room. Conflating them
@@ -631,13 +635,7 @@ mod tests {
         let rag = Arc::new(RagEngine::new());
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
-        let pc = PersonaCognition::with_capture_sink(
-            id,
-            "TestBot".into(),
-            rag,
-            200.0,
-            sink_dyn,
-        );
+        let pc = PersonaCognition::with_capture_sink(id, "TestBot".into(), rag, 200.0, sink_dyn);
 
         // Admit + register one engram.
         let now = 1_000_000_000u64;
@@ -708,9 +706,7 @@ mod tests {
     //      over engram + airc, not via inspect_persona_rag's ad-hoc seam.
 
     use crate::persona::inference_profile::PersonaInferenceProfile;
-    use crate::persona::rag_budget::{
-        AllocationState, ContinuationCursor, RagDelivery, RagItem,
-    };
+    use crate::persona::rag_budget::{AllocationState, ContinuationCursor, RagDelivery, RagItem};
     use async_trait::async_trait;
 
     /// Test source that returns a fixed budget-aware payload — proves
@@ -727,15 +723,15 @@ mod tests {
             self.id
         }
 
-    fn expand_command(&self) -> Option<&'static str> {
-        // Test/stub source — nothing further to fetch.
-        None
-    }
+        fn expand_command(&self) -> Option<&'static str> {
+            // Test/stub source — nothing further to fetch.
+            None
+        }
 
-    /// Test/stub source — floorless, so it never encodes a production floor.
-    fn floor_tokens(&self) -> u32 {
-        0
-    }
+        /// Test/stub source — floorless, so it never encodes a production floor.
+        fn floor_tokens(&self) -> u32 {
+            0
+        }
         async fn deliver(
             &self,
             _ctx: &RagContext,

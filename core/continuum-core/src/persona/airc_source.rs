@@ -33,10 +33,10 @@ use async_trait::async_trait;
 
 use crate::cognition::channel_digest::{ChannelDigest, ChannelDigestBuilder, DEFAULT_GROUNDING};
 use crate::cognition::channel_digest_region::DigestBuffer;
+use crate::cognition::channel_element::ChannelElement;
 use crate::cognition::channel_substrate::{
     global_channel_digest_buffer, global_channel_digest_builder,
 };
-use crate::cognition::channel_element::ChannelElement;
 use crate::persona::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
@@ -159,9 +159,7 @@ impl AircRagSource {
             buffer: global_channel_digest_buffer(),
             grounding: DEFAULT_GROUNDING,
             fetch_limit: FETCH_LIMIT,
-            history: Some(Arc::new(
-                crate::persona::durable_history::ChatStoreHistory,
-            )),
+            history: Some(Arc::new(crate::persona::durable_history::ChatStoreHistory)),
         }
     }
 
@@ -175,7 +173,7 @@ impl AircRagSource {
     /// hold dozens — the persona then confabulated generic-assistant filler
     /// because the actual conversation was invisible (#259).
     // context-budget-exempt: a FLOOR under a per-turn allocation — it only ever raises, so a large window is never clamped by it
-const MIN_TOKENS_PER_TURN: u32 = 8;
+    const MIN_TOKENS_PER_TURN: u32 = 8;
 
     /// Turns-that-fit grounding: derive the digest's before-bookmark window
     /// from the delivery budget. `recipe_floor` (the recipe-defined N, default
@@ -201,12 +199,10 @@ const MIN_TOKENS_PER_TURN: u32 = 8;
     /// order among themselves) — hydrated history can therefore only ever land
     /// on the grounding side of the bookmark, never as unread. That is the #242
     /// contract: history is context, never fresh perception.
-    fn hydrated_event(
-        room_id: uuid::Uuid,
-        sender: uuid::Uuid,
-        text: &str,
-    ) -> TranscriptEvent {
-        use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind};
+    fn hydrated_event(room_id: uuid::Uuid, sender: uuid::Uuid, text: &str) -> TranscriptEvent {
+        use airc_core::{
+            Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,
+        };
         let room = RoomId::from_uuid(room_id);
         TranscriptEvent {
             event_id: EventId::new(),
@@ -265,7 +261,10 @@ const MIN_TOKENS_PER_TURN: u32 = 8;
             } else {
                 let head = head_to_tokens(text, cap);
                 let head_cost = estimate_tokens(&head).saturating_add(2); // marker
-                (head_cost, Some(format!("{head} (…{full}-token message trimmed)")))
+                (
+                    head_cost,
+                    Some(format!("{head} (…{full}-token message trimmed)")),
+                )
             };
             if tokens_used.saturating_add(cost) > budget {
                 break;
@@ -592,7 +591,9 @@ mod tests {
             paged_room: Mutex::new(None),
         });
         let (source, _, _) = isolated_source(reader.clone());
-        source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
+        source
+            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(
             *reader.paged_room.lock().unwrap(),
             Some(Some(room)),
@@ -602,7 +603,9 @@ mod tests {
         // Room-less work (consolidation, dreams): the page is explicitly
         // pointer-scoped, not accidentally room-pinned.
         let ctx_no_room = RagContext::for_persona(persona(), 1_000_000);
-        source.deliver(&ctx_no_room, 1_000, ResolutionPreference::Raw).await;
+        source
+            .deliver(&ctx_no_room, 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(*reader.paged_room.lock().unwrap(), Some(None));
     }
 
@@ -663,11 +666,19 @@ mod tests {
             event_in(room, Some("world"), 2),
         ]));
         let (source, _, _) = isolated_source(reader);
-        let delivery = source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 2);
         assert_eq!(delivery.items[0].content, "hello");
         assert_eq!(delivery.items[1].content, "world");
-        assert_eq!(delivery.items[1].metadata.get("unread").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            delivery.items[1]
+                .metadata
+                .get("unread")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     // what this catches: the 5-message world view (#259, glass-boxed
@@ -687,7 +698,9 @@ mod tests {
         let (source, bookmarks, _) = isolated_source(reader);
         bookmarks.advance(persona(), room.as_uuid(), 20); // fully caught up
 
-        let delivery = source.deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx_in(room), 4_000, ResolutionPreference::Raw)
+            .await;
         assert!(
             delivery.items.len() > DEFAULT_GROUNDING,
             "a 4k-token budget must widen the window past the {DEFAULT_GROUNDING}-message \
@@ -713,14 +726,20 @@ mod tests {
     async fn small_budget_keeps_many_trimmed_turns_not_three_essays() {
         let room = RoomId::new();
         let long = |tag: &str| format!("{tag}: {}", "lorem ipsum dolor sit amet ".repeat(15));
-        let mut events = vec![event_in(room, Some(&long("OPERATOR your card is 0b1a6230")), 1)];
+        let mut events = vec![event_in(
+            room,
+            Some(&long("OPERATOR your card is 0b1a6230")),
+            1,
+        )];
         for (i, l) in (2..=5).enumerate() {
             events.push(event_in(room, Some(&long(&format!("peer essay {i}"))), l));
         }
         events.push(event_in(room, Some(&long("newest peer question")), 6));
         let reader = Arc::new(StubReader::new(events));
         let (source, _, _) = isolated_source(reader);
-        let delivery = source.deliver(&ctx_in(room), 400, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
+            .await;
 
         assert!(
             delivery.items.len() >= 6,
@@ -738,7 +757,11 @@ mod tests {
             newest.starts_with("newest peer question") && !newest.contains("trimmed"),
             "the turn being responded to stays verbatim: {newest:?}"
         );
-        assert!(delivery.tokens_used <= 400, "budget honored: {}", delivery.tokens_used);
+        assert!(
+            delivery.tokens_used <= 400,
+            "budget honored: {}",
+            delivery.tokens_used
+        );
     }
 
     // what this catches: THE DEAF-PERSONA FIX — when the turn's ctx has no airc_room
@@ -752,7 +775,11 @@ mod tests {
         let (source, _, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000); // airc_room = None
         let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 1, "derives the room from the transcript, not deaf");
+        assert_eq!(
+            delivery.items.len(),
+            1,
+            "derives the room from the transcript, not deaf"
+        );
         assert_eq!(delivery.items[0].content, "hi");
     }
 
@@ -788,9 +815,14 @@ mod tests {
             .unwrap();
         buffer.publish((persona(), room.as_uuid()), Arc::new(staged));
 
-        let delivery = source.deliver(&ctx_in(room), 8, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx_in(room), 8, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 1);
-        assert_eq!(delivery.items[0].content, "staged", "served the pre-staged digest, not a rebuild");
+        assert_eq!(
+            delivery.items[0].content, "staged",
+            "served the pre-staged digest, not a rebuild"
+        );
     }
 
     // what this catches: cross-persona ctx is refused (defense in depth).
@@ -801,7 +833,9 @@ mod tests {
         let (source, _, _) = isolated_source(reader);
         let mut other = RagContext::for_persona(Uuid::new_v4(), 1_000_000);
         other.substrate.airc_room = Some(room);
-        let delivery = source.deliver(&other, 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&other, 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
@@ -814,7 +848,9 @@ mod tests {
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("x"), 1)]));
         reader.set_fail(true);
         let (source, _, _) = isolated_source(reader);
-        let delivery = source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
     }
@@ -830,9 +866,14 @@ mod tests {
             event_in(room, Some("ccccc"), 3),
         ]));
         let (source, _, _) = isolated_source(reader);
-        let delivery = source.deliver(&ctx_in(room), 4, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx_in(room), 4, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 2, "two newest fit budget 4");
-        assert!(delivery.continuation.is_none(), "digest model has no continuation cursor");
+        assert!(
+            delivery.continuation.is_none(),
+            "digest model has no continuation cursor"
+        );
     }
 
     struct StubHistory {
@@ -889,11 +930,7 @@ mod tests {
         let delivery = source
             .deliver(&ctx_in(room), 400, ResolutionPreference::Raw)
             .await;
-        let texts: Vec<&str> = delivery
-            .items
-            .iter()
-            .map(|i| i.content.as_str())
-            .collect();
+        let texts: Vec<&str> = delivery.items.iter().map(|i| i.content.as_str()).collect();
         assert!(
             texts.iter().any(|t| t.contains("wordstats tests")),
             "durable history must appear in the window; got: {texts:?}"
@@ -903,10 +940,7 @@ mod tests {
             "all non-duplicate durable lines hydrate; got: {texts:?}"
         );
         assert_eq!(
-            texts
-                .iter()
-                .filter(|t| t.contains("I'm Benchy"))
-                .count(),
+            texts.iter().filter(|t| t.contains("I'm Benchy")).count(),
             1,
             "the live event and its durable copy dedup to ONE line"
         );

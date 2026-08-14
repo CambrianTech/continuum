@@ -167,7 +167,10 @@ mod tests {
         assert_eq!(parsed.command_name, "cargo/build");
         assert_eq!(parsed.duration_ms, 12345);
         assert!(!parsed.success);
-        assert_eq!(parsed.error.as_deref(), Some("cargo timed out after 300000ms"));
+        assert_eq!(
+            parsed.error.as_deref(),
+            Some("cargo timed out after 300000ms")
+        );
     }
 
     #[test]

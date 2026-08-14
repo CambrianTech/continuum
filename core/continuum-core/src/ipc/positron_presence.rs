@@ -58,9 +58,9 @@ use uuid::Uuid;
 
 use crate::ipc::positron_source::{roster_slot_from_member, AircPresenceUpdate, PRESENCE_UPDATED};
 use crate::persona::room_roster_source::AircRosterReader;
+use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::runtime::MessageBus;
 use tokio::sync::broadcast::error::RecvError;
-use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 
 /// How often the emitter re-reads the roster. Presence is Session-tier
 /// (a human-perceivable roster delta, not a sub-second signal), and the
@@ -607,9 +607,9 @@ pub fn spawn_node_presence_emitter(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use airc_lib::RoomMember;
     use airc_core::PeerId;
     use airc_lib::AircError;
+    use airc_lib::RoomMember;
     use async_trait::async_trait;
     // The module proper no longer names `SenderKind` (the coarse kind is
     // derived inside the shared `roster_slot_from_member` projection now);
@@ -684,7 +684,7 @@ mod tests {
             vec![
                 member(named, "claude", Some("win-claude")),
                 member(unnamed, "codex", None),
-                member(human, "interactive", Some("Joel")),
+                member(human, "interactive", Some("Operator")),
             ],
             Uuid::from_u128(0xa),
             "general".into(),
@@ -749,7 +749,7 @@ mod tests {
         let live = vec![crate::ipc::positron_source::roster_slot_from_card(&member(
             local,
             "interactive",
-            Some("Joel"),
+            Some("Operator"),
         ))];
         let published = union_with_directory(live.clone(), &dir);
         let ghost = published
@@ -862,7 +862,7 @@ mod tests {
     fn self_is_included_in_the_widget_roster() {
         let me = PeerId::new();
         let update = project_presence(
-            vec![member(me, "interactive", Some("Joel"))],
+            vec![member(me, "interactive", Some("Operator"))],
             Uuid::from_u128(0xb),
             "general".into(),
             &HashMap::new(),

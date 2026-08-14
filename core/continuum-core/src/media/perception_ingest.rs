@@ -186,14 +186,22 @@ mod tests {
         let compute = crate::runtime::shared_compute::global();
         let mut hashes = Vec::new();
         for viewer in [a, b] {
-            let buf = perception_registry().get(&viewer).expect("viewer got a buffer");
+            let buf = perception_registry()
+                .get(&viewer)
+                .expect("viewer got a buffer");
             let percepts = buf.current_percepts(&compute);
             assert_eq!(percepts.len(), 1, "each viewer sees the one speaker");
-            assert_eq!(percepts[0].participant, human, "keyed by the speaker identity");
+            assert_eq!(
+                percepts[0].participant, human,
+                "keyed by the speaker identity"
+            );
             hashes.push(percepts[0].content_hash.clone());
             perception_registry().remove(&viewer);
         }
-        assert_eq!(hashes[0], hashes[1], "same frame content hash across viewers (compute-once)");
+        assert_eq!(
+            hashes[0], hashes[1],
+            "same frame content hash across viewers (compute-once)"
+        );
     }
 
     // what this catches: a persona NEVER observes its own outbound avatar frame — when
@@ -205,15 +213,27 @@ mod tests {
         let other = Uuid::new_v4();
 
         // The speaker is one of the viewers (it's a persona in the call).
-        ingest().fan_out(&speaker.to_string(), &[speaker, other], jpeg(50, 40), "image/jpeg", 0);
+        ingest().fan_out(
+            &speaker.to_string(),
+            &[speaker, other],
+            jpeg(50, 40),
+            "image/jpeg",
+            0,
+        );
 
         assert!(
             perception_registry().get(&speaker).is_none(),
             "the speaker persona did not observe (and never resolved) its own buffer"
         );
         let compute = crate::runtime::shared_compute::global();
-        let other_buf = perception_registry().get(&other).expect("the other viewer saw it");
-        assert_eq!(other_buf.current_percepts(&compute).len(), 1, "the other viewer sees the speaker");
+        let other_buf = perception_registry()
+            .get(&other)
+            .expect("the other viewer saw it");
+        assert_eq!(
+            other_buf.current_percepts(&compute).len(),
+            1,
+            "the other viewer sees the speaker"
+        );
         assert_eq!(
             other_buf.current_percepts(&compute)[0].participant,
             speaker.to_string(),

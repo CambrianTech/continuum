@@ -2584,7 +2584,12 @@ mod tests {
 
         // Resettle: a ready snapshot with a NEW layout resolves the wait.
         let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
-        let waiter = tokio::spawn(await_snapshot_resettle(rx, 4, 16384, Duration::from_secs(5)));
+        let waiter = tokio::spawn(await_snapshot_resettle(
+            rx,
+            4,
+            16384,
+            Duration::from_secs(5),
+        ));
         // Transient mid-relaunch publish (not ready) must be ignored…
         let mut transitional = ServingSnapshot::empty();
         transitional.lanes = 1;
@@ -2606,7 +2611,12 @@ mod tests {
         // planner ran and held — resolves well before the (long) bound, so a
         // no-change solve pays reconcile-tick latency, never the full backstop.
         let (tx2, rx2) = tokio::sync::watch::channel(ServingSnapshot::empty());
-        let waiter2 = tokio::spawn(await_snapshot_resettle(rx2, 4, 16384, Duration::from_secs(30)));
+        let waiter2 = tokio::spawn(await_snapshot_resettle(
+            rx2,
+            4,
+            16384,
+            Duration::from_secs(30),
+        ));
         let mut same = ServingSnapshot::empty();
         same.lanes = 4;
         same.served_context_window = 16384;
@@ -2622,8 +2632,12 @@ mod tests {
 
         // Unchanged, BACKSTOP: a daemon that stops publishing ends at the bound.
         let (_tx3, rx3) = tokio::sync::watch::channel(ServingSnapshot::empty());
-        let waiter3 =
-            tokio::spawn(await_snapshot_resettle(rx3, 4, 16384, Duration::from_millis(80)));
+        let waiter3 = tokio::spawn(await_snapshot_resettle(
+            rx3,
+            4,
+            16384,
+            Duration::from_millis(80),
+        ));
         assert_eq!(waiter3.await.unwrap(), SnapshotSettle::Unchanged);
     }
 

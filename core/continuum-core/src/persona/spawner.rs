@@ -308,12 +308,8 @@ mod tests {
             assert_eq!(prof.context_length, TEST_SERVE_WINDOW);
         }
 
-        let mseries_plan = derive_spawn_plan(
-            &roster,
-            "m1_uma_8gb",
-            HwTierCategory::MSeries,
-            &registry,
-        );
+        let mseries_plan =
+            derive_spawn_plan(&roster, "m1_uma_8gb", HwTierCategory::MSeries, &registry);
         for p in &mseries_plan {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::MSeries);

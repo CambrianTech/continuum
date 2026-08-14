@@ -149,7 +149,10 @@ pub struct SocialSignals {
 
 /// Detailed gate information for diagnostics.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/GateDetails.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/GateDetails.ts"
+)]
 pub struct GateDetails {
     #[ts(optional, type = "number")]
     pub response_count: Option<u32>,
@@ -567,9 +570,7 @@ pub fn analyze_burst(
             }
         }
         CoherentInput::Other {
-            domain,
-            item_count,
-            ..
+            domain, item_count, ..
         } => {
             // Non-Chat domains drain into Other until their typed
             // views land (PR D for Audio). Cognition decides silent

@@ -1017,8 +1017,12 @@ mod tests {
                 false,
                 "assertion failed: left 0, right 2",
             );
-            let pass =
-                ExperienceRecord::from_kanban_grade(&task, "fn sum_evens…correct", true, "ALL ASSERTIONS PASSED");
+            let pass = ExperienceRecord::from_kanban_grade(
+                &task,
+                "fn sum_evens…correct",
+                true,
+                "ALL ASSERTIONS PASSED",
+            );
             append_experience(&dir, &fail).unwrap();
             // A partial write / schema drift in the middle of the stream:
             {
@@ -1032,7 +1036,11 @@ mod tests {
             append_experience(&dir, &pass).unwrap();
 
             let loaded = load_experiences(&dir);
-            assert_eq!(loaded.len(), 2, "both real records load; the corrupt line costs only itself");
+            assert_eq!(
+                loaded.len(),
+                2,
+                "both real records load; the corrupt line costs only itself"
+            );
             assert!(!loaded[0].ok && loaded[0].grade.contains("assertion failed"));
             assert_eq!(loaded[0].answer, "fn sum_evens(n:&[i32])->i32{0}");
             assert!(matches!(loaded[0].source, ExperienceSource::Eval));
@@ -1053,10 +1061,24 @@ mod tests {
                 test: Some("assert_eq!(fib(10), 55);".into()),
                 ..EvalTask::default()
             };
-            let fail = ExperienceRecord::from_kanban_grade(&task, "fn fib(n:u32)->u64{n as u64}", false, "left 10, right 55");
-            let pass = ExperienceRecord::from_kanban_grade(&task, "fn fib…", true, "ALL ASSERTIONS PASSED");
+            let fail = ExperienceRecord::from_kanban_grade(
+                &task,
+                "fn fib(n:u32)->u64{n as u64}",
+                false,
+                "left 10, right 55",
+            );
+            let pass = ExperienceRecord::from_kanban_grade(
+                &task,
+                "fn fib…",
+                true,
+                "ALL ASSERTIONS PASSED",
+            );
             let teach = salient_teach_set(&[fail, pass], &ErrorSalience);
-            assert_eq!(teach.len(), 1, "the failure is remediable; the pass teaches nothing");
+            assert_eq!(
+                teach.len(),
+                1,
+                "the failure is remediable; the pass teaches nothing"
+            );
             assert_eq!(teach[0].id, "fib");
         }
 

@@ -27,7 +27,10 @@ use super::memory_manager::GpuPriority;
 
 /// A registered GPU consumer visible to the eviction system.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/gpu/EvictableEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/EvictableEntry.ts"
+)]
 pub struct EvictableEntry {
     /// Unique identifier (e.g., "candle:llama-3.2-3b", "tts:kokoro", "embed:bge-small")
     pub id: String,

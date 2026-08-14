@@ -23,7 +23,10 @@ use super::lease::ResourceKind;
 /// human/grid-facing ("qwen3-coder-30b weights", "render target pool").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ConsumerFootprint.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ConsumerFootprint.ts"
+)]
 pub struct ConsumerFootprint {
     pub kind: ResourceKind,
     #[ts(type = "number")]
@@ -36,7 +39,10 @@ pub struct ConsumerFootprint {
 /// needs room now; `Rebalance` is housekeeping it may partially defer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ReclaimReason.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ReclaimReason.ts"
+)]
 pub enum ReclaimReason {
     Pressure,
     Rebalance,
@@ -48,7 +54,10 @@ pub enum ReclaimReason {
 /// in-flight frame / inference before releasing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ReclaimRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ReclaimRequest.ts"
+)]
 pub struct ReclaimRequest {
     pub kind: ResourceKind,
     #[ts(type = "number")]
@@ -63,7 +72,10 @@ pub struct ReclaimRequest {
 /// re-asks, it does not assume freed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ReclaimStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ReclaimStatus.ts"
+)]
 pub enum ReclaimStatus {
     Released,
     Partial,
@@ -76,7 +88,10 @@ pub enum ReclaimStatus {
 /// lease `release` lands — this is the report, the ledger mutation is separate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/resources/ReclaimOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/resources/ReclaimOutcome.ts"
+)]
 pub struct ReclaimOutcome {
     #[ts(type = "number")]
     pub freed_bytes: u64,

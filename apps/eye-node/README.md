@@ -40,7 +40,7 @@ cd apps/eye-node && npx tsx src/index.ts
 Env:
 
 - `CONTINUUM_CORE_SOCKET` — core IPC socket path or `tcp://host:port`
-  (default `/tmp/continuum-core.sock`, matching `cu`).
+  (default `/tmp/continuum-core.sock`, matching `uu`).
 - `EYE_NODE_LABEL` — provider label shown in the core's logs.
 
 **Opt-in, browserless-core principle:** not every core runs a browser. Start an

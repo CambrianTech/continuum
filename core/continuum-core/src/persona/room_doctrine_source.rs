@@ -291,7 +291,9 @@ mod tests {
             "This is a coordination room. Respond sparingly; do not chat.",
         ))));
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert_eq!(delivery.items.len(), 1);
         assert!(delivery.items[0].content.contains("Respond sparingly"));
         assert_eq!(delivery.items[0].metadata["version"], "v1abc");
@@ -304,7 +306,9 @@ mod tests {
     async fn no_doctrine_delivers_nothing() {
         let reader = Arc::new(StubReader::new(None));
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
     }
@@ -316,7 +320,9 @@ mod tests {
         let reader = Arc::new(StubReader::new(Some(card("body"))));
         reader.set_fail(true);
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
         assert!(delivery.items.is_empty());
     }
 
@@ -363,8 +369,8 @@ mod tests {
                 // A delivered block must carry real doctrine content, not
                 // just the truncation marker — else it spends tokens to
                 // say nothing.
-                let only_marker = item.content.trim_start().starts_with('…')
-                    || !item.content.contains('x');
+                let only_marker =
+                    item.content.trim_start().starts_with('…') || !item.content.contains('x');
                 assert!(
                     !only_marker,
                     "budget {budget}: delivered a content-free block: {:?}",

@@ -178,8 +178,11 @@ impl PersonaCommandInboundPump {
         // (built from this node's own key + mesh + durable watermark). A peer
         // presenting an owner-signed grant gets the conferred command past its tier
         // ceiling; absent/invalid grants fall back to tier gating.
-        let handler =
-            CommandRequestHandler::with_grant_authorizer(Arc::clone(&airc), executor, grant_authorizer);
+        let handler = CommandRequestHandler::with_grant_authorizer(
+            Arc::clone(&airc),
+            executor,
+            grant_authorizer,
+        );
         let handle = tokio::spawn(run(persona_id, airc, handler, stream));
         Ok(Self { persona_id, handle })
     }

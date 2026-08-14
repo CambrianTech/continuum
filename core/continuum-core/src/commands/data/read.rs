@@ -6,11 +6,12 @@ use crate::modules::data::DataState;
 use crate::orm::types::{DataRecord, StorageResult, UUID};
 
 /// Params for `data/read`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataReadParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataReadParams.ts"
+)]
 pub struct DataReadParams {
     /// The collection to read from (e.g. "rooms", "users", "messages").
     pub collection: String,

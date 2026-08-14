@@ -25,9 +25,7 @@ use send::ChatSend;
 
 /// The `chat/*` command objects over the module's shared late-bound executor slot.
 /// Called from [`ChatModule::commands`](crate::modules::chat::ChatModule::commands).
-pub fn command_objects(
-    executor_slot: Arc<LateBound<CommandExecutor>>,
-) -> Vec<Arc<dyn DynCommand>> {
+pub fn command_objects(executor_slot: Arc<LateBound<CommandExecutor>>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ChatPoll {
             executor_slot: executor_slot.clone(),

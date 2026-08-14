@@ -4,7 +4,7 @@
  *
  * Config (env):
  *   CONTINUUM_CORE_SOCKET  core IPC socket path or `tcp://host:port`
- *                          (default `/tmp/continuum-core.sock`, matching `cu`)
+ *                          (default `/tmp/continuum-core.sock`, matching `uu`)
  *   EYE_NODE_LABEL         provider label shown in core logs
  */
 

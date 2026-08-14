@@ -9,7 +9,10 @@ use ts_rs::TS;
 /// Model family hint for parser prioritization.
 /// When provided, the model-family-specific parser runs FIRST before generic fallbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/ModelFamily.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ModelFamily.ts"
+)]
 pub enum ModelFamily {
     /// DeepSeek v3, R1, Coder — Unicode fullwidth delimiters
     DeepSeek,

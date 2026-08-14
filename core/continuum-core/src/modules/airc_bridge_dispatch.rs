@@ -180,7 +180,10 @@ mod tests {
     fn command_directives_are_recognized_but_not_executed() {
         for action in ["rooms", "export", "activity-list", "assert-seen", "chat"] {
             let r = reply_for(action, &json!({}));
-            assert!(r.starts_with("[continuum]"), "reply must be loop-guarded: {r}");
+            assert!(
+                r.starts_with("[continuum]"),
+                "reply must be loop-guarded: {r}"
+            );
             assert!(r.contains("not executed"), "must NOT claim execution: {r}");
         }
     }
@@ -235,7 +238,9 @@ mod tests {
         let mut rx = bus.receiver();
         process_directive_event("chat:posted", &json!({ "action": "ping" }), &bus);
         assert!(
-            timeout(Duration::from_millis(150), rx.recv()).await.is_err(),
+            timeout(Duration::from_millis(150), rx.recv())
+                .await
+                .is_err(),
             "must not reply to a non-directive event"
         );
     }

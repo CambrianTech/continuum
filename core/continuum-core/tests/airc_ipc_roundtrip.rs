@@ -126,11 +126,8 @@ async fn aircipctransport_round_trips_against_real_substrate_command_handler() {
 
     // peer_a = substrate; peer_b = client.
     let handler = build_handler(Arc::clone(loop_back.peer_a()));
-    let responder = spawn_real_substrate_responder(
-        Arc::clone(&handler),
-        Arc::clone(loop_back.peer_a()),
-    )
-    .await;
+    let responder =
+        spawn_real_substrate_responder(Arc::clone(&handler), Arc::clone(loop_back.peer_a())).await;
 
     // Give the responder time to install its subscribe filter.
     tokio::time::sleep(Duration::from_millis(50)).await;

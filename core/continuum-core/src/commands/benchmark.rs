@@ -532,7 +532,6 @@ impl ActionCommand for BenchmarkRecord {
 }
 crate::register_stateless_command!(BenchmarkRecord);
 
-
 // ───────────────────────── benchmark/dispatch ─────────────────────
 //
 // #346 (Joel, 2026-08-07): benchmarks delivered as WORK CARDS — measured for
@@ -622,7 +621,11 @@ pub struct BenchmarkDispatchResult {
 /// for the citizen scanning the board.
 pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> String {
     let gist: String = prompt.chars().take(60).collect();
-    let ellipsis = if prompt.chars().count() > 60 { "…" } else { "" };
+    let ellipsis = if prompt.chars().count() > 60 {
+        "…"
+    } else {
+        ""
+    };
     format!("[bench {bench}] {task_id}: {gist}{ellipsis}")
 }
 
@@ -633,7 +636,11 @@ pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> S
 /// `dod_shell` are legitimately visible: real work has a visible definition
 /// of done.
 pub(crate) fn dispatch_card_body(bench: &str, t: &crate::cognition::eval::EvalTask) -> String {
-    let mut body = format!("benchmark: {bench}\ntask: {}\n\n{}\n", t.id, t.prompt.trim());
+    let mut body = format!(
+        "benchmark: {bench}\ntask: {}\n\n{}\n",
+        t.id,
+        t.prompt.trim()
+    );
     if let Some(f) = &t.solution_file {
         body.push_str(&format!(
             "\nWrite your solution to `{f}` in your workspace (code/write)."
@@ -812,7 +819,10 @@ impl ActionCommand for BenchmarkDispatch {
             if let Some(wanted) = p.instances.as_ref().filter(|w| !w.is_empty()) {
                 let mut picked: Vec<crate::cognition::swe_bench::SweInstance> = Vec::new();
                 for want in wanted {
-                    match instances.iter().position(|i| i.instance_id.contains(want.as_str())) {
+                    match instances
+                        .iter()
+                        .position(|i| i.instance_id.contains(want.as_str()))
+                    {
                         Some(idx) => picked.push(instances.remove(idx)),
                         None => {
                             return Err(CommandError::Invalid(format!(
@@ -854,8 +864,10 @@ impl ActionCommand for BenchmarkDispatch {
                     let t: EvalTask = serde_json::from_str(l).map_err(|e| {
                         CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
                     })?;
-                    let solution_file =
-                        t.solution_file.clone().unwrap_or_else(|| format!("{}.rs", t.id));
+                    let solution_file = t
+                        .solution_file
+                        .clone()
+                        .unwrap_or_else(|| format!("{}.rs", t.id));
                     Ok(PreparedCard {
                         title: dispatch_card_title(spec.name, &t.id, &t.prompt),
                         body: dispatch_card_body(spec.name, &t),
@@ -1266,103 +1278,99 @@ pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError>
 /// (fresh clone at base_commit, held-out tests, experience-stream write) as
 /// the operator verb. One grader, never two.
 pub(crate) async fn grade_swe(p: SweGradeParams) -> Result<SweGradeResult, CommandError> {
-        let dataset = p
-            .dataset
-            .clone()
-            .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
-        let rows = swe_bench::load_dataset(&dataset)
-            .await
-            .map_err(CommandError::Internal)?;
-        let instance = rows
-            .into_iter()
-            .find(|r| r.instance_id == p.instance)
-            .ok_or_else(|| {
-                CommandError::NotFound(format!("{} not found in {dataset}", p.instance))
-            })?;
+    let dataset = p
+        .dataset
+        .clone()
+        .unwrap_or_else(|| "princeton-nlp/SWE-bench_Lite".to_string());
+    let rows = swe_bench::load_dataset(&dataset)
+        .await
+        .map_err(CommandError::Internal)?;
+    let instance = rows
+        .into_iter()
+        .find(|r| r.instance_id == p.instance)
+        .ok_or_else(|| CommandError::NotFound(format!("{} not found in {dataset}", p.instance)))?;
 
-        // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
-        // clone below — where the solver worked is never where the score is taken.
-        let candidate: Option<String> = if p.gold.unwrap_or(false) {
-            Some(instance.patch.clone())
-        } else if let Some(ws) = p.workspace.as_ref() {
-            Some(workspace_candidate_diff(ws)?)
-        } else {
-            p.patch.clone()
-        };
-        let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
+    // Resolve the candidate patch. A workspace's diff is READ here but graded in a fresh
+    // clone below — where the solver worked is never where the score is taken.
+    let candidate: Option<String> = if p.gold.unwrap_or(false) {
+        Some(instance.patch.clone())
+    } else if let Some(ws) = p.workspace.as_ref() {
+        Some(workspace_candidate_diff(ws)?)
+    } else {
+        p.patch.clone()
+    };
+    let patch_bytes = candidate.as_ref().map(|c| c.len()).unwrap_or(0);
 
-        let work = swe_bench::swe_cache_dir()
-            .join("work")
-            .join(&instance.instance_id);
-        let repo = work.join("repo");
-        let _ = std::fs::create_dir_all(&work);
-        if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
-            return Ok(SweGradeResult::from((
-                SweVerdict {
-                    instance_id: instance.instance_id,
-                    error: Some(e),
-                    ..Default::default()
-                },
-                patch_bytes,
-            )));
-        }
-        let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
+    let work = swe_bench::swe_cache_dir()
+        .join("work")
+        .join(&instance.instance_id);
+    let repo = work.join("repo");
+    let _ = std::fs::create_dir_all(&work);
+    if let Err(e) = swe_bench::clone_at(&instance, &repo).await {
+        return Ok(SweGradeResult::from((
+            SweVerdict {
+                instance_id: instance.instance_id,
+                error: Some(e),
+                ..Default::default()
+            },
+            patch_bytes,
+        )));
+    }
+    let verdict = swe_bench::grade(&instance, &repo, candidate.as_deref()).await;
 
-        // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
-        // append it to her experience stream. Only her: the gold/raw-patch arms are
-        // harness plumbing, not experience. And only a REAL verdict: an errored run
-        // is an ABSENCE (harness fault), and teaching from a harness failure would
-        // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
-        if verdict.error.is_none() {
-            if let Some(peer_dir) = p
-                .workspace
-                .as_ref()
-                .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
-            {
-                let task = crate::cognition::eval::EvalTask {
-                    id: instance.instance_id.clone(),
-                    prompt: instance.problem_statement.clone(),
-                    ..Default::default()
-                };
-                // Name the failures — a count is a score, a name is a lesson (Joel,
-                // 2026-08-08). "PASS_TO_PASS 6/11" told Atlas nothing; "your change
-                // broke test_arguments" is what a human reviewer would have said.
-                let broke = if verdict.failed_tests.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — failing: {}", verdict.failed_tests.join(", "))
-                };
-                let detail = format!(
-                    "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}{}",
-                    instance.instance_id,
-                    verdict.resolved,
-                    verdict.f2p_passed,
-                    verdict.f2p_total,
-                    verdict.p2p_passed,
-                    verdict.p2p_total,
-                    broke
+    // #319: a WORKSPACE grade is a citizen's lived, objectively judged work —
+    // append it to her experience stream. Only her: the gold/raw-patch arms are
+    // harness plumbing, not experience. And only a REAL verdict: an errored run
+    // is an ABSENCE (harness fault), and teaching from a harness failure would
+    // corrupt the reward signal (`an_errored_verdict_is_an_absence_not_a_zero`).
+    if verdict.error.is_none() {
+        if let Some(peer_dir) = p
+            .workspace
+            .as_ref()
+            .and_then(|ws| citizen_peer_dir_of(std::path::Path::new(ws)))
+        {
+            let task = crate::cognition::eval::EvalTask {
+                id: instance.instance_id.clone(),
+                prompt: instance.problem_statement.clone(),
+                ..Default::default()
+            };
+            // Name the failures — a count is a score, a name is a lesson (Joel,
+            // 2026-08-08). "PASS_TO_PASS 6/11" told Atlas nothing; "your change
+            // broke test_arguments" is what a human reviewer would have said.
+            let broke = if verdict.failed_tests.is_empty() {
+                String::new()
+            } else {
+                format!(" — failing: {}", verdict.failed_tests.join(", "))
+            };
+            let detail = format!(
+                "swe-bench {}: resolved={} FAIL_TO_PASS {}/{} PASS_TO_PASS {}/{}{}",
+                instance.instance_id,
+                verdict.resolved,
+                verdict.f2p_passed,
+                verdict.f2p_total,
+                verdict.p2p_passed,
+                verdict.p2p_total,
+                broke
+            );
+            let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
+                &task,
+                candidate.as_deref().unwrap_or(""),
+                verdict.resolved,
+                &detail,
+            );
+            if let Err(e) = crate::cognition::experience::append_experience(&peer_dir, &episode) {
+                tracing::warn!(
+                    workspace = ?p.workspace,
+                    error = %e,
+                    "swe-grade outcome could not be appended to the experience \
+                     stream — the verdict stands, but this lesson was LOST"
                 );
-                let episode = crate::cognition::experience::ExperienceRecord::from_kanban_grade(
-                    &task,
-                    candidate.as_deref().unwrap_or(""),
-                    verdict.resolved,
-                    &detail,
-                );
-                if let Err(e) =
-                    crate::cognition::experience::append_experience(&peer_dir, &episode)
-                {
-                    tracing::warn!(
-                        workspace = ?p.workspace,
-                        error = %e,
-                        "swe-grade outcome could not be appended to the experience \
-                         stream — the verdict stands, but this lesson was LOST"
-                    );
-                }
             }
         }
-
-        Ok(SweGradeResult::from((verdict, patch_bytes)))
     }
+
+    Ok(SweGradeResult::from((verdict, patch_bytes)))
+}
 
 /// The citizen peer dir owning a workspace path: the `<...>/citizens/peers/<uuid>`
 /// prefix of `path`, or `None` when the path is not inside a citizen's home (an
@@ -1513,7 +1521,11 @@ pub(crate) fn resolve_solver_dir(
     })?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.to_ascii_lowercase().replace('-', "").starts_with(&needle) {
+        if name
+            .to_ascii_lowercase()
+            .replace('-', "")
+            .starts_with(&needle)
+        {
             matches.push((name, entry.path()));
         }
     }
@@ -1747,7 +1759,11 @@ mod swe_setup_tests {
             let card = fold_run_card("r3", Some(&failed), None, ancient, now);
             assert_eq!(card.phase, "failed");
             assert!(!card.stalled);
-            assert!(card.infra_error.as_deref().unwrap_or("").contains("deadline"));
+            assert!(card
+                .infra_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("deadline"));
         }
 
         // what this catches: fresh activity reads `active` — the stall window
@@ -1777,6 +1793,55 @@ mod swe_setup_tests {
             assert!(!card.stalled);
             assert_eq!(card.solver.as_deref(), Some("atlas-uuid"));
             assert_eq!(card.resolved, None, "no grade yet — never a verdict");
+        }
+
+        // what this catches: an UNGRADEABLE grade must fold as an ABSENCE, never
+        // a capability zero. `SweGradeResult.error` documents the contract ("an
+        // ABSENCE, not a zero, and must never be tallied as a failed attempt")
+        // and the grader proves it — for the env class it re-runs the PRISTINE
+        // tree before declaring one. This projection read only the RESULT's
+        // error, so a grade-level fault folded `resolved: false` + phase
+        // `failed`, indistinguishable from a citizen who tried and lost.
+        // Measured 2026-08-13 on sympy__sympy-11400: p2p 0/29 on the pristine
+        // tree, and 8 of 36 instances graded UNGRADEABLE on that box — the
+        // denominator of every rate read off this projection was poisoned.
+        #[test]
+        fn an_ungradeable_grade_folds_as_absence_never_a_capability_zero() {
+            let now: u64 = 10_000_000_000;
+            let fresh = now - 5_000;
+            let result = json!({"persona_id": "asha-uuid", "acts": 12,
+                                "instance": "sympy__sympy-11400", "attempt": 1});
+            let ungradeable = json!({
+                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": false,
+                "passToPassPassed": 0, "passToPassTotal": 29, "patchBytes": 402,
+                "error": "UNGRADEABLE — PASS_TO_PASS passes 0 of 29 on the PRISTINE tree: \
+                          the suite does not run in this environment, so every score from \
+                          this tree is an env fault, never a capability verdict."});
+            let card = fold_run_card("r6", Some(&result), Some(&ungradeable), fresh, now);
+            assert_eq!(
+                card.resolved, None,
+                "an env fault is an ABSENCE — `Some(false)` is the lie that reads as a \
+                 citizen who tried and failed"
+            );
+            assert_eq!(card.phase, "ungradeable", "never `failed`, never `resolved`");
+            assert!(
+                card.infra_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("UNGRADEABLE")),
+                "the REASON rides with the absence — one field means 'no valid verdict, \
+                 and why', fed by both the result's error and the grade's"
+            );
+
+            // Positive control: the SAME shape with no grade error is a real
+            // verdict and must still fold as a capability zero, or this test
+            // would pass by simply never reporting failure.
+            let honest_zero = json!({
+                "instance": "sympy__sympy-11400", "resolved": false, "gateOk": true,
+                "passToPassPassed": 29, "passToPassTotal": 29, "patchBytes": 402});
+            let card = fold_run_card("r7", Some(&result), Some(&honest_zero), fresh, now);
+            assert_eq!(card.resolved, Some(false), "a graded miss IS a zero");
+            assert_ne!(card.phase, "ungradeable");
+            assert!(card.infra_error.is_none());
         }
 
         // what this catches: the board facts (#329) — instance + attempt N/M
@@ -1820,7 +1885,10 @@ mod swe_setup_tests {
 const RUN_STALL_WINDOW_SECS: u64 = 20 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsParams.ts"
+)]
 pub struct BenchmarkRunsParams {
     /// Filter to one run. Omit → the newest `limit` runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1837,7 +1905,10 @@ pub struct BenchmarkRunsParams {
 /// liveness Monitor all fold THIS, never bespoke file scraping
 /// (docs/architecture/ACADEMY-EXAM-ROOM-POSITRONIC-SURFACE.md §5.2).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchRunCard.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchRunCard.ts"
+)]
 pub struct BenchRunCard {
     pub run_id: String,
     /// Instance under test ("sympy__sympy-24066") — from the result ledger's
@@ -1895,7 +1966,10 @@ pub struct BenchRunCard {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/benchmark/BenchmarkRunsResult.ts"
+)]
 pub struct BenchmarkRunsResult {
     pub runs: Vec<BenchRunCard>,
 }
@@ -1910,19 +1984,49 @@ fn fold_run_card(
     now_ms: u64,
 ) -> BenchRunCard {
     let s = |v: Option<&serde_json::Value>, k: &str| {
-        v.and_then(|v| v.get(k)).and_then(|x| x.as_str()).map(String::from)
+        v.and_then(|v| v.get(k))
+            .and_then(|x| x.as_str())
+            .map(String::from)
     };
     let n = |v: Option<&serde_json::Value>, k: &str| {
-        v.and_then(|v| v.get(k)).and_then(|x| x.as_u64()).map(|x| x as u32)
+        v.and_then(|v| v.get(k))
+            .and_then(|x| x.as_u64())
+            .map(|x| x as u32)
     };
     let arr = |v: Option<&serde_json::Value>, k: &str| -> Vec<String> {
         v.and_then(|v| v.get(k))
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|e| e.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
-    let resolved = grade.and_then(|g| g.get("resolved")).and_then(|x| x.as_bool());
-    let infra_error = s(result, "infra_error").or_else(|| s(result, "error"));
+    // ABSENCE vs ZERO, on the board. A grade carrying `error` is a harness/env
+    // fault the grader PROVED — for the env class it re-runs the PRISTINE tree
+    // first, so a genuinely broken patch is never mislabelled — and
+    // `SweGradeResult.error` documents the contract in its own doc comment: "a
+    // result with `error` is an ABSENCE, not a zero, and must never be tallied
+    // as a failed attempt." This projection honoured that for the RESULT's error
+    // and ignored the GRADE's, so an env fault folded as `resolved: false` +
+    // phase `failed` — indistinguishable from a citizen who tried and lost.
+    // Measured 2026-08-13: 8 of 36 instances (22%) grade UNGRADEABLE on this box.
+    // `infra_error` already means "no valid verdict, and why", so it takes both
+    // sources rather than growing a second field, and `resolved` returns to None
+    // — the same "no verdict" the pre-grade card carries, because that is the truth.
+    let grade_error = s(grade, "error");
+    let ungradeable = grade_error.is_some();
+    let resolved = if ungradeable {
+        None
+    } else {
+        grade
+            .and_then(|g| g.get("resolved"))
+            .and_then(|x| x.as_bool())
+    };
+    let infra_error = s(result, "infra_error")
+        .or_else(|| s(result, "error"))
+        .or(grade_error);
     let failed_marker = result
         .and_then(|r| r.get("failed"))
         .and_then(|x| x.as_bool())
@@ -1930,6 +2034,10 @@ fn fold_run_card(
     let age_secs = now_ms.saturating_sub(last_activity_ms) / 1000;
     let phase = if resolved == Some(true) {
         "resolved"
+    } else if ungradeable {
+        // Ahead of `failed`: a run can carry both a failed marker and an
+        // ungradeable grade, and the absence is the more truthful of the two.
+        "ungradeable"
     } else if failed_marker {
         "failed"
     } else if age_secs < RUN_STALL_WINDOW_SECS {
@@ -1937,11 +2045,12 @@ fn fold_run_card(
     } else {
         "quiet"
     };
-    let ratio = |g: Option<&serde_json::Value>, passed: &str, total: &str| {
-        match (n(g, passed), n(g, total)) {
-            (Some(p), Some(t)) => Some(format!("{p}/{t}")),
-            _ => None,
-        }
+    let ratio = |g: Option<&serde_json::Value>, passed: &str, total: &str| match (
+        n(g, passed),
+        n(g, total),
+    ) {
+        (Some(p), Some(t)) => Some(format!("{p}/{t}")),
+        _ => None,
     };
     BenchRunCard {
         run_id: run_id.to_string(),
@@ -1982,7 +2091,8 @@ impl ActionCommand for BenchmarkRuns {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "The benchmark RunProjection: every agent/solve run's live card — phase \
-         (active/quiet/resolved/failed), last-activity age, stall flag, acts, grade summary, \
+         (active/quiet/resolved/failed/ungradeable), last-activity age, stall flag, acts, \
+         grade summary, \
          investigation trail — folded from the run ledgers. ONE projection for every consumer: \
          the exam-room tab bar, a teacher persona's grounding, and the operator's liveness \
          monitor all read THIS instead of scraping files. `quiet` (stalled=true) is the shape \
@@ -2021,8 +2131,7 @@ pub(crate) fn scan_run_cards(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let mut cards: Vec<BenchRunCard> = Vec::new();
-    let entries =
-        std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
+    let entries = std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         let Some(run_id) = name
@@ -2043,7 +2152,9 @@ pub(crate) fn scan_run_cards(
             }
         }
         let read_json = |p: &std::path::Path| -> Option<serde_json::Value> {
-            std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok())
+            std::fs::read_to_string(p)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
         };
         let mtime_ms = |p: &std::path::Path| -> Option<u64> {
             std::fs::metadata(p)

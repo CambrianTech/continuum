@@ -257,12 +257,11 @@ pub async fn read_seed(path: &Path) -> Result<PersonaSeedFile, PersonaSeedError>
             });
         }
     };
-    let seed: PersonaSeedFile = serde_json::from_slice(&bytes).map_err(|e| {
-        PersonaSeedError::Malformed {
+    let seed: PersonaSeedFile =
+        serde_json::from_slice(&bytes).map_err(|e| PersonaSeedError::Malformed {
             path: path.to_path_buf(),
             source: e,
-        }
-    })?;
+        })?;
     Ok(seed)
 }
 
@@ -296,16 +295,16 @@ pub async fn write_seed_atomic(
             "seed path must have a parent directory",
         ),
     })?;
-    let filename = path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .ok_or_else(|| PersonaSeedError::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "seed path must have a UTF-8 file name",
-            ),
-        })?;
+    let filename =
+        path.file_name()
+            .and_then(|f| f.to_str())
+            .ok_or_else(|| PersonaSeedError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "seed path must have a UTF-8 file name",
+                ),
+            })?;
     let tmp_path = parent.join(format!("{filename}.tmp"));
 
     // Ensure parent directory exists.
@@ -324,12 +323,13 @@ pub async fn write_seed_atomic(
     // driven (continuum #1507 finding 4); substrate-is-a-good-
     // citizen "reliable" non-negotiable.
     use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .map_err(|source| PersonaSeedError::Io {
-            path: tmp_path.clone(),
-            source,
-        })?;
+    let mut file =
+        tokio::fs::File::create(&tmp_path)
+            .await
+            .map_err(|source| PersonaSeedError::Io {
+                path: tmp_path.clone(),
+                source,
+            })?;
     file.write_all(&json)
         .await
         .map_err(|source| PersonaSeedError::Io {
@@ -357,16 +357,18 @@ pub async fn write_seed_atomic(
     // rename happened in-memory but may not be on disk), per
     // every-error-is-an-opportunity-to-battle-harden — failure to
     // durably persist is signal, not noise.
-    let dir = tokio::fs::File::open(parent).await.map_err(|source| {
-        PersonaSeedError::Io {
+    let dir = tokio::fs::File::open(parent)
+        .await
+        .map_err(|source| PersonaSeedError::Io {
             path: parent.to_path_buf(),
             source,
-        }
-    })?;
-    dir.sync_all().await.map_err(|source| PersonaSeedError::Io {
-        path: parent.to_path_buf(),
-        source,
-    })?;
+        })?;
+    dir.sync_all()
+        .await
+        .map_err(|source| PersonaSeedError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
 
     Ok(())
 }
@@ -464,9 +466,15 @@ mod tests {
         write_seed_atomic(&path, &seed).await.unwrap();
 
         // A later spawn calls ensure_seed (a full rewrite) — the pin must survive.
-        ensure_seed(&path, pid, "Pax", 9_999_999_999_999).await.unwrap();
+        ensure_seed(&path, pid, "Pax", 9_999_999_999_999)
+            .await
+            .unwrap();
         let after = read_seed(&path).await.unwrap();
-        assert_eq!(after.avatar_vrm(), Some("asha.vrm"), "pin clobbered by ensure_seed");
+        assert_eq!(
+            after.avatar_vrm(),
+            Some("asha.vrm"),
+            "pin clobbered by ensure_seed"
+        );
         // And the original birth time is preserved (ensure_seed doesn't reset it).
         assert_eq!(after.created_at_ms(), 1_717_200_000_000);
     }
@@ -491,7 +499,11 @@ mod tests {
         let read = read_seed(&path).await.unwrap();
         assert_eq!(read.persona_id(), id);
         assert_eq!(read.agent_name(), "Asha");
-        assert_eq!(read.created_at_ms(), 4242, "no prior seed → fallback is birth time");
+        assert_eq!(
+            read.created_at_ms(),
+            4242,
+            "no prior seed → fallback is birth time"
+        );
     }
 
     // what this catches: re-running ensure_seed on an EXISTING seed PRESERVES the
@@ -507,7 +519,11 @@ mod tests {
         // Second boot: a different fallback, but the original 1000 must survive.
         ensure_seed(&path, id, "Asha", 9_999_999).await.unwrap();
         let read = read_seed(&path).await.unwrap();
-        assert_eq!(read.created_at_ms(), 1000, "birth time is stable across resumes");
+        assert_eq!(
+            read.created_at_ms(),
+            1000,
+            "birth time is stable across resumes"
+        );
         assert_eq!(read.persona_id(), id);
     }
 
@@ -517,12 +533,18 @@ mod tests {
     async fn ensure_seed_heals_corrupt_seed() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("seed.json");
-        tokio::fs::write(&path, b"definitely not json").await.unwrap();
+        tokio::fs::write(&path, b"definitely not json")
+            .await
+            .unwrap();
         let id = Uuid::new_v4();
         ensure_seed(&path, id, "Asha", 5555).await.unwrap();
         let read = read_seed(&path).await.unwrap();
         assert_eq!(read.persona_id(), id);
-        assert_eq!(read.created_at_ms(), 5555, "corrupt seed's timestamp is untrusted → fallback");
+        assert_eq!(
+            read.created_at_ms(),
+            5555,
+            "corrupt seed's timestamp is untrusted → fallback"
+        );
     }
 
     // what this catches (#199 migration a): a v1 seed UPGRADES to v2 on the next
@@ -547,13 +569,29 @@ mod tests {
         };
         write_seed_atomic(&path, &v1).await.unwrap();
 
-        ensure_seed(&path, pid, "Asha", 9_999_999_999_999).await.unwrap();
+        ensure_seed(&path, pid, "Asha", 9_999_999_999_999)
+            .await
+            .unwrap();
         let after = read_seed(&path).await.unwrap();
-        assert!(matches!(after, PersonaSeedFile::V2 { .. }), "v1 must upgrade to v2");
+        assert!(
+            matches!(after, PersonaSeedFile::V2 { .. }),
+            "v1 must upgrade to v2"
+        );
         let card = after.card();
-        assert_eq!(card.gender, AvatarGender::Female, "gender must NOT shift on upgrade");
-        assert_eq!(card.created_at_ms, 1_717_200_000_000, "birth time preserved");
-        assert_eq!(card.avatar_vrm.as_deref(), Some("asha.vrm"), "pinned face preserved");
+        assert_eq!(
+            card.gender,
+            AvatarGender::Female,
+            "gender must NOT shift on upgrade"
+        );
+        assert_eq!(
+            card.created_at_ms, 1_717_200_000_000,
+            "birth time preserved"
+        );
+        assert_eq!(
+            card.avatar_vrm.as_deref(),
+            Some("asha.vrm"),
+            "pinned face preserved"
+        );
         assert_eq!(card.voice_seed, pid.to_string(), "voice seeds on identity");
     }
 
@@ -592,7 +630,11 @@ mod tests {
             AvatarGender::Female,
             "a stored v2 gender must be preserved, not re-derived from the name"
         );
-        assert_eq!(after.created_at_ms(), 500, "birth time preserved on v2 respawn");
+        assert_eq!(
+            after.created_at_ms(),
+            500,
+            "birth time preserved on v2 respawn"
+        );
     }
 
     // what this catches: from_card → write → read → card() is a lossless round-trip,
@@ -603,9 +645,15 @@ mod tests {
         let path = temp.path().join("seed.json");
         let pid = Uuid::new_v4();
         let card = PersonaCard::genesis(pid, "Maya", 4242, Some("maya.vrm".to_string()));
-        write_seed_atomic(&path, &PersonaSeedFile::from_card(&card)).await.unwrap();
+        write_seed_atomic(&path, &PersonaSeedFile::from_card(&card))
+            .await
+            .unwrap();
         let read = read_seed(&path).await.unwrap();
-        assert_eq!(read.card(), card, "card must survive the disk round-trip intact");
+        assert_eq!(
+            read.card(),
+            card,
+            "card must survive the disk round-trip intact"
+        );
     }
 
     #[tokio::test]
@@ -616,7 +664,10 @@ mod tests {
             .await
             .unwrap();
         let err = read_seed(&path).await.unwrap_err();
-        assert!(matches!(err, PersonaSeedError::Malformed { .. }), "got {err:?}");
+        assert!(
+            matches!(err, PersonaSeedError::Malformed { .. }),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

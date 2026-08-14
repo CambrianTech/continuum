@@ -49,7 +49,10 @@ pub(crate) const MAX_TIMEOUT_SECS: u64 = 1800;
 /// One compiler diagnostic, flattened from cargo's `--message-format=json` stream
 /// into the shape a mind actually acts on: what went wrong, and where.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/code/CargoDiagnostic.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/code/CargoDiagnostic.ts"
+)]
 pub struct CargoDiagnostic {
     /// `"error"` or `"warning"` (notes/help are folded into `rendered`, not surfaced
     /// as standalone diagnostics).
@@ -143,30 +146,58 @@ pub(crate) fn parse_diagnostics(stdout: &str) -> Vec<CargoDiagnostic> {
         if v.get("reason").and_then(|r| r.as_str()) != Some("compiler-message") {
             continue;
         }
-        let Some(msg) = v.get("message") else { continue };
-        let level = msg.get("level").and_then(|l| l.as_str()).unwrap_or("").to_string();
+        let Some(msg) = v.get("message") else {
+            continue;
+        };
+        let level = msg
+            .get("level")
+            .and_then(|l| l.as_str())
+            .unwrap_or("")
+            .to_string();
         if level != "error" && level != "warning" {
             continue;
         }
-        let message = msg.get("message").and_then(|m| m.as_str()).unwrap_or_default().to_string();
-        let rendered = msg.get("rendered").and_then(|m| m.as_str()).unwrap_or_default().to_string();
+        let message = msg
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let rendered = msg
+            .get("rendered")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default()
+            .to_string();
         let (file, line_no) = msg
             .get("spans")
             .and_then(|s| s.as_array())
             .and_then(|spans| {
                 spans
                     .iter()
-                    .find(|sp| sp.get("is_primary").and_then(|b| b.as_bool()).unwrap_or(false))
+                    .find(|sp| {
+                        sp.get("is_primary")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false)
+                    })
                     .or_else(|| spans.first())
             })
             .map(|sp| {
                 (
-                    sp.get("file_name").and_then(|f| f.as_str()).map(String::from),
-                    sp.get("line_start").and_then(|l| l.as_u64()).map(|n| n as u32),
+                    sp.get("file_name")
+                        .and_then(|f| f.as_str())
+                        .map(String::from),
+                    sp.get("line_start")
+                        .and_then(|l| l.as_u64())
+                        .map(|n| n as u32),
                 )
             })
             .unwrap_or((None, None));
-        diags.push(CargoDiagnostic { level, message, file, line: line_no, rendered });
+        diags.push(CargoDiagnostic {
+            level,
+            message,
+            file,
+            line: line_no,
+            rendered,
+        });
     }
     diags
 }
@@ -210,7 +241,10 @@ pub(crate) fn parse_test_summary(stdout: &str) -> TestSummary {
                     }
                 }
             }
-        } else if let Some(name) = line.strip_prefix("test ").and_then(|r| r.strip_suffix(" ... FAILED")) {
+        } else if let Some(name) = line
+            .strip_prefix("test ")
+            .and_then(|r| r.strip_suffix(" ... FAILED"))
+        {
             // A failed test's name line — distinct from the summary; capture it so the
             // persona is handed WHICH test broke, not just a count.
             s.failures.push(name.trim().to_string());
@@ -224,7 +258,9 @@ pub(crate) fn parse_test_summary(stdout: &str) -> TestSummary {
 /// caller's `Arc<CodeState>`.
 pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(CargoCheck { state: state.clone() }),
+        Arc::new(CargoCheck {
+            state: state.clone(),
+        }),
         Arc::new(CargoTest { state }),
     ]
 }

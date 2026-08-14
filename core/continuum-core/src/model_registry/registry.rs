@@ -370,7 +370,9 @@ mod tests {
                 .expect("forged qwen3.5 in catalog");
             // Pin a stale path that does not exist; resolution must fall
             // through to the HF cache discovered via gguf_hint.
-            forged.gguf_local_path = Some(std::path::PathBuf::from("~/missing/docker/bundle/model.gguf"));
+            forged.gguf_local_path = Some(std::path::PathBuf::from(
+                "~/missing/docker/bundle/model.gguf",
+            ));
 
             let reg = Registry::from_catalog(vec![forged], catalog::providers())
                 .expect("registry should load");
@@ -407,8 +409,8 @@ mod tests {
                 "coder-14b catalog spec must have no hardcoded gguf_local_path"
             );
 
-            let reg = Registry::from_catalog(vec![spec], catalog::providers())
-                .expect("registry loads");
+            let reg =
+                Registry::from_catalog(vec![spec], catalog::providers()).expect("registry loads");
             let model = reg
                 .model("continuum-ai/qwen2.5-coder-14b-instruct-GGUF")
                 .expect("coder-14b registered");

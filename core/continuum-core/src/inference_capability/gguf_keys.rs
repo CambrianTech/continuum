@@ -83,7 +83,10 @@ pub fn block_count(ct: &Content, arch: &str) -> Option<u32> {
 /// A zero in this array is also the honest, name-free marker of a GDN/SSM
 /// hybrid whose fused ops cannot span CPU/GPU buffers (5090 issue 3, #238).
 pub fn attention_head_count_kv_per_layer(ct: &Content, arch: &str) -> Option<Vec<u32>> {
-    match ct.metadata.get(&format!("{arch}.attention.head_count_kv"))? {
+    match ct
+        .metadata
+        .get(&format!("{arch}.attention.head_count_kv"))?
+    {
         Value::Array(items) => items.iter().map(|v| v.to_u32().ok()).collect(),
         _ => None,
     }

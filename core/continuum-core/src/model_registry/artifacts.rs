@@ -91,9 +91,7 @@ fn find_mmproj_beside(dir: &Path) -> Option<PathBuf> {
 /// reinterpreted as "the id is already an HF repo".
 pub fn resolve_hf_source_for_model_id(model_id: &str) -> Result<String, String> {
     let registry = crate::model_registry::try_global().ok_or_else(|| {
-        format!(
-            "cannot resolve hf_source for '{model_id}': model registry not initialized"
-        )
+        format!("cannot resolve hf_source for '{model_id}': model registry not initialized")
     })?;
     let model = registry.model(model_id).ok_or_else(|| {
         format!(
@@ -294,7 +292,8 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
     }
 
     let repo_name = model_id.split('/').next_back()?;
-    let wanted: std::collections::HashSet<String> = identity_tokens(repo_name).into_iter().collect();
+    let wanted: std::collections::HashSet<String> =
+        identity_tokens(repo_name).into_iter().collect();
     if wanted.is_empty() {
         return None;
     }
@@ -316,7 +315,10 @@ fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
             continue;
         }
         let overlap = have.len();
-        if best.as_ref().is_none_or(|(best_overlap, _)| overlap > *best_overlap) {
+        if best
+            .as_ref()
+            .is_none_or(|(best_overlap, _)| overlap > *best_overlap)
+        {
             best = Some((overlap, path));
         }
     }
@@ -626,7 +628,10 @@ mod tests {
 
             let mut m = model("qwen-vl", None, None);
             m.mmproj_local_path = Some(mmproj.clone());
-            assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
+            assert_eq!(
+                resolve_mmproj_for_model(&m).as_deref(),
+                Some(mmproj.as_path())
+            );
 
             // Declared but not on disk, and no GGUF resolves (empty HOME) → None
             // (serving warns TEXT-ONLY, never fakes sight).
@@ -670,7 +675,10 @@ mod tests {
 
             // Tier 1 still wins when a declared projector is actually present.
             m.mmproj_local_path = Some(mmproj.clone());
-            assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
+            assert_eq!(
+                resolve_mmproj_for_model(&m).as_deref(),
+                Some(mmproj.as_path())
+            );
         });
     }
 
@@ -729,11 +737,17 @@ mod tests {
             write_empty_gguf(&d.join("model-Q4_K_M.gguf"));
         }
 
-        let resolved =
-            find_model_dir_in_root("Continuum/qwen3-coder-30b-a3b-compacted-19b-256k", root.path());
+        let resolved = find_model_dir_in_root(
+            "Continuum/qwen3-coder-30b-a3b-compacted-19b-256k",
+            root.path(),
+        );
         assert_eq!(
             resolved.as_deref(),
-            Some(root.path().join("qwen3-coder-30b-a3b-compacted-19b").as_path()),
+            Some(
+                root.path()
+                    .join("qwen3-coder-30b-a3b-compacted-19b")
+                    .as_path()
+            ),
             "19b request must select the 19b dir, not the 32b sibling"
         );
 
@@ -746,6 +760,9 @@ mod tests {
 
         // A size the request does not name has no subset dir → no false match.
         let absent = find_model_dir_in_root("Continuum/qwen3-coder-70b", root.path());
-        assert_eq!(absent, None, "no 70b dir exists; must not match a 32b/19b sibling");
+        assert_eq!(
+            absent, None,
+            "no 70b dir exists; must not match a 32b/19b sibling"
+        );
     }
 }

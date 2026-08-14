@@ -111,14 +111,10 @@ pub async fn spawn_persona_service(
     let persona_id = ctx.identity.peer_id.as_uuid();
     Ok(rt_handle.spawn(async move {
         use futures::FutureExt;
-        let outcome = std::panic::AssertUnwindSafe(serve_persona_loop(
-            &ctx,
-            &mut conversation,
-            reader,
-            opts,
-        ))
-        .catch_unwind()
-        .await;
+        let outcome =
+            std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, reader, opts))
+                .catch_unwind()
+                .await;
         match outcome {
             Ok(r) => r,
             Err(panic) => {
@@ -141,7 +137,9 @@ pub async fn spawn_persona_service(
                     persona_id = %persona_id,
                     reason = %panic_msg
                 );
-                Err(format!("persona '{persona_name}' service loop panicked: {panic_msg}"))
+                Err(format!(
+                    "persona '{persona_name}' service loop panicked: {panic_msg}"
+                ))
             }
         }
     }))
@@ -322,10 +320,9 @@ impl PersonaSpawnSupervisor {
             },
             move |pid| {
                 tool_exec_source.clone().map(|ex| {
-                    Arc::new(crate::cognition::tool_executor::CommandToolExecutor::for_persona(
-                        ex, pid,
-                    ))
-                        as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
+                    Arc::new(
+                        crate::cognition::tool_executor::CommandToolExecutor::for_persona(ex, pid),
+                    ) as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
                 })
             },
         )

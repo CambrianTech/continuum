@@ -1044,7 +1044,10 @@ mod tests {
             "points at the shared cache: {target}"
         );
         session.set_env("CARGO_TARGET_DIR".into(), "/tmp/override".into());
-        assert_eq!(session.env.get("CARGO_TARGET_DIR").unwrap(), "/tmp/override");
+        assert_eq!(
+            session.env.get("CARGO_TARGET_DIR").unwrap(),
+            "/tmp/override"
+        );
     }
 
     #[test]

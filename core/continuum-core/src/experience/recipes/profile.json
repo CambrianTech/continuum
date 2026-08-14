@@ -1,9 +1,21 @@
 {
+  "id": "089ac0da-d65a-4922-8cdc-36e7f589c465",
+  "version": 1,
   "purpose": "profile",
   "regions": [
-    { "name": "form", "kind": "profile", "scope": "activity", "role": "primary", "slot": "content", "live": true }
+    {
+      "name": "form",
+      "kind": "profile",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "content",
+      "live": true
+    }
   ],
   "affordances": [
-    { "verb": "save", "command": "data/update" }
+    {
+      "verb": "save",
+      "command": "data/update"
+    }
   ]
 }

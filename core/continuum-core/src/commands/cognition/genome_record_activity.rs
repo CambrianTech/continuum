@@ -20,7 +20,10 @@ fn default_success() -> bool {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeRecordActivityParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeRecordActivityParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenomeRecordActivityParams {
     /// Persona whose coverage ledger records the activity.
@@ -34,7 +37,10 @@ pub struct GenomeRecordActivityParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeRecordActivityResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenomeRecordActivityResult.ts"
+)]
 pub struct GenomeRecordActivityResult {
     pub recorded: bool,
     pub domain: String,

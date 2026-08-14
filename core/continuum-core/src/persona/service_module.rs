@@ -394,11 +394,9 @@ impl PersonaServiceModule {
                         // would be a structural bug in the evaluator, not
                         // a runtime condition to handle gracefully.
                         let Some(ref ctx) = decision.respond_context else {
-                            return Err(
-                                "analyze_burst returned should_respond=true \
+                            return Err("analyze_burst returned should_respond=true \
                                  with no respond_context — typed contract violated"
-                                    .to_string(),
-                            );
+                                .to_string());
                         };
                         let respond_input = Self::build_respond_input_from_burst(persona, ctx);
                         out.push(ServiceBurstDecision::NeedsResponse {
@@ -416,9 +414,7 @@ impl PersonaServiceModule {
                     }
                 }
                 CoherentInput::Other {
-                    domain,
-                    item_count,
-                    ..
+                    domain, item_count, ..
                 } => {
                     out.push(ServiceBurstDecision::UnsupportedDomain {
                         domain,
@@ -986,8 +982,8 @@ mod tests {
         let mut personas = m.personas.lock().unwrap();
         let persona = personas.get_mut(&persona_id).unwrap();
         ensure_chat_channel(persona);
-        let bursts = PersonaServiceModule::service_burst_for(persona, 1_700_000_000_000)
-            .expect("idle ok");
+        let bursts =
+            PersonaServiceModule::service_burst_for(persona, 1_700_000_000_000).expect("idle ok");
         assert!(
             bursts.is_empty(),
             "no items routed → no bursts; got {} entries",
@@ -1313,7 +1309,10 @@ mod tests {
                 ensure_chat_channel(persona);
                 let mut item = test_chat_item(&format!("msg {tick}"), true, room_id);
                 item.timestamp = 1_700_000_000_000 + tick as u64;
-                persona.channels.route(std::sync::Arc::new(item)).expect("route");
+                persona
+                    .channels
+                    .route(std::sync::Arc::new(item))
+                    .expect("route");
             }
             m.drain_all_personas(1_700_000_000_000 + tick as u64)
                 .await

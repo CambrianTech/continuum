@@ -114,7 +114,10 @@ fn default_assistant_column() -> String {
 /// Params for `dataset/import-csv`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/dataset/ImportCsvParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/dataset/ImportCsvParams.ts"
+)]
 pub struct ImportCsvParams {
     /// Path to the CSV file to import.
     pub csv_path: String,
@@ -139,7 +142,10 @@ pub struct ImportCsvParams {
 /// Params for `dataset/from-turns`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/dataset/FromTurnsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/dataset/FromTurnsParams.ts"
+)]
 pub struct FromTurnsParams {
     /// Directory of recorder per-turn JSON (default `~/.continuum/fixtures/persona-respond`).
     #[serde(default)]
@@ -164,7 +170,7 @@ pub struct FromTurnsParams {
     /// Only convert turns from this persona id.
     #[serde(default)]
     #[ts(optional)]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// Only convert turns from this room id.
     #[serde(default)]
     #[ts(optional)]
@@ -174,7 +180,10 @@ pub struct FromTurnsParams {
 /// Params for `dataset/from-captures`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/dataset/FromCapturesParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/dataset/FromCapturesParams.ts"
+)]
 pub struct FromCapturesParams {
     /// Directory of live prompt-captures (default `~/.continuum/fixtures/prompt-captures`).
     #[serde(default)]
@@ -196,7 +205,7 @@ pub struct FromCapturesParams {
     /// Only convert captures from this persona id.
     #[serde(default)]
     #[ts(optional)]
-    pub persona_id: Option<String>,
+    pub persona_id: Option<crate::identity::PersonaRef>,
     /// Only convert captures from this room id.
     #[serde(default)]
     #[ts(optional)]
@@ -242,7 +251,10 @@ pub struct ImportRealClassEvalParams {
 /// Params for `dataset/list`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/dataset/ListDatasetsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/dataset/ListDatasetsParams.ts"
+)]
 pub struct ListDatasetsParams {
     /// Override the datasets root directory to list (default `~/.continuum/datasets`).
     #[serde(default)]
@@ -253,7 +265,10 @@ pub struct ListDatasetsParams {
 /// Params for `dataset/info`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/dataset/DatasetInfoParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/dataset/DatasetInfoParams.ts"
+)]
 pub struct DatasetInfoParams {
     /// Dataset name (subdirectory under the datasets root).
     pub name: String,
@@ -400,7 +415,7 @@ impl DatasetService {
                 continue;
             };
 
-            if let Some(pid) = p.persona_id.as_deref() {
+            if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {
                 if turn.get("personaId").and_then(|v| v.as_str()) != Some(pid) {
                     continue;
                 }
@@ -481,7 +496,7 @@ impl DatasetService {
                 let Ok(cap) = serde_json::from_str::<Value>(line) else {
                     continue;
                 };
-                if let Some(pid) = p.persona_id.as_deref() {
+                if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {
                     if cap.get("persona_id").and_then(|v| v.as_str()) != Some(pid) {
                         continue;
                     }
@@ -740,7 +755,8 @@ impl DatasetService {
                     let manifest_path = path.join("manifest.json");
                     if manifest_path.exists() {
                         if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                            if let Ok(manifest) = serde_json::from_str::<DatasetManifest>(&content) {
+                            if let Ok(manifest) = serde_json::from_str::<DatasetManifest>(&content)
+                            {
                                 datasets.push(manifest);
                             }
                         }
@@ -954,7 +970,10 @@ fn turn_to_example(turn: &Value, include_system: bool, include_history: bool) ->
         return None;
     }
 
-    let persona_name = turn.get("personaName").and_then(|v| v.as_str()).unwrap_or("");
+    let persona_name = turn
+        .get("personaName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let mut messages: Vec<Value> = Vec::new();
 
     if include_system {
@@ -1170,7 +1189,10 @@ mod tests {
             "response": { "text": "{\"tool_call\": {\"name\": \"ping\", \"arguments\": {}}}" }
         });
         let ex = capture_to_example(&tool_json, true).expect("acting turn → example");
-        assert_eq!(ex["skillAxis"], "operational", "JSON-in-prompt call → operational");
+        assert_eq!(
+            ex["skillAxis"], "operational",
+            "JSON-in-prompt call → operational"
+        );
 
         // A structured `response.toolCalls` array (adapter-extracted) with prose
         // preamble → KEPT, tagged operational.
@@ -1183,7 +1205,10 @@ mod tests {
             }
         });
         let ex = capture_to_example(&structured, true).expect("structured-call turn → example");
-        assert_eq!(ex["skillAxis"], "operational", "structured toolCalls → operational");
+        assert_eq!(
+            ex["skillAxis"], "operational",
+            "structured toolCalls → operational"
+        );
 
         // Empty response → dropped (no pair).
         let empty = json!({
@@ -1271,7 +1296,10 @@ mod tests {
         assert_eq!(msgs[1]["role"], "user");
         assert_eq!(msgs[1]["content"], "What causes reflux?");
         assert_eq!(msgs[2]["role"], "assistant");
-        assert_eq!(msgs[2]["content"], "Lower esophageal sphincter dysfunction.");
+        assert_eq!(
+            msgs[2]["content"],
+            "Lower esophageal sphincter dysfunction."
+        );
     }
 
     // what this catches: a turnsDir with no spoke turns is an explicit error

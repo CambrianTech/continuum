@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use airc_core::RoomId;
 
 use crate::airc::discovery::{
-    discover_airc_socket, discover_default_channel, discover_default_room_name,
-    discover_peer_id, DiscoveryError,
+    discover_airc_socket, discover_default_channel, discover_default_room_name, discover_peer_id,
+    DiscoveryError,
 };
 use crate::airc::discovery_state::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
 
@@ -102,9 +102,7 @@ impl From<DiscoveryError> for DiscoveryFailure {
             }
             DiscoveryError::EmptyPath => DiscoveryFailure::EmptyPath,
             DiscoveryError::RoomCommandFailed(msg) => DiscoveryFailure::RoomCommandFailed(msg),
-            DiscoveryError::UnparseableChannel(msg) => {
-                DiscoveryFailure::UnparseableRoomOutput(msg)
-            }
+            DiscoveryError::UnparseableChannel(msg) => DiscoveryFailure::UnparseableRoomOutput(msg),
             DiscoveryError::PeerStatusFailed(msg) => DiscoveryFailure::PeerStatusFailed(msg),
             DiscoveryError::UnparseablePeerId(raw, err) => {
                 DiscoveryFailure::UnparseablePeerId(raw, err.to_string())
@@ -151,8 +149,7 @@ mod discovery_failure_mapping_tests {
 
     #[test]
     fn install_failed_preserves_message() {
-        let f: DiscoveryFailure =
-            DiscoveryError::InstallFailed("permission denied".into()).into();
+        let f: DiscoveryFailure = DiscoveryError::InstallFailed("permission denied".into()).into();
         assert!(matches!(f, DiscoveryFailure::InstallFailed(m) if m == "permission denied"));
     }
 
@@ -214,8 +211,7 @@ mod discovery_failure_mapping_tests {
     #[test]
     fn unparseable_peer_id_preserves_raw_and_error() {
         let uuid_err = "not-a-uuid".parse::<uuid::Uuid>().unwrap_err();
-        let f: DiscoveryFailure =
-            DiscoveryError::UnparseablePeerId("xyz".into(), uuid_err).into();
+        let f: DiscoveryFailure = DiscoveryError::UnparseablePeerId("xyz".into(), uuid_err).into();
         assert!(matches!(
             f,
             DiscoveryFailure::UnparseablePeerId(raw, err_msg)

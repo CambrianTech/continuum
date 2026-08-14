@@ -153,9 +153,8 @@ mod tests {
     /// context.
     #[test]
     fn no_permission_for_uri_includes_uri_in_display() {
-        let r = ForbiddenReason::NoPermissionForUri(
-            "airc://maya/cognition/genome/lora-evict".into(),
-        );
+        let r =
+            ForbiddenReason::NoPermissionForUri("airc://maya/cognition/genome/lora-evict".into());
         let display = format!("{r}");
         assert!(display.contains("airc://maya/cognition/genome/lora-evict"));
     }

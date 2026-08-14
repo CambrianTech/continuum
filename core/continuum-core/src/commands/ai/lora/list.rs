@@ -10,7 +10,10 @@ use crate::commands::ai::AiRegistryQueryParams;
 /// One LoRA adapter as reported by its host provider.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/LoraAdapterView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/LoraAdapterView.ts"
+)]
 pub struct LoraAdapterView {
     pub provider: String,
     pub adapter_id: String,
@@ -24,7 +27,10 @@ pub struct LoraAdapterView {
 /// Result of `ai/lora/list`.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiLoraListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiLoraListResult.ts"
+)]
 pub struct AiLoraListResult {
     pub adapters: Vec<LoraAdapterView>,
     pub count: usize,

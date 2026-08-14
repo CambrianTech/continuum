@@ -278,11 +278,7 @@ impl ServiceModule for PersonaSpawnerModule {
         Ok(())
     }
 
-    async fn handle_command(
-        &self,
-        command: &str,
-        _params: Value,
-    ) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         match command {
             "persona/spawner/plan" => {
                 let plan = self.plan();
@@ -470,11 +466,13 @@ pub async fn bootstrap_planned(
     Ok(bootstrapped
         .into_iter()
         .zip(profiles)
-        .map(|((role, instance, _model_id, _serving), profile)| MaterializedPersonaPlan {
-            role,
-            instance,
-            profile,
-        })
+        .map(
+            |((role, instance, _model_id, _serving), profile)| MaterializedPersonaPlan {
+                role,
+                instance,
+                profile,
+            },
+        )
         .collect())
 }
 
@@ -498,10 +496,7 @@ mod tests {
         );
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].role, RoleId::Helper);
-        assert_eq!(
-            plan[0].model_id,
-            "continuum-ai/qwen2.5-0.5b-instruct-GGUF"
-        );
+        assert_eq!(plan[0].model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
     }
 
     /// Every tier currently plans exactly one Helper — until slice 14
@@ -518,7 +513,12 @@ mod tests {
             (HwCapabilityTier::Cloud, HwTierCategory::Cloud),
         ] {
             let plan = plan_for_tier(hw, cat);
-            assert_eq!(plan.len(), 1, "tier {cat:?} planned {} roles, want 1", plan.len());
+            assert_eq!(
+                plan.len(),
+                1,
+                "tier {cat:?} planned {} roles, want 1",
+                plan.len()
+            );
             assert_eq!(
                 plan[0].role,
                 RoleId::Helper,

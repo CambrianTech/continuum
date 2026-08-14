@@ -351,7 +351,10 @@ mod tests {
             "free ({free}) > total + 10% ({})",
             total + total / 10
         );
-        assert!(proc > 0, "process bytes should be > 0 (we forced an allocation)");
+        assert!(
+            proc > 0,
+            "process bytes should be > 0 (we forced an allocation)"
+        );
         assert!(proc < total, "process bytes ({proc}) >= total ({total})");
     }
 
@@ -431,8 +434,14 @@ mod tests {
         };
         let total = device.recommended_max_working_set_size();
         let (free, proc) = sample_memory(MemoryMode::Discrete, total, &device);
-        assert!(free <= total, "discrete free ({free}) must not exceed total ({total})");
-        assert!(proc <= total, "discrete proc ({proc}) must not exceed total ({total})");
+        assert!(
+            free <= total,
+            "discrete free ({free}) must not exceed total ({total})"
+        );
+        assert!(
+            proc <= total,
+            "discrete proc ({proc}) must not exceed total ({total})"
+        );
     }
 
     /// What this catches: the trait's snapshot() default impl producing

@@ -79,15 +79,13 @@ pub(crate) fn persona_airc(
         .as_ref()
         .map(|c| c.peer_id.as_uuid())
         .ok_or_else(|| {
-            CommandError::Denied(
-                format!(
-                    "{family} acts as the caller's own airc identity, and the \
+            CommandError::Denied(format!(
+                "{family} acts as the caller's own airc identity, and the \
                      substrate-local operator has none in-core (yet — the self-peer gap, \
                      task #27). Personas calling through their toolbelt act as themselves \
                      and need nothing special; for operator-identity board writes use \
                      `airc work <verb> ...`."
-                ),
-            )
+            ))
         })?;
     let rt = registry.get(peer).ok_or_else(|| {
         CommandError::NotFound(format!("no live airc runtime for persona {peer}"))
@@ -126,15 +124,13 @@ pub(crate) fn curator_airc(
     }
     // Operator seeding with no self-peer (#27): author through a live citizen —
     // whoever this machine has online, chosen deterministically, never our name.
-    let rt = registry
-        .any_live_citizen()
-        .ok_or_else(|| {
-            CommandError::Denied(format!(
-                "{family} seeds the shared board and must author as a citizen, but none \
+    let rt = registry.any_live_citizen().ok_or_else(|| {
+        CommandError::Denied(format!(
+            "{family} seeds the shared board and must author as a citizen, but none \
                  are online to author through — spawn a persona first (persona/spawn), \
                  then retry."
-            ))
-        })?;
+        ))
+    })?;
     Ok(rt.airc().clone())
 }
 
@@ -261,7 +257,10 @@ async fn claim_following_card_room(
             "claim-by-id targeted a card outside the current room — switched to \
              the card's room and retried (accept-or-redirect, never refuse-and-instruct)"
         );
-        return Some(airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms }).await);
+        return Some(
+            airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+                .await,
+        );
     }
     None
 }
@@ -311,7 +310,9 @@ impl ActionCommand for WorkClaim {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
-        let mut claim_attempt = airc.claim_work_card(ClaimWorkCard { card_id, ttl_ms }).await;
+        let mut claim_attempt = airc
+            .claim_work_card(ClaimWorkCard { card_id, ttl_ms })
+            .await;
         // FOLLOW THE CARD TO ITS ROOM (#328 accept-or-redirect, live 2026-08-11):
         // Atlas's very first act on her dispatched SWE card was work/claim by full
         // uuid — refused with "not in current room general; switch to the card's
@@ -364,7 +365,9 @@ impl ActionCommand for WorkClaim {
                         // perception for ten minutes.
                         //
                         // Measured 2026-08-07: ~50 of 61 cards on #general and 4 of 12 on
-                        // #k3-serving carry a stale owner with a lease expired 134h+; three
+                        // #k3-serving (a RETIRED subsystem-named room — do not copy the name;
+                        // rooms are activities WITH LIFETIMES) carried a stale owner with a
+                        // lease expired 134h+; three
                         // of the latter are in Review, where the true refusal is "settled
                         // work is not claimable". Two citizens spent the day quoting this
                         // string back — "expired leases or the cards being held by others"
@@ -505,12 +508,11 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // the lane is decode-verified means the solve fires the moment serving is up instead of the
     // claim silently no-op-ing (Joel 2026-08-11: "persona should boot beforehand"). None after
     // the deadline = a genuinely dead lane; the claim stands and re-fires on the next serving edge.
-    let model = crate::inference::llama_server::await_ready_serving(
-        std::time::Duration::from_secs(30),
-    )
-    .await
-    .and_then(|s| s.active_model)
-    .unwrap_or_default();
+    let model =
+        crate::inference::llama_server::await_ready_serving(std::time::Duration::from_secs(30))
+            .await
+            .and_then(|s| s.active_model)
+            .unwrap_or_default();
     if model.is_empty() {
         crate::probe!(
             class = "benchmark.dispatch",
@@ -535,7 +537,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         .to_string_lossy()
         .to_string();
     let params = crate::commands::agent::solve::AgentSolveParams {
-        persona_id: claimer.to_string(),
+        persona_id: claimer.to_string().into(),
         base_model_id: model,
         workspace,
         task: card.body.clone().unwrap_or_else(|| card.title.clone()),
@@ -548,7 +550,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         max_acts: None,
         path_prepend: Some(vec![venv_bin]),
         suppress_recall: None,
-                prev_failed_patch_sha: None,
+        prev_failed_patch_sha: None,
         // The SWE claim adapter's N (Joel, 2026-08-08): a failed grade re-enters the
         // same workspace with the named failing tests — learning to investigate your
         // own failure is part of the exam. Three chances: first attempt, one informed
@@ -856,10 +858,7 @@ fn state_str(s: &CardState) -> &'static str {
 ///
 /// Delegates to [`card_holder::hold_of`], the SAME predicate `work/list` renders
 /// through. One rule for "is someone on this card", not two in one file.
-fn live_holder(
-    card: &airc_work::WorkCard,
-    now_ms: u64,
-) -> Option<airc_core::PeerId> {
+fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<airc_core::PeerId> {
     match crate::persona::card_holder::hold_of(card, now_ms) {
         crate::persona::card_holder::Hold::Held => card.owner,
         // Lapsed or unclaimed: whatever refused the claim, it was not a person.
@@ -1300,6 +1299,8 @@ mod tests {
     ///
     /// Measured on the live boards 2026-08-07: ~50 of 61 cards on #general and
     /// 4 of 12 on #k3-serving carried a stale owner with a lease expired 134h+.
+    /// (#k3-serving is RETIRED — it was named for a SUBSYSTEM, so it had no lifetime
+    /// and outlived its purpose by a month. Kept here only as the incident record.)
     /// Two citizens spent the day quoting the resulting sentence back at us —
     /// "expired leases or the cards being held by others" is BOTH HALVES of that
     /// one format string.

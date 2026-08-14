@@ -142,9 +142,9 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     core.lines()
         .last()
         .map(|l| {
-            let l = l
-                .trim()
-                .trim_matches(|c| matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\''));
+            let l = l.trim().trim_matches(|c| {
+                matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\'')
+            });
             let l = l.strip_suffix('.').unwrap_or(l).trim_end();
             l.eq_ignore_ascii_case(SILENCE_TOKEN)
         })
@@ -849,13 +849,13 @@ mod tests {
             matched_angle: "This is a coding question about Rust error handling.".to_string(),
             history: vec![HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "How do I handle errors in Rust?".to_string(),
                 timestamp_ms: Some(1000000),
             }],
             current_message: HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "Specifically with Result types?".to_string(),
                 timestamp_ms: Some(1010000),
             },
@@ -891,7 +891,7 @@ mod tests {
             history: vec![],
             current_message: HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()),
+                name: Some("Operator".to_string()),
                 content: "what color did I say I liked?".to_string(),
                 timestamp_ms: Some(1000),
             },
@@ -900,8 +900,8 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![
-                "Joel's favorite color is teal.".to_string(),
-                "Joel works in San Francisco.".to_string(),
+                "Operator's favorite color is teal.".to_string(),
+                "Operator works in San Francisco.".to_string(),
             ],
             room_roster: vec![],
             room_doctrine: None,
@@ -916,14 +916,14 @@ mod tests {
         assert!(
             result
                 .system_message
-                .contains("- Joel's favorite color is teal."),
+                .contains("- Operator's favorite color is teal."),
             "expected bullet-prefixed engram in: {}",
             result.system_message
         );
         assert!(
             result
                 .system_message
-                .contains("- Joel works in San Francisco."),
+                .contains("- Operator works in San Francisco."),
             "expected second bullet in: {}",
             result.system_message
         );
@@ -1066,9 +1066,7 @@ mod tests {
 
         // 1. Real delivery from the shared roster projection.
         let ctx = RagContext::for_persona(persona, 1_000_000);
-        let delivery = source
-            .deliver(&ctx, 1_000, ResolutionPreference::Raw)
-            .await;
+        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
 
         // 2. Real loop fold: delivery → grounding consumers (the converged line +
         //    the bare name), via the exact fn the heartbeat loop calls.
@@ -1401,7 +1399,7 @@ mod tests {
         let history = vec![
             HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()), // human
+                name: Some("Operator".to_string()), // human
                 content: "anyone want to review PersonaUser.ts?".to_string(),
                 timestamp_ms: None,
             },
@@ -1425,7 +1423,7 @@ mod tests {
             },
             HistoryMessage {
                 role: "user".to_string(),
-                name: Some("Joel".to_string()), // human
+                name: Some("Operator".to_string()), // human
                 content: "great, let's go".to_string(),
                 timestamp_ms: None,
             },
@@ -1501,7 +1499,7 @@ mod tests {
     fn proper_chatml_single_party_human_only_history() {
         let history = vec![HistoryMessage {
             role: "user".to_string(),
-            name: Some("Joel".to_string()),
+            name: Some("Operator".to_string()),
             content: "hi".to_string(),
             timestamp_ms: None,
         }];

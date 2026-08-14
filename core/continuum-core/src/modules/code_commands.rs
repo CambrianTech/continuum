@@ -44,8 +44,7 @@ use super::code::CodeState;
 use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
 use crate::code::types::{
     DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
-    SearchResult, TreeResult,
-    WriteResult,
+    SearchResult, TreeResult, WriteResult,
 };
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
@@ -62,7 +61,7 @@ pub(crate) fn caller_id(ctx: &Ctx) -> String {
 }
 
 /// The caller id assigned when a command arrives with NO peer identity — the
-/// substrate-local operator (cu CLI, boot plumbing). The ONE caller whose
+/// substrate-local operator (uu CLI, boot plumbing). The ONE caller whose
 /// workspace is the core's own cwd; every identified peer gets a layer.
 pub(crate) const LOCAL_OWNER: &str = "local-owner";
 
@@ -97,7 +96,11 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
         .ok()
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
         .ok_or_else(|| CommandError::Internal("no home dir for citizen layer".into()))?;
-    Ok(home.join("citizens").join("peers").join(peer).join("workspace"))
+    Ok(home
+        .join("citizens")
+        .join("peers")
+        .join(peer)
+        .join("workspace"))
 }
 
 pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
@@ -170,11 +173,10 @@ fn ensure_citizen_layer_from_base(
     } else {
         clone.args(["--reflink=auto", "-R"]);
     }
-    let out = clone
-        .arg(base)
-        .arg(&layer)
-        .output()
-        .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
+    let out =
+        clone.arg(base).arg(&layer).output().map_err(|e| {
+            CommandError::Internal(format!("citizen layer clone spawn failed: {e}"))
+        })?;
     if !out.status.success() {
         // Never leave a half-materialized layer for the next call to mistake
         // for a real one.
@@ -387,11 +389,9 @@ impl ActionCommand for CodeWrite {
         // existing file with a tiny body is the exact shape of "solved, then destroyed"
         // (the model re-emits a stub or a fragment over a working file). A count alone
         // could never show that.
-        let before = std::fs::metadata(
-            engine.workspace_root().join(&p.file_path),
-        )
-        .ok()
-        .map(|m| m.len());
+        let before = std::fs::metadata(engine.workspace_root().join(&p.file_path))
+            .ok()
+            .map(|m| m.len());
         let out = engine
             .write(&p.file_path, &p.content, p.description.as_deref())
             .map_err(|e| CommandError::Internal(e.to_string()));
@@ -483,8 +483,11 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
     }
     // A field pulled from top-level OR from an untyped edit_mode object (flat call shapes).
     let s = |top: &Option<String>, key: &str| -> Option<String> {
-        top.clone()
-            .or_else(|| p.edit_mode.get(key).and_then(|v| v.as_str().map(str::to_string)))
+        top.clone().or_else(|| {
+            p.edit_mode
+                .get(key)
+                .and_then(|v| v.as_str().map(str::to_string))
+        })
     };
     let content = s(&p.content, "content");
     // Top-level old_string/new_string land on p.search/p.replace via serde aliases above; this
@@ -526,7 +529,8 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             None
         }
     });
-    let miss = |what: &str| CommandError::Invalid(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
+    let miss =
+        |what: &str| CommandError::Invalid(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
     match mode.as_deref().map(|m| m.trim().to_lowercase()).as_deref() {
         Some("search_replace") => Ok(EditMode::SearchReplace {
             search: search.ok_or_else(|| miss("search"))?,
@@ -583,7 +587,8 @@ fn reject_placeholder_path(file_path: &str) -> Result<(), CommandError> {
 #[async_trait]
 impl ActionCommand for CodeEdit {
     const NAME: &'static str = "code/edit";
-    const ALIASES: &'static [&'static str] = &["edit_file", "str_replace", "apply_patch", "replace_in_file"];
+    const ALIASES: &'static [&'static str] =
+        &["edit_file", "str_replace", "apply_patch", "replace_in_file"];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
     const DESCRIPTION: &'static str =
         "Edit an existing file: line-range replace, search/replace, insert-at, or append. Undoable.";
@@ -1097,10 +1102,16 @@ fn shell_response(s: &crate::code::shell_session::ExecutionState) -> ShellExecut
 #[async_trait]
 impl ActionCommand for CodeShell {
     const NAME: &'static str = "code/shell";
-    const ALIASES: &'static [&'static str] = &["bash", "shell", "run_terminal_cmd", "execute_command", "run_command"];
+    const ALIASES: &'static [&'static str] = &[
+        "bash",
+        "shell",
+        "run_terminal_cmd",
+        "execute_command",
+        "run_command",
+    ];
     const NATIVE: bool = true; // core agentic working set — offered natively (auto-derived)
-    // Privileged → Trusted tier: arbitrary execution is for high-trust local
-    // citizens (a local persona / a trusted node), never a Provisional remote peer.
+                               // Privileged → Trusted tier: arbitrary execution is for high-trust local
+                               // citizens (a local persona / a trusted node), never a Provisional remote peer.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
         "Run a shell command (bash) in your persistent workspace session. Waits inline up to \
@@ -1109,7 +1120,11 @@ impl ActionCommand for CodeShell {
     type Params = CodeShellParams;
     type Output = ShellExecuteResponse;
 
-    async fn run(&self, ctx: &Ctx, p: CodeShellParams) -> Result<ShellExecuteResponse, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeShellParams,
+    ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
         ensure_shell(&self.state, &who)?;
 
@@ -1117,11 +1132,9 @@ impl ActionCommand for CodeShell {
         // DashMap ref before awaiting — never hold a lock across `.await` (the
         // bounded wait below blocks the turn, not the shard). [[concurrency-style-guide]]
         let state_arc = {
-            let mut shell = self
-                .state
-                .shell_sessions
-                .get_mut(&who)
-                .ok_or_else(|| CommandError::Internal("shell vanished after provisioning".into()))?;
+            let mut shell = self.state.shell_sessions.get_mut(&who).ok_or_else(|| {
+                CommandError::Internal("shell vanished after provisioning".into())
+            })?;
             let exec_id = shell
                 .execute(&p.cmd, p.timeout_ms, &self.state.rt_handle)
                 .map_err(CommandError::Internal)?;
@@ -1133,7 +1146,8 @@ impl ActionCommand for CodeShell {
         // BOUNDED inline wait: return the moment it completes, or hand back the
         // handle when the window elapses — never block past wait_ms. No DashMap
         // lock held across the await.
-        let deadline = Instant::now() + Duration::from_millis(p.wait_ms.unwrap_or(DEFAULT_SHELL_WAIT_MS));
+        let deadline =
+            Instant::now() + Duration::from_millis(p.wait_ms.unwrap_or(DEFAULT_SHELL_WAIT_MS));
         loop {
             let notify = {
                 let s = state_arc
@@ -1181,7 +1195,11 @@ impl ActionCommand for CodeShellPoll {
     type Params = CodeShellPollParams;
     type Output = ShellExecuteResponse;
 
-    async fn run(&self, ctx: &Ctx, p: CodeShellPollParams) -> Result<ShellExecuteResponse, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeShellPollParams,
+    ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
         let shell = self
             .state
@@ -1225,7 +1243,11 @@ impl ActionCommand for CodeShellKill {
     type Params = CodeShellKillParams;
     type Output = CodeShellKillResult;
 
-    async fn run(&self, ctx: &Ctx, p: CodeShellKillParams) -> Result<CodeShellKillResult, CommandError> {
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeShellKillParams,
+    ) -> Result<CodeShellKillResult, CommandError> {
         let who = caller_id(ctx);
         let shell = self
             .state
@@ -1473,7 +1495,10 @@ impl ActionCommand for CodeCreateWorkspace {
         let who = caller_id(ctx);
         let root = std::path::Path::new(&p.workspace_root);
         let mut security = PathSecurity::new(root).map_err(|e| {
-            CommandError::Invalid(format!("invalid workspace root '{}': {e}", p.workspace_root))
+            CommandError::Invalid(format!(
+                "invalid workspace root '{}': {e}",
+                p.workspace_root
+            ))
         })?;
         for rr in &p.read_roots {
             security
@@ -1565,21 +1590,51 @@ crate::register_command!(CodeCreateWorkspace);
 /// prefix → `handle_command` arm, which is deleted for these commands.
 pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(CodeRead { state: state.clone() }),
-        Arc::new(CodeWrite { state: state.clone() }),
-        Arc::new(CodeEdit { state: state.clone() }),
-        Arc::new(CodeList { state: state.clone() }),
-        Arc::new(CodeExists { state: state.clone() }),
-        Arc::new(CodeGlob { state: state.clone() }),
-        Arc::new(CodeTree { state: state.clone() }),
-        Arc::new(CodeSearch { state: state.clone() }),
-        Arc::new(CodeShell { state: state.clone() }),
-        Arc::new(CodeShellPoll { state: state.clone() }),
-        Arc::new(CodeShellKill { state: state.clone() }),
-        Arc::new(CodeDelete { state: state.clone() }),
-        Arc::new(CodeDiff { state: state.clone() }),
-        Arc::new(CodeUndo { state: state.clone() }),
-        Arc::new(CodeHistory { state: state.clone() }),
+        Arc::new(CodeRead {
+            state: state.clone(),
+        }),
+        Arc::new(CodeWrite {
+            state: state.clone(),
+        }),
+        Arc::new(CodeEdit {
+            state: state.clone(),
+        }),
+        Arc::new(CodeList {
+            state: state.clone(),
+        }),
+        Arc::new(CodeExists {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGlob {
+            state: state.clone(),
+        }),
+        Arc::new(CodeTree {
+            state: state.clone(),
+        }),
+        Arc::new(CodeSearch {
+            state: state.clone(),
+        }),
+        Arc::new(CodeShell {
+            state: state.clone(),
+        }),
+        Arc::new(CodeShellPoll {
+            state: state.clone(),
+        }),
+        Arc::new(CodeShellKill {
+            state: state.clone(),
+        }),
+        Arc::new(CodeDelete {
+            state: state.clone(),
+        }),
+        Arc::new(CodeDiff {
+            state: state.clone(),
+        }),
+        Arc::new(CodeUndo {
+            state: state.clone(),
+        }),
+        Arc::new(CodeHistory {
+            state: state.clone(),
+        }),
         Arc::new(CodeCreateWorkspace { state }),
     ]
 }
@@ -1596,33 +1651,44 @@ mod tests {
     // MISSING required field fails loud NAMING it (never a silent no-op that scores false-zero).
     #[test]
     fn code_edit_normalizes_forgiving_shapes_and_fails_loud() {
-        let mk = |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
+        let mk =
+            |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
         // (1) strict tagged object — unchanged
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": {"type":"append","content":"X"}
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::Append { content } if content == "X"));
         // (2) bare mode string + top-level content
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": "append", "content": "Y"
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::Append { content } if content == "Y"));
         // (3) bare "search_replace" + top-level fields
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": "search_replace", "search": "old", "replace": "new"
-        }))).unwrap();
-        assert!(matches!(m, EditMode::SearchReplace { search, replace, .. } if search=="old" && replace=="new"));
+        })))
+        .unwrap();
+        assert!(
+            matches!(m, EditMode::SearchReplace { search, replace, .. } if search=="old" && replace=="new")
+        );
         // (4) inferred from present fields (no edit_mode at all)
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "search": "o", "replace": "n"
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::SearchReplace { .. }));
         // (5) bare "append" with NO content → loud error naming the missing field (the exact
         //     glass-boxed failure: edit_mode:"append", no content).
         let err = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": "append"
-        }))).unwrap_err();
-        assert!(format!("{err}").contains("content"), "names the missing field: {err}");
+        })))
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("content"),
+            "names the missing field: {err}"
+        );
     }
 
     // what this catches: THE live edit-stall (2026-07-14). Devstral personas
@@ -1634,15 +1700,21 @@ mod tests {
     // nested numbers must resolve and the missing start_line must default to 1.
     #[test]
     fn code_edit_forgives_nested_lines_and_the_reflexive_whole_file_shape() {
-        let mk = |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
+        let mk =
+            |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
 
         // (a) nested end_line + new_content, no start_line → LineRange{1, 65535, …}
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "src/main.rs",
             "edit_mode": {"end_line": 65535, "new_content": "fn main() {}"}
-        }))).unwrap();
+        })))
+        .unwrap();
         match m {
-            EditMode::LineRange { start_line, end_line, new_content } => {
+            EditMode::LineRange {
+                start_line,
+                end_line,
+                new_content,
+            } => {
                 assert_eq!(start_line, 1);
                 assert_eq!(end_line, 65535);
                 assert_eq!(new_content, "fn main() {}");
@@ -1653,9 +1725,14 @@ mod tests {
         // (b) ONLY new_content (no lines at all) → whole-file replace: start 1, end MAX
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "src/main.rs", "new_content": "whole new file"
-        }))).unwrap();
+        })))
+        .unwrap();
         match m {
-            EditMode::LineRange { start_line, end_line, .. } => {
+            EditMode::LineRange {
+                start_line,
+                end_line,
+                ..
+            } => {
                 assert_eq!(start_line, 1);
                 assert_eq!(end_line, u32::MAX);
             }
@@ -1665,14 +1742,19 @@ mod tests {
         // (c) nested line for insert_at resolves from inside edit_mode too
         let m = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": {"line": 3, "content": "x"}
-        }))).unwrap();
+        })))
+        .unwrap();
         assert!(matches!(m, EditMode::InsertAt { line, .. } if line == 3));
 
         // (d) still loud when there's genuinely nothing to write
         let err = normalize_edit_mode(&mk(serde_json::json!({
             "file_path": "a.py", "edit_mode": {"end_line": 10}
-        }))).unwrap_err();
-        assert!(format!("{err}").contains("new_content"), "names missing field: {err}");
+        })))
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("new_content"),
+            "names missing field: {err}"
+        );
     }
 
     // what this catches: the code/list glob-recovery (#160). A model that reflexively
@@ -1700,9 +1782,15 @@ mod tests {
         let listing = list_result_from_glob("**/*.rs", glob);
         assert!(listing.success);
         assert_eq!(listing.total_count, 2);
-        assert_eq!(listing.directory_path, "glob:**/*.rs", "records the glob provenance");
+        assert_eq!(
+            listing.directory_path, "glob:**/*.rs",
+            "records the glob provenance"
+        );
         assert_eq!(listing.entries[0].name, "main.rs", "name is the basename");
-        assert_eq!(listing.entries[0].path, "core/main.rs", "path stays workspace-relative");
+        assert_eq!(
+            listing.entries[0].path, "core/main.rs",
+            "path stays workspace-relative"
+        );
         assert!(matches!(listing.entries[0].kind, FsEntryKind::File));
     }
 
@@ -1711,11 +1799,28 @@ mod tests {
     // path passes untouched (no false positives on ordinary filenames).
     #[test]
     fn code_edit_rejects_placeholder_paths_but_passes_real_ones() {
-        for ph in ["<path_to_blueprints.py>", "path_to_file.py", "/path/to/x.py", "<file>", "your_file.rs"] {
-            assert!(reject_placeholder_path(ph).is_err(), "should reject placeholder: {ph}");
+        for ph in [
+            "<path_to_blueprints.py>",
+            "path_to_file.py",
+            "/path/to/x.py",
+            "<file>",
+            "your_file.rs",
+        ] {
+            assert!(
+                reject_placeholder_path(ph).is_err(),
+                "should reject placeholder: {ph}"
+            );
         }
-        for real in ["src/flask/blueprints.py", "core/continuum-core/src/lib.rs", "a.py", "example.py"] {
-            assert!(reject_placeholder_path(real).is_ok(), "should accept real path: {real}");
+        for real in [
+            "src/flask/blueprints.py",
+            "core/continuum-core/src/lib.rs",
+            "a.py",
+            "example.py",
+        ] {
+            assert!(
+                reject_placeholder_path(real).is_ok(),
+                "should accept real path: {real}"
+            );
         }
     }
 
@@ -1726,11 +1831,30 @@ mod tests {
     // flask SWE 0-edit search-loop.
     #[test]
     fn glob_shaped_search_patterns_detected_content_regexes_spared() {
-        for g in ["**/*.py", "*.rs", "src/**/*.js", "**/blueprints.py", "*.{rs,py}"] {
-            assert!(looks_like_file_glob(g), "should be treated as a file glob: {g}");
+        for g in [
+            "**/*.py",
+            "*.rs",
+            "src/**/*.js",
+            "**/blueprints.py",
+            "*.{rs,py}",
+        ] {
+            assert!(
+                looks_like_file_glob(g),
+                "should be treated as a file glob: {g}"
+            );
         }
-        for r in ["Blueprint", "foo.*bar", "fn .*Params", "self.name = name", "TODO", "raise ValueError"] {
-            assert!(!looks_like_file_glob(r), "must NOT be treated as a glob (real content pattern): {r}");
+        for r in [
+            "Blueprint",
+            "foo.*bar",
+            "fn .*Params",
+            "self.name = name",
+            "TODO",
+            "raise ValueError",
+        ] {
+            assert!(
+                !looks_like_file_glob(r),
+                "must NOT be treated as a glob (real content pattern): {r}"
+            );
         }
     }
 
@@ -1752,7 +1876,10 @@ mod tests {
 
         let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
         let file_engines = Arc::new(DashMap::new());
-        file_engines.insert("local-owner".to_string(), FileEngine::new("local-owner", security));
+        file_engines.insert(
+            "local-owner".to_string(),
+            FileEngine::new("local-owner", security),
+        );
         let state = Arc::new(CodeState::new(
             file_engines,
             Arc::new(DashMap::new()),
@@ -1829,11 +1956,18 @@ mod tests {
 
         let err = teach_layout_on_miss(&engine, "src/persona.rs", "no such file or directory");
         let msg = err.to_string();
-        assert!(msg.contains("apps") && msg.contains("core") && msg.contains("docs"),
-            "enumerates the real top-level dirs so the persona self-corrects: {msg}");
-        assert!(msg.contains("src/persona.rs"), "names what was actually missed: {msg}");
-        assert!(msg.contains("don't assume source lives under `src/`"),
-            "carries the same anti-assumption teaching as the workspace-map: {msg}");
+        assert!(
+            msg.contains("apps") && msg.contains("core") && msg.contains("docs"),
+            "enumerates the real top-level dirs so the persona self-corrects: {msg}"
+        );
+        assert!(
+            msg.contains("src/persona.rs"),
+            "names what was actually missed: {msg}"
+        );
+        assert!(
+            msg.contains("don't assume source lives under `src/`"),
+            "carries the same anti-assumption teaching as the workspace-map: {msg}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1850,7 +1984,10 @@ mod tests {
         std::fs::write(dir.join("core/main.rs"), "fn main() {}").unwrap();
         let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
         let file_engines = Arc::new(DashMap::new());
-        file_engines.insert("local-owner".to_string(), FileEngine::new("local-owner", security));
+        file_engines.insert(
+            "local-owner".to_string(),
+            FileEngine::new("local-owner", security),
+        );
         let state = Arc::new(CodeState::new(
             file_engines,
             Arc::new(DashMap::new()),
@@ -1860,18 +1997,39 @@ mod tests {
 
         // A glob that matches no files → empty entries + a teaching note.
         let out = cmd
-            .run(&Ctx::default(), CodeListParams { path: Some("**/*.nonexistent".to_string()), include_hidden: None })
+            .run(
+                &Ctx::default(),
+                CodeListParams {
+                    path: Some("**/*.nonexistent".to_string()),
+                    include_hidden: None,
+                },
+            )
             .await
             .expect("a zero-match glob is not an error");
         assert!(out.entries.is_empty(), "no files match the glob");
         let note = out.error.expect("zero-match glob carries a teaching note");
-        assert!(note.contains("NOT an empty workspace"), "corrects the confabulation: {note}");
-        assert!(note.contains("apps") && note.contains("core"), "names the real dirs: {note}");
-        assert!(note.contains("code/tree"), "points at the recursive view: {note}");
+        assert!(
+            note.contains("NOT an empty workspace"),
+            "corrects the confabulation: {note}"
+        );
+        assert!(
+            note.contains("apps") && note.contains("core"),
+            "names the real dirs: {note}"
+        );
+        assert!(
+            note.contains("code/tree"),
+            "points at the recursive view: {note}"
+        );
 
         // A glob that DOES match keeps working (no false note).
         let hit = cmd
-            .run(&Ctx::default(), CodeListParams { path: Some("**/*.rs".to_string()), include_hidden: None })
+            .run(
+                &Ctx::default(),
+                CodeListParams {
+                    path: Some("**/*.rs".to_string()),
+                    include_hidden: None,
+                },
+            )
             .await
             .expect("glob runs");
         assert!(!hit.entries.is_empty(), "the .rs glob finds main.rs");
@@ -1914,7 +2072,10 @@ mod tests {
             CodeUndo::ACCESS,
             CodeHistory::ACCESS,
         ] {
-            assert!(matches!(access, AccessLevel::AiSafe), "file-op hands are AiSafe");
+            assert!(
+                matches!(access, AccessLevel::AiSafe),
+                "file-op hands are AiSafe"
+            );
         }
     }
 
@@ -1942,7 +2103,10 @@ mod tests {
         assert!(out.nodes.is_empty(), "no changes recorded yet");
         let json = serde_json::to_value(&out).unwrap();
         assert!(json["nodes"].is_array(), "nodes is the wire array");
-        assert!(json["total_count"].is_number(), "total_count present on the wire");
+        assert!(
+            json["total_count"].is_number(),
+            "total_count present on the wire"
+        );
     }
 
     // what this catches: the four hands are contributed to the module object map via
@@ -1955,7 +2119,10 @@ mod tests {
             .map(|c| c.name())
             .collect();
         for n in ["code/delete", "code/diff", "code/undo", "code/history"] {
-            assert!(names.contains(&n), "command_objects missing {n}; got {names:?}");
+            assert!(
+                names.contains(&n),
+                "command_objects missing {n}; got {names:?}"
+            );
         }
     }
 

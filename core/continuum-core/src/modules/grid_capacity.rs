@@ -115,7 +115,11 @@ impl ServiceModule for GridCapacityModule {
         let Some(offer) = self.current_offer() else {
             // Ungoverned VRAM — nothing honest to offer. Visible, not spammy: the
             // no-offer state surfaces once per free-GB "change" via the MAX sentinel.
-            if self.last_probed_free_gb.swap(u64::MAX - 1, Ordering::AcqRel) != u64::MAX - 1 {
+            if self
+                .last_probed_free_gb
+                .swap(u64::MAX - 1, Ordering::AcqRel)
+                != u64::MAX - 1
+            {
                 crate::probe!(
                     class = "grid.capacity.ungoverned",
                     "VRAM ungoverned on this node — no capacity offer published",

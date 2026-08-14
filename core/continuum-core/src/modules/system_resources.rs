@@ -25,7 +25,10 @@ use ts_rs::TS;
 /// Memory-gate state — whether the global gate is closed (critical pressure sustained),
 /// plus the current pressure / RSS. The typed projection behind `system/memory-gate`.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/system/MemoryGateState.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/MemoryGateState.ts"
+)]
 pub struct MemoryGateState {
     /// `true` when the global memory gate is closed (critical pressure sustained).
     pub closed: bool,
@@ -102,8 +105,16 @@ impl SystemResourceService {
     pub fn memory_gate(&self) -> MemoryGateState {
         MemoryGateState {
             closed: crate::system_resources::is_memory_gate_closed(),
-            pressure: self.pressure_monitor.get().map(|pm| pm.pressure()).unwrap_or(0.0),
-            rss_bytes: self.pressure_monitor.get().map(|pm| pm.rss_bytes()).unwrap_or(0),
+            pressure: self
+                .pressure_monitor
+                .get()
+                .map(|pm| pm.pressure())
+                .unwrap_or(0.0),
+            rss_bytes: self
+                .pressure_monitor
+                .get()
+                .map(|pm| pm.rss_bytes())
+                .unwrap_or(0),
         }
     }
 
@@ -236,10 +247,7 @@ mod tests {
         let service = test_service();
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let snap = service.resources(true, 5).expect("resources ok");
-        assert!(
-            snap.processes.is_some(),
-            "processes present when requested"
-        );
+        assert!(snap.processes.is_some(), "processes present when requested");
     }
 
     // what this catches: docker-tier-stats always returns the full four-field shape so

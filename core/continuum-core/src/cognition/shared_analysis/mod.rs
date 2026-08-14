@@ -58,7 +58,6 @@ const CACHE_MAX_ENTRIES: usize = 200;
 /// the conversation state. Same TTL pattern as the embedding cache used.
 const CACHE_TTL_MS: u64 = 5 * 60 * 1000;
 
-
 /// Run or retrieve the cached SharedAnalysis for a chat message.
 ///
 /// Concurrent calls for the same `cache_key` collapse into a single
@@ -244,10 +243,9 @@ async fn run_analysis(
     // fixes a live bug: the old hardcoded `qwen3.5-4b` + `provider:"local"` were
     // rejected downstream whenever the resident model was anything else (the
     // `single_resident_model` guard), silently failing analysis.
-    let model =
-        crate::cognition::inference_session::resolve_model(input.model_override.clone())
-            .await
-            .map_err(|e| AnalysisError::from_inference(e.to_string()))?;
+    let model = crate::cognition::inference_session::resolve_model(input.model_override.clone())
+        .await
+        .map_err(|e| AnalysisError::from_inference(e.to_string()))?;
 
     let request = TextGenerationRequest {
         messages: vec![

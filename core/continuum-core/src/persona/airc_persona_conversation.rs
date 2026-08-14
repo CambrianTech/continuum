@@ -257,6 +257,34 @@ impl PersonaConversation for AircPersonaConversation {
                     // schema). `perceptual_from_event` decodes both; a
                     // `None` means the event is not a room turn (presence,
                     // event-bridge, media-control, binary) — skip it.
+                    // WHAT the rejected event actually was. `reason` names the branch
+                    // that refused it; these two name the SHAPE, which is what a fix has
+                    // to be written against.
+                    //
+                    // Measured 2026-08-13 (#410): every `airc msg` a human sends reaches
+                    // every citizen and is dropped as `no_continuum_body_hint`, because
+                    // `envelope_from_event` gates on HEADER_FORGE_BODY_HINT — a stamp only
+                    // continuum's own clients apply. Teaching the decoder the CLI's shape
+                    // needs that shape, and the reason string alone cannot supply it; a
+                    // decoder arm written against a GUESSED body is how presence frames
+                    // become fabricated perception. So: capture the kind and a bounded
+                    // preview, and let the next fix be written against a fact.
+                    //
+                    // Bounded to 160 chars and emitted only on the ALREADY-firing filtered
+                    // line — no new event, no new flood ([[the stream-chunk skip stays
+                    // deliberately unprobed]]).
+                    let event_kind = format!("{:?}", event.kind);
+                    let body_preview = match event.body.as_ref() {
+                        None => "<none>".to_string(),
+                        Some(b) => match b.as_text() {
+                            Some(t) => t.chars().take(160).collect(),
+                            None => serde_json::to_string(b)
+                                .unwrap_or_else(|e| format!("<unserializable: {e}>"))
+                                .chars()
+                                .take(160)
+                                .collect(),
+                        },
+                    };
                     let message = match perceptual_from_event(&event) {
                         Ok(message) => message,
                         Err(reason) => {
@@ -273,6 +301,8 @@ impl PersonaConversation for AircPersonaConversation {
                                     persona = %self.own_peer_id,
                                     from_peer = %event.peer_id,
                                     body_kind,
+                                    event_kind,
+                                    body_preview,
                                     reason,
                                     probe_class = "persona.inbound.filtered_non_turn",
                                     "message-shaped event FAILED to decode — a peer may be structurally unheard (#177)"
@@ -282,6 +312,8 @@ impl PersonaConversation for AircPersonaConversation {
                                     persona = %self.own_peer_id,
                                     from_peer = %event.peer_id,
                                     body_kind,
+                                    event_kind,
+                                    body_preview,
                                     reason,
                                     probe_class = "persona.inbound.filtered_non_turn",
                                     "raw event was not a perceptual room turn — skipped (#146/#177)"

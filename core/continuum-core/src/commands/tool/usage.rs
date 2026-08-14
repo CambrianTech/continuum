@@ -20,19 +20,25 @@ use ts_rs::TS;
 
 use crate::cognition::tool_usage::{snapshot, Stat};
 use crate::commands::help::did_you_mean;
-use crate::sdk_codegen::{command_registry, ActionCommand, AccessLevel, CommandError, Ctx};
+use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// Params for `tool/usage` — no inputs; the report is the whole tally since the
 /// last deploy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolUsageParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolUsageParams.ts"
+)]
 pub struct ToolUsageParams {}
 
 /// A tool name that resolved — a declared alias hit, or our canonical name.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolUsageResolvedRow.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolUsageResolvedRow.ts"
+)]
 pub struct ToolUsageResolvedRow {
     pub name: String,
     #[ts(type = "number")]
@@ -44,7 +50,10 @@ pub struct ToolUsageResolvedRow {
 /// A tool name that MISSED — no command answers to it — with the fix suggestion.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolUsageMissRow.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolUsageMissRow.ts"
+)]
 pub struct ToolUsageMissRow {
     /// The name the model reached for that didn't resolve.
     pub name: String,
@@ -58,7 +67,10 @@ pub struct ToolUsageMissRow {
 /// Result of `tool/usage` — resolved calls + the actionable miss list.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/tool/ToolUsageReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/tool/ToolUsageReport.ts"
+)]
 pub struct ToolUsageReport {
     #[ts(type = "number")]
     pub total_calls: u64,
@@ -123,7 +135,10 @@ fn build_report(usage: Vec<(String, Stat)>, ai_names: &[&str]) -> ToolUsageRepor
                 format!(
                     "closest: {} — add `{}` as an alias on it (the command owns its aliases), \
                      or rename to this form if it's the industry standard",
-                    hits.iter().map(|h| format!("`{h}`")).collect::<Vec<_>>().join(", "),
+                    hits.iter()
+                        .map(|h| format!("`{h}`"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     name
                 )
             };
@@ -160,13 +175,41 @@ mod tests {
     #[test]
     fn report_folds_tally_into_resolved_and_actionable_misses() {
         let tally = vec![
-            ("read_file".to_string(), Stat { alias_hits: 3, canonical: 0, misses: 0 }),
-            ("code/read".to_string(), Stat { alias_hits: 0, canonical: 5, misses: 0 }),
+            (
+                "read_file".to_string(),
+                Stat {
+                    alias_hits: 3,
+                    canonical: 0,
+                    misses: 0,
+                },
+            ),
+            (
+                "code/read".to_string(),
+                Stat {
+                    alias_hits: 0,
+                    canonical: 5,
+                    misses: 0,
+                },
+            ),
             // a name no command answers to, but close to `code/read` — should get
             // a did-you-mean remedy.
-            ("read_fil".to_string(), Stat { alias_hits: 0, canonical: 0, misses: 2 }),
+            (
+                "read_fil".to_string(),
+                Stat {
+                    alias_hits: 0,
+                    canonical: 0,
+                    misses: 2,
+                },
+            ),
             // a name nothing is close to — should get the "tool we lack" remedy.
-            ("frobnicate_widget".to_string(), Stat { alias_hits: 0, canonical: 0, misses: 1 }),
+            (
+                "frobnicate_widget".to_string(),
+                Stat {
+                    alias_hits: 0,
+                    canonical: 0,
+                    misses: 1,
+                },
+            ),
         ];
         let ai_names = ["code/read", "code/write", "code/list"];
         let out = build_report(tally, &ai_names);

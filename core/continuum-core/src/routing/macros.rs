@@ -111,11 +111,7 @@ macro_rules! probe {
 #[macro_export]
 macro_rules! time_sync {
     ($name:expr, $body:expr) => {{
-        let __span = ::tracing::info_span!(
-            "time",
-            seam = $name,
-            probe_class = "timing",
-        );
+        let __span = ::tracing::info_span!("time", seam = $name, probe_class = "timing",);
         let __enter = __span.enter();
         $body
     }};
@@ -206,11 +202,7 @@ macro_rules! time_probe {
     ($name:expr, $future:expr) => {{
         ::tracing::Instrument::instrument(
             $future,
-            ::tracing::info_span!(
-                "time",
-                seam = $name,
-                probe_class = "timing",
-            ),
+            ::tracing::info_span!("time", seam = $name, probe_class = "timing",),
         )
         .await
     }};
@@ -298,11 +290,7 @@ mod tests {
     fn probe_state_class_compiles() {
         let working_set_size: usize = 12;
         let recall_candidates: usize = 23;
-        crate::probe!(
-            class = "state",
-            working_set_size,
-            recall_candidates
-        );
+        crate::probe!(class = "state", working_set_size, recall_candidates);
     }
 
     #[test]
@@ -337,9 +325,8 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("current-thread runtime");
-        let result = runtime.block_on(async {
-            crate::time_probe!("test_phase", produces_forty_two())
-        });
+        let result =
+            runtime.block_on(async { crate::time_probe!("test_phase", produces_forty_two()) });
         assert_eq!(result, 42);
     }
 
@@ -357,9 +344,8 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("current-thread runtime");
-        let result: Result<i32, &str> = runtime.block_on(async {
-            crate::time_probe!("test_error_path", fails())
-        });
+        let result: Result<i32, &str> =
+            runtime.block_on(async { crate::time_probe!("test_error_path", fails()) });
         assert_eq!(result, Err("intentional"));
     }
 
@@ -376,9 +362,8 @@ mod tests {
             .build()
             .expect("current-thread runtime");
         let result = runtime.block_on(async {
-            let outer = crate::time_probe!("outer", async {
-                crate::time_probe!("inner", doubled(21))
-            });
+            let outer =
+                crate::time_probe!("outer", async { crate::time_probe!("inner", doubled(21)) });
             outer
         });
         assert_eq!(result, 42);
@@ -390,7 +375,11 @@ mod tests {
         // the substrate returns an empty Vec — honest reporting per
         // [[no-fallbacks-ever]].
         let s: Vec<String> = crate::stack!();
-        assert!(s.is_empty(), "expected empty stack with no Layer installed, got {:?}", s);
+        assert!(
+            s.is_empty(),
+            "expected empty stack with no Layer installed, got {:?}",
+            s
+        );
     }
 
     /// With the URI-aware tracing Layer installed and a dispatched
@@ -401,8 +390,8 @@ mod tests {
     fn stack_inside_a_dispatched_span_returns_uri_frame() {
         use tracing_subscriber::prelude::*;
 
-        let subscriber = tracing_subscriber::registry()
-            .with(crate::routing::UriCaptureLayer::new());
+        let subscriber =
+            tracing_subscriber::registry().with(crate::routing::UriCaptureLayer::new());
 
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
@@ -422,8 +411,8 @@ mod tests {
     fn stack_walks_nested_dispatched_spans() {
         use tracing_subscriber::prelude::*;
 
-        let subscriber = tracing_subscriber::registry()
-            .with(crate::routing::UriCaptureLayer::new());
+        let subscriber =
+            tracing_subscriber::registry().with(crate::routing::UriCaptureLayer::new());
 
         tracing::subscriber::with_default(subscriber, || {
             let outer = tracing::info_span!("cmd", uri = "airc:///inference/llm/generate");
@@ -447,9 +436,7 @@ mod tests {
         // a sub-block. The nested time! span becomes a child of the
         // outer probe's span; the timing flamegraph shows the chain.
         let total = crate::time_sync!("outer", {
-            let inner_result = crate::time_sync!("inner", {
-                21 + 21
-            });
+            let inner_result = crate::time_sync!("inner", { 21 + 21 });
             crate::probe!(class = "state", inner = inner_result);
             inner_result
         });

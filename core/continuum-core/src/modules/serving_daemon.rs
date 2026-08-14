@@ -536,7 +536,10 @@ struct LaneDemandState {
 impl LaneDemandState {
     /// Recompute the effective demand from base + overrides and publish it to the cell.
     fn recompute(&self) {
-        let overrides = self.overrides.lock().expect("lane-demand overrides lock poisoned");
+        let overrides = self
+            .overrides
+            .lock()
+            .expect("lane-demand overrides lock poisoned");
         let effective = overrides
             .iter()
             .map(|(_, active)| *active)
@@ -589,7 +592,6 @@ pub fn release_lane_demand(id: u64) {
 }
 
 impl ServingDaemonModule {
-
     /// The current lane demand (≥ 1).
     /// Register serving's autonomic PLANNER to run on the memory authority's tick
     /// (MEMORY-AUTHORITY-DAEMON slice 1b). The lane plan — which model, how many lanes,
@@ -2117,6 +2119,19 @@ impl ServingDaemonModule {
                         self.downshift_streak.store(0, Ordering::Relaxed);
                     }
                 }
+                // The per-prefill transient spike, derived BEFORE the probe so the
+                // probe can carry it. This value decides the prefill grant's
+                // deadband (#415) and prices "can local serve one more?" in
+                // capacity::lease — and until 2026-08-13 it appeared in NEITHER,
+                // so a flapping grant was unfalsifiable in exactly the way the
+                // served_window comment below warns about. `None` here is NOT the
+                // same fact as a measured zero: it means the served base model was
+                // absent from its own candidate list, which is a planner
+                // inconsistency, not "this model has no compute buffer".
+                let spike_of_served = candidates
+                    .iter()
+                    .find(|c| c.model_id == plan.base_model_id)
+                    .map(|f| f.compute_buffer_per_lane());
                 crate::probe!(
                     class = "serving.plan",
                     base_model = plan.base_model_id.as_str(),
@@ -2125,6 +2140,12 @@ impl ServingDaemonModule {
                     fits_on_gpu = plan.fits_on_gpu,
                     usable_gb = (budget.usable_bytes / 1_000_000_000),
                     candidates = candidates.len(),
+                    // #415: the deadband's deciding input. Zero DISABLES the
+                    // deadband entirely (reconcile short-circuits), so a grant
+                    // that flaps while this reads 0 is a different defect from one
+                    // that flaps with a real spike — and they were indistinguishable.
+                    spike_bytes = spike_of_served.unwrap_or(0),
+                    spike_known = spike_of_served.is_some(),
                     // WHICH bound decided the window. Without this the plan is
                     // unfalsifiable: a window that does not grow after demand rises
                     // looks identical whether the HOST could not fit more, the
@@ -2152,11 +2173,25 @@ impl ServingDaemonModule {
                 // And the prefill throttle's demand facts (#56): the served model's per-spike
                 // transient compute buffer + the lane count. Published HERE, next to the lane
                 // count, so both gates read the one plan — no second path.
-                let spike = candidates
-                    .iter()
-                    .find(|c| c.model_id == plan.base_model_id)
-                    .map(|f| f.compute_buffer_per_lane())
-                    .unwrap_or(0);
+                // A MISSING spike is not a measured zero. Publishing 0 silently
+                // disables the prefill deadband (#415) and prices lease admission
+                // as if prefill were free — two safety mechanisms turned off by an
+                // absent signal rather than a decision
+                // ([[removing-a-hardcode-is-not-automatically-an-improvement]]:
+                // a missing signal must be loud, never a default that happens to
+                // parse). Still publishes 0 so behaviour is unchanged pending the
+                // #415 decision on what a deadband means with no spike — but it can
+                // no longer happen invisibly.
+                if spike_of_served.is_none() {
+                    crate::probe!(
+                        class = "serving.plan.spike_missing",
+                        base_model = plan.base_model_id.as_str(),
+                        candidates = candidates.len(),
+                        "served base model absent from its own candidate list — per-prefill \
+                         spike unknown, publishing 0, which DISABLES the prefill deadband",
+                    );
+                }
+                let spike = spike_of_served.unwrap_or(0);
                 crate::cognition::prefill_throttle::publish_serving(spike, plan.lanes as usize);
                 // send_replace keeps the latest even with no live receivers yet.
                 let _ = self.plan_tx.send_replace(Some(plan));
@@ -3091,7 +3126,11 @@ mod tests {
             next_id: std::sync::atomic::AtomicU64::new(1),
         };
         state.recompute();
-        assert_eq!(cell.load(Ordering::Relaxed), 4, "base floor before any lease");
+        assert_eq!(
+            cell.load(Ordering::Relaxed),
+            4,
+            "base floor before any lease"
+        );
 
         // Overlap: eval quiesce_all (active 0 → floored 1), then a solve's
         // quiesce_others (active 1) while the first is still held.
@@ -4771,9 +4810,7 @@ mod tests {
     // `available_bytes` again would make this budget ignore the floor.
     #[tokio::test]
     async fn serving_budget_plans_around_other_consumers_floors() {
-        use crate::resources::{
-            DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon,
-        };
+        use crate::resources::{DaemonConfig, GovernorConfig, MockCapacitySource, ResourceDaemon};
         let src = Arc::new(MockCapacitySource::new(
             crate::resources::ResourceKind::Vram,
             10_000,
@@ -4798,7 +4835,11 @@ mod tests {
         daemon.reserve("embed", crate::resources::ResourceKind::Vram, 1_800);
         assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
         // Serving's own hypothetical floor would NOT count against itself.
-        daemon.reserve(SERVING_CONSUMER_ID, crate::resources::ResourceKind::Vram, 3_000);
+        daemon.reserve(
+            SERVING_CONSUMER_ID,
+            crate::resources::ResourceKind::Vram,
+            3_000,
+        );
         assert_eq!(governed_vram_ceiling(&daemon), Some(8_200));
     }
 }

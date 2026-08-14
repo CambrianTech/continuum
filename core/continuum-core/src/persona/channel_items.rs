@@ -1189,7 +1189,7 @@ mod tests {
             room_id: Uuid::new_v4().to_string(),
             content: "look at this".into(),
             sender_id: Uuid::new_v4().to_string(),
-            sender_name: "joel".into(),
+            sender_name: "operator".into(),
             sender_type: "human".into(),
             mentions: false,
             timestamp: now_ms(),

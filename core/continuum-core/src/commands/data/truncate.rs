@@ -6,11 +6,12 @@ use crate::modules::data::DataState;
 use crate::orm::types::StorageResult;
 
 /// Params for `data/truncate`.
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/data/DataTruncateParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/data/DataTruncateParams.ts"
+)]
 pub struct DataTruncateParams {
     /// The collection to empty.
     pub collection: String,

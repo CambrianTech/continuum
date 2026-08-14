@@ -80,7 +80,10 @@ mod tests {
             .run(&Ctx::default(), ServingPlanParams::default())
             .await
             .expect("plan read must succeed");
-        assert!(out.plan.is_none(), "no decision before the daemon computes one");
+        assert!(
+            out.plan.is_none(),
+            "no decision before the daemon computes one"
+        );
     }
 
     // what this catches: the body returns the published decision from the captured
@@ -100,9 +103,6 @@ mod tests {
             .run(&Ctx::default(), ServingPlanParams::default())
             .await
             .expect("plan read must succeed");
-        assert_eq!(
-            out.plan.expect("plan present").base_model_id,
-            "qwen3-coder"
-        );
+        assert_eq!(out.plan.expect("plan present").base_model_id, "qwen3-coder");
     }
 }

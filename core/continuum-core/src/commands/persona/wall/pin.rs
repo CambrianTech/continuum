@@ -44,12 +44,15 @@ use crate::sdk_codegen::CommandError;
 
 /// Which persona's citizen publishes the post, and the post itself.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaWallPinParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaWallPinParams.ts"
+)]
 pub struct PersonaWallPinParams {
     /// The persona (airc peer_id Uuid, as in `persona/instances/list`) whose
     /// citizen publishes the post. The post lands on that citizen's current
     /// room's board. Fails loud if mal-formed or not currently online.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
     /// Consumer-defined category label — common values: `plan`, `rules`,
     /// `agenda`, `principles`, `recipe`, `decision`. The substrate has no
     /// opinion on the string; `WallSource` renders it as the per-post header
@@ -67,7 +70,10 @@ pub struct PersonaWallPinParams {
 
 /// The published post's identity, echoed so the caller can later supersede it.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaWallPinResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaWallPinResult.ts"
+)]
 pub struct PersonaWallPinResult {
     /// The new post's `post_id` — pass this back as `supersedes` to edit it.
     pub post_id: String,
@@ -96,7 +102,7 @@ crate::action_command! {
         // persona/identity/get. What a surface displays (8-char short form), its
         // verbs must accept.
         let persona_id =
-            crate::id_resolve::resolve(&p.persona_id, &crate::persona::card::ids(), "persona")
+            crate::id_resolve::resolve(p.persona_id.as_str(), &crate::persona::card::ids(), "persona")
                 .map_err(CommandError::Invalid)?;
         let supersedes = match p.supersedes.as_deref() {
             Some(s) => Some(Uuid::parse_str(s).map_err(|e| {
@@ -149,7 +155,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 PersonaWallPinParams {
-                    persona_id: "not-a-uuid".to_string(),
+                    persona_id: "not-a-uuid".to_string().into(),
                     category: "plan".to_string(),
                     body: "x".to_string(),
                     supersedes: None,
@@ -173,7 +179,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 PersonaWallPinParams {
-                    persona_id: Uuid::new_v4().to_string(),
+                    persona_id: Uuid::new_v4().to_string().into(),
                     category: "plan".to_string(),
                     body: "x".to_string(),
                     supersedes: Some("not-a-uuid".to_string()),
@@ -197,7 +203,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 PersonaWallPinParams {
-                    persona_id: Uuid::new_v4().to_string(),
+                    persona_id: Uuid::new_v4().to_string().into(),
                     category: "plan".to_string(),
                     body: "x".to_string(),
                     supersedes: None,

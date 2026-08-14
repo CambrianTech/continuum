@@ -83,7 +83,9 @@ impl HfRepoId {
             repo_id: raw.to_string(),
             reason: reason.to_string(),
         };
-        let (ns, name) = raw.split_once('/').ok_or_else(|| bad("expected 'namespace/name'"))?;
+        let (ns, name) = raw
+            .split_once('/')
+            .ok_or_else(|| bad("expected 'namespace/name'"))?;
         if name.contains('/') {
             return Err(bad("more than one '/' — expected exactly 'namespace/name'"));
         }
@@ -179,10 +181,14 @@ impl PublishRequest {
         }
         // 2. Required card fields.
         if inputs.base_model.trim().is_empty() {
-            return Err(PublishError::MissingField { field: "base_model" });
+            return Err(PublishError::MissingField {
+                field: "base_model",
+            });
         }
         if inputs.trait_kind.trim().is_empty() {
-            return Err(PublishError::MissingField { field: "trait_kind" });
+            return Err(PublishError::MissingField {
+                field: "trait_kind",
+            });
         }
         // 3. Repo id.
         let repo_id = HfRepoId::parse(&inputs.repo_id)?;
@@ -250,7 +256,9 @@ mod tests {
         assert_eq!(req.repo_id.as_str(), "continuum-ai/devstral-code-asha");
         assert!((req.lift_pct - 5.1).abs() < 1e-9);
         assert!(req.tags.contains(&"continuum:role=code".to_string()));
-        assert!(req.tags.contains(&"continuum:base=devstral-small-2507-gguf".to_string()));
+        assert!(req
+            .tags
+            .contains(&"continuum:base=devstral-small-2507-gguf".to_string()));
     }
 
     // what this catches: the market boundary must REFUSE a layer that didn't beat
@@ -270,7 +278,14 @@ mod tests {
     // what this catches: malformed HF targets never reach the network.
     #[test]
     fn malformed_repo_ids_are_refused() {
-        for bad in ["noSlash", "too/many/slashes", "/name", "ns/", "ns/na me", "ns/../x"] {
+        for bad in [
+            "noSlash",
+            "too/many/slashes",
+            "/name",
+            "ns/",
+            "ns/na me",
+            "ns/../x",
+        ] {
             let mut i = good_inputs();
             i.repo_id = bad.to_string();
             assert!(
@@ -307,13 +322,17 @@ mod tests {
         no_base.base_model = "  ".to_string();
         assert_eq!(
             PublishRequest::build(&no_base, |_| true),
-            Err(PublishError::MissingField { field: "base_model" })
+            Err(PublishError::MissingField {
+                field: "base_model"
+            })
         );
         let mut no_trait = good_inputs();
         no_trait.trait_kind = String::new();
         assert_eq!(
             PublishRequest::build(&no_trait, |_| true),
-            Err(PublishError::MissingField { field: "trait_kind" })
+            Err(PublishError::MissingField {
+                field: "trait_kind"
+            })
         );
     }
 }

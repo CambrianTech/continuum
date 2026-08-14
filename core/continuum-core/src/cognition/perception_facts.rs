@@ -277,7 +277,11 @@ mod tests {
     #[test]
     fn registry_renders_bounds_always_and_loops_only_on_evidence() {
         let turns = vec![
-            turn("Anwen", "let us look at the parser seam in the json module today", false),
+            turn(
+                "Anwen",
+                "let us look at the parser seam in the json module today",
+                false,
+            ),
             turn("Asha", "sounds good, starting now", true),
         ];
         let own = vec!["sounds good, starting now".to_string()];
@@ -353,8 +357,14 @@ mod tests {
         wm.record_fact("chose silence — said nothing to the room");
         wm.record_fact("chose silence — said nothing to the room (again)");
         let l = ledger(&render_facts(&cx, &FactPolicy::default()));
-        assert!(!l.contains("nothing has executed yet"), "denied her real act: {l}");
-        assert!(l.contains("aged out of working memory"), "must explain the void: {l}");
+        assert!(
+            !l.contains("nothing has executed yet"),
+            "denied her real act: {l}"
+        );
+        assert!(
+            l.contains("aged out of working memory"),
+            "must explain the void: {l}"
+        );
         assert!(l.contains("1 step executed earlier"));
     }
 }

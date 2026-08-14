@@ -31,7 +31,11 @@ pub struct CacheEntry {
 
 impl CacheEntry {
     pub fn new(id: impl Into<String>, disk: DiskState, pinned: bool) -> Self {
-        Self { id: id.into(), disk, pinned }
+        Self {
+            id: id.into(),
+            disk,
+            pinned,
+        }
     }
 }
 
@@ -94,7 +98,11 @@ pub fn reconcile(entries: &[CacheEntry], budget_bytes: u64) -> CacheDecision {
     // evict pinned). If that still exceeds the budget, it's a hard shortfall.
     let shortfall_bytes = used.saturating_sub(budget_bytes);
 
-    CacheDecision { fetch, evict, shortfall_bytes }
+    CacheDecision {
+        fetch,
+        evict,
+        shortfall_bytes,
+    }
 }
 
 #[cfg(test)]
@@ -103,7 +111,10 @@ mod tests {
     use std::path::PathBuf;
 
     fn present(bytes: u64) -> DiskState {
-        DiskState::Present { path: PathBuf::from("/x"), bytes }
+        DiskState::Present {
+            path: PathBuf::from("/x"),
+            bytes,
+        }
     }
 
     fn entry(id: &str, disk: DiskState, pinned: bool) -> CacheEntry {
@@ -134,7 +145,10 @@ mod tests {
         // used=110, budget=70 → must free 40. Largest unpinned (cache-big, 40) does it.
         let d = reconcile(&e, 70);
         assert_eq!(d.evict, vec!["cache-big".to_string()]);
-        assert!(!d.is_shortfall(), "70 fits the 50 pinned + 20 small after eviction");
+        assert!(
+            !d.is_shortfall(),
+            "70 fits the 50 pinned + 20 small after eviction"
+        );
         assert!(!d.evict.contains(&"pinned-model".to_string()));
     }
 

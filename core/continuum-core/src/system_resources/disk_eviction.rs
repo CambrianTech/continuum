@@ -356,19 +356,17 @@ fn entries_identical(a: &Path, b: &Path) -> bool {
             let Ok(entries) = std::fs::read_dir(a) else {
                 return false;
             };
-            let names_a: Vec<std::ffi::OsString> = entries
-                .flatten()
-                .map(|e| e.file_name())
-                .collect();
+            let names_a: Vec<std::ffi::OsString> =
+                entries.flatten().map(|e| e.file_name()).collect();
             let Ok(entries_b) = std::fs::read_dir(b) else {
                 return false;
             };
             let names_b: HashSet<std::ffi::OsString> =
                 entries_b.flatten().map(|e| e.file_name()).collect();
             names_a.len() == names_b.len()
-                && names_a.iter().all(|n| {
-                    names_b.contains(n) && entries_identical(&a.join(n), &b.join(n))
-                })
+                && names_a
+                    .iter()
+                    .all(|n| names_b.contains(n) && entries_identical(&a.join(n), &b.join(n)))
         }
         _ => false,
     }
@@ -401,7 +399,10 @@ fn copy_entry_durable(src: &Path, dst: &Path) -> std::io::Result<()> {
         // fsync on a read-only fd, which is why this survived on
         // macOS/Linux — [[dir-opened-as-file-windows-only]] is the same
         // family: a file-API assumption that only one platform enforces.
-        std::fs::OpenOptions::new().write(true).open(dst)?.sync_all()?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dst)?
+            .sync_all()?;
     }
     Ok(())
 }
@@ -451,7 +452,9 @@ impl ResourcePool for NvmeServingTierPool {
             if self.active.protects(&path) {
                 continue;
             }
-            let Some(name) = path.file_name() else { continue };
+            let Some(name) = path.file_name() else {
+                continue;
+            };
             let dest = cold_root.join(name);
 
             if dest.exists() {
@@ -684,8 +687,8 @@ mod tests {
         use super::super::disk_pressure::DiskReporter as _;
         for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h")) {
             let name = dir.report().name;
-            let decided = owned.contains(&name.as_str())
-                || deferred.iter().any(|(n, _)| *n == name);
+            let decided =
+                owned.contains(&name.as_str()) || deferred.iter().any(|(n, _)| *n == name);
             assert!(
                 decided,
                 "cache class '{name}' has NO eviction decision — register an owner pool or \
@@ -774,7 +777,10 @@ mod tests {
                 hot.path().join("served-model/model.gguf").exists(),
                 "the served model must survive unlimited eviction demand"
             );
-            assert!(!hot.path().join("stale-model").exists(), "frozen artifacts migrate");
+            assert!(
+                !hot.path().join("stale-model").exists(),
+                "frozen artifacts migrate"
+            );
             assert!(!hot.path().join("old.gguf").exists());
         }
 
@@ -805,8 +811,14 @@ mod tests {
                 cold.path().join("stale-model/model.gguf").exists(),
                 "verified cold copy exists"
             );
-            assert!(!hot.path().join("stale-model").exists(), "hot copy gone after verify");
-            assert!(hot.path().join("old.gguf").exists(), "later candidate untouched");
+            assert!(
+                !hot.path().join("stale-model").exists(),
+                "hot copy gone after verify"
+            );
+            assert!(
+                hot.path().join("old.gguf").exists(),
+                "later candidate untouched"
+            );
             assert_eq!(tracked.bytes(), usage_before - 4000);
 
             // Second round: old.gguf's twin is already frozen — pure drop.
@@ -849,7 +861,11 @@ mod tests {
                 "collision with different content: hot copy kept"
             );
             let cold_bytes = std::fs::read(cold.path().join("old.gguf")).expect("read");
-            assert_eq!(cold_bytes, vec![9u8; 3000], "cold artifact never overwritten");
+            assert_eq!(
+                cold_bytes,
+                vec![9u8; 3000],
+                "cold artifact never overwritten"
+            );
         }
 
         // what this catches: the capacity derivation (#287-style) — 10% of
@@ -880,7 +896,10 @@ mod tests {
                 set.protects(Path::new("/hot/served-model/model.gguf")),
                 "candidate under active dir is protected"
             );
-            assert!(set.protects(Path::new("/hot")), "parent of active is protected");
+            assert!(
+                set.protects(Path::new("/hot")),
+                "parent of active is protected"
+            );
             assert!(!set.protects(Path::new("/hot/other-model")));
             set.release(Path::new("/hot/served-model"));
             assert!(!set.protects(Path::new("/hot/served-model")));

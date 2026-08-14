@@ -67,10 +67,7 @@ mod tests {
     // registered and grid-routable, but never a remote-callable persona toolbelt verb.
     #[test]
     fn name_and_access_are_the_contract() {
-        assert_eq!(
-            SemanticSearchTools::NAME,
-            "cognition/semantic-search-tools"
-        );
+        assert_eq!(SemanticSearchTools::NAME, "cognition/semantic-search-tools");
         assert_eq!(SemanticSearchTools::ACCESS, AccessLevel::Internal);
     }
 }

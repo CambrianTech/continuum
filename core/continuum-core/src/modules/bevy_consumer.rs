@@ -57,7 +57,8 @@ use async_trait::async_trait;
 use crate::gpu::{GpuMemoryManager, GpuSubsystem};
 use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::resources::{
-    ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ResourceConsumer, ResourceKind,
+    ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ResourceConsumer,
+    ResourceKind,
 };
 
 /// The renderer surface the consumer observes and drives — every read and the
@@ -142,7 +143,10 @@ impl BevyConsumer {
     /// Inject a custom surface — tests drive the refuse/shed disposition (and
     /// assert the renderer is NEVER shed while a call is live) without a real Bevy
     /// thread.
-    pub fn with_surface(lifecycle: Arc<AudioResourceLifecycle>, surface: Arc<dyn RenderSurface>) -> Self {
+    pub fn with_surface(
+        lifecycle: Arc<AudioResourceLifecycle>,
+        surface: Arc<dyn RenderSurface>,
+    ) -> Self {
         Self { lifecycle, surface }
     }
 }
@@ -272,8 +276,15 @@ mod tests {
 
         assert_eq!(out.status, ReclaimStatus::Refused);
         assert_eq!(out.freed_bytes, 0);
-        assert!(out.detail.unwrap().contains("freeze the avatar"), "named refusal");
-        assert_eq!(surface.sheds(), 0, "the renderer is never shed while a call is live");
+        assert!(
+            out.detail.unwrap().contains("freeze the avatar"),
+            "named refusal"
+        );
+        assert_eq!(
+            surface.sheds(),
+            0,
+            "the renderer is never shed while a call is live"
+        );
         assert!(surface.is_running(), "renderer still up");
     }
 
@@ -290,7 +301,11 @@ mod tests {
         let out = bevy.reclaim(pressure(3_000_000)).await;
 
         assert_eq!(out.status, ReclaimStatus::Refused);
-        assert_eq!(surface.sheds(), 0, "a rendering slot alone protects the renderer");
+        assert_eq!(
+            surface.sheds(),
+            0,
+            "a rendering slot alone protects the renderer"
+        );
     }
 
     // what this catches: the "constantly kicking" scenario — under SUSTAINED
@@ -324,7 +339,10 @@ mod tests {
         let out = bevy.reclaim(pressure(2_000_000_000)).await;
 
         assert_eq!(out.status, ReclaimStatus::Released);
-        assert_eq!(out.freed_bytes, 3_000_000_000, "reports the tracked residency released");
+        assert_eq!(
+            out.freed_bytes, 3_000_000_000,
+            "reports the tracked residency released"
+        );
         assert_eq!(surface.sheds(), 1, "shed exactly once when idle");
         assert!(!surface.is_running(), "renderer torn down");
     }
@@ -357,7 +375,8 @@ mod tests {
     #[tokio::test]
     async fn footprint_reports_tracked_vram_only_when_running() {
         let lifecycle = Arc::new(AudioResourceLifecycle::new());
-        let up = BevyConsumer::with_surface(lifecycle.clone(), FakeSurface::new(true, 2, 53_000_000));
+        let up =
+            BevyConsumer::with_surface(lifecycle.clone(), FakeSurface::new(true, 2, 53_000_000));
         let fp = up.footprint();
         assert_eq!(fp.len(), 1);
         assert_eq!(fp[0].kind, ResourceKind::Vram);
@@ -365,7 +384,10 @@ mod tests {
         assert!(fp[0].detail.contains("2 slot(s) rendering"));
 
         let down = BevyConsumer::with_surface(lifecycle.clone(), FakeSurface::new(false, 0, 0));
-        assert!(down.footprint().is_empty(), "renderer down → report nothing");
+        assert!(
+            down.footprint().is_empty(),
+            "renderer down → report nothing"
+        );
     }
 
     // ---- the crown jewel: all THREE consumers, one live call ------------------
@@ -379,7 +401,11 @@ mod tests {
     }
     impl ReleasablePeer {
         fn new(id: &str, held: u64) -> Arc<Self> {
-            Arc::new(Self { id: id.into(), held: AtomicU64::new(held), reclaims: AtomicU32::new(0) })
+            Arc::new(Self {
+                id: id.into(),
+                held: AtomicU64::new(held),
+                reclaims: AtomicU32::new(0),
+            })
         }
     }
     #[async_trait]
@@ -423,7 +449,10 @@ mod tests {
         }
     }
 
-    async fn settle(daemon: &ResourceDaemon, mut pred: impl FnMut(&crate::resources::LeaseBoard) -> bool) -> bool {
+    async fn settle(
+        daemon: &ResourceDaemon,
+        mut pred: impl FnMut(&crate::resources::LeaseBoard) -> bool,
+    ) -> bool {
         for _ in 0..200 {
             if pred(&daemon.board()) {
                 return true;
@@ -467,7 +496,10 @@ mod tests {
 
         // Renderer: up, a slot rendering, a Pinned lease.
         let surface = FakeSurface::new(true, 1, 3_000);
-        let bevy = Arc::new(BevyConsumer::with_surface(lifecycle.clone(), surface.clone()));
+        let bevy = Arc::new(BevyConsumer::with_surface(
+            lifecycle.clone(),
+            surface.clone(),
+        ));
 
         // Serving: fully reclaimable, Graceful.
         let serving = ReleasablePeer::new("serving", 8_000);
@@ -478,13 +510,22 @@ mod tests {
             DaemonConfig {
                 tick_interval: Duration::from_millis(20),
                 min_reclaim_budget: Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+                governor: GovernorConfig {
+                    min_dwell_ms: 0,
+                    graceful_grace_ms: 50,
+                },
             },
         );
 
-        daemon.acquire(&lease("serving", 8_000, ReclaimPolicy::Graceful)).unwrap();
-        let call = daemon.acquire(&lease("voice", 3_000, ReclaimPolicy::Pinned)).unwrap();
-        let render = daemon.acquire(&lease("render", 3_000, ReclaimPolicy::Pinned)).unwrap();
+        daemon
+            .acquire(&lease("serving", 8_000, ReclaimPolicy::Graceful))
+            .unwrap();
+        let call = daemon
+            .acquire(&lease("voice", 3_000, ReclaimPolicy::Pinned))
+            .unwrap();
+        let render = daemon
+            .acquire(&lease("render", 3_000, ReclaimPolicy::Pinned))
+            .unwrap();
         assert_eq!(daemon.board().leases.len(), 3);
 
         // Squeeze VRAM to 7GB — granted (14GB) is 7GB over. Reclaiming serving fully
@@ -492,24 +533,42 @@ mod tests {
         src.set_ceiling(7_000);
 
         let settled = settle(&daemon, |b| board_total(b) <= 7_000).await;
-        assert!(settled, "daemon should reclaim serving to get within budget");
+        assert!(
+            settled,
+            "daemon should reclaim serving to get within budget"
+        );
 
         // Neither side of the live call was touched — the whole point.
         let board = daemon.board();
         assert_eq!(
-            board.leases.iter().find(|l| l.lease_id == call.lease_id).map(|l| l.bytes),
+            board
+                .leases
+                .iter()
+                .find(|l| l.lease_id == call.lease_id)
+                .map(|l| l.bytes),
             Some(3_000),
             "the live call's voice Pinned lease is never shrunk"
         );
         assert_eq!(
-            board.leases.iter().find(|l| l.lease_id == render.lease_id).map(|l| l.bytes),
+            board
+                .leases
+                .iter()
+                .find(|l| l.lease_id == render.lease_id)
+                .map(|l| l.bytes),
             Some(3_000),
             "the live call's render Pinned lease is never shrunk"
         );
         assert_eq!(surface.sheds(), 0, "the renderer was never torn down");
         assert!(surface.is_running(), "the video feed into LiveKit survives");
-        assert_eq!(lifecycle.active_count(), 1, "the human is still on the call");
-        assert!(serving.reclaims.load(Ordering::SeqCst) >= 1, "serving is what got reclaimed");
+        assert_eq!(
+            lifecycle.active_count(),
+            1,
+            "the human is still on the call"
+        );
+        assert!(
+            serving.reclaims.load(Ordering::SeqCst) >= 1,
+            "serving is what got reclaimed"
+        );
         assert!(
             serving.held.load(Ordering::SeqCst) < 8_000,
             "serving gave up VRAM (tiered down) — it is the reclaimable one, not the call"

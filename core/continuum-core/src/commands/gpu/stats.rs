@@ -11,7 +11,10 @@ use crate::gpu::{GpuMemoryManager, GpuStats};
 
 /// `gpu/stats` takes no input — it reports the current GPU authority state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/gpu/GpuStatsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/GpuStatsParams.ts"
+)]
 pub struct GpuStatsParams {}
 
 crate::action_command! {

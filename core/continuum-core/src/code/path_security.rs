@@ -107,7 +107,11 @@ fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
         };
         return format!(
             "There is no '{broke}' in '{}', but there IS '{best}' — did you mean '{full}'?",
-            if existing_prefix.is_empty() { "." } else { &existing_prefix }
+            if existing_prefix.is_empty() {
+                "."
+            } else {
+                &existing_prefix
+            }
         );
     }
 
@@ -117,9 +121,17 @@ fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
     let more = names.len().saturating_sub(shown.len());
     format!(
         "The path is good up to '{}' — but that directory has no '{broke}'. It contains: {}{}.",
-        if existing_prefix.is_empty() { "." } else { &existing_prefix },
+        if existing_prefix.is_empty() {
+            "."
+        } else {
+            &existing_prefix
+        },
         shown.join(", "),
-        if more > 0 { format!(", …+{more} more") } else { String::new() }
+        if more > 0 {
+            format!(", …+{more} more")
+        } else {
+            String::new()
+        }
     )
 }
 
@@ -127,7 +139,7 @@ fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
 /// edit distance, capped: 1-2 typos in a real filename, never a coincidental prefix match.
 fn nearest_name(want: &str, names: &[String]) -> Option<String> {
     let budget = match want.len() {
-        0..=3 => 0,   // too short to disambiguate — a listing is more honest
+        0..=3 => 0, // too short to disambiguate — a listing is more honest
         4..=8 => 1,
         _ => 2,
     };
@@ -582,7 +594,9 @@ mod tests {
     #[test]
     fn any_extension_writes_within_sandbox_but_escapes_are_refused() {
         let (_dir, security) = setup_workspace();
-        for ext in &["swift", "kt", "cpp", "m", "go", "java", "ts", "rs", "py", "plist"] {
+        for ext in &[
+            "swift", "kt", "cpp", "m", "go", "java", "ts", "rs", "py", "plist",
+        ] {
             let path = format!("src/test.{}", ext);
             assert!(
                 security.validate_write(&path).is_ok(),

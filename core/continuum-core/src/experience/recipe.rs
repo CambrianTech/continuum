@@ -20,16 +20,98 @@
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 
 use super::{Affordance, Experience, Layout, Member, ProofSpec, Region};
+
+/// Stable identity for a recipe. Task #274.
+///
+/// A newtype rather than a bare `Uuid` so a recipe id can never be passed where a
+/// room id, peer id, or card id is expected — the same discipline #396 is applying
+/// to airc identities. Serializes as a plain UUID string, so authored JSON stays
+/// readable and hand-editable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/RecipeId.ts"
+)]
+#[serde(transparent)]
+pub struct RecipeId(#[ts(type = "string")] pub Uuid);
+
+impl RecipeId {
+    /// Build from a literal — how `shipped::` constants are authored, so the
+    /// prod-critical set is `const`-nameable and never a magic string in core code.
+    pub const fn from_u128(value: u128) -> Self {
+        Self(Uuid::from_u128(value))
+    }
+
+    pub fn as_uuid(&self) -> Uuid {
+        self.0
+    }
+
+    /// The identity an authored recipe gets when its file names no `id`.
+    ///
+    /// A real RFC 4122 v5 UUID under a fixed namespace — deterministic, so every
+    /// node that loads the same authored file derives the same identity without
+    /// coordinating, and collision-resistant, unlike the readable stems a human
+    /// (or a model) reaches for when inventing an id by hand.
+    pub fn derived_from_purpose(purpose: &str) -> Self {
+        Self(Uuid::new_v5(&RECIPE_NAMESPACE, purpose.as_bytes()))
+    }
+}
+
+/// The v5 namespace all purpose-derived recipe ids live under. Itself a genuine v4,
+/// generated once and frozen: changing it re-identifies every derived recipe.
+const RECIPE_NAMESPACE: Uuid = Uuid::from_u128(0x2a9a1f1e_8bd2_4a56_9c0f_7d3f1a4e6b85);
+
+impl std::fmt::Display for RecipeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Recipes authored before `version` existed are revision 1, not revision 0 — a
+/// recipe that exists has shipped at least once.
+fn default_version() -> u32 {
+    1
+}
 
 /// The authored, data-only shape of an [`Experience`] — everything a recipe owns,
 /// nothing the system computes. Projected to a full manifest by [`Self::project`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/ExperienceRecipe.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/ExperienceRecipe.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperienceRecipe {
+    /// Stable identity. Task #274.
+    ///
+    /// Recipes are open — shipped in the binary, authored on disk, installed at
+    /// runtime, GENERATED on the fly — so identity cannot be a Rust enum and must
+    /// not be a name. `purpose` used to carry identity AND taxonomy at once, which
+    /// is why `benchmark` (a family) and `benchmark/hard-rs` (an instance) were
+    /// indistinguishable and why a room could bind to a purpose that resolves to
+    /// nothing and silently render as plain chat.
+    ///
+    /// Deliberately NOT a content hash: a shipped recipe is prod-critical and
+    /// long-lived, so a bugfix to `chat.json` must not orphan every chat room in
+    /// existence. Identity survives content edits. Reproducibility lives in the RUN
+    /// RECEIPT instead — `(recipe_id, version, content_hash)` — which is what pins
+    /// the exact bytes an exam was administered under without making identity
+    /// brittle. Same split forge-alloy uses for models.
+    pub id: RecipeId,
+
+    /// Which revision of this recipe. Bumped on install when the id already exists,
+    /// so a room's receipt can name the revision it ran under.
+    #[serde(default = "default_version")]
+    pub version: u32,
+
     /// The activity nature — the content-dispatch key and this recipe's table key.
+    ///
+    /// As of #274 this is a hierarchical LABEL (`benchmark/hard-rs`,
+    /// `academy/bench/swe-lite`), not identity: it groups for discovery and drives
+    /// UI sectioning, while [`Self::id`] is what anything resolves by.
     pub purpose: String,
     /// The regions this room surfaces (authored verbatim — regions carry no
     /// computed fields).
@@ -48,7 +130,10 @@ pub struct ExperienceRecipe {
 /// proof its result yields. `who_may` is intentionally ABSENT: it is computed from
 /// the ACL at projection so authorization can never be forged in a recipe.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/experience/AffordanceRecipe.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/AffordanceRecipe.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct AffordanceRecipe {
     /// The user-facing verb.
@@ -65,7 +150,28 @@ impl ExperienceRecipe {
     /// recipe file). Fails loud on malformed data — a broken embedded recipe is a
     /// build-time authoring bug, caught by the tests.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let mut value: serde_json::Value = serde_json::from_str(json)?;
+
+        // An author writing a recipe file must never have to hand-mint a UUID —
+        // "author a file, zero code" includes zero `uuidgen`. A recipe that arrives
+        // without an id gets one DERIVED from its purpose (RFC 4122 v5), so the
+        // same authored file resolves to the same identity on every node that ever
+        // loads it. That determinism is what makes it safe across a partition: two
+        // machines that independently load the same file agree, with nothing to
+        // reconcile. A recipe that DOES carry an id keeps it verbatim — shipped
+        // recipes pin theirs so identity survives a purpose rename.
+        if let Some(object) = value.as_object_mut() {
+            if !object.contains_key("id") {
+                if let Some(purpose) = object.get("purpose").and_then(|p| p.as_str()) {
+                    let derived = RecipeId::derived_from_purpose(purpose);
+                    object.insert("id".into(), serde_json::json!(derived.to_string()));
+                }
+                // No purpose either → fall through and let serde report the missing
+                // field, which names the real authoring error.
+            }
+        }
+
+        serde_json::from_value(value)
     }
 
     /// Project this authored recipe into a live [`Experience`]: compute each

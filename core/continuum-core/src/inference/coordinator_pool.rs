@@ -334,10 +334,16 @@ mod tests {
 
         assert_eq!(c.lane_count(), 2);
         let pressure_before = broker.global_pressure();
-        assert!(pressure_before > 1.0, "expected over-budget; got {pressure_before}");
+        assert!(
+            pressure_before > 1.0,
+            "expected over-budget; got {pressure_before}"
+        );
 
         let report = broker.relieve();
-        assert!(report.triggered, "broker should have acted on critical pressure");
+        assert!(
+            report.triggered,
+            "broker should have acted on critical pressure"
+        );
         assert!(
             report.bytes_freed >= 32 * 1024,
             "expected >= 32K freed; got {}",

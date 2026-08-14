@@ -16,7 +16,10 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RecordContentParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RecordContentParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordContentParams {
     /// Persona whose recent-content memory records the content.
@@ -30,7 +33,10 @@ pub struct RecordContentParams {
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/RecordContentResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/RecordContentResult.ts"
+)]
 pub struct RecordContentResult {
     pub success: bool,
     pub recorded: bool,

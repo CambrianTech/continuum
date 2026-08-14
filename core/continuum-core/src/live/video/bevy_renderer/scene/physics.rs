@@ -73,7 +73,9 @@ pub struct PhysicsBackendRegistry {
 
 impl Default for PhysicsBackendRegistry {
     fn default() -> Self {
-        Self { backend: Box::new(NoopPhysicsBackend) }
+        Self {
+            backend: Box::new(NoopPhysicsBackend),
+        }
     }
 }
 

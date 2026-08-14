@@ -29,7 +29,10 @@ use ts_rs::TS;
 
 /// One decode-token frame of the pager control loop. See module doc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/generated/pager/PagerCaptureEvent.ts")]
+#[ts(
+    export,
+    export_to = "../../../shared/generated/pager/PagerCaptureEvent.ts"
+)]
 pub struct PagerCaptureEvent {
     /// Monotonic decode-token index.
     #[ts(type = "number")]

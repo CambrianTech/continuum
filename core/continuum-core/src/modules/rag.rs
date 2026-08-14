@@ -103,7 +103,10 @@ pub struct ProjectSourceParams {
 
 /// Custom section for passthrough content
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/rag/CustomSection.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/rag/CustomSection.ts"
+)]
 pub struct CustomSection {
     /// Section type label
     pub section_type: String,
@@ -236,7 +239,10 @@ pub struct ConsciousnessSourceMetadata {
 
 /// Empty metadata for simple sources
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/rag/EmptyMetadata.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/rag/EmptyMetadata.ts"
+)]
 pub struct EmptyMetadata {}
 
 // ─── Tagged Union: RagSourceMetadata ─────────────────────────────────────────
@@ -265,7 +271,10 @@ pub enum RagSourceMetadata {
 
 /// Result from a single RAG source.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/rag/RagSourceResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/rag/RagSourceResult.ts"
+)]
 pub struct RagSourceResult {
     /// Which source this result came from
     pub source_type: String,
@@ -317,7 +326,7 @@ pub struct RagSection {
 )]
 pub struct RagComposeRequest {
     /// Persona ID for memory/persona-specific sources
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
 
     /// Room/context ID
     pub room_id: String,
@@ -386,7 +395,7 @@ impl RagState {
     /// before its sync Rayon recall layers run.
     async fn load_memory_source(
         &self,
-        persona_id: &str,
+        persona_id: &crate::identity::PersonaRef,
         room_id: &str,
         query_text: Option<&str>,
         params: &MemorySourceParams,
@@ -468,7 +477,7 @@ impl RagState {
     /// Load consciousness context (cross-context awareness, intentions, etc.)
     fn load_consciousness_source(
         &self,
-        persona_id: &str,
+        persona_id: &crate::identity::PersonaRef,
         room_id: &str,
         query_text: Option<&str>,
         params: &ConsciousnessSourceParams,
@@ -684,7 +693,7 @@ impl RagState {
     pub(crate) async fn load_source(
         &self,
         source: &RagSourceRequest,
-        persona_id: &str,
+        persona_id: &crate::identity::PersonaRef,
         room_id: &str,
         query_text: Option<&str>,
     ) -> RagSourceResult {

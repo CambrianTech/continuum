@@ -140,8 +140,9 @@ const OWN_SPEECH_RING: usize = 8;
 /// read by the deliberation faculty when rendering the repetition fact. Same
 /// process-global registry pattern as `channel_substrate` — the seam between
 /// the speaking path and the perceiving path.
-fn own_speech_rings(
-) -> &'static std::sync::Mutex<std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>> {
+fn own_speech_rings() -> &'static std::sync::Mutex<
+    std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>,
+> {
     static RINGS: std::sync::OnceLock<
         std::sync::Mutex<
             std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>,
@@ -189,12 +190,11 @@ const ROOM_SPEECH_RING: usize = 16;
 /// across an entire live chorus). Written ONCE per message at the airc
 /// inbound-attach seam (the single point every room message crosses), read
 /// by the deliberation faculty per tick.
-fn room_speech_rings(
-) -> &'static std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>> {
+fn room_speech_rings() -> &'static std::sync::Mutex<
+    std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>,
+> {
     static RINGS: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>,
-        >,
+        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>>,
     > = std::sync::OnceLock::new();
     RINGS.get_or_init(Default::default)
 }
@@ -648,7 +648,9 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
 /// A bare mention ("I agree with Anwen's plan") matches neither shape and stays
 /// unannotated. Leading beats greeting; among greetings the earliest wins.
 pub(super) fn vocative_addressee<'a>(content: &str, participants: &'a [String]) -> Option<&'a str> {
-    vocative_addressees(content, participants).into_iter().next()
+    vocative_addressees(content, participants)
+        .into_iter()
+        .next()
 }
 
 /// Every addressee the message's vocative geometry names, in discovery order,
@@ -677,7 +679,11 @@ pub(super) fn vocative_addressees<'a>(content: &str, participants: &'a [String])
             if name.is_empty() {
                 continue;
             }
-            let (start, at_form) = if line.starts_with('@') { (1, true) } else { (0, false) };
+            let (start, at_form) = if line.starts_with('@') {
+                (1, true)
+            } else {
+                (0, false)
+            };
             if matches_name_at(line, start, name) {
                 let after = line[start + name.len()..].trim_start();
                 let boundary = after
@@ -799,8 +805,18 @@ mod tests {
         );
 
         let healthy = vec![
-            BurstTurn::attributed(true, SPEAKER_TESTER, "let me check the workspace state", None),
-            BurstTurn::attributed(true, SPEAKER_TESTER, "the tokenizer needs punctuation tests", None),
+            BurstTurn::attributed(
+                true,
+                SPEAKER_TESTER,
+                "let me check the workspace state",
+                None,
+            ),
+            BurstTurn::attributed(
+                true,
+                SPEAKER_TESTER,
+                "the tokenizer needs punctuation tests",
+                None,
+            ),
             BurstTurn::attributed(true, SPEAKER_TESTER, "I'll claim the README step", None),
         ];
         assert_eq!(
@@ -834,9 +850,24 @@ mod tests {
             )
         };
         let looping = vec![
-            variant("System Security and Privacy", "Security Protocols", "Privacy Considerations", "Vulnerability Management"),
-            variant("Project Documentation", "Documentation Overview", "Best Practices", "Templates and Examples"),
-            variant("User Interface and Experience Design", "UI/UX Principles", "Feedback and Iteration", "Accessibility Considerations"),
+            variant(
+                "System Security and Privacy",
+                "Security Protocols",
+                "Privacy Considerations",
+                "Vulnerability Management",
+            ),
+            variant(
+                "Project Documentation",
+                "Documentation Overview",
+                "Best Practices",
+                "Templates and Examples",
+            ),
+            variant(
+                "User Interface and Experience Design",
+                "UI/UX Principles",
+                "Feedback and Iteration",
+                "Accessibility Considerations",
+            ),
         ];
         let fact = template_loop_fact(&[], &looping)
             .expect("three topic-swapped copies of one scaffold are a structural fact");
@@ -901,7 +932,12 @@ mod tests {
 
         // Short acknowledgements matching short acknowledgements are
         // conversation, not copying (token floor).
-        let acks = vec![BurstTurn::attributed(false, SPEAKER_LEAD, "thanks, all good!", None)];
+        let acks = vec![BurstTurn::attributed(
+            false,
+            SPEAKER_LEAD,
+            "thanks, all good!",
+            None,
+        )];
         assert_eq!(peer_echo_fact(&acks, Some("thanks, all good!")), None);
 
         // Her own turns are the self-detector's job, never an echo of a peer.
@@ -933,7 +969,10 @@ mod tests {
                       macOS install modules. First, review existing manifests and related \
                       documentation to understand the acceptance criteria for those checks.";
         let fact = draft_peer_echo(mirror, &turns).expect("a mirrored peer plan is a fact");
-        assert!(fact.contains(SPEAKER_REVIEWER), "names the echoed peer: {fact}");
+        assert!(
+            fact.contains(SPEAKER_REVIEWER),
+            "names the echoed peer: {fact}"
+        );
         assert!(fact.starts_with("[echo]"));
 
         // A genuinely different contribution (division of labor) → inert.
@@ -967,7 +1006,10 @@ mod tests {
             BurstTurn::attributed(false, SPEAKER_LEAD, settled, None),
         ];
         let fact = inbound_restates_fact(&turns, &[], &[]).expect("a restated inbound is a fact");
-        assert!(fact.contains(SPEAKER_LEAD), "names the restating peer: {fact}");
+        assert!(
+            fact.contains(SPEAKER_LEAD),
+            "names the restating peer: {fact}"
+        );
         assert!(fact.starts_with("[settled]"));
 
         // Peer restates what SHE already said (own-speech ring) → fires too.
@@ -1031,7 +1073,10 @@ mod tests {
         ];
         let stops = peer_stop_sequences(&turns);
         assert_eq!(stops, vec!["\nAnwen:".to_string(), "\nAtlas:".to_string()]);
-        assert!(!stops.iter().any(|s| s.contains("Casper")), "own name is never a stop");
+        assert!(
+            !stops.iter().any(|s| s.contains("Casper")),
+            "own name is never a stop"
+        );
     }
 
     // what this catches: #158 — the reserved-marker stops that cut receipt/recall
@@ -1042,11 +1087,23 @@ mod tests {
     #[test]
     fn reserved_marker_stops_cover_action_and_recall_line_anchored() {
         let stops = reserved_marker_stop_sequences();
-        assert!(stops.contains(&"\n[action".to_string()), "cuts fabricated [action #n] receipts");
-        assert!(stops.contains(&"\n[recall]".to_string()), "cuts fabricated [recall] blocks");
-        assert!(stops.contains(&"\nI ran ".to_string()), "cuts the unbracketed 'I ran …' receipt opener");
+        assert!(
+            stops.contains(&"\n[action".to_string()),
+            "cuts fabricated [action #n] receipts"
+        );
+        assert!(
+            stops.contains(&"\n[recall]".to_string()),
+            "cuts fabricated [recall] blocks"
+        );
+        assert!(
+            stops.contains(&"\nI ran ".to_string()),
+            "cuts the unbracketed 'I ran …' receipt opener"
+        );
         // every marker is line-anchored — never fires on a passing mid-line mention
-        assert!(stops.iter().all(|s| s.starts_with('\n')), "line-anchored, not mid-sentence");
+        assert!(
+            stops.iter().all(|s| s.starts_with('\n')),
+            "line-anchored, not mid-sentence"
+        );
     }
 
     // what this catches: the #148 starvation regression — under small serving
@@ -1101,17 +1158,26 @@ mod tests {
         // Connects the loop to her existing silence affordance (the fact fired ×3 live
         // and the model repeated 20× anyway — surfacing PASS at the detected moment is
         // the doctrine-safe lever, never an output gate).
-        assert!(fact.contains("silence (PASS)"), "surfaces the PASS affordance: {fact}");
+        assert!(
+            fact.contains("silence (PASS)"),
+            "surfaces the PASS affordance: {fact}"
+        );
 
         // PERIOD-2 CYCLE (the live blind spot that forced cluster detection):
         // two templates alternating — consecutive pairs are dissimilar, but the
         // repetition is massive at lag 2 and must fire.
         let cycling = vec![
-            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own(
+                "Thank you both for your commitment and enthusiasm! Let's keep each other updated.",
+            ),
             own("Got it! Let's proceed with our tasks and keep each other updated on progress."),
-            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own(
+                "Thank you both for your commitment and enthusiasm! Let's keep each other updated.",
+            ),
             own("Got it! Let's proceed with our tasks and keep each other updated on progress."),
-            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own(
+                "Thank you both for your commitment and enthusiasm! Let's keep each other updated.",
+            ),
         ];
         let fact = own_repetition_fact(&cycling, &[]).expect("a period-2 cycle is a loop");
         assert!(
@@ -1227,14 +1293,24 @@ mod tests {
 
         // A bare MENTION is not a vocative — no annotation. ("Anwen's" is closed
         // by an apostrophe, not address punctuation.)
-        let mention = BurstTurn::attributed(false, SPEAKER_REVIEWER, "I agree with Anwen's plan for the parser.", None);
+        let mention = BurstTurn::attributed(
+            false,
+            SPEAKER_REVIEWER,
+            "I agree with Anwen's plan for the parser.",
+            None,
+        );
         assert_eq!(
             turn_message_line_addressed(&mention, &names, SPEAKER_TESTER),
             "Asha: I agree with Anwen's plan for the parser."
         );
 
         // Self turns and opaque turns render verbatim — annotation is peer-only.
-        let own = BurstTurn::attributed(true, SPEAKER_TESTER, "Anwen, here are the test results.", None);
+        let own = BurstTurn::attributed(
+            true,
+            SPEAKER_TESTER,
+            "Anwen, here are the test results.",
+            None,
+        );
         assert_eq!(
             turn_message_line_addressed(&own, &names, SPEAKER_TESTER),
             "Anwen, here are the test results."
@@ -1247,16 +1323,29 @@ mod tests {
 
         // A vocative matching the AUTHOR is a signature/self-reference, never an
         // addressee ("Thanks, Asha!" quoted inside Asha's own message).
-        let self_named = BurstTurn::attributed(false, SPEAKER_REVIEWER, "Asha, reporting in: review done.", None);
+        let self_named = BurstTurn::attributed(
+            false,
+            SPEAKER_REVIEWER,
+            "Asha, reporting in: review done.",
+            None,
+        );
         assert_eq!(
             turn_message_line_addressed(&self_named, &names, SPEAKER_TESTER),
             "Asha: Asha, reporting in: review done."
         );
 
         // @-mention form.
-        let at_form = BurstTurn::attributed(false, SPEAKER_REVIEWER, "@Atlas can you run the suite?", None);
+        let at_form = BurstTurn::attributed(
+            false,
+            SPEAKER_REVIEWER,
+            "@Atlas can you run the suite?",
+            None,
+        );
         let line = turn_message_line_addressed(&at_form, &names, SPEAKER_TESTER);
-        assert!(line.starts_with("Asha (to you): @Atlas"), "@-form: {line:?}");
+        assert!(
+            line.starts_with("Asha (to you): @Atlas"),
+            "@-form: {line:?}"
+        );
 
         // Name-prefix false positive guard: ", Anwenne." must not match "Anwen"
         // (the closing-punctuation requirement doubles as the word boundary).

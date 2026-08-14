@@ -464,7 +464,11 @@ mod tests {
             Some(("coder-14b".into(), 11008, 3)),
             "the snapshot's window + lane count must reach the resolver"
         );
-        assert_eq!(fp[0].bytes, 1000 + 3 * 10 * 11008, "resident folds per-lane KV");
+        assert_eq!(
+            fp[0].bytes,
+            1000 + 3 * 10 * 11008,
+            "resident folds per-lane KV"
+        );
         assert!(fp[0].detail.contains("3 lane(s) × 11008 ctx"));
 
         // A re-home to a single lane at a smaller window shrinks the charged KV.
@@ -541,8 +545,7 @@ mod tests {
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let (pin_tx, pin_rx) = watch::channel(None);
         let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32| current);
-        let consumer =
-            ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy);
+        let consumer = ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy);
         (consumer, serving_tx, pin_rx)
     }
 
@@ -567,7 +570,11 @@ mod tests {
         let first = consumer.reclaim(ask()).await;
         assert_eq!(first.status, ReclaimStatus::Deferred);
         assert_eq!(first.freed_bytes, 0);
-        assert_eq!(pin_rx.borrow().as_deref(), Some("coder-7b"), "re-home pinned");
+        assert_eq!(
+            pin_rx.borrow().as_deref(),
+            Some("coder-7b"),
+            "re-home pinned"
+        );
         assert!(
             !consumer.suppress.borrow().contains("coder-30b"),
             "tier-down pins, never suppresses — serving must not go dark"
@@ -587,7 +594,11 @@ mod tests {
 
         // Cleared — a further ask starts fresh (would tier down the 7b next time).
         let fourth = consumer.reclaim(ask()).await;
-        assert_eq!(fourth.status, ReclaimStatus::Deferred, "new cycle, not stuck");
+        assert_eq!(
+            fourth.status,
+            ReclaimStatus::Deferred,
+            "new cycle, not stuck"
+        );
     }
 
     // what this catches: reason gating. Shutdown wants EVERYTHING gone and
@@ -612,7 +623,10 @@ mod tests {
                 })
                 .await;
             assert_eq!(out.status, ReclaimStatus::Deferred);
-            assert!(pin_rx.borrow().is_none(), "{reason:?} must not pin/tier-down");
+            assert!(
+                pin_rx.borrow().is_none(),
+                "{reason:?} must not pin/tier-down"
+            );
             assert!(
                 consumer.suppress.borrow().contains("coder-30b"),
                 "{reason:?} suppresses for a full unload"
@@ -634,7 +648,10 @@ mod tests {
         let (consumer, _tx, pin_rx) = tier_down_rig("coder-30b", 18_000, policy);
         let out = consumer.reclaim(ask()).await;
         assert_eq!(out.status, ReclaimStatus::Deferred);
-        assert!(pin_rx.borrow().is_none(), "non-shrink proposal must not pin");
+        assert!(
+            pin_rx.borrow().is_none(),
+            "non-shrink proposal must not pin"
+        );
         assert!(
             consumer.suppress.borrow().contains("coder-30b"),
             "falls through to full unload"

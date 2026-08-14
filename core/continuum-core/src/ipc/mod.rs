@@ -118,15 +118,38 @@ pub mod positron_bench_source;
 pub mod positron_dispatch;
 pub mod positron_foundry_source;
 pub mod positron_kanban_source;
+pub mod positron_live_source;
 pub mod positron_metrics_source;
 pub mod positron_nav_source;
 pub mod positron_presence;
-pub mod positron_live_source;
 pub mod positron_serving_source;
 pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
 pub mod provider_bridge;
+pub mod recipe_room_purpose;
+
+/// THE per-room substrate registry for this process (#408).
+///
+/// A process-global `OnceLock`, the same shape as
+/// [`positron_nav_source::global_nav_focus`] and the channel-bookmarks singleton —
+/// because the WRITER (the chat projection, in the WS boot block) and the READERS
+/// (a persona's grounding, bound at spawn in `persona::supervisor`) are constructed
+/// in different places and must land on ONE registry. Two registries would be two
+/// stores, which is the exact defect this repair exists to remove.
+///
+/// It is a registry of `Arc`-shared substrates, so this is a handle lookup, not a
+/// cache: cloning it clones `Arc`s.
+pub fn global_room_substrates(
+) -> std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates> {
+    use std::sync::OnceLock;
+    static G: OnceLock<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>> =
+        OnceLock::new();
+    G.get_or_init(|| {
+        std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new())
+    })
+    .clone()
+}
 pub mod room_purpose;
 pub mod stream_rail;
 pub mod vitals_emitter;
@@ -2016,7 +2039,9 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(
             registry.clone(),
         )));
-        runtime.register(Arc::new(crate::modules::room::RoomModule::new(registry.clone(),)));
+        runtime.register(Arc::new(crate::modules::room::RoomModule::new(
+            registry.clone(),
+        )));
         // activity/* (#274) — the verb that turns a recipe into a room. Same
         // registry: creating a room acts as the CALLER's own airc identity, so the
         // creator is a real peer rather than the substrate acting anonymously.
@@ -3066,6 +3091,34 @@ pub fn start_server(
                     "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
                      the positron chat projection has no airc source to subscribe to",
                 );
+                // Activity-purpose index (#6/#274/#329): resolve each room to the
+                // recipe it was spawned from, by READING the binding `activity/spawn`
+                // publishes to the room's wall. Until this existed, that binding had
+                // no reader anywhere and every room — benchmark, foundry, video-call
+                // — projected as a plain chat room to every renderer AND to the
+                // citizen standing inside it. Without a daemon (headless / no
+                // bootstrap room) the honest default stands: everything is chat.
+                let room_purpose: crate::ipc::room_purpose::SharedRoomPurpose =
+                    match node_presence_deps
+                        .clone()
+                        .zip(persona_bootstrap_room_name.clone())
+                    {
+                        Some(((socket, _room), room_name)) => {
+                            Arc::new(recipe_room_purpose::spawn_node_purpose_index(
+                                &state.rt_handle,
+                                projection_bus.clone(),
+                                socket,
+                                crate::modules::persona_instance_manager::resolve_continuum_root()
+                                    .join("citizens")
+                                    .join("node")
+                                    .join("purpose")
+                                    .join("airc"),
+                                room_name,
+                            ))
+                        }
+                        None => crate::ipc::room_purpose::default_source(),
+                    };
+
                 positron_source::spawn(
                     &state.rt_handle,
                     projection_bus.clone(),
@@ -3076,6 +3129,13 @@ pub fn start_server(
                     node_presence_deps
                         .clone()
                         .map(|(_socket, room)| (Arc::clone(&ws_executor), room.as_uuid())),
+                    room_purpose,
+                    // Per-room stores (#408): every per-room envelope is mirrored into
+                    // its OWN room's store, so a consumer that names its room (a
+                    // citizen's grounding) reads THAT room instead of whichever room
+                    // wrote last. The node substrate above still receives everything,
+                    // so the focused-room web session is unchanged.
+                    Some(global_room_substrates()),
                 );
 
                 // Per-citizen substrates for per-user views (nav): each connecting
@@ -3137,10 +3197,7 @@ pub fn start_server(
                 // Benchmark board (#329): fold the run-ledger projection into
                 // kind="bench" — the academy right-rail's live rows (who is
                 // solving what, attempt N/M, patch forming, verdicts).
-                positron_bench_source::spawn_bench_emitter(
-                    &state.rt_handle,
-                    ws_substrate.clone(),
-                );
+                positron_bench_source::spawn_bench_emitter(&state.rt_handle, ws_substrate.clone());
 
                 // Live-call glass box (#58): folds the TRANSPORT's calls against
                 // the ORCHESTRATOR's registered sessions. Their disagreement is

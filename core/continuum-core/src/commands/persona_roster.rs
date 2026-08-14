@@ -23,24 +23,34 @@ use crate::persona::PersonaAircRuntimeRegistry;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaRosterParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaRosterParams.ts"
+)]
 pub struct PersonaRosterParams {}
 
 /// One live citizen's row.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaRosterEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaRosterEntry.ts"
+)]
 pub struct PersonaRosterEntry {
     /// The citizen's airc agent_name — the handle `benchmark/dispatch --assignees` resolves.
     pub agent_name: String,
     /// Her durable persona-airc peer_id (the id the reuse seam addresses her by).
-    pub peer_id: String,
+    #[ts(type = "string")]
+    pub peer_id: crate::identity::PeerId,
     /// SWE instances already staged in her workspace (`workspace/swe/<id>` with a `.git`).
     /// Non-empty here is the REUSE signal: dispatch found the checkout and skipped cloning.
     pub staged_swe: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaRosterResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaRosterResult.ts"
+)]
 pub struct PersonaRosterResult {
     /// How many citizens are online right now (the roster `benchmark/dispatch` targets when
     /// `--assignees` is omitted). Zero means dispatch would be Denied — spawn a persona.
@@ -106,7 +116,7 @@ impl ActionCommand for PersonaRoster {
             .into_iter()
             .map(|(agent_name, peer)| PersonaRosterEntry {
                 agent_name,
-                peer_id: peer.to_string(),
+                peer_id: crate::identity::PeerId::from_uuid(peer),
                 staged_swe: staged_swe_for(&peer),
             })
             .collect();
@@ -126,6 +136,7 @@ crate::register_command!(PersonaRoster);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
 
     // what this catches: the roster row shape is what the CLI/SDK read to answer "who is
     // live + what's staged". A row must carry the agent_name, the durable peer_id as a
@@ -135,12 +146,23 @@ mod tests {
     fn roster_entry_carries_name_peer_and_staged() {
         let e = PersonaRosterEntry {
             agent_name: "Yori".into(),
-            peer_id: "a93ec5cc-e183-427a-ab8f-784ffe8805cc".into(),
+            peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                b"a93ec5cc-e183-427a-ab8f-784ffe8805cc",
+            )),
             staged_swe: vec!["astropy__astropy-12907".into()],
         };
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["agent_name"], "Yori");
-        assert_eq!(v["peer_id"], "a93ec5cc-e183-427a-ab8f-784ffe8805cc");
+        assert_eq!(
+            v["peer_id"],
+            PeerId::from_uuid(uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                b"a93ec5cc-e183-427a-ab8f-784ffe8805cc"
+            ))
+            .as_uuid()
+            .to_string()
+        );
         assert_eq!(v["staged_swe"][0], "astropy__astropy-12907");
     }
 

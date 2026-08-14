@@ -77,7 +77,8 @@ pub struct RoomMemberView {
     pub last_seen_secs_ago: u64,
     /// True for the caller's own row — she is a member of the room she is asking about.
     pub is_you: bool,
-    pub peer_id: String,
+    #[ts(type = "string")]
+    pub peer_id: crate::identity::PeerId,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -137,7 +138,10 @@ impl ActionCommand for RoomMembers {
             .map(|c| {
                 let identity = c.identity;
                 RoomMemberView {
-                    name: identity.as_ref().map(|i| i.name.clone()).filter(|n| !n.is_empty()),
+                    name: identity
+                        .as_ref()
+                        .map(|i| i.name.clone())
+                        .filter(|n| !n.is_empty()),
                     pronouns: identity
                         .as_ref()
                         .map(|i| i.pronouns.clone())
@@ -154,7 +158,7 @@ impl ActionCommand for RoomMembers {
                     availability: c.availability.map(|a| format!("{a:?}").to_lowercase()),
                     last_seen_secs_ago: now_ms.saturating_sub(c.last_seen_ms) / 1000,
                     is_you: c.peer_id == me,
-                    peer_id: c.peer_id.to_string(),
+                    peer_id: c.peer_id,
                 }
             })
             .collect();
@@ -361,7 +365,10 @@ impl ActionCommand for RoomJoin {
             .subscription_set()
             .await
             .ok()
-            .and_then(|s| s.default_subscription().map(|d| d.name.as_str() == room.name))
+            .and_then(|s| {
+                s.default_subscription()
+                    .map(|d| d.name.as_str() == room.name)
+            })
             .unwrap_or(false);
         let summary = if is_default {
             format!(
@@ -516,6 +523,7 @@ impl ServiceModule for RoomModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use airc_core::PeerId;
 
     fn view(name: Option<&str>, is_you: bool) -> RoomMemberView {
         RoomMemberView {
@@ -527,7 +535,10 @@ mod tests {
             availability: None,
             last_seen_secs_ago: 3,
             is_you,
-            peer_id: "peer-test".into(),
+            peer_id: PeerId::from_uuid(uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                b"peer-test",
+            )),
         }
     }
 
@@ -549,7 +560,10 @@ mod tests {
         let s = summarize(&[view(Some("Asha"), true), view(Some("Anwen"), false)]);
         assert!(s.starts_with("1 other participant(s)"), "{s}");
         assert!(s.contains("Anwen"), "{s}");
-        assert!(!s.contains("Asha"), "must not list the caller as a peer: {s}");
+        assert!(
+            !s.contains("Asha"),
+            "must not list the caller as a peer: {s}"
+        );
     }
 
     fn room(name: &str, is_default: bool) -> RoomListEntry {
@@ -581,10 +595,10 @@ mod tests {
         let s = summarize_rooms(&[
             room("academy", true),
             room("cambriantech", false),
-            room("k3-serving", false),
+            room("bench-swe-run-1", false),
         ]);
         assert!(s.starts_with("You belong to 3 room(s)"), "{s}");
-        assert!(s.contains("academy") && s.contains("k3-serving"), "{s}");
+        assert!(s.contains("academy") && s.contains("bench-swe-run-1"), "{s}");
         assert!(
             s.contains("default room is academy"),
             "the focus must be named, not just implied: {s}"

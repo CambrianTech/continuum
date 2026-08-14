@@ -14,10 +14,10 @@ use std::io::{Read, Write};
 // `connect()` to the bridge's filesystem-path socket then fails gracefully at
 // runtime (voice/livekit is a Unix-only subsystem today). BEHAVIORAL GAP:
 // voice bridge is unavailable on Windows until a TCP endpoint is wired.
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 #[cfg(windows)]
 use std::net::TcpStream as UnixStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 

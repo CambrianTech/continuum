@@ -12,7 +12,10 @@ use crate::model_registry::Capability;
 /// when choosing a provider/model.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/ProviderCapabilitiesView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/ProviderCapabilitiesView.ts"
+)]
 pub struct ProviderCapabilitiesView {
     pub text_generation: bool,
     pub chat: bool,
@@ -43,7 +46,10 @@ pub struct ProviderInfo {
 /// Result of `ai/providers/list`.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/ai/AiProvidersListResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/AiProvidersListResult.ts"
+)]
 pub struct AiProvidersListResult {
     /// Provider ids currently available (registered + reachable).
     pub available: Vec<String>,

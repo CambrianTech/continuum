@@ -74,12 +74,8 @@ pub trait WorkingSetManager: Send + Sync {
     /// The pinned-page case is NOT a TierError — page_out skips
     /// pinned pages silently; the caller (composition) is responsible
     /// for unpinning before demoting.
-    async fn page_out(
-        &self,
-        persona: PeerId,
-        page: PageRef,
-        to: TierRole,
-    ) -> Result<(), TierError>;
+    async fn page_out(&self, persona: PeerId, page: PageRef, to: TierRole)
+        -> Result<(), TierError>;
 
     /// Read-only snapshot of the persona's current working set. The
     /// hot path uses this to decide "is the page I need already
@@ -131,11 +127,7 @@ mod tests {
 
     #[async_trait]
     impl WorkingSetManager for StubManager {
-        async fn page_in(
-            &self,
-            _persona: PeerId,
-            page: PageRef,
-        ) -> Result<PageHandle, PageFault> {
+        async fn page_in(&self, _persona: PeerId, page: PageRef) -> Result<PageHandle, PageFault> {
             // Stub: every page_in succeeds with a fresh handle. The
             // contract being tested is the signature shape, not the
             // page-resolution logic (PR-3's territory).

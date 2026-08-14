@@ -130,10 +130,7 @@ impl TrainingDataset {
     /// dataset-by-NAME seam: `dataset/from-captures` writes the corpus,
     /// `genome/job-create` consumes it by name — the recipe stays data on disk,
     /// never a multi-megabyte example blob hand-carried through argv.
-    pub fn from_chat_jsonl(
-        path: &std::path::Path,
-        source: TrainingSource,
-    ) -> Result<Self, String> {
+    pub fn from_chat_jsonl(path: &std::path::Path, source: TrainingSource) -> Result<Self, String> {
         let raw = std::fs::read_to_string(path)
             .map_err(|e| format!("read dataset {}: {e}", path.display()))?;
         let mut examples = Vec::new();
@@ -338,14 +335,10 @@ pub enum TrainingStatus {
     },
     /// Terminal success. `artifact` is what genome paging /
     /// forge-alloy consume.
-    Completed {
-        artifact: TrainingArtifact,
-    },
+    Completed { artifact: TrainingArtifact },
     /// Terminal failure. `error` is the typed surface; the substrate
     /// branches on it for retry vs surface-to-operator.
-    Failed {
-        error: String,
-    },
+    Failed { error: String },
     /// Terminal — operator-initiated stop, or provider-side abort.
     Cancelled,
 }
@@ -481,8 +474,8 @@ mod tests {
             r#"{"messages":[{"role":"assistant","content":"act"},{"role":"user","content":"q"}]}"#,
         )
         .unwrap();
-        let err = TrainingDataset::from_chat_jsonl(&bad, TrainingSource::OperatorCurated)
-            .unwrap_err();
+        let err =
+            TrainingDataset::from_chat_jsonl(&bad, TrainingSource::OperatorCurated).unwrap_err();
         assert!(err.contains("not the assistant turn"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }

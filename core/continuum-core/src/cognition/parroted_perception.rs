@@ -132,7 +132,11 @@ mod tests {
     fn the_brick_she_was_handed_is_not_something_she_may_say() {
         let turns = vec![fact(LIVE_BRICK)];
         let facts = perception_facts(&turns);
-        assert_eq!(facts.len(), 1, "a perception-voiced turn IS a perception fact");
+        assert_eq!(
+            facts.len(),
+            1,
+            "a perception-voiced turn IS a perception fact"
+        );
         assert_eq!(
             parroted_fact(LIVE_BRICK, &facts, PARROT_CONTAINMENT_THRESHOLD),
             Some(LIVE_BRICK),
@@ -180,7 +184,10 @@ mod tests {
     // the system's own — is off limits.
     #[test]
     fn echoing_a_peer_is_a_different_concern_and_not_this_gate() {
-        let turns = vec![peer("BigMama", "The consolidator has zero production callers.")];
+        let turns = vec![peer(
+            "BigMama",
+            "The consolidator has zero production callers.",
+        )];
         let facts = perception_facts(&turns);
         assert!(
             facts.is_empty(),
@@ -199,7 +206,9 @@ mod tests {
     // speech at all". Only TurnVoice can, which is why it exists.
     #[test]
     fn an_unattributed_peer_stimulus_is_still_speech_not_a_fact() {
-        let turns = vec![BurstTurn::opaque("teammate asks: where did we land on the deploy?")];
+        let turns = vec![BurstTurn::opaque(
+            "teammate asks: where did we land on the deploy?",
+        )];
         assert!(
             perception_facts(&turns).is_empty(),
             "an unattributed STIMULUS is speech — silencing a reply to it would mute her"

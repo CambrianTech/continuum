@@ -25,11 +25,14 @@ use crate::sdk_codegen::CommandError;
 
 /// Which online persona to fetch.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaInstancesGetParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaInstancesGetParams.ts"
+)]
 pub struct PersonaInstancesGetParams {
     /// The persona's id as it appears in `persona/instances/list` (the airc
     /// peer_id Uuid). Fails loud if mal-formed or not currently online.
-    pub persona_id: String,
+    pub persona_id: crate::identity::PersonaRef,
 }
 
 crate::action_command! {
@@ -50,7 +53,7 @@ crate::action_command! {
         // live registry — the ONE shared id_resolve primitive, candidates = who's
         // online.
         let persona_id = crate::id_resolve::resolve(
-            &p.persona_id,
+            p.persona_id.as_str(),
             &this.registry.ids(),
             "persona",
         )
@@ -90,7 +93,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 PersonaInstancesGetParams {
-                    persona_id: Uuid::new_v4().to_string(),
+                    persona_id: Uuid::new_v4().to_string().into(),
                 },
             )
             .await
@@ -110,7 +113,7 @@ mod tests {
             .run(
                 &Ctx::default(),
                 PersonaInstancesGetParams {
-                    persona_id: "not-a-uuid".to_string(),
+                    persona_id: "not-a-uuid".to_string().into(),
                 },
             )
             .await

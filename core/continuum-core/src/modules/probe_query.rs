@@ -213,13 +213,19 @@ impl ActionCommand for ProbeQuery {
         let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let filter: HashSet<String> = p.class.clone().unwrap_or_default().into_iter().collect();
         let needle = p.contains.as_ref().map(|s| s.to_lowercase());
-        let project: Option<HashSet<String>> =
-            p.fields.clone().map(|f| f.into_iter().collect());
+        let project: Option<HashSet<String>> = p.fields.clone().map(|f| f.into_iter().collect());
 
         // Reading up to ~24MB of JSONL is blocking work; it never runs on the async
         // executor (CONCURRENCY-STYLE-GUIDE: spawn_blocking for filesystem scans).
         let scan = tokio::task::spawn_blocking(move || {
-            scan_ledger(&dir, &filter, p.since_ms, needle.as_deref(), project.as_ref(), limit)
+            scan_ledger(
+                &dir,
+                &filter,
+                p.since_ms,
+                needle.as_deref(),
+                project.as_ref(),
+                limit,
+            )
         })
         .await
         .map_err(|e| CommandError::Internal(format!("probe ledger scan panicked: {e}")))??;
@@ -283,7 +289,10 @@ fn scan_ledger(
 
     for path in &paths {
         let file = File::open(path).map_err(|e| {
-            CommandError::Internal(format!("probe ledger unreadable at {}: {e}", path.display()))
+            CommandError::Internal(format!(
+                "probe ledger unreadable at {}: {e}",
+                path.display()
+            ))
         })?;
         sources.push(path.display().to_string());
 
@@ -500,7 +509,10 @@ mod tests {
             row("personality.quirk", 2, "not mine", ("k", "v")),
         ]);
         let s = scan(&dir, &["persona"], 50);
-        assert_eq!(s.matched, 1, "personality.* must not match the persona filter");
+        assert_eq!(
+            s.matched, 1,
+            "personality.* must not match the persona filter"
+        );
         assert_eq!(s.events[0].class, "persona.turn.start");
     }
 
@@ -532,7 +544,12 @@ mod tests {
     #[test]
     fn contains_searches_field_values_not_just_the_message() {
         let dir = ledger(&[
-            row("persona.act.observed", 1, "acted", ("verbs", "room/members")),
+            row(
+                "persona.act.observed",
+                1,
+                "acted",
+                ("verbs", "room/members"),
+            ),
             row("persona.act.observed", 2, "acted", ("verbs", "code/read")),
         ]);
         let set: HashSet<String> = HashSet::new();

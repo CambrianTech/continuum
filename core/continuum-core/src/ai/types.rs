@@ -23,7 +23,10 @@ pub struct ChatMessage {
 
 /// Message content - either plain text or multimodal content blocks
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/MessageContent.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/MessageContent.ts"
+)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
@@ -118,7 +121,10 @@ pub struct VideoInput {
 ///   This must NOT use rename_all = "camelCase" because the wire format
 ///   from TypeScript AND the Anthropic API both use snake_case for this struct.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/NativeToolSpec.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/NativeToolSpec.ts"
+)]
 pub struct NativeToolSpec {
     pub name: String,
     pub description: String,
@@ -128,7 +134,10 @@ pub struct NativeToolSpec {
 /// JSON Schema for tool input parameters.
 /// Matches Anthropic API wire format (snake_case field names).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/ToolInputSchema.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/ToolInputSchema.ts"
+)]
 pub struct ToolInputSchema {
     #[serde(rename = "type")]
     pub schema_type: String, // Always "object"
@@ -340,7 +349,10 @@ pub struct TextGenerationRequest {
 /// commentary, no leading/trailing text. The right way to enforce structured
 /// output: at the model level, not via a downstream parser fallback.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/ResponseFormat.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/ResponseFormat.ts"
+)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseFormat {
     /// Model output is constrained to a single valid JSON object.
@@ -414,7 +426,10 @@ pub struct TextGenerationResponse {
 /// is the KV-cache hit/miss that governs that cost; a high cached fraction means
 /// the static identity+catalog prefix stayed resident across turns.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/GenerationTiming.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/GenerationTiming.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationTiming {
     /// KV-prefix tokens reused from cache this call (llama `cache_n`).
@@ -554,7 +569,10 @@ impl ModelInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/CostPer1kTokens.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/CostPer1kTokens.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct CostPer1kTokens {
     pub input: f64,
@@ -563,7 +581,10 @@ pub struct CostPer1kTokens {
 
 /// Embedding request
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/EmbeddingRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/EmbeddingRequest.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingRequest {
     pub input: EmbeddingInput,
@@ -576,7 +597,10 @@ pub struct EmbeddingRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/EmbeddingInput.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai/EmbeddingInput.ts"
+)]
 #[serde(untagged)]
 pub enum EmbeddingInput {
     Single(String),

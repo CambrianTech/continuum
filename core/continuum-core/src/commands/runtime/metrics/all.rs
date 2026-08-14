@@ -7,7 +7,10 @@ use crate::runtime::ModuleStats;
 /// recorded timing, plus the count.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/RuntimeMetricsAllResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/RuntimeMetricsAllResult.ts"
+)]
 pub struct RuntimeMetricsAllResult {
     pub modules: Vec<ModuleStats>,
     #[ts(type = "number")]

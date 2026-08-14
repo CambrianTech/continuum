@@ -151,10 +151,7 @@ pub trait AircCitizen:
     /// VISIBLE). Default no-op — only the production runtime streams; scripted /
     /// stub citizens don't. Returns `Ok(())` (the event id isn't needed by the
     /// forwarder).
-    async fn publish_stream_chunk(
-        &self,
-        _chunk: &airc_lib::StreamChunk,
-    ) -> Result<(), AircError> {
+    async fn publish_stream_chunk(&self, _chunk: &airc_lib::StreamChunk) -> Result<(), AircError> {
         Ok(())
     }
 }
@@ -242,11 +239,9 @@ impl StubAircCitizen {
     /// [[test-fixtures-are-system-primitives]] — every supervisor
     /// test that exercises materialize_adapters without a real airc
     /// daemon leases this closure shape.
-    pub fn fresh_lookup(
-    ) -> impl Fn(Uuid) -> Option<std::sync::Arc<dyn AircCitizen>> + Clone {
+    pub fn fresh_lookup() -> impl Fn(Uuid) -> Option<std::sync::Arc<dyn AircCitizen>> + Clone {
         |_pid| {
-            Some(std::sync::Arc::new(Self::new(Uuid::new_v4()))
-                as std::sync::Arc<dyn AircCitizen>)
+            Some(std::sync::Arc::new(Self::new(Uuid::new_v4())) as std::sync::Arc<dyn AircCitizen>)
         }
     }
 }
@@ -300,9 +295,7 @@ impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for StubAircCitizen {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // No daemon in tests → no pinned wall posts. Cognition runs through
         // cleanly with no [room-board] grounding block.
         Ok(vec![])
@@ -347,18 +340,21 @@ impl AircCitizen for StubAircCitizen {
     }
 
     async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError> {
-        // No service-loop test drives the stub's subscribe — the
-        // service loop receives messages through StubConversation
-        // directly, never through the citizen's stream. If a future
-        // test ever wires the stub into the conversation, this panics
-        // visibly per [[no-fallbacks-ever]] rather than silently
-        // returning an empty stream or fabricating an AircError
-        // variant that doesn't fit ("Transport"/"Route"/etc).
-        unreachable!(
-            "StubAircCitizen::subscribe_all_rooms must not be called — \
-             service-loop tests should drive the loop through \
-             StubConversation directly, not through the citizen handle"
-        );
+        // This USED to `unreachable!()` on the premise that nothing drives the
+        // stub's subscribe — true when it was written, false since #398 slice 3
+        // (bf11a66a7) gave `PersonaSupervisor::materialize` a subscribe call to
+        // wire the doctrine/wall cache invalidators. Five supervisor tests have
+        // been panicking here ever since; the assertion outlived its premise.
+        //
+        // Returning `Transport` rather than an empty stream is the honest answer
+        // and NOT a fallback: a stub has no transport, and that is exactly the
+        // condition the caller already handles explicitly — it keeps both sources
+        // uncached ("correct, just slow") and logs loud. So the supervisor tests
+        // now exercise the real degradation branch instead of dying, and a stub
+        // still never pretends to carry a live stream.
+        Err(AircError::Transport(
+            "StubAircCitizen has no transport — no event stream to subscribe to".to_string(),
+        ))
     }
 
     async fn say_in(&self, _room_id: Uuid, _text: &str) -> Result<EventId, AircError> {
@@ -384,11 +380,25 @@ mod tests {
         assert!(events.is_empty());
     }
 
+    // what this catches: the stub must REFUSE to subscribe, and must refuse in the
+    // shape the caller already handles. It used to panic, on the premise that nothing
+    // called it — false since #398 slice 3 gave PersonaSupervisor::materialize a
+    // subscribe call, which killed 5 supervisor tests for as long as that premise
+    // stood. An `Err` keeps the refusal honest AND lets the caller take its documented
+    // degradation path (sources stay uncached, logged loud). What must never happen is
+    // an Ok(empty stream): that would look like a live subscription that silently never
+    // invalidates — the actual fallback.
     #[tokio::test]
-    #[should_panic(expected = "service-loop tests should drive the loop")]
-    async fn stub_subscribe_panics_loudly() {
+    async fn stub_subscribe_refuses_rather_than_faking_a_stream() {
         let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
-        let _ = stub.subscribe_all_rooms().await;
+        // `FilteredEventStream` is not Debug, so match rather than `expect_err`.
+        match stub.subscribe_all_rooms().await {
+            Err(AircError::Transport(_)) => {}
+            Err(other) => {
+                panic!("refusal must be Transport (what the caller branches on), got: {other:?}")
+            }
+            Ok(_) => panic!("a stub has no transport — it must not hand back a stream"),
+        }
     }
 
     // what this catches: a reply addressed to the room that asked, rather than

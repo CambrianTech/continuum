@@ -244,7 +244,10 @@ mod tests {
     fn a_missing_delivery_record_is_unsettled_never_honored() {
         let s = settle(&promise(gb(16), gb(24), gb(16)), None);
         assert_eq!(s.verdict, Verdict::Unsettled);
-        assert!(!s.verdict.builds_reputation(), "unobserved is not delivered");
+        assert!(
+            !s.verdict.builds_reputation(),
+            "unobserved is not delivered"
+        );
     }
 
     /// what this catches: overquoting hiding inside ordinary variance. Claiming
@@ -253,7 +256,12 @@ mod tests {
     #[test]
     fn quoting_above_your_own_ceiling_is_dishonest_not_merely_short() {
         let s = settle(&promise(gb(64), gb(24), gb(16)), None);
-        assert_eq!(s.verdict, Verdict::Overquoted { over_by_bytes: gb(40) });
+        assert_eq!(
+            s.verdict,
+            Verdict::Overquoted {
+                over_by_bytes: gb(40)
+            }
+        );
         assert!(s.verdict.is_dishonest());
     }
 
@@ -267,7 +275,11 @@ mod tests {
             delivered_bytes: gb(16),
         };
         let s = settle(&promise(gb(64), gb(24), gb(16)), Some(&d));
-        assert!(s.verdict.is_dishonest(), "lucky is not honest: {:?}", s.verdict);
+        assert!(
+            s.verdict.is_dishonest(),
+            "lucky is not honest: {:?}",
+            s.verdict
+        );
     }
 
     #[test]
@@ -391,7 +403,10 @@ mod tests {
                 verdict: Verdict::Failed,
             });
         }
-        assert!(fresh.trust_lower_bound() > 0.0, "a newcomer is not excluded");
+        assert!(
+            fresh.trust_lower_bound() > 0.0,
+            "a newcomer is not excluded"
+        );
         assert!(
             fresh.trust_lower_bound() > failed.trust_lower_bound() * 2.0,
             "unproven {} must beat demonstrated failure {}",
@@ -465,7 +480,12 @@ mod tests {
             delivered_bytes: gb(10),
         };
         let s = settle(&promise(gb(16), gb(64), gb(16)), Some(&d));
-        assert_eq!(s.verdict, Verdict::Shortfall { missing_bytes: gb(6) });
+        assert_eq!(
+            s.verdict,
+            Verdict::Shortfall {
+                missing_bytes: gb(6)
+            }
+        );
         assert!(!s.verdict.builds_reputation());
         assert!(!s.verdict.is_dishonest(), "a bad day is not a lie");
     }

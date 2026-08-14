@@ -155,7 +155,11 @@ impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
             room_id: trace.room_id.to_string(),
             world_state: trace.world_state.clone(),
             bids: trace.bids.iter().map(BidRecord::from).collect(),
-            context: trace.context_broadcast.iter().map(BidRecord::from).collect(),
+            context: trace
+                .context_broadcast
+                .iter()
+                .map(BidRecord::from)
+                .collect(),
             decision: trace.decision.clone(),
             timings: trace.timings.iter().map(TimingRecord::from).collect(),
         };
@@ -178,9 +182,7 @@ impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::workspace::{
-        Contribution, CycleId, Decision, FacultyId, FacultyTiming,
-    };
+    use crate::cognition::workspace::{Contribution, CycleId, Decision, FacultyId, FacultyTiming};
 
     // what this catches: THE core VDD property — a captured tick must round-trip
     // to disk with every faculty's bid CONTENT intact (so "was the recalled engram
@@ -266,10 +268,7 @@ mod tests {
         let bids = v["bids"].as_array().unwrap();
         assert!(
             bids.iter().any(|b| b["faculty"] == "recall"
-                && b["content"]
-                    .as_str()
-                    .unwrap()
-                    .contains("auth migration")),
+                && b["content"].as_str().unwrap().contains("auth migration")),
             "recall bid content must be captured: {bids:?}"
         );
         // The assembled context (what the decider saw) is captured separately.

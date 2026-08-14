@@ -156,8 +156,7 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
     match super::lane_process::command_name(pid) {
         Some(comm) if comm.contains("llama-server") => {
             super::lane_process::kill9(pid);
-            let freed =
-                super::lane_process::wait_port_free(port, PORT_RELEASE_BUDGET).await;
+            let freed = super::lane_process::wait_port_free(port, PORT_RELEASE_BUDGET).await;
             clear_at(path);
             if freed {
                 ReclaimOutcome::Reclaimed { pid }
@@ -174,7 +173,6 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
         }
     }
 }
-
 
 // The unix-process helpers (`is_alive` / `kill9` / `command_name`) live in the
 // shared `super::lane_process` module so the canonical-port reclaim here and the

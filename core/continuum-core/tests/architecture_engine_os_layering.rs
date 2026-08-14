@@ -291,7 +291,10 @@ fn every_runtime_submodule_is_tracked() {
     let tracked: std::collections::HashSet<&str> =
         FORBIDDEN_RUNTIME_SUBMODULES.iter().copied().collect();
 
-    let untracked: Vec<&String> = declared.iter().filter(|d| !tracked.contains(d.as_str())).collect();
+    let untracked: Vec<&String> = declared
+        .iter()
+        .filter(|d| !tracked.contains(d.as_str()))
+        .collect();
 
     assert!(
         untracked.is_empty(),

@@ -29,7 +29,9 @@ use crate::cognition::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
 pub fn global_channel_element_cache() -> Arc<ChannelElementCache> {
     static G: OnceLock<Arc<ChannelElementCache>> = OnceLock::new();
     G.get_or_init(|| {
-        let embedder = Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())));
+        let embedder = Arc::new(CachingEmbeddingProvider::new(Arc::new(
+            LexicalEmbedder::new(),
+        )));
         Arc::new(ChannelElementCache::new(embedder))
     })
     .clone()

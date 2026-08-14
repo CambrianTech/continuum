@@ -35,7 +35,10 @@ use super::recency::{
 /// (a) the `wrote` bool in `apply.rs`, (b) the "I ran code/write(" scans in
 /// `perception.rs`, (c) the orientation-prefix scans in `is_redundant_orientation`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ToolVerb.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ToolVerb.ts"
+)]
 pub enum ToolVerb {
     Write,
     Edit,
@@ -116,7 +119,10 @@ impl ToolVerb {
 /// (`tool_use_id == ToolCall.id`). `verb`/`paths` PRECOMPUTED at the act seam so
 /// no consumer re-derives from prose.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ToolOutput.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ToolOutput.ts"
+)]
 pub struct ToolOutput {
     /// Single source of the raw payload; correlated by `tool_use_id == call.id`.
     pub result: ToolResult,
@@ -129,22 +135,34 @@ pub struct ToolOutput {
 
 /// Per-call outcome. Flattens the FIVE return sites of the old `Option<String>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ActStatus.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ActStatus.ts"
+)]
 pub enum ActStatus {
     Executed,
     /// Executor `Err` — the old path only `warn`'d and dropped this.
-    Errored { message: String },
+    Errored {
+        message: String,
+    },
     /// The already-satisfied short-circuit.
-    AlreadySatisfied { repeat: usize },
+    AlreadySatisfied {
+        repeat: usize,
+    },
     /// The redundant-orientation short-circuit.
-    RedundantOrientation { repeat: usize },
+    RedundantOrientation {
+        repeat: usize,
+    },
 }
 
 /// ONE act = typed pair (call, output) + status. `call` retains `ToolCall`
 /// (INCLUDING `.id`) so correlation is by id, not by `outcome.results.get(i)`
 /// positional index.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/Observation.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/Observation.ts"
+)]
 pub struct Observation {
     pub call: ToolCall,
     pub output: ToolOutput,
@@ -153,7 +171,10 @@ pub struct Observation {
 
 /// The BATCH result of `apply_act` — replaces `Option<String>`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/ActOutcome.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/ActOutcome.ts"
+)]
 pub enum ActOutcome {
     /// The mind has no hands (tools were never offered) — was `None`.
     NoHands,
@@ -291,7 +312,10 @@ mod tests {
     #[test]
     fn extract_paths_reads_the_typed_input_not_the_receipt() {
         let one = serde_json::json!({ "file_path": "sympy/core/basic.py" });
-        assert_eq!(extract_paths(&one), vec![PathBuf::from("sympy/core/basic.py")]);
+        assert_eq!(
+            extract_paths(&one),
+            vec![PathBuf::from("sympy/core/basic.py")]
+        );
 
         let arr = serde_json::json!({ "paths": ["a.rs", "b.rs", "a.rs"] });
         assert_eq!(

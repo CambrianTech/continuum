@@ -68,7 +68,10 @@ pub struct ChannelDigestRegion {
 impl ChannelDigestRegion {
     /// Build with the shared digest builder + the persona/channel source, owning a
     /// fresh ready-buffer (tests / standalone).
-    pub fn new(builder: Arc<ChannelDigestBuilder>, personas: Arc<dyn PersonaChannelReader>) -> Self {
+    pub fn new(
+        builder: Arc<ChannelDigestBuilder>,
+        personas: Arc<dyn PersonaChannelReader>,
+    ) -> Self {
         Self::with_buffer(builder, personas, Arc::new(DashMapReadyBuffer::new()))
     }
 
@@ -119,7 +122,13 @@ impl ChannelDigestRegion {
         };
         match self
             .builder
-            .build(persona_id, room, reader.as_ref(), self.fetch_limit, self.grounding)
+            .build(
+                persona_id,
+                room,
+                reader.as_ref(),
+                self.fetch_limit,
+                self.grounding,
+            )
             .await
         {
             Ok(digest) => {
@@ -204,11 +213,11 @@ mod tests {
     use crate::cognition::channel_digest::ChannelBookmarks;
     use crate::cognition::channel_element::ChannelElementCache;
     use crate::cognition::embedding::EmbeddingProvider;
+    use airc_core::TranscriptEvent;
     use airc_core::{
         Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,
     };
     use airc_lib::AircError;
-    use airc_core::TranscriptEvent;
     use std::sync::Mutex;
 
     struct NoopEmbedder;
@@ -231,7 +240,14 @@ mod tests {
     #[async_trait]
     impl AircTranscriptReader for StubReader {
         async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
-            Ok(self.events.lock().unwrap().iter().take(limit).cloned().collect())
+            Ok(self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
         }
     }
 
@@ -245,7 +261,10 @@ mod tests {
         fn live_personas(&self) -> Vec<Uuid> {
             vec![self.persona]
         }
-        fn reader_and_room(&self, persona_id: Uuid) -> Option<(Arc<dyn AircTranscriptReader>, Uuid)> {
+        fn reader_and_room(
+            &self,
+            persona_id: Uuid,
+        ) -> Option<(Arc<dyn AircTranscriptReader>, Uuid)> {
             (persona_id == self.persona).then(|| (self.reader.clone(), self.room))
         }
     }
@@ -285,7 +304,10 @@ mod tests {
                 events: Mutex::new(events),
             }),
         });
-        (ChannelDigestRegion::new(builder, channels).with_grounding(0), bookmarks)
+        (
+            ChannelDigestRegion::new(builder, channels).with_grounding(0),
+            bookmarks,
+        )
     }
 
     // what this catches: THE PRE-STAGING — a per-persona tick builds the digest and
@@ -303,9 +325,15 @@ mod tests {
         let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
         assert_eq!(outcome.published, 1);
 
-        let digest = region.peek(persona, room.as_uuid()).expect("digest pre-staged");
+        let digest = region
+            .peek(persona, room.as_uuid())
+            .expect("digest pre-staged");
         assert_eq!(digest.unread().len(), 2);
-        assert_eq!(outcome.cadence_hint, Some(CadenceHint::Hold), "fresh unread holds cadence");
+        assert_eq!(
+            outcome.cadence_hint,
+            Some(CadenceHint::Hold),
+            "fresh unread holds cadence"
+        );
     }
 
     // what this catches: a global tick (no persona scope) stages nothing — digests
@@ -327,7 +355,9 @@ mod tests {
         let persona = Uuid::new_v4();
         let room = RoomId::new();
         let (region, _) = region_for(persona, room, vec![event_in(room, "a", 1)]);
-        let outcome = region.tick(&RegionContext::for_persona(0, Uuid::new_v4())).await;
+        let outcome = region
+            .tick(&RegionContext::for_persona(0, Uuid::new_v4()))
+            .await;
         assert_eq!(outcome.published, 0);
     }
 
@@ -359,6 +389,10 @@ mod tests {
         let (region, _) = region_for(persona, room, vec![event_in(room, "a", 1)]);
         region.tick(&RegionContext::for_persona(0, persona)).await;
         region.tick(&RegionContext::for_persona(1, persona)).await;
-        assert_eq!(region.digests().len(), 1, "one entry per (persona, channel), refreshed");
+        assert_eq!(
+            region.digests().len(),
+            1,
+            "one entry per (persona, channel), refreshed"
+        );
     }
 }

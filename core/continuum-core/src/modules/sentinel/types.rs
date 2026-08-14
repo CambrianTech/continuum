@@ -394,7 +394,10 @@ pub enum PipelineStep {
 
 /// A complete pipeline definition
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/sentinel/Pipeline.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/sentinel/Pipeline.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,7 +414,10 @@ pub struct Pipeline {
 
 /// Result of a single step execution
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/sentinel/StepResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/sentinel/StepResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct StepResult {
     pub step_index: usize,

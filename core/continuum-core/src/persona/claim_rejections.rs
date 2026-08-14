@@ -123,7 +123,10 @@ mod tests {
         }
         let facts = recent_at(a, t0 + Duration::from_secs(1));
         assert_eq!(facts.len(), MAX_PER_PERSONA);
-        assert!(facts.last().is_some_and(|f| f.contains("card5")), "newest kept");
+        assert!(
+            facts.last().is_some_and(|f| f.contains("card5")),
+            "newest kept"
+        );
         assert!(!facts.iter().any(|f| f.contains("card0")), "oldest dropped");
     }
 }

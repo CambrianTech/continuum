@@ -34,7 +34,6 @@
 
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::registry_bridge::models_for_provider_via_registry;
-use crate::model_registry::Capability;
 use crate::ai::types::{
     EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason, HealthState, HealthStatus,
     MessageContent, ModelInfo, ResponseFormat, TextGenerationRequest, TextGenerationResponse,
@@ -43,6 +42,7 @@ use crate::ai::types::{
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
 use crate::inference_capability::enforce_residency;
+use crate::model_registry::Capability;
 use crate::runtime;
 use async_trait::async_trait;
 use llama::FlashAttn;
@@ -558,9 +558,7 @@ impl LlamaCppAdapter {
         // instead of silent quality loss.
         let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1);
         let effective_n_seq_max = if requested_n_seq_max > 1 {
-            match crate::inference::batching_probe::probe_gguf_batching_safety(
-                &self.model_path,
-            ) {
+            match crate::inference::batching_probe::probe_gguf_batching_safety(&self.model_path) {
                 Ok(verdict) => {
                     let clamped = verdict.clamp_n_seq_max(requested_n_seq_max);
                     if clamped < requested_n_seq_max {
@@ -1012,7 +1010,13 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .as_ref()
             .map(|v| {
                 v.iter()
-                    .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
+                    .map(|a| {
+                        (
+                            a.name.clone(),
+                            std::path::PathBuf::from(&a.path),
+                            a.scale as f32,
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -1024,27 +1028,31 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // 2026-06-06 baseline). `time_probe!` wraps the JoinHandle
             // future cleanly across the `.await`.
             let genes_for_closure = requested_genes;
-            crate::time_probe!("inference.forward.text", tokio::task::spawn_blocking(move || {
-                let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
-                // Page in each requested gene (idempotent) before generation.
-                // A missing/unreadable adapter file is a hard error — never
-                // silently run the base model in its place (Rule 2).
-                for (id, path, _) in &genes_for_closure {
-                    backend_for_blocking.ensure_adapter(id, path)?;
-                }
-                let active_loras: Vec<(String, f32)> = genes_for_closure
-                    .iter()
-                    .map(|(id, _, scale)| (id.clone(), *scale))
-                    .collect();
-                backend_for_blocking.generate_for_persona(
-                    persona_id,
-                    &prompt_for_blocking,
-                    max_tokens,
-                    sampling_for_closure,
-                    &stop_refs,
-                    &active_loras,
-                )
-            }))
+            crate::time_probe!(
+                "inference.forward.text",
+                tokio::task::spawn_blocking(move || {
+                    let stop_refs: Vec<&str> =
+                        stop_for_closure.iter().map(|s| s.as_str()).collect();
+                    // Page in each requested gene (idempotent) before generation.
+                    // A missing/unreadable adapter file is a hard error — never
+                    // silently run the base model in its place (Rule 2).
+                    for (id, path, _) in &genes_for_closure {
+                        backend_for_blocking.ensure_adapter(id, path)?;
+                    }
+                    let active_loras: Vec<(String, f32)> = genes_for_closure
+                        .iter()
+                        .map(|(id, _, scale)| (id.clone(), *scale))
+                        .collect();
+                    backend_for_blocking.generate_for_persona(
+                        persona_id,
+                        &prompt_for_blocking,
+                        max_tokens,
+                        sampling_for_closure,
+                        &stop_refs,
+                        &active_loras,
+                    )
+                })
+            )
             .map_err(|e| format!("generate task panicked: {e}"))?
         } else {
             // Multimodal path: bypass the scheduler — media tokens have
@@ -1059,7 +1067,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // applies set_loras). Fail loud rather than silently dropping the
             // requested adapter (Rule 2).
             if !requested_genes.is_empty() {
-                let names: Vec<&str> = requested_genes.iter().map(|(id, _, _)| id.as_str()).collect();
+                let names: Vec<&str> = requested_genes
+                    .iter()
+                    .map(|(id, _, _)| id.as_str())
+                    .collect();
                 return Err(format!(
                     "llamacpp_adapter: LoRA genes {names:?} requested with media — not supported \
                      on the multimodal bypass path (v1). Genes apply only on the text scheduler \
@@ -1084,25 +1095,29 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // scheduler batching for media) so the timing here is
             // direct end-to-end. Separate seam from the text path so
             // operators can `jq` text-only vs mtmd cost distinctly.
-            crate::time_probe!("inference.forward.multimodal", tokio::task::spawn_blocking(move || {
-                let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
-                match kind {
-                    llama::MediaKind::Image => backend_for_blocking.generate_with_image(
-                        &prompt_for_blocking,
-                        &media_bytes,
-                        max_tokens,
-                        sampling_for_closure,
-                        &stop_refs,
-                    ),
-                    llama::MediaKind::Audio => backend_for_blocking.generate_with_audio(
-                        &prompt_for_blocking,
-                        &media_bytes,
-                        max_tokens,
-                        sampling_for_closure,
-                        &stop_refs,
-                    ),
-                }
-            }))
+            crate::time_probe!(
+                "inference.forward.multimodal",
+                tokio::task::spawn_blocking(move || {
+                    let stop_refs: Vec<&str> =
+                        stop_for_closure.iter().map(|s| s.as_str()).collect();
+                    match kind {
+                        llama::MediaKind::Image => backend_for_blocking.generate_with_image(
+                            &prompt_for_blocking,
+                            &media_bytes,
+                            max_tokens,
+                            sampling_for_closure,
+                            &stop_refs,
+                        ),
+                        llama::MediaKind::Audio => backend_for_blocking.generate_with_audio(
+                            &prompt_for_blocking,
+                            &media_bytes,
+                            max_tokens,
+                            sampling_for_closure,
+                            &stop_refs,
+                        ),
+                    }
+                })
+            )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
         let (text, tokens) = result?;
@@ -1402,8 +1417,7 @@ mod tests {
     use crate::model_registry::Model;
     use std::collections::BTreeSet;
 
-    fn lcd_compat_profile()
-    -> crate::persona::inference_profile::PersonaInferenceProfile {
+    fn lcd_compat_profile() -> crate::persona::inference_profile::PersonaInferenceProfile {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
         use uuid::Uuid;
@@ -1411,9 +1425,7 @@ mod tests {
             persona_id: Uuid::nil(),
             persona_name: "Paige".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            gguf_local_path: Some(PathBuf::from(
-                "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            )),
+            gguf_local_path: Some(PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")),
             tier_category: HwTierCategory::Compat,
             tier_id: "mac_intel_metal_discrete".to_string(),
             context_length: 2048,
@@ -1435,9 +1447,10 @@ mod tests {
     fn for_persona_populates_all_overrides_from_profile() {
         let profile = lcd_compat_profile();
         let adapter = LlamaCppAdapter::for_persona(&profile).expect("build adapter");
-        assert_eq!(adapter.model_path, PathBuf::from(
-            "/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf"
-        ));
+        assert_eq!(
+            adapter.model_path,
+            PathBuf::from("/tmp/test-qwen2.5-0.5b-instruct-q4_k_m.gguf")
+        );
         assert_eq!(adapter.default_model, profile.model_id);
         assert_eq!(adapter.context_length_override, Some(2048));
         assert_eq!(adapter.n_seq_max_override, Some(1));
@@ -1473,12 +1486,10 @@ mod tests {
     /// They're the escape hatch; production paths use `for_persona`.
     #[test]
     fn with_n_ubatch_and_n_gpu_layers_setters() {
-        let adapter = LlamaCppAdapter::with_model_id(
-            PathBuf::from("/tmp/x.gguf"),
-            "model".to_string(),
-        )
-        .with_n_ubatch(1024)
-        .with_n_gpu_layers(20);
+        let adapter =
+            LlamaCppAdapter::with_model_id(PathBuf::from("/tmp/x.gguf"), "model".to_string())
+                .with_n_ubatch(1024)
+                .with_n_gpu_layers(20);
         assert_eq!(adapter.n_ubatch_override, Some(1024));
         assert_eq!(adapter.n_gpu_layers_override, Some(20));
     }

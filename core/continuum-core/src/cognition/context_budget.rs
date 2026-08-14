@@ -255,8 +255,8 @@ mod tests {
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
         near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS
-        // Echoed args share the trail-head fraction (see the module doc's † note — the old
-        // 600 was invented, not tuned, so it is not a calibration target).
+                                             // Echoed args share the trail-head fraction (see the module doc's † note — the old
+                                             // 600 was invented, not tuned, so it is not a calibration target).
         assert_eq!(b.echoed_arg_chars(), b.trail_head_chars());
     }
 
@@ -293,7 +293,10 @@ mod tests {
         let lane = ContextBudget::from_window(16_384);
         let huge = ContextBudget::from_window(1_000_000);
 
-        assert_eq!(lane.working_memory_steps(), TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM);
+        assert_eq!(
+            lane.working_memory_steps(),
+            TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM
+        );
         assert_eq!(
             small.working_memory_steps(),
             lane.working_memory_steps(),

@@ -647,7 +647,11 @@ impl Burst {
         for turn in &turns {
             turn.write_line(&mut rendered);
         }
-        Self { turns, rendered, now_ms }
+        Self {
+            turns,
+            rendered,
+            now_ms,
+        }
     }
 }
 
@@ -1309,8 +1313,7 @@ pub struct WorkspaceCycle {
 pub struct EvalIsolation {
     admission: Option<Arc<crate::persona::admission_state::AdmissionState>>,
     checkpoint: Option<crate::persona::admission_state::AdmissionCheckpoint>,
-    real_sink:
-        Option<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    real_sink: Option<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
     /// The shared decoding handle the guard forced to greedy on creation — restored
     /// to relaxed (`None`) on drop. Carried even for a no-hands (pure-cognition)
     /// cycle, because a reproducible metric needs deterministic generation whether
@@ -1338,7 +1341,9 @@ impl Drop for EvalIsolation {
         if let Some(decoding) = &self.decoding {
             decoding.store(Arc::new(None));
         }
-        let Some(admission) = &self.admission else { return };
+        let Some(admission) = &self.admission else {
+            return;
+        };
         // Rewind the memory frame, THEN restore the real sink — order matters:
         // restoring the sink first could let a racing observe land a write the
         // rewind was meant to erase. With the sink still muted, the rewind is
@@ -1432,7 +1437,8 @@ impl WorkspaceCycle {
     /// Act has no `FacultyId` (the hands run AFTER deliberation, not as a workspace
     /// faculty), so it is bumped explicitly rather than through the tick map.
     pub fn note_acting(&self) {
-        self.faculty_pulse.fire(super::faculty_pulse::CognitionAxis::Act);
+        self.faculty_pulse
+            .fire(super::faculty_pulse::CognitionAxis::Act);
     }
 
     /// Share the persona's decoding handle — call with the SAME [`DecodingHandle`]
@@ -1515,7 +1521,10 @@ impl WorkspaceCycle {
     /// clean through the same adapter.
     pub fn current_model_route(
         &self,
-    ) -> Option<(Arc<dyn crate::ai::adapter::AIProviderAdapter>, Option<String>)> {
+    ) -> Option<(
+        Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+        Option<String>,
+    )> {
         self.model_binding.as_ref().map(|handle| {
             let b = handle.load();
             (b.adapter.clone(), b.model.clone())
@@ -1577,7 +1586,8 @@ impl WorkspaceCycle {
     /// the persona's live "thinking tempo" (the roster **ACT** vital): a rising
     /// count = actively servicing concerns, a flat count = idle. Read wait-free.
     pub fn cycle_count(&self) -> u64 {
-        self.cycle_counter.load(std::sync::atomic::Ordering::Relaxed)
+        self.cycle_counter
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Clear the volatile working-memory scratch (the act/reasoning proprioception
@@ -1622,8 +1632,8 @@ impl WorkspaceCycle {
         };
         let admission = acting.admission.clone();
         let checkpoint = admission.checkpoint();
-        let real_sink = admission
-            .swap_persistence(crate::persona::admission_persistence::NoopSink::arc());
+        let real_sink =
+            admission.swap_persistence(crate::persona::admission_persistence::NoopSink::arc());
         EvalIsolation {
             admission: Some(admission),
             checkpoint: Some(checkpoint),
@@ -1725,8 +1735,13 @@ impl WorkspaceCycle {
         // Ambient default: silence stays first-class, message-driven. A turn put TO
         // the persona, or her own heartbeat, uses [`run_framed`](Self::run_framed)
         // with the appropriate [`TurnFraming`].
-        self.run_in_room_inner(burst, room_id, TurnFraming::ambient(), Situation::FreshContext)
-            .await
+        self.run_in_room_inner(
+            burst,
+            room_id,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await
     }
 
     /// The full cognitive tick. [`TurnFraming`] is set on the [`Workspace`] so the
@@ -2041,7 +2056,10 @@ mod tests {
     #[test]
     fn genome_page_in_and_out_round_trips() {
         let c = cycle(vec![], 4);
-        assert!(c.genome().is_empty(), "a fresh cycle starts on the base model");
+        assert!(
+            c.genome().is_empty(),
+            "a fresh cycle starts on the base model"
+        );
 
         c.page_in(vec![ActiveAdapterRequest {
             name: "coder-0p5b".to_string(),
@@ -2147,7 +2165,10 @@ mod tests {
         let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
             Arc::new(HeuristicInferenceAdapter::new());
         let default_id = adapter.default_model().to_string();
-        assert!(!default_id.is_empty(), "fixture adapter must carry a default model");
+        assert!(
+            !default_id.is_empty(),
+            "fixture adapter must carry a default model"
+        );
 
         // Boot shape: binding with NO explicit model (the live upstart path).
         let handle = model_binding(Arc::clone(&adapter), None, 20_224);
@@ -2199,8 +2220,15 @@ mod tests {
         // First tick → CycleId(1); both the perception (Recall) and deliberation
         // (verdict) findings must carry it.
         let ws1 = c.run("burst one").await;
-        assert_eq!(ws1.cycle, CycleId(1), "first live cycle is 1, not the 0 sentinel");
-        assert!(ws1.broadcast.len() >= 2, "both faculties contributed this tick");
+        assert_eq!(
+            ws1.cycle,
+            CycleId(1),
+            "first live cycle is 1, not the 0 sentinel"
+        );
+        assert!(
+            ws1.broadcast.len() >= 2,
+            "both faculties contributed this tick"
+        );
         for bid in &ws1.broadcast {
             assert_eq!(
                 bid.cycle,
@@ -2665,9 +2693,13 @@ mod tests {
         let arbiter = SituationFocusArbiter::new();
         // A realistic mixed tick: high-salience standing grounding (stable) plus the
         // volatile task context (the just-landed tool result + a recalled fact).
-        let roster =
-            Contribution::context(FacultyId::Custom("roster".into()), "room roster", 0.9, "grounding")
-                .session_stable();
+        let roster = Contribution::context(
+            FacultyId::Custom("roster".into()),
+            "room roster",
+            0.9,
+            "grounding",
+        )
+        .session_stable();
         let doctrine = Contribution::context(
             FacultyId::Custom("doctrine".into()),
             "operating doctrine",
@@ -2675,9 +2707,18 @@ mod tests {
             "grounding",
         )
         .session_stable();
-        let result =
-            Contribution::context(FacultyId::WorldModel, "[action #1] code/read → fn main()...", 0.6, "result");
-        let recall = Contribution::context(FacultyId::Recall, "recalled: the ticket asks for X", 0.5, "recall");
+        let result = Contribution::context(
+            FacultyId::WorldModel,
+            "[action #1] code/read → fn main()...",
+            0.6,
+            "result",
+        );
+        let recall = Contribution::context(
+            FacultyId::Recall,
+            "recalled: the ticket asks for X",
+            0.5,
+            "recall",
+        );
         let candidates = vec![roster, doctrine, result.clone(), recall.clone()];
 
         // Fresh ask: fuller grounding — everything within capacity survives, exactly

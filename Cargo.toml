@@ -220,7 +220,7 @@ tokio-stream = "0.1"
 
 # Timing and UUIDs (for JTAG protocol)
 chrono = "0.4"
-uuid = { version = "1.6", features = ["v4", "serde"] }
+uuid = { version = "1.6", features = ["v4", "v5", "serde"] }
 
 # Safetensors for model/adapter weights
 safetensors = "0.7"

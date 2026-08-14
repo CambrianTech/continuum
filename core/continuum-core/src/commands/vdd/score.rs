@@ -32,7 +32,10 @@ pub struct ScoreCase {
 
 /// Params for `vdd/score`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vdd/VddScoreParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vdd/VddScoreParams.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VddScoreParams {
     /// The held-out cases to score.
@@ -59,7 +62,10 @@ fn default_score_scenario() -> String {
 
 /// Per-case verdict surfaced in the result so a failing case is debuggable.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/vdd/ScoreCaseVerdict.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vdd/ScoreCaseVerdict.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreCaseVerdict {
     pub prompt: String,
@@ -70,7 +76,10 @@ pub struct ScoreCaseVerdict {
 /// Result of `vdd/score` — the accuracy measurement + per-case verdicts. `score`
 /// ∈ [0,1] is the number the A/B's *lift* is a difference of.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/vdd/VddScoreResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vdd/VddScoreResult.ts"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct VddScoreResult {
     pub scenario: String,

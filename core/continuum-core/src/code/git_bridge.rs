@@ -182,8 +182,14 @@ pub fn git_init_if_needed(workspace_root: &Path) -> Result<bool, String> {
     }
     run_git(workspace_root, &["init"]).map_err(|e| format!("git init failed: {e}"))?;
     // Identity for the initial commit: repo-local, never touching global config.
-    let _ = run_git(workspace_root, &["config", "user.email", "citizen@continuum.local"]);
-    let _ = run_git(workspace_root, &["config", "user.name", "continuum-citizen"]);
+    let _ = run_git(
+        workspace_root,
+        &["config", "user.email", "citizen@continuum.local"],
+    );
+    let _ = run_git(
+        workspace_root,
+        &["config", "user.name", "continuum-citizen"],
+    );
     let _ = run_git(workspace_root, &["add", "-A"]);
     // An empty dir still gets a root commit so diffs have a base.
     let _ = run_git(
@@ -244,7 +250,11 @@ pub fn git_sync_from_shared(
         let _ = run_git(workspace_root, &["add", "-A"]);
         let _ = run_git(
             workspace_root,
-            &["commit", "-m", "workspace: autosave persona work before shared sync"],
+            &[
+                "commit",
+                "-m",
+                "workspace: autosave persona work before shared sync",
+            ],
         );
     }
     let before = run_git(workspace_root, &["rev-parse", "HEAD"])
@@ -254,8 +264,11 @@ pub fn git_sync_from_shared(
 
     // 2. Fetch shared's current HEAD (a filesystem path is a valid git remote).
     let shared = shared_checkout.to_string_lossy();
-    run_git(workspace_root, &["fetch", "--no-tags", shared.as_ref(), "HEAD"])
-        .map_err(|e| format!("fetch from shared checkout '{shared}' failed: {e}"))?;
+    run_git(
+        workspace_root,
+        &["fetch", "--no-tags", shared.as_ref(), "HEAD"],
+    )
+    .map_err(|e| format!("fetch from shared checkout '{shared}' failed: {e}"))?;
 
     // 3. Merge shared in — shared wins framework conflicts, persona files kept.
     if let Err(e) = run_git(
@@ -469,9 +482,18 @@ mod tests {
         assert!(report.synced, "should report a sync: {}", report.summary);
 
         // BOTH survive: shared's new file arrives, the persona's work is preserved.
-        assert!(citizen.path().join("framework.rs").exists(), "shared file must arrive");
-        assert!(citizen.path().join("my_work.rs").exists(), "persona work must survive");
-        assert!(citizen.path().join("initial.txt").exists(), "base file still present");
+        assert!(
+            citizen.path().join("framework.rs").exists(),
+            "shared file must arrive"
+        );
+        assert!(
+            citizen.path().join("my_work.rs").exists(),
+            "persona work must survive"
+        );
+        assert!(
+            citizen.path().join("initial.txt").exists(),
+            "base file still present"
+        );
 
         // Idempotent: a second sync is a clean no-op.
         let again = git_sync_from_shared(citizen.path(), shared.path()).expect("2nd sync ok");
@@ -519,10 +541,16 @@ mod tests {
             !citizen.path().join("conway.rs").exists(),
             "shared's deletion wins the tree"
         );
-        assert!(citizen.path().join("framework3.rs").exists(), "shared file arrives");
+        assert!(
+            citizen.path().join("framework3.rs").exists(),
+            "shared file arrives"
+        );
         // Preserve-first: her edit is one commit back in HER history.
-        let show = run_git(citizen.path(), &["log", "--all", "-S", "persona edit", "--oneline"])
-            .unwrap_or_default();
+        let show = run_git(
+            citizen.path(),
+            &["log", "--all", "-S", "persona edit", "--oneline"],
+        )
+        .unwrap_or_default();
         assert!(
             !show.trim().is_empty(),
             "the persona's modified version survives in history"
@@ -550,11 +578,17 @@ mod tests {
         // Upstream submodule repo with two commits: P0 (the pointer both clones
         // start at) and S2 (what shared advances to).
         let sub = setup_git_repo();
-        let _p0 = run_git(sub.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let _p0 = run_git(sub.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
         fs::write(sub.path().join("v2.txt"), "v2\n").unwrap();
         run_git(sub.path(), &["add", "."]).unwrap();
         run_git(sub.path(), &["commit", "-m", "sub: v2"]).unwrap();
-        let s2 = run_git(sub.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let s2 = run_git(sub.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
 
         // Shared checkout carrying the submodule at P0.
         let shared = setup_git_repo();
@@ -569,7 +603,11 @@ mod tests {
                 "vendor/sub",
             ],
         );
-        assert!(out.status.success(), "submodule add: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "submodule add: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         // Pin the submodule at P0 (submodule add checks out its current HEAD = S2 tip;
         // rewind the gitlink so both sides start from a common base pointer).
         run_git(shared.path(), &["commit", "-m", "shared: add submodule"]).unwrap();
@@ -589,22 +627,41 @@ mod tests {
         // Shared moves the pointer to S2 + ships a framework file.
         run_git(
             shared.path(),
-            &["update-index", "--cacheinfo", &format!("160000,{s2},vendor/sub")],
+            &[
+                "update-index",
+                "--cacheinfo",
+                &format!("160000,{s2},vendor/sub"),
+            ],
         )
         .unwrap();
         fs::write(shared.path().join("framework2.rs"), "// newer shared\n").unwrap();
         run_git(shared.path(), &["add", "framework2.rs"]).unwrap();
-        run_git(shared.path(), &["commit", "-m", "shared: bump sub + framework2"]).unwrap();
+        run_git(
+            shared.path(),
+            &["commit", "-m", "shared: bump sub + framework2"],
+        )
+        .unwrap();
 
         // Citizen diverges the pointer to a THIRD sha (what autosave does with a
         // drifted vendored tree) plus her own uncommitted work.
-        let stray = run_git(citizen.path(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let stray = run_git(citizen.path(), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
         run_git(
             citizen.path(),
-            &["update-index", "--cacheinfo", &format!("160000,{stray},vendor/sub")],
+            &[
+                "update-index",
+                "--cacheinfo",
+                &format!("160000,{stray},vendor/sub"),
+            ],
         )
         .unwrap();
-        run_git(citizen.path(), &["commit", "-m", "citizen: drifted pointer"]).unwrap();
+        run_git(
+            citizen.path(),
+            &["commit", "-m", "citizen: drifted pointer"],
+        )
+        .unwrap();
         fs::write(citizen.path().join("my_work.rs"), "// persona code\n").unwrap();
 
         let report = git_sync_from_shared(citizen.path(), shared.path())
@@ -613,7 +670,10 @@ mod tests {
 
         // Shared's pointer wins; shared's file arrives; persona work survives.
         let tree = run_git(citizen.path(), &["ls-tree", "HEAD", "vendor/sub"]).unwrap();
-        assert!(tree.contains(&s2), "gitlink must resolve to shared's sha: {tree}");
+        assert!(
+            tree.contains(&s2),
+            "gitlink must resolve to shared's sha: {tree}"
+        );
         assert!(citizen.path().join("framework2.rs").exists());
         assert!(citizen.path().join("my_work.rs").exists());
     }

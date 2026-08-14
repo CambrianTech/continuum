@@ -125,7 +125,10 @@ use super::CommandResult;
 /// `P` in this generic — so the typed surface cannot drift from the Rust
 /// envelope. `P` is flattened (`#[ts(flatten)]`) to match the flat wire JSON.
 #[derive(Debug, Clone, Deserialize, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/CommandRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/CommandRequest.ts"
+)]
 pub struct CommandRequest<P> {
     /// Command-specific params, deserialized from the same JSON object
     /// as the envelope. Flatten means the wire JSON looks like
@@ -145,11 +148,7 @@ pub struct CommandRequest<P> {
     /// Calling session — set by the kernel from the request envelope.
     /// Handlers reading this can correlate per-session telemetry, dual
     /// log, etc.
-    #[serde(
-        rename = "sessionId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none", default)]
     #[ts(optional, type = "string")]
     pub session_id: Option<Uuid>,
 
@@ -171,11 +170,7 @@ pub struct CommandRequest<P> {
     /// params. First-class for every citizen — a persona servicing a room is
     /// a citizen scoped to that room's contextId, the same shape a browser tab
     /// uses (this is what fills the persona cognition's tool_context).
-    #[serde(
-        rename = "contextId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "contextId", skip_serializing_if = "Option::is_none", default)]
     #[ts(optional, type = "string")]
     pub context_id: Option<Uuid>,
 }
@@ -223,7 +218,9 @@ fn param_mismatch_message(serde_error: &str, sent: &[String]) -> String {
         })
         .collect();
     if candidates.is_empty() {
-        return format!("{base}. You sent no parameters at all — this command requires `{wanted}`.");
+        return format!(
+            "{base}. You sent no parameters at all — this command requires `{wanted}`."
+        );
     }
     let sent_list = candidates
         .iter()
@@ -289,8 +286,7 @@ where
             .as_object()
             .map(|o| o.keys().cloned().collect())
             .unwrap_or_default();
-        serde_json::from_value(value)
-            .map_err(|e| param_mismatch_message(&e.to_string(), &sent))
+        serde_json::from_value(value).map_err(|e| param_mismatch_message(&e.to_string(), &sent))
     }
 }
 
@@ -449,7 +445,10 @@ impl<P> CommandRequest<P> {
 /// in this generic, so a caller always sees the cross-cutting
 /// success/error/handle alongside the command-specific payload.
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/runtime/CommandResponse.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/runtime/CommandResponse.ts"
+)]
 pub struct CommandResponse<T> {
     /// Operation succeeded. Default `true`; flipped by
     /// [`CommandResponse::err`].
@@ -611,7 +610,10 @@ mod tests {
             "missing field `cmd`",
             &["command".to_string(), "timeout".to_string()],
         );
-        assert!(msg.contains("You sent `command`"), "must name what she sent: {msg}");
+        assert!(
+            msg.contains("You sent `command`"),
+            "must name what she sent: {msg}"
+        );
         assert!(
             msg.contains("calls that parameter `cmd`, not `command`"),
             "must state the correspondence, not just the wanted name: {msg}"
@@ -621,7 +623,11 @@ mod tests {
         // paraded back as if she had mis-named something.
         let msg = param_mismatch_message(
             "missing field `file_path`",
-            &["path".to_string(), "sessionId".to_string(), "userId".to_string()],
+            &[
+                "path".to_string(),
+                "sessionId".to_string(),
+                "userId".to_string(),
+            ],
         );
         assert!(msg.contains("`path`"), "the real candidate survives: {msg}");
         assert!(
@@ -653,7 +659,10 @@ mod tests {
 
         // A non-missing-field error is passed through untouched.
         let msg = param_mismatch_message("invalid type: string, expected u32", &["n".to_string()]);
-        assert!(msg.ends_with("expected u32"), "unrelated errors are not rewritten: {msg}");
+        assert!(
+            msg.ends_with("expected u32"),
+            "unrelated errors are not rewritten: {msg}"
+        );
     }
 
     #[test]
@@ -762,7 +771,9 @@ mod tests {
             tokens_emitted: 1,
         })
         .with_handle("ai/inference", Uuid::new_v4(), "ai::InferenceSession");
-        let cr = resp.into_command_result().expect("materialize must succeed");
+        let cr = resp
+            .into_command_result()
+            .expect("materialize must succeed");
         match cr {
             CommandResult::Json(v) => {
                 assert_eq!(v["success"], true);
@@ -908,10 +919,8 @@ mod tests {
         // this resolver, the error must name BOTH the failing command
         // (so the caller knows which surface) AND the
         // HandleRef-level mismatch (so the caller knows what to fix).
-        let req = CommandRequest::new(CursorParams::default()).with_handle(HandleRef::mint(
-            "chat",
-            "chat::MessageHandle",
-        ));
+        let req = CommandRequest::new(CursorParams::default())
+            .with_handle(HandleRef::mint("chat", "chat::MessageHandle"));
 
         let err = req
             .handle_id_or_legacy(
@@ -950,8 +959,14 @@ mod tests {
                 "data/query-close",
             )
             .expect_err("wrong-type handle must Err");
-        assert!(err.starts_with("data/query-close:"), "command prefix: {err}");
-        assert!(err.contains("type mismatch"), "type mismatch propagates: {err}");
+        assert!(
+            err.starts_with("data/query-close:"),
+            "command prefix: {err}"
+        );
+        assert!(
+            err.contains("type mismatch"),
+            "type mismatch propagates: {err}"
+        );
         assert!(
             err.contains("data::Migration") && err.contains("data::QueryCursor"),
             "both offender and expected named: {err}"

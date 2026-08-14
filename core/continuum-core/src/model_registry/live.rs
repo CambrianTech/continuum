@@ -50,7 +50,10 @@ use super::types::{Model, ProviderKind};
 /// Whether a model is usable *right now* on this host. The one runtime fact a
 /// `models/pull` flips and a `models/list` reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/Availability.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/Availability.ts"
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Availability {
     /// Artifact present on disk (local) or remote endpoint configured (cloud) —
@@ -65,7 +68,10 @@ pub enum Availability {
 /// inference against it. Absent until verification runs; attached to the live
 /// status once it does. This is the "can we actually handle it?" record.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/model_registry/VerifyReport.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/model_registry/VerifyReport.ts"
+)]
 pub struct VerifyReport {
     /// A minimal text generation completed.
     pub text_ok: bool,
@@ -195,13 +201,8 @@ impl ModelCatalog {
     /// usable without a reboot.
     pub fn register(&self, model: Model, status: ModelStatus) {
         self.mutate(|snap| {
-            snap.models.insert(
-                model.id.clone(),
-                LiveModel {
-                    model,
-                    status,
-                },
-            );
+            snap.models
+                .insert(model.id.clone(), LiveModel { model, status });
         });
     }
 
@@ -337,7 +338,10 @@ mod tests {
             Availability::Ready,
             "a cloud model has no artifact to fetch — Ready at seed"
         );
-        assert!(sonnet.status.verified.is_none(), "no verification until models/try runs");
+        assert!(
+            sonnet.status.verified.is_none(),
+            "no verification until models/try runs"
+        );
     }
 
     // what this catches: a mutation must be copy-on-write + observable — the
@@ -398,7 +402,10 @@ mod tests {
         ));
         let snap = catalog.snapshot();
         let live = snap.get(&id).expect("model still present");
-        assert_eq!(live.status.verified.as_ref().unwrap().measured_tps, Some(42.0));
+        assert_eq!(
+            live.status.verified.as_ref().unwrap().measured_tps,
+            Some(42.0)
+        );
     }
 
     // what this catches: a models/pull result is recorded truthfully — the live
@@ -432,10 +439,17 @@ mod tests {
 
         let snap = catalog.snapshot();
         let live = snap.get(&id).expect("model still present");
-        assert_eq!(live.status.availability, Availability::Ready, "pull flips Ready");
+        assert_eq!(
+            live.status.availability,
+            Availability::Ready,
+            "pull flips Ready"
+        );
         assert_eq!(live.model.gguf_local_path.as_ref(), Some(&gguf));
         assert_eq!(live.model.mmproj_local_path.as_ref(), Some(&mmproj));
-        assert!(snap.generation > gen_before, "the mutation bumps generation");
+        assert!(
+            snap.generation > gen_before,
+            "the mutation bumps generation"
+        );
     }
 
     // what this catches: detach is the exact inverse of attach — after a
@@ -468,7 +482,10 @@ mod tests {
             PathBuf::from("/tmp/pulled-Q4_K_M.gguf"),
             Some(PathBuf::from("/tmp/mmproj-f16.gguf")),
         );
-        assert_eq!(catalog.snapshot().get(&id).unwrap().status.availability, Availability::Ready);
+        assert_eq!(
+            catalog.snapshot().get(&id).unwrap().status.availability,
+            Availability::Ready
+        );
         let gen_after_attach = catalog.snapshot().generation;
 
         assert!(catalog.detach_local_artifact(&id));
@@ -479,8 +496,17 @@ mod tests {
             Availability::NotDownloaded,
             "remove flips NotDownloaded — the model is re-acquirable again"
         );
-        assert!(live.model.gguf_local_path.is_none(), "the gguf path is forgotten");
-        assert!(live.model.mmproj_local_path.is_none(), "the projector path is forgotten");
-        assert!(snap.generation > gen_after_attach, "the deallocation also bumps generation");
+        assert!(
+            live.model.gguf_local_path.is_none(),
+            "the gguf path is forgotten"
+        );
+        assert!(
+            live.model.mmproj_local_path.is_none(),
+            "the projector path is forgotten"
+        );
+        assert!(
+            snap.generation > gen_after_attach,
+            "the deallocation also bumps generation"
+        );
     }
 }

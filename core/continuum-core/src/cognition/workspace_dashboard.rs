@@ -171,7 +171,9 @@ impl WorkspaceCaptureSink for DashboardCaptureSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::workspace::{Contribution, CycleId, FacultyId, FacultyTiming, TurnMetrics};
+    use crate::cognition::workspace::{
+        Contribution, CycleId, FacultyId, FacultyTiming, TurnMetrics,
+    };
 
     // what this catches: the live dashboard frame projects a tick's load-bearing
     // axes correctly — the two-barrier critical path (max-perception + max-delib,

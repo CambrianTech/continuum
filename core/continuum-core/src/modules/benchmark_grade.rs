@@ -162,7 +162,8 @@ async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Res
         return Ok(());
     };
 
-    let owner = owner.ok_or_else(|| format!("bench card {card_id} has no owner — nobody worked it"))?;
+    let owner =
+        owner.ok_or_else(|| format!("bench card {card_id} has no owner — nobody worked it"))?;
     // The staged checkout: <home>/citizens/peers/<owner>/workspace/swe/<instance>, exactly
     // where benchmark/swe-setup put it. Graded in a FRESH clone, so this tree is READ only.
     let workspace = crate::commands::benchmark::continuum_home()
@@ -209,7 +210,9 @@ async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Res
 
     // Post the verdict into the room as a participant (slice 2 posts to the authoring
     // citizen's room; per-run bench-room targeting is #329/#346 slice 3).
-    airc.say(&msg).await.map_err(|e| format!("post verdict: {e}"))?;
+    airc.say(&msg)
+        .await
+        .map_err(|e| format!("post verdict: {e}"))?;
     Ok(())
 }
 

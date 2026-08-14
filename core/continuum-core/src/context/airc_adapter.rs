@@ -37,10 +37,7 @@ impl AircHandleAdapter {
 
 #[async_trait]
 impl AircTranscriptReader for AircHandleAdapter {
-    async fn page_recent(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
+    async fn page_recent(&self, limit: usize) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Route through the ONE kinds-filtered impl on `airc_lib::Airc`
         // (persona/airc_source.rs, #297) — never the raw inherent page.
         crate::persona::airc_source::AircTranscriptReader::page_recent(&*self.inner, limit).await
@@ -53,12 +50,8 @@ impl AircTranscriptReader for AircHandleAdapter {
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         // Explicit forward (#367) — the #262 lesson lives in this file:
         // a silently-inherited trait default is how regressions ship.
-        crate::persona::airc_source::AircTranscriptReader::page_recent_in(
-            &*self.inner,
-            room,
-            limit,
-        )
-        .await
+        crate::persona::airc_source::AircTranscriptReader::page_recent_in(&*self.inner, room, limit)
+            .await
     }
 }
 
@@ -101,9 +94,7 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdap
 
 #[async_trait]
 impl crate::persona::wall_source::WallReader for AircHandleAdapter {
-    async fn wall_posts(
-        &self,
-    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+    async fn wall_posts(&self) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
         // Whole board (all categories); the source filters/labels per post.
         self.inner.wall_posts(None).await
     }

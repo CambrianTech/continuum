@@ -93,7 +93,10 @@ pub struct RagAssemblySeed {
 /// (future PR).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "../../../protocol/typescript/persona/PromptRole.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PromptRole.ts"
+)]
 pub enum PromptRole {
     System,
     User,
@@ -383,9 +386,9 @@ mod tests {
         let persona_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
         let inbox = PersonaInbox::new(persona_id);
-        inbox.enqueue(message(room_id, "Joel", "first", 1_000, 0.5));
+        inbox.enqueue(message(room_id, "Operator", "first", 1_000, 0.5));
         inbox.enqueue(message(room_id, "Ava", "second", 1_010, 0.9));
-        inbox.enqueue(message(room_id, "Joel", "third", 1_020, 0.7));
+        inbox.enqueue(message(room_id, "Operator", "third", 1_020, 0.7));
 
         let inbox_frame = inbox.drain_frame(100, 8).expect("frame drains");
         let turn_frame = PersonaTurnFrame::from_inbox_frame(inbox_frame);
@@ -406,7 +409,10 @@ mod tests {
             vec!["first", "second", "third"]
         );
         assert_eq!(chunk.trigger_message_id, chunk.messages[2].id);
-        assert_eq!(chunk.transcript, "Joel: first\nAva: second\nJoel: third");
+        assert_eq!(
+            chunk.transcript,
+            "Operator: first\nAva: second\nOperator: third"
+        );
         assert!(inbox.is_empty(), "one frame, not one inference per message");
     }
 
@@ -415,7 +421,7 @@ mod tests {
         let persona_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
         let messages = vec![
-            message(room_id, "Joel", "what changed?", 2_000, 0.8),
+            message(room_id, "Operator", "what changed?", 2_000, 0.8),
             message(room_id, "Mira", "the queue coalesced", 2_030, 0.7),
         ];
         let frame = PersonaInboxFrame {
@@ -442,7 +448,7 @@ mod tests {
         assert_eq!(seed.room_id, room_id);
         assert_eq!(
             seed.query_text,
-            "Joel: what changed?\nMira: the queue coalesced"
+            "Operator: what changed?\nMira: the queue coalesced"
         );
         assert_eq!(seed.source_message_ids.len(), 2);
     }
@@ -452,7 +458,7 @@ mod tests {
         let persona_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
         let messages = vec![
-            message(room_id, "Joel", "first", 3_000, 0.8),
+            message(room_id, "Operator", "first", 3_000, 0.8),
             message(room_id, "Mira", "second", 3_040, 0.7),
         ];
         let source_ids = messages
@@ -486,7 +492,7 @@ mod tests {
         assert_eq!(record.inbox_frame.metrics.messages_drained, 2);
         assert_eq!(
             record.consolidated_inbox.transcript,
-            "Joel: first\nMira: second"
+            "Operator: first\nMira: second"
         );
         assert_eq!(record.rag_seed.source_message_ids, source_ids);
 
@@ -561,7 +567,7 @@ mod tests {
         let frame = PersonaInboxFrame {
             persona_id: Uuid::new_v4(),
             room_id,
-            messages: vec![message(room_id, "Joel", "hello", 1, 0.5)],
+            messages: vec![message(room_id, "Operator", "hello", 1, 0.5)],
             metrics: PersonaInboxFrameMetrics {
                 queue_depth_before: 1,
                 queue_depth_after: 0,
@@ -585,7 +591,7 @@ mod tests {
             .as_ref()
             .expect("v2 record has response_prompt for non-empty frame");
         assert_eq!(prompt.messages.len(), 1);
-        assert_eq!(prompt.messages[0].content, "Joel: hello");
+        assert_eq!(prompt.messages[0].content, "Operator: hello");
     }
 
     #[test]
@@ -690,7 +696,7 @@ mod tests {
             persona_id: Uuid::new_v4(),
             room_id,
             messages: vec![
-                message(room_id, "Joel", "first line", 1_000, 0.9),
+                message(room_id, "Operator", "first line", 1_000, 0.9),
                 message(room_id, "Mira", "second line", 1_010, 0.8),
             ],
             metrics: PersonaInboxFrameMetrics {
@@ -710,7 +716,7 @@ mod tests {
         assert_eq!(prompt.messages.len(), 2);
         assert!(matches!(prompt.messages[0].role, PromptRole::User));
         assert!(matches!(prompt.messages[1].role, PromptRole::User));
-        assert_eq!(prompt.messages[0].content, "Joel: first line");
+        assert_eq!(prompt.messages[0].content, "Operator: first line");
         assert_eq!(prompt.messages[1].content, "Mira: second line");
     }
 
@@ -723,7 +729,7 @@ mod tests {
         let frame = PersonaInboxFrame {
             persona_id: Uuid::new_v4(),
             room_id,
-            messages: vec![message(room_id, "Joel", "hi", 1, 0.5)],
+            messages: vec![message(room_id, "Operator", "hi", 1, 0.5)],
             metrics: PersonaInboxFrameMetrics {
                 queue_depth_before: 1,
                 queue_depth_after: 0,
@@ -746,7 +752,7 @@ mod tests {
     #[test]
     fn response_prompt_trigger_matches_latest_message_id() {
         let room_id = Uuid::new_v4();
-        let m1 = message(room_id, "Joel", "earlier", 1, 0.5);
+        let m1 = message(room_id, "Operator", "earlier", 1, 0.5);
         let m2 = message(room_id, "Mira", "trigger", 2, 0.5);
         let trigger_id = m2.id;
         let frame = PersonaInboxFrame {
@@ -777,7 +783,7 @@ mod tests {
         let frame = PersonaInboxFrame {
             persona_id: Uuid::new_v4(),
             room_id,
-            messages: vec![message(room_id, "Joel", "hi", 1, 0.5)],
+            messages: vec![message(room_id, "Operator", "hi", 1, 0.5)],
             metrics: PersonaInboxFrameMetrics {
                 queue_depth_before: 1,
                 queue_depth_after: 0,
@@ -824,24 +830,24 @@ mod tests {
         let prompt = prompt_with(
             None,
             vec![
-                (PromptRole::User, "Joel: hi"),
-                (PromptRole::User, "Joel: how are you"),
+                (PromptRole::User, "Operator: hi"),
+                (PromptRole::User, "Operator: how are you"),
             ],
         );
         let text = prompt.to_prompt_text();
-        assert_eq!(text, "user: Joel: hi\nuser: Joel: how are you");
+        assert_eq!(text, "user: Operator: hi\nuser: Operator: how are you");
     }
 
     #[test]
     fn to_prompt_text_prepends_system_prompt_when_present() {
         let prompt = prompt_with(
             Some("You are Helper, a calm assistant."),
-            vec![(PromptRole::User, "Joel: ping")],
+            vec![(PromptRole::User, "Operator: ping")],
         );
         let text = prompt.to_prompt_text();
         assert_eq!(
             text,
-            "You are Helper, a calm assistant.\n\nuser: Joel: ping"
+            "You are Helper, a calm assistant.\n\nuser: Operator: ping"
         );
     }
 
@@ -860,15 +866,15 @@ mod tests {
             None,
             vec![
                 (PromptRole::System, "Be brief."),
-                (PromptRole::User, "Joel: hi"),
+                (PromptRole::User, "Operator: hi"),
                 (PromptRole::Assistant, "Helper: hello"),
-                (PromptRole::User, "Joel: thanks"),
+                (PromptRole::User, "Operator: thanks"),
             ],
         );
         let text = prompt.to_prompt_text();
         assert_eq!(
             text,
-            "system: Be brief.\nuser: Joel: hi\nassistant: Helper: hello\nuser: Joel: thanks"
+            "system: Be brief.\nuser: Operator: hi\nassistant: Helper: hello\nuser: Operator: thanks"
         );
     }
 

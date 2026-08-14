@@ -288,12 +288,20 @@ mod tests {
     fn budget_for_maps_resolution_linearly_between_floor_and_full() {
         struct Noop;
         impl DraftBackend for Noop {
-            async fn generate(&self, _b: ComputeBudget, _f: Option<&str>) -> Result<String, String> {
+            async fn generate(
+                &self,
+                _b: ComputeBudget,
+                _f: Option<&str>,
+            ) -> Result<String, String> {
                 Ok(String::new())
             }
         }
         let d = ComputeDepthDrafter::new(Noop, 200, 1000);
-        assert_eq!(d.budget_for(0.0).max_tokens, 200, "reflexive floor at res 0");
+        assert_eq!(
+            d.budget_for(0.0).max_tokens,
+            200,
+            "reflexive floor at res 0"
+        );
         assert_eq!(d.budget_for(1.0).max_tokens, 1000, "full window at res 1");
         assert_eq!(d.budget_for(0.5).max_tokens, 600, "halfway");
         // Out-of-range clamps, never underflows below the floor.
@@ -325,7 +333,10 @@ mod tests {
         match &fresh.messages[0].content {
             MessageContent::Text(t) => {
                 assert!(t.contains("Write add(a,b)."));
-                assert!(!t.contains("previous attempt"), "fresh draft carries no feedback");
+                assert!(
+                    !t.contains("previous attempt"),
+                    "fresh draft carries no feedback"
+                );
             }
             other => panic!("expected text message, got {other:?}"),
         }
@@ -369,7 +380,9 @@ mod tests {
         // Bootstrap will starts cheap (start_point ≈ 0.185) and leans on escalation.
         let will = Will::bootstrap();
 
-        let out = resolve(will, &drafter, &SolvedVerifier, &ladder).await.unwrap();
+        let out = resolve(will, &drafter, &SolvedVerifier, &ladder)
+            .await
+            .unwrap();
         match out {
             Resolved::Passed {
                 resolution,
@@ -378,15 +391,27 @@ mod tests {
                 ..
             } => {
                 assert_eq!(draft, "SOLVED");
-                assert!(escalations >= 1, "cheap budget did not suffice — had to climb");
-                assert!(resolution >= 0.75 - 1e-6, "passed at the budget that met 800 tokens");
+                assert!(
+                    escalations >= 1,
+                    "cheap budget did not suffice — had to climb"
+                );
+                assert!(
+                    resolution >= 0.75 - 1e-6,
+                    "passed at the budget that met 800 tokens"
+                );
             }
             other => panic!("expected Passed after climbing compute, got {other:?}"),
         }
         // The climb spent strictly increasing budgets on the same model, ending at the
         // rung that cleared the requirement — the escalation path is monotonic compute.
         let seen = drafter.backend.seen.lock().unwrap().clone();
-        assert!(seen.windows(2).all(|w| w[0] < w[1]), "budgets strictly increased: {seen:?}");
-        assert!(seen.last().copied().unwrap() >= 800, "final budget cleared the requirement");
+        assert!(
+            seen.windows(2).all(|w| w[0] < w[1]),
+            "budgets strictly increased: {seen:?}"
+        );
+        assert!(
+            seen.last().copied().unwrap() >= 800,
+            "final budget cleared the requirement"
+        );
     }
 }

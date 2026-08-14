@@ -26,36 +26,36 @@ pub mod bandit_plan_controller;
 pub mod cold_twin;
 pub mod consumer;
 pub mod device_fit;
+pub mod eligibility;
 pub mod expert_container;
 pub mod expert_decay_policy;
 pub mod expert_depot;
 pub mod expert_ecache;
 pub mod expert_observer;
 pub mod expert_pager;
-pub mod eligibility;
-pub mod grid_budget;
-pub mod settlement;
-pub mod host_cache_lease;
 pub mod expert_predictor;
 pub mod expert_reconcile;
 pub mod expert_residency;
 pub mod expert_tier_policy;
 pub mod gossip;
 pub mod grid;
+pub mod grid_budget;
+pub mod host_cache_lease;
 pub mod lease;
 pub mod market;
 pub mod moe_arch_profile;
 pub mod moe_serving;
 pub mod pager_capture;
-pub mod trace_tail;
-pub mod plan_file;
 pub mod placement;
+pub mod plan_file;
 pub mod recursion_depth;
 pub mod residency_detect;
 pub mod score;
 pub mod serving_pager;
+pub mod settlement;
 pub mod sim;
 pub mod system_profile;
+pub mod trace_tail;
 pub mod vq_decode;
 
 pub use system_profile::{DriveInfo, DriveRole, SystemProfile};
@@ -139,7 +139,9 @@ pub struct StaticConcurrencyPolicy {
 impl AllocationPolicy for StaticConcurrencyPolicy {
     fn grant(&self, _cap: &DeviceCapacity, req: &LeaseRequest) -> Grant {
         // Blind to `cap` — the bug. Grants the ideal regardless of what's free RIGHT NOW.
-        Grant { concurrency: req.want_concurrency.min(self.fixed).max(1) }
+        Grant {
+            concurrency: req.want_concurrency.min(self.fixed).max(1),
+        }
     }
     fn name(&self) -> &'static str {
         "static-concurrency"
@@ -157,7 +159,11 @@ pub struct FitPolicy {
 
 impl AllocationPolicy for FitPolicy {
     fn grant(&self, cap: &DeviceCapacity, req: &LeaseRequest) -> Grant {
-        let fits = lanes_that_fit(cap.gpu_free_bytes_live, self.safety_margin_bytes, req.spike_bytes);
+        let fits = lanes_that_fit(
+            cap.gpu_free_bytes_live,
+            self.safety_margin_bytes,
+            req.spike_bytes,
+        );
         // Never below 1: a loaded model must be able to run at least one prefill (else the
         // model shouldn't have been resident — that's a residency decision, not a
         // concurrency one). Never above what the mind actually demands.

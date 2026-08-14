@@ -437,12 +437,8 @@ mod tests {
         // four casing variants resolve through the same cached state.
         let rag_engine = Arc::new(RagEngine::new());
         let (_tx, rx) = watch::channel(false);
-        let engine = PersonaCognitionEngine::new(
-            Uuid::new_v4(),
-            "Helper AI".into(),
-            rag_engine,
-            rx,
-        );
+        let engine =
+            PersonaCognitionEngine::new(Uuid::new_v4(), "Helper AI".into(), rag_engine, rx);
         assert!(engine.is_mentioned("@helper ai please"));
         assert!(engine.is_mentioned("@HELPER AI"));
         assert!(engine.is_mentioned("Hey helper ai, can you..."));

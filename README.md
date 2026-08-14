@@ -157,14 +157,17 @@ One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-togg
 <details>
 <summary>Development (from source)</summary>
 
-Requires Node.js 20+. `npm run setup:rust` provisions the rest of the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
+The system is a **headless Rust core**. `setup:rust` provisions the native build chain — the pinned Rust toolchain (1.95, via `rust-toolchain.toml`), **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Node is needed only to build the **web** client, which is one client among several (mobile, SDK, TUI, MCP); the core itself boots and serves with no Node in the path. Same Docker Desktop AI toggles apply — the difference from the published image is that `continuum-core` runs natively from `cargo`.
 
 ```bash
 cd continuum
-npm install
+npm install               # web-client deps + the setup scripts below
 npm run setup:rust        # pinned Rust 1.95 + cmake + vendored submodules (native build prereqs)
 npm run setup:git-hooks   # optional, for commit/pre-push validation
-npm start
+
+continuum start           # build + run the headless Rust core, wait until ready
+continuum reboot          # after editing: rebuild, relaunch, VERIFY the running build SHA
+continuum ping            # is the core answering?
 ```
 
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.

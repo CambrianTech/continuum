@@ -108,7 +108,10 @@ mod tests {
     // lives on the AiSafe surface (a persona may observe its own pending curriculum).
     #[test]
     fn name_and_access_wired() {
-        assert_eq!(TrainingTriggerStatus::NAME, "genome/training-trigger/status");
+        assert_eq!(
+            TrainingTriggerStatus::NAME,
+            "genome/training-trigger/status"
+        );
         assert!(matches!(TrainingTriggerStatus::ACCESS, AccessLevel::AiSafe));
     }
 

@@ -52,14 +52,7 @@ fn default_model_for_provider(provider: &str) -> &'static str {
 /// `cognition/generate-recipe` (the whole `{ request, provider?, model?,
 /// temperature? }` payload deserializes into it), so it carries the full wire
 /// derive set + camelCase serde.
-#[derive(
-    Debug,
-    Clone,
-    serde::Serialize,
-    serde::Deserialize,
-    ts_rs::TS,
-    schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

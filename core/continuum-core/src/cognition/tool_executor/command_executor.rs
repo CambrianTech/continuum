@@ -40,10 +40,10 @@ use futures::future::join_all;
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::spill;
 use super::types::{
     NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
-use super::spill;
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
@@ -100,7 +100,9 @@ impl CommandToolExecutor {
         let core = executor.clone();
         let transport = InProcessTransport::new(
             executor,
-            Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona),
+            )),
         );
         Self {
             conn: Connection::new(transport),
@@ -292,14 +294,16 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
         let mut candidates = ai_names.clone();
         candidates.extend_from_slice(crate::cognition::tool_dialect::ai_safe_aliases());
         let mut seen = std::collections::HashSet::new();
-        let suggestions: Vec<String> = crate::commands::help::did_you_mean(&normalized, &candidates)
-            .into_iter()
-            .map(crate::cognition::tool_dialect::resolve_wire_name)
-            .filter(|canonical| seen.insert(canonical.clone()))
-            .collect();
-        if let (Some(best), Some(manual)) =
-            (suggestions.first(), suggestions.first().and_then(|b| manual_for(b)))
-        {
+        let suggestions: Vec<String> =
+            crate::commands::help::did_you_mean(&normalized, &candidates)
+                .into_iter()
+                .map(crate::cognition::tool_dialect::resolve_wire_name)
+                .filter(|canonical| seen.insert(canonical.clone()))
+                .collect();
+        if let (Some(best), Some(manual)) = (
+            suggestions.first(),
+            suggestions.first().and_then(|b| manual_for(b)),
+        ) {
             let list = suggestions
                 .iter()
                 .map(|n| format!("`{n}`"))
@@ -552,12 +556,24 @@ mod tests {
                    register a `ServiceModule` whose `command_prefixes` covers it."
             .to_string();
         let out = persona_tool_error("frobnicate", raw);
-        assert!(!out.contains("ServiceModule"), "dev noise leaked to persona: {out}");
-        assert!(!out.contains("TS-bridge"), "dev noise leaked to persona: {out}");
+        assert!(
+            !out.contains("ServiceModule"),
+            "dev noise leaked to persona: {out}"
+        );
+        assert!(
+            !out.contains("TS-bridge"),
+            "dev noise leaked to persona: {out}"
+        );
         // No near-miss exists for "frobnicate", so she's pointed at full
         // discovery (commands/help with no arguments) — the #1916 contract.
-        assert!(out.contains("commands/help"), "must point her at discovery: {out}");
-        assert!(out.contains("`frobnicate`"), "must name what she tried: {out}");
+        assert!(
+            out.contains("commands/help"),
+            "must point her at discovery: {out}"
+        );
+        assert!(
+            out.contains("`frobnicate`"),
+            "must name what she tried: {out}"
+        );
     }
 
     // what this catches: a dropped category prefix (the most common near-miss) gets a
@@ -607,7 +623,10 @@ mod tests {
     fn invalid_params_feedback_reinforces_help() {
         let raw = "code/write: [invalid] missing field `filePath`".to_string();
         let out = persona_tool_error("code/write", raw);
-        assert!(out.contains("missing field `filePath`"), "keeps the real cause: {out}");
+        assert!(
+            out.contains("missing field `filePath`"),
+            "keeps the real cause: {out}"
+        );
         assert!(
             out.contains("fix your arguments and retry") || out.contains("commands/help"),
             "must hand her the correct shape (inline manual) or the manual pointer: {out}"
@@ -636,10 +655,20 @@ mod tests {
         );
         // None spill ref → the narrow-at-source affordance (re-run scoped / grep).
         let out = truncate_tool_output(body, 600, None);
-        assert!(out.len() < 1200, "stays bounded near the cap: {} chars", out.len());
+        assert!(
+            out.len() < 1200,
+            "stays bounded near the cap: {} chars",
+            out.len()
+        );
         assert!(out.contains("BUILD START"), "keeps the head: {out}");
-        assert!(out.contains("THE VERDICT AT THE END"), "keeps the tail (the verdict): {out}");
-        assert!(out.contains("code/search"), "reinforces grep/narrowing: {out}");
+        assert!(
+            out.contains("THE VERDICT AT THE END"),
+            "keeps the tail (the verdict): {out}"
+        );
+        assert!(
+            out.contains("code/search"),
+            "reinforces grep/narrowing: {out}"
+        );
         assert!(out.contains("elided"), "names that output was cut: {out}");
     }
 
@@ -657,7 +686,10 @@ mod tests {
         };
         let out = truncate_tool_output(body, 600, Some(&fake));
         assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
-        assert!(out.contains("tool/output"), "names the recovery tool: {out}");
+        assert!(
+            out.contains("tool/output"),
+            "names the recovery tool: {out}"
+        );
         // #1917: the failure hunt is a PREBUILT one-word filter, not a regex.
         assert!(
             out.contains("\"filter\":\"errors\""),
@@ -889,8 +921,10 @@ mod tests {
         #[tokio::test]
         async fn required_args_missing_fails_loud_across_the_stateless_surface() {
             let exec = stateless_surface_hands();
-            let stateless: HashSet<&'static str> =
-                stateless_command_objects().iter().map(|c| c.name()).collect();
+            let stateless: HashSet<&'static str> = stateless_command_objects()
+                .iter()
+                .map(|c| c.name())
+                .collect();
 
             let mut examined = 0usize;
             for d in command_registry()
@@ -1021,10 +1055,11 @@ mod tests {
         }
 
         fn persona_over(executor: Arc<CommandExecutor>) -> CommandToolExecutor {
-            let transport =
-                InProcessTransport::new(
+            let transport = InProcessTransport::new(
                 executor,
-                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(Uuid::new_v4()))),
+                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(
+                    Uuid::new_v4(),
+                ))),
             );
             CommandToolExecutor::new(Connection::new(transport))
         }

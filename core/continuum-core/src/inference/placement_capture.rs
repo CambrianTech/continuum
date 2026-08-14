@@ -95,8 +95,7 @@ impl JsonlPlacementCaptureSink {
     /// alongside the prompt-captures glass box. Returns a Noop sink (boxed) if the
     /// home dir or file can't be opened — capture degrades, spawn proceeds.
     pub fn glass_box() -> Box<dyn PlacementCaptureSink> {
-        let dir = dirs::home_dir()
-            .map(|h| h.join(".continuum/fixtures/placement-decisions"));
+        let dir = dirs::home_dir().map(|h| h.join(".continuum/fixtures/placement-decisions"));
         match dir.and_then(|d| Self::open(&d).ok()) {
             Some(sink) => Box::new(sink),
             None => Box::new(NoopPlacementCaptureSink),
@@ -139,10 +138,8 @@ mod tests {
     // silently in production. Noop must stay a true no-op (no file, no panic).
     #[test]
     fn jsonl_sink_appends_one_decision_line() {
-        let dir = std::env::temp_dir().join(format!(
-            "placement-capture-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("placement-capture-test-{}", std::process::id()));
         let sink = JsonlPlacementCaptureSink::open(&dir).expect("open sink");
         let rec = PlacementDecisionRecord {
             schema_version: SCHEMA_VERSION,

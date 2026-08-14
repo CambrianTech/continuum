@@ -238,7 +238,6 @@ fn grow_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, targ
 /// Total permits installed into each lane semaphore — the grow-delta bookkeeping for
 /// [`grow_semaphore_to`], set at lazy-init and bumped on each live grow.
 
-
 /// The lane count a sibling gate should boot with before any plan publishes — the same
 /// live-count-else-ceiling read the lane semaphores lazy-init from. Used by the prefill
 /// throttle (#56) so both gates start from the ONE number.
@@ -294,7 +293,10 @@ impl LaneAdmission {
     pub fn set_served_lane_count(&self, lanes: usize) {
         let lanes = lanes.max(1);
         self.served.store(lanes, Ordering::Release);
-        let _guard = self.resize_lock.lock().expect("lane-resize lock never poisoned");
+        let _guard = self
+            .resize_lock
+            .lock()
+            .expect("lane-resize lock never poisoned");
         if let Some(sem) = self.serving.get() {
             grow_semaphore_to(sem, &self.serving_installed, lanes);
         }
@@ -326,7 +328,9 @@ impl LaneAdmission {
     /// See [`try_hold_ambient_turn`].
     pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.ambient
-            .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY)))
+            .get_or_init(|| {
+                std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY))
+            })
             .clone()
             .try_acquire_owned()
             .ok()
@@ -374,7 +378,6 @@ impl Default for LaneAdmission {
         Self::new()
     }
 }
-
 
 /// Acquire a serving lane for a model call, priced by priority (#139). `directed`
 /// callers take from the full lane pool; non-directed callers first claim the
@@ -625,7 +628,10 @@ mod tests {
             assert_eq!(gauge.inflight(), expected);
         }
         // Every decode slot busy → one more call would queue behind the fleet.
-        assert!(gauge.saturated(max), "MAX_LANES outstanding must read saturated");
+        assert!(
+            gauge.saturated(max),
+            "MAX_LANES outstanding must read saturated"
+        );
 
         guards.pop(); // free a slot
         assert_eq!(gauge.inflight(), max - 1);
@@ -654,7 +660,10 @@ mod tests {
         // Exactly AMBIENT_TURN_CONCURRENCY win; the rest get None and must yield.
         let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
         for _ in 0..AMBIENT_TURN_CONCURRENCY {
-            held.push(gate.try_hold_ambient_turn().expect("a free slot is grantable"));
+            held.push(
+                gate.try_hold_ambient_turn()
+                    .expect("a free slot is grantable"),
+            );
         }
         // The next simultaneous ambient waker finds every slot taken → yields.
         assert!(
@@ -669,8 +678,9 @@ mod tests {
         // A held ambient turn finishes → its permit drops → capacity frees for the next
         // beat, so a yielded room re-perceives and contributes when there's headroom.
         held.pop();
-        let reclaimed =
-            gate.try_hold_ambient_turn().expect("dropping a finished turn frees its slot for the next");
+        let reclaimed = gate
+            .try_hold_ambient_turn()
+            .expect("dropping a finished turn frees its slot for the next");
         drop(reclaimed);
         drop(held); // release the rest (nothing else can observe this gate anyway)
     }
@@ -696,11 +706,9 @@ mod tests {
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
         // acquires immediately — it is not blocked by the saturated non-directed budget.
         if gate.lane_count() > 1 {
-            let directed = tokio::time::timeout(
-                Duration::from_millis(250),
-                gate.acquire_serving_lane(true),
-            )
-            .await;
+            let directed =
+                tokio::time::timeout(Duration::from_millis(250), gate.acquire_serving_lane(true))
+                    .await;
             assert!(
                 directed.is_ok(),
                 "a directed turn must get a reserved lane, never queue behind non-directed work"
@@ -708,11 +716,9 @@ mod tests {
 
             // And a FURTHER non-directed call must now WAIT (its budget is full) — it
             // times out rather than stealing the lane the directed turn is using.
-            let extra_nondirected = tokio::time::timeout(
-                Duration::from_millis(150),
-                gate.acquire_serving_lane(false),
-            )
-            .await;
+            let extra_nondirected =
+                tokio::time::timeout(Duration::from_millis(150), gate.acquire_serving_lane(false))
+                    .await;
             assert!(
                 extra_nondirected.is_err(),
                 "non-directed work over its (MAX_LANES-1) budget must wait, not preempt"
@@ -768,6 +774,10 @@ mod tests {
             "unset → MAX_LANES ceiling fallback"
         );
         gate.set_served_lane_count(4);
-        assert_eq!(gate.lane_count(), 4, "published live count wins over the ceiling");
+        assert_eq!(
+            gate.lane_count(),
+            4,
+            "published live count wins over the ceiling"
+        );
     }
 }

@@ -248,9 +248,9 @@ impl TierPolicy for ClassicTierPolicy {
             let residency = if zero_signal || record_bytes == 0 {
                 PlannedResidency::Cold
             } else {
-                match (0..inputs.residency.len()).find(|&i| {
-                    plan.planned_bytes[i].saturating_add(record_bytes) <= usable[i]
-                }) {
+                match (0..inputs.residency.len())
+                    .find(|&i| plan.planned_bytes[i].saturating_add(record_bytes) <= usable[i])
+                {
                     Some(i) => {
                         plan.planned_bytes[i] += record_bytes;
                         PlannedResidency::Promoted { residency_index: i }
@@ -356,7 +356,10 @@ mod tests {
             let a = plan.assignments[&e(0, i)];
             assert_eq!(a.tier, 0, "all-star {i} is sharp");
             assert!(
-                matches!(a.residency, PlannedResidency::Promoted { residency_index: 0 }),
+                matches!(
+                    a.residency,
+                    PlannedResidency::Promoted { residency_index: 0 }
+                ),
                 "all-star {i} is resident"
             );
         }
@@ -379,7 +382,10 @@ mod tests {
             .values()
             .filter(|a| matches!(a.residency, PlannedResidency::Promoted { .. }))
             .count();
-        assert_eq!(resident, 4, "sharp-only fits fewer — cruft tiers multiply cache");
+        assert_eq!(
+            resident, 4,
+            "sharp-only fits fewer — cruft tiers multiply cache"
+        );
         assert!(
             flat.assignments.values().all(|a| a.tier == 0),
             "single-tier ladder degenerates to tier 0 everywhere (v1 container)"
@@ -454,7 +460,10 @@ mod tests {
         let spec = plan.assignments[&e(0, 2)];
         assert_eq!(spec.tier, 1, "speculation earns no fidelity");
         assert!(spec.prefetch, "predicted-only fetches ahead of demand");
-        assert!(!plan.assignments[&e(0, 0)].prefetch, "proven hit is not a prefetch");
+        assert!(
+            !plan.assignments[&e(0, 0)].prefetch,
+            "proven hit is not a prefetch"
+        );
     }
 
     // what this catches: the speculative-verify promotion integrator — a
@@ -494,11 +503,23 @@ mod tests {
 
         let (obs, promo) = empty_ctx();
         let plan = plan_with(&p, &two_tiers(), &vram(64 * KB), Some(&sens), &obs, &promo);
-        assert_eq!(plan.assignments[&e(0, 1)].tier, 0, "sensitivity buys fidelity");
-        assert_eq!(plan.assignments[&e(0, 2)].tier, 1, "neutral stays on frequency");
+        assert_eq!(
+            plan.assignments[&e(0, 1)].tier,
+            0,
+            "sensitivity buys fidelity"
+        );
+        assert_eq!(
+            plan.assignments[&e(0, 2)].tier,
+            1,
+            "neutral stays on frequency"
+        );
 
         let flat = plan_with(&p, &two_tiers(), &vram(64 * KB), None, &obs, &promo);
-        assert_eq!(flat.assignments[&e(0, 1)].tier, 1, "no sensor ⇒ frequency-only");
+        assert_eq!(
+            flat.assignments[&e(0, 1)].tier,
+            1,
+            "no sensor ⇒ frequency-only"
+        );
         assert_eq!(flat.assignments[&e(0, 2)].tier, 1);
     }
 

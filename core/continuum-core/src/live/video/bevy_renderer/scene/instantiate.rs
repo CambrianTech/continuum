@@ -36,8 +36,8 @@ use super::animation::AnimationConfig;
 use super::avatar::AvatarObject;
 use super::builder::{SceneLight, SceneMarker};
 use super::description::{
-    default_portrait_lights, AnimationProfileKind, AvatarPayload, LightDesc, LightKind, NodePayload,
-    PropPayload, SceneDescription, SceneNode,
+    default_portrait_lights, AnimationProfileKind, AvatarPayload, LightDesc, LightKind,
+    NodePayload, PropPayload, SceneDescription, SceneNode,
 };
 use super::object::{PropSceneObject, SceneObject};
 use super::physics::PhysicsBackend;
@@ -106,7 +106,9 @@ pub fn build_scene_from_description(
 
     let scene_root = commands
         .spawn((
-            SceneMarker { slot_id: params.slot },
+            SceneMarker {
+                slot_id: params.slot,
+            },
             root_transform,
             Visibility::default(),
             params.layer.clone(),
@@ -163,7 +165,8 @@ impl SceneWalk<'_, '_, '_> {
         // PhysicsBackend is installed — the base engine's default is inert).
         if let Some(physics) = &node.physics {
             let transform: Transform = node.transform.into();
-            self.physics.attach(self.commands, entity, &transform, physics);
+            self.physics
+                .attach(self.commands, entity, &transform, physics);
         }
 
         for child in &node.children {
@@ -282,12 +285,18 @@ impl SceneWalk<'_, '_, '_> {
             model_path.clone()
         };
 
-        let mut avatar = AvatarObject::new(model_path.clone(), display_name.clone(), identity.clone());
+        let mut avatar =
+            AvatarObject::new(model_path.clone(), display_name.clone(), identity.clone());
 
         let asset_path = format!("{}#Scene0", load_path);
         let scene_handle: Handle<Scene> = self.asset_server.load(&asset_path);
         let gltf_handle: Handle<bevy::gltf::Gltf> = self.asset_server.load(&load_path);
-        clog_info!("🎨 Slot {}: loading '{}' from {}", self.slot, display_name, load_path);
+        clog_info!(
+            "🎨 Slot {}: loading '{}' from {}",
+            self.slot,
+            display_name,
+            load_path
+        );
         self.pending.scene_handles.push(PendingLoadEntry {
             slot: self.slot,
             handle: scene_handle.clone(),
@@ -306,7 +315,9 @@ impl SceneWalk<'_, '_, '_> {
         // canonical (glTF/Bevy) space so ANY model kind presents face-on and
         // upright, composed with the node's placement transform (correction is
         // applied in the model's own space, then the placement).
-        let correction = coordinate::detect_convention(&load_path).correction().to_transform();
+        let correction = coordinate::detect_convention(&load_path)
+            .correction()
+            .to_transform();
         let model_transform = node_transform.mul_transform(correction);
 
         let animation = match payload.animation {
@@ -561,7 +572,11 @@ pub fn spawn_global_lights(commands: &mut Commands, max_slots: u8) {
                     SceneLight,
                 ));
             }
-            LightKind::Spot { range, inner_angle, outer_angle } => {
+            LightKind::Spot {
+                range,
+                inner_angle,
+                outer_angle,
+            } => {
                 commands.spawn((
                     SpotLight {
                         intensity: light.intensity,
@@ -602,7 +617,10 @@ mod tests {
             },
         );
         assert!(msg.contains("'key'"), "must name the node: {msg}");
-        assert!(msg.contains("spawn_global_lights"), "must point at the rig: {msg}");
+        assert!(
+            msg.contains("spawn_global_lights"),
+            "must point at the rig: {msg}"
+        );
     }
 
     // what this catches: the default portrait rig drifting over Bevy's

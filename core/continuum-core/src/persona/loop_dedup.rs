@@ -248,7 +248,7 @@ pub fn defer_as_loop_filler(incoming: &str, recent: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{ResolutionPreference, RagDelivery, RagItem};
+    use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
     use serde_json::json;
 
     fn airc_item(content: &str, peer: &str) -> RagItem {
@@ -293,18 +293,19 @@ mod tests {
             airc_item(c, "p2"),
         ];
         let deduped = dedup_loop_filler(&[airc_delivery(items)]);
-        assert_eq!(deduped[0].items.len(), 3, "11 turns of 3 templates → 3 kept");
+        assert_eq!(
+            deduped[0].items.len(),
+            3,
+            "11 turns of 3 templates → 3 kept"
+        );
 
         // The anti-resonance property: append ANOTHER copy of an existing template →
         // the deduped set is unchanged (no new distinct turn to wake on).
         let mut grown: Vec<RagItem> = deduped[0].items.clone();
         // Simulate the next tick's full burst = prior 11 + one more copy of A.
         let next_burst = {
-            let mut v: Vec<RagItem> = vec![
-                airc_item(a, "p1"),
-                airc_item(b, "p2"),
-                airc_item(c, "p2"),
-            ];
+            let mut v: Vec<RagItem> =
+                vec![airc_item(a, "p1"), airc_item(b, "p2"), airc_item(c, "p2")];
             v.push(airc_item(a, "p1")); // the new tick's repeat
             v
         };
@@ -363,8 +364,16 @@ mod tests {
         let mut d = airc_delivery(vec![]);
         d.source_id = "room-doctrine".to_string();
         d.items = vec![
-            RagItem { content: repeated.to_string(), tokens: 1, metadata: json!({}) },
-            RagItem { content: repeated.to_string(), tokens: 1, metadata: json!({}) },
+            RagItem {
+                content: repeated.to_string(),
+                tokens: 1,
+                metadata: json!({}),
+            },
+            RagItem {
+                content: repeated.to_string(),
+                tokens: 1,
+                metadata: json!({}),
+            },
         ];
         let deduped = dedup_loop_filler(&[d]);
         assert_eq!(
@@ -383,11 +392,14 @@ mod tests {
     fn defer_only_known_contribution_in_already_cycling_exchange() {
         let goodbye_loop: Vec<String> = vec![
             "Anwen, the benchmark board is committed — thanks for the review session today!".into(),
-            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!".into(),
+            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!"
+                .into(),
             "Understood, Anwen. See you tomorrow at 2 PM! Have a great rest of your day!".into(),
-            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!".into(),
+            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!"
+                .into(),
             "Understood, Anwen. See you tomorrow at 2 PM! Have a great rest of your day!".into(),
-            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!".into(),
+            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!"
+                .into(),
             "Understood, Anwen. See you tomorrow at 2 PM! Have a great rest of your day!".into(),
         ];
         assert!(

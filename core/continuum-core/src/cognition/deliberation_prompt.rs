@@ -399,8 +399,8 @@ mod tests {
     #[test]
     fn framing_flip_never_perturbs_the_cacheable_prefix() {
         let expanded = BTreeSet::new();
-        let parts = |directed, self_initiated, holds_live_work, now_ms, context| {
-            SystemPromptParts {
+        let parts =
+            |directed, self_initiated, holds_live_work, now_ms, context| SystemPromptParts {
                 system_prompt: "IDENTITY-PROMPT",
                 persona_name: "Asha",
                 tools: &[],
@@ -410,8 +410,7 @@ mod tests {
                 self_initiated,
                 now_ms,
                 holds_live_work,
-            }
-        };
+            };
         let stable = |p: &SystemPromptParts| compose_split(p).stable;
         // Context held CONSTANT — only the per-turn FRAMING dimensions flip.
         let baseline = stable(&parts(false, false, false, None, "CTX"));
@@ -432,7 +431,8 @@ mod tests {
         );
         // The hard-flipping framing carries NONE of its markers in the cacheable prefix…
         assert!(
-            !baseline.contains("[Conversational Presence]") && !baseline.contains("[Your own time]"),
+            !baseline.contains("[Conversational Presence]")
+                && !baseline.contains("[Your own time]"),
             "the per-turn framing must not sit in the cacheable prefix: {baseline}"
         );
         // …the STANDING grounding, by contrast, DOES stay in the cacheable prefix (its head
@@ -480,11 +480,22 @@ mod tests {
         // Identity leads; context tail trails; presence block present (undirected).
         let id = s.find("IDENTITY").expect("identity present");
         let turn = s.find("[Taking your turn]").expect("turn block present");
-        let ctx = s.find("[What you are working with right now]").expect("ctx block");
-        assert!(id < turn && turn < ctx, "identity → turn → context order: {s}");
+        let ctx = s
+            .find("[What you are working with right now]")
+            .expect("ctx block");
+        assert!(
+            id < turn && turn < ctx,
+            "identity → turn → context order: {s}"
+        );
         assert!(s.contains("Asha"), "persona name interpolated: {s}");
-        assert!(s.contains("[Conversational Presence]"), "undirected ⇒ silence block");
-        assert!(!s.contains("[Your own time]"), "not self-initiated ⇒ no own-time block");
+        assert!(
+            s.contains("[Conversational Presence]"),
+            "undirected ⇒ silence block"
+        );
+        assert!(
+            !s.contains("[Your own time]"),
+            "not self-initiated ⇒ no own-time block"
+        );
         assert!(!s.contains("[Your tools]"), "no tools ⇒ no tools block");
 
         // A DIRECTED turn carries the DIRECTED presence variant: never ghost a question,
@@ -516,7 +527,10 @@ mod tests {
             "being addressed outranks the work contract: {directed_working}"
         );
 
-        let directed = compose(&SystemPromptParts { directed: true, ..base });
+        let directed = compose(&SystemPromptParts {
+            directed: true,
+            ..base
+        });
         assert!(
             directed.contains("This message names you"),
             "directed ⇒ DIRECTED presence variant: {directed}"
@@ -527,9 +541,15 @@ mod tests {
         );
 
         // A SELF-INITIATED turn carries the own-time framing.
-        let own = compose(&SystemPromptParts { holds_live_work: false,
-            self_initiated: true, ..base });
-        assert!(own.contains("[Your own time]"), "self-initiated ⇒ own-time block: {own}");
+        let own = compose(&SystemPromptParts {
+            holds_live_work: false,
+            self_initiated: true,
+            ..base
+        });
+        assert!(
+            own.contains("[Your own time]"),
+            "self-initiated ⇒ own-time block: {own}"
+        );
     }
 
     // what this catches: #139 context-split — the minute-volatile [now] clock must render
@@ -554,8 +574,12 @@ mod tests {
             self_initiated: false,
             now_ms: Some(1_700_000_000_000),
         });
-        let ctx = s.find("[What you are working with right now]").expect("ctx block present");
-        let now = s.find("[now ").expect("now clock present when now_ms is set");
+        let ctx = s
+            .find("[What you are working with right now]")
+            .expect("ctx block present");
+        let now = s
+            .find("[now ")
+            .expect("now clock present when now_ms is set");
         assert!(
             ctx < now,
             "the volatile [now] clock must trail the context block (stable prefix stays cacheable): {s}"
@@ -595,11 +619,19 @@ mod tests {
             self_initiated: false,
             now_ms: None,
         });
-        assert!(s.contains("[Your tools]"), "tools present ⇒ tools block: {s}");
+        assert!(
+            s.contains("[Your tools]"),
+            "tools present ⇒ tools block: {s}"
+        );
         // The exact false-refusal phrases the base model reaches for are named + forbidden.
-        assert!(s.contains("can't execute tools"), "names the false refusal to forbid it");
-        assert!(s.contains("NO \n     knowledge cutoff") || s.contains("NO knowledge cutoff"),
-            "denies the training-cutoff prior: {s}");
+        assert!(
+            s.contains("can't execute tools"),
+            "names the false refusal to forbid it"
+        );
+        assert!(
+            s.contains("NO \n     knowledge cutoff") || s.contains("NO knowledge cutoff"),
+            "denies the training-cutoff prior: {s}"
+        );
         assert!(
             s.contains("embodied in this system"),
             "asserts embodiment, not hosted-chat-model: {s}"

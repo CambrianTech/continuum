@@ -51,21 +51,18 @@ use ts_rs::TS;
 
 use airc_lib::Airc;
 
-use crate::experience::standing::{
-    project_standing, RoomStanding, STANDING_WALL_CATEGORY,
-};
+use crate::experience::standing::{project_standing, RoomStanding, STANDING_WALL_CATEGORY};
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
-/// The wall category that carries a room's recipe binding.
+/// The wall category + typed body that carry a room's recipe binding.
 ///
-/// airc's own `ScopeRef` doc names the split: peer-private room state is
-/// `ScopeRef::Room`, but "plan / instructions / **recipe** that every participant
-/// must see" belongs on the **wall**. A recipe binding must be shared — every
-/// client, human or citizen, has to agree on what this room IS — so it is a wall
-/// post, not per-peer state, and not a continuum-side table shadowing the room.
-pub const RECIPE_WALL_CATEGORY: &str = "recipe";
+/// Both live in [`crate::experience::binding`] — with the READER, not with this
+/// writer. A category const and a payload shape owned by the only code that
+/// writes them is how the binding spent its whole life un-read: nothing outside
+/// this module could name what it was looking for.
+pub use crate::experience::binding::{RoomRecipeBinding, RECIPE_WALL_CATEGORY};
 
 /// Resolve the CALLING peer's own airc handle so the room is created as THEIR
 /// identity — the creator is a real peer, never the substrate acting anonymously.
@@ -180,12 +177,21 @@ impl ActionCommand for ActivitySpawn {
         // Bind the room to its recipe ON THE WALL, where every participant sees the
         // same answer to "what is this room". Without this the room forgets which
         // recipe it is and every client falls back to projecting it as a plain chat.
-        let binding = serde_json::json!({
-            "recipe": p.recipe,
-            "parent": p.parent,
-        });
+        //
+        // Serialized from the SHARED [`RoomRecipeBinding`] type, never a hand-authored
+        // `json!` — the reader (`ipc::recipe_room_purpose`) deserializes that same type,
+        // so the two sides agree by construction. This was an inline literal for as
+        // long as the binding had no reader at all, which is exactly how a field-name
+        // typo here would have cost nothing and been noticed by nobody.
+        let binding = RoomRecipeBinding {
+            recipe: p.recipe.clone(),
+            parent: p.parent.clone(),
+        };
+        let body = serde_json::to_string(&binding).map_err(|source| {
+            CommandError::Internal(format!("encode recipe binding: {source}"))
+        })?;
         let post_id = airc
-            .publish_wall_post(RECIPE_WALL_CATEGORY.to_string(), binding.to_string(), None)
+            .publish_wall_post(RECIPE_WALL_CATEGORY.to_string(), body, None)
             .await
             .map_err(|source| {
                 CommandError::Internal(format!(

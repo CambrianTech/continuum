@@ -169,7 +169,9 @@ pub(crate) fn now_ms() -> u64 {
 ///
 /// Missing personas dir returns empty Vec — that's the "first boot"
 /// path and not an error.
-async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityIntent>, PersonaIdentityError> {
+async fn scan_personas_dir(
+    personas_dir: &Path,
+) -> Result<Vec<PersonaIdentityIntent>, PersonaIdentityError> {
     let mut entries = match tokio::fs::read_dir(personas_dir).await {
         Ok(e) => e,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -194,12 +196,15 @@ async fn scan_personas_dir(personas_dir: &Path) -> Result<Vec<PersonaIdentityInt
     // alphabetically so behavior is reproducible. Reviewer-defect-
     // driven (continuum #1507 finding 7).
     let mut dir_entries: Vec<std::path::PathBuf> = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(|source| {
-        PersonaIdentityError::HomeScanFailed {
-            path: personas_dir.to_path_buf(),
-            source,
-        }
-    })? {
+    while let Some(entry) =
+        entries
+            .next_entry()
+            .await
+            .map_err(|source| PersonaIdentityError::HomeScanFailed {
+                path: personas_dir.to_path_buf(),
+                source,
+            })?
+    {
         if !entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
             // Each direct child of personas/ should be a persona
             // directory; non-dir entries (stray file, .DS_Store, etc.)
@@ -329,10 +334,8 @@ mod tests {
     async fn corrupted_seed_is_skipped_not_fatal() {
         let temp = TempDir::new().unwrap();
         // Canonical citizen layout (same helper production scans).
-        let citizens = crate::context::citizens_kind_dir(
-            temp.path(),
-            crate::identity::IdentityKind::Persona,
-        );
+        let citizens =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona);
         // Good persona.
         let good = citizens.join("Pax").join("seed.json");
         let seed = PersonaSeedFile::V1 {
@@ -354,7 +357,10 @@ mod tests {
         let first = provider.next_persona().await.unwrap().unwrap();
         assert_eq!(first.agent_name, "Pax");
         let exhausted = provider.next_persona().await.unwrap();
-        assert!(exhausted.is_none(), "broken seed should not have been yielded");
+        assert!(
+            exhausted.is_none(),
+            "broken seed should not have been yielded"
+        );
     }
 
     #[tokio::test]

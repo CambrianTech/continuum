@@ -40,9 +40,9 @@ fn default_importance() -> f64 {
 )]
 pub struct MemoryShareParams {
     /// The RECIPIENT agent's persona id (airc peer id) — the corpus that receives the lesson.
-    pub to_persona_id: String,
+    pub to_persona_id: crate::identity::PersonaRef,
     /// The SHARING agent's persona id (airc peer id) — recorded as shared-by provenance.
-    pub from_persona_id: String,
+    pub from_persona_id: crate::identity::PersonaRef,
     /// The lesson to share. Free text; serde escapes it into the record.
     pub content: String,
     /// Project / room scope — becomes the recall `room_id`, a tag, and part of context.
@@ -101,7 +101,8 @@ pub(super) fn build_shared_record(
         layer: None,
         relevance_score: None,
         origin_node: None,
-        origin_seq: None,    }
+        origin_seq: None,
+    }
 }
 
 crate::action_command! {
@@ -128,8 +129,8 @@ crate::action_command! {
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = chrono::Utc::now().to_rfc3339();
         let record = build_shared_record(
-            &p.to_persona_id,
-            &p.from_persona_id,
+            p.to_persona_id.as_str(),
+            p.from_persona_id.as_str(),
             p.content,
             &p.scope,
             p.session,

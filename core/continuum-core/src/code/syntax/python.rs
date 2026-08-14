@@ -94,22 +94,29 @@ impl SyntaxValidator for PythonValidator {
 
         let inside: Vec<usize> = (inserted.0..inserted.1)
             .filter(|i| {
-                offsets.get(*i).is_some_and(|off| {
-                    spans.iter().any(|(s, e)| *off > *s && *off < *e)
-                })
+                offsets
+                    .get(*i)
+                    .is_some_and(|off| spans.iter().any(|(s, e)| *off > *s && *off < *e))
             })
             .collect();
         if inside.is_empty() {
             return Some(Vec::new());
         }
-        let block: Vec<&str> = inside.iter().filter_map(|i| after_lines.get(*i).copied()).collect();
+        let block: Vec<&str> = inside
+            .iter()
+            .filter_map(|i| after_lines.get(*i).copied())
+            .collect();
         if !reads_as_code(&block) {
             return Some(Vec::new());
         }
         let first = *inside.first()?;
         Some(vec![InertInsertion {
             line: first + 1,
-            first_line: after_lines.get(first).copied().unwrap_or_default().to_string(),
+            first_line: after_lines
+                .get(first)
+                .copied()
+                .unwrap_or_default()
+                .to_string(),
             lines: inside.len(),
         }])
     }
@@ -143,7 +150,9 @@ fn collect_string_spans(stmt: &ast::Stmt, out: &mut Vec<(usize, usize)>) {
         ast::Stmt::With(w) => w.body.iter().for_each(|s| collect_string_spans(s, out)),
         ast::Stmt::Try(t) => {
             t.body.iter().for_each(|s| collect_string_spans(s, out));
-            t.finalbody.iter().for_each(|s| collect_string_spans(s, out));
+            t.finalbody
+                .iter()
+                .for_each(|s| collect_string_spans(s, out));
         }
         _ => {}
     }
@@ -187,7 +196,13 @@ fn reads_as_code(lines: &[&str]) -> bool {
         .unwrap_or(0);
     let block: String = lines
         .iter()
-        .map(|l| if l.len() >= indent { &l[indent..] } else { l.trim_start() })
+        .map(|l| {
+            if l.len() >= indent {
+                &l[indent..]
+            } else {
+                l.trim_start()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let Some(module) = parse_module(&block) else {
@@ -624,9 +639,14 @@ mod tests {
             "precondition: the docstring is still structurally a docstring, so its gate says nothing"
         );
 
-        let inert = V.inert_insertions(before, after).expect("python has an opinion");
+        let inert = V
+            .inert_insertions(before, after)
+            .expect("python has an opinion");
         assert_eq!(inert.len(), 1, "the guard must be reported: {inert:?}");
-        assert_eq!(inert[0].lines, 3, "all three inserted lines landed in the literal");
+        assert_eq!(
+            inert[0].lines, 3,
+            "all three inserted lines landed in the literal"
+        );
         assert!(
             inert[0].first_line.contains("name = blueprint_name"),
             "the report names her own edit back to her: {:?}",

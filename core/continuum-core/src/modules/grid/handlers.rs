@@ -193,7 +193,12 @@ pub async fn dispatch_to_node(
     // 5 minute timeout for long operations (training, etc.)
     let response = tokio::time::timeout(Duration::from_secs(300), conn.recv_frame())
         .await
-        .map_err(|_| format!("Command '{remote_command}' on {} timed out (300s)", node.node_id))?
+        .map_err(|_| {
+            format!(
+                "Command '{remote_command}' on {} timed out (300s)",
+                node.node_id
+            )
+        })?
         .map_err(|e| format!("Recv from {} failed: {e}", node.node_id))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -452,9 +457,22 @@ pub async fn handle_job_submit(
     .map_err(|e| format!("Failed to write alloy: {e}"))?;
 
     // Find alloy_executor.py
-    let executor = find_alloy_executor();
+    // The forge executor is the core's ONE remaining runtime Python dependency, and it
+    // lives in a SIBLING repo (`../sentinel-ai/scripts/alloy_executor.py`) that a fresh
+    // clone of this repo does not have. Not finding it used to return pid 0 and write
+    // `state: "queued"` — indistinguishable from a job legitimately waiting its turn, so
+    // `forge/start` reported SUCCESS for work that would never run, on every machine that
+    // had only cloned continuum. Fail loud and name what is missing.
+    // Tracked for excision to Rust by #52 / #99.
+    let exec_path = find_alloy_executor().ok_or_else(|| {
+        "forge/start cannot run: the alloy executor was not found. It is a Python script in \
+         the sibling sentinel-ai repo, which this clone does not have. Set ALLOY_EXECUTOR to \
+         its path, or clone sentinel-ai next to this repo. (The job was NOT queued — nothing \
+         would have run it.)"
+            .to_string()
+    })?;
 
-    let pid = if let Some(exec_path) = executor {
+    let pid = {
         // Start forge pipeline
         let log_file =
             std::fs::File::create(&log_path).map_err(|e| format!("Failed to create log: {e}"))?;
@@ -478,8 +496,6 @@ pub async fn handle_job_submit(
             .spawn()
             .map_err(|e| format!("Failed to start forge: {e}"))?;
         child.id()
-    } else {
-        0 // No executor found — job is queued but not started
     };
 
     let alloy_name = alloy

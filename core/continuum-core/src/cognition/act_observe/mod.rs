@@ -28,13 +28,11 @@
 // fold, echoed args) come from the persona's LIVE served window via `ContextBudget` — never
 // a constant; see `cognition/context_budget.rs`.
 
-mod recency;
 mod perception;
+mod recency;
 
 mod observation;
-pub use observation::{
-    extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb,
-};
+pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
 mod types;
 pub use types::{SettleOutcome, SettleStep};
@@ -44,7 +42,6 @@ pub use apply::apply_act;
 
 mod settle;
 pub use settle::{drive_to_settle, settle_step};
-
 
 #[cfg(test)]
 mod tests {
@@ -75,12 +72,11 @@ mod tests {
         );
     }
 
+    use super::perception::is_redundant_orientation;
     use super::*;
-    use uuid::Uuid;
     use crate::ai::types::ToolCall;
     use crate::cognition::workspace::{Decision, Situation, TurnFraming, WorkspaceCycle};
-    use super::perception::is_redundant_orientation;
-
+    use uuid::Uuid;
 
     use crate::cognition::tool_executor::{
         NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolExecutor,
@@ -353,7 +349,6 @@ mod tests {
         })
     }
 
-
     // what this catches: an act is scoped to the room it is FOR (one mind is in
     // many rooms — the body is room-agnostic, `room_id` flows per-call), the
     // observation correlates each call to its result in first person, and the
@@ -382,7 +377,10 @@ mod tests {
             Some(room),
             "the act must be scoped to the room it is for, not a phantom nil room"
         );
-        assert_eq!(obs.call.name, "code/run", "the typed act names the tool it ran");
+        assert_eq!(
+            obs.call.name, "code/run",
+            "the typed act names the tool it ran"
+        );
         // THE RESULT THREADS BACK BY ID — the run-18057-f1 correlation, now a TYPED
         // field the caller reads instead of splitting on "[action #".
         assert_eq!(
@@ -395,7 +393,9 @@ mod tests {
         );
         // The recency rendering still names tool + intent + result (byte-stable).
         assert!(obs.render_recall("check the math").contains("code/run"));
-        assert!(obs.render_recall("check the math").contains("check the math"));
+        assert!(obs
+            .render_recall("check the math")
+            .contains("check the math"));
         assert!(obs.render_recall("check the math").contains('4'));
         assert_eq!(
             adm.engram_count(),
@@ -465,8 +465,14 @@ mod tests {
         )
         .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
-        let outcome =
-            drive_to_settle(&cycle, "[eval]\npeer: what is 2+2?", Uuid::new_v4(), 8, TurnFraming::ambient()).await;
+        let outcome = drive_to_settle(
+            &cycle,
+            "[eval]\npeer: what is 2+2?",
+            Uuid::new_v4(),
+            8,
+            TurnFraming::ambient(),
+        )
+        .await;
 
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
         assert_eq!(outcome.spoken.as_deref(), Some("the answer is 4"));
@@ -555,14 +561,17 @@ mod tests {
         )
         .await;
 
-        assert_eq!(speaker.generations(), 1, "one generation, settled — unchanged");
+        assert_eq!(
+            speaker.generations(),
+            1,
+            "one generation, settled — unchanged"
+        );
         assert!(
             !wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
             "no workspace-deliverable fact on a turn whose deliverable is the answer"
         );
         assert!(matches!(outcome.decision, Decision::Speak { .. }));
     }
-
 
     /// Emits a DIFFERENT read-class act every tick (fresh path per generation), so
     /// every batch has a fresh loop signature — the exact shape the #206 identical-act
@@ -615,7 +624,9 @@ mod tests {
         });
         let adm = admission();
         let cycle = WorkspaceCycle::new(
-            vec![Arc::new(VaryingAct { ticks: Mutex::new(0) })],
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
             Arc::new(SalienceArbiter),
             8,
         )
@@ -647,14 +658,21 @@ mod tests {
             result_content: "file contents...".into(),
         });
         let cycle2 = WorkspaceCycle::new(
-            vec![Arc::new(VaryingAct { ticks: Mutex::new(0) })],
+            vec![Arc::new(VaryingAct {
+                ticks: Mutex::new(0),
+            })],
             Arc::new(SalienceArbiter),
             8,
         )
         .with_acting(body(exec2, admission()));
-        let ambient =
-            drive_to_settle(&cycle2, "look around", Uuid::new_v4(), 20, TurnFraming::ambient())
-                .await;
+        let ambient = drive_to_settle(
+            &cycle2,
+            "look around",
+            Uuid::new_v4(),
+            20,
+            TurnFraming::ambient(),
+        )
+        .await;
         assert_eq!(
             ambient.acts, 20,
             "a non-workspace turn reads to the full budget — the gate scopes to \
@@ -676,7 +694,8 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 2, TurnFraming::ambient()).await;
+        let outcome =
+            drive_to_settle(&cycle, "go", Uuid::new_v4(), 2, TurnFraming::ambient()).await;
 
         assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
         assert!(
@@ -709,7 +728,8 @@ mod tests {
 
         // Budget of 20 acts, but she loops on the identical call — the backstop must fire long
         // before, at 4 acts (3 consecutive identical repeats + the first).
-        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 20, TurnFraming::ambient()).await;
+        let outcome =
+            drive_to_settle(&cycle, "go", Uuid::new_v4(), 20, TurnFraming::ambient()).await;
 
         assert_eq!(
             outcome.acts, 4,
@@ -737,8 +757,15 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let (deferred, _) =
-            settle_step(&cycle, "go", Uuid::new_v4(), false, TurnFraming::ambient(), Situation::FreshContext).await;
+        let (deferred, _) = settle_step(
+            &cycle,
+            "go",
+            Uuid::new_v4(),
+            false,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
             "may_act=false defers the act"
@@ -748,9 +775,19 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let (ran, _) =
-            settle_step(&cycle, "go", Uuid::new_v4(), true, TurnFraming::ambient(), Situation::FreshContext).await;
-        assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
+        let (ran, _) = settle_step(
+            &cycle,
+            "go",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+            Situation::FreshContext,
+        )
+        .await;
+        assert!(
+            matches!(ran, SettleStep::Acted { .. }),
+            "may_act=true runs it"
+        );
         assert!(
             exec.seen_context.lock().unwrap().is_some(),
             "a permitted act DOES reach the executor"
@@ -1006,7 +1043,10 @@ mod tests {
 
         // First act genuinely runs; its result lands in working memory.
         let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
-        assert_eq!(first[0].call.name, "code/run", "first act names the tool it ran");
+        assert_eq!(
+            first[0].call.name, "code/run",
+            "first act names the tool it ran"
+        );
         assert!(
             matches!(first[0].status, ActStatus::Executed),
             "the first act really executed"
@@ -1081,7 +1121,11 @@ mod tests {
         const K: &str = "orientation|<class>";
         assert_eq!(wm.note_action_fingerprint(K), 1);
         assert_eq!(wm.note_action_fingerprint(K), 2);
-        assert_eq!(wm.note_action_fingerprint(K), 3, "climbs — perception shifts each demotion");
+        assert_eq!(
+            wm.note_action_fingerprint(K),
+            3,
+            "climbs — perception shifts each demotion"
+        );
 
         // The OLD arg-keyed shape, for contrast: jittered variants never escalate, which is
         // precisely how a determined model rode past the guard.
@@ -1113,7 +1157,10 @@ mod tests {
             input: serde_json::json!({ "name": "code/write" }),
         };
         // First orientation, nothing yet in the concern → honest, not redundant.
-        assert!(!is_redundant_orientation(&[], &[list(serde_json::json!({}))]));
+        assert!(!is_redundant_orientation(
+            &[],
+            &[list(serde_json::json!({}))]
+        ));
         // A discovery receipt is already in the concern → a second orientation is spin.
         let recent = vec!["commands/list({}) → ok".to_string()];
         assert!(is_redundant_orientation(&recent, &[help.clone()]));
@@ -1130,7 +1177,10 @@ mod tests {
         assert!(!is_redundant_orientation(&recent_settled, &[help.clone()]));
         // A MIXED batch with a real workspace action is never demoted — the real call
         // must reach the hand.
-        assert!(!is_redundant_orientation(&recent, &[help.clone(), tool_call()]));
+        assert!(!is_redundant_orientation(
+            &recent,
+            &[help.clone(), tool_call()]
+        ));
         // Empty batch is never redundant.
         assert!(!is_redundant_orientation(&recent, &[]));
 
@@ -1143,17 +1193,28 @@ mod tests {
             name: "code/tree".into(),
             input: serde_json::json!({ "path": p, "max_depth": 2 }),
         };
-        assert!(!is_redundant_orientation(&[], &[tree("apps/cli")]), "first survey is honest");
+        assert!(
+            !is_redundant_orientation(&[], &[tree("apps/cli")]),
+            "first survey is honest"
+        );
         let after_tree = vec!["code/tree(path=apps/cli, max_depth=2) → ok".to_string()];
         // Jittered repeat (trailing slash, different depth) → still demoted (args ignored).
         assert!(is_redundant_orientation(&after_tree, &[tree("apps/cli/")]));
         assert!(is_redundant_orientation(
             &after_tree,
-            &[ToolCall { id: "t".into(), name: "code/tree".into(), input: serde_json::json!({}) }]
+            &[ToolCall {
+                id: "t".into(),
+                name: "code/tree".into(),
+                input: serde_json::json!({})
+            }]
         ));
         // `code/list` is NOT orientation — a specific-dir listing to get filenames before
         // an edit is a legitimate narrowing step, so it always runs.
-        let clist = ToolCall { id: "l".into(), name: "code/list".into(), input: serde_json::json!({ "path": "src" }) };
+        let clist = ToolCall {
+            id: "l".into(),
+            name: "code/list".into(),
+            input: serde_json::json!({ "path": "src" }),
+        };
         assert!(!is_redundant_orientation(&after_tree, &[clist]));
     }
 
@@ -1228,7 +1289,10 @@ mod tests {
         // content-addressed dedup no-op in memory (correct substrate behavior,
         // [[embeddings-are-per-content-computed-once-shared]]), which would mask
         // the continuity-of-self assertion below.
-        let exec = Arc::new(ScriptedExecutor::new(["learned about A", "learned about B"]));
+        let exec = Arc::new(ScriptedExecutor::new([
+            "learned about A",
+            "learned about B",
+        ]));
         let adm = admission();
         // One living mind: the working-memory buffer accumulates ACROSS both
         // concern-drives (volatile continuity), so `ActThenSpeak` must re-awaken on
@@ -1247,13 +1311,27 @@ mod tests {
         let room = Uuid::new_v4();
 
         // Concern A: act → observe → settle on a Speak.
-        let a = drive_to_settle(&cycle, "[eval]\npeer: concern A?", room, 8, TurnFraming::ambient()).await;
+        let a = drive_to_settle(
+            &cycle,
+            "[eval]\npeer: concern A?",
+            room,
+            8,
+            TurnFraming::ambient(),
+        )
+        .await;
         assert_eq!(a.acts, 1, "settled concern A after one act→observe");
         assert!(a.spoken.is_some(), "concern A got a spoken answer");
         assert_eq!(adm.engram_count(), 1, "concern A left exactly one memory");
 
         // Concern B on the SAME living mind — it must wake again, not stay halted.
-        let b = drive_to_settle(&cycle, "[eval]\npeer: a totally different concern B?", room, 8, TurnFraming::ambient()).await;
+        let b = drive_to_settle(
+            &cycle,
+            "[eval]\npeer: a totally different concern B?",
+            room,
+            8,
+            TurnFraming::ambient(),
+        )
+        .await;
         assert_eq!(
             b.acts, 1,
             "the mind RE-AWAKENED and acted on the new concern — not stuck post-settle"
@@ -1265,7 +1343,6 @@ mod tests {
             "continuity of self: concern-A memory persisted, concern B added its own"
         );
     }
-
 
     /// Deliberation faculty that Speaks a fixed text — for exercising the Speak arm.
     struct SpeaksText(&'static str);
@@ -1279,7 +1356,9 @@ mod tests {
         }
         async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
             Some(Contribution::verdict(
-                Decision::Speak { text: self.0.into() },
+                Decision::Speak {
+                    text: self.0.into(),
+                },
                 0.9,
                 "speaks",
             ))
@@ -1297,8 +1376,7 @@ mod tests {
             seen_context: Mutex::new(None),
             result_content: "ok".into(),
         });
-        let promise =
-            "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
+        let promise = "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
         let wm = Arc::new(WorkingMemory::new(4));
         let cycle = WorkspaceCycle::new(
             vec![Arc::new(SpeaksText(promise)) as Arc<dyn Faculty>],
@@ -1419,5 +1497,4 @@ mod tests {
             wm2.recent()
         );
     }
-
 }

@@ -166,12 +166,17 @@ pub fn plan_recursion_depth(
     // Desired depth per token: difficulty scaled across [min,max], halt forces the floor.
     let mut depths: Vec<u32> = (0..n)
         .map(|i| {
-            let converged = profile.halt_confidence.get(i).copied().unwrap_or(0.0)
-                >= shape.halt_threshold;
+            let converged =
+                profile.halt_confidence.get(i).copied().unwrap_or(0.0) >= shape.halt_threshold;
             if converged {
                 return min_d;
             }
-            let diff = profile.difficulty.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let diff = profile
+                .difficulty
+                .get(i)
+                .copied()
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
             min_d + (diff * span).round() as u32
         })
         .collect();
@@ -186,7 +191,9 @@ pub fn plan_recursion_depth(
         order.sort_by(|&a, &b| {
             let da = profile.difficulty.get(a).copied().unwrap_or(0.0);
             let db = profile.difficulty.get(b).copied().unwrap_or(0.0);
-            da.partial_cmp(&db).unwrap_or(Ordering::Equal).then(a.cmp(&b))
+            da.partial_cmp(&db)
+                .unwrap_or(Ordering::Equal)
+                .then(a.cmp(&b))
         });
         for &i in &order {
             if need_to_shed == 0 {
@@ -238,7 +245,10 @@ mod tests {
 
         assert_eq!(plan.uniform_steps, 48, "uniform baseline = tokens*max");
         assert!(plan.spent_steps <= 24, "never exceeds the budget");
-        assert!(plan.spent_steps < plan.uniform_steps, "adaptive beats uniform");
+        assert!(
+            plan.spent_steps < plan.uniform_steps,
+            "adaptive beats uniform"
+        );
         // The two hard tokens reach max depth; the easy tail stays at the floor.
         assert_eq!(plan.depths[0], 6, "hardest token recurses to max");
         assert_eq!(plan.depths[1], 6, "second-hardest token recurses to max");
@@ -259,12 +269,18 @@ mod tests {
         p.difficulty = vec![0.99, 0.75, 0.10];
         p.halt_confidence = vec![0.95, 0.10, 0.10]; // only tok0 has halted
         let sh = shape(1, 5); // span = 4
-        // Abundant budget: nothing is shed, so each token gets exactly its desired depth.
+                              // Abundant budget: nothing is shed, so each token gets exactly its desired depth.
         let plan = plan_recursion_depth(&p, &sh, DepthBudget { total_steps: 15 });
 
-        assert_eq!(plan.depths[0], 1, "converged token floored despite being hardest");
+        assert_eq!(
+            plan.depths[0], 1,
+            "converged token floored despite being hardest"
+        );
         // tok1 desired = 1 + round(0.75*4) = 1 + 3 = 4 — its difficulty, not forced to max.
-        assert_eq!(plan.depths[1], 4, "moving token gets the depth its difficulty asks for");
+        assert_eq!(
+            plan.depths[1], 4,
+            "moving token gets the depth its difficulty asks for"
+        );
         assert!(plan.depths[1] > plan.depths[0], "halt beats difficulty");
     }
 
@@ -281,24 +297,44 @@ mod tests {
 
         // Starved: budget below the floor → everyone at min_depth, spent = floor > budget.
         let starved = plan_recursion_depth(&mid, &sh, DepthBudget { total_steps: 3 });
-        assert!(starved.depths.iter().all(|&d| d == 2), "floor granted under starvation");
-        assert_eq!(starved.spent_steps, 8, "spent is the mandatory floor, honestly over budget");
+        assert!(
+            starved.depths.iter().all(|&d| d == 2),
+            "floor granted under starvation"
+        );
+        assert_eq!(
+            starved.spent_steps, 8,
+            "spent is the mandatory floor, honestly over budget"
+        );
 
         // Abundant budget on a MID workload → desired (5 each), NOT max — no wasted passes,
         // and still below uniform (32): the saving comes from difficulty, not budget.
-        let abundant = plan_recursion_depth(&mid, &sh, DepthBudget::from_compute_fraction(4, 8, 1.0));
-        assert!(abundant.depths.iter().all(|&d| d == 5), "mid difficulty ⇒ mid depth, not inflated");
-        assert!(abundant.spent_steps < abundant.uniform_steps, "adaptive saves even with budget to spare");
+        let abundant =
+            plan_recursion_depth(&mid, &sh, DepthBudget::from_compute_fraction(4, 8, 1.0));
+        assert!(
+            abundant.depths.iter().all(|&d| d == 5),
+            "mid difficulty ⇒ mid depth, not inflated"
+        );
+        assert!(
+            abundant.spent_steps < abundant.uniform_steps,
+            "adaptive saves even with budget to spare"
+        );
 
         // Maximally-hard workload with room → full depth (we never cap below what's needed).
         let mut hard = DepthProfile::default();
         hard.difficulty = vec![1.0, 1.0, 1.0, 1.0];
         let full = plan_recursion_depth(&hard, &sh, DepthBudget::from_compute_fraction(4, 8, 1.0));
-        assert!(full.depths.iter().all(|&d| d == 8), "hard workload runs max depth");
+        assert!(
+            full.depths.iter().all(|&d| d == 8),
+            "hard workload runs max depth"
+        );
         assert_eq!(full.spent_steps, full.uniform_steps);
 
         // Empty sequence → empty plan.
-        let empty = plan_recursion_depth(&DepthProfile::default(), &sh, DepthBudget { total_steps: 99 });
+        let empty = plan_recursion_depth(
+            &DepthProfile::default(),
+            &sh,
+            DepthBudget { total_steps: 99 },
+        );
         assert!(empty.depths.is_empty());
         assert_eq!(empty.spent_steps, 0);
     }

@@ -81,12 +81,12 @@ impl LiveExperienceResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use crate::experience::RecipeExperienceSource;
     use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
     use airc_core::PeerId;
     use airc_lib::RoomMember;
     use async_trait::async_trait;
+    use std::time::Duration;
 
     struct FixedPurpose(&'static str);
     impl RoomPurposeSource for FixedPurpose {
@@ -162,12 +162,12 @@ mod tests {
         let joel_m = exp
             .membership
             .iter()
-            .find(|m| m.peer_id == joel.to_string())
+            .find(|m| m.peer_id.as_uuid() == joel)
             .expect("human present");
         let asha_m = exp
             .membership
             .iter()
-            .find(|m| m.peer_id == asha.to_string())
+            .find(|m| m.peer_id.as_uuid() == asha)
             .expect("persona present");
         // Standing overlaid per role: one list, human Owner + persona Examinee.
         assert_eq!(joel_m.standing, Standing::Owner);

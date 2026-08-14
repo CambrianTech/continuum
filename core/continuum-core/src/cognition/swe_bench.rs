@@ -146,8 +146,12 @@ pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         if !name.starts_with("swe-solve-") || !name.ends_with(".json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
         if v.get("state").and_then(|s| s.as_str()) != Some("running") {
             continue;
         }
@@ -206,7 +210,10 @@ pub fn reap_orphaned_solve_runs() -> Vec<String> {
 /// scratch dir — see the disk-eviction contract.
 pub fn swe_cache_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".continuum").join("benchmarks").join("swe")
+    PathBuf::from(home)
+        .join(".continuum")
+        .join("benchmarks")
+        .join("swe")
 }
 
 /// Fetch a dataset split, cached on first use. On-demand, never a gated install step.
@@ -234,7 +241,11 @@ pub async fn load_dataset(dataset: &str) -> Result<Vec<SweInstance>, String> {
             .json()
             .await
             .map_err(|e| format!("dataset decode failed at offset {offset}: {e}"))?;
-        let page = body.get("rows").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+        let page = body
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .cloned()
+            .unwrap_or_default();
         if page.is_empty() {
             break;
         }
@@ -271,7 +282,11 @@ fn urlencoding_encode(s: &str) -> String {
 /// HOURS, detected by the operator's cooling fan, not by any instrument).
 const SUBPROCESS_CEILING: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
-pub(crate) async fn run(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<std::process::Output, String> {
+pub(crate) async fn run(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+) -> Result<std::process::Output, String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args);
     if let Some(dir) = cwd {
@@ -357,7 +372,13 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
         }
         let out = run(
             "git",
-            &["clone", "--quiet", "--bare", &url, &mirror.to_string_lossy()],
+            &[
+                "clone",
+                "--quiet",
+                "--bare",
+                &url,
+                &mirror.to_string_lossy(),
+            ],
             None,
         )
         .await?;
@@ -389,15 +410,24 @@ pub async fn clone_at(instance: &SweInstance, repo_dir: &Path) -> Result<(), Str
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let out = run("git", &["checkout", "--quiet", &instance.base_commit], Some(repo_dir)).await?;
+    let out = run(
+        "git",
+        &["checkout", "--quiet", &instance.base_commit],
+        Some(repo_dir),
+    )
+    .await?;
     if !out.status.success() {
         // A mirror created earlier can predate this instance's base_commit. Refresh it once and
         // retry rather than failing — the alternative is a cache that silently rots into
         // "instance not gradeable" as the dataset grows.
         let _ = run("git", &["fetch", "--quiet", "--all"], Some(&mirror)).await;
         let _ = run("git", &["fetch", "--quiet", "origin"], Some(repo_dir)).await;
-        let retry =
-            run("git", &["checkout", "--quiet", &instance.base_commit], Some(repo_dir)).await?;
+        let retry = run(
+            "git",
+            &["checkout", "--quiet", &instance.base_commit],
+            Some(repo_dir),
+        )
+        .await?;
         if !retry.status.success() {
             return Err(format!(
                 "checkout {} failed even after refreshing the local mirror: {}",
@@ -438,7 +468,9 @@ pub async fn apply_patch(repo_dir: &Path, text: &str, what: &str) -> Result<(), 
             }
         }
     }
-    Err(format!("could not apply {what} patch — the tree is not what the patch expects"))
+    Err(format!(
+        "could not apply {what} patch — the tree is not what the patch expects"
+    ))
 }
 
 /// The interpreter an instance's own code could actually have run on.
@@ -510,7 +542,17 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             let py_s = py.to_string_lossy().to_string();
             let out = run(
                 &uv,
-                &["pip", "install", "-q", "--python", &py_s, "--no-build-isolation", "--no-deps", "-e", "."],
+                &[
+                    "pip",
+                    "install",
+                    "-q",
+                    "--python",
+                    &py_s,
+                    "--no-build-isolation",
+                    "--no-deps",
+                    "-e",
+                    ".",
+                ],
                 Some(repo_dir),
             )
             .await?;
@@ -567,7 +609,16 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // era class, not one repo (#380 "pin era deps"). pytest/wheel stay latest.
     let _ = run(
         &uv,
-        &["pip", "install", "-q", "--python", &py_s, "pytest", "setuptools<70", "wheel"],
+        &[
+            "pip",
+            "install",
+            "-q",
+            "--python",
+            &py_s,
+            "pytest",
+            "setuptools<70",
+            "wheel",
+        ],
         None,
     )
     .await?;
@@ -607,7 +658,14 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // dep_util (<70) — the same two-sided constraint documented above.
         let _ = run(
             &uv,
-            &["pip", "install", "-q", "--python", &py_s, "setuptools>=64,<70"],
+            &[
+                "pip",
+                "install",
+                "-q",
+                "--python",
+                &py_s,
+                "setuptools>=64,<70",
+            ],
             None,
         )
         .await?;
@@ -677,7 +735,15 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                 if pin.starts_with("importlib-metadata=") {
                     let up = run(
                         &uv,
-                        &["pip", "install", "-q", "--python", &py_s, "--upgrade", "importlib-metadata"],
+                        &[
+                            "pip",
+                            "install",
+                            "-q",
+                            "--python",
+                            &py_s,
+                            "--upgrade",
+                            "importlib-metadata",
+                        ],
                         None,
                     )
                     .await?;
@@ -719,8 +785,15 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         let out = run(
             &uv,
             &[
-                "pip", "install", "-q", "--python", &py_s, "--exclude-newer", &date,
-                "--reinstall", "pytest",
+                "pip",
+                "install",
+                "-q",
+                "--python",
+                &py_s,
+                "--exclude-newer",
+                &date,
+                "--reinstall",
+                "pytest",
             ],
             None,
         )
@@ -734,8 +807,91 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
+
+        // GOLD-GATE THE HARNESS (#380's other half). The era pin above assumes the era
+        // INTERPRETER rung (#2253) found a matching interpreter. When it can't — no
+        // Python 3.5 on a modern macOS — the venv falls back to a modern interpreter
+        // while pytest is still pinned to the instance's year, and that PAIR can be
+        // structurally unable to run. Glass-boxed 2026-08-13 on sympy__sympy-11400
+        // (2016 → pytest 2.9.2 on Python 3.9.6): pytest dies in `pytest_configure`
+        // with INTERNALERROR before collecting anything, on a two-line trivial test
+        // with no conftest and no sympy involved. Every test then "fails", the
+        // pristine p2p reads 0/29, and the whole tree grades UNGRADEABLE — 8 of 36
+        // instances on this box.
+        //
+        // A version pin is a GUESS about compatibility; running it is the evidence. So
+        // prove the harness executes before handing the env to a citizen.
+        //
+        // This REFUSES rather than self-heals, and that is deliberate — measured, not
+        // assumed. The obvious repair (reinstall a modern pytest) was tried against this
+        // exact instance and does NOT work: pytest 8.4.2 loads, then dies in sympy 1.0's
+        // own 2016 conftest on the `py.path` hook API that pytest 7 removed; pytest 6.2.5
+        // dies on `py.test.mark.slow`, removed in pytest 4. The band of pytest versions
+        // that both RUN on Python 3.9 and LOAD a 2016 conftest is EMPTY, so no version
+        // choice rescues this class. What does work — verified on this tree, 30/30 passing
+        // — is sympy's OWN runner (`sympy.test(...)`) on the same interpreter. That is
+        // #383's shape ("django needs its OWN test runner") generalised: the runner is a
+        // property of the repo era, not a pytest version to search for. `run_tests` is
+        // pytest-only today, so until it grows a runner seam, an env in this state cannot
+        // produce a verdict and must say so loudly instead of caching a tree where every
+        // test errors ([[brittleness-is-the-highest-priority-work-there-is]] — heal what is
+        // known-safe, REPORT what needs a human decision; a wrong auto-repair here would
+        // silently trade one void tree for another).
+        if let Err(why) = smoke_test_pytest(&py, &env_dir).await {
+            let _ = std::fs::remove_dir_all(&env_dir);
+            return Err(format!(
+                "{}'s env has no runnable test harness: era-pinned pytest (cutoff {}) \
+                 cannot execute even a trivial test on this venv's interpreter, which \
+                 means the era INTERPRETER rung fell back to a modern one and left an \
+                 incompatible pair. Env removed rather than cached — a cached copy grades \
+                 every attempt UNGRADEABLE. This repo era likely needs its own native \
+                 runner rather than any pytest version (#383). Detail: {why}",
+                instance.instance_id, instance.created_at
+            ));
+        }
     }
     Ok(py)
+}
+
+/// Can this venv's pytest actually RUN? Not "is it installed", not "does `--version`
+/// answer" — both stay true for a pytest that dies in `pytest_configure` (sympy-11400:
+/// `pytest --version` prints 2.9.2 happily, then INTERNALERRORs on any real run).
+///
+/// So: write a trivial passing test to a scratch dir OUTSIDE the repo (no conftest, no
+/// subject imports — a failure here is the harness, never the code under test) and
+/// require a clean exit. This is the smallest honest question, and it is the one the
+/// grader's whole verdict rests on.
+async fn smoke_test_pytest(py: &std::path::Path, env_dir: &std::path::Path) -> Result<(), String> {
+    let smoke_dir = env_dir.join(".harness-smoke");
+    std::fs::create_dir_all(&smoke_dir)
+        .map_err(|e| format!("could not create the harness smoke dir: {e}"))?;
+    std::fs::write(
+        smoke_dir.join("test_harness_smoke.py"),
+        "def test_the_harness_can_run():\n    assert True\n",
+    )
+    .map_err(|e| format!("could not write the harness smoke test: {e}"))?;
+    let out = run(
+        &py.to_string_lossy(),
+        &["-m", "pytest", "-q", "test_harness_smoke.py"],
+        Some(&smoke_dir),
+    )
+    .await?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // stderr carries the INTERNALERROR trace; stdout carries collection errors.
+    let detail = {
+        let e = String::from_utf8_lossy(&out.stderr);
+        let s = if e.trim().is_empty() {
+            String::from_utf8_lossy(&out.stdout).to_string()
+        } else {
+            e.to_string()
+        };
+        s.lines().rev().take(3).collect::<Vec<_>>().join(" | ")
+    };
+    Err(format!(
+        "a trivial one-assert test did not pass under this venv's pytest: {detail}"
+    ))
 }
 
 /// Parse uv's deleted-history hint into an `--exclude-newer-package` value (`pkg=cutoff`).
@@ -863,7 +1019,13 @@ pub fn parse_pytest_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
             continue;
         };
         by_node.insert(node.to_string(), ok);
-        let func = node.rsplit("::").next().unwrap_or(node).split('[').next().unwrap_or(node);
+        let func = node
+            .rsplit("::")
+            .next()
+            .unwrap_or(node)
+            .split('[')
+            .next()
+            .unwrap_or(node);
         // Same bare name in two files: passing only if every one passed.
         let entry = by_func.entry(func.to_string()).or_insert(true);
         *entry = *entry && ok;
@@ -905,7 +1067,10 @@ pub async fn run_tests(
     test_files: &[String],
 ) -> (HashMap<String, bool>, String) {
     if test_files.is_empty() || ids.is_empty() {
-        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
+        return (
+            ids.iter().map(|i| (i.clone(), false)).collect(),
+            String::new(),
+        );
     }
     let mut args: Vec<&str> = vec!["-m", "pytest"];
     for f in test_files {
@@ -919,7 +1084,10 @@ pub async fn run_tests(
     // flags are not worth a version gate; `-v` and no:cacheprovider go back to 2.x.
     args.extend(["-v", "-p", "no:cacheprovider"]);
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
-        return (ids.iter().map(|i| (i.clone(), false)).collect(), String::new());
+        return (
+            ids.iter().map(|i| (i.clone(), false)).collect(),
+            String::new(),
+        );
     };
     let report = format!(
         "{}{}",
@@ -929,7 +1097,12 @@ pub async fn run_tests(
     let (by_node, by_func) = parse_pytest_report(&report);
     let verdicts = ids
         .iter()
-        .map(|id| (id.clone(), verdict_for(id, &by_node, &by_func).unwrap_or(false)))
+        .map(|id| {
+            (
+                id.clone(),
+                verdict_for(id, &by_node, &by_func).unwrap_or(false),
+            )
+        })
         .collect();
     // The report rides back so the grader can excerpt the FAILURE OUTPUT into the
     // verdict — the assertion diff is the teaching half a bare test name lacks.
@@ -981,9 +1154,17 @@ fn compose_failure_excerpt(
     let mut sections: Vec<String> = Vec::new();
     if !p2p_broken.is_empty() {
         const NAME_CAP: usize = 10;
-        let shown: Vec<&str> = p2p_broken.iter().take(NAME_CAP).map(|s| s.as_str()).collect();
+        let shown: Vec<&str> = p2p_broken
+            .iter()
+            .take(NAME_CAP)
+            .map(|s| s.as_str())
+            .collect();
         let more = p2p_broken.len().saturating_sub(NAME_CAP);
-        let more_note = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+        let more_note = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
         let tail = if p2p_report.trim().is_empty() {
             String::new()
         } else {
@@ -1045,7 +1226,11 @@ pub async fn grade(
         return verdict;
     }
     let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
-    let already: Vec<&String> = pre.iter().filter(|(_, ok)| **ok).map(|(id, _)| id).collect();
+    let already: Vec<&String> = pre
+        .iter()
+        .filter(|(_, ok)| **ok)
+        .map(|(id, _)| id)
+        .collect();
     verdict.gate_ok = already.is_empty();
     if !verdict.gate_ok {
         verdict.error = Some(format!(
@@ -1145,12 +1330,18 @@ mod tests {
             vec!["config", "user.email", "t@t"],
             vec!["config", "user.name", "t"],
         ] {
-            assert!(run("git", &args, Some(repo)).await.unwrap().status.success());
+            assert!(run("git", &args, Some(repo))
+                .await
+                .unwrap()
+                .status
+                .success());
         }
         std::fs::write(repo.join("tracked.py"), "original").unwrap();
         std::fs::write(repo.join(".gitignore"), "*.egg-info\n").unwrap();
         run("git", &["add", "."], Some(repo)).await.unwrap();
-        run("git", &["commit", "-qm", "base"], Some(repo)).await.unwrap();
+        run("git", &["commit", "-qm", "base"], Some(repo))
+            .await
+            .unwrap();
 
         // The three states a candidate patch leaves behind:
         std::fs::write(repo.join("tracked.py"), "edited").unwrap(); // tracked edit
@@ -1159,9 +1350,18 @@ mod tests {
 
         reset_worktree(repo).await;
 
-        assert_eq!(std::fs::read_to_string(repo.join("tracked.py")).unwrap(), "original");
-        assert!(!repo.join("conftest.py").exists(), "created file must not survive the reset");
-        assert!(repo.join("pkg.egg-info").exists(), "ignored install artifacts must survive");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("tracked.py")).unwrap(),
+            "original"
+        );
+        assert!(
+            !repo.join("conftest.py").exists(),
+            "created file must not survive the reset"
+        );
+        assert!(
+            repo.join("pkg.egg-info").exists(),
+            "ignored install artifacts must survive"
+        );
     }
 
     // what this catches: the deleted-history env-build failure (pytest-dev__pytest-5103,
@@ -1210,7 +1410,10 @@ mod tests {
             metadata_mismatch_override(stderr).as_deref(),
             Some("lazy-object-proxy=9999-01-01T00:00:00Z"),
         );
-        assert_eq!(metadata_mismatch_override("error: some other failure"), None);
+        assert_eq!(
+            metadata_mismatch_override("error: some other failure"),
+            None
+        );
         assert_eq!(
             metadata_mismatch_override(
                 "Package metadata version `0.0.0` does not match given version `1.0` (no hint)"
@@ -1234,7 +1437,10 @@ mod tests {
             setuptools_importlib_clash_override(stderr).as_deref(),
             Some("importlib-metadata=9999-01-01T00:00:00Z"),
         );
-        assert_eq!(setuptools_importlib_clash_override("error: unrelated"), None);
+        assert_eq!(
+            setuptools_importlib_clash_override("error: unrelated"),
+            None
+        );
     }
 
     // what this catches: the hidden-collateral verdict (atlas-24066-n7) — a patch that
@@ -1245,21 +1451,38 @@ mod tests {
     #[test]
     fn regression_breakage_leads_the_failure_excerpt() {
         let broken: Vec<String> = (0..12).map(|i| format!("test_p2p_{i}")).collect();
-        let both = compose_failure_excerpt(&broken, "E ImportError: cannot import name 'Exp'", true, "E AssertionError: target still fails")
-            .expect("both sections");
+        let both = compose_failure_excerpt(
+            &broken,
+            "E ImportError: cannot import name 'Exp'",
+            true,
+            "E AssertionError: target still fails",
+        )
+        .expect("both sections");
         assert!(both.starts_with("REGRESSION"), "breakage must LEAD: {both}");
         assert!(both.contains("BROKE 12 test(s)"));
-        assert!(both.contains("test_p2p_0") && both.contains("(+2 more)"), "names capped at 10: {both}");
-        assert!(both.contains("ImportError") && both.contains("AssertionError"), "both report tails present");
+        assert!(
+            both.contains("test_p2p_0") && both.contains("(+2 more)"),
+            "names capped at 10: {both}"
+        );
+        assert!(
+            both.contains("ImportError") && both.contains("AssertionError"),
+            "both report tails present"
+        );
         let regression_at = both.find("REGRESSION").unwrap();
         let f2p_at = both.find("AssertionError").unwrap();
         assert!(regression_at < f2p_at, "regression before target-test tail");
 
         let clean = compose_failure_excerpt(&[], "", true, "E AssertionError: target still fails")
             .expect("f2p-only");
-        assert!(!clean.contains("REGRESSION"), "no fabricated regression on a clean tree");
+        assert!(
+            !clean.contains("REGRESSION"),
+            "no fabricated regression on a clean tree"
+        );
 
-        assert!(compose_failure_excerpt(&[], "", false, "noise").is_none(), "nothing failing → no excerpt");
+        assert!(
+            compose_failure_excerpt(&[], "", false, "noise").is_none(),
+            "nothing failing → no excerpt"
+        );
     }
 
     // what this catches: the id-shape assumption that mis-scored GOLD as a real failure.
@@ -1276,12 +1499,22 @@ tests/test_x.py::TestC::test_param[3-4] PASSED";
 
         // flask/pytest shape — full node id.
         assert_eq!(
-            verdict_for("tests/test_polysys.py::test_solve_poly_system", &by_node, &by_func),
+            verdict_for(
+                "tests/test_polysys.py::test_solve_poly_system",
+                &by_node,
+                &by_func
+            ),
             Some(true)
         );
         // sympy shape — BARE function name, the case that was broken.
-        assert_eq!(verdict_for("test_solve_poly_system", &by_node, &by_func), Some(true));
-        assert_eq!(verdict_for("test_solve_biquadratic", &by_node, &by_func), Some(false));
+        assert_eq!(
+            verdict_for("test_solve_poly_system", &by_node, &by_func),
+            Some(true)
+        );
+        assert_eq!(
+            verdict_for("test_solve_biquadratic", &by_node, &by_func),
+            Some(false)
+        );
         // parametrised tests resolve by their base name.
         assert_eq!(verdict_for("test_param", &by_node, &by_func), Some(true));
         // an id nothing in the report matches is UNKNOWN, never a silent pass.
@@ -1297,7 +1530,10 @@ tests/a.py::test_shared PASSED
 tests/b.py::test_shared FAILED";
         let (by_node, by_func) = parse_pytest_report(report);
         assert_eq!(verdict_for("test_shared", &by_node, &by_func), Some(false));
-        assert_eq!(verdict_for("tests/a.py::test_shared", &by_node, &by_func), Some(true));
+        assert_eq!(
+            verdict_for("tests/a.py::test_shared", &by_node, &by_func),
+            Some(true)
+        );
     }
 
     // what this catches: the scope of the test run. Running the whole suite is slow and
@@ -1376,15 +1612,24 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         assert_eq!(reaped, vec!["alive".to_string()]);
 
         let after = std::fs::read_to_string(p.join("swe-solve-alive.json")).unwrap();
-        assert!(after.contains("\"failed\":true"), "the orphan is now a FAILED run: {after}");
+        assert!(
+            after.contains("\"failed\":true"),
+            "the orphan is now a FAILED run: {after}"
+        );
         assert!(
             after.contains("killed by a core restart"),
             "and it names the cause rather than leaving a bare zero: {after}"
         );
         let done = std::fs::read_to_string(p.join("swe-solve-done.json")).unwrap();
-        assert!(done.contains("\"acts\":7"), "a finished verdict is never rewritten");
+        assert!(
+            done.contains("\"acts\":7"),
+            "a finished verdict is never rewritten"
+        );
         let other = std::fs::read_to_string(p.join("agent-solve-other.json")).unwrap();
-        assert!(!other.contains("failed"), "another subsystem's ledger is untouched");
+        assert!(
+            !other.contains("failed"),
+            "another subsystem's ledger is untouched"
+        );
 
         assert!(
             in_flight_solve_runs_in(p).is_empty(),

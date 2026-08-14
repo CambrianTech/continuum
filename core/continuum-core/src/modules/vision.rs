@@ -68,7 +68,10 @@ struct CachedDescription {
 /// Params for `vision/description-get` and `vision/description-status` — both
 /// address one cache entry by its content key (compression: one shared type).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionKeyParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionKeyParams.ts"
+)]
 pub struct VisionKeyParams {
     /// Content-addressed key (e.g. SHA-256 of the image bytes).
     pub content_key: String,
@@ -76,7 +79,10 @@ pub struct VisionKeyParams {
 
 /// Params for `vision/description-put` — store one description under a content key.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionPutParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionPutParams.ts"
+)]
 pub struct VisionPutParams {
     /// Content-addressed key the description is stored under.
     pub content_key: String,
@@ -104,7 +110,10 @@ pub struct VisionPutParams {
 /// two that identify a description — a row missing `content_key`/`description` is
 /// skipped (a corrupt row must not abort a bulk restore).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionWarmEntry.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionWarmEntry.ts"
+)]
 pub struct VisionWarmEntry {
     #[serde(default)]
     #[ts(optional)]
@@ -131,7 +140,10 @@ pub struct VisionWarmEntry {
 
 /// Params for `vision/cache-warm` — bulk-restore L1 from persisted L2 rows.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionWarmParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionWarmParams.ts"
+)]
 pub struct VisionWarmParams {
     /// Persisted description rows to load into L1.
     pub entries: Vec<VisionWarmEntry>,
@@ -139,7 +151,10 @@ pub struct VisionWarmParams {
 
 /// Params for `vision/cache-evict` — drop entries idle longer than `idle_ms`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionEvictParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionEvictParams.ts"
+)]
 pub struct VisionEvictParams {
     /// Evict entries not accessed within this many ms (default 1,800,000 = 30 min).
     #[serde(default)]
@@ -149,7 +164,10 @@ pub struct VisionEvictParams {
 
 /// Params for `vision/cache-stats` — no arguments.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionStatsParams.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionStatsParams.ts"
+)]
 pub struct VisionStatsParams {}
 
 // ============================================================================
@@ -158,7 +176,10 @@ pub struct VisionStatsParams {}
 
 /// Result of `vision/description-get`. `found=false` → all other fields absent.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionGetResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionGetResult.ts"
+)]
 pub struct VisionGetResult {
     pub found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -180,21 +201,30 @@ pub struct VisionGetResult {
 
 /// Result of `vision/description-put`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionPutResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionPutResult.ts"
+)]
 pub struct VisionPutResult {
     pub stored: bool,
 }
 
 /// Result of `vision/description-status`: `cached` or `none`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionStatusResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionStatusResult.ts"
+)]
 pub struct VisionStatusResult {
     pub status: String,
 }
 
 /// Result of `vision/cache-stats` — cache diagnostics.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionCacheStatsResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionCacheStatsResult.ts"
+)]
 pub struct VisionCacheStatsResult {
     #[ts(type = "number")]
     pub entries: usize,
@@ -211,7 +241,10 @@ pub struct VisionCacheStatsResult {
 
 /// Result of `vision/cache-warm`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionWarmResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionWarmResult.ts"
+)]
 pub struct VisionWarmResult {
     #[ts(type = "number")]
     pub warmed: u64,
@@ -221,7 +254,10 @@ pub struct VisionWarmResult {
 
 /// Result of `vision/cache-evict`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/vision/VisionEvictResult.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/vision/VisionEvictResult.ts"
+)]
 pub struct VisionEvictResult {
     #[ts(type = "number")]
     pub evicted: usize,
@@ -572,7 +608,10 @@ mod tests {
 
         let got = cache.get("abc123");
         assert!(got.found);
-        assert_eq!(got.description.as_deref(), Some("A cat sitting on a keyboard"));
+        assert_eq!(
+            got.description.as_deref(),
+            Some("A cat sitting on a keyboard")
+        );
         assert_eq!(got.model.as_deref(), Some("llava:7b"));
     }
 

@@ -105,8 +105,7 @@ static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::
 /// llama-server) must size against these real free bytes, not the level, or it gets
 /// jetsam-SIGKILLed on a memory-tight machine. 0 until the first monitor poll (then
 /// treat as "unknown — don't veto on it"). Lock-free read from anywhere.
-static CURRENT_AVAILABLE_BYTES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static CURRENT_AVAILABLE_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Check if the memory gate is closed (critical pressure sustained).
 /// Subsystems should refuse new allocations when this returns true.
@@ -757,7 +756,8 @@ impl MemoryPressureMonitor {
 
             // Process RSS.
             let rss = if let Some(p) = st.pid {
-                st.sys.refresh_processes(ProcessesToUpdate::Some(&[p]), true);
+                st.sys
+                    .refresh_processes(ProcessesToUpdate::Some(&[p]), true);
                 st.sys.process(p).map(|proc| proc.memory()).unwrap_or(0)
             } else {
                 0
@@ -774,7 +774,8 @@ impl MemoryPressureMonitor {
 
             // Atomics + cross-module level — lock-free reads from anywhere.
             self.current_rss.store(rss, Ordering::Relaxed);
-            self.current_pressure.store(pressure.to_bits(), Ordering::Relaxed);
+            self.current_pressure
+                .store(pressure.to_bits(), Ordering::Relaxed);
             CURRENT_PRESSURE_LEVEL.store(level.to_u8(), Ordering::Relaxed);
             // Publish the honest free-physical-bytes number too, so a subsystem sizing
             // a large elective allocation can veto against real headroom, not the ratio.
@@ -801,7 +802,16 @@ impl MemoryPressureMonitor {
                 .map(|(i, e)| (i, e.reporter.clone()))
                 .collect();
 
-            (total, available, swap_used, rss, pressure, level, consecutive_at_level, live)
+            (
+                total,
+                available,
+                swap_used,
+                rss,
+                pressure,
+                level,
+                consecutive_at_level,
+                live,
+            )
         };
 
         // --- Phase 2: off-lock report fan-out — each reporter on the blocking
