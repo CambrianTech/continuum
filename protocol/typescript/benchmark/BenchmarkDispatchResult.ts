@@ -2,6 +2,16 @@
 
 export type BenchmarkDispatchResult = { benchmark: string, 
 /**
+ * The room this run lives in — where its board, its kickoffs and its citizens are.
+ * Returned so the caller never has to guess where the work went.
+ */
+room: string, 
+/**
+ * That room's airc channel id — the TYPE, not a uuid-shaped string. See
+ * `ActivitySpawnResult::room_id`; this field is that value passed through.
+ */
+room_id: string, 
+/**
  * Cards actually posted to the board.
  */
 dispatched: number, 

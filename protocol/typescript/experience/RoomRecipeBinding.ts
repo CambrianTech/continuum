@@ -18,5 +18,10 @@ recipe: string,
 /**
  * Optional parent activity — activities spawn activities, and the graph is
  * POINTERS, never nested blobs.
+ *
+ * A pointer to a room is a `RoomId`. It was a `String` while the doc directly
+ * above it said "POINTERS" — a pointer typed as text is not a pointer, it is a
+ * hope that whoever fills it in spells a uuid correctly, and nothing rejects
+ * `"the benchmark one"` ([[uuids-are-not-strings-and-never-hand-drawn]]).
  */
 parent?: string, };

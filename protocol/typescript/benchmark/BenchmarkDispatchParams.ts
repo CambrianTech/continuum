@@ -36,6 +36,26 @@ assignees?: Array<string>,
  */
 instances: Array<string> | null, 
 /**
+ * The room this run lives in. Omit to get a FRESH one per run, named
+ * `bench-<benchmark>-<epoch>`.
+ *
+ * **A run is an activity, and an activity is a room.** Before this existed,
+ * dispatch had no way to say where — so every suite, every run, forever, piled
+ * into whichever room the curator happened to be standing in. Measured on one
+ * 37-minute window of that pile: 136 cards with 66 already CLOSED and still
+ * resident, and 5,336 of 5,345 inbound events discarded as bookkeeping —
+ * ~48 wake-ups per minute per citizen, of which NINE in 37 minutes were
+ * something a mind could actually read. Claim heartbeats scale as
+ * `O(claims × citizens)`, so the more work a citizen held, the less capacity
+ * it had to do any of it.
+ *
+ * A fresh room per run makes the run's board its OWN denominator, lets the
+ * round END, and puts the assignees somewhere they can hear each other. Pass
+ * an explicit name to join an existing run (it must already exist — dispatch
+ * spawns a room it names, and never silently adopts a stranger's).
+ */
+room?: string, 
+/**
  * Also CLOSE this benchmark's redundant duplicate cards, converging the board
  * to one live card per task. Off by default — a dispatch that silently closed
  * cards would be a surprising verb.
