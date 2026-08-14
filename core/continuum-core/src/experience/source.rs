@@ -178,14 +178,39 @@ impl RecipeExperienceSource {
         Self::new(purpose, Self::embedded())
     }
 
-    /// Every purpose the SHIPPED recipe set declares — the validation list
-    /// `activity/spawn` refuses against (#431). Derived from the SAME
-    /// [`Self::embedded`] iterator the registry is built from, so the
-    /// validation set and the resolution set cannot drift. When the disk
-    /// overlay is wired into production (#432), this must grow the overlay
-    /// too — they are the same set by definition.
+    /// Every purpose the SHIPPED recipe set declares. Derived from the SAME
+    /// [`Self::embedded`] iterator the registry is built from, so this list
+    /// and the embedded resolution set cannot drift. Production validation
+    /// goes through [`Self::known_purposes`], which is this PLUS the disk
+    /// overlay — the same union [`Self::builtins_with_overlay`] resolves.
     pub fn shipped_purposes() -> Vec<String> {
         Self::embedded().map(|r| r.purpose).collect()
+    }
+
+    /// The ONE directory production overlays recipes from:
+    /// `<continuum_root>/recipes`. Named here so the resolution side
+    /// ([`Self::builtins_with_overlay`] in the positron projection) and the
+    /// validation side (`activity/spawn`'s `validate_recipe`) derive the same
+    /// path from the same root — two hand-built joins would drift, and a
+    /// drifted pair means an authored recipe that RESOLVES gets REFUSED at
+    /// spawn (or the reverse, the #431 silent-chat downgrade).
+    pub fn overlay_dir(continuum_root: &std::path::Path) -> std::path::PathBuf {
+        continuum_root.join("recipes")
+    }
+
+    /// Every purpose the FULL recipe set declares — embedded floor plus the
+    /// disk overlay under `dir` (#432). This is the validation list
+    /// `activity/spawn` refuses against, and it is the same union
+    /// [`Self::builtins_with_overlay`] builds its registry from, so an
+    /// authored on-disk recipe is spawnable the moment the file exists. A
+    /// malformed overlay recipe is an ERROR naming the file, not a silent
+    /// skip — the author believes it is live.
+    pub fn known_purposes(dir: &std::path::Path) -> Result<Vec<String>, RecipeLoadError> {
+        let overlay = Self::load_dir(dir)?;
+        Ok(Self::embedded()
+            .map(|r| r.purpose)
+            .chain(overlay.into_iter().map(|r| r.purpose))
+            .collect())
     }
 
     /// The declared purpose of a shipped recipe, by its [`shipped`] handle.

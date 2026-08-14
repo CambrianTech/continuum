@@ -188,8 +188,20 @@ impl ActionCommand for ActivitySpawn {
 /// rendered as chat for a full campaign: dispatch bound `"benchmark"` while the
 /// shipped recipe's purpose is `"benchmark/hard-rs"`. The refusal names the
 /// actionable set, per the registry's own `ids()`/`purposes()` design note.
-pub fn validate_recipe(recipe: &str) -> Result<(), CommandError> {
-    let known = crate::experience::source::RecipeExperienceSource::shipped_purposes();
+/// `overlay_dir` is the SAME directory the positron projection resolves from
+/// (`RecipeExperienceSource::overlay_dir`), so an authored on-disk recipe is
+/// spawnable the moment the file exists (#432) — validation and resolution
+/// stay one set by construction. A malformed overlay file surfaces HERE as the
+/// parse error naming the file: the author's loudest, most actionable surface.
+pub fn validate_recipe(recipe: &str, overlay_dir: &std::path::Path) -> Result<(), CommandError> {
+    let known = crate::experience::source::RecipeExperienceSource::known_purposes(overlay_dir)
+        .map_err(|e| {
+            CommandError::Invalid(format!(
+                "recipe overlay under {} failed to load — fix or remove the named \
+                 file, then retry: {e}",
+                overlay_dir.display()
+            ))
+        })?;
     if known.iter().any(|k| k == recipe) {
         return Ok(());
     }
@@ -217,7 +229,12 @@ pub async fn spawn_activity_room(
     recipe: &str,
     parent: Option<RoomId>,
 ) -> Result<ActivitySpawnResult, CommandError> {
-    validate_recipe(recipe)?;
+    validate_recipe(
+        recipe,
+        &crate::experience::source::RecipeExperienceSource::overlay_dir(
+            &crate::modules::persona_instance_manager::resolve_continuum_root(),
+        ),
+    )?;
     {
         // `join` IS room creation in airc: it derives the channel from the name,
         // subscribes this peer, and publishes presence. Reusing it keeps ONE room
@@ -499,17 +516,49 @@ mod tests {
     // regression for #431 / commit at benchmark.rs:1091
     #[test]
     fn validate_recipe_refuses_unknown_and_passes_every_shipped_purpose() {
+        let empty_overlay = tempfile::tempdir().expect("tempdir");
         for purpose in crate::experience::source::RecipeExperienceSource::shipped_purposes() {
             assert!(
-                validate_recipe(&purpose).is_ok(),
+                validate_recipe(&purpose, empty_overlay.path()).is_ok(),
                 "shipped purpose {purpose:?} must validate"
             );
         }
-        let err = validate_recipe("benchmark").expect_err("the old dispatch literal must refuse");
+        let err = validate_recipe("benchmark", empty_overlay.path())
+            .expect_err("the old dispatch literal must refuse");
         let msg = format!("{err}");
         assert!(
             msg.contains("benchmark/hard-rs"),
             "refusal must name the actionable set, got: {msg}"
+        );
+    }
+
+    // what this catches (#432): validation and resolution staying ONE set once
+    // the disk overlay is live. An authored on-disk recipe must be spawnable
+    // the moment the file exists — if validate_recipe only consulted the
+    // embedded set, every authored recipe would be refused at activity/spawn
+    // while the projection happily resolved it (or vice versa). Also pins the
+    // fail-loud arm: a malformed overlay file refuses NAMING the file, never a
+    // silent skip.
+    #[test]
+    fn validate_recipe_accepts_overlay_authored_purpose_and_refuses_malformed_overlay() {
+        let overlay = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            overlay.path().join("wordstats.json"),
+            r#"{ "purpose": "bench/wordstats", "regions": [], "affordances": [] }"#,
+        )
+        .expect("write authored recipe");
+        match validate_recipe("bench/wordstats", overlay.path()) {
+            Ok(()) => {}
+            Err(e) => panic!("authored overlay purpose must validate, got: {e}"),
+        }
+
+        std::fs::write(overlay.path().join("broken.json"), "{ not json")
+            .expect("write malformed recipe");
+        let err = validate_recipe("bench/wordstats", overlay.path())
+            .expect_err("a malformed overlay file must refuse loudly");
+        assert!(
+            format!("{err}").contains("broken.json"),
+            "refusal must name the malformed file, got: {err}"
         );
     }
 
