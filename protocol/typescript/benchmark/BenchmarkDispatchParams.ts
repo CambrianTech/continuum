@@ -34,4 +34,15 @@ assignees?: Array<string>,
  * sits first in the dataset (astropy's C-extension build is the hard tail, #383, and it
  * leads swe-bench-lite). Ignored for gym-class benchmarks.
  */
-instances: Array<string> | null, };
+instances: Array<string> | null, 
+/**
+ * Also CLOSE this benchmark's redundant duplicate cards, converging the board
+ * to one live card per task. Off by default — a dispatch that silently closed
+ * cards would be a surprising verb.
+ *
+ * A card someone is genuinely working (a live claim) is never closed; if two
+ * citizens hold the SAME task, both are kept and the contention is reported
+ * rather than resolved by cancelling one of them. Pair with `limit=0` to prune
+ * without dispatching anything new.
+ */
+prune: boolean | null, };

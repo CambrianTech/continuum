@@ -30,6 +30,19 @@ skipped_needs_setup: number,
  */
 skipped_already_on_board: number, 
 /**
+ * Redundant duplicate cards CLOSED by this call (only when `prune` was set).
+ * Cards under a live claim are never counted here because they are never
+ * closed — see `contended_tasks`.
+ */
+pruned_duplicates: number, 
+/**
+ * Tasks where MORE THAN ONE citizen holds a live claim on a duplicate card.
+ * The prune leaves all of them alone: cancelling one would destroy real
+ * in-flight work, so this is surfaced as a coordination fact for the room to
+ * settle rather than resolved silently.
+ */
+contended_tasks: number, 
+/**
  * Addressed kickoff messages actually delivered (one per dispatched card —
  * every card is directed at a live citizen). A kickoff that failed to send is
  * reported via `kickoff_errors`, never silently counted as delivered.
