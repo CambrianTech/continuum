@@ -2423,6 +2423,16 @@ pub fn start_server(
             // follow-on; we break once a citizen is hosted to avoid
             // re-bootstrapping a live persona's airc identity.)
             let mut attempt = 0u32;
+            // #429: once boot composition succeeds, this task does NOT end —
+            // it becomes the standing HOSTING RECONCILER. `persona/spawn`
+            // births end at `registry.register` (identity only); hosting
+            // (adapter + cognition loop) is the supervisor's job, and before
+            // this flag existed it ran exactly once, so a command-born
+            // citizen was on airc, carded — and MUTE. Post-boot, each
+            // serving-plan edge drives `host_unattended`: registered
+            // citizens with no service loop get the same materialize +
+            // attach pipeline boot slots got.
+            let mut booted = false;
             loop {
                 let plan_ready = serving_plan_rx
                     .borrow()
@@ -2463,7 +2473,7 @@ pub fn start_server(
                              personas onto a lane that cannot generate; retrying on the \
                              next serving edge."
                         );
-                    } else {
+                    } else if !booted {
                         attempt += 1;
                         let summary = supervisor
                             .spawn_all(&mut provider, Some(tool_executor.clone()))
@@ -2474,26 +2484,62 @@ pub fn start_server(
                                 failed = summary.failed(),
                                 attempts = attempt,
                                 "🌐 Substrate boot composition complete (slice 13.5) — \
-                                 citizen(s) hosted, event-driven on serving-plan readiness"
+                                 citizen(s) hosted; supervisor stays resident as the \
+                                 hosting reconciler (#429)"
                             );
-                            break;
+                            booted = true;
+                        } else {
+                            tracing::warn!(
+                                failed = summary.failed(),
+                                attempt,
+                                "persona spawn found a decode-ready serving lane but no citizen \
+                                 materialized — will retry on the next serving-plan edge"
+                            );
                         }
-                        tracing::warn!(
-                            failed = summary.failed(),
-                            attempt,
-                            "persona spawn found a decode-ready serving lane but no citizen \
-                             materialized — will retry on the next serving-plan edge"
-                        );
+                    } else {
+                        // Post-boot reconcile (#429): a `persona/spawn` birth ends at
+                        // `registry.register`; the hosting half (adapter + cognition
+                        // loop) is ours. Each serving-plan edge, host any registered
+                        // citizen with no attached service loop — never re-running
+                        // `spawn_all` (which would re-bootstrap live airc identities).
+                        let summary = supervisor
+                            .host_unattended(Some(tool_executor.clone()))
+                            .await;
+                        if summary.hosted > 0 {
+                            tracing::info!(
+                                hosted = summary.hosted,
+                                failed = summary.failed(),
+                                "🌐 hosting reconciler: {} newborn citizen(s) hosted \
+                                 (persona/spawn → live mind)",
+                                summary.hosted
+                            );
+                        }
+                        for failure in &summary.failures {
+                            tracing::warn!(
+                                persona_id = ?failure.persona_id,
+                                reason = %failure.reason,
+                                "hosting reconciler: slot failed — will retry on the \
+                                 next serving-plan edge"
+                            );
+                        }
                     }
                 }
                 // Park until the serving daemon republishes (every tick, or
                 // sooner on a pressure edge). `changed()` errs only if the
                 // daemon is gone — then there is nothing left to react to.
                 if serving_plan_rx.changed().await.is_err() {
-                    tracing::warn!(
-                        "serving-daemon watch closed before any persona materialized \
-                         — no citizens online this run"
-                    );
+                    if booted {
+                        tracing::warn!(
+                            "serving-daemon watch closed — hosting reconciler exiting; \
+                             citizens already hosted stay live, but later persona/spawn \
+                             births will not be hosted this run (#429)"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "serving-daemon watch closed before any persona materialized \
+                             — no citizens online this run"
+                        );
+                    }
                     break;
                 }
             }
