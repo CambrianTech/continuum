@@ -349,6 +349,13 @@ impl ActionCommand for WorkClaim {
                 // it teaches her the substrate is broken when the truth is "that one
                 // is Anwen's". Observed live 2026-08-06.
                 let mut contention = false;
+                // Set when the live holder turns out to be the caller herself.
+                let mut already_yours = None;
+                let caller_short = ctx
+                    .caller
+                    .as_ref()
+                    .map(|c| short8(c.peer_id.as_uuid()))
+                    .unwrap_or_else(|| "-".to_string());
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await
@@ -380,22 +387,52 @@ impl ActionCommand for WorkClaim {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0);
-                        if let Some(owner) = live_holder(card, now_ms) {
-                            contention = true;
-                            msg = format!(
-                                "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
-                                 them in the room, or take another card — work/list with \
-                                 claimable=true lists every card you can pick up right now \
-                                 (most sit in the `claimed` column with a lapsed lease, so \
-                                 filtering by state=\"open\" will not show them). \
-                                 (claim error: {e})",
-                                short8(card_id.as_uuid()),
-                                card.title,
-                                short8(owner.as_uuid()),
-                                state_str(&card.state),
-                            );
+                        // ASK WHO, NOT JUST WHETHER. `live_holder` says a person is on
+                        // the card; `classify_refusal` says whether that person is YOU.
+                        // Without the second question this arm told Anon her own card was
+                        // a stranger's (2026-08-14) — see `ClaimRefusal`.
+                        let caller_uuid = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
+                        let holder = live_holder(card, now_ms).map(|o| o.as_uuid());
+                        match classify_refusal(holder, caller_uuid) {
+                            ClaimRefusal::AlreadyYours => already_yours = card.claim_id,
+                            ClaimRefusal::HeldByPeer(owner) => {
+                                contention = true;
+                                msg = format!(
+                                    "card {} (\"{}\") is held by peer {} [{}]. Coordinate with \
+                                     them in the room, or take another card — work/list with \
+                                     claimable=true lists every card you can pick up right now \
+                                     (most sit in the `claimed` column with a lapsed lease, so \
+                                     filtering by state=\"open\" will not show them). \
+                                     (claim error: {e})",
+                                    short8(card_id.as_uuid()),
+                                    card.title,
+                                    short8(owner),
+                                    state_str(&card.state),
+                                );
+                            }
+                            // Nobody is on it — the original error stands as written.
+                            ClaimRefusal::Fault => {}
                         }
                     }
+                }
+                // A claim you ALREADY HOLD is satisfied, not refused: the verb's goal
+                // ("this citizen owns this card") is already true, so report success
+                // with the live claim rather than inventing a rival. Deliberately does
+                // NOT re-fire `dispatch_staged_swe_solve` — `run_id` is deterministic
+                // (`claim-<card>`) with no in-flight guard, and a duplicate detached
+                // solve would contend for the exclusive warm slot. Recovering a claim
+                // whose session died is a separate, dedup-gated fix.
+                if let Some(claim_id) = already_yours {
+                    crate::probe!(
+                        class = "work.claim",
+                        card_id = %card_id.as_uuid(),
+                        claimer = %caller_short,
+                        "re-claim of a card the caller already holds — satisfied, no re-dispatch"
+                    );
+                    return Ok(WorkClaimResult {
+                        card_id: p.card_id,
+                        claim_id: claim_id.as_uuid().to_string(),
+                    });
                 }
                 // A rejection is WORK-STATE, not a transient tool result: the
                 // raw receipt scrolls out of the persona's short window and the
@@ -864,6 +901,48 @@ fn live_holder(card: &airc_work::WorkCard, now_ms: u64) -> Option<airc_core::Pee
         // Lapsed or unclaimed: whatever refused the claim, it was not a person.
         crate::persona::card_holder::Hold::Lapsed
         | crate::persona::card_holder::Hold::Unclaimed => None,
+    }
+}
+
+/// What a refused claim MEANS for the citizen who made it.
+///
+/// `live_holder` answers "is a person on this card". It does NOT answer "is that
+/// person YOU" — and without that second question the refusal path told a citizen
+/// a stranger held her own work. Glass-boxed live 2026-08-14: Anon (a20b3ada) held
+/// 13 cards and was told `card 17531483 ... is held by peer a20b3ada` — her own
+/// peer id, rendered as somebody else. She read it as contention, concluded there
+/// was nothing for her to do, and went silent holding thirteen claims. Her prompt
+/// was not the problem: `[active-work]` listed every card and `[Working Presence]`
+/// told her a quiet room is not a stop sign. The substrate said the work was
+/// someone else's, so she believed the substrate.
+///
+/// The caller's identity was already in scope 20 lines below (`ctx.caller`) and
+/// simply never consulted for this decision. This is the [[same-bug-at-two-sites]]
+/// shape — `work/list` renders holders through `card_holder`, and the claim path
+/// needed the same self-vs-other distinction as a NAMED rule rather than prose.
+///
+/// Separated from the call site for the reason `live_holder` was: the call site is
+/// where this went wrong, and an inline `if` is not something a test can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaimRefusal {
+    /// The live holder IS the caller — she already owns this card. Not contention,
+    /// not a fault: the claim's goal ("this citizen holds this card") is already
+    /// true, so the verb is satisfied and must not manufacture a rival.
+    AlreadyYours,
+    /// A different peer genuinely holds it right now. A normal shared-board outcome.
+    HeldByPeer(Uuid),
+    /// Nobody holds it; whatever refused the claim was not a person.
+    Fault,
+}
+
+/// Classify a refusal from the live holder and the caller. Pure — no board, no
+/// daemon, no persona.
+pub(crate) fn classify_refusal(holder: Option<Uuid>, caller: Option<Uuid>) -> ClaimRefusal {
+    match (holder, caller) {
+        // Self-comparison FIRST: a caller who holds the card is never contention.
+        (Some(h), Some(c)) if h == c => ClaimRefusal::AlreadyYours,
+        (Some(h), _) => ClaimRefusal::HeldByPeer(h),
+        (None, _) => ClaimRefusal::Fault,
     }
 }
 
@@ -1534,6 +1613,72 @@ mod tests {
                 "`{field}` must survive truncation — declare the summary BEFORE `cards`, \
                  or citizens read a severed result and correctly conclude there is no work"
             );
+        }
+    }
+
+    /// The self-vs-other half of the refusal rule. `live_holder` (tested above,
+    /// #357) answers "is a person on this card"; these answer "is that person YOU".
+    mod refusal_identity {
+        use super::*;
+
+        /// what this catches: work/claim telling a citizen that SHE holds her own
+        /// card — rendered as a stranger. Glass-boxed live 2026-08-14: Anon
+        /// (a20b3ada) held 13 bench cards and was told `card 17531483 ... is held
+        /// by peer a20b3ada`. She read her own id as a rival, concluded the work
+        /// was taken, and went silent holding thirteen claims — with the board in
+        /// her prompt and [Working Presence] telling her a quiet room is not a stop
+        /// sign. The substrate outranked both, because it spoke in specifics.
+        ///
+        /// This is the benchmark loop's stall: dispatch stages a card, she claims
+        /// it, a re-claim tells her it is someone else's, and no work happens.
+        #[test]
+        fn the_caller_is_never_a_rival_for_her_own_card() {
+            let her = Uuid::new_v4();
+            assert_eq!(
+                classify_refusal(Some(her), Some(her)),
+                ClaimRefusal::AlreadyYours,
+                "a citizen holding her own card must be told she holds it — naming her \
+                 own peer id as the rival is how thirteen claimed cards went unworked"
+            );
+        }
+
+        /// what this catches: over-correcting into "self" and swallowing real
+        /// contention — the failure the #357 fix was careful to avoid. A DIFFERENT
+        /// live holder is a normal shared-board outcome and must still be named.
+        #[test]
+        fn a_different_live_holder_is_still_reported_as_contention() {
+            let her = Uuid::new_v4();
+            let peer = Uuid::new_v4();
+            assert_eq!(
+                classify_refusal(Some(peer), Some(her)),
+                ClaimRefusal::HeldByPeer(peer),
+                "someone else's live claim is real contention and must name them"
+            );
+        }
+
+        /// what this catches: an unidentified caller silently classifying as
+        /// "yours". Identity absent is NOT identity matched — without a caller we
+        /// cannot claim the card is hers, so the holder is reported as a peer.
+        #[test]
+        fn an_unknown_caller_is_not_treated_as_the_holder() {
+            let holder = Uuid::new_v4();
+            assert_eq!(
+                classify_refusal(Some(holder), None),
+                ClaimRefusal::HeldByPeer(holder),
+                "no caller identity means no self-match — never assume it is hers"
+            );
+        }
+
+        /// what this catches: regression of the #357 rule through the new arm —
+        /// nobody on the card is a fault, never a fabricated holder, whether or
+        /// not we know who is asking.
+        #[test]
+        fn nobody_on_the_card_is_a_fault_not_a_holder() {
+            assert_eq!(
+                classify_refusal(None, Some(Uuid::new_v4())),
+                ClaimRefusal::Fault
+            );
+            assert_eq!(classify_refusal(None, None), ClaimRefusal::Fault);
         }
     }
 }
