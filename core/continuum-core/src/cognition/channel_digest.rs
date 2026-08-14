@@ -48,6 +48,18 @@ use crate::persona::airc_source::AircTranscriptReader;
 /// Recipe/RoomPurpose resolution belongs to the caller; this is only the floor.
 pub const DEFAULT_GROUNDING: usize = 5;
 
+/// What a reader who has NEVER read this room lands on: the last page, not the
+/// whole retained history.
+///
+/// `last_read` returns `0` for a room nobody has read, and `0` means "everything
+/// is unread" — a correct SENTINEL that is catastrophic as a delivered WINDOW
+/// once a room holds thousands of messages. Every chat client has worked the
+/// other way for thirty years: you join, you see the last page, and you scroll
+/// if you want more. This is that page, and it applies to EVERY reader — a fresh
+/// human opening a busy room and a fresh persona waking into one are the same
+/// case.
+pub const FIRST_READ_PAGE: usize = 20;
+
 /// Per-persona, per-channel last-read cursor — the Slack unread marker. Keyed by
 /// (persona, room); the value is the lamport of the newest message the persona has
 /// read. Cheap per-persona state (a relationship property), lock-free.
@@ -169,7 +181,7 @@ impl ChannelDigestBuilder {
         events: Vec<TranscriptEvent>,
         grounding: usize,
     ) -> ChannelDigest {
-        let bookmark = self.bookmarks.last_read(persona_id, room_id);
+        let mut bookmark = self.bookmarks.last_read(persona_id, room_id);
 
         // Filter to THIS channel — lamport is per-room, so mixing rooms would make
         // the bookmark split meaningless. Resolve to shared elements (consolidation:
@@ -183,6 +195,26 @@ impl ChannelDigestBuilder {
         // Sort lamport-ascending ourselves: correctness must not depend on the
         // reader's ordering convention.
         elements.sort_by_key(|e| e.event().lamport);
+
+        // FIRST SIGHT OF THIS ROOM: land one page back from the tip, not on the
+        // whole history. `bookmark == 0` is the never-read sentinel, and taken
+        // literally it means "every message ever retained is unread" — which is
+        // how a fresh reader was being handed the entire transcript as FRESH
+        // PERCEPTION, every element at full attention, with no grounding split
+        // (`unread_start` lands at 0 because `first_unread` does).
+        //
+        // Seeding is PERSISTED via `advance` — "you joined here" is a fact about
+        // this reader's relationship to this room, and persisting it is what makes
+        // the room quiet on the next turn instead of re-delivering the same page.
+        // Monotonic, so it can only ever move a never-read cursor forward.
+        if bookmark == 0 && elements.len() > FIRST_READ_PAGE {
+            let page_start = elements[elements.len() - FIRST_READ_PAGE]
+                .event()
+                .lamport;
+            // Everything strictly older than the page start counts as already seen.
+            bookmark = page_start.saturating_sub(1);
+            self.bookmarks.advance(persona_id, room_id, bookmark);
+        }
 
         // Split: first element strictly newer than the bookmark begins the unread
         // run; keep up to `grounding` elements before it for context.
@@ -328,6 +360,65 @@ mod tests {
             .unwrap();
         assert_eq!(d.unread().len(), 1);
         assert_eq!(d.unread()[0].text(), Some("c"));
+    }
+
+    // what this catches: a reader who has NEVER read a busy room must land on the
+    // LAST PAGE, not on the entire retained history. `last_read` returns 0 for a
+    // fresh reader and 0 literally means "everything is unread" — which delivered
+    // every message ever retained as fresh perception at full attention, with an
+    // EMPTY grounding split. That is the mutual-excitation storm's fuel supply
+    // (#264): nothing is ever consumed, so nothing is ever old.
+    #[tokio::test]
+    async fn a_fresh_reader_lands_one_page_back_not_on_the_whole_history() {
+        let room = RoomId::new();
+        let persona = Uuid::new_v4();
+        // A busy room: three pages' worth, and this reader has never seen any of it.
+        let events: Vec<_> = (1..=(FIRST_READ_PAGE as u64 * 3))
+            .map(|n| test_event_in(room, "msg", n))
+            .collect();
+        let tip = FIRST_READ_PAGE as u64 * 3;
+        let (b, marks) = builder();
+        assert_eq!(marks.last_read(persona, room.as_uuid()), 0, "never read");
+
+        let d = b
+            .build(
+                persona,
+                room.as_uuid(),
+                &StubReader::new(events.clone()),
+                500,
+                0,
+            )
+            .await
+            .unwrap();
+
+        // ONE page unread, not sixty.
+        assert_eq!(
+            d.unread().len(),
+            FIRST_READ_PAGE,
+            "a fresh reader gets the last page, not the whole transcript"
+        );
+        assert_eq!(d.tip_lamport(), Some(tip));
+        // And the seed PERSISTED — this is what makes the room quiet next turn
+        // rather than re-delivering the same page forever.
+        assert!(
+            marks.last_read(persona, room.as_uuid()) > 0,
+            "first sight must persist a cursor, else every turn re-reads the page"
+        );
+
+        // Now the DELIVERY step marks what she was shown as read — what
+        // `AircRagSource::deliver` does with the packed read-through lamport. The
+        // seed bounds the page; the advance consumes it. Both halves are needed,
+        // and together the room goes QUIET with nothing new. Before the fix, the
+        // whole transcript came back as unread on every single turn forever.
+        marks.advance(persona, room.as_uuid(), tip);
+        let d2 = b
+            .build(persona, room.as_uuid(), &StubReader::new(events), 500, 0)
+            .await
+            .unwrap();
+        assert!(
+            !d2.has_unread(),
+            "after reading the page, a room with no new messages must be quiet"
+        );
     }
 
     // what this catches: N-before-bookmark grounding — the unread run is delivered

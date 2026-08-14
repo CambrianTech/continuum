@@ -244,7 +244,11 @@ impl AircRagSource {
     /// straddling-trim law the prompt fitter applies to messages, one level down.
     /// The NEWEST turn is exempt (kept verbatim up to the whole budget): it is
     /// what the persona is responding to.
-    fn pack_digest(digest: &ChannelDigest, budget: u32) -> (Vec<RagItem>, u32) {
+    /// Returns the packed items, the tokens they cost, and the READ-THROUGH
+    /// lamport: the newest element that actually entered her prompt. That last
+    /// value is what advances her bookmark — she is marked read for what she was
+    /// GIVEN, never for what was merely fetched and then dropped by the budget.
+    fn pack_digest(digest: &ChannelDigest, budget: u32) -> (Vec<RagItem>, u32, Option<u64>) {
         // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
         // tiny budgets still render a sentence and huge ones don't let one
         // essay crowd the window.
@@ -274,13 +278,18 @@ impl AircRagSource {
             keep.push((idx, trimmed));
         }
         keep.reverse();
+        // `keep` is oldest-first after the reverse, so its LAST entry is the newest
+        // element that actually fit — how far she genuinely read this turn.
+        let read_through = keep
+            .last()
+            .map(|(idx, _)| digest.elements[*idx].event().lamport);
         let items = keep
             .into_iter()
             .map(|(idx, trimmed)| {
                 Self::format_item(&digest.elements[idx], idx >= digest.unread_start, trimmed)
             })
             .collect();
-        (items, tokens_used)
+        (items, tokens_used, read_through)
     }
 
     fn format_item(
@@ -467,7 +476,37 @@ impl RagSource for AircRagSource {
             )),
         };
 
-        let (items, tokens_used) = Self::pack_digest(&digest, budget);
+        let (items, tokens_used, read_through) = Self::pack_digest(&digest, budget);
+        // SHE HAS NOW READ THE ROOM — advance her per-room cursor, exactly as the
+        // human's UI does on nav/mark-read and on navigating away from a room.
+        //
+        // THE BUG THIS FIXES: `ChannelBookmarks` is per-(persona, room) and has
+        // been correct since it was written — but the ONLY production callers of
+        // `advance` were in `modules/nav.rs`, both keyed on `ctx.user_id`, the
+        // authenticated HUMAN. A persona never navigates, so her `last_read` stayed
+        // at 0 forever, and `last_read`'s own doc spells out what 0 means:
+        // "never read (everything is unread)". Every turn therefore re-delivered
+        // the ENTIRE paged history as UNREAD, each item at attention score 1.0,
+        // with an EMPTY grounding split (unread_start == 0) — the digest's
+        // read/unread structure was built and then never used for a persona.
+        //
+        // That is the storm: with nothing ever marked read, no message is ever
+        // consumed, so two citizens in one room re-excite each other on a window
+        // that only grows. With the cursor advancing, a wake shows what is NEW
+        // plus N-before grounding, and a room with nothing new is quiet — the same
+        // contract every message client has had for thirty years.
+        //
+        // Mark-read on DELIVERY, not on reply, because delivery is when she saw
+        // it — `tip_lamport`'s own doc says "ignore/skip/respond all mark-read".
+        // Advancing to `read_through` (what was PACKED) rather than the digest tip
+        // keeps it honest under a tight budget: she is never marked read for a
+        // message the packer dropped. `advance` is monotonic, so a repeat delivery
+        // or a late lower lamport can never rewind her.
+        if let Some(lamport) = read_through {
+            self.builder
+                .bookmarks()
+                .advance(self.persona_id, room_id, lamport);
+        }
         tracing::debug!(
             persona_id = %self.persona_id,
             room = %room_id,
