@@ -118,6 +118,64 @@ pub fn cli_staleness_note(
     ))
 }
 
+/// Whether this deploy may rebuild the `continuum` CLI in place — see [`cli_self_build`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliSelfBuild {
+    /// Rebuild it. Replacing the FILE of a running executable is legal here, so the
+    /// deploy loop can close itself with no operator step.
+    Rebuild,
+    /// Skip it, and print `reason`. A running image is locked on this platform, so
+    /// building over it fails the whole cargo invocation and takes the CORE build down
+    /// with it.
+    Skip { reason: String },
+}
+
+/// May `reboot` rebuild the CLI it is running from, on `target_os`
+/// ([`std::env::consts::OS`])?
+///
+/// ## The bug this fixes: a platform guard applied to every platform
+///
+/// `reboot` sets `CONTINUUM_SKIP_SELF_BUILD=1` unconditionally, and `start-server.sh`
+/// then skips the CLI build. That guard exists for exactly ONE constraint, stated in its
+/// own comment: Windows LOCKS a running image, so `cargo build --bin continuum` from
+/// inside the running `continuum` fails with `failed to remove file ...\continuum.exe`,
+/// cargo returns non-zero for the WHOLE invocation, every later build is skipped — the
+/// CORE included — and reboot dies after its full timeout having rebuilt nothing
+/// (measured 772s on BIGMAMA, 2026-08-05). Real, and worth guarding.
+///
+/// But the same comment also records that on Unix it "silently works: unlink leaves the
+/// running inode" — and the guard was applied there anyway. That is the whole of #422:
+/// a Windows accommodation charged to every operator, making the documented deploy path
+/// (`edit → reboot → exercise`) structurally unable to ship a fix that lives in the CLI.
+/// Measured on this machine 2026-08-14: `stop`'s split-brain reap (#2287) had merged and
+/// had NOT reached the installed CLI, which left a core alive and silent — while
+/// `deploy-verify` printed its green checkmark, because it only looked at the core.
+///
+/// Nothing else was missing. `start-server.sh` already installs the built CLI into
+/// `~/.local/bin` with a temp+`mv` atomic swap, and does it OUTSIDE this guard — so on a
+/// Rebuild platform the loop closes with no new verb and no new swap machinery. And the
+/// running image is normally the `~/.local/bin` COPY, not the target-dir binary cargo
+/// replaces, so even the Unix inode trick is a second line of defence rather than the
+/// first.
+///
+/// Pure, and takes the OS as a parameter rather than reading `cfg!`, so BOTH rows are
+/// tested from any host — the Windows row is the one no Mac CI job would otherwise cover.
+pub fn cli_self_build(target_os: &str) -> CliSelfBuild {
+    // Allow-list the platform whose constraint is real, rather than deny-listing the
+    // ones known safe: a future target that locks running images should inherit the
+    // SKIP, not silently inherit the breakage ([[fallbacks-are-illegal-fail-loud]]).
+    if target_os == "windows" {
+        return CliSelfBuild::Skip {
+            reason: "skipping the continuum CLI build — Windows locks a running image, and \
+                     building over it would fail the whole cargo invocation and skip the CORE \
+                     build too. The CORE is still rebuilt. A CLI-side fix is NOT deployed by \
+                     this reboot: reinstall the CLI separately (#422)."
+                .to_string(),
+        };
+    }
+    CliSelfBuild::Rebuild
+}
+
 /// Two short/long git SHAs refer to the same commit when one prefixes the other (git's
 /// `--short` abbreviation length varies over a repo's life). Both must be real hex SHAs of
 /// credible length — never matches `""` or `"unknown"`.
@@ -210,6 +268,32 @@ mod tests {
                 !note.contains("STALE CLI"),
                 "never assert staleness it cannot prove: {note}"
             );
+        }
+    }
+
+    // what this catches: #422 in both directions. The self-build guard is a WINDOWS
+    // file-locking accommodation (building over a locked image fails the whole cargo
+    // invocation and takes the CORE build with it — 772s to failure on BIGMAMA); it was
+    // applied on every platform, which is what made `reboot` structurally unable to ship
+    // a CLI-side fix anywhere. Widening the Skip row back to Unix re-opens that gap
+    // silently; narrowing it to nothing re-breaks Windows reboot outright. The skip must
+    // also SAY it did not deploy the CLI — a silent skip that reads as a completed deploy
+    // is exactly how the stale CLI survived a green deploy-verify.
+    #[test]
+    fn only_a_platform_that_locks_running_images_skips_the_cli_build() {
+        for os in ["macos", "linux", "freebsd"] {
+            assert_eq!(
+                cli_self_build(os),
+                CliSelfBuild::Rebuild,
+                "{os} can replace a running executable's file — reboot must close the loop"
+            );
+        }
+
+        let CliSelfBuild::Skip { reason } = cli_self_build("windows") else {
+            panic!("windows locks a running image — building over it kills the CORE build too");
+        };
+        for needle in ["Windows", "CORE is still rebuilt", "NOT deployed", "#422"] {
+            assert!(reason.contains(needle), "skip reason names {needle}: {reason}");
         }
     }
 
