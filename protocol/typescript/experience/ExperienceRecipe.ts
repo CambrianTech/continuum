@@ -52,6 +52,14 @@ regions: Array<Region>,
  */
 affordances: Array<AffordanceRecipe>, 
 /**
+ * The parameters this recipe accepts (#433) — typed knobs with EASY
+ * DEFAULTS, so a zero-arg `activity/spawn` always works while callers can
+ * target anything dynamic (suite, instances, team, budget…). Declared as
+ * DATA in the recipe JSON: authoring a parameterized activity is a file,
+ * zero code. Empty (the default) means the recipe takes no parameters.
+ */
+params: Record<string, ParamDecl>, 
+/**
  * The resident citizens this experience wants HOSTED — the roster as
  * authored DATA (#430). The DEFAULT experience's citizens are the node's
  * resident population: what the persona spawner plans at boot, replacing
