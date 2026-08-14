@@ -120,10 +120,36 @@ pub struct ExperienceRecipe {
     /// gains its computed `who_may` at projection.
     #[serde(default)]
     pub affordances: Vec<AffordanceRecipe>,
+    /// The resident citizens this experience wants HOSTED — the roster as
+    /// authored DATA (#430). The DEFAULT experience's citizens are the node's
+    /// resident population: what the persona spawner plans at boot, replacing
+    /// the hardcoded `plan_for_tier` role vec. Empty (the default) means this
+    /// experience declares no residents — for most activity recipes that is
+    /// the ordinary state; membership is live roster state, not authorship.
+    #[serde(default)]
+    pub citizens: Vec<CitizenRecipe>,
     /// Optional explicit composition (level-3 layout). Omitted → organic placement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub layout: Option<Layout>,
+}
+
+/// One resident citizen an experience declares (#430) — a ROLE, not an
+/// identity. Identity (peer_id, name) is minted or resumed by the identity
+/// provider at hosting time; the MODEL is the serving daemon's per-host
+/// decision. A recipe authoring a device-specific model id would make the
+/// recipe non-portable across the grid, so the role is all it declares.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/experience/CitizenRecipe.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct CitizenRecipe {
+    /// Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) —
+    /// `persona/role_template::RoleId`'s own serde form.
+    #[ts(type = "string")]
+    pub role: crate::persona::role_template::RoleId,
 }
 
 /// The authored shape of an [`Affordance`] — the verb and its command plus the
