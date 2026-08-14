@@ -4,6 +4,7 @@
 //! `forge.body_hint` contract has one definition.
 
 use airc_core::{Body, Headers, TranscriptEvent};
+use serde::Deserialize;
 use airc_protocol::{FrameKind, HEADER_FORGE_BODY_HINT};
 
 use crate::airc::realtime::{
@@ -74,7 +75,14 @@ pub fn envelope_from_event(
         return Ok(None);
     };
 
-    serde_json::from_value(value.clone())
+    // Borrow-decode: `&Value` is itself a Deserializer, so the envelope is read
+    // in place. The previous `from_value(value.clone())` deep-copied the WHOLE
+    // body first (`from_value` consumes by value, so the clone was reflexive) —
+    // paid per event PER PERSONA, since every citizen's subscribe stream sees
+    // every event. That is the same O(personas x payload) waste the stream-chunk
+    // header guard above exists to avoid; the header decides, the body is never
+    // copied to find out.
+    AircRealtimeEnvelope::deserialize(value)
         .map(Some)
         .map_err(|error| format!("failed to decode continuum airc envelope: {error}"))
 }
