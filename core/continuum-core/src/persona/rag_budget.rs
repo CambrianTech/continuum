@@ -184,13 +184,21 @@ impl RagContext {
 /// (`None`, legacy/test construction) and an unstamped ctx (`airc_room: None`,
 /// background consolidation) both keep pre-gate behavior. One logical decision,
 /// one place (the compression law); every abstain emits a probe naming both
-/// rooms so a mis-binding is diagnosable from the log, never a silent blank
-/// grounding block. [[identity-context-session-three-axes]]
+/// rooms so a mis-binding is diagnosable from the PROBE STREAM, never a silent
+/// blank grounding block. [[identity-context-session-three-axes]]
+///
+/// `probe!`, not `tracing::info!(probe_class = …)`. Glass-boxed 2026-08-14
+/// chasing the anchor_silent cascade (#346/#353/#264): this abstain WAS a bare
+/// `tracing::info!` carrying a `probe_class` field, which is the "tracing
+/// masquerading as a probe" move the concurrency guide forbids — it never
+/// reaches `~/.continuum/probes/`, so querying the probe stream for it returned
+/// a confident zero that meant nothing at all. An absence is only evidence when
+/// the instrument can produce a presence; this one couldn't.
 pub fn room_scope_allows(bound: Option<uuid::Uuid>, ctx: &RagContext, source_id: &str) -> bool {
     match (bound, ctx.airc_room.as_ref()) {
         (Some(b), Some(t)) if t.as_uuid() != b => {
-            tracing::info!(
-                probe_class = "rag.room_gate.abstain",
+            crate::probe!(
+                class = "rag.room_gate.abstain",
                 source = %source_id,
                 bound_room = %b,
                 turn_room = %t.as_uuid(),
