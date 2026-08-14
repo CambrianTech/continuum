@@ -38,6 +38,7 @@ pub mod command_interceptor;
 pub mod control;
 pub mod core_bind_guard;
 pub mod core_ipc_transport;
+pub mod deploy_provenance;
 pub mod daemon;
 pub mod governor_bus;
 pub mod grid_interceptor;
