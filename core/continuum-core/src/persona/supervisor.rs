@@ -635,6 +635,21 @@ pub async fn materialize_adapters(
             ));
         cognition.set_roster_source(roster_source.clone());
 
+        // The benchmark board, read from the SAME `BenchViewState` fold the
+        // academy rail renders (#426) — the second RenderTarget of the bench
+        // outlier. The renderable existed with a comment promising exactly
+        // this and was never bound; without it a citizen's only route to run
+        // state was a command that scrapes the progress dir, which fails the
+        // doctrine's acceptance test
+        // ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+        // The board is ONE global fold (unlike the per-room roster), so the
+        // handle is the global bench substrate the emitter dual-publishes into.
+        let bench_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::viewstate_rag::ViewStateRagSource::<
+                continuum_positron::bench::BenchViewState,
+            >::new(crate::ipc::global_bench_substrate()));
+        cognition.set_bench_source(bench_source);
+
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
         // — the airc-published operating contract. Slice 2.

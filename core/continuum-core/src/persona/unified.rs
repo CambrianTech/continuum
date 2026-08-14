@@ -115,6 +115,15 @@ pub struct PersonaCognition {
     /// persona confabulating other citizens' turns. See
     /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
     pub roster_source: Option<Arc<dyn RagSource>>,
+    /// The persona's benchmark-board RAG source — the live run rows
+    /// (`ViewStateRagSource::<BenchViewState>` over
+    /// `ipc::global_bench_substrate()`), the SAME fold the academy
+    /// rail renders. Bound at supervisor boot (#426); `None` pre-attach
+    /// / in tests. This is the benchmarks-as-activity acceptance test
+    /// made real: a citizen perceives run state through the same pipe
+    /// the human's screen uses, never a file read
+    /// ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+    pub bench_source: Option<Arc<dyn RagSource>>,
     /// The persona's room-doctrine RAG source — "what KIND of room is
     /// this" (the airc-published operating contract via
     /// `Airc::room_doctrine`). Bound at supervisor boot from the same
@@ -214,6 +223,7 @@ impl PersonaCognition {
             engram_source,
             airc_source: None,
             roster_source: None,
+            bench_source: None,
             doctrine_source: None,
             capture_sink,
         }
@@ -272,6 +282,19 @@ impl PersonaCognition {
             self.capture_sink.clone(),
         ));
         self.roster_source = Some(decorated);
+    }
+
+    /// Bind the brain's benchmark-board RAG source
+    /// (`ViewStateRagSource::<BenchViewState>` over the global bench
+    /// substrate). Same boot-time wire and capture decoration as
+    /// `set_roster_source` — bench deliveries are recorded + replayable
+    /// on the same wire (task #426).
+    pub fn set_bench_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.bench_source = Some(decorated);
     }
 
     /// Bind the brain's room-doctrine RAG source (`RoomDoctrineSource`).
@@ -365,6 +388,12 @@ impl PersonaCognition {
         }
         if let Some(ref doctrine) = self.doctrine_source {
             sources.push(doctrine.clone());
+        }
+        // The benchmark board (#426): live run rows through the same
+        // budgeter as everything else. Its budget rides the generic
+        // floor_tokens arm — a handful of run lines, never a heavyweight.
+        if let Some(ref bench) = self.bench_source {
+            sources.push(bench.clone());
         }
 
         // Per-source budget claims. The two HEAVYWEIGHT sources (engram
@@ -845,6 +874,68 @@ mod tests {
                 alloc.source_id
             );
         }
+    }
+
+    /// what this catches: the #426 wiring itself. `BenchViewState` had a
+    /// doctrine-citing `RagRenderable` impl and ZERO bindings — citizens could
+    /// only learn run state from a progress-dir scrape command. This pins that
+    /// a bound bench source delivers REAL run rows through the SAME budgeter
+    /// as every other source; if the compose push or setter regresses, minds
+    /// go blind to the board again and only this fails.
+    #[tokio::test]
+    async fn compose_for_turn_delivers_the_benchmark_board() {
+        use continuum_positron::bench::{BenchRunRow, BenchViewState};
+        use continuum_positron::StateBuilder;
+
+        let id = Uuid::new_v4();
+        let rag = Arc::new(RagEngine::new());
+        let mut pc = PersonaCognition::new(id, "TestBot".into(), rag);
+
+        // One run row in the mind-side substrate — the same envelope shape the
+        // emitter dual-publishes (a session revision of the global fold).
+        let substrate = continuum_positron::Substrate::new();
+        substrate.store(StateBuilder::standalone().session(BenchViewState {
+            runs: vec![BenchRunRow {
+                run_id: "run-7".into(),
+                instance: Some("sympy__sympy-24152".into()),
+                solver: Some("Asha".into()),
+                phase: "solving".into(),
+                stalled: false,
+                attempt: Some(1),
+                max_attempts: Some(3),
+                age_secs: 42,
+                acts: Some(5),
+                patch_bytes: None,
+                resolved: None,
+                fail_to_pass: None,
+                pass_to_pass: None,
+                failed_tests: Vec::new(),
+                infra_error: None,
+            }],
+            sample_interval_ms: 1000,
+        }));
+        let bench: Arc<dyn RagSource> = Arc::new(
+            crate::persona::viewstate_rag::ViewStateRagSource::<BenchViewState>::new(substrate),
+        );
+        pc.set_bench_source(bench);
+
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
+        let bench_delivery = composed
+            .deliveries
+            .iter()
+            .find(|d| d.source_id == "bench")
+            .expect("bench board must be composed alongside the other sources");
+        let rendered = bench_delivery
+            .items
+            .iter()
+            .map(|i| i.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("run-7"), "run row missing: {rendered}");
+        assert!(
+            rendered.contains("sympy__sympy-24152"),
+            "instance missing: {rendered}"
+        );
     }
 
     /// The brain's capture sink records the TurnStart / BudgetAllocated

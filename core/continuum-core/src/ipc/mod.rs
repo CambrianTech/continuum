@@ -147,6 +147,24 @@ pub fn global_room_substrates() -> std::sync::Arc<continuum_positron::scoping::P
     G.get_or_init(|| std::sync::Arc::new(continuum_positron::scoping::PerRoomSubstrates::new()))
         .clone()
 }
+
+/// The ONE substrate a citizen's mind reads the benchmark board from — the
+/// mind-side render target of the SAME `BenchViewState` fold the browser rail
+/// renders (kind="bench").
+///
+/// Unlike the roster (whose view differs per room, hence `PerRoomSubstrates`),
+/// the bench board is ONE global fold, so its mind-side handle is a single
+/// substrate. The emitter dual-publishes into this AND the websocket substrate;
+/// `supervisor` binds a `ViewStateRagSource::<BenchViewState>` over it at
+/// persona boot (task #426). Without this handle the bench renderable was
+/// implemented and never reachable by any mind — citizens could only learn run
+/// state via a command that scrapes the progress dir, which fails the doctrine's
+/// acceptance test ([[benchmarks-must-be-positronic-activities-not-a-parallel-subsystem]]).
+pub fn global_bench_substrate() -> continuum_positron::Substrate {
+    use std::sync::OnceLock;
+    static G: OnceLock<continuum_positron::Substrate> = OnceLock::new();
+    G.get_or_init(continuum_positron::Substrate::new).clone()
+}
 pub mod room_purpose;
 pub mod stream_rail;
 pub mod vitals_emitter;
@@ -3193,8 +3211,15 @@ pub fn start_server(
 
                 // Benchmark board (#329): fold the run-ledger projection into
                 // kind="bench" — the academy right-rail's live rows (who is
-                // solving what, attempt N/M, patch forming, verdicts).
-                positron_bench_source::spawn_bench_emitter(&state.rt_handle, ws_substrate.clone());
+                // solving what, attempt N/M, patch forming, verdicts). Dual-
+                // published: the websocket substrate for human eyes AND the
+                // global bench substrate for citizen minds (#426) — one
+                // definition, two render targets, same as the roster repair.
+                positron_bench_source::spawn_bench_emitter(
+                    &state.rt_handle,
+                    ws_substrate.clone(),
+                    global_bench_substrate(),
+                );
 
                 // Live-call glass box (#58): folds the TRANSPORT's calls against
                 // the ORCHESTRATOR's registered sessions. Their disagreement is
