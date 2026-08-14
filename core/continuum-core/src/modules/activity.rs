@@ -122,6 +122,14 @@ pub struct ActivitySpawnParams {
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub parent: Option<RoomId>,
+
+    /// Parameter overrides for the recipe's declared knobs (#433). Omit
+    /// entirely (or leave empty) for the recipe's defaults — a zero-arg spawn
+    /// always works. An unknown name or a value whose JSON type differs from
+    /// the declared default is refused, naming the declared set.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    #[ts(type = "Record<string, unknown>")]
+    pub params: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -175,7 +183,7 @@ impl ActionCommand for ActivitySpawn {
         p: ActivitySpawnParams,
     ) -> Result<ActivitySpawnResult, CommandError> {
         let airc = caller_airc(&self.registry, ctx)?;
-        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent).await
+        spawn_activity_room(&airc, &p.name, &p.recipe, p.parent, &p.params).await
     }
 }
 
@@ -194,7 +202,17 @@ impl ActionCommand for ActivitySpawn {
 /// stay one set by construction. A malformed overlay file surfaces HERE as the
 /// parse error naming the file: the author's loudest, most actionable surface.
 pub fn validate_recipe(recipe: &str, overlay_dir: &std::path::Path) -> Result<(), CommandError> {
-    let known = crate::experience::source::RecipeExperienceSource::known_purposes(overlay_dir)
+    resolve_recipe(recipe, overlay_dir).map(|_| ())
+}
+
+/// As [`validate_recipe`], but return the MATCHED recipe (later wins by
+/// purpose, the registry's overlay law) — `activity/spawn` needs its param
+/// declarations (#433), not just a yes/no on the purpose string.
+pub fn resolve_recipe(
+    recipe: &str,
+    overlay_dir: &std::path::Path,
+) -> Result<crate::experience::recipe::ExperienceRecipe, CommandError> {
+    let known = crate::experience::source::RecipeExperienceSource::known_recipes(overlay_dir)
         .map_err(|e| {
             CommandError::Invalid(format!(
                 "recipe overlay under {} failed to load — fix or remove the named \
@@ -202,14 +220,78 @@ pub fn validate_recipe(recipe: &str, overlay_dir: &std::path::Path) -> Result<()
                 overlay_dir.display()
             ))
         })?;
-    if known.iter().any(|k| k == recipe) {
-        return Ok(());
+    let purposes: Vec<&str> = known.iter().map(|r| r.purpose.as_str()).collect();
+    known
+        .iter()
+        .filter(|r| r.purpose == recipe)
+        .next_back()
+        .cloned()
+        .ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "unknown recipe {recipe:?} — no recipe declares that purpose, so the \
+                 room would project as plain chat. Known recipes: {}",
+                purposes.join(", ")
+            ))
+        })
+}
+
+/// Merge caller overrides over the recipe's declared defaults (#433).
+///
+/// The declared DEFAULT is the type authority: a supplied value must carry the
+/// same JSON type. Unknown names and type mismatches refuse loudly, naming the
+/// declared set with its docs — the author's actionable surface, same doctrine
+/// as the recipe-string gate above.
+pub fn resolve_params(
+    recipe: &crate::experience::recipe::ExperienceRecipe,
+    given: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<std::collections::BTreeMap<String, serde_json::Value>, CommandError> {
+    fn json_type(v: &serde_json::Value) -> &'static str {
+        match v {
+            serde_json::Value::Null => "null",
+            serde_json::Value::Bool(_) => "bool",
+            serde_json::Value::Number(_) => "number",
+            serde_json::Value::String(_) => "string",
+            serde_json::Value::Array(_) => "array",
+            serde_json::Value::Object(_) => "object",
+        }
     }
-    Err(CommandError::Invalid(format!(
-        "unknown recipe {recipe:?} — no recipe declares that purpose, so the room \
-         would project as plain chat. Known recipes: {}",
-        known.join(", ")
-    )))
+    let declared_set = || {
+        if recipe.params.is_empty() {
+            "this recipe declares NO parameters".to_string()
+        } else {
+            recipe
+                .params
+                .iter()
+                .map(|(k, d)| format!("{k} ({}: {})", json_type(&d.default), d.doc))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    let mut resolved: std::collections::BTreeMap<String, serde_json::Value> = recipe
+        .params
+        .iter()
+        .map(|(k, d)| (k.clone(), d.default.clone()))
+        .collect();
+    for (name, value) in given {
+        let decl = recipe.params.get(name).ok_or_else(|| {
+            CommandError::Invalid(format!(
+                "unknown parameter {name:?} for recipe {:?} — declared: {}",
+                recipe.purpose,
+                declared_set()
+            ))
+        })?;
+        if json_type(value) != json_type(&decl.default) {
+            return Err(CommandError::Invalid(format!(
+                "parameter {name:?} expects a {} (the declared default's type), got a \
+                 {} — declared: {}",
+                json_type(&decl.default),
+                json_type(value),
+                declared_set()
+            )));
+        }
+        resolved.insert(name.clone(), value.clone());
+    }
+    Ok(resolved)
 }
 
 /// Birth a room from a recipe on an ALREADY-RESOLVED airc handle.
@@ -228,13 +310,15 @@ pub async fn spawn_activity_room(
     name: &str,
     recipe: &str,
     parent: Option<RoomId>,
+    params: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Result<ActivitySpawnResult, CommandError> {
-    validate_recipe(
+    let recipe_def = resolve_recipe(
         recipe,
         &crate::experience::source::RecipeExperienceSource::overlay_dir(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
         ),
     )?;
+    let resolved_params = resolve_params(&recipe_def, params)?;
     {
         // `join` IS room creation in airc: it derives the channel from the name,
         // subscribes this peer, and publishes presence. Reusing it keeps ONE room
@@ -269,6 +353,7 @@ pub async fn spawn_activity_room(
         let binding = RoomRecipeBinding {
             recipe: recipe.to_string(),
             parent,
+            params: resolved_params,
         };
         let body = serde_json::to_string(&binding).map_err(|source| {
             CommandError::Internal(format!("encode recipe binding: {source}"))
@@ -628,5 +713,137 @@ mod tests {
     fn spawning_a_room_is_an_ordinary_citizen_act() {
         assert!(matches!(ActivitySpawn::ACCESS, AccessLevel::AiSafe));
         assert!(ActivitySpawn::NATIVE);
+    }
+
+    mod params {
+        use super::*;
+        use crate::experience::recipe::ExperienceRecipe;
+        use std::collections::BTreeMap;
+
+        fn recipe_with_params() -> ExperienceRecipe {
+            ExperienceRecipe::from_json(
+                r#"{
+                    "purpose": "bench/param-fixture",
+                    "regions": [],
+                    "affordances": [],
+                    "params": {
+                        "suite": { "default": "swe-lite", "doc": "which benchmark suite" },
+                        "instances": { "default": 1, "doc": "how many instances to run" },
+                        "disclose": { "default": true, "doc": "announce full capacity" }
+                    }
+                }"#,
+            )
+            .expect("fixture recipe parses")
+        }
+
+        // what this catches (#433): the zero-arg contract. "A zero-arg spawn
+        // always works" is the whole point of default-carrying decls — if an
+        // empty override map didn't resolve to exactly the declared defaults,
+        // every existing caller (benchmark dispatch passes an empty map) would
+        // break or silently under-describe its room.
+        #[test]
+        fn empty_overrides_resolve_to_the_declared_defaults() {
+            let resolved = resolve_params(&recipe_with_params(), &BTreeMap::new())
+                .expect("zero-arg spawn always works");
+            assert_eq!(resolved["suite"], serde_json::json!("swe-lite"));
+            assert_eq!(resolved["instances"], serde_json::json!(1));
+            assert_eq!(resolved["disclose"], serde_json::json!(true));
+        }
+
+        // what this catches (#433): an override MERGING over the defaults, not
+        // replacing them — a caller setting one knob must still get every other
+        // knob's default on the binding, or the room stops being self-describing.
+        #[test]
+        fn an_override_merges_over_the_remaining_defaults() {
+            let given = BTreeMap::from([("instances".to_string(), serde_json::json!(5))]);
+            let resolved =
+                resolve_params(&recipe_with_params(), &given).expect("valid override");
+            assert_eq!(resolved["instances"], serde_json::json!(5));
+            assert_eq!(resolved["suite"], serde_json::json!("swe-lite"));
+        }
+
+        // what this catches (#433): a typo'd param name silently vanishing.
+        // If unknown names were dropped instead of refused, a caller targeting
+        // "instance" (singular) would run the default count and never learn why
+        // — the refusal must name the declared set WITH docs, the author's
+        // actionable surface.
+        #[test]
+        fn an_unknown_name_is_refused_naming_the_declared_set() {
+            let given = BTreeMap::from([("instance".to_string(), serde_json::json!(5))]);
+            let err = resolve_params(&recipe_with_params(), &given)
+                .expect_err("unknown param must refuse");
+            let msg = format!("{err}");
+            assert!(msg.contains("instance"), "names the offender: {msg}");
+            assert!(msg.contains("instances"), "names the declared set: {msg}");
+            assert!(
+                msg.contains("how many instances to run"),
+                "carries the docs so the caller can self-correct: {msg}"
+            );
+        }
+
+        // what this catches (#433): the default-IS-the-type contract. A string
+        // where the declared default is a number must refuse — otherwise the
+        // binding publishes a value no reader can trust the shape of, and the
+        // type error surfaces far from the caller who made it.
+        #[test]
+        fn a_value_of_the_wrong_json_type_is_refused() {
+            let given = BTreeMap::from([("instances".to_string(), serde_json::json!("five"))]);
+            let err = resolve_params(&recipe_with_params(), &given)
+                .expect_err("type mismatch must refuse");
+            let msg = format!("{err}");
+            assert!(msg.contains("number"), "names the expected type: {msg}");
+            assert!(msg.contains("string"), "names the supplied type: {msg}");
+        }
+
+        // what this catches (#433): a parameterless recipe (every shipped one
+        // today) refusing ANY override — and saying so plainly rather than
+        // implying a declared set that doesn't exist.
+        #[test]
+        fn a_parameterless_recipe_refuses_any_override_plainly() {
+            let bare = ExperienceRecipe::from_json(
+                r#"{ "purpose": "bench/bare", "regions": [], "affordances": [] }"#,
+            )
+            .expect("bare recipe parses");
+            assert!(
+                resolve_params(&bare, &BTreeMap::new())
+                    .expect("no params, no overrides — fine")
+                    .is_empty()
+            );
+            let err = resolve_params(
+                &bare,
+                &BTreeMap::from([("anything".to_string(), serde_json::json!(1))]),
+            )
+            .expect_err("override on a parameterless recipe must refuse");
+            assert!(
+                format!("{err}").contains("NO parameters"),
+                "says the recipe declares nothing: {err}"
+            );
+        }
+
+        // what this catches (#433): resolve_recipe honoring the registry's
+        // later-wins-by-purpose law. An overlay file re-declaring a shipped
+        // purpose must be the one whose param decls govern the spawn — if the
+        // embedded copy won, authored param additions would silently not exist.
+        #[test]
+        fn resolve_recipe_returns_the_overlay_copy_when_purposes_collide() {
+            let overlay = tempfile::tempdir().expect("tempdir");
+            std::fs::write(
+                overlay.path().join("chat.json"),
+                r#"{
+                    "purpose": "chat",
+                    "regions": [],
+                    "affordances": [],
+                    "params": { "topic": { "default": "open", "doc": "what this chat is for" } }
+                }"#,
+            )
+            .expect("write overlay chat");
+            let resolved = resolve_recipe("chat", overlay.path())
+                .expect("shipped purpose still resolves");
+            assert!(
+                resolved.params.contains_key("topic"),
+                "the OVERLAY copy (with its param decls) must win, got params: {:?}",
+                resolved.params.keys().collect::<Vec<_>>()
+            );
+        }
     }
 }

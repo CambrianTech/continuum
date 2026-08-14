@@ -1102,8 +1102,16 @@ impl ActionCommand for BenchmarkDispatch {
                     .into(),
             )
         })?;
+        // Empty params = the recipe's declared defaults (#433). Threading the
+        // run's REAL targeting (suite/instances/team/budget) through here is
+        // the remaining #433 slice for dispatch — until then the binding
+        // carries the defaults honestly rather than nothing.
         let room = crate::modules::activity::spawn_activity_room(
-            &airc, &room_name, &bench_recipe, None,
+            &airc,
+            &room_name,
+            &bench_recipe,
+            None,
+            &Default::default(),
         )
         .await?;
 

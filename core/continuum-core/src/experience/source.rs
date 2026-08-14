@@ -206,11 +206,20 @@ impl RecipeExperienceSource {
     /// malformed overlay recipe is an ERROR naming the file, not a silent
     /// skip — the author believes it is live.
     pub fn known_purposes(dir: &std::path::Path) -> Result<Vec<String>, RecipeLoadError> {
+        Ok(Self::known_recipes(dir)?.into_iter().map(|r| r.purpose).collect())
+    }
+
+    /// The FULL known recipe set — embedded floor plus the disk overlay, in
+    /// registry order (embedded first, overlay after, so later-wins-by-purpose
+    /// resolution can be applied by any consumer). `activity/spawn` reads
+    /// this to resolve a recipe's PARAM declarations (#433), not just its
+    /// purpose — the same union the projection serves, so what validates is
+    /// what resolves.
+    pub fn known_recipes(
+        dir: &std::path::Path,
+    ) -> Result<Vec<ExperienceRecipe>, RecipeLoadError> {
         let overlay = Self::load_dir(dir)?;
-        Ok(Self::embedded()
-            .map(|r| r.purpose)
-            .chain(overlay.into_iter().map(|r| r.purpose))
-            .collect())
+        Ok(Self::embedded().chain(overlay).collect())
     }
 
     /// The node's RESIDENT roles — the roster as recipe data (#430). Read from

@@ -24,4 +24,15 @@ recipe: string,
  * hope that whoever fills it in spells a uuid correctly, and nothing rejects
  * `"the benchmark one"` ([[uuids-are-not-strings-and-never-hand-drawn]]).
  */
-parent?: string, };
+parent?: string, 
+/**
+ * The RESOLVED parameters this room was spawned with (#433) — caller
+ * overrides merged over the recipe's declared defaults, validated at
+ * spawn. On the wall so the room is SELF-DESCRIBING: a citizen, a
+ * renderer, or a grader reads WHAT this room is parameterized to do from
+ * the same pipe as everything else — no side-channel run files
+ * (BENCHMARKS-ARE-ADAPTERS law). Empty for parameterless recipes, and
+ * absent on bindings published before #433 (serde default keeps them
+ * readable).
+ */
+params?: Record<string, unknown>, };
