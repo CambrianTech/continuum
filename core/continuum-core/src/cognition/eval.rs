@@ -1575,6 +1575,12 @@ pub struct EvalTaskResult {
 /// Proctored Exam Session exists to make impossible.
 /// [[proctored-exam-session-dependable-benchmark]] [[benchmark-needs-its-own-serving-lane]]
 #[derive(Debug, Clone, Serialize, TS)]
+// `#[ts(export)]` for the same reason as `EvalTask` above: this struct is a field of
+// the exported result (`infra_unavailable`), so ts-rs emits `bindings/InfraUnavailable.ts`
+// on every build regardless — a derive without an export left that file an UNTRACKED
+// orphan that regenerated forever (audit card #424). Exporting explicitly makes the
+// emission intentional and the binding a tracked sibling of `bindings/EvalTask.ts`.
+#[ts(export)]
 pub struct InfraUnavailable {
     /// Human cause: which axis broke (not-ready / connect-refused / not-the-served-model
     /// / compute-error / stream-idle timeout), naming the task it broke on. Display-only
