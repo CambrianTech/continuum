@@ -242,6 +242,11 @@ crate::action_command! {
         // command-seeded message is put TO the persona, so we withhold the silent-PASS
         // hatch — the same exam-is-directed measurement control the eval driver documents
         // (a structural harness fact fed to the mind, never a filter on her output).
+        // Per-frame causal thread: this surface executes ONE settle step per
+        // invocation, so the chain starts fresh each frame. Cross-frame
+        // CausedBy linking (frame N+1's act → frame N's) needs the chain to
+        // live with the frame session — CAUSAL-MEMORY-GRAPH.md follow-on.
+        let chain = crate::cognition::act_observe::ActChain::new();
         let (step, metrics) = crate::cognition::act_observe::settle_step(
             &cycle,
             burst,
@@ -250,6 +255,7 @@ crate::action_command! {
             crate::cognition::workspace::TurnFraming::message(true),
             // One-shot directed tick: a fresh ask, so fuller grounding.
             crate::cognition::workspace::Situation::FreshContext,
+            &chain,
         )
         .await;
 

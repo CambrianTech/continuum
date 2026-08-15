@@ -38,7 +38,7 @@ mod types;
 pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
-pub use apply::apply_act;
+pub use apply::{apply_act, ActChain};
 
 mod settle;
 pub use settle::{drive_to_settle, settle_step};
@@ -312,6 +312,60 @@ mod tests {
         }
     }
 
+    // what this catches: the causal spine's first production wiring (task #447,
+    // CAUSAL-MEMORY-GRAPH.md slice A). Two acts driven through ONE chain must
+    // leave a `CausedBy` edge from the second act's engram to the first's —
+    // recorded at the write site, queryable through the admission store's graph.
+    // A fresh chain (a new turn) must NOT link back to the previous turn's acts.
+    // Regression guard for the zero-production-callers state EngramGraph shipped
+    // in: this pins that acts now populate the graph.
+    #[tokio::test]
+    async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok\n".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+        let room = Uuid::new_v4();
+        let chain = ActChain::new();
+
+        // Act 1 — starts the chain: no predecessor, so no edge.
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        let first = chain.prior().expect("first act admitted onto the chain");
+        assert!(
+            adm.engram_neighbors(&first).is_empty(),
+            "the chain's first act has no predecessor to point at"
+        );
+
+        // Act 2 — a DIFFERENT call (the repeat guard short-circuits identical
+        // batches; a chain is made of distinct steps).
+        let second_call = ToolCall {
+            id: "call-2".into(),
+            name: "code/read".into(),
+            input: serde_json::json!({ "file_path": "src/main.rs" }),
+        };
+        acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain).await);
+        let second = chain.prior().expect("second act admitted onto the chain");
+        assert_ne!(first, second, "two acts, two engrams");
+
+        let edges = adm.engram_neighbors(&second);
+        assert!(
+            edges.iter().any(|e| e.target == first
+                && e.kind == crate::persona::engram_graph::EdgeKind::CausedBy),
+            "the second act must carry a CausedBy edge to its predecessor — \
+             the `because` clause as structure, not prose; got {edges:?}"
+        );
+
+        // A NEW chain (next turn) must not reach back across the boundary.
+        let next_turn = ActChain::new();
+        assert!(
+            next_turn.prior().is_none(),
+            "a fresh chain starts empty — edges can never cross turns by construction"
+        );
+    }
+
     /// Unwrap the typed acts of an `Acted` outcome (panics on NoHands/ExecutorError) —
     /// the typed sibling of the old `.expect("acted")` on the `Option<String>`.
     fn acts_of(outcome: ActOutcome) -> Vec<Observation> {
@@ -365,7 +419,7 @@ mod tests {
             .with_acting(body(exec.clone(), adm.clone()));
 
         let room = Uuid::new_v4();
-        let acts = match apply_act(&cycle, &[tool_call()], "check the math", room).await {
+        let acts = match apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await {
             ActOutcome::Acted { acts } => acts,
             other => panic!("expected Acted, got {other:?}"),
         };
@@ -417,7 +471,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8);
         assert!(
             matches!(
-                apply_act(&cycle, &[tool_call()], "try", Uuid::new_v4()).await,
+                apply_act(&cycle, &[tool_call()], "try", Uuid::new_v4(), &ActChain::new()).await,
                 ActOutcome::NoHands
             ),
             "no hands → NoHands, never a fabricated success"
@@ -434,7 +488,7 @@ mod tests {
             .with_acting(body(Arc::new(FailingExecutor), adm.clone()));
         assert!(
             matches!(
-                apply_act(&cycle, &[tool_call()], "run", Uuid::new_v4()).await,
+                apply_act(&cycle, &[tool_call()], "run", Uuid::new_v4(), &ActChain::new()).await,
                 ActOutcome::ExecutorError { .. }
             ),
             "a batch-level failure surfaces as ExecutorError, distinct from NoHands"
@@ -764,6 +818,7 @@ mod tests {
             false,
             TurnFraming::ambient(),
             Situation::FreshContext,
+            &ActChain::new(),
         )
         .await;
         assert!(
@@ -782,6 +837,7 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
+            &ActChain::new(),
         )
         .await;
         assert!(
@@ -1042,7 +1098,7 @@ mod tests {
         let room = Uuid::new_v4();
 
         // First act genuinely runs; its result lands in working memory.
-        let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
+        let first = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
         assert_eq!(
             first[0].call.name, "code/run",
             "first act names the tool it ran"
@@ -1059,7 +1115,7 @@ mod tests {
 
         // Second, byte-identical act: already satisfied → short-circuit, no re-run.
         // The typed act's OUTPUT carries the nudge and the STATUS names the demotion.
-        let second = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
+        let second = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
         assert!(
             matches!(second[0].status, ActStatus::AlreadySatisfied { .. }),
             "the second identical act is typed AlreadySatisfied, not Executed"
@@ -1079,7 +1135,7 @@ mod tests {
         // than the second — the proprioception climbs rather than repeating byte-identical
         // text. Without this, static-nudge spam evicts the useful receipt from the bounded
         // recency window and a greedy (temp-0) model re-emits the identical call forever.
-        let third = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room).await);
+        let third = acts_of(apply_act(&cycle, &[tool_call()], "check the math", room, &ActChain::new()).await);
         let third_nudge = third[0].output.result.content.clone();
         assert_ne!(
             second_nudge, third_nudge,
@@ -1251,7 +1307,7 @@ mod tests {
         };
 
         // First orientation genuinely runs; its receipt lands in working memory.
-        acts_of(apply_act(&cycle, &[list], "orient", room).await);
+        acts_of(apply_act(&cycle, &[list], "orient", room, &ActChain::new()).await);
         assert_eq!(
             exec.results.lock().unwrap().len(),
             1,
@@ -1259,7 +1315,7 @@ mod tests {
         );
 
         // Second, DIFFERENT-args orientation this concern → demoted, no re-run.
-        let second = acts_of(apply_act(&cycle, &[help], "orient again", room).await);
+        let second = acts_of(apply_act(&cycle, &[help], "orient again", room, &ActChain::new()).await);
         assert!(
             matches!(second[0].status, ActStatus::RedundantOrientation { .. }),
             "the demoted orientation is typed RedundantOrientation, not Executed"
@@ -1391,6 +1447,7 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
+            &ActChain::new(),
         )
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
@@ -1414,6 +1471,7 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
+            &ActChain::new(),
         )
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
@@ -1459,6 +1517,7 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
+            &ActChain::new(),
         )
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
@@ -1488,6 +1547,7 @@ mod tests {
             true,
             TurnFraming::ambient(),
             Situation::FreshContext,
+            &ActChain::new(),
         )
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));

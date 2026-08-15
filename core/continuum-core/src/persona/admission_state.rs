@@ -164,6 +164,13 @@ pub struct AdmissionState {
     /// per-token), so the cost is nil. See
     /// [[eval-mutates-persona-lift-needs-isolation]].
     persistence: RwLock<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    /// The engram edge graph — causal + associative structure over the
+    /// engrams this store admits (docs/cognition/CAUSAL-MEMORY-GRAPH.md,
+    /// docs/cognition/BELIEF-JUSTIFICATION-GRAPH.md). Edges are FACTS about
+    /// what happened, recorded at the write site; the graph never decides —
+    /// retrieval surfaces walk it, cognition judges. In-memory (DashMap);
+    /// sidecar durability is a follow-on slice.
+    graph: crate::persona::engram_graph::EngramGraph,
     /// The persona this store BELONGS to (its own user id). Set once at spawn via
     /// [`set_owner_id`](Self::set_owner_id); `None` for bare/test states. Used to
     /// recognize the persona's OWN authored chat engrams (`Chat` origin whose
@@ -221,6 +228,7 @@ impl AdmissionState {
             recall_metadata,
             persistence: RwLock::new(persistence),
             owner_id: RwLock::new(None),
+            graph: crate::persona::engram_graph::EngramGraph::new(),
         }
     }
 
@@ -265,6 +273,10 @@ impl AdmissionState {
             recall_metadata,
             persistence: RwLock::new(persistence),
             owner_id: RwLock::new(None),
+            // Edges are not yet durable — a rehydrated store starts with an
+            // empty graph and re-accumulates from live acts. Sidecar
+            // persistence is the next slice (CAUSAL-MEMORY-GRAPH.md §4).
+            graph: crate::persona::engram_graph::EngramGraph::new(),
         }
     }
 
@@ -273,6 +285,31 @@ impl AdmissionState {
     /// observe the same DashMap admission writes into.
     pub fn recall_metadata(&self) -> &Arc<crate::persona::recall_metadata::RecallMetadataRegistry> {
         &self.recall_metadata
+    }
+
+    /// Record one directed edge between two admitted engrams — a FACT about
+    /// how they relate (CausedBy, Produced, derived_from, …), written at the
+    /// site that KNOWS the relation, never inferred later. The graph never
+    /// decides anything; retrieval surfaces walk it and cognition judges
+    /// (CAUSAL-MEMORY-GRAPH.md §3c, BELIEF-JUSTIFICATION-GRAPH.md §5).
+    /// Weight 1.0: a wired structural edge is a certainty, unlike the
+    /// tuned associative kinds.
+    pub fn link_engrams(
+        &self,
+        from: Uuid,
+        to: Uuid,
+        kind: crate::persona::engram_graph::EdgeKind,
+    ) {
+        self.graph.add_edge(from, to, kind, 1.0);
+    }
+
+    /// Outbound edges of one engram — the traversal read the ledger,
+    /// thread retrieval, and the confabulation check walk.
+    pub fn engram_neighbors(
+        &self,
+        id: &Uuid,
+    ) -> Vec<crate::persona::engram_graph::EngramEdge> {
+        self.graph.neighbors(id)
     }
 
     /// Bind this store to the persona that owns it (its own user id). Called once
