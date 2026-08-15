@@ -1470,6 +1470,53 @@ const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
 const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Warn LOUD when a call's measured decode rate collapses far below the catalog
+/// row's expectation (#441, Joel 2026-08-15: "we need very good tok/sec or it's a
+/// failure. We need warnings when shit hits the fan").
+///
+/// The comparison is decode-only (`predicted_per_second` — undiluted by prefill,
+/// so a long prompt can't false-positive this) against the row's
+/// `tokens_per_second`. Both thresholds are deliberately coarse: this is a
+/// shit-hit-the-fan alarm for order-of-magnitude collapse (CPU-fallback lane,
+/// thrashing pager, contended GPU), not a perf regression tracker — a row whose
+/// estimate is merely 2× optimistic must stay silent.
+///
+/// - `MIN_SAMPLE_TOKENS`: a rate computed over a handful of tokens is noise, and
+///   warmup's first few decodes read slow; a real turn decodes far more.
+/// - `FLOOR_FRACTION`: below a quarter of expectation is a different MACHINE
+///   STATE, not variance.
+///
+/// Stateless by design — one warn per breaching call. During a genuinely
+/// degraded period that is one line per turn, which is the correct volume for
+/// "every consumer of this lane is currently waiting an eternity". Unknown model
+/// rows and rows without an expectation stay silent (no registry = no contract
+/// to breach — external/cloud adapters are not governed lanes).
+fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measured_tps: f64) {
+    const MIN_SAMPLE_TOKENS: u32 = 16;
+    const FLOOR_FRACTION: f64 = 0.25;
+    if decode_tokens < MIN_SAMPLE_TOKENS || measured_tps <= 0.0 {
+        return;
+    }
+    let Some(expected) = crate::model_registry::try_global()
+        .and_then(|r| r.model(model_id).map(|m| m.tokens_per_second as f64))
+        .filter(|e| *e > 0.0)
+    else {
+        return;
+    };
+    if measured_tps < expected * FLOOR_FRACTION {
+        tracing::warn!(
+            probe_class = "serving.throughput.degraded",
+            model = model_id,
+            measured_tps = measured_tps,
+            expected_tps = expected,
+            decode_tokens = decode_tokens,
+            "THROUGHPUT COLLAPSE: decode {measured_tps:.1} t/s vs expected {expected:.0} t/s \
+             — this lane is serving at a fraction of its catalog rate. Suspect CPU fallback \
+             (see serving.placement.cpu_fallback), pager thrash, or GPU contention (#441)."
+        );
+    }
+}
+
 /// One streamed SSE frame from an OpenAI-compatible `/v1/chat/completions` with
 /// `stream: true`. Each frame carries an incremental `delta`; `usage` arrives only
 /// on the final frame (requires `stream_options.include_usage`).
@@ -2743,6 +2790,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             decode_ms: t.predicted_ms,
             decode_tokens_per_second: t.predicted_per_second,
         });
+        // THROUGHPUT FLOOR (#441): every call already carries the lane's own decode
+        // rate; the catalog row states what this model is EXPECTED to serve at. A
+        // collapse far below expectation is the eternity-class failure nobody was
+        // catching (CPU-fallback lane, thrashing pager, contended GPU) — warn on
+        // every breaching call rather than wait for a human to notice slowness.
+        if let Some(t) = &timing {
+            warn_if_decode_collapsed(model, t.decode_tokens, t.decode_tokens_per_second);
+        }
 
         Ok(TextGenerationResponse {
             text,
