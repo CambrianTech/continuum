@@ -178,12 +178,13 @@ impl RoomBoardReader for airc_lib::Airc {
 /// Persona-bound source reading the current room's whole work board.
 pub struct RoomBoardSource {
     persona_id: uuid::Uuid,
-    /// The room whose board this source grounds. The reader answers for the
-    /// persona's airc connection's room; this names it explicitly so delivery
-    /// can be scoped to the TURN'S context (the room gate in `deliver`). Bound
-    /// at assembly from the room the persona joined at bootstrap
-    /// (`identity.default_room`). `None` = unscoped (legacy/test construction):
-    /// deliver regardless of turn context, exactly the pre-gate behavior.
+    /// FALLBACK room for UNSTAMPED contexts only (#443). A context-stamped turn
+    /// reads the board of ITS OWN room (turn-parametric — see the room
+    /// resolution in `deliver`); this bound id answers only when the context
+    /// carries no room at all (background consolidation, legacy construction).
+    /// Bound at assembly from the room the persona joined at bootstrap
+    /// (`identity.default_room`). `None` = unscoped: an unstamped delivery
+    /// reads the scope's current room, exactly the pre-gate behavior.
     room_id: Option<uuid::Uuid>,
     reader: Arc<dyn RoomBoardReader>,
 }
@@ -304,19 +305,45 @@ impl RagSource for RoomBoardSource {
         if ctx.persona_id != self.persona_id {
             return Self::empty();
         }
-        // Room-scoped: a context-stamped turn in a DIFFERENT context than the
-        // room this board belongs to gets nothing — room A's kanban must not
-        // ground a turn in room B, nor a synthetic context (the eval fork's nil
-        // room). The ONE shared gate (`room_scope_allows`) probes every abstain
-        // with both rooms named, so a mis-binding shows in the log instead of a
-        // silent blank grounding block. [[identity-context-session-three-axes]]
-        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
-            return Self::empty();
-        }
+        // Room resolution — TURN-PARAMETRIC (#443, measured live 2026-08-15).
+        // This source used to be BOUND to the persona's bootstrap room and the
+        // gate abstained on any other stamped room — so a turn in a per-run
+        // bench room took a WORK turn with NO board surface: the kickoff said
+        // "card X is claimed for you" while the kanban block stayed silent
+        // (every turn of the round fired `rag.room_gate.abstain` with
+        // bound=academy, turn=bench-room). The board she needs is the board OF
+        // THE ROOM SHE IS STANDING IN, so the stamped turn room WINS; the
+        // bound room is only the fallback for UNSTAMPED contexts (background
+        // consolidation, legacy construction — pre-gate behavior, unchanged).
+        //
+        // The invariants the old gate protected, restated stronger:
+        //  - Cross-room leakage is impossible BY CONSTRUCTION: the reader
+        //    refuses (`NotSubscribed`, fail-loud) any room this persona's OWN
+        //    airc scope has not joined — enforced by the store, not by whoever
+        //    remembered to bind correctly.
+        //  - The eval fork's SYNTHETIC nil room still gets NOTHING, ever — an
+        //    exam context must not see any board (the exam-bleed pin), and it
+        //    must not fall back to the bound room either.
+        let turn_room = ctx.airc_room.as_ref().map(|r| r.as_uuid());
+        let effective_room = match turn_room {
+            Some(t) if t.is_nil() => {
+                crate::probe!(
+                    class = "rag.room_gate.abstain",
+                    source = SOURCE_ID,
+                    bound_room = ?self.room_id,
+                    turn_room = %t,
+                    persona_id = %ctx.persona_id,
+                    "synthetic nil-room context — no board, and no fallback to the bound room"
+                );
+                return Self::empty();
+            }
+            Some(t) => Some(t),
+            None => self.room_id,
+        };
 
-        // One airc call (the current room's complete board). Failure is
+        // One airc call (the effective room's complete board). Failure is
         // non-fatal — empty delivery, cognition stays up (good-citizen doctrine).
-        let board = match self.reader.work_board(self.room_id).await {
+        let board = match self.reader.work_board(effective_room).await {
             Ok(b) => b,
             Err(err) => {
                 tracing::warn!(
@@ -755,6 +782,10 @@ mod tests {
         /// alias store. Empty by default — an owner with no published name
         /// renders as its short id, the honest degradation.
         names: std::collections::HashMap<airc_core::PeerId, String>,
+        /// The `room` param of the LAST `work_board` call — how the
+        /// turn-parametric tests (#443) assert WHICH room's board was read,
+        /// since the stub itself serves one board regardless.
+        last_room: Mutex<Option<Option<uuid::Uuid>>>,
     }
 
     impl StubReader {
@@ -763,6 +794,7 @@ mod tests {
                 board,
                 fail: Mutex::new(false),
                 names: std::collections::HashMap::new(),
+                last_room: Mutex::new(None),
             }
         }
         fn with_name(mut self, peer: airc_core::PeerId, name: &str) -> Self {
@@ -776,7 +808,8 @@ mod tests {
 
     #[async_trait]
     impl RoomBoardReader for StubReader {
-        async fn work_board(&self, _room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
+        async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
+            *self.last_room.lock().unwrap() = Some(room);
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }
@@ -1141,7 +1174,15 @@ mod tests {
     // work/claim invitations; the SAME room still delivers; an UNSTAMPED ctx
     // (None — background/legacy) keeps pre-gate behavior.
     #[tokio::test]
-    async fn room_bound_board_abstains_outside_its_room() {
+    async fn board_reads_are_turn_parametric_and_exam_contexts_get_nothing() {
+        // what this catches (#443, the round-killer's layer 6): a stamped turn
+        // must read the board OF ITS OWN ROOM — a citizen in a per-run bench
+        // room used to hit the bound-room abstain and take a work turn with NO
+        // board surface. Pins: (1) same-room turn reads the turn room; (2) a
+        // turn in a DIFFERENT room reads THAT room, never the bound one; (3)
+        // the eval fork's synthetic nil context gets NOTHING and never falls
+        // back to the bound room (the exam-bleed pin, unchanged); (4) an
+        // unstamped ctx keeps legacy behavior — bound-room fallback.
         let home = uuid::Uuid::new_v4();
         let p = persona();
         let reader = Arc::new(StubReader::new(snapshot(vec![card(
@@ -1149,9 +1190,10 @@ mod tests {
             CardState::Open,
             None,
         )])));
-        let source = RoomBoardSource::new(p, reader).for_room(home);
+        let source = RoomBoardSource::new(p, Arc::clone(&reader) as Arc<dyn RoomBoardReader>)
+            .for_room(home);
 
-        // Turn stamped with the SAME room → delivers.
+        // (1) Turn stamped with the SAME room → delivers, read keyed on it.
         let same = RagContext::for_persona_in_room(p, 1_000, home);
         assert!(
             !source
@@ -1159,19 +1201,32 @@ mod tests {
                 .await
                 .items
                 .is_empty(),
-            "same-room turn must still receive the board"
+            "same-room turn must receive the board"
         );
-        // Turn stamped with a DIFFERENT room → abstains.
-        let other = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::new_v4());
+        assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(home)));
+
+        // (2) Turn stamped with a DIFFERENT room → delivers THAT room's board
+        // (the reader is asked for the TURN room; production's reader refuses
+        // rooms the scope has not joined, which is the leak guarantee).
+        let bench = uuid::Uuid::new_v4();
+        let other = RagContext::for_persona_in_room(p, 1_000, bench);
         assert!(
-            source
+            !source
                 .deliver(&other, 500, ResolutionPreference::Raw)
                 .await
                 .items
                 .is_empty(),
-            "another room's turn must NOT receive this room's board"
+            "a bench-room turn must receive a board — the bench room's own"
         );
-        // The eval fork's synthetic nil context → abstains (the exam-bleed fix).
+        assert_eq!(
+            *reader.last_room.lock().unwrap(),
+            Some(Some(bench)),
+            "the read must be keyed on the TURN room, never the bound one"
+        );
+
+        // (3) The eval fork's synthetic nil context → NOTHING, and the reader
+        // is never consulted (no bound-room fallback for an exam).
+        *reader.last_room.lock().unwrap() = None;
         let exam = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::nil());
         assert!(
             source
@@ -1179,9 +1234,15 @@ mod tests {
                 .await
                 .items
                 .is_empty(),
-            "a synthetic exam context must NOT receive the room board"
+            "a synthetic exam context must NOT receive any board"
         );
-        // Unstamped ctx (None) → pre-gate behavior (delivers).
+        assert_eq!(
+            *reader.last_room.lock().unwrap(),
+            None,
+            "an exam context must not even reach the reader"
+        );
+
+        // (4) Unstamped ctx (None) → pre-gate behavior: bound-room fallback.
         let unstamped = RagContext::for_persona(p, 1_000);
         assert!(
             !source
@@ -1191,5 +1252,6 @@ mod tests {
                 .is_empty(),
             "an unstamped ctx keeps legacy behavior"
         );
+        assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(home)));
     }
 }
