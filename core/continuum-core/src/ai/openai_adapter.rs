@@ -2567,7 +2567,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                             // in-flight generations that proved it healthy.
                             use crate::inference::llama_server::NeverStartedClass;
                             match crate::inference::llama_server::classify_never_started_timeout(
-                                crate::inference::llama_server::ms_since_real_decode(),
+                                crate::inference::llama_server::ms_since_real_work(),
                                 idle.as_millis() as u64,
                             ) {
                                 NeverStartedClass::WedgeEvidence => {
@@ -2665,6 +2665,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         if p.processed > last_prefill_processed {
                             last_prefill_processed = p.processed;
                             last_progress = Instant::now();
+                            // L9: prefill advance is LANE liveness, not just request
+                            // liveness — the health heartbeat and the never-started
+                            // classifier both read this stamp via ms_since_real_work.
+                            if local_lane {
+                                crate::inference::llama_server::note_real_prefill_progress();
+                            }
                             let _ = sink.send(GenerationChunk::Prefill {
                                 processed: p.processed,
                                 total: p.total,
