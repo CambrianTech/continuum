@@ -2551,15 +2551,50 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             let next = tokio::time::timeout(idle, byte_stream.next())
                 .await
                 .map_err(|_| {
+                    let started = last_progress > stream_opened;
                     if local_lane {
-                        crate::inference::llama_server::note_real_decode_failure();
+                        if started {
+                            // Started-then-stopped is per-slot evidence about OUR
+                            // generation — always counts toward the relaunch threshold.
+                            crate::inference::llama_server::note_real_decode_failure();
+                        } else {
+                            // Never-started is ambiguous: dead backend vs oversubscribed
+                            // queue. Judge it by the lane's own delivery record — if real
+                            // tokens came out for ANYONE while we waited, the lane is
+                            // provably alive and this is starvation, not a wedge. Stamping
+                            // starvation as wedge evidence relaunched a healthy busy lane
+                            // every 2 minutes (bench-hard-rs, 2026-08-15) and killed the
+                            // in-flight generations that proved it healthy.
+                            use crate::inference::llama_server::NeverStartedClass;
+                            match crate::inference::llama_server::classify_never_started_timeout(
+                                crate::inference::llama_server::ms_since_real_decode(),
+                                idle.as_millis() as u64,
+                            ) {
+                                NeverStartedClass::WedgeEvidence => {
+                                    crate::inference::llama_server::note_real_decode_failure();
+                                }
+                                NeverStartedClass::Starved => {
+                                    // The capacity shortfall stays LOUD on its own channel
+                                    // (#234 QoS reads this) — it just stops masquerading as
+                                    // lane death.
+                                    crate::probe!(
+                                        class = "inference.queue_starved",
+                                        provider = self.config.name.as_str(),
+                                        waited_s = idle.as_secs(),
+                                        "never-started timeout on a lane that delivered real \
+                                         tokens within the wait — oversubscription, not wedge \
+                                         evidence; no real-turn failure stamped",
+                                    );
+                                }
+                            }
+                        }
                     }
                     format!(
                         "{}: inference lane went silent for {}s (no bytes at all) — {}; \
                          refusing to wait on a dead stream",
                         self.config.name,
                         idle.as_secs(),
-                        if last_progress > stream_opened {
+                        if started {
                             "the slot HAD started our work and then stopped mid-stream, \
                              so the backend is stuck or dead"
                         } else {
