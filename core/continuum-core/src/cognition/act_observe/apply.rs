@@ -71,11 +71,39 @@ fn short_circuit_acts(calls: &[ToolCall], nudge: &str, status: ActStatus) -> Vec
         .collect()
 }
 
+/// One settle chain's causal thread — owned by the DRIVER of the chain
+/// (`drive_to_settle`, or one turn-frame), passed by reference through
+/// `settle_step` into `apply_act`. Holds the engram id of the most recently
+/// ADMITTED act observation so the next act in the same chain can carry a
+/// `CausedBy` edge to it (CAUSAL-MEMORY-GRAPH.md §3a). One concern, one
+/// chain; the driver drops it when the turn settles, so an edge can never
+/// cross turns or rooms by construction — the wire is the scope, never an
+/// inference over timestamps.
+#[derive(Default)]
+pub struct ActChain(std::sync::Mutex<Option<Uuid>>);
+
+impl ActChain {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The chain's latest admitted act engram — the CAUSE of whatever act
+    /// comes next in this chain. `None` until the first admission.
+    pub fn prior(&self) -> Option<Uuid> {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn advance(&self, id: Uuid) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+    }
+}
+
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
     intent: &str,
     room_id: Uuid,
+    chain: &ActChain,
 ) -> ActOutcome {
     // no hands → cannot act (and tools were never offered)
     let Some(body) = cycle.acting() else {
@@ -550,6 +578,27 @@ pub async fn apply_act(
             // durable knowledge.
             body.admission
                 .set_recall_salience(engram.id, PROPRIOCEPTION_RECALL_SALIENCE);
+            // The causal spine (CAUSAL-MEMORY-GRAPH.md): this act was decided by
+            // a deliberation that perceived the chain's previous act result, so
+            // wire the CausedBy edge HERE, where the relation is known — the
+            // `because` clause as structure. A fact about what happened, never
+            // a rail on what she does next.
+            if let Some(prior) = chain.prior() {
+                body.admission.link_engrams(
+                    engram.id,
+                    prior,
+                    crate::persona::engram_graph::EdgeKind::CausedBy,
+                );
+                crate::probe!(
+                    class = "engram.edge.caused_by",
+                    persona = %body.persona_name,
+                    room_id = %room_id,
+                    from = %engram.id,
+                    to = %prior,
+                    "act chained to its predecessor in the causal memory graph"
+                );
+            }
+            chain.advance(engram.id);
         }
         Ok(_) => {} // Drop (dedup) — nothing admitted to weight.
         Err(e) => {

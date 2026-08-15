@@ -43,6 +43,10 @@ pub async fn drive_to_settle(
 ) -> SettleOutcome {
     let burst: Burst = burst.into();
     let mut acts = 0usize;
+    // This turn's causal thread: each admitted act observation becomes the
+    // CausedBy target of the next act in the SAME chain — the driver owns the
+    // chain, so an edge can never cross turns or rooms (CAUSAL-MEMORY-GRAPH.md).
+    let chain = super::apply::ActChain::new();
     // The turn's investigation trail (see `SettleOutcome::touched_paths`).
     let mut touched: Vec<String> = Vec::new();
     // Fold each tick's deliberation cost in, so the settled outcome reports the
@@ -158,8 +162,16 @@ pub async fn drive_to_settle(
             );
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
-        let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), room_id, may_act, framing, situation).await;
+        let (step, step_metrics) = settle_step(
+            cycle,
+            burst.clone(),
+            room_id,
+            may_act,
+            framing,
+            situation,
+            &chain,
+        )
+        .await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -388,6 +400,7 @@ pub async fn settle_step(
     may_act: bool,
     framing: TurnFraming,
     situation: Situation,
+    chain: &super::apply::ActChain,
 ) -> (SettleStep, Option<TurnMetrics>) {
     let burst: Burst = burst.into();
     // Snapshot the burst's PEER turns before the workspace consumes it — the
@@ -428,7 +441,7 @@ pub async fn settle_step(
                 // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
                 // identical to the old `Some`/`None`, but `ExecutorError` is now
                 // distinguishable for a future backstop.
-                if apply_act(cycle, &calls, &intent, room_id)
+                if apply_act(cycle, &calls, &intent, room_id, chain)
                     .await
                     .produced_an_act()
                 {

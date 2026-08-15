@@ -84,6 +84,19 @@ pub enum EdgeKind {
     /// produced. Used by the outcome-linked salience boost in
     /// algorithm 4.
     TaskOutcome,
+
+    /// Act-engram → the engram of what directly triggered it: the
+    /// predecessor act in the same settle chain, the inbound message,
+    /// or the work-card kickoff. The causal spine of the memory graph
+    /// (docs/cognition/CAUSAL-MEMORY-GRAPH.md) — the `because` clause
+    /// as structure instead of archived prose. Wired at the act write
+    /// site, never inferred after the fact.
+    CausedBy,
+
+    /// Act-engram → engram/handle of what the act created: an artifact
+    /// write, a posted message, a card state change. The forward half
+    /// of the causal spine; TaskOutcome remains the start→done pairing.
+    Produced,
 }
 
 // ─── EngramEdge ─────────────────────────────────────────────────────
@@ -426,6 +439,8 @@ mod tests {
             EdgeKind::RecallCoOccurrence,
             EdgeKind::ConversationalReply,
             EdgeKind::TaskOutcome,
+            EdgeKind::CausedBy,
+            EdgeKind::Produced,
         ] {
             let json = serde_json::to_string(&kind).expect("serialize");
             let decoded: EdgeKind = serde_json::from_str(&json).expect("deserialize");
