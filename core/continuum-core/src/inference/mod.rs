@@ -55,6 +55,7 @@ pub mod ort_providers;
 pub mod placement_capture;
 pub mod recipe_budget;
 pub mod throughput_expectation;
+pub mod placement_watch;
 pub mod vendored;
 pub mod vision_sidecar;
 pub mod wedge;

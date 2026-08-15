@@ -1526,6 +1526,11 @@ pub struct LlamaServerProcess {
     /// polled by the serving daemon. Live lane only — an ephemeral lane has no daemon
     /// watching it and tears down its own process, so its watcher would report into a void.
     wedge: Option<crate::inference::wedge::WedgeFlag>,
+    /// The engine's own offload banner (`offloaded X/Y layers to GPU`), recorded by the
+    /// same stderr pump — the READBACK half of the placement contract (#441). Every lane
+    /// carries it (live and ephemeral): a CPU-fallback eval lane silently corrupts a
+    /// benchmark's wall-clock exactly like a live one starves citizens.
+    offload: crate::inference::placement_watch::OffloadReport,
 }
 
 impl LlamaServerProcess {
@@ -1545,6 +1550,7 @@ impl LlamaServerProcess {
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
+            offload: crate::inference::placement_watch::OffloadReport::new(),
         }
     }
 
@@ -1571,6 +1577,7 @@ impl LlamaServerProcess {
             // No serving daemon watches an ephemeral lane, and its owner tears the process
             // down when the eval ends — a wedge report would have no consumer.
             wedge: None,
+            offload: crate::inference::placement_watch::OffloadReport::new(),
         }
     }
 
@@ -2455,9 +2462,18 @@ impl LlamaServerControl for LlamaServerProcess {
         // `progress = 1.10` is wedged; the decode heartbeat can't see it (the OTHER slots
         // still decode, so the lane reads healthy) — which is how one slot burned four
         // hours on 2026-08-05. The watcher only RAISES; the serving daemon reaps.
+        // The same pump also records the engine's OFFLOAD BANNER — the readback half of
+        // the placement contract (#441): the governor planned a placement, the banner is
+        // what the engine actually allocated, and serve() compares them after readiness.
+        let offload_watch = Box::new(super::placement_watch::OffloadWatch::new(
+            self.offload.clone(),
+        ));
         let watch: Box<dyn super::child_log::LineWatch> = match self.wedge.clone() {
-            Some(flag) => Box::new(super::wedge::WedgeWatch::new(flag)),
-            None => Box::new(()),
+            Some(flag) => Box::new(super::placement_watch::ChainWatch(
+                Box::new(super::wedge::WedgeWatch::new(flag)),
+                offload_watch,
+            )),
+            None => offload_watch,
         };
         match (child.stderr.take(), log_path) {
             (Some(stderr), Some(path)) => super::child_log::drain_capped(stderr, path, watch),
@@ -2533,6 +2549,45 @@ impl LlamaServerControl for LlamaServerProcess {
         *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
         self.wait_ready().await?;
+        // PLACEMENT CONTRACT READBACK (#441, Joel 2026-08-15: "models that got fucked by
+        // serving and are on cpu. You never catch it and we are waiting an eternity").
+        // The governor planned a placement; the engine's own load banner says what it
+        // ACTUALLY allocated. A GPU-placement lane that offloaded ZERO layers is the
+        // whole model on CPU — it answers /health, decodes at a tenth of the planned
+        // speed, and nothing else in the system can see the difference. This is a lease
+        // violation, not a tuning note: probe LOUD so the daemon/operator respond,
+        // never wait for a human to notice the eternity. (Partial offload is legit —
+        // MoE cold-expert `-ot` splits offload a subset by design; only 0-of-N on a
+        // GPU-intent lane is unambiguous.) The watcher only REPORTS; lifecycle stays
+        // with the daemon, same doctrine as the wedge flag.
+        if target.placement != LanePlacement::Cpu {
+            match self.offload.get() {
+                Some((0, total)) => {
+                    crate::probe!(
+                        class = "serving.placement.cpu_fallback",
+                        port = port,
+                        model = target.model_id(),
+                        total_layers = total,
+                        "PLACEMENT VIOLATION: GPU-placement lane offloaded 0/{total} layers \
+                         — the model is running ON CPU. Throughput will be an order of \
+                         magnitude below plan; every consumer of this lane is degraded (#441).",
+                    );
+                }
+                Some(_) => {}
+                None => {
+                    // No banner observed is a different fact from "reported 0" — an
+                    // engine build that never prints it would otherwise read as
+                    // healthy forever, which is exactly the silent class this exists
+                    // to kill. Say so once, quietly.
+                    tracing::info!(
+                        probe_class = "serving.placement.unreported",
+                        port = port,
+                        "no offload banner observed by readiness — placement readback \
+                         unavailable for this lane (#441)"
+                    );
+                }
+            }
+        }
         // GENOME DORMANCY (glass-boxed 2026-07-23): llama.cpp loads every
         // `--lora` at scale 1.0 — ALL ACTIVE, superimposed. Four personas'
         // adapters blended at full scale produced the degenerate-decode plague

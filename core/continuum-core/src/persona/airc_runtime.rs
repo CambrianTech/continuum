@@ -563,6 +563,22 @@ impl PersonaAircRuntime {
             let handle = tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
                 let mut last: Option<airc_lib::AgentAvailabilityState> = None;
+                // CLAIM RENEWAL RUNS ON ITS OWN, SLOWER CADENCE (Joel 2026-08-15:
+                // "Heartbeat needs fix. That is no good"). Presence needs the 60s
+                // pulse — roster liveness IS a fast question. A 30-minute claim
+                // lease does not: renewing it every presence tick emitted ~30× the
+                // events one lease needs, and that churn crossed the wire to EVERY
+                // subscriber on every node. Renew at TTL/3 — derived from the one
+                // lease constant, never a second magic number — which still gives a
+                // healthy citizen three renewal opportunities per lease. The stamp
+                // is only advanced on a fully-clean pass, so any roster-read or
+                // per-card failure falls back to retrying on the NEXT 60s tick
+                // (exactly the old cadence) until clean — degraded mode is the old
+                // behavior, never a wider gap.
+                let renewal_period = std::time::Duration::from_millis(
+                    crate::modules::work::DEFAULT_CLAIM_TTL_MS / 3,
+                );
+                let mut last_clean_renewal: Option<std::time::Instant> = None;
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
@@ -631,6 +647,11 @@ impl PersonaAircRuntime {
                     //
                     // Renewal is per-card WARN-and-continue: a failed renewal degrades
                     // to exactly the old lapse, and never takes down presence.
+                    let renewal_due = last_clean_renewal
+                        .map_or(true, |t| t.elapsed() >= renewal_period);
+                    if !renewal_due {
+                        continue;
+                    }
                     match hb_airc
                         .work_roster_status(airc_lib::WorkRosterQuery::default())
                         .await
@@ -644,6 +665,7 @@ impl PersonaAircRuntime {
                                 .map(|r| r.active_claims)
                                 .unwrap_or_default();
                             let mut renewed = 0usize;
+                            let mut failed = 0usize;
                             for card in &mine {
                                 let Some(claim_id) = card.claim_id else {
                                     continue;
@@ -656,6 +678,7 @@ impl PersonaAircRuntime {
                                     })
                                     .await
                                 {
+                                    failed += 1;
                                     warn!(
                                         persona_id = %hb_persona,
                                         agent_name = %hb_name,
@@ -676,8 +699,13 @@ impl PersonaAircRuntime {
                                     renewed = renewed,
                                     held = mine.len(),
                                     ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                                    "held work-card claims renewed on the presence pulse"
+                                    "held work-card claims renewed on the claim cadence (TTL/3)"
                                 );
+                            }
+                            // Only a fully-clean pass earns the slow cadence; any
+                            // failure retries on the next 60s presence tick.
+                            if failed == 0 {
+                                last_clean_renewal = Some(std::time::Instant::now());
                             }
                         }
                         Err(error) => {
@@ -685,7 +713,8 @@ impl PersonaAircRuntime {
                                 persona_id = %hb_persona,
                                 agent_name = %hb_name,
                                 error = %error,
-                                "claim-renewal roster read failed — holds may lapse this tick"
+                                "claim-renewal roster read failed — holds may lapse; retrying \
+                                 on the next presence tick"
                             );
                         }
                     }
