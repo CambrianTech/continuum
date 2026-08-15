@@ -188,8 +188,19 @@ pub trait AircCitizen:
 pub(crate) async fn subscribe_every_room(
     airc: &airc_lib::Airc,
 ) -> Result<FilteredEventStream, AircError> {
-    airc.subscribe_subscribed_filtered(airc_lib::EventFilter::default())
-        .await
+    // #445: liveness beacons were 84% of a persona subscription's inbound
+    // (measured 2026-08-15: 149 of 177 events in the window, 100% discarded
+    // post-decode as no_continuum_body_hint). Heartbeats already stamp their
+    // class header at publish, so exclude them at the ROUTER — they never
+    // cross the socket, never cost a decode. Exclusion, never an allowlist:
+    // unstamped events keep flowing, so nothing a publisher hasn't classified
+    // yet can be silently dropped. The same filter still applies client-side
+    // on the in-process (non-daemon) fallback, which has no router.
+    let mut filter = airc_lib::EventFilter::default();
+    filter.headers_filter = airc_core::HeaderFilter::Not(Box::new(airc_core::HeaderFilter::Has {
+        key: airc_lib::HEADER_HEARTBEAT_KIND.to_string(),
+    }));
+    airc.subscribe_subscribed_filtered(filter).await
 }
 
 /// Where a reply for `room_id` should be published — the ONE place
