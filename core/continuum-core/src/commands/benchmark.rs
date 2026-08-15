@@ -1014,15 +1014,25 @@ impl ActionCommand for BenchmarkDispatch {
                 .map(|(i, l)| (i + 1, l.trim()))
                 .filter(|(_, l)| !l.is_empty())
                 .map(|(n, l)| {
-                    let t: EvalTask = serde_json::from_str(l).map_err(|e| {
+                    let mut t: EvalTask = serde_json::from_str(l).map_err(|e| {
                         CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
                     })?;
+                    // Title gist comes from the AUTHORED prompt: require_hands_for_code
+                    // prepends the same write-and-verify preamble to every code task, and a
+                    // board of 12 cards all titled "Implement the following, and VERIFY…"
+                    // is unscannable for the citizen AND breaks dispatch_card_key parsing.
+                    let headline = t.prompt.clone();
+                    // THE artifact rule — the same normalization cognition/eval applies at
+                    // load. Before this, the card body named NO file (the gym rows carry no
+                    // solution_file) while the grade read the derived one: the citizen was
+                    // graded against a path she was never told. One derivation, both readers.
+                    t.require_hands_for_code();
                     let solution_file = t
                         .solution_file
                         .clone()
                         .unwrap_or_else(|| format!("{}.rs", t.id));
                     Ok(PreparedCard {
-                        title: dispatch_card_title(spec.name, &t.id, &t.prompt),
+                        title: dispatch_card_title(spec.name, &t.id, &headline),
                         body: dispatch_card_body(spec.name, &t),
                         needs_setup: t.setup_shell.is_some(),
                         work: CardWork::Gym { solution_file },

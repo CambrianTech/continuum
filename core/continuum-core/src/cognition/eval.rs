@@ -1332,7 +1332,12 @@ impl EvalTask {
     /// `expect`-graded knowledge tasks are untouched — answering a question IS speaking, and
     /// nothing is confused about that. The rule keys on `test`: only a task that compiles and
     /// runs code has a program as its deliverable.
-    fn require_hands_for_code(&mut self) {
+    ///
+    /// `pub(crate)` because THIS is the one derivation of a code task's artifact name:
+    /// `benchmark/dispatch` must run the same rule before composing a work card, or the card
+    /// tells the citizen nothing about WHERE to write while the grade reads the derived path
+    /// (glass-boxed 2026-08-15: a frontier-rs claimer inventing `swe/benchmarks/.../lib.rs`).
+    pub(crate) fn require_hands_for_code(&mut self) {
         if self.test.is_none()
             || self.solution_file.is_some()
             || self.dod_shell.is_some()

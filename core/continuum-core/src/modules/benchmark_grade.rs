@@ -152,14 +152,17 @@ async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Res
         return Ok(()); // not a bench card — nothing to grade
     };
 
-    // Only SWE-INSTANCE benchmarks grade through this path (repo + held-out tests). A gym
-    // card ([bench frontier-rs] …) has a different grader and swe_dataset() is None.
-    let Some(dataset) = known_benchmarks()
-        .iter()
-        .find(|b| b.name == bench)
-        .and_then(|s| s.swe_dataset())
-    else {
-        return Ok(());
+    // SWE-INSTANCE benchmarks grade via a fresh clone + the repo's held-out tests; every
+    // other RUNNABLE benchmark is a GYM (embedded task collection) whose grade reads the
+    // FILE her hands wrote. Both fire on the same done-transition. Until the gym arm below
+    // existed, gym cards had NO grader at all — a perfect artifact could never resolve,
+    // and the board sat at 0-resolved while kickoffs promised a grade (2026-08-15).
+    let spec = known_benchmarks().iter().find(|b| b.name == bench);
+    let Some(dataset) = spec.and_then(|s| s.swe_dataset()) else {
+        if let Some(spec) = spec.filter(|s| s.eval_set.is_some()) {
+            return grade_gym_card(&airc, spec, &instance, owner, &bench).await;
+        }
+        return Ok(()); // catalogued-but-not-runnable, or a bench name we don't know
     };
 
     let owner =
@@ -216,6 +219,92 @@ async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Res
     Ok(())
 }
 
+/// Resolve one gym task by id and normalize it with the SAME `require_hands_for_code`
+/// rule dispatch applies before composing the card — so the `solution_file` this grader
+/// reads is byte-for-byte the path the card told her to write. Pure over the embedded
+/// gym text; the unit test below pins the agreement.
+fn normalized_gym_task(
+    reference: &str,
+    task_id: &str,
+) -> Result<crate::cognition::eval::EvalTask, String> {
+    let (origin, text) = crate::cognition::gym::resolve_gym(reference)?;
+    let mut task = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str::<crate::cognition::eval::EvalTask>(l).ok())
+        .find(|t| t.id == task_id)
+        .ok_or_else(|| format!("task '{task_id}' not found in {origin}"))?;
+    task.require_hands_for_code();
+    Ok(task)
+}
+
+/// Grade a GYM bench card (`[bench frontier-rs] calc_pow: …`) from the file the owner's
+/// hands wrote. The task resolves from the SAME embedded gym `benchmark/dispatch` loaded,
+/// normalized by the SAME `require_hands_for_code` rule — so the path graded here is
+/// byte-for-byte the path the card told her to write. Verdict is posted into the room;
+/// a missing/empty artifact is an ABSENCE message (never a silent skip or fake fail),
+/// same honesty rule as the SWE arm's infra line.
+async fn grade_gym_card(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    spec: &crate::commands::benchmark::BenchmarkSpec,
+    task_id: &str,
+    owner: Option<impl std::fmt::Display>,
+    bench: &str,
+) -> Result<(), String> {
+    let owner = owner
+        .ok_or_else(|| format!("bench card {task_id} has no owner — nobody worked it"))?
+        .to_string();
+    let reference = spec
+        .eval_set
+        .ok_or_else(|| format!("gym benchmark '{bench}' has no eval_set"))?;
+    let task = normalized_gym_task(reference, task_id)?;
+    let Some(test) = task.test.clone() else {
+        return Ok(()); // expect-graded knowledge task — nothing file-shaped to grade
+    };
+    let lang = task.lang.clone().unwrap_or_else(|| "rust".to_string());
+    let solution_file = task
+        .solution_file
+        .clone()
+        .unwrap_or_else(|| format!("{}.rs", task.id));
+    // Her workspace root — the same layout every other per-citizen path uses.
+    let path = crate::commands::benchmark::continuum_home()
+        .map_err(|e| format!("{e:?}"))?
+        .join("citizens")
+        .join("peers")
+        .join(&owner)
+        .join("workspace")
+        .join(&solution_file);
+    let msg = match std::fs::read_to_string(&path) {
+        Ok(code) if !code.trim().is_empty() => {
+            let (passed, detail) =
+                crate::cognition::gym_grader::test_grade(&code, &lang, &test).await;
+            if passed {
+                format!(
+                    "✅ [bench {bench}] {task_id} RESOLVED — `{solution_file}` compiled and \
+                     passed the held-out tests. Nice work."
+                )
+            } else {
+                // rustc output can run pages; the room gets the head, enough to act on.
+                let head: String = detail.chars().take(600).collect();
+                format!("❌ [bench {bench}] {task_id} not resolved — `{solution_file}`: {head}")
+            }
+        }
+        Ok(_) => format!(
+            "🧪 [bench {bench}] {task_id} — `{solution_file}` exists but is EMPTY; \
+             nothing to grade."
+        ),
+        Err(_) => format!(
+            "🧪 [bench {bench}] {task_id} — no `{solution_file}` in the owner's workspace. \
+             The card is graded on the file her hands write (code/write); it was never written."
+        ),
+    };
+    airc.say(&msg)
+        .await
+        .map_err(|e| format!("post verdict: {e}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +328,32 @@ mod tests {
     fn only_terminal_states_grade() {
         assert!(is_terminal("done") && is_terminal("closed") && is_terminal("merged"));
         assert!(!is_terminal("in_progress") && !is_terminal("claimed") && !is_terminal("review"));
+    }
+
+    // what this catches: the grader and the dispatched card must agree on the artifact
+    // path — BOTH must run the task through require_hands_for_code. Regression for the
+    // 2026-08-15 0-resolved incident: gym rows carry no solution_file, dispatch composed
+    // cards from the raw task (no file named) while nothing graded on done at all, so a
+    // citizen was graded against a path she was never told (task #439). This resolves a
+    // REAL embedded gym task the way grade_gym_card does and pins the derived name and
+    // harness presence; if a gym row ever names solution_file explicitly, that name wins
+    // in both places by the same rule, so the agreement holds either way.
+    #[test]
+    fn gym_grade_reads_the_same_artifact_path_the_card_names() {
+        let task = normalized_gym_task("frontier-rs.jsonl", "edit_distance")
+            .expect("frontier-rs edit_distance must resolve from the embedded gym");
+        let file = task
+            .solution_file
+            .as_deref()
+            .expect("a test-graded task must have a derived solution_file after normalization");
+        assert_eq!(file, "sol_edit_distance.rs");
+        assert!(
+            task.test.is_some(),
+            "frontier-rs tasks are compile-and-run graded — the harness must survive load"
+        );
+        assert!(
+            task.prompt.contains(file),
+            "the normalized prompt must ASK for the file the grade reads"
+        );
     }
 }
