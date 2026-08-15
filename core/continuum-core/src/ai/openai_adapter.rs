@@ -1481,10 +1481,13 @@ const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_
 /// thrashing pager, contended GPU), not a perf regression tracker — a row whose
 /// estimate is merely 2× optimistic must stay silent.
 ///
-/// - `MIN_SAMPLE_TOKENS`: a rate computed over a handful of tokens is noise, and
-///   warmup's first few decodes read slow; a real turn decodes far more.
-/// - `FLOOR_FRACTION`: below a quarter of expectation is a different MACHINE
-///   STATE, not variance.
+/// The classification itself is delegated to the canonical
+/// [`crate::inference::throughput_expectation::classify_throughput`] — this
+/// call site only supplies policy: a sample-size gate (a rate computed over a
+/// handful of tokens is noise, and warmup's first few decodes read slow) and a
+/// collapse floor (below a quarter of expectation is a different MACHINE
+/// STATE, not variance — a row whose estimate is merely 2× optimistic must
+/// stay silent).
 ///
 /// Stateless by design — one warn per breaching call. During a genuinely
 /// degraded period that is one line per turn, which is the correct volume for
@@ -1492,9 +1495,7 @@ const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_
 /// rows and rows without an expectation stay silent (no registry = no contract
 /// to breach — external/cloud adapters are not governed lanes).
 fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measured_tps: f64) {
-    const MIN_SAMPLE_TOKENS: u32 = 16;
-    const FLOOR_FRACTION: f64 = 0.25;
-    if decode_tokens < MIN_SAMPLE_TOKENS || measured_tps <= 0.0 {
+    if decode_tokens < 16 || measured_tps <= 0.0 {
         return;
     }
     let Some(expected) = crate::model_registry::try_global()
@@ -1503,12 +1504,21 @@ fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measured_tps: f6
     else {
         return;
     };
-    if measured_tps < expected * FLOOR_FRACTION {
+    // Collapse alarm only: floor 0.25 of catalog rate, no above-par ceiling
+    // (this seam never celebrates over-delivery — it screams on collapse).
+    let verdict = crate::inference::throughput_expectation::classify_throughput(
+        measured_tps,
+        expected,
+        0.25,
+        f64::INFINITY,
+    );
+    if verdict.is_degraded() {
         tracing::warn!(
             probe_class = "serving.throughput.degraded",
             model = model_id,
             measured_tps = measured_tps,
             expected_tps = expected,
+            ratio = verdict.ratio(),
             decode_tokens = decode_tokens,
             "THROUGHPUT COLLAPSE: decode {measured_tps:.1} t/s vs expected {expected:.0} t/s \
              — this lane is serving at a fraction of its catalog rate. Suspect CPU fallback \
