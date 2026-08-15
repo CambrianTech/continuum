@@ -518,6 +518,49 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>"],
             ..ModelSpec::default()
         }),
+        // QWEN3.8-27B — the FRONTIER-TIER lane (Joel, 2026-08-15: "open models just got
+        // released that are better than opus and even fable"). Dense 27B, Arch::Qwen35
+        // (the fork carries LLM_ARCH_QWEN35 + MTP draft spec-decode + the mmproj vision
+        // path for it). Published scores: SWE-bench Pro 61.7 vs Opus 4.6 Max 53.4,
+        // QwenSWEBench 79.0 vs 63.8 — a local model that beats the cloud flagship on
+        // agentic coding, on consumer hardware. Field-measured serving (RTX 4090,
+        // Q4_K_M-class): 40.7 t/s decode plain, 60.1 t/s with native MTP spec-decode
+        // (the `mtp-*.gguf` sibling this catalog's serving spawn now auto-loads, #440),
+        // 262k native context resident in 24GB with q4_0 KV. The ggml-org repo ships
+        // main + mtp draft + mmproj in ONE snapshot, so `models/pull` acquires all
+        // three and the sibling resolvers find them with zero per-machine paths.
+        // context_window is the MODEL's capability; the live served window comes from
+        // the adapter/live serve per #50.
+        model(ModelSpec {
+            id: "ggml-org/Qwen3.8-27B-GGUF",
+            name: "Qwen3.8-27B (frontier agentic coder + vision)",
+            provider: "llama-server",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            // Conservative M5/Metal estimate for a dense 27B (Devstral 24B row carries
+            // 10.0); the 4090 numbers above don't transfer across backends. Corrected
+            // by live measurement, never by wish.
+            tokens_per_second: 10.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen3.8-27B-GGUF"),
+            // Trainable HF safetensors base (verified live 2026-08-15: repo exists,
+            // pipeline image-text-to-text, arch qwen3_5) — what the genome forge
+            // trains LoRA against; the GGUF above is serving-only.
+            hf_source: Some("Qwen/Qwen3.8-27B"),
+            // Embedded template + --jinja (same pattern as Devstral/Hermes): the
+            // ggml-org GGUF carries Qwen3.5's own ChatML-with-tools template.
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
         // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
         // and opencode like any other model, so the head-to-head is model-through-harness fair, not
