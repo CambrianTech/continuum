@@ -1351,12 +1351,50 @@ impl ActionCommand for BenchmarkDispatch {
             let full = card_id.as_uuid().simple().to_string();
             let short = full[..8].to_string();
 
+            // Directed gym card: CLAIM IT FOR HER at dispatch, under her own airc
+            // identity. The SWE arm below already fires her scored solve directly
+            // (dispatch_staged_swe_solve — "we don't wait on her to re-derive a
+            // work/claim from the kickoff"); gym cards never got the same cut, so
+            // every round spent its first multi-minute turn per card on claim
+            // ceremony the dispatcher had already decided (Joel 2026-08-15:
+            // "taking 30 minutes to start coding sure is a flawed design").
+            // #425-compatible: the claim is administrative — the WORK stays hers,
+            // in-room, through her own cognition. Best-effort: a failed pre-claim
+            // is REPORTED and the card stays claimable by hand.
+            let mut pre_claimed = false;
+            if let CardWork::Gym { .. } = &pc.work {
+                match self.registry.get(*who_peer) {
+                    Some(rt) => {
+                        match rt
+                            .airc()
+                            .claim_work_card(airc_lib::ClaimWorkCard {
+                                card_id,
+                                ttl_ms: crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                            })
+                            .await
+                        {
+                            Ok(_) => pre_claimed = true,
+                            Err(e) => kickoff_errors.push(format!("pre-claim {short}: {e}")),
+                        }
+                    }
+                    None => kickoff_errors
+                        .push(format!("pre-claim {short}: {who} has no live airc runtime")),
+                }
+            }
+
             // Directed dispatch: round-robin an addressed kickoff per card. An addressed
             // imperative in its OWN message block is what actually starts work (measured
             // 2026-08-07: coalesced mid-burst it was ignored). airc.say is one event = one
             // block, so the structural condition holds by construction.
             {
                 let kickoff = match &pc.work {
+                    CardWork::Gym { solution_file } if pre_claimed => format!(
+                        "@{who} (to you): card {short} is CLAIMED FOR YOU on this board — \
+                         no claim step needed. Read its body, write your solution to \
+                         `{solution_file}` in your workspace NOW, then mark it done \
+                         (work/state {short} done). Your artifact gets graded against \
+                         held-out tests."
+                    ),
                     CardWork::Gym { solution_file } => format!(
                         "@{who} (to you): card {short} on this board is yours. Claim it \
                          (claim_task {short}), read its body, write your solution to \
