@@ -236,7 +236,21 @@ async fn advance_caller_cursor(caller: Uuid, room: Uuid, lamport: u64) -> u64 {
     let airc = runtime.airc();
     // Resolve the event AT this lamport so airc gets the real source event (room +
     // kind, and the `SubscriptionAdvanced` emit). No event → nothing to mark.
-    let events = match airc.page_recent_in(Some(airc_core::RoomId::from_uuid(room)), 256).await {
+    // airc 574ce235: page_recent_in takes a resolved &Room; the resolver refuses
+    // rooms outside this scope's subscription set, which is the right refusal here
+    // too — advancing a read cursor in a room the caller isn't part of would mint
+    // state about a conversation they never joined.
+    let room_handle = match airc
+        .room_by_name_or_channel(&room.to_string(), "advance read cursor in")
+        .await
+    {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor room resolve failed");
+            return 0;
+        }
+    };
+    let events = match airc.page_recent_in(&room_handle, 256).await {
         Ok(e) => e,
         Err(err) => {
             tracing::warn!(error = %err, caller = %caller, room = %room, "nav: cursor page failed");
