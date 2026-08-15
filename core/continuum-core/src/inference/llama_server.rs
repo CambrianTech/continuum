@@ -240,6 +240,55 @@ pub fn classify_never_started_timeout(
     }
 }
 
+/// Wall-clock ms of the last real PREFILL advance on the served lane. The decode stamp
+/// above is blind to a lane that is 100% mid-prefill: eight 17k prompts saturate the
+/// slots for minutes producing ZERO output tokens, the decode stamp goes stale, the
+/// health heartbeat's "trust busy lanes" gate falls through, its probe can't get a
+/// slot, and two misses relaunch a lane working flat out (round-killer L9, live
+/// 2026-08-15 13:32 — 30s after dispatch, reason "sustained decode failure"). The #385
+/// per-request detector already learned PREFILL IS PROGRESS; this is the same lesson at
+/// the lane level. Stamped from the adapter's prefill-progress site, same local-lane
+/// gating as the decode stamp.
+static LAST_REAL_PREFILL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record that a real generation's PREFILL advanced on the served lane.
+pub fn note_real_prefill_progress() {
+    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        // Same clock discipline as note_real_decode: 0 is the "never" sentinel,
+        // an unreadable clock must not erase a real stamp.
+        return;
+    };
+    LAST_REAL_PREFILL_MS.store(
+        since_epoch.as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Milliseconds since the lane last did REAL WORK for anyone — a decode that produced
+/// tokens OR a prefill that advanced, whichever is fresher. This is the liveness
+/// question the health heartbeat and the never-started-timeout classifier actually ask;
+/// [`ms_since_real_decode`] remains for callers that specifically need tokens-out.
+pub fn ms_since_real_work() -> Option<u64> {
+    let decode = ms_since_real_decode();
+    let prefill = ms_since_stamp(&LAST_REAL_PREFILL_MS);
+    match (decode, prefill) {
+        (Some(d), Some(p)) => Some(d.min(p)),
+        (one, other) => one.or(other),
+    }
+}
+
+fn ms_since_stamp(stamp: &std::sync::atomic::AtomicU64) -> Option<u64> {
+    let last = stamp.load(std::sync::atomic::Ordering::Relaxed);
+    if last == 0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    Some(now.saturating_sub(last))
+}
+
 /// Milliseconds since the last real token-producing generation, or `None` if none has been
 /// observed yet (fresh boot) — the caller must then fall back to probing.
 pub fn ms_since_real_decode() -> Option<u64> {

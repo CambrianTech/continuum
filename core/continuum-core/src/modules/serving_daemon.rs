@@ -476,7 +476,7 @@ impl ServingDaemonModule {
             model_resolver: Arc::new(|id: &str| {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
-            decode_age: Arc::new(crate::inference::llama_server::ms_since_real_decode),
+            decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
@@ -2092,10 +2092,11 @@ impl ServingDaemonModule {
                 crate::probe!(
                     class = "serving.health",
                     ok = true,
-                    via = "real_decode",
-                    ms_since_decode = since,
-                    "lane proven alive by real token delivery — skipped the smoke probe rather \
-                     than contend for a slot with the work that proves it",
+                    via = "real_work",
+                    ms_since_work = since,
+                    "lane proven alive by real work (decode OR prefill advance — L9: a lane \
+                     saturated in prefill produces no tokens but is NOT quiet) — skipped the \
+                     smoke probe rather than contend for a slot with the work that proves it",
                 );
                 return None;
             }
