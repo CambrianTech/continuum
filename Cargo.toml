@@ -13,7 +13,8 @@ members = [
     # core/ — rust substrate
     "core/airc-test-fixtures",
     "core/continuum-airc-protocol",
-    "core/archive",
+    # "core/archive" quarantined → legacy/quarantine/archive-worker (#424):
+    # its only spawn wiring pointed at a dir that no longer exists.
     "core/continuum-core",
     "core/expert-pager-policy",
     "core/continuum-orm-derive",
