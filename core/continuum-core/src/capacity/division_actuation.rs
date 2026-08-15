@@ -131,6 +131,9 @@ pub const PRIOR_COMPUTE_FLOOR_S: f64 = 0.010;
 
 /// Reject reward samples built from fewer decode tokens than this — a 3-token tick delta
 /// is timer noise, not a throughput measurement.
+// context-budget-exempt: measurement noise floor for the bandit's tok/s reward samples,
+// bounded by timer resolution — it gates statistic quality, never shapes a prompt or
+// window, and timer noise does not scale with the served context.
 const MIN_REWARD_TOKENS: u64 = 64;
 
 /// The daemon-held actuator: tier catalog + warm-started bandit + the trace-tail token
