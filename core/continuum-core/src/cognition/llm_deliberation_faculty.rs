@@ -1997,6 +1997,36 @@ impl Faculty for LlmDeliberationFaculty {
                         );
                         return Some(self.act_verdict(vec![call], &resp));
                     }
+                    // THINK-ONLY turn (#181 tail, glass-boxed on the 2026-08-15 bench
+                    // round): she spent the ENTIRE generation inside the reasoning
+                    // channel and stopped — no answer, no PASS, no liftable call
+                    // anywhere in the thinking (the captured turn analyzed all 12
+                    // tasks lucidly and then just ended). Settling that as an empty
+                    // Speak is a silent dead turn: maximal thought, zero commitment,
+                    // and the round dies of it. Route the SAME mechanism #159 built
+                    // for the sibling cases above: a reported-never-executed sentinel
+                    // whose executor teacher names what happened as an observation,
+                    // and `drive_to_settle` hands her another generation — which
+                    // starts from her own conclusions, because the reasoning was
+                    // already recorded into working memory at the top of this fn.
+                    // Model-agnostic by construction: `reasoning` is an adapter fact,
+                    // never a model sniff. Bounded by `max_acts`; an identical repeat
+                    // short-circuits via `all_calls_already_satisfied`.
+                    if !reasoning.trim().is_empty() {
+                        crate::probe!(
+                            class = "persona.act.think_only",
+                            persona = %self.persona_name,
+                            reasoning_len = reasoning.len(),
+                            "generation ended inside the reasoning channel — no answer, no act; routing the think-only teacher"
+                        );
+                        let call = crate::ai::types::ToolCall {
+                            id: "tool-attempt-think-only".to_string(),
+                            name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL
+                                .to_string(),
+                            input: serde_json::json!({}),
+                        };
+                        return Some(self.act_verdict(vec![call], &resp));
+                    }
                 }
             }
         }
@@ -3657,6 +3687,48 @@ mod tests {
             match c.decision {
                 Some(Decision::Speak { .. }) => {}
                 other => panic!("expected the spoken answer to stand, got {other:?}"),
+            }
+        }
+
+        // what this catches: the THINK-ONLY tail of the #181 arc — a thinking model
+        // that ends its generation INSIDE the reasoning channel (content empty,
+        // reasoning present, NO liftable call anywhere in the thinking) must not
+        // settle as an empty Speak. The verdict routes the think-only sentinel so
+        // the executor's teacher fires as an observation and drive_to_settle hands
+        // her another generation. Glass-boxed live 2026-08-15: a full bench round
+        // produced 17 inference turns and zero acts through exactly this hole.
+        #[tokio::test]
+        async fn think_only_turn_routes_the_teacher_sentinel_not_empty_speak() {
+            let persona = Uuid::new_v4();
+            let mut resp = make_response(FinishReason::Stop, "", None);
+            resp.reasoning = Some(
+                "These tasks are all tractable. I should start with the parser fix, \
+                 then the two string tasks. Let me plan the order carefully."
+                    .to_string(),
+            );
+            let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![read_tool()])
+                .with_context_window(32_768);
+
+            let c = faculty
+                .contribute(&Workspace::new("solve the tasks on the board"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Act { calls, intent }) => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(
+                        calls[0].name,
+                        crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL,
+                        "the think-only sentinel rides the verdict so the teacher fires"
+                    );
+                    assert!(
+                        intent.contains("tractable"),
+                        "her own reasoning is the act's intent — the engram records why"
+                    );
+                }
+                other => panic!("expected the think-only sentinel Act, got {other:?}"),
             }
         }
 
