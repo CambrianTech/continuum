@@ -185,6 +185,11 @@ async function main(): Promise<void> {
     banner.style.color = warn ? '#f7b7b7' : '#cdcdd3';
     if (!banner.isConnected) document.body.appendChild(banner);
   };
+  // Stamp the feed status SYNCHRONOUSLY before any await: from this instant the
+  // page always carries `<html data-feed-status>`, so outside observers (shot
+  // harness, e2e) wait on the app's own signal and can never mistake a
+  // still-booting page for a settled one via the generic readyState fallback.
+  document.documentElement.dataset.feedStatus = 'booting';
   setStatus(`connecting to ${config.wsUrl} …`);
 
   // READ socket: subscribe to chat state, merge each envelope into the widget.
@@ -202,6 +207,14 @@ async function main(): Promise<void> {
   });
   state.onStatus((status, detail) => {
     lastFeedStatus = status;
+    // The feed status is FEEDBACK, so publish it where feedback belongs: one DOM
+    // attribute on the root, not console spam. Anything outside the page — the
+    // screenshot harness, an e2e test, a human in devtools — reads
+    // `<html data-feed-status="live">` and knows the feed is E2E-healthy (a real
+    // State frame landed; health is delivery, never socket existence — the
+    // client-side twin of #280). This is the event the capture tooling waits on
+    // instead of guessing with wall-clock (or worse, virtual-time) budgets.
+    document.documentElement.dataset.feedStatus = status;
     if (status === 'live') {
       banner.remove();
       gotState = true;
