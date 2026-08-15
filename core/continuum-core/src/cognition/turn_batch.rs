@@ -410,12 +410,48 @@ fn build_shared_sources(
         .collect()
 }
 
+/// Whether this candidate EXECUTES as a local model — the runtime-locality
+/// question wave scheduling exists for (protecting the local GPU from
+/// over-concurrency). Deliberately BROADER than the allocator's catalog
+/// `is_local()` — see the TRAP note there (`persona/allocator.rs`): they must
+/// never be merged.
+///
+/// Resolution, most-authoritative first (#70/#73, #424 fix 2):
+/// 1. the provider string as a registry provider id → its declared
+///    [`ProviderKind`](crate::model_registry::ProviderKind);
+/// 2. the model id as a registry model row → its owning provider's kind
+///    (covers candidates whose provider string is the allocation-layer
+///    vocabulary but whose model the registry knows);
+/// 3. the allocation-layer vocabulary `local`/`dmr` — the legacy provider
+///    strings the persona catalog still carries; #73 retires these by
+///    threading a typed `ProviderKind` through the candidate itself;
+/// 4. `continuum-ai/` — OUR artifact namespace: forged artifacts are by
+///    construction locally served (a namespace fact, not a vendor sniff).
+///
+/// A candidate none of these resolve schedules as CLOUD — the safe direction.
+/// The `model.starts_with("qwen")` vendor sniff that used to sit here is GONE
+/// (#424): a model's NAME never decides where it runs — a qwen can be served
+/// by a cloud provider, and every locally-served qwen the registry knows
+/// resolves through arms 1–2.
 fn is_local_provider(provider: &str, model: &str) -> bool {
+    use crate::model_registry::ProviderKind;
+    // try_global, not global(): before backend_init (or in a bare unit test)
+    // the registry legitimately isn't up yet — that is "the registry can't
+    // answer", handled by the declared arms below, never a panic.
+    if let Some(reg) = crate::model_registry::try_global() {
+        if let Some(p) = reg.provider(provider) {
+            return p.kind == ProviderKind::Local;
+        }
+        if let Some(kind) = reg
+            .model(model)
+            .and_then(|m| reg.provider(&m.provider))
+            .map(|p| p.kind)
+        {
+            return kind == ProviderKind::Local;
+        }
+    }
     let provider = provider.to_ascii_lowercase();
-    provider == "local"
-        || provider == "dmr"
-        || model.starts_with("continuum-ai/")
-        || model.starts_with("qwen")
+    provider == "local" || provider == "dmr" || model.starts_with("continuum-ai/")
 }
 
 fn stable_key(parts: &[&str]) -> String {
@@ -457,6 +493,30 @@ mod tests {
             max_output_tokens: 32_768,
             tokens_per_second: Some(12.0),
         }
+    }
+
+    /// What this catches: locality is decided by the registry's declared
+    /// ProviderKind (or our own artifact namespace), NEVER by a model-name
+    /// vendor sniff — the `model.starts_with("qwen")` arm this replaces made a
+    /// cloud-served qwen schedule as local (#70/#73). regression for #424
+    #[test]
+    fn locality_comes_from_the_registry_never_a_model_name_sniff() {
+        let _ = crate::model_registry::init_global();
+        // A qwen-NAMED model unknown to the registry on a cloud provider is
+        // NOT local — the old sniff would have said local.
+        assert!(!is_local_provider("together", "qwen-magic-preview"));
+        // Registry-declared Local provider id → local, regardless of name.
+        assert!(is_local_provider("llamacpp-local", "anything"));
+        // Registry-declared Cloud provider → not local.
+        assert!(!is_local_provider("anthropic", "claude-sonnet-4-5-20250929"));
+        // A registry-known model resolves through its OWNING provider's kind
+        // even when the candidate's provider string is unresolvable.
+        assert!(is_local_provider("", "continuum-ai/qwen3.5-4b-code-forged-GGUF"));
+        // The allocation-layer vocabulary (#73 retires) and our artifact
+        // namespace still schedule local.
+        assert!(is_local_provider("local", "x"));
+        assert!(is_local_provider("dmr", "x"));
+        assert!(is_local_provider("cloudish", "continuum-ai/some-forged-artifact"));
     }
 
     fn request() -> RecipeTurnBatchRequest {
