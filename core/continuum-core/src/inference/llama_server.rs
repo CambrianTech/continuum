@@ -2283,6 +2283,28 @@ impl LlamaServerControl for LlamaServerProcess {
                  mmproj_local_path) or drop the Vision capability so the row stops claiming sight."
             );
         }
+        // NATIVE MTP SPECULATIVE DECODE (#440): if the model ships an `mtp-*.gguf`
+        // draft head beside its main GGUF (the ggml-org Qwen3.8 layout), load it as
+        // the spec-decode draft. MTP heads are trained WITH the model, so acceptance
+        // is high and there is no external draft model to fit: field-measured on
+        // Qwen3.8-27B (RTX 4090, 2026-08-15) decode went 40.7 → 60.1 t/s for ~0.1GB
+        // extra state. Artifact presence IS the capability signal (the mmproj
+        // pattern): no draft file → no flags → byte-identical serving. n-max 4 /
+        // p-min 0.7 are the upstream-recommended MTP operating point from that same
+        // field benchmark — per-model tuning, if ever needed, belongs on the Model
+        // row beside `sampling`, not here.
+        if let Some(draft) =
+            crate::model_registry::artifacts::resolve_mtp_draft_for_model(&target.model)
+        {
+            cmd.arg("--spec-type")
+                .arg("draft-mtp")
+                .arg("--spec-draft-model")
+                .arg(&draft)
+                .arg("--spec-draft-n-max")
+                .arg("4")
+                .arg("--spec-draft-p-min")
+                .arg("0.7");
+        }
         // Device-fit resident-override (#29): source the RESIDENT (non-expert)
         // tensors from the precision-shrunk fit GGUF so the whole resident tier fits
         // VRAM offloaded to GPU, while this primary GGUF streams the experts. The

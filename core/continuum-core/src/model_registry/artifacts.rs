@@ -79,6 +79,36 @@ fn find_mmproj_beside(dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Resolve a model's native-MTP speculative-decode draft head for serving
+/// (`llama-server --spec-type draft-mtp --spec-draft-model <this>`).
+///
+/// Convention (ggml-org, e.g. Qwen3.8-27B): repos whose architecture bakes in
+/// multi-token-prediction heads ship the head as a sibling `mtp-<Model>-<quant>.gguf`
+/// beside the main weights, so it lands in the same snapshot dir the normal GGUF
+/// resolution finds. Artifact presence IS the capability signal — the exact pattern
+/// [`resolve_mmproj_for_model`] established: no draft file → `None` → the spawn adds
+/// no flags and serving is byte-identical to before this seam existed.
+pub fn resolve_mtp_draft_for_model(model: &Model) -> Option<PathBuf> {
+    let gguf = resolve_gguf_for_model(model)?;
+    find_mtp_draft_beside(gguf.parent()?)
+}
+
+/// Find an MTP draft-head GGUF sitting in `dir` — an `mtp-*.gguf` sibling of the
+/// model's GGUF. When several quants of the head are present, newest-mtime wins
+/// (same tie-break as main-model candidate selection).
+fn find_mtp_draft_beside(dir: &Path) -> Option<PathBuf> {
+    let candidates: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+            (name.starts_with("mtp-") && name.ends_with(".gguf")).then_some(path)
+        })
+        .collect();
+    pick_best_candidate(candidates)
+}
+
 /// Resolve a canonical model id to the HF safetensors repo id of its
 /// *trainable* form (`Model::hf_source`). The training lane (`mlx_lm.lora
 /// --model`) and the forge custodian's HF→PEFT→GGUF convert both need the
@@ -463,15 +493,22 @@ fn is_gguf(path: &Path) -> bool {
 /// (#106): pulling Qwen2.5-VL wrote the mmproj AFTER the main weights, so
 /// mtime-newest candidate selection picked the projector as the model and
 /// every VL spawn died with "unsupported model architecture: 'clip'".
-/// ONE predicate for every main-model collector; [`find_mmproj_beside`]
-/// remains the mmproj-POSITIVE scan.
+/// Also excludes `mtp-*.gguf` MTP draft heads (the ggml-org Qwen3.8 layout):
+/// same failure shape — the draft downloads AFTER the main weights, so
+/// mtime-newest would serve the 1.6GB head as the 27B model. Draft heads load
+/// via `--spec-draft-model`, never `-m`.
+/// ONE predicate for every main-model collector; [`find_mmproj_beside`] and
+/// [`find_mtp_draft_beside`] remain the sidecar-POSITIVE scans.
 fn is_main_model_gguf(path: &Path) -> bool {
     if !is_gguf(path) {
         return false;
     }
     path.file_name()
         .and_then(|s| s.to_str())
-        .is_some_and(|name| !name.to_ascii_lowercase().contains("mmproj"))
+        .is_some_and(|name| {
+            let name = name.to_ascii_lowercase();
+            !name.contains("mmproj") && !name.starts_with("mtp-")
+        })
 }
 
 fn home_dir_string() -> Option<String> {
@@ -610,6 +647,35 @@ mod tests {
         // beats serving CLIP as a mind.
         std::fs::remove_file(&main).unwrap();
         assert!(find_ggufs_under_snapshots(snap.path()).is_none());
+    }
+
+    // what this catches: #440 — the ggml-org Qwen3.8 snapshot ships main + `mtp-*.gguf`
+    // draft head + mmproj in ONE dir, and the draft downloads AFTER the main weights
+    // (live ordering 2026-08-15: main 02:48, mtp 02:49). Without the mtp exclusion,
+    // mtime-newest candidate selection serves the 1.6GB DRAFT HEAD as the 27B model —
+    // the exact #106 clip failure shape. The draft-POSITIVE scan
+    // (`find_mtp_draft_beside`) must still find it so the spawn can pass
+    // `--spec-type draft-mtp`.
+    #[test]
+    fn mtp_draft_head_never_wins_main_model_resolution_but_resolves_as_draft() {
+        let snap = tempfile::tempdir().unwrap();
+        let model_dir = snap.path().join("snapshots").join("qwen38");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let main = model_dir.join("Qwen3.8-27B-Q4_K_M.gguf");
+        write_empty_gguf(&main);
+        // Written SECOND → newer mtime, the exact live download ordering.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let draft = model_dir.join("mtp-Qwen3.8-27B-Q4_0.gguf");
+        write_empty_gguf(&draft);
+
+        let picked = find_ggufs_under_snapshots(snap.path()).expect("main model resolves");
+        assert_eq!(picked, main, "draft head must not out-mtime the model");
+        let found = find_mtp_draft_beside(&model_dir).expect("draft head still discoverable");
+        assert_eq!(found, draft);
+        // A directory with no mtp sibling resolves no draft — the spawn adds no
+        // spec-decode flags and serving is byte-identical to pre-#440.
+        std::fs::remove_file(&draft).unwrap();
+        assert!(find_mtp_draft_beside(&model_dir).is_none());
     }
 
     // what this catches: tier-1 resolution — an explicitly declared projector resolves
