@@ -95,6 +95,19 @@ heads ≈ 5× more history in the same budget), cross-room remainder as one hone
    different keying.
 4. **Slice D — confab + L1 consume the graph** (follow-on; each independently
    valuable).
+5. **Slice E — `GraphViewState` (positron)** (Joel, 2026-08-15: "so cool to see
+   visually how engrams are linked … dynamically via events and introspection").
+   The standard projection contract, nothing bespoke: one truth in Rust, keyed
+   on `(room_id, kind)` per #408, N renderers (web canvas, persona tile #184,
+   console #284). Event-driven, never polled — every edge write already fires
+   at the moment it happens (`engram.edge.caused_by` probe today, a typed wire
+   class under #445), so the graph GROWS on screen as she works: a solve draws
+   itself as a causal chain. Introspection is the same traversal twice — her
+   slice-C thread query IS the walk the human watches, one graph, one query,
+   two observers (diegetic doctrine). BJG §6's "watch her change her mind"
+   click-through is the epistemic sibling; this adds click-an-artifact → walk
+   the acts that built it. Diagnosis for free: a spiraling citizen is a graph
+   that visibly stopped growing.
 
 Every slice is general cognition: chat reply chains, wall edits, bench solves, and
 dreams get the same causal spine. Benchmarks touch none of this — they are adapters
