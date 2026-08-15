@@ -355,19 +355,12 @@ impl PersonaCognition {
             None => RagContext::for_persona(persona_id, now_ms),
         };
 
-        // Reserved tokens scale with context window. See doctrine
-        // comment on the constants — these are FALLBACK shapes, NOT
-        // hardcodes pinned to LCD tier. The substrate's real
-        // budgeter logic (driven by profile model characteristics)
-        // can override these later via a richer reservation API.
+        // Window-scaled reservation — ONE derivation, owned by
+        // ReservedTokens::scaled_for_window (#424 dedup; rag_inspect
+        // shares it). Doctrine lives on the constructor.
         let context_window = profile.context_length;
-        let reserved = ReservedTokens {
-            system: (context_window / 10).clamp(128, 512),
-            completion: (context_window / 4).clamp(256, 4_000),
-        };
-        let headroom = context_window
-            .saturating_sub(reserved.system + reserved.completion)
-            .max(512);
+        let reserved = ReservedTokens::scaled_for_window(context_window);
+        let headroom = reserved.headroom_within(context_window);
 
         // Collect the brain's bound sources in deterministic order:
         // engram first (long-term memory, the L2+ recall layer),

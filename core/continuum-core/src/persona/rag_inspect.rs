@@ -59,6 +59,17 @@ use crate::persona::rag_capture::{
 // never text sent to a model
 pub const CONTENT_PREVIEW_CHARS: usize = 200;
 
+/// Assumed window for [`RagInspectionRequest::defaults_for`] — the
+/// DIAGNOSTIC path only, where no inference profile is in hand and the
+/// `persona/rag-inspect` caller can override `context_window` explicitly.
+/// This is NOT a serving decision and never reaches a live turn: live
+/// turns go through [`RagInspectionRequest::for_persona`] with the
+/// profile's real `context_length` (#46/#50 law — the window comes from
+/// the adapter, never a per-tier cap).
+// context-budget-exempt: inspection-command default only, caller-overridable;
+// live turns derive the window from the persona's inference profile
+pub const DEFAULT_INSPECT_WINDOW: u32 = 32_768;
+
 /// Tunable inputs for one inspection. Defaults via `defaults_for`
 /// match the `mid-local (32k)` profile the demo binary uses — a
 /// sensible "what would a typical local persona see right now" probe
@@ -85,30 +96,19 @@ pub struct RagInspectionRequest {
 }
 
 impl RagInspectionRequest {
-    /// Sensible defaults for "show me what this persona would see
-    /// right now at a typical 32k context model." Caller can mutate
-    /// any field after this. Prefer [`Self::for_persona`] when you
-    /// already have a [`PersonaInferenceProfile`] in hand — that
+    /// Diagnostic defaults for "show me what this persona would see
+    /// right now" when NO inference profile is in hand — the
+    /// `persona/rag-inspect` command path, where the caller can
+    /// override `context_window` explicitly. Same derivation as
+    /// [`Self::for_persona`], seeded with [`DEFAULT_INSPECT_WINDOW`].
+    /// Prefer [`Self::for_persona`] when a profile IS in hand — that
     /// path threads the profile's actual context_length through so
     /// the RAG layer never asks for more tokens than the adapter
-    /// can decode.
+    /// can decode. (TODO #46/#50 family: `PersonaResolution` should
+    /// carry the persona's live profile so the inspect command stops
+    /// needing an assumed window at all.)
     pub fn defaults_for(persona_id: Uuid, persona_name: String, now_ms: u64) -> Self {
-        Self {
-            persona_id,
-            persona_name,
-            context_window: 32_768,
-            reserved: ReservedTokens {
-                system: 400,
-                completion: 4_000,
-            },
-            airc_floor: 500,
-            airc_max: 20_000,
-            airc_priority: 10,
-            airc_required: true,
-            airc_fetch_limit: 100,
-            now_ms,
-            trace_path: None,
-        }
+        Self::for_window(persona_id, persona_name, now_ms, DEFAULT_INSPECT_WINDOW)
     }
 
     /// Derive the inspection request from the persona's inference
@@ -119,42 +119,34 @@ impl RagInspectionRequest {
     /// from this struct instead of copying fields or holding
     /// duplicate constants.
     ///
-    /// The derivation:
     /// - `context_window` = `profile.context_length` (no overflow
     ///   risk — the RAG layer can never ask for more than the
     ///   adapter was loaded with).
-    /// - `airc_max` = at most 60% of the runtime context, AND at
-    ///   most what's left after the system + completion reserve.
-    ///   The 60% factor mirrors the `defaults_for` ratio
-    ///   (20_000 / 32_768 ≈ 0.61) so the relative budget shape
-    ///   stays consistent across tier-clamped contexts.
-    /// - `airc_floor` clamps to `airc_max` so floor ≤ max always.
     pub fn for_persona(
         persona_id: Uuid,
         persona_name: String,
         now_ms: u64,
         profile: &crate::persona::inference_profile::PersonaInferenceProfile,
     ) -> Self {
-        let context_window = profile.context_length;
-        // Reserved tokens scale with context window per
-        // [[intent-driven-api-not-hot-patches]]: a 2048-window persona
-        // can't reserve 4000 for completion (negative headroom → all
-        // sources get 0 → cognition fires with no RAG content → LLM
-        // defaults to grammar-shortest "will_respond=false" attractor).
-        // The cognition call caps output at 512 tokens; system prompt
-        // is ~200 tokens. We scale both as a percentage of the window
-        // so a Compat-tier 2048 persona AND an M-series 32768 persona
-        // both get sensibly-sized reservations.
-        //
-        // system: 10% of window, clamped [128, 512]
-        // completion: 25% of window, clamped [256, 4_000]
-        let reserved = ReservedTokens {
-            system: (context_window / 10).clamp(128, 512),
-            completion: (context_window / 4).clamp(256, 4_000),
-        };
-        let headroom = context_window
-            .saturating_sub(reserved.system + reserved.completion)
-            .max(512);
+        Self::for_window(persona_id, persona_name, now_ms, profile.context_length)
+    }
+
+    /// THE derivation both constructors share (#424 — `defaults_for`
+    /// previously hand-copied a flat `{system: 400, completion: 4_000,
+    /// airc_max: 20_000}` shape that had already drifted from this one).
+    ///
+    /// - reservation + headroom: [`ReservedTokens::scaled_for_window`].
+    /// - `airc_max` = at most 60% of the window, AND at most the
+    ///   post-reservation headroom.
+    /// - `airc_floor` clamps to `airc_max` so floor ≤ max always.
+    pub fn for_window(
+        persona_id: Uuid,
+        persona_name: String,
+        now_ms: u64,
+        context_window: u32,
+    ) -> Self {
+        let reserved = ReservedTokens::scaled_for_window(context_window);
+        let headroom = reserved.headroom_within(context_window);
         // Default budget: ~60% of the context window for room
         // history, clamped to headroom. This is a CONSERVATIVE
         // FALLBACK — the substrate's real budgeter (TODO: routed

@@ -303,6 +303,41 @@ impl ReservedTokens {
     pub fn total(self) -> u32 {
         self.system.saturating_add(self.completion)
     }
+
+    /// THE window-scaled reservation shape (#424 dedup — this derivation was
+    /// byte-identical in `unified.rs` and `rag_inspect.rs`; one logical
+    /// decision lives in one place). Reservations scale as a percentage of
+    /// the window per [[intent-driven-api-not-hot-patches]]: a 2048-window
+    /// persona can't reserve a flat 4000 for completion (negative headroom →
+    /// all sources get 0 → cognition fires with no RAG content → LLM defaults
+    /// to the grammar-shortest "will_respond=false" attractor), while an
+    /// M-series 32k persona shouldn't be pinned to Compat-tier crumbs.
+    ///
+    /// - system: 10% of window, clamped [128, 512]
+    /// - completion: 25% of window, clamped [256, 4_000]
+    ///
+    /// This is a FALLBACK shape, not a budgeter: the substrate's real
+    /// budgeter (profile/model-characteristic driven) can override via a
+    /// richer reservation API. NOTE the 4_000 completion ceiling is the RAG
+    /// *reservation* only — the generation ceiling itself is deliberately
+    /// uncapped (`llm_deliberation_faculty::completion_budget_for`, Joel
+    /// 2026-07-13: stop choking context); whether this reservation should
+    /// follow it up on large windows is an open budgeting question, not a
+    /// dedup question.
+    pub fn scaled_for_window(context_window: u32) -> Self {
+        Self {
+            system: (context_window / 10).clamp(128, 512),
+            completion: (context_window / 4).clamp(256, 4_000),
+        }
+    }
+
+    /// Tokens left for sources after this reservation, floored at 512 so a
+    /// tiny window still delivers *some* context instead of zeroing every
+    /// source. Sibling of [`Self::scaled_for_window`] — both call sites
+    /// computed this identically too.
+    pub fn headroom_within(self, context_window: u32) -> u32 {
+        context_window.saturating_sub(self.total()).max(512)
+    }
 }
 
 /// Full allocation result.
@@ -1370,6 +1405,32 @@ mod tests {
                 s.source_id,
             );
         }
+    }
+
+    /// What this catches: the window-scaled reservation stays ONE derivation
+    /// with the documented shape — a second hand-copied variant (the exact
+    /// duplication this replaced across unified.rs / rag_inspect.rs) shows up
+    /// as a drift here. Also pins the headroom floor: a tiny window must
+    /// still deliver ≥512 tokens to sources, never zero. regression for #424
+    #[test]
+    fn reserved_tokens_scaled_shape_is_the_one_derivation() {
+        // Compat-tier 2048: percentages, floors active.
+        let small = ReservedTokens::scaled_for_window(2048);
+        assert_eq!(small.system, 204); // 10%, inside [128, 512]
+        assert_eq!(small.completion, 512); // 25%, inside [256, 4_000]
+        assert_eq!(small.headroom_within(2048), 2048 - 204 - 512);
+
+        // M-series 32k: both ceilings engage.
+        let big = ReservedTokens::scaled_for_window(32_768);
+        assert_eq!(big.system, 512);
+        assert_eq!(big.completion, 4_000);
+        assert_eq!(big.headroom_within(32_768), 32_768 - 4_512);
+
+        // Degenerate window: floors dominate, headroom floor holds — sources
+        // still get 512, never zero (the zero-budget annihilation class, #259).
+        let tiny = ReservedTokens::scaled_for_window(256);
+        assert_eq!((tiny.system, tiny.completion), (128, 256));
+        assert_eq!(tiny.headroom_within(256), 512);
     }
 }
 
