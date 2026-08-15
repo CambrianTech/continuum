@@ -239,6 +239,19 @@ const WINDOW_RELAUNCH_TOLERANCE: u32 = 512;
 // context-budget-exempt: how many tokens a post-spawn smoke decode must produce to prove the lane is alive — a liveness probe, not a budget
 const MIN_SMOKE_DECODE_TOKENS: u64 = 5;
 
+/// Smoke budget for the quick first attempt. Cheap on purpose: a non-thinking
+/// model answers "count to 10" well inside this, and the probe must stay a light
+/// passenger on a busy co-tenant lane.
+// context-budget-exempt: liveness-probe first-attempt budget — probe cost control, never a serving cap
+const QUICK_SMOKE_BUDGET: u64 = 24;
+
+/// Smoke budget for the THINK-STARVED retry: a THINKING model that spent the whole
+/// quick budget inside its reasoning channel gets one attempt with room to finish
+/// thinking AND put the ten digits in the ANSWER channel. Only a proven
+/// think-starved outcome (decode ran, visible empty, reasoning non-empty) pays this.
+// context-budget-exempt: liveness-probe retry budget for thinking models — room to traverse the reasoning phase, never a serving cap
+const THINKING_SMOKE_BUDGET: u64 = 768;
+
 /// Everything the launcher needs to bring a model up, GROUPED so adding a new
 /// serving knob is a field here — never a new param threaded down the call chain
 /// ([[pass-the-model-struct-no-param-hell]]). The [`Model`] carries its own id,
@@ -1351,6 +1364,109 @@ fn counts_upward(text: &str) -> bool {
         .any(|w| w[1] == w[0] + 1 && w[2] == w[1] + 1)
 }
 
+/// Verdict of one smoke-decode attempt, judged from the response's TWO channels.
+///
+/// THINK-STARVED (2026-08-15, root cause of a fully dead bench round): a THINKING
+/// model spends its whole small smoke budget inside the reasoning channel — the
+/// server decodes perfectly (the round's llama-server stderr showed healthy ~30 t/s
+/// generations of exactly `max_tokens` on every probe) while `content` comes back
+/// EMPTY, so a visible-channel-only judgment reads a working brain as a dead lane,
+/// marks serving degraded forever, and every turn then waits on a serving
+/// transition that never resolves. The reasoning channel is an ADAPTER FACT — any
+/// thinking model (Qwen, DeepSeek, whatever comes next) hits this identically — so
+/// the verdict is judged structurally, never by model name.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum SmokeVerdict {
+    /// Multi-token decode AND the visible answer followed the instruction.
+    Alive,
+    /// Wedged, incoherent, or structurally not a chat model.
+    Dead,
+    /// Decode PROVEN (token floor met) but the whole budget went to private
+    /// reasoning and the visible channel is empty — a thinking model mid-thought,
+    /// not a dead lane. Retry with a budget that lets it finish and ANSWER.
+    ThinkStarved,
+}
+
+/// Pure (numbers + strs in, verdict out) so the judgment is unit-testable without
+/// a server. The embedding-model-on-the-port incident (BigMama: "uiuiui…" garbage
+/// past a count-only gate) still reads `Dead` here: its garbage lands in the
+/// VISIBLE channel with no reasoning channel at all.
+fn smoke_verdict(out_tokens: u64, visible: &str, reasoning_len: usize) -> SmokeVerdict {
+    if out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(visible) {
+        return SmokeVerdict::Alive;
+    }
+    if out_tokens >= MIN_SMOKE_DECODE_TOKENS && visible.trim().is_empty() && reasoning_len > 0 {
+        return SmokeVerdict::ThinkStarved;
+    }
+    SmokeVerdict::Dead
+}
+
+/// One smoke-decode HTTP attempt: POST the count-to-ten prompt with `max_tokens`,
+/// return `(completion_tokens, visible_content, reasoning_len)` — or `None` when
+/// the transport/status/schema failed (each case logged where it is detected).
+/// Free fn (client + url in) so [`decode_smoke_ok`]'s policy stays a readable
+/// verdict match instead of interleaved I/O.
+async fn smoke_attempt(
+    client: &reqwest::Client,
+    v1_url: &str,
+    max_tokens: u64,
+) -> Option<(u64, String, usize)> {
+    let url = format!("{v1_url}/chat/completions");
+    let body = serde_json::json!({
+        // Digits-only instruction so a compliant model spends its budget on the ANSWER,
+        // not a preamble — the content assertion needs the answer to actually fit.
+        "messages": [{ "role": "user", "content":
+            "Reply with only the numbers 1 through 10 separated by single spaces. No other words." }],
+        "max_tokens": max_tokens,
+        "stream": false,
+        "temperature": 0.0,
+    });
+    let resp = match client
+        .post(&url)
+        .timeout(DECODE_SMOKE_TIMEOUT)
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => resp,
+        _ => return None,
+    };
+    let Ok(v) = resp.json::<serde_json::Value>().await else {
+        return None;
+    };
+    // A missing/!u64 `usage.completion_tokens` is NOT "produced 0 tokens" — it is
+    // "this server did not tell us". Both fail the smoke test, but only one of them
+    // is a wedge; say which, or a schema change reads forever as a dead lane.
+    let Some(out_tokens) = v
+        .get("usage")
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|t| t.as_u64())
+    else {
+        tracing::warn!(
+            "smoke decode: response carried no usage.completion_tokens — cannot \
+             confirm the compute path (treating as NOT proven, but this is a \
+             missing field, not a measured zero)"
+        );
+        return None;
+    };
+    // The VISIBLE answer channel. Missing is treated as empty here (not None):
+    // paired with a non-empty reasoning channel that shape is the think-starved
+    // outcome, which the verdict must SEE rather than abort on.
+    let visible = v
+        .pointer("/choices/0/message/content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    // The PRIVATE reasoning channel (llama-server splits `<think>` out when the
+    // template opens one). Its length is evidence of where the budget went.
+    let reasoning_len = v
+        .pointer("/choices/0/message/reasoning_content")
+        .and_then(|c| c.as_str())
+        .map(str::len)
+        .unwrap_or(0);
+    Some((out_tokens, visible, reasoning_len))
+}
+
 /// Pure reconcile decision: bring the running server in line with `desired`.
 /// Split from the process impl so the branch logic is unit-tested against a
 /// fake. `Unreachable` from the probe means "nothing up" → serve; any other
@@ -1996,82 +2112,45 @@ impl LlamaServerControl for LlamaServerProcess {
         // "~2 tokens then stop for EVERY request" failure mode, observed intermittently
         // on fresh ephemeral eval lanes) still answers a `max_tokens: 1` request with
         // 200 — so a status-only probe passes it, and every downstream task then decodes
-        // ~2 tokens and silently scores 0. The probe now forces a prompt a healthy model
-        // MUST answer with many tokens and asserts the completion actually produced
-        // several (`usage.completion_tokens >= MIN_SMOKE_DECODE_TOKENS`). That is the
-        // difference between "the server binds" and "the decode path truly generates".
-        // A 500 "Compute error" (the wedged-orphan signature) still fails fast on status.
-        // The `--alias` id is what the server answers to; reuse the live v1 url.
-        let url = format!("{}/chat/completions", self.v1_url);
-        let body = serde_json::json!({
-            // Digits-only instruction so a compliant model spends its budget on the ANSWER, not a
-            // preamble — the content assertion below needs the answer to actually fit.
-            "messages": [{ "role": "user", "content":
-                "Reply with only the numbers 1 through 10 separated by single spaces. No other words." }],
-            // Room for the full answer plus a short preamble, still a light passenger on a busy
-            // co-tenant lane (the probe must not become another load source).
-            "max_tokens": 24,
-            "stream": false,
-            "temperature": 0.0,
-        });
-        let resp = match self
-            .client
-            .post(&url)
-            .timeout(DECODE_SMOKE_TIMEOUT)
-            .json(&body)
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => resp,
-            _ => return false,
-        };
-        // Read the completion-token count; a wedged lane yields ~2, a healthy one 20+.
-        let Ok(v) = resp.json::<serde_json::Value>().await else {
-            return false;
-        };
-        // A missing/!u64 `usage.completion_tokens` is NOT "produced 0 tokens" — it is
-        // "this server did not tell us". Both fail the smoke test, but only one of them
-        // is a wedge; say which, or a schema change reads forever as a dead lane.
-        let Some(out_tokens) = v
-            .get("usage")
-            .and_then(|u| u.get("completion_tokens"))
-            .and_then(|t| t.as_u64())
-        else {
-            tracing::warn!(
-                "smoke decode: response carried no usage.completion_tokens — cannot \
-                 confirm the compute path (treating as NOT proven, but this is a \
-                 missing field, not a measured zero)"
-            );
-            return false;
-        };
-        // CONTENT, not just volume — the second half of the same idea as the branch above.
-        // M5 removed a FABRICATED zero here (`.unwrap_or(0)` turned "the server did not say"
-        // into "it produced nothing"). This removes a fabricated PASS: a token count alone
-        // cannot tell a chat model from one with no usable generative head. MEASURED on
-        // BigMama: an EMBEDDING model (qwen3-embedding-0.6b) was bound to the port the persona
-        // lane was configured for and answered this probe with
-        //   "user interface interface user interface UIUUIUUIuiuiuiuiuiuiuiui"
-        // — comfortably past a count-only gate, while structurally incapable of chat. Every
-        // persona on the node then "thought" through it, producing the token-loop garbage that
-        // flooded the rooms and scored eval runs as capability zeros when they were infra zeros.
+        // ~2 tokens and silently scores 0. The probe forces a prompt a healthy model
+        // MUST answer with many tokens and verifies BOTH volume (token floor) and
+        // CONTENT (the digits actually count upward — the embedding-model-on-the-port
+        // incident sailed past a count-only gate with "uiuiui…" garbage).
         //
-        // The prompt has a verifiable answer, so verify it. Missing content is treated the same
-        // way M5 treats a missing token count: NOT PROVEN, not a silent pass.
-        let Some(text) = v
-            .pointer("/choices/0/message/content")
-            .and_then(|c| c.as_str())
+        // Judged by [`smoke_verdict`] over BOTH response channels, because a THINKING
+        // model can spend the whole quick budget inside its reasoning channel with a
+        // perfectly healthy decode path (2026-08-15: this exact shape marked serving
+        // degraded forever and killed a full bench round while the server generated
+        // at 30 t/s). That outcome is ThinkStarved, not Dead — retry once with a
+        // budget that lets the model finish thinking and ANSWER. A wedged lane
+        // (~2 tokens) and the garbage-content lane both still read Dead on EITHER
+        // budget. A 500 "Compute error" (the wedged-orphan signature) still fails
+        // fast on status inside `smoke_attempt`.
+        let Some((tok, visible, rlen)) =
+            smoke_attempt(&self.client, &self.v1_url, QUICK_SMOKE_BUDGET).await
         else {
-            tracing::warn!(
-                "smoke decode: response carried no choices[0].message.content — cannot \n                 confirm the model answered (NOT proven; a missing field, not an empty reply)"
-            );
             return false;
         };
-        // BOTH conditions survive this merge, deliberately. M5's side of the
-        // conflict kept only the token count; dropping `counts_upward(text)`
-        // would re-open the exact defect that poisoned this node all night —
-        // an embedding model bound to the persona port sails past a count-only
-        // gate while being structurally incapable of chat.
-        out_tokens >= MIN_SMOKE_DECODE_TOKENS && counts_upward(text)
+        match smoke_verdict(tok, &visible, rlen) {
+            SmokeVerdict::Alive => true,
+            SmokeVerdict::Dead => false,
+            SmokeVerdict::ThinkStarved => {
+                crate::probe!(
+                    class = "serving.smoke.think_retry",
+                    quick_tokens = tok,
+                    reasoning_len = rlen as u64,
+                    retry_budget = THINKING_SMOKE_BUDGET,
+                    "smoke decode proven but the whole quick budget went to private \
+                     reasoning — thinking model, not a wedge; retrying with room to answer"
+                );
+                match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
+                    Some((tok, visible, rlen)) => {
+                        matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
+                    }
+                    None => false,
+                }
+            }
+        }
     }
 
     fn owns_child(&self) -> bool {
@@ -2679,6 +2758,45 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (2026-08-15, the round-killer): the smoke verdict judged a
+    // THINKING model's healthy decode as a dead lane because the whole quick budget
+    // went to the reasoning channel and `content` came back empty — serving was
+    // marked degraded forever and every turn waited on a transition that never
+    // resolved. The verdict must read that shape as ThinkStarved (retry), keep the
+    // wedged-lane shape (~2 tokens) Dead, keep the embedding-model-on-the-port
+    // shape (garbage in the VISIBLE channel, no reasoning) Dead, and pass a real
+    // answer regardless of whether reasoning is present.
+    #[test]
+    fn smoke_verdict_separates_thinking_from_wedged_from_garbage() {
+        use super::{smoke_verdict, SmokeVerdict};
+        // Healthy non-thinking model: answer in the visible channel.
+        assert_eq!(
+            smoke_verdict(20, "1 2 3 4 5 6 7 8 9 10", 0),
+            SmokeVerdict::Alive
+        );
+        // Healthy THINKING model after the big-budget retry: reasoning present AND
+        // the visible answer counts — reasoning must not disqualify a real answer.
+        assert_eq!(
+            smoke_verdict(120, "1 2 3 4 5 6 7 8 9 10", 400),
+            SmokeVerdict::Alive
+        );
+        // Thinking model starved by the quick budget: decode proven, all of it
+        // private, visible empty — retry, never "dead lane".
+        assert_eq!(smoke_verdict(24, "", 300), SmokeVerdict::ThinkStarved);
+        assert_eq!(smoke_verdict(24, "   ", 300), SmokeVerdict::ThinkStarved);
+        // Wedged lane: ~2 tokens then stop. Dead on either budget.
+        assert_eq!(smoke_verdict(2, "", 0), SmokeVerdict::Dead);
+        assert_eq!(smoke_verdict(2, "", 50), SmokeVerdict::Dead);
+        // Embedding model bound to the port: garbage in the VISIBLE channel, no
+        // reasoning channel at all (the BigMama incident) — Dead, never a retry.
+        assert_eq!(
+            smoke_verdict(24, "user interface interface UIUUIUUIuiui", 0),
+            SmokeVerdict::Dead
+        );
+        // Empty visible with NO reasoning: nothing proves a mind is attached.
+        assert_eq!(smoke_verdict(24, "", 0), SmokeVerdict::Dead);
+    }
 
     /// what this catches (2026-08-11, the solve-prelude keyhole): the settle wait
     /// must resolve on the FIRST ready snapshot whose layout differs from the

@@ -2260,6 +2260,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 if let Some(s) = settled {
                     snap = s;
                 }
+                // Carry the daemon's own stated degradation on the probe: an
+                // unresolved wait with NO reason is "polling slop" a reader must go
+                // spelunking to explain, while `degraded=` names the killer in the
+                // stream itself (2026-08-15: every turn of a round waited here for
+                // 120s each while serving/status knew the exact cause — a failed
+                // decode smoke-probe — and nothing surfaced it).
+                let degraded = snap.degraded_reason.as_deref().unwrap_or("");
                 crate::probe!(
                     class = "inference.awaiting_serving_transition",
                     provider = self.config.provider_id.as_str(),
@@ -2267,6 +2274,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     waited_ms = started.elapsed().as_millis() as u64,
                     served_before = crate::inference::llama_server::has_reconciled(),
                     resolved = snapshot_guarantees(&snap, model),
+                    degraded = &degraded[..degraded.len().min(200)],
                     "no lane was resident at pre-flight (serving transition) — waited on the \
                      daemon's readiness signal rather than failing the turn"
                 );
