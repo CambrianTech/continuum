@@ -117,6 +117,27 @@ pub trait AircCitizen:
     /// to drive the service loop.
     async fn subscribe_all_rooms(&self) -> Result<FilteredEventStream, AircError>;
 
+    /// Watch receiver whose value increments whenever this citizen's room
+    /// membership GROWS at runtime (a join after spawn) — the perception
+    /// stream's rebuild cue (P0 20b44763). airc-lib's
+    /// `subscribe_subscribed_filtered` snapshots the subscribed-channel
+    /// list ONCE at subscribe time, so a room joined later (benchmark
+    /// dispatch moving assignees into a fresh run room) never enters an
+    /// existing stream — the run room is born deaf. Consumers select on
+    /// this beside the stream and re-open it (via
+    /// [`subscribe_all_rooms`](Self::subscribe_all_rooms)) when the epoch
+    /// moves. The sibling of the 2026-08-08 narrowing bug documented on
+    /// `subscribe_all_rooms` above: that one snapshotted the WRONG SET,
+    /// this one snapshots the right set at the WRONG TIME.
+    ///
+    /// Default: a receiver whose sender is already dropped — membership
+    /// never changes for stubs/fixtures. Consumers MUST treat a closed
+    /// channel as "never fires" (park on `pending()`), never as an event,
+    /// or a stub conversation would busy-loop on `changed() == Err`.
+    fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0u64).1
+    }
+
     /// Publish a text message under the citizen's identity INTO A
     /// SPECIFIC ROOM — normally the room the turn being answered
     /// arrived in ([`IncomingMessage::room_id`](super::service_loop::IncomingMessage),
@@ -388,6 +409,23 @@ mod tests {
     // degradation path (sources stay uncached, logged loud). What must never happen is
     // an Ok(empty stream): that would look like a live subscription that silently never
     // invalidates — the actual fallback.
+    // what this catches: the default `membership_epoch` contract (P0 20b44763) —
+    // a CLOSED receiver (sender already dropped). The conversation's select loop
+    // parks on `pending()` when `changed()` errs; if a future default swapped to
+    // a live-but-never-moving channel (or a consumer treated Err as an event),
+    // stub-driven conversations would either deadlock waiting on a phantom
+    // membership change or busy-loop resubscribing. Closed = "membership never
+    // changes", and this pins that both ways.
+    #[tokio::test]
+    async fn default_membership_epoch_is_a_closed_channel() {
+        let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let mut rx = stub.membership_epoch();
+        assert!(
+            rx.changed().await.is_err(),
+            "default epoch sender must be dropped — consumers park, never poll"
+        );
+    }
+
     #[tokio::test]
     async fn stub_subscribe_refuses_rather_than_faking_a_stream() {
         let stub: Arc<dyn AircCitizen> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
