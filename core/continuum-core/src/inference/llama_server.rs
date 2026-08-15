@@ -2225,6 +2225,38 @@ impl LlamaServerControl for LlamaServerProcess {
             // surfaces the real defect: a RAG budget that overshot the served
             // window ([[fallbacks-are-illegal-fail-loud]]).
             .arg("--no-context-shift");
+        // KV CACHE QUANTIZATION (#232, opt-in field-proven technique). f16 KV is the
+        // default; q8_0 is ~half the resident KV footprint at near-lossless quality,
+        // freeing memory the elastic window (#234) can spend on a BIGGER context or MORE
+        // warm lanes — faster for multiple personas AND more room for hard coding.
+        // OFF by default: not every backend/build ships Metal KV-quant kernels, so this
+        // is an operator opt-in, never a blind assumption ([[verify-real-device-numbers-not-a-clamp-premise]]).
+        // Set SERVING_KV_CACHE_TYPE=q8_0 (or q4_0) to enable; absent / `f16` → byte-identical
+        // f16 behavior. NOTE: to have the plan actually GROW the window on the freed memory
+        // (not just leave it as extra headroom), the fit math must also scale kv_per_token —
+        // that footprint coupling is the follow-up; this slice is the safe enablement.
+        if let Some(kv_type) = crate::config_env::read("SERVING_KV_CACHE_TYPE")
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty() && s != "f16")
+        {
+            cmd.arg("--cache-type-k")
+                .arg(&kv_type)
+                .arg("--cache-type-v")
+                .arg(&kv_type);
+        }
+        // FLASH ATTENTION (#232, opt-in field-proven technique). The fused attention kernel
+        // is faster on BOTH prefill and decode and lowers peak memory — directly attacking
+        // the prefill-bound turn latency (#139) and freeing room the elastic window (#234)
+        // can spend. OFF by default: Metal/backend flash-attn support + quality vary by build
+        // ([[verify-real-device-numbers-not-a-clamp-premise]]), so it's an operator opt-in,
+        // never a blind assumption. SERVING_FLASH_ATTN=1|on|true → enable; absent → llama.cpp
+        // default (no flag), byte-identical.
+        if crate::config_env::read("SERVING_FLASH_ATTN")
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "on" | "true" | "yes"))
+            .unwrap_or(false)
+        {
+            cmd.arg("--flash-attn");
+        }
         // MULTIMODAL PROJECTOR (#106): a vision/audio-capable model needs its mmproj GGUF so
         // llama-server loads the vision (or audio) encoder and can tokenize image/audio content
         // parts. Present → the model actually SEES (the `ContentPart::Image` the persona render
