@@ -176,6 +176,14 @@ pub struct PersonaAircRuntime {
     home: PathBuf,
     airc: Arc<Airc>,
     default_room: RoomId,
+    /// Bumped by [`Self::join_room`] whenever this citizen's room membership
+    /// GROWS at runtime. The perception stream's rebuild cue (P0 20b44763):
+    /// airc-lib's `subscribe_subscribed_filtered` snapshots the subscribed
+    /// channel list ONCE at subscribe time, so a room joined after `prime()`
+    /// (benchmark dispatch moving assignees into a fresh run room) never
+    /// enters an existing stream — the run room is born deaf. Watchers of
+    /// [`AircCitizen::membership_epoch`] re-open their stream when this moves.
+    membership_epoch: tokio::sync::watch::Sender<u64>,
     inbound_handle: Option<JoinHandle<()>>,
     /// Per-persona command inbound pump (task #222). When `Some`,
     /// this persona's airc handle is wired to receive cross-grid
@@ -837,12 +845,28 @@ impl PersonaAircRuntime {
             // state above) — before #298 this stored the passed-in operator
             // room, which could even diverge from the joined channel.
             default_room: RoomId::from_uuid(room.channel.as_uuid()),
+            membership_epoch: tokio::sync::watch::channel(0u64).0,
             inbound_handle: None,
             command_pump: Some(command_pump),
             heartbeat,
             identity_republish,
             source,
         })
+    }
+
+    /// Join a room UNDER THIS CITIZEN'S IDENTITY at runtime and bump the
+    /// membership epoch so her live perception stream re-opens with the
+    /// enlarged channel snapshot (P0 20b44763). This — not `airc().join`
+    /// directly — is the ONE runtime-join path for a living persona:
+    /// airc-lib's `subscribe_subscribed_filtered` collects the channel list
+    /// once at subscribe time, so a bare join grants durable membership to a
+    /// room whose events her existing stream will never carry (measured
+    /// 2026-08-15: three benchmark rounds, 12 addressed kickoffs each, zero
+    /// turns — every per-run room was born deaf).
+    pub async fn join_room(&self, name: &str) -> Result<(), AircError> {
+        self.airc.join(name).await?;
+        self.membership_epoch.send_modify(|e| *e += 1);
+        Ok(())
     }
 
     /// Wrap an already-attached + already-joined `Arc<Airc>` into a
@@ -887,6 +911,7 @@ impl PersonaAircRuntime {
             home,
             airc,
             default_room,
+            membership_epoch: tokio::sync::watch::channel(0u64).0,
             inbound_handle: None,
             // from_attached is sync + the pump install is async, so
             // we don't install at construction. Callers that want the
@@ -1109,6 +1134,10 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
 
     async fn subscribe_all_rooms(&self) -> Result<airc_lib::FilteredEventStream, AircError> {
         crate::persona::airc_citizen::subscribe_every_room(&self.airc).await
+    }
+
+    fn membership_epoch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.membership_epoch.subscribe()
     }
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {

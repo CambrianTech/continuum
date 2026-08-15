@@ -1142,7 +1142,12 @@ impl ActionCommand for BenchmarkDispatch {
         for (who, peer) in &roster {
             match self.registry.get(*peer) {
                 Some(rt) => {
-                    if let Err(e) = rt.airc().join(&room_name).await {
+                    // join_room, not airc().join: it bumps the membership epoch so
+                    // her LIVE perception stream re-opens with the new room in its
+                    // channel snapshot. A bare join grants durable membership to a
+                    // room she structurally cannot hear (P0 20b44763 — three rounds
+                    // of kickoffs into deaf run rooms, zero turns).
+                    if let Err(e) = rt.join_room(&room_name).await {
                         room_join_errors.push(format!("{who}: {e}"));
                     }
                 }
