@@ -1,3 +1,4 @@
+
 //! ServingDaemonModule — the ever-present ServiceModule that decides, and
 //! continuously re-decides, how THIS host serves persona inference.
 //!
@@ -383,6 +384,13 @@ pub struct ServingDaemonModule {
     /// what separates a real capacity change from memory jitter — see
     /// [`REHOME_SUSTAINED_TICKS`].
     rehome_streak: Arc<std::sync::atomic::AtomicU32>,
+    /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
+    /// ready incumbent, and which model that was. A model swap re-homes every
+    /// persona to different weights, so it earns the same sustained-streak bar as
+    /// the window re-home above — a one-tick nothing-fits fallback (bogus
+    /// usable_bytes sample) must never actuate a swap.
+    model_change_streak: Arc<std::sync::atomic::AtomicU32>,
+    pending_model_change: Arc<std::sync::Mutex<Option<String>>>,
     /// Consecutive ticks the fresh plan has wanted a LESS capable base model
     /// than the incumbent (a DOWNSHIFT). Reset the moment it stops. See
     /// [`DOWNSHIFT_SUSTAINED_TICKS`] — #368's second occurrence: a ~6-second
@@ -423,6 +431,54 @@ pub struct ServingDaemonModule {
     /// inside the reconcile task while holding the slot.
     vision_sidecar:
         Arc<tokio::sync::Mutex<Option<crate::inference::llama_server::EphemeralServingLane>>>,
+}
+
+/// L10 (#438) pure gate: may the reconcile commit a BASE-MODEL swap this tick?
+///
+/// A swap tears down the lane and re-homes every persona to different weights, so a
+/// plan that names a different model than the READY incumbent must persist for
+/// `needs` consecutive ticks. Changing the *target* mid-streak restarts the count
+/// (a plan flapping 0.5B->27B->0.5B never accumulates); a tick where plan == live
+/// clears any pending change. Boot / wedge-recovery (no ready incumbent) commits
+/// immediately — recovery must not wait out a streak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelChangeGate {
+    /// Not a ready-lane model change (same model, or no ready incumbent) — proceed.
+    NotAChange,
+    /// A change, but not yet sustained — do nothing this tick.
+    Defer { streak: u32 },
+    /// Sustained disagreement — commit the swap (streak consumed).
+    Commit { streak: u32 },
+}
+
+fn model_change_gate(
+    live_ready: bool,
+    live_model: Option<&str>,
+    desired: &str,
+    pending: &mut Option<String>,
+    streak: &std::sync::atomic::AtomicU32,
+    needs: u32,
+) -> ModelChangeGate {
+    use std::sync::atomic::Ordering;
+    if !(live_ready && live_model.is_some() && live_model != Some(desired)) {
+        streak.store(0, Ordering::Relaxed);
+        *pending = None;
+        return ModelChangeGate::NotAChange;
+    }
+    let n = if pending.as_deref() == Some(desired) {
+        streak.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+    } else {
+        *pending = Some(desired.to_string());
+        streak.store(1, Ordering::Relaxed);
+        1
+    };
+    if n < needs {
+        ModelChangeGate::Defer { streak: n }
+    } else {
+        streak.store(0, Ordering::Relaxed);
+        *pending = None;
+        ModelChangeGate::Commit { streak: n }
+    }
 }
 
 impl ServingDaemonModule {
@@ -485,6 +541,8 @@ impl ServingDaemonModule {
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             downshift_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             working_set: crate::cognition::working_set::global(),
@@ -1688,6 +1746,63 @@ impl ServingDaemonModule {
                 self.rehome_streak.store(0, Ordering::Relaxed);
                 self.rehome_cooldown
                     .store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
+            }
+        }
+
+        // L10 (#438, live 2026-08-15 14:13): a MODEL CHANGE on a READY lane must earn
+        // the same sustained streak the window re-home above already requires. The
+        // asymmetry was the bug: growing a window (mild) needed REHOME_SUSTAINED_TICKS
+        // of consistent evidence, while swapping the base model (a full teardown that
+        // also re-homes every persona to different WEIGHTS) actuated on a single plan
+        // tick. One bogus usable_bytes sample during the incumbent's own load made the
+        // planner's nothing-fits arm name the SMALLEST candidate, the swap fired
+        // immediately, and citizens spoke qwen2.5-0.5B template salad into the round's
+        // room — durable garbage every healthy peer then perceived as conversation.
+        // With this gate the plan must want the DIFFERENT model for the same sustained
+        // run of ticks; a one-tick transient can never re-home minds. Deliberately
+        // scoped: only when the lane is READY and serving something else — boot,
+        // wedge-recovery, and genome page-ins (same model, adapter change) stay
+        // immediate, and a change to a DIFFERENT different model resets the streak.
+        {
+            let live = self.serving_tx.borrow();
+            let mut pending = self
+                .pending_model_change
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let verdict = model_change_gate(
+                live.ready,
+                live.active_model.as_deref(),
+                desired.as_str(),
+                &mut pending,
+                &self.model_change_streak,
+                REHOME_SUSTAINED_TICKS,
+            );
+            match verdict {
+                ModelChangeGate::Defer { streak } => {
+                    crate::probe!(
+                        class = "serving.reconcile.model",
+                        decision = "deferred",
+                        live_model = live.active_model.as_deref().unwrap_or("<none>"),
+                        plan_model = desired.as_str(),
+                        streak = streak as u64,
+                        needs_streak = REHOME_SUSTAINED_TICKS as u64,
+                        "plan wants a DIFFERENT model on a ready lane — the swap must \
+                         persist across ticks before it re-homes minds (#438: a one-tick \
+                         bogus-sample fallback once served citizens a 0.5B)",
+                    );
+                    return None;
+                }
+                ModelChangeGate::Commit { streak } => {
+                    crate::probe!(
+                        class = "serving.reconcile.model",
+                        decision = "swapping",
+                        live_model = live.active_model.as_deref().unwrap_or("<none>"),
+                        plan_model = desired.as_str(),
+                        streak = streak as u64,
+                        "sustained plan disagreement — committing the model swap",
+                    );
+                }
+                ModelChangeGate::NotAChange => {}
             }
         }
 
@@ -3213,6 +3328,67 @@ impl ServiceModule for ServingDaemonModule {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (2026-08-15 14:13, round-killer L10 / #438 live): a plan tick
+    // whose usable_bytes sample was transiently bogus named the SMALLEST candidate
+    // (qwen2.5-0.5B) via the nothing-fits arm, and the reconcile swapped the READY
+    // 27B lane on that single tick — citizens spoke template-token salad into the
+    // bench room as durable messages every healthy peer then perceived as
+    // conversation. A base-model swap re-homes minds; it must earn the same
+    // sustained streak as the (milder) window re-home, target changes must restart
+    // the count, and recovery (no ready incumbent) must never wait.
+    #[test]
+    fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
+        use super::{model_change_gate, ModelChangeGate};
+        use std::sync::atomic::AtomicU32;
+        let streak = AtomicU32::new(0);
+        let mut pending = None;
+        // One bogus tick wanting the 0.5B: deferred, never actuates.
+        assert_eq!(
+            model_change_gate(true, Some("27b"), "0.5b", &mut pending, &streak, 3),
+            ModelChangeGate::Defer { streak: 1 }
+        );
+        // Next tick the sample healed and the plan wants the incumbent again:
+        // pending clears, nothing happened.
+        assert_eq!(
+            model_change_gate(true, Some("27b"), "27b", &mut pending, &streak, 3),
+            ModelChangeGate::NotAChange
+        );
+        assert!(pending.is_none());
+        // Sustained genuine disagreement commits on the Nth consecutive tick.
+        assert_eq!(
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            ModelChangeGate::Defer { streak: 1 }
+        );
+        assert_eq!(
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            ModelChangeGate::Defer { streak: 2 }
+        );
+        assert_eq!(
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            ModelChangeGate::Commit { streak: 3 }
+        );
+        // A flapping target restarts the count — 0.5b/48b alternation never commits.
+        assert_eq!(
+            model_change_gate(true, Some("27b"), "0.5b", &mut pending, &streak, 3),
+            ModelChangeGate::Defer { streak: 1 }
+        );
+        assert_eq!(
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            ModelChangeGate::Defer { streak: 1 }
+        );
+        // No ready incumbent (boot / post-wedge): commit immediately — recovery
+        // must not wait out a streak.
+        let mut p2 = None;
+        assert_eq!(
+            model_change_gate(false, Some("27b"), "48b", &mut p2, &streak, 3),
+            ModelChangeGate::NotAChange
+        );
+        assert_eq!(
+            model_change_gate(true, None, "48b", &mut p2, &streak, 3),
+            ModelChangeGate::NotAChange
+        );
+    }
     use super::*;
 
     const GB: u64 = 1_000_000_000;
