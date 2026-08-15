@@ -1170,12 +1170,12 @@ fn parse_provider_context_length(body: &serde_json::Value, model_id: &str) -> Op
 /// than failing the whole run. A task is TEST-GRADED when it carries `test`, else
 /// substring-graded against `expect`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-// `#[ts(export)]` so the binding at `bindings/EvalTask.ts` (imported by
-// GenomeTeachParams / MinedTask / RedactMemoryParams) REGENERATES with this struct
-// instead of drifting stale — the file was orphaned (a derive without export) and a
-// new field silently rotted it. Default export path = `bindings/EvalTask.ts`, exactly
-// where the parents already import it from.
-#[ts(export)]
+// Exported to the canonical protocol root (#247/#80) so the parents that embed it
+// (GenomeTeachParams / MinedTask / RedactMemoryParams — all already emitting under
+// protocol/typescript/) import a SIBLING instead of reaching back into the legacy
+// crate bindings/ dir. A derive without an export once left this file a silently
+// rotting orphan; the explicit export is the fix, the canonical path is #424.
+#[ts(export, export_to = "../../../protocol/typescript/cognition/EvalTask.ts")]
 pub struct EvalTask {
     /// Stable id for the task (echoed in results so a regression is identifiable).
     #[serde(default)]
@@ -1575,12 +1575,12 @@ pub struct EvalTaskResult {
 /// Proctored Exam Session exists to make impossible.
 /// [[proctored-exam-session-dependable-benchmark]] [[benchmark-needs-its-own-serving-lane]]
 #[derive(Debug, Clone, Serialize, TS)]
-// `#[ts(export)]` for the same reason as `EvalTask` above: this struct is a field of
-// the exported result (`infra_unavailable`), so ts-rs emits `bindings/InfraUnavailable.ts`
-// on every build regardless — a derive without an export left that file an UNTRACKED
-// orphan that regenerated forever (audit card #424). Exporting explicitly makes the
-// emission intentional and the binding a tracked sibling of `bindings/EvalTask.ts`.
-#[ts(export)]
+// Exported for the same reason as `EvalTask` above: this struct is a field of the
+// exported result (`infra_unavailable`), so ts-rs emits a binding on every build
+// regardless — a derive without an export left it an UNTRACKED orphan that
+// regenerated forever (audit card #424). Canonical protocol root, sibling of
+// `cognition/EvalTask.ts`.
+#[ts(export, export_to = "../../../protocol/typescript/cognition/InfraUnavailable.ts")]
 pub struct InfraUnavailable {
     /// Human cause: which axis broke (not-ready / connect-refused / not-the-served-model
     /// / compute-error / stream-idle timeout), naming the task it broke on. Display-only

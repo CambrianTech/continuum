@@ -579,7 +579,7 @@ fn server_bin() -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(
     export,
-    export_to = "../../../shared/generated/persona/ServingSnapshot.ts"
+    export_to = "../../../protocol/typescript/serving/ServingSnapshot.ts"
 )]
 pub struct ServingSnapshot {
     /// The model id currently being served, if any. `None` = nothing live yet.

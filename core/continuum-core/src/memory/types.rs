@@ -12,7 +12,7 @@ use ts_rs::TS;
 /// A single memory record — comes from the TS ORM, not SQL.
 /// Used as both input (corpus loading) and output (recall results).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/MemoryRecord.ts")]
 pub struct MemoryRecord {
     pub id: String,
     pub persona_id: String,
@@ -54,7 +54,7 @@ pub struct MemoryRecord {
 
 /// A memory with its optional embedding vector — sent from TS ORM to Rust.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/CorpusMemory.ts")]
 pub struct CorpusMemory {
     pub record: MemoryRecord,
     pub embedding: Option<Vec<f32>>,
@@ -62,7 +62,7 @@ pub struct CorpusMemory {
 
 /// A timeline event with its optional embedding vector — sent from TS ORM to Rust.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/CorpusTimelineEvent.ts")]
 pub struct CorpusTimelineEvent {
     pub event: TimelineEvent,
     pub embedding: Option<Vec<f32>>,
@@ -70,7 +70,7 @@ pub struct CorpusTimelineEvent {
 
 /// Response from corpus loading.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/LoadCorpusResponse.ts")]
 pub struct LoadCorpusResponse {
     pub memory_count: usize,
     pub embedded_memory_count: usize,
@@ -83,7 +83,7 @@ pub struct LoadCorpusResponse {
 
 /// Multi-layer recall request — the primary recall API.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/MultiLayerRecallRequest.ts")]
 pub struct MultiLayerRecallRequest {
     pub query_text: Option<String>,
     pub room_id: String,
@@ -94,7 +94,7 @@ pub struct MultiLayerRecallRequest {
 
 /// Response from any recall operation.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/MemoryRecallResponse.ts")]
 pub struct MemoryRecallResponse {
     pub memories: Vec<MemoryRecord>,
     pub recall_time_ms: f64,
@@ -104,7 +104,7 @@ pub struct MemoryRecallResponse {
 
 /// Timing for a single recall layer.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/LayerTiming.ts")]
 pub struct LayerTiming {
     pub layer: String,
     pub time_ms: f64,
@@ -115,7 +115,7 @@ pub struct LayerTiming {
 
 /// Request to build consciousness context (replaces TS UnifiedConsciousness.getContext).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/ConsciousnessContextRequest.ts")]
 pub struct ConsciousnessContextRequest {
     pub room_id: String,
     pub current_message: Option<String>,
@@ -124,7 +124,7 @@ pub struct ConsciousnessContextRequest {
 
 /// Response with formatted consciousness context for RAG injection.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/ConsciousnessContextResponse.ts")]
 pub struct ConsciousnessContextResponse {
     pub formatted_prompt: Option<String>,
     pub build_time_ms: f64,
@@ -136,7 +136,7 @@ pub struct ConsciousnessContextResponse {
 
 /// Temporal continuity information — "what was I doing before?"
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/TemporalInfo.ts")]
 pub struct TemporalInfo {
     pub last_active_context: Option<String>,
     pub last_active_context_name: Option<String>,
@@ -149,7 +149,7 @@ pub struct TemporalInfo {
 
 /// A timeline event — records cross-context activity for consciousness.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/TimelineEvent.ts")]
 pub struct TimelineEvent {
     pub id: String,
     pub persona_id: String,
