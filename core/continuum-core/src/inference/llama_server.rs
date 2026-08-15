@@ -198,6 +198,48 @@ pub fn note_real_decode() {
     );
 }
 
+/// How a NEVER-STARTED stream timeout should be read. The adapter's queue-budget
+/// timeout fires for two very different worlds that look identical from inside one
+/// request: the backend is dead (wedge), or the lane is busy serving OTHER work and
+/// this request simply never got a slot (starvation). Its own error text has always
+/// admitted the ambiguity ("either the backend is dead or the queue is oversubscribed").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeverStartedClass {
+    /// The lane delivered real tokens to SOMEONE within the window we waited —
+    /// it is provably alive, just oversubscribed. Not wedge evidence: stamping
+    /// it as such relaunches a healthy busy lane, killing the very generations
+    /// that prove it healthy. Measured live 2026-08-15 (bench-hard-rs): 4 demand
+    /// lanes on 1-2 slots with multi-minute thinking turns → queued turns timed
+    /// out never-started → 2 stamps → `serving.health via=real_turn_failures` →
+    /// relaunch every 2 minutes, forever — llama's own log showed 11k-token
+    /// completions at 17.5 t/s between the kills. The round died to its own
+    /// health monitor.
+    Starved,
+    /// No real decode landed for anyone across the whole window we waited (or
+    /// none has ever been observed) — the timeout IS evidence the lane cannot
+    /// serve, and it must count toward the relaunch threshold (#363: an
+    /// undersized/dead lane rejecting the fleet's real prompts is exactly what
+    /// the real-turn counter exists to catch).
+    WedgeEvidence,
+}
+
+/// Classify a never-started stream timeout using the lane's OWN delivery record —
+/// the same "health is recent delivery, never a synthetic probe" principle as
+/// [`ms_since_real_decode`], applied to the failure side. Pure so the busy-lane
+/// and dead-lane rows are table-testable without a server.
+pub fn classify_never_started_timeout(
+    ms_since_decode: Option<u64>,
+    waited_ms: u64,
+) -> NeverStartedClass {
+    match ms_since_decode {
+        // Tokens came out for someone while we were waiting: alive, oversubscribed.
+        Some(age) if age < waited_ms => NeverStartedClass::Starved,
+        // No delivery across our whole wait (or never / clock unreadable): the
+        // timeout is genuine evidence about the lane, not about the queue.
+        _ => NeverStartedClass::WedgeEvidence,
+    }
+}
+
 /// Milliseconds since the last real token-producing generation, or `None` if none has been
 /// observed yet (fresh boot) — the caller must then fall back to probing.
 pub fn ms_since_real_decode() -> Option<u64> {
@@ -2758,6 +2800,42 @@ fn split_host_port(root: &str) -> (String, u16) {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (2026-08-15, round-killer #2 of the day): a never-started
+    // stream timeout stamped `note_real_decode_failure` unconditionally, so an
+    // OVERSUBSCRIBED lane (4 demand lanes, 1-2 slots, multi-minute thinking turns)
+    // hit the relaunch threshold from queue starvation alone — the health monitor
+    // killed a lane whose own log showed 11k-token completions at 17.5 t/s, every
+    // 2 minutes, forever. The classifier reads the lane's own delivery record:
+    // tokens for ANYONE within the wait = Starved (alive, no stamp); no delivery
+    // across the whole wait, or none ever observed = WedgeEvidence (stamp — the
+    // #363 undersized/dead class this counter exists for).
+    #[test]
+    fn never_started_timeout_on_a_delivering_lane_is_starvation_not_wedge_evidence() {
+        use super::{classify_never_started_timeout, NeverStartedClass};
+        // Busy lane: someone got tokens 30s into our 120s wait — alive.
+        assert_eq!(
+            classify_never_started_timeout(Some(30_000), 120_000),
+            NeverStartedClass::Starved
+        );
+        // Dead lane: last delivery predates our whole wait — genuine evidence.
+        assert_eq!(
+            classify_never_started_timeout(Some(300_000), 120_000),
+            NeverStartedClass::WedgeEvidence
+        );
+        // Fresh boot / unreadable clock: no delivery record — do not excuse the
+        // timeout on faith; the wedge path (and its relaunch) is the safe read.
+        assert_eq!(
+            classify_never_started_timeout(None, 120_000),
+            NeverStartedClass::WedgeEvidence
+        );
+        // Boundary: delivery exactly as old as the wait means nothing came out
+        // DURING it — evidence, not starvation.
+        assert_eq!(
+            classify_never_started_timeout(Some(120_000), 120_000),
+            NeverStartedClass::WedgeEvidence
+        );
+    }
 
     // what this catches (2026-08-15, the round-killer): the smoke verdict judged a
     // THINKING model's healthy decode as a dead lane because the whole quick budget
