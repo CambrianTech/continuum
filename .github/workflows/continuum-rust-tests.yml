@@ -26,6 +26,9 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'core/**'
+      # ts-rs export root: the binding-drift gate below diffs it, so an edit
+      # to a generated .ts alone must still run this job.
+      - 'protocol/typescript/**'
       - '.github/workflows/continuum-rust-tests.yml'
   push:
     branches: [canary, main]
@@ -120,6 +123,37 @@ jobs:
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+
+      # ts-rs binding-drift gate (was its own workflow until 2026-08-16).
+      #
+      # Rust types carry `#[derive(TS)]` + `#[ts(export_to = "…/protocol/typescript/…")]`.
+      # The per-type `export_bindings_*` tests WRITE those .ts files as a side effect,
+      # so a Rust type change with an uncommitted .ts regeneration leaves the wire
+      # shape silently stale — no compile-time guard fires for the TS consumer.
+      # (Near-miss on #1624: TargetSilicon gained a variant, TargetSilicon.ts wasn't
+      # in the push.)
+      #
+      # This used to be a SECOND ubuntu job that re-compiled continuum-core from the
+      # same shared cache just to run `cargo test … export_bindings` — a strict subset
+      # of the step above, which already regenerated every binding. ~9 min of duplicate
+      # compile for one `git diff`. The check is the diff, not the build, so it belongs
+      # here where the build already happened.
+      - name: Verify protocol/typescript/ in sync with Rust source
+        run: |
+          if ! git diff --exit-code protocol/typescript/; then
+            echo "::error::ts-rs binding drift detected. Some Rust types"
+            echo "were modified but their regenerated TypeScript bindings"
+            echo "(in protocol/typescript/) were not committed."
+            echo ""
+            echo "Fix: run cargo test locally to regenerate, then:"
+            echo "  git add protocol/typescript/"
+            echo "  git commit --amend --no-edit"
+            echo "  git push --force-with-lease"
+            echo ""
+            echo "Or: include the regenerated .ts files in a follow-up commit."
+            exit 1
+          fi
+          echo "✓ protocol/typescript/ is in sync with Rust source"
 
   # windows-msvc BUILD gate (#304). Glass-boxed 2026-08-02: the Windows grid
   # node (the CUDA lane) could not run ANY core test locally — un-gated unix
