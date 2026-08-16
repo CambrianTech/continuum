@@ -397,14 +397,15 @@ pub struct ServingDaemonModule {
     /// flipped the PLAN to the 0.5B, and from then on hysteresis defended the
     /// WRONG incumbent. A brain flip must outlast jitter to be believed.
     downshift_streak: Arc<std::sync::atomic::AtomicU32>,
-    /// Fingerprint of the last `serving.plan` probe actually emitted. The plan
-    /// recomputes every tick, but the PROBE fires only when its content changes
-    /// (event-based law: emit on change, never per tick). Measured 2026-08-14:
-    /// per-tick emission put 1,585 identical rows into 600s of probe stream —
-    /// 51% of ALL rows — which rotated real history away in minutes and made
-    /// every incident archeological (#399). Steady state is now silence; the
-    /// live value stays queryable on demand via `serving/plan`.
-    last_plan_probe: Arc<std::sync::Mutex<Option<String>>>,
+    /// (decision-fingerprint, served_window) of the last `serving.plan` probe
+    /// actually emitted. The plan recomputes every tick, but the PROBE fires
+    /// only when a DECISION changes or the window moves past a relative
+    /// deadband (event-based law: emit on change, never per tick). Measured
+    /// 2026-08-14: per-tick emission put 1,585 identical rows into 600s of
+    /// probe stream — 51% of ALL rows — which rotated real history away in
+    /// minutes and made every incident archeological (#399). Steady state is
+    /// now silence; the live value stays queryable on demand via `serving/plan`.
+    last_plan_probe: Arc<std::sync::Mutex<Option<(String, u32)>>>,
     /// Ticks remaining before another window re-home may fire. Charged to
     /// [`REHOME_COOLDOWN_TICKS`] when one fires, decremented every reconcile.
     /// Counted in ticks rather than wall-clock deliberately: the rate limit is on
@@ -2399,29 +2400,28 @@ impl ServingDaemonModule {
                     .find(|c| c.model_id == plan.base_model.model_id)
                     .map(|f| f.compute_buffer_per_lane());
                 // Emit-on-change gate (#399): the plan recomputes every tick but
-                // the probe fires only when what it would say DIFFERS from the
+                // the probe fires only when what it would SAY differs from the
                 // last emission. Per-tick emission was 51% of the entire probe
                 // stream — identical rows rotating real history away in minutes.
-                // Every field the probe carries is in the fingerprint, so any
-                // real transition (model, lanes, window, budget-GB, spike,
-                // demand, bound) still lands in the stream the moment it happens.
-                // Windows are quantized to 1k-token buckets IN THE FINGERPRINT
-                // ONLY (the emitted probe keeps exact values): served_window is
-                // derived from live free memory and wobbles by tens of tokens
-                // per tick (measured 24762→24728→24706… post-deploy, still 146
-                // rows/3min) — token-level wobble is measurement noise, not a
-                // plan change; a real re-plan crosses a bucket.
-                let fingerprint = format!(
-                    "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                //
+                // The trigger is DECISIONS ONLY. Continuously-MEASURED fields
+                // (usable_gb, served/demand windows) ride the row as payload but
+                // never trigger it: on a live box free memory churns ±1-2 GB and
+                // the derived window wobbles ~1k tokens every tick, so any
+                // quantization of them still flaps at bucket boundaries — two
+                // attempts measured live (1k buckets → 146 rows/3min; GB
+                // granularity → 563 rows/15min). A WINDOW change only emits past
+                // a relative deadband (>1/8 from the last-emitted value), the
+                // same shape as the #415 prefill deadband: a real re-plan
+                // (16384→26368) clears it, measurement wobble never does.
+                let decisions = format!(
+                    "{}|{}|{}|{}|{}|{}|{}",
                     plan.base_model.model_id,
                     plan.lanes,
                     plan.resident_models,
                     plan.fits_on_gpu,
-                    budget.usable_bytes / 1_000_000_000,
                     candidates.len(),
                     spike_of_served.unwrap_or(0),
-                    plan.served_context_window / 1024,
-                    demand.window_tokens / 1024,
                     demand.lanes,
                 );
                 let plan_probe_changed = {
@@ -2429,11 +2429,15 @@ impl ServingDaemonModule {
                         .last_plan_probe
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if last.as_deref() == Some(fingerprint.as_str()) {
-                        false
-                    } else {
-                        *last = Some(fingerprint);
-                        true
+                    let window_moved = |prev: u32| -> bool {
+                        plan.served_context_window.abs_diff(prev) > prev / 8
+                    };
+                    match last.as_ref() {
+                        Some((d, w)) if *d == decisions && !window_moved(*w) => false,
+                        _ => {
+                            *last = Some((decisions, plan.served_context_window));
+                            true
+                        }
                     }
                 };
                 if plan_probe_changed {
@@ -2531,10 +2535,10 @@ impl ServingDaemonModule {
                         .last_plan_probe
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if last.as_deref() == Some("<no-servable-model>") {
+                    if last.as_ref().map(|(d, _)| d.as_str()) == Some("<no-servable-model>") {
                         false
                     } else {
-                        *last = Some("<no-servable-model>".to_string());
+                        *last = Some(("<no-servable-model>".to_string(), 0));
                         true
                     }
                 };
