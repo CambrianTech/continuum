@@ -240,6 +240,75 @@ pub fn classify_never_started_timeout(
     }
 }
 
+/// How a missed decode SMOKE PROBE should be read, judged by the server's own
+/// `/slots` activity between two consecutive misses (L11) — the exact sibling of
+/// [`classify_never_started_timeout`], one layer up: that one classifies a REQUEST
+/// timeout by the lane's delivery record; this one classifies a PROBE miss by the
+/// lane's slot-state record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmokeMissVerdict {
+    /// `/slots` changed between the two misses: the serve loop is advancing (for
+    /// whoever's work — including clients this core never knew about), so the probe
+    /// missed because real work held the slots. Contention, never wedge evidence.
+    AliveViaSlotProgress,
+    /// No proof of progress: first miss (nothing to compare), fingerprint frozen
+    /// (the wedge signature), or `/slots` unreadable (no exoneration on a fetch
+    /// error). Counts toward the relaunch threshold exactly as before L11.
+    CountMiss,
+}
+
+/// Judge a smoke-probe miss by comparing `/slots` fingerprints across misses. Pure so
+/// the busy-lane / frozen-lane / first-miss / no-endpoint rows are table-testable.
+pub fn judge_smoke_miss(prev_fp: Option<u64>, cur_fp: Option<u64>) -> SmokeMissVerdict {
+    match (prev_fp, cur_fp) {
+        (Some(prev), Some(cur)) if prev != cur => SmokeMissVerdict::AliveViaSlotProgress,
+        _ => SmokeMissVerdict::CountMiss,
+    }
+}
+
+/// Fingerprint of the server's own `/slots` activity state — the lane-level work
+/// evidence that survives every blind spot the adapter-side stamps have (L11).
+///
+/// The adapter stamps ([`note_real_decode`] / [`note_real_prefill_progress`]) only see
+/// work done for OUR open streams. Two measured cases where that goes blind while the
+/// lane works flat out:
+///   1. GHOST WORK after a core restart: the predecessor's in-flight turns keep
+///      decoding inside llama-server for clients that no longer exist — no stream on
+///      this side, no stamps (2026-08-16 boot: 3 wedge declarations + kill-loop,
+///      10:13→10:36, on a lane llama's own log showed grinding the whole time).
+///   2. A fresh core's atomics start at 0 (`None`), so the L9 "trust busy lanes" gate
+///      falls through until the first adapter stream observes progress.
+/// `/slots` is the server's OWN account: per slot `id_task` (task turnover),
+/// `is_processing`, `n_prompt_tokens_processed` (prefill advance), and the decode
+/// counter when the build exposes it. If ANY of that changed between two looks, the
+/// serve loop is provably advancing — for whoever's work — and a missed smoke probe
+/// is queue contention, not death. A truly wedged backend is FROZEN: same fingerprint
+/// every look (the 2026-08-05 4-hour wedge held one task at one impossible progress).
+///
+/// FOR WHOEVER EXTENDS THIS: hash only fields that change WITH WORK. Never hash
+/// timing/params blobs — they'd churn the fingerprint on every poll and exonerate a
+/// dead lane forever. `None` (no array) means "cannot say", which the caller must
+/// treat as no exoneration, never as evidence of progress.
+pub fn slots_activity_fingerprint_of(slots: &serde_json::Value) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let arr = slots.as_array()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    arr.len().hash(&mut h);
+    for slot in arr {
+        slot.get("id").and_then(|v| v.as_u64()).hash(&mut h);
+        slot.get("id_task").and_then(|v| v.as_i64()).hash(&mut h);
+        slot.get("is_processing").and_then(|v| v.as_bool()).hash(&mut h);
+        slot.get("n_prompt_tokens_processed")
+            .and_then(|v| v.as_u64())
+            .hash(&mut h);
+        slot.get("next_token")
+            .and_then(|nt| nt.get("n_decoded"))
+            .and_then(|v| v.as_u64())
+            .hash(&mut h);
+    }
+    Some(h.finish())
+}
+
 /// Wall-clock ms of the last real PREFILL advance on the served lane. The decode stamp
 /// above is blind to a lane that is 100% mid-prefill: eight 17k prompts saturate the
 /// slots for minutes producing ZERO output tokens, the decode stamp goes stale, the
@@ -1424,6 +1493,17 @@ pub trait LlamaServerControl: Send + Sync {
         false
     }
 
+    /// Fingerprint of the server's `/slots` activity state (see
+    /// [`slots_activity_fingerprint_of`]). The health heartbeat compares the value
+    /// across two consecutive smoke-probe MISSES: changed → the serve loop is
+    /// advancing (ghost work, other clients' turns — work the adapter stamps can't
+    /// see) and the miss is queue contention; frozen → the miss counts as wedge
+    /// evidence exactly as before. `None` = "cannot say" (no endpoint, fake/remote
+    /// control) — never exoneration. Default `None` keeps fakes honest.
+    async fn slots_activity_fingerprint(&self) -> Option<u64> {
+        None
+    }
+
     /// The flag this control's stderr watcher raises when the running lane proves itself
     /// WEDGED — a slot reporting arithmetically impossible progress (see
     /// [`crate::inference::wedge`]). The serving daemon polls it on its tick and owns the
@@ -1693,9 +1773,21 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     }
 
     match ctrl.serve(target).await {
-        Ok(()) => EnsureOutcome::Spawned {
-            model: target.model_id().to_string(),
-        },
+        Ok(()) => {
+            // A fresh lane starts with a CLEAN failure record. `serve` kills the old
+            // child, which murders its in-flight turns; their deaths stamp
+            // `note_real_decode_failure` DURING the load window — after the reset
+            // `declare_lane_wedged` did — so without this the corpses of the turns OUR
+            // kill created condemn the replacement on its first heartbeat and the
+            // relaunch loops (measured 2026-08-16: wedge 10:19:04 → kill → 4 stamped
+            // fails by 10:19:49 → wedged again; 23 min of self-fighting). The reset
+            // comment on `reset_real_decode_failures` always promised "the freshly
+            // relaunched lane starts clean" — this is the site that makes it true.
+            reset_real_decode_failures();
+            EnsureOutcome::Spawned {
+                model: target.model_id().to_string(),
+            }
+        }
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
         },
@@ -2242,6 +2334,24 @@ impl LlamaServerControl for LlamaServerProcess {
                 }
             }
         }
+    }
+
+    async fn slots_activity_fingerprint(&self) -> Option<u64> {
+        // Control-plane read (`/slots` is on the HTTP thread, answers while compute
+        // is saturated). Any failure → None: the caller must not read a fetch error
+        // as either progress or freeze.
+        let url = format!("{}/slots", self.root);
+        let body: serde_json::Value = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        slots_activity_fingerprint_of(&body)
     }
 
     fn owns_child(&self) -> bool {
@@ -2883,6 +2993,66 @@ mod tests {
         assert_eq!(
             classify_never_started_timeout(Some(120_000), 120_000),
             NeverStartedClass::WedgeEvidence
+        );
+    }
+
+    // what this catches (2026-08-16, the 23-minute boot kill-loop): a smoke miss on
+    // a lane doing GHOST WORK (a dead core's in-flight turns, no adapter stream →
+    // no L9 stamps) counted as wedge evidence, so 2 misses killed a lane llama's
+    // own log showed grinding flat out — three times in one boot. The verdict must
+    // exonerate a miss when the server's own /slots state ADVANCED between misses,
+    // keep a FROZEN fingerprint counting (the 2026-08-05 wedge signature holds one
+    // task at one impossible progress forever), never exonerate on a first miss
+    // (nothing to compare), and never exonerate on a fetch error.
+    #[test]
+    fn smoke_miss_on_an_advancing_lane_is_contention_not_wedge_evidence() {
+        use super::{judge_smoke_miss, SmokeMissVerdict};
+        // Slots advanced between the two misses: real work held the probe out.
+        assert_eq!(
+            judge_smoke_miss(Some(1), Some(2)),
+            SmokeMissVerdict::AliveViaSlotProgress
+        );
+        // Frozen fingerprint: the wedge signature — count it.
+        assert_eq!(judge_smoke_miss(Some(7), Some(7)), SmokeMissVerdict::CountMiss);
+        // First miss: nothing to compare — count it (threshold ≥ 2 keeps the
+        // detection latency identical to pre-L11).
+        assert_eq!(judge_smoke_miss(None, Some(7)), SmokeMissVerdict::CountMiss);
+        // /slots unreadable: a fetch error is never exoneration.
+        assert_eq!(judge_smoke_miss(Some(7), None), SmokeMissVerdict::CountMiss);
+        assert_eq!(judge_smoke_miss(None, None), SmokeMissVerdict::CountMiss);
+    }
+
+    // what this catches: the fingerprint must move with WORK (prefill advance, task
+    // turnover, decode count) and must NOT move with volatile per-request params —
+    // hashing the params blob would churn every poll and exonerate a dead lane
+    // forever. JSON shape pinned from a live /slots response (2026-08-16, :58057).
+    #[test]
+    fn slots_fingerprint_moves_with_work_and_ignores_params() {
+        use super::slots_activity_fingerprint_of;
+        let slot = |processed: u64, temp: f64| {
+            serde_json::json!([{
+                "id": 0, "n_ctx": 32512, "is_processing": true, "id_task": 55395,
+                "n_prompt_tokens": 143, "n_prompt_tokens_processed": processed,
+                "params": { "temperature": temp, "top_k": 20 }
+            }])
+        };
+        let base = slots_activity_fingerprint_of(&slot(4, 0.0)).expect("array parses");
+        // Prefill advanced → fingerprint moves.
+        assert_ne!(
+            base,
+            slots_activity_fingerprint_of(&slot(90, 0.0)).unwrap(),
+            "prefill advance must change the fingerprint"
+        );
+        // Only volatile params changed → fingerprint stable.
+        assert_eq!(
+            base,
+            slots_activity_fingerprint_of(&slot(4, 0.9)).unwrap(),
+            "params churn must NOT change the fingerprint"
+        );
+        // Non-array body (error page, wrong endpoint) → None, never a fake hash.
+        assert_eq!(
+            slots_activity_fingerprint_of(&serde_json::json!({"error": "nope"})),
+            None
         );
     }
 
