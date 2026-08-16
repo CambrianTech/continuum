@@ -382,15 +382,15 @@ impl ActionCommand for AgentSolve {
                     inner.max_acts.unwrap_or(DEFAULT_MAX_ACTS).max(1) as u64
                         * PER_ACT_ALLOWANCE_SECS,
                 );
-                // #384: the attempt counter is MANUAL so an infra-void attempt (she
-                // never worked — zero acts, no error, empty patch: the F1 signature,
-                // where six null-decision settles during a serving transition graded
-                // as capability zeros) can retry WITHOUT burning her chances. A zero
-                // is a harness claim; the harness must not launder its own faults
-                // into her record.
+                // #384: the attempt counter is MANUAL so an attempt killed by
+                // INFRASTRUCTURE (a serving swap under the drive, a failed
+                // deliberation path) can retry WITHOUT burning her chances. A zero is
+                // a harness claim; the harness must not launder its own faults into
+                // her record — nor, per the classifier below, launder HER result into
+                // an infra excuse.
                 let mut attempt = 1;
-                let mut infra_void_retries: u32 = 0;
-                const INFRA_VOID_RETRIES_MAX: u32 = 2;
+                let mut infra_retries: u32 = 0;
+                const INFRA_RETRIES_MAX: u32 = 2;
                 while attempt <= max_attempts {
                     let mut this_attempt = inner.clone();
                     this_attempt.task = next_task.clone();
@@ -403,6 +403,13 @@ impl ActionCommand for AgentSolve {
                         deadline_s = attempt_deadline.as_secs(),
                         "solve attempt starting — pulse anchor for run-liveness watchers"
                     );
+                    // SERVING EVIDENCE, sampled at the attempt's two ends. This is the
+                    // ONLY thing that entitles the classifier below to say "serving
+                    // transition" — measured movement, never an assumption (the old
+                    // arm asserted it for every zero-work ending, including endings
+                    // where serving never moved at all).
+                    let served_at_start =
+                        crate::inference::llama_server::current_serving().active_model;
                     let body = match tokio::time::timeout(
                         attempt_deadline,
                         AgentSolve::solve_body(this_attempt),
@@ -462,58 +469,121 @@ impl ActionCommand for AgentSolve {
                                 }
                             }
                             tracing::info!(run_id = %run_id, acts = r.acts, attempt, "agent/solve detached run complete");
-                            // #384: ZERO acts + NO error + EMPTY patch = she never
-                            // worked at all — the serving-transition signature (F1:
-                            // decision:null ticks, ~60ms "deliberations", lane not
-                            // resident at pre-flight). That is INFRA, never a
-                            // capability verdict: retry the SAME attempt after a
-                            // settling pause, bounded; exhausted retries end the run
-                            // with a loud infra marker instead of a graded zero.
-                            // #386 extension: an attempt whose settle carries ANY
-                            // infra_error died to INFRASTRUCTURE by definition (the
-                            // inference path failed her — round G: wedge-killed
-                            // attempts with 'no TOKEN progress' still graded and
-                            // burned). Same arm, same bound; her partial work stays
-                            // in the workspace and the retry resumes from it.
-                            if r.infra_error.is_some() || (r.acts == 0 && r.patch.is_empty()) {
-                                if infra_void_retries < INFRA_VOID_RETRIES_MAX {
-                                    infra_void_retries += 1;
+                            // WHAT DID THIS ATTEMPT MEAN? One pure classifier over
+                            // EVIDENCE (`attempt_outcome::classify_attempt`), replacing
+                            // the arm that folded two different endings together and
+                            // then narrated BOTH with the prose of one:
+                            //
+                            //   if r.infra_error.is_some() || (acts == 0 && patch empty)
+                            //       → probe "attempt produced ZERO work with no error —
+                            //          infra void (serving transition)"
+                            //
+                            // Live specimen (run claim-109172fa, 2026-08-16): the FIRST
+                            // disjunct fired — the ledger holds acts: 19, a 12,937-byte
+                            // patch on astropy/modeling/separable.py, and an infra_error
+                            // naming a served-model swap mid-drive — and the wire said
+                            // she produced ZERO work. A citizen's real work, erased from
+                            // the only record anyone reads. The probes below carry the
+                            // acts, the patch bytes and the verbatim cause, so no reader
+                            // can ever again infer "she did nothing" from the class name.
+                            let served_at_end =
+                                crate::inference::llama_server::current_serving().active_model;
+                            let disposition = crate::commands::agent::attempt_outcome::
+                                classify_attempt(crate::commands::agent::attempt_outcome::
+                                    AttemptEvidence {
+                                        acts: r.acts,
+                                        patch_bytes: r.patch.len(),
+                                        infra_error: r.infra_error.as_deref(),
+                                        served_model_at_start: served_at_start.as_deref(),
+                                        served_model_at_end: served_at_end.as_deref(),
+                                    });
+                            use crate::commands::agent::attempt_outcome::AttemptDisposition;
+                            match &disposition {
+                                // A NAMED infra fault: the substrate failed her, so the
+                                // attempt is retried in the SAME workspace (her partial
+                                // work is still on disk) without burning a chance.
+                                AttemptDisposition::InfraFault { kind, cause } => {
+                                    if infra_retries < INFRA_RETRIES_MAX {
+                                        infra_retries += 1;
+                                        crate::probe!(
+                                            class = "benchmark.attempt.infra_fault",
+                                            run_id = %run_id,
+                                            attempt,
+                                            retry = infra_retries,
+                                            kind = kind.as_str(),
+                                            acts = r.acts as u64,
+                                            patch_bytes = r.patch.len() as u64,
+                                            served_before = %served_at_start.as_deref().unwrap_or("<none>"),
+                                            served_after = %served_at_end.as_deref().unwrap_or("<none>"),
+                                            cause = %cause,
+                                            "attempt died to INFRASTRUCTURE — retrying the \
+                                             SAME attempt, her chances unburned (#384/#386). \
+                                             `acts`/`patch_bytes` are the work she HAD done \
+                                             when the substrate failed her, not a verdict."
+                                        );
+                                        tokio::time::sleep(std::time::Duration::from_secs(90))
+                                            .await;
+                                        continue;
+                                    }
                                     crate::probe!(
-                                        class = "benchmark.attempt.infra_void",
+                                        class = "benchmark.attempt.infra_fault",
                                         run_id = %run_id,
                                         attempt,
-                                        retry = infra_void_retries,
-                                        "attempt produced ZERO work with no error — \
-                                         infra void (serving transition); retrying the \
-                                         SAME attempt, her chances unburned (#384)"
+                                        retry = infra_retries,
+                                        kind = kind.as_str(),
+                                        acts = r.acts as u64,
+                                        patch_bytes = r.patch.len() as u64,
+                                        cause = %cause,
+                                        "infra retries exhausted — run ends as INFRA, never \
+                                         graded (a lane that keeps failing her cannot produce \
+                                         a capability verdict)"
                                     );
-                                    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
-                                    continue;
+                                    if let Some(path) = path.as_ref() {
+                                        let _ = std::fs::write(
+                                            path,
+                                            serde_json::json!({
+                                                "failed": true,
+                                                "infra_error": format!(
+                                                    "attempt died to infrastructure \
+                                                     repeatedly ({}): {cause}. This run is an \
+                                                     INFRA fault, not a capability result — \
+                                                     she had taken {} act(s) and left {} patch \
+                                                     bytes when the substrate failed her.",
+                                                    kind.as_str(), r.acts, r.patch.len(),
+                                                ),
+                                                "kind": kind.as_str(),
+                                                "acts": r.acts,
+                                                "patch_bytes": r.patch.len(),
+                                                "run_id": run_id,
+                                                "attempt": attempt,
+                                            })
+                                            .to_string(),
+                                        );
+                                    }
+                                    break;
                                 }
-                                crate::probe!(
-                                    class = "benchmark.attempt.infra_void",
-                                    run_id = %run_id,
-                                    attempt,
-                                    retry = infra_void_retries,
-                                    "infra-void retries exhausted — run ends as INFRA, \
-                                     never graded (#384)"
-                                );
-                                if let Some(path) = path.as_ref() {
-                                    let _ = std::fs::write(
-                                        path,
-                                        serde_json::json!({
-                                            "failed": true,
-                                            "infra_error": "attempt produced zero work \
-                                             with no error repeatedly — serving never \
-                                             delivered a working mind (#384); this run \
-                                             is an INFRA VOID, not a capability result",
-                                            "run_id": run_id,
-                                            "attempt": attempt,
-                                        })
-                                        .to_string(),
+                                // Zero work, no named error, and serving never moved.
+                                // The harness has NOTHING to attribute this to, so it
+                                // attributes it to nothing — and grades the zero it can
+                                // actually see. The old arm claimed "serving transition"
+                                // here and burned 90s × 2 retries (each re-paying the
+                                // ~3-minute quiesce/resettle prelude) to produce no
+                                // measurement at all, which is how a round loses hours.
+                                AttemptDisposition::SilentVoid => {
+                                    crate::probe!(
+                                        class = "benchmark.attempt.silent_void",
+                                        run_id = %run_id,
+                                        attempt,
+                                        served_before = %served_at_start.as_deref().unwrap_or("<none>"),
+                                        served_after = %served_at_end.as_deref().unwrap_or("<none>"),
+                                        "attempt produced ZERO acts and an EMPTY patch, named \
+                                         NO error, and serving never moved — NOT attributable \
+                                         to infrastructure. Graded as the zero it is; if this \
+                                         is a cognition regression it must surface as itself, \
+                                         not hide behind an infra retry loop."
                                     );
                                 }
-                                break;
+                                AttemptDisposition::Grade => {}
                             }
                             // The claim ran to a diff; now the diff runs to a VERDICT with
                             // no human in the loop. Same grader as `benchmark/swe-grade`

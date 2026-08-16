@@ -22,6 +22,7 @@ use std::sync::Arc;
 use crate::modules::agent::AgentService;
 use crate::sdk_codegen::DynCommand;
 
+pub mod attempt_outcome;
 pub mod list;
 pub mod start;
 pub mod status;

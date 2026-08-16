@@ -463,6 +463,9 @@ enum ModelChangeGate {
     NotAChange,
     /// A change, but not yet sustained — do nothing this tick.
     Defer { streak: u32 },
+    /// A measurement holds the lane STEADY — the swap is refused outright this tick,
+    /// however sustained the plan's preference is. See [`model_change_gate`].
+    HeldSteady,
     /// Sustained disagreement — commit the swap (streak consumed).
     Commit { streak: u32 },
 }
@@ -474,12 +477,35 @@ fn model_change_gate(
     pending: &mut Option<String>,
     streak: &std::sync::atomic::AtomicU32,
     needs: u32,
+    held_steady: bool,
 ) -> ModelChangeGate {
     use std::sync::atomic::Ordering;
     if !(live_ready && live_model.is_some() && live_model != Some(desired)) {
         streak.store(0, Ordering::Relaxed);
         *pending = None;
         return ModelChangeGate::NotAChange;
+    }
+    // A READY incumbent + a `ServingSteadyHold` = someone is being MEASURED on these
+    // exact weights right now. Swapping the model out from under them does not
+    // degrade the run, it KILLS it: every subsequent generation is refused with
+    // "model X is not the active served model", the settle burns its deliberation
+    // retries, and the attempt ends as an infra fault. Glass-boxed live 2026-08-16
+    // (run claim-109172fa): at act 19, with a real patch on disk, the plan's
+    // opportunistic upshift Devstral → Qwen3.8-27B committed under the solve's hold
+    // and destroyed the attempt — and the retry re-paid the whole ~3-minute
+    // quiesce/resettle prelude before doing it again.
+    //
+    // This gates the OPTIONAL swap only, exactly like the grow-back suppression
+    // above: an incumbent that is not `ready` (a wedge, a boot, a teardown) is
+    // `NotAChange` by the guard above, so self-heal and recovery are untouched.
+    // The streak is CLEARED so a swap deferred by a measurement must re-earn its
+    // sustained run of ticks once the hold drops — the same re-arm the window
+    // re-home does when it commits. [[benchmark-is-a-governor-preemption-lease]]
+    // [[measured-work-gets-an-exclusive-warm-slot]]
+    if held_steady {
+        streak.store(0, Ordering::Relaxed);
+        *pending = None;
+        return ModelChangeGate::HeldSteady;
     }
     let n = if pending.as_deref() == Some(desired) {
         streak.fetch_add(1, Ordering::Relaxed).saturating_add(1)
@@ -1716,9 +1742,11 @@ impl ServingDaemonModule {
                 // (`ShareLane`). Growing its window means a relaunch, and a relaunch
                 // connection-refuses the exam's in-flight generations (hard-rs 0/8,
                 // 2026-07-20). The grow-back is OPTIONAL headroom; the exam is not.
-                // Hold the lane steady until the eval drops its guard — a model/genome
-                // change or a pressure shrink above still runs (this only gates the
-                // starved GROW re-home). [[benchmark-is-a-governor-preemption-lease]]
+                // Hold the lane steady until the eval drops its guard — a genome change
+                // or a pressure shrink above still runs (this only gates the starved
+                // GROW re-home). The OPTIONAL base-model swap is suppressed by the same
+                // hold at the L10 gate below, for the same reason and with worse
+                // consequences. [[benchmark-is-a-governor-preemption-lease]]
                 if serving_held_steady() {
                     crate::probe!(
                         class = "serving.reconcile.window",
@@ -1797,8 +1825,24 @@ impl ServingDaemonModule {
                 &mut pending,
                 &self.model_change_streak,
                 REHOME_SUSTAINED_TICKS,
+                serving_held_steady(),
             );
             match verdict {
+                ModelChangeGate::HeldSteady => {
+                    crate::probe!(
+                        class = "serving.reconcile.model",
+                        decision = "held-steady",
+                        live_model = live.active_model.as_deref().unwrap_or("<none>"),
+                        plan_model = desired.as_str(),
+                        streak = 0u64,
+                        needs_streak = REHOME_SUSTAINED_TICKS as u64,
+                        "model swap SUPPRESSED: a measurement holds this lane steady — \
+                         swapping the served model under a scored run kills it outright \
+                         (every generation refused as 'not the active served model'). \
+                         Re-earns its streak once the hold drops.",
+                    );
+                    return None;
+                }
                 ModelChangeGate::Defer { streak } => {
                     crate::probe!(
                         class = "serving.reconcile.model",
@@ -3479,47 +3523,98 @@ mod tests {
         let mut pending = None;
         // One bogus tick wanting the 0.5B: deferred, never actuates.
         assert_eq!(
-            model_change_gate(true, Some("27b"), "0.5b", &mut pending, &streak, 3),
+            model_change_gate(true, Some("27b"), "0.5b", &mut pending, &streak, 3, false),
             ModelChangeGate::Defer { streak: 1 }
         );
         // Next tick the sample healed and the plan wants the incumbent again:
         // pending clears, nothing happened.
         assert_eq!(
-            model_change_gate(true, Some("27b"), "27b", &mut pending, &streak, 3),
+            model_change_gate(true, Some("27b"), "27b", &mut pending, &streak, 3, false),
             ModelChangeGate::NotAChange
         );
         assert!(pending.is_none());
         // Sustained genuine disagreement commits on the Nth consecutive tick.
         assert_eq!(
-            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3, false),
             ModelChangeGate::Defer { streak: 1 }
         );
         assert_eq!(
-            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3, false),
             ModelChangeGate::Defer { streak: 2 }
         );
         assert_eq!(
-            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3, false),
             ModelChangeGate::Commit { streak: 3 }
         );
         // A flapping target restarts the count — 0.5b/48b alternation never commits.
         assert_eq!(
-            model_change_gate(true, Some("27b"), "0.5b", &mut pending, &streak, 3),
+            model_change_gate(true, Some("27b"), "0.5b", &mut pending, &streak, 3, false),
             ModelChangeGate::Defer { streak: 1 }
         );
         assert_eq!(
-            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3),
+            model_change_gate(true, Some("27b"), "48b", &mut pending, &streak, 3, false),
             ModelChangeGate::Defer { streak: 1 }
         );
         // No ready incumbent (boot / post-wedge): commit immediately — recovery
         // must not wait out a streak.
         let mut p2 = None;
         assert_eq!(
-            model_change_gate(false, Some("27b"), "48b", &mut p2, &streak, 3),
+            model_change_gate(false, Some("27b"), "48b", &mut p2, &streak, 3, false),
             ModelChangeGate::NotAChange
         );
         assert_eq!(
-            model_change_gate(true, None, "48b", &mut p2, &streak, 3),
+            model_change_gate(true, None, "48b", &mut p2, &streak, 3, false),
+            ModelChangeGate::NotAChange
+        );
+    }
+
+    // what this catches (2026-08-16, run claim-109172fa — the round-killer): the
+    // reconcile committed an OPTIONAL base-model swap (Devstral → Qwen3.8-27B) while
+    // `agent/solve` held a `ServingSteadyHold` and was 19 acts deep with a real patch
+    // on disk. Every generation after the swap was refused as "not the active served
+    // model", the settle burned its deliberation retries, and the attempt died as an
+    // infra fault — then re-paid the whole ~3-minute prelude to try again. A
+    // measurement's weights are not swappable out from under it; the swap must
+    // re-earn its sustained streak after the hold drops, and an UNREADY incumbent
+    // (wedge / boot recovery) must still be untouched by the hold.
+    #[test]
+    fn a_steady_hold_refuses_a_model_swap_and_makes_it_re_earn_its_streak() {
+        use super::{model_change_gate, ModelChangeGate};
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let streak = AtomicU32::new(0);
+        let mut pending = None;
+        // Two ticks of genuine, sustained disagreement accumulate normally…
+        assert_eq!(
+            model_change_gate(true, Some("devstral"), "qwen27b", &mut pending, &streak, 3, false),
+            ModelChangeGate::Defer { streak: 1 }
+        );
+        assert_eq!(
+            model_change_gate(true, Some("devstral"), "qwen27b", &mut pending, &streak, 3, false),
+            ModelChangeGate::Defer { streak: 2 }
+        );
+        // …and then a measurement takes the lane. The tick that WOULD have committed
+        // is refused outright, and the accumulated streak is cleared.
+        assert_eq!(
+            model_change_gate(true, Some("devstral"), "qwen27b", &mut pending, &streak, 3, true),
+            ModelChangeGate::HeldSteady
+        );
+        assert_eq!(streak.load(Ordering::Relaxed), 0, "the streak must re-arm");
+        assert!(pending.is_none());
+        // Held for as long as the measurement runs — never a "held once, then swap".
+        assert_eq!(
+            model_change_gate(true, Some("devstral"), "qwen27b", &mut pending, &streak, 3, true),
+            ModelChangeGate::HeldSteady
+        );
+        // Hold dropped: the swap must prove itself again from zero, not resume at 3.
+        assert_eq!(
+            model_change_gate(true, Some("devstral"), "qwen27b", &mut pending, &streak, 3, false),
+            ModelChangeGate::Defer { streak: 1 }
+        );
+        // A WEDGED/booting lane is not a "change" at all — self-heal and boot are
+        // never blocked by a hold (the recovery path must not wait on a measurement).
+        let mut p2 = None;
+        assert_eq!(
+            model_change_gate(false, Some("devstral"), "qwen27b", &mut p2, &streak, 3, true),
             ModelChangeGate::NotAChange
         );
     }
