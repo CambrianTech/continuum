@@ -282,6 +282,14 @@ pub struct ServingDaemonModule {
     /// Where the liveness heartbeat gets "how long since a real decode" from. Defaults to
     /// the llama-server process-global; tests own it ([`Self::set_decode_age_source`]).
     decode_age: DecodeAgeSource,
+    /// The `/slots` activity fingerprint observed at the LAST missed smoke probe (L11).
+    /// A changed fingerprint at the next miss proves the serve loop advanced between the
+    /// two looks — work the adapter stamps can't see (ghost turns from a dead core's
+    /// clients, a fresh boot's un-stamped atomics) — so the miss is queue contention,
+    /// not wedge evidence. Cleared on every smoke success so a stale value can never
+    /// exonerate a later freeze. `std::sync::Mutex` — held only for a copy, never
+    /// across an await.
+    last_miss_slots_fp: Arc<std::sync::Mutex<Option<u64>>>,
     /// Where the heartbeat reads the real-turn failure streak (#363). Sustained real
     /// failure is wedge evidence that OUTRANKS a passing smoke probe — the undersized-slot
     /// wedge class rejects the fleet's real prompts while a tiny probe still succeeds.
@@ -541,6 +549,7 @@ impl ServingDaemonModule {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
+            last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
             last_healthy_lanes: Arc::new(AtomicU32::new(0)),
@@ -2138,7 +2147,9 @@ impl ServingDaemonModule {
         }))
     }
 
-    /// The liveness HEARTBEAT (#175 self-heal). On a cadence far slower than [`TICK`],
+    /// The liveness HEARTBEAT (#175 self-heal) — see also [`judge_smoke_miss`] (L11),
+    /// which decides whether a missed probe is contention or wedge evidence.
+    /// On a cadence far slower than [`TICK`],
     /// decode-probe the LIVE lane the daemon currently believes is `ready`. The reconcile
     /// fast-path trusts that published `ready` and never re-probes a child it owns, so a
     /// Metal-GPU-OOM-POISONED backend — which answers every control-plane read (`/health`,
@@ -2240,6 +2251,7 @@ impl ServingDaemonModule {
         let health_fails = self.health_fails.clone();
         let health_probing = self.health_probing.clone();
         let force_relaunch = self.force_relaunch.clone();
+        let last_miss_fp = self.last_miss_slots_fp.clone();
         let bus = self.bus.get().cloned();
         Some(tokio::spawn(async move {
             // A real one-token generation through the live slots — the ONLY probe that
@@ -2249,6 +2261,38 @@ impl ServingDaemonModule {
             let ok = server.decode_smoke_ok().await;
             if ok {
                 health_fails.store(0, Ordering::Relaxed);
+                // A success invalidates the miss-time fingerprint — a stale one must
+                // never exonerate a LATER freeze.
+                *last_miss_fp.lock().unwrap() = None;
+                health_probing.store(false, Ordering::Release);
+                return;
+            }
+            // L11: before counting the miss, ask the server's OWN /slots whether the
+            // serve loop advanced since the LAST miss. The adapter stamps (L9) are
+            // blind to work done for clients that no longer exist — measured
+            // 2026-08-16 boot: an adopted lane grinding through a dead core's ghost
+            // turns ate 2 smoke misses and got killed, three times, 23 minutes. A
+            // changed fingerprint = queue contention (probe couldn't get a slot
+            // because real work held them); frozen = wedge evidence, same threshold
+            // and latency as before.
+            let cur_fp = server.slots_activity_fingerprint().await;
+            let prev_fp = {
+                let mut guard = last_miss_fp.lock().unwrap();
+                std::mem::replace(&mut *guard, cur_fp)
+            };
+            if matches!(
+                crate::inference::llama_server::judge_smoke_miss(prev_fp, cur_fp),
+                crate::inference::llama_server::SmokeMissVerdict::AliveViaSlotProgress
+            ) {
+                health_fails.store(0, Ordering::Relaxed);
+                crate::probe!(
+                    class = "serving.health",
+                    ok = true,
+                    via = "slot_progress",
+                    "smoke probe missed but /slots advanced between misses — the serve \
+                     loop is doing real work the adapter stamps can't see (ghost turns, \
+                     other clients); contention, not a wedge (L11)",
+                );
                 health_probing.store(false, Ordering::Release);
                 return;
             }
@@ -3912,6 +3956,10 @@ mod tests {
         /// The stderr watcher's report channel, as the real `LlamaServerProcess` exposes it.
         /// A test raises this to stand in for a slot printing impossible progress.
         wedge: crate::inference::wedge::WedgeFlag,
+        /// Drives [`LlamaServerControl::slots_activity_fingerprint`] (L11). 0 = the
+        /// endpoint is unreadable (`None`); any other value is the fingerprint. A test
+        /// bumps it to stand in for the serve loop advancing between smoke misses.
+        slots_fp: Arc<AtomicU64>,
     }
 
     impl FakeServer {
@@ -3922,6 +3970,7 @@ mod tests {
                 ok,
                 smoke_ok: Arc::new(AtomicBool::new(true)),
                 wedge: Default::default(),
+                slots_fp: Default::default(),
             }
         }
     }
@@ -3957,6 +4006,12 @@ mod tests {
             // liveness-heartbeat tests) independently of the control plane; defaults
             // true (a healthy fake decodes).
             self.smoke_ok.load(Ordering::Relaxed)
+        }
+        async fn slots_activity_fingerprint(&self) -> Option<u64> {
+            match self.slots_fp.load(Ordering::Relaxed) {
+                0 => None,
+                v => Some(v),
+            }
         }
     }
 
@@ -4736,6 +4791,7 @@ mod tests {
             ok: true,
             smoke_ok: smoke.clone(),
             wedge: Default::default(),
+                slots_fp: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -4776,6 +4832,7 @@ mod tests {
             ok: true,
             smoke_ok: smoke.clone(),
             wedge: Default::default(),
+                slots_fp: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -4818,6 +4875,7 @@ mod tests {
             ok: true,
             smoke_ok: smoke.clone(),
             wedge: Default::default(),
+                slots_fp: Default::default(),
         }));
         let _ = daemon.serving_tx.send_replace(ready_snapshot());
 
@@ -4861,6 +4919,7 @@ mod tests {
             ok: true,
             smoke_ok: Arc::new(AtomicBool::new(false)),
             wedge: Default::default(),
+                slots_fp: Default::default(),
         }));
         busy.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
         let _ = busy.serving_tx.send_replace(ready_snapshot());
@@ -4878,6 +4937,7 @@ mod tests {
             ok: true,
             smoke_ok: Arc::new(AtomicBool::new(true)),
             wedge: Default::default(),
+                slots_fp: Default::default(),
         }));
         quiet.set_decode_age_source(Arc::new(move || Some(window_ms + 1)));
         let _ = quiet.serving_tx.send_replace(ready_snapshot());
@@ -4909,6 +4969,7 @@ mod tests {
             // chance to vouch for a lane the real workload proves broken.
             smoke_ok: Arc::new(AtomicBool::new(true)),
             wedge: Default::default(),
+                slots_fp: Default::default(),
         }));
         // Fresh decode trust too (a partial stream can stamp it) — must ALSO be outranked.
         let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
@@ -4929,6 +4990,75 @@ mod tests {
             d.force_relaunch.load(Ordering::Acquire),
             "the reconcile must be forced to re-prove the lane, not re-adopt it"
         );
+    }
+
+    // what this catches (L11 — the 2026-08-16 23-minute boot kill-loop): after a
+    // reboot, the adopted lane ground through the dead core's GHOST turns — real
+    // work no adapter stream observes, so decode-age trust (L9) was blind, two
+    // smoke misses counted as wedge evidence, and a healthy lane was killed three
+    // times. The heartbeat must consult the server's OWN /slots between misses:
+    // an ADVANCING fingerprint exonerates the miss (streak resets, lane stays
+    // ready); a FROZEN fingerprint keeps counting and wedges at the same
+    // threshold/latency as before.
+    #[tokio::test]
+    async fn a_smoke_miss_on_a_lane_with_advancing_slots_is_not_wedge_evidence() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let slots_fp = Arc::new(AtomicU64::new(1));
+        let mut d = daemon_with(Arc::new(FakeServer {
+            serves,
+            ok: true,
+            // Every smoke probe MISSES — the ghost work holds the slots.
+            smoke_ok: Arc::new(AtomicBool::new(false)),
+            wedge: Default::default(),
+            slots_fp: slots_fp.clone(),
+        }));
+        // Pin both process-global evidence sources to inert test values — the
+        // globals are stamped by unrelated tests under full-suite parallelism
+        // (the #7 isolation class), which would silently skip the probe path.
+        d.set_decode_age_source(Arc::new(|| None));
+        d.set_real_fails_source(Arc::new(|| 0));
+        let _ = d.serving_tx.send_replace(ready_snapshot());
+
+        // Drive a heartbeat probe to completion (the cadence gate only fires
+        // every Nth call; bounded by that cadence).
+        let probe_once = |d: &ServingDaemonModule| {
+            let mut h = None;
+            for _ in 0..(HEALTH_PROBE_EVERY_TICKS as usize + 1) {
+                if let Some(handle) = d.spawn_health_heartbeat_if_due() {
+                    h = Some(handle);
+                    break;
+                }
+            }
+            h.expect("a heartbeat probe must fire within one cadence window")
+        };
+
+        // Miss #1: first miss has nothing to compare — it counts (streak = 1).
+        probe_once(&d).await.unwrap();
+        assert_eq!(d.health_fails.load(Ordering::Relaxed), 1);
+        // The serve loop ADVANCES between misses (ghost work / other clients).
+        slots_fp.store(2, Ordering::Relaxed);
+        // Miss #2: fingerprint moved → exonerated, streak resets, still ready.
+        probe_once(&d).await.unwrap();
+        assert_eq!(
+            d.health_fails.load(Ordering::Relaxed),
+            0,
+            "slot progress between misses proves the serve loop alive — the miss \
+             must reset the streak, not feed the relaunch threshold"
+        );
+        assert!(d.serving_tx.borrow().ready, "lane must stay ready");
+        assert!(!d.force_relaunch.load(Ordering::Acquire));
+
+        // Now FREEZE the fingerprint (the 2026-08-05 wedge signature): two more
+        // misses with no slot movement must wedge exactly as before L11.
+        probe_once(&d).await.unwrap();
+        assert_eq!(d.health_fails.load(Ordering::Relaxed), 1);
+        probe_once(&d).await.unwrap();
+        assert!(
+            !d.serving_tx.borrow().ready,
+            "a frozen /slots across the miss window is the real wedge — detection \
+             latency must be unchanged"
+        );
+        assert!(d.force_relaunch.load(Ordering::Acquire));
     }
 
     // what this catches: a lane whose per-slot window froze at ≤ HALF the
