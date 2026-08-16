@@ -482,6 +482,7 @@ mod tests {
             build_sha: String::new(),
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // written before the archive existed
+            recent_results: Vec::new(),
         });
         let cx2 = FactContext {
             turns: &turns,

@@ -690,6 +690,16 @@ async fn serve_persona_loop_inner(
         // for the complete per-turn record. The `respond_inner`-level
         // probes (`persona.response.enter` etc.) live INSIDE the
         // cognition; this one names the airc-boundary turn.
+        // Cognition pulse: this stamp is what EARNS her claim renewals
+        // (cognition_pulse.rs) — a turn starting, even one that later defers
+        // on serving pressure, is proof she is working her holds.
+        crate::persona::cognition_pulse::touch(
+            ctx.identity.peer_id.as_uuid(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or_default(),
+        );
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,

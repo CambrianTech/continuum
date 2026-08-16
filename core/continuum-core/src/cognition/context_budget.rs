@@ -260,6 +260,24 @@ impl ContextBudget {
     pub fn steps_ledger_chars(&self) -> usize {
         self.fraction(TRAIL_HEAD_DENOM)
     }
+
+    /// The RECENT-RESULTS buffer share — the last few acts' result TAILS, kept across
+    /// subsequent acts and turn boundaries. The `last_action` slot keeps only the
+    /// LATEST result and any act overwrites it, and the pinned block is settlement-
+    /// gated — so a finding survived exactly until the next trivial act or spoken
+    /// turn (measured 2026-08-16: Anwen's compile error was overwritten by a
+    /// `list_files` one act later; her next three turns wandered discovery tools and
+    /// she re-ran the same unfixed code — the missing-feedback loop). `1/32` of the
+    /// window holds a handful of ~300-char tails on a 16k lane, more on a big one.
+    /// Storage bound (same leak-honesty contract as [`Self::receipt_archive_chars`]).
+    pub fn recent_results_chars(&self) -> usize {
+        match self.total_chars {
+            Some(_) => self.fraction(32),
+            None => {
+                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(32)
+            }
+        }
+    }
 }
 
 #[cfg(test)]

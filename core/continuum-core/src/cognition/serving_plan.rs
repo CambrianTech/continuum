@@ -540,20 +540,17 @@ pub fn plan_serving(
     // LRU eviction re-prefills a cold ~10k prefix every time an evicted mind speaks (#266). The
     // honest node ceiling is "how many minds fit warmly at a full-turn window", and exceeding it
     // is a real condition to make VISIBLE, never silently absorb: `grid_overflow_lanes` (below)
-    // carries the same count to the governor for off-box placement, and this probe names it at
-    // the decision so "two of four citizens sat at 0% cache reuse" can't go unseen for weeks.
-    if lanes < demand_lanes {
-        crate::probe!(
-            class = "serving.plan",
-            decision = "warm-slot-oversubscribed",
-            resident_personas = demand_lanes,
-            warm_slots = lanes,
-            without_warm_slot = demand_lanes - lanes,
-            per_slot_floor = BOOTSTRAP_WORKING_SET,
-            "node cannot warmly host all resident personas at the full-turn window floor — the \
-             unslotted minds re-prefill cold every turn until tiered off or grid-placed (#266)",
-        );
-    }
+    // carries the same count to the governor for off-box placement, and the serving daemon's
+    // adopted-plan probe names it so "0% cache reuse" can't go unseen for weeks.
+    // NO probe here for oversubscription (#399): this is a PURE planning function
+    // and `plan_serving_stable` calls it TWICE per tick with different budgets
+    // (fresh + at-rest credit), so any per-call emission — even dedup'd through a
+    // static — alternates between the two call sites and floods anyway (measured
+    // live 2026-08-16: a single-slot dedup static still emitted 260 rows/3min
+    // because the call sites' lane counts, 1 vs 2, defeated it every tick). The
+    // condition already rides the RETURNED plan (`grid_overflow_lanes`, and
+    // lanes < demand is recomputable from plan + demand); the serving daemon
+    // probes it for the ADOPTED plan only, behind its emit-on-change gate.
     // DEMAND cap (M5+BigMama 2026-07-26): provision for what personas USE, not for
     // what RAM allows. `window_for` maximizes the window to fill the budget (94k on a
     // roomy host) → ~33GB pre-allocated KV × lanes → swap/wedge. Cap DOWN to demand.
