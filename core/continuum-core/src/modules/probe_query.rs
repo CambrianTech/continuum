@@ -124,7 +124,17 @@ pub struct ProbeQueryParams {
     /// bare and comma forms are what `CONTINUUM_PROBE_CLASSES` already uses, so the
     /// filter reads identically whether you are configuring the sink or querying it
     /// (#328 — the canonical form follows the standard that already exists).
-    #[serde(default, deserialize_with = "comma_or_seq")]
+    /// `classPrefix`/`class_prefix` are accepted aliases (#328: natural synonyms
+    /// resolve) — measured 2026-08-16: a caller passed `--classPrefix=serving`, serde
+    /// silently dropped the unknown key, and the "filtered" query returned all 9,093
+    /// events. On THE diagnostic command, a silently-vacuous filter is the worst
+    /// failure shape there is.
+    #[serde(
+        default,
+        deserialize_with = "comma_or_seq",
+        alias = "classPrefix",
+        alias = "class_prefix"
+    )]
     pub class: Option<Vec<String>>,
     /// Only events captured at or after this epoch-ms watermark.
     #[serde(default)]
@@ -167,6 +177,15 @@ pub struct ProbeQueryResult {
     pub sources: Vec<String>,
     /// Plain-language reading, so a zero explains itself instead of being interpreted.
     pub summary: String,
+    /// Resume cursor: pass as `since_ms` on the NEXT call to receive only rows newer
+    /// than everything this response already showed. `newest captured_at_ms + 1` of
+    /// the MATCHED set (not just the returned page), or `since_ms` passed through
+    /// unchanged when nothing matched — so polling in a loop can never re-read a row
+    /// it has seen, and never skips one it hasn't. This field exists because every
+    /// hand-rolled `since` computation on 2026-08-16 got it subtly wrong at least
+    /// once (whole-file counts read as fresh counts); the command owns the cursor so
+    /// callers cannot.
+    pub watermark_ms: u64,
 }
 
 #[async_trait]
@@ -230,12 +249,22 @@ impl ActionCommand for ProbeQuery {
         .await
         .map_err(|e| CommandError::Internal(format!("probe ledger scan panicked: {e}")))??;
 
+        // The ledger is chronological and `events` keeps the NEWEST matches, so the
+        // last returned row carries the newest matched timestamp — +1 makes the
+        // cursor exclusive. An empty match passes the caller's own watermark back
+        // unchanged: the cursor only ever moves because a row moved it.
+        let watermark_ms = scan
+            .events
+            .last()
+            .map(|row| row.captured_at_ms + 1)
+            .unwrap_or_else(|| p.since_ms.unwrap_or(0));
         Ok(ProbeQueryResult {
             summary: summarize(&scan, limit),
             events: scan.events,
             matched: scan.matched,
             scanned: scan.scanned,
             sources: scan.sources,
+            watermark_ms,
         })
     }
 }
