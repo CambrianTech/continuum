@@ -41,6 +41,7 @@ pub mod channel_view;
 pub mod claim_rejections;
 pub mod cognition;
 pub mod cognition_io;
+pub mod cognition_pulse;
 pub mod decay_tick;
 pub mod domain_classifier;
 pub mod durable_history;

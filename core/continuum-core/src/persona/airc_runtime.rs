@@ -568,6 +568,16 @@ impl PersonaAircRuntime {
             let hb_airc = airc_arc.clone();
             let hb_persona = persona_id;
             let hb_name = agent_name.clone();
+            // Birth stamp: one full lease-length of renewal grace before her
+            // first turn (covers the post-boot deaf window, #412). After
+            // that, renewals must be EARNED by cognition — see the gate below.
+            crate::persona::cognition_pulse::touch(
+                persona_id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or_default(),
+            );
             let handle = tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
                 let mut last: Option<airc_lib::AgentAvailabilityState> = None;
@@ -659,6 +669,41 @@ impl PersonaAircRuntime {
                         .map_or(true, |t| t.elapsed() >= renewal_period);
                     if !renewal_due {
                         continue;
+                    }
+                    // RENEWAL IS EARNED BY COGNITION, NOT BY BREATHING
+                    // (2026-08-16). The presence-bound renewal above this
+                    // comment's ancestor fixed #331 by overcorrecting: a
+                    // citizen whose cognition had been silent for HOURS still
+                    // renewed every minute, so a stalled round read as
+                    // "actively held" forever and the lapsed-claim sweeper
+                    // could never recover her finished artifact. The gate:
+                    // no turn within one lease-length → skip renewal → the
+                    // hold lapses naturally → the card becomes re-claimable
+                    // and any written artifact gets graded. A turn that
+                    // DEFERS on serving pressure still stamps the pulse —
+                    // trying to think counts; only true silence lapses.
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or_default();
+                        let idle =
+                            crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
+                        if !crate::persona::cognition_pulse::renewal_earned(
+                            idle,
+                            crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                        ) {
+                            crate::probe!(
+                                class = "persona.claim.renewal_skipped_idle",
+                                persona_id = %hb_persona,
+                                agent_name = %hb_name,
+                                idle_ms = idle.unwrap_or(u64::MAX),
+                                ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                "no cognition within one lease-length — holds lapse \
+                                 naturally so the work can be recovered"
+                            );
+                            continue;
+                        }
                     }
                     match hb_airc
                         .work_roster_status(airc_lib::WorkRosterQuery::default())
