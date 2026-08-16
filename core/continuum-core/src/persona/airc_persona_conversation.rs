@@ -300,6 +300,14 @@ impl PersonaConversation for AircPersonaConversation {
                         probe_class = "persona.inbound.raw_event",
                         "persona subscribe stream yielded a raw event (#146)"
                     );
+                    // Card-state transitions bridge onto the internal bus HERE —
+                    // the persona subscribe streams are the only channel-complete
+                    // receiver this core has (the daemon attach covers ONE room),
+                    // and this runs BEFORE the perceptual filter and the self-skip
+                    // so a citizen's own `work/state` echo counts. Once per wire
+                    // event process-wide (the bridge dedups by event id); this is
+                    // the single emitter the grade-on-done subscriber hears.
+                    crate::modules::work::bridge_wire_work_event(&event).await;
                     // Recover a perceptual room turn. Two on-wire shapes
                     // reach a persona's subscribe stream and both are
                     // messages it must hear: a peer's plain-text `say()`
