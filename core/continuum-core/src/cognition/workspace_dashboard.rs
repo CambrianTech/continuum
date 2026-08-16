@@ -27,7 +27,31 @@ use serde::Serialize;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::workspace::{Decision, WorkspaceCaptureSink, WorkspaceTrace};
+use super::workspace::{Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace};
+
+/// The two concurrent barriers, as arithmetic: the turn waits on the SLOWEST
+/// faculty of each phase, not the sum — `max(perception) + max(deliberation)`.
+///
+/// Pure, and lifted out of [`DashboardCaptureSink::record`] on purpose. The COST
+/// claim of the grounding-deferral slice — *"taking a slow source off the
+/// perception barrier removes exactly its deliver from the turn's wait"* — is
+/// arithmetic over per-faculty timings, so it is provable with the timings as
+/// PARAMETERS. Proving it instead with a stopwatch around a live cycle is what
+/// made the old `deferring_grounding_..._critical_path` test flaky: on a loaded
+/// CI runner a scheduler stall forged a 99,798µs "grounding cost" in the fork
+/// that pays no grounding cost at all. Same shape as the pure verdict fns in
+/// `inference/llama_server.rs` — decide from parameters, leave the clock outside.
+pub(crate) fn critical_path_us(timings: &[FacultyTiming]) -> u128 {
+    let slowest_of = |deliberation: bool| {
+        timings
+            .iter()
+            .filter(|t| t.deliberation == deliberation)
+            .map(|t| t.elapsed_us)
+            .max()
+            .unwrap_or(0)
+    };
+    slowest_of(false) + slowest_of(true)
+}
 
 /// One faculty's wall-clock this tick, projected to a serializable shape. Same
 /// pattern as the JSONL sink's `TimingRecord`: each sink owns its wire format so
@@ -105,22 +129,6 @@ impl WorkspaceCaptureSink for DashboardCaptureSink {
     fn record(&self, trace: &WorkspaceTrace) {
         let tick = self.tick.fetch_add(1, Ordering::Relaxed) + 1;
 
-        // The two concurrent barriers: the turn waits on the slowest of each
-        // phase, not the sum. critical_path = max(perception) + max(deliberation).
-        let max_perception = trace
-            .timings
-            .iter()
-            .filter(|t| !t.deliberation)
-            .map(|t| t.elapsed_us)
-            .max()
-            .unwrap_or(0);
-        let max_deliberation = trace
-            .timings
-            .iter()
-            .filter(|t| t.deliberation)
-            .map(|t| t.elapsed_us)
-            .max()
-            .unwrap_or(0);
         let total_faculty_us: u128 = trace.timings.iter().map(|t| t.elapsed_us).sum();
 
         let context_chars: usize = trace
@@ -152,7 +160,7 @@ impl WorkspaceCaptureSink for DashboardCaptureSink {
                     bid: t.bid,
                 })
                 .collect(),
-            critical_path_us: max_perception + max_deliberation,
+            critical_path_us: critical_path_us(&trace.timings),
             total_faculty_us,
             context_bids: trace.context_broadcast.len(),
             context_chars,
@@ -277,5 +285,83 @@ mod tests {
         assert_eq!(frame.output_tokens, 40);
         // The decision rides along, kebab-tagged.
         assert!(matches!(frame.decision, Some(Decision::Speak { .. })));
+    }
+
+    // what this catches: the COST half of the grounding-deferral claim — that
+    // moving a slow grounding source OFF the perception barrier removes exactly
+    // its deliver from the turn's wait — as arithmetic over the timings instead
+    // of a stopwatch around a live cycle. The structural half (that the deferred
+    // tick genuinely never awaits `deliver()`) is proven clock-free in
+    // `persona_workspace.rs`. Together they replace the wall-clock test that CI
+    // load could forge either way.
+    #[test]
+    fn taking_the_slow_grounding_faculty_off_the_barrier_removes_exactly_its_cost() {
+        let deliberation = FacultyTiming {
+            faculty: FacultyId::Deliberation,
+            elapsed_us: 5_000,
+            deliberation: true,
+            bid: true,
+        };
+        let fast_perception = FacultyTiming {
+            faculty: FacultyId::Recall,
+            elapsed_us: 200,
+            deliberation: false,
+            bid: true,
+        };
+        let grounding = |elapsed_us| FacultyTiming {
+            faculty: FacultyId::Custom("grounding".to_string()),
+            elapsed_us,
+            deliberation: false,
+            bid: true,
+        };
+
+        // Synchronous: the 60ms deliver IS the perception max, so the turn waits on it.
+        let on_barrier = critical_path_us(&[
+            fast_perception.clone(),
+            grounding(60_000),
+            deliberation.clone(),
+        ]);
+        assert_eq!(on_barrier, 60_000 + 5_000);
+
+        // Deferred: the tick serves reprojected last-good, so the grounding faculty
+        // reads ~0 and the perception max collapses back to the fast faculty.
+        let off_barrier = critical_path_us(&[
+            fast_perception.clone(),
+            grounding(3),
+            deliberation.clone(),
+        ]);
+        assert_eq!(off_barrier, 200 + 5_000);
+        assert_eq!(
+            on_barrier - off_barrier,
+            59_800,
+            "deferral must remove the grounding deliver, and nothing else, from the wait"
+        );
+
+        // The barrier is a MAX, not a sum: a second slow perception faculty means
+        // deferring grounding buys nothing, and the arithmetic must say so rather
+        // than crediting the slice with a win it didn't earn.
+        let two_slow = critical_path_us(&[
+            FacultyTiming {
+                elapsed_us: 60_000,
+                ..fast_perception.clone()
+            },
+            grounding(60_000),
+            deliberation.clone(),
+        ]);
+        let one_deferred = critical_path_us(&[
+            FacultyTiming {
+                elapsed_us: 60_000,
+                ..fast_perception.clone()
+            },
+            grounding(3),
+            deliberation.clone(),
+        ]);
+        assert_eq!(two_slow, one_deferred, "the barrier waits on the slowest");
+
+        // An all-perception tick has no deliberation term, and vice versa — the
+        // `unwrap_or(0)` legs, so a half-populated trace can't underflow the frame.
+        assert_eq!(critical_path_us(&[grounding(700)]), 700);
+        assert_eq!(critical_path_us(&[deliberation]), 5_000);
+        assert_eq!(critical_path_us(&[]), 0);
     }
 }
