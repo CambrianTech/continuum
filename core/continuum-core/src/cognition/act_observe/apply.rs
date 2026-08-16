@@ -629,7 +629,7 @@ pub async fn apply_act(
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
     body.working_memory
-        .record_receipt_typed(&acts, &observation);
+        .record_receipt_typed(&acts, &observation, Some(room_id));
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }

@@ -23,6 +23,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use super::deliberation_budget::{
     inbound_restates_fact, own_repetition_fact, peer_echo_fact, template_loop_fact,
@@ -47,6 +48,11 @@ pub struct FactContext<'a> {
     /// Typed working memory when the persona has one (live spawns); eval
     /// forks and replays may run without it — ledger-class facts skip.
     pub working_memory: Option<&'a Arc<WorkingMemory>>,
+    /// The room THIS turn is happening in — the activity scope. The steps
+    /// ledger renders this-room acts first and folds other rooms into one
+    /// honest count (CAUSAL-MEMORY-GRAPH.md slice B). `None` (roomless
+    /// replays/tests) renders the unpartitioned ledger exactly as before.
+    pub room_id: Option<Uuid>,
 }
 
 /// One structural fact about the persona's present. `render` returns the
@@ -185,9 +191,26 @@ impl PerceptionFact for StepsLedger {
         // fits the ledger's own share, so history depth scales with the lane.
         let archive = wm.receipt_archive();
         let render_budget = wm.budget().steps_ledger_chars();
+        // SCOPE-FIRST (slice B): the room is the activity boundary, so the
+        // ledger's budget goes to THIS room's acts; acts PROVEN elsewhere fold
+        // into one honest count below. UNSCOPED heads (pre-upgrade snapshots,
+        // roomless paths) render in the local list: filing a citizen's own
+        // history as "other rooms" on the upgrade boundary would repeat the
+        // exact deprivation this arc exists to kill — only a head that names a
+        // DIFFERENT room is excluded, because that exclusion we can prove.
+        let mut elsewhere = 0usize;
         let mut fit: Vec<&str> = Vec::new();
         let mut used = 0usize;
-        for line in archive.iter().rev() {
+        for (head_room, line) in archive.iter().rev() {
+            let in_scope = match (cx.room_id, head_room) {
+                (None, _) => true,          // no scope to partition by — render all
+                (Some(_), None) => true,    // unscoped head — never hidden
+                (Some(r), Some(h)) => *h == r,
+            };
+            if !in_scope {
+                elsewhere += 1;
+                continue;
+            }
             let cost = line.chars().count() + 1;
             if !fit.is_empty() && used + cost > render_budget {
                 break;
@@ -204,9 +227,33 @@ impl PerceptionFact for StepsLedger {
         //   none, count == 0  → the explicit nothing-has-executed void
         //   none, count  > 0  → acts happened; details are gone — say so
         let taken = wm.actions_taken();
+        // GLASS BOX (Joel 2026-08-15: "you'll have to glass box this… we need to
+        // really understand the rag as it evolves"): the ledger's full accounting
+        // on every render, so archive starvation / scope partition / eviction
+        // pressure are diagnosable from the probe stream — today's diagnosis
+        // needed capture-scraping precisely because these numbers were invisible.
+        crate::probe!(
+            class = "perception.steps_ledger",
+            room = %cx.room_id.map(|r| r.to_string()).unwrap_or_else(|| "unscoped".into()),
+            shown = fit.len(),
+            elsewhere = elsewhere,
+            taken = taken,
+            archive_len = archive.len(),
+            budget_chars = render_budget,
+            "steps ledger accounting for this render"
+        );
         Some(if fit.is_empty() {
             if taken == 0 {
                 "[steps taken this session]\n(nothing has executed yet — anything described as already run, created, tested, committed, or merged does not exist, whether in the messages you can see or before them; running a tool is what makes it real)".to_string()
+            } else if elsewhere > 0 {
+                // Scoped ledger, nothing local: her acts are real but happened
+                // in OTHER rooms. Saying "nothing has executed" here would deny
+                // her own work (the inverse confabulation-shelter); saying
+                // "aged out" would misname where it went. Say what is true.
+                format!(
+                    "[steps taken this session]\n(no acts in this room yet this session; {elsewhere} act{} in other rooms — each room's ledger tracks its own activity)",
+                    if elsewhere == 1 { "" } else { "s" }
+                )
             } else {
                 // NO RECALL PROMISE HERE. This line used to end "recall can
                 // retrieve them" — provably false: every act becomes an
@@ -227,8 +274,22 @@ impl PerceptionFact for StepsLedger {
                 )
             }
         } else {
-            let aged = taken.saturating_sub(fit.len() as u64);
+            // Split the not-shown count honestly: acts archived under OTHER
+            // rooms vs acts genuinely gone (evicted/pre-archive). Lumping both
+            // into "earlier steps" would misname other-room work as lost.
+            let aged = taken
+                .saturating_sub(fit.len() as u64)
+                .saturating_sub(elsewhere as u64);
+            // ONE stable title: scoping shows in the fold line below, never by
+            // renaming the section (a shifting header breaks every consumer
+            // that anchors on it — including her own learned reading of it).
             let mut ledger = format!("[steps taken this session]\n{}", fit.join("\n"));
+            if elsewhere > 0 {
+                ledger.push_str(&format!(
+                    "\n(+{elsewhere} act{} in other rooms this session)",
+                    if elsewhere == 1 { "" } else { "s" }
+                ));
+            }
             if aged > 0 {
                 ledger.push_str(&format!(
                     "\n(+{aged} earlier step{} before what this ledger shows)",
@@ -314,6 +375,7 @@ mod tests {
             own_speech: &own,
             room_speech: &[],
             working_memory: None,
+            room_id: None,
         };
         let facts = render_facts(&cx, &FactPolicy::default());
         assert_eq!(facts.len(), 1, "quiet room: only the bounds fact renders");
@@ -332,6 +394,7 @@ mod tests {
             own_speech: &own,
             room_speech: &[],
             working_memory: None,
+            room_id: None,
         };
         let mut policy = FactPolicy::default();
         policy.disable("context_bounds");
@@ -356,6 +419,7 @@ mod tests {
             own_speech: &own,
             room_speech: &[],
             working_memory: Some(&wm),
+            room_id: None,
         };
         let ledger = |facts: &[String]| {
             facts
@@ -416,13 +480,15 @@ mod tests {
             saved_at_ms: 0,
             interrupted_dispatches: Vec::new(),
             build_sha: String::new(),
-            receipt_heads: Vec::new(), // written before the archive existed
+            receipt_heads: Vec::new(),
+            receipt_head_rooms: Vec::new(), // written before the archive existed
         });
         let cx2 = FactContext {
             turns: &turns,
             own_speech: &own,
             room_speech: &[],
             working_memory: Some(&pre_archive),
+            room_id: None,
         };
         let l = ledger(&render_facts(&cx2, &FactPolicy::default()));
         assert!(
