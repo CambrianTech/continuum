@@ -75,6 +75,12 @@ fn wire_card_state_payload(event: &airc_core::TranscriptEvent) -> Option<Value> 
     Some(serde_json::json!({
         "card_id": changed.card_id.as_uuid().to_string(),
         "state": state,
+        // The card's OWN room — boards are per-room, so a subscriber that reads
+        // the board or posts a verdict must scope to THIS room, never to whatever
+        // current_room() happens to be (the documented #345 wrong-room trap;
+        // found live 2026-08-15 when the grader read the grading citizen's
+        // academy board and never found the bench card).
+        "room_id": event.room_id.as_uuid().to_string(),
     }))
 }
 
@@ -1485,6 +1491,12 @@ mod tests {
             payload["state"].as_str().unwrap(),
             "closed",
             "state must be the snake_case CardState serde form — the is_terminal vocabulary"
+        );
+        assert_eq!(
+            payload["room_id"].as_str().unwrap(),
+            airc_core::RoomId::from_u128(2).as_uuid().to_string(),
+            "room_id must be the card's OWN room — the grader scopes its board read and \
+             verdict post to it (#345 wrong-room trap, hit live 2026-08-15)"
         );
         // parse_state round-trip: the bridged state string is valid work/state input.
         assert_eq!(parse_state("closed").unwrap(), CardState::Closed);

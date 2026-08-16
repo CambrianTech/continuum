@@ -102,13 +102,32 @@ impl ServiceModule for BenchmarkGradeModule {
         if card_id.is_empty() {
             return Ok(());
         }
+        // The card's room, from the wire event (bridge payload contract). Boards are
+        // per-room: without this the grade read whatever room the grading citizen
+        // happened to be in — the #345 wrong-room trap, hit live 2026-08-15.
+        let room_id = payload
+            .get("room_id")
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse::<uuid::Uuid>().ok());
 
         // Grading is minutes long (clone + venv + pytest). The bus calls handle_event
         // INLINE during publish, so blocking here would hang the citizen's work/state
         // verb. Spawn it — fire-and-observe, never block-on-client (the long-jobs rule).
         let registry = self.registry.clone();
         tokio::spawn(async move {
-            if let Err(e) = grade_card(&registry, &card_id).await {
+            crate::probe!(
+                class = "benchmark_grade.start",
+                card_id = %card_id,
+                room_id = %room_id.map(|r| r.to_string()).unwrap_or_default(),
+                "grade-on-done fired — reading the card's own room board"
+            );
+            if let Err(e) = grade_card(&registry, &card_id, room_id).await {
+                crate::probe!(
+                    class = "benchmark_grade.error",
+                    card_id = %card_id,
+                    error = %e,
+                    "grade could not run"
+                );
                 tracing::warn!(card = %card_id, "benchmark_grade: {e}");
             }
         });
@@ -122,7 +141,17 @@ impl ServiceModule for BenchmarkGradeModule {
 
 /// Read the card, and — if it is a bench SWE card — grade her workspace against the
 /// held-out oracle and post the verdict into the room.
-async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Result<(), String> {
+///
+/// `room_id` is the card's OWN room from the wire event. Boards are per-room, so the
+/// read scopes there and the verdict posts there — never to `current_room()`, which
+/// is whichever room the grading citizen happens to sit in (#345's wrong-room trap,
+/// hit live 2026-08-15: the grader read academy's board, never found the bench card,
+/// and parked forever with no receipt).
+async fn grade_card(
+    registry: &PersonaAircRuntimeRegistry,
+    card_id: &str,
+    room_id: Option<uuid::Uuid>,
+) -> Result<(), String> {
     // Author/read through a live citizen — whoever this machine has online (never a
     // hardcoded name), the same deterministic pick curator_airc uses.
     let rt = registry
@@ -130,8 +159,25 @@ async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Res
         .ok_or("no live citizen to author the grade through")?;
     let airc = rt.airc().clone();
 
+    // Resolve the card's room from the citizen's subscription set (same pattern as
+    // work.rs::claim_following_card_room). A room we can't resolve is a LOUD error —
+    // grading against a guessed board is exactly the silent-wrong-room failure this
+    // parameter exists to kill.
+    let room_id = room_id.ok_or("event carried no room_id — cannot scope the board read")?;
+    let set = airc
+        .subscription_set()
+        .await
+        .map_err(|e| format!("subscription set: {e}"))?;
+    let room = set
+        .all()
+        .map(|sub| sub.as_room())
+        .find(|r| r.channel.as_uuid() == room_id)
+        .ok_or_else(|| {
+            format!("grading citizen is not subscribed to the card's room {room_id}")
+        })?;
+
     let board = airc
-        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .work_board_in(&room)
         .await
         .map_err(|e| format!("board read: {e}"))?
         .snapshot();
@@ -160,7 +206,7 @@ async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Res
     let spec = known_benchmarks().iter().find(|b| b.name == bench);
     let Some(dataset) = spec.and_then(|s| s.swe_dataset()) else {
         if let Some(spec) = spec.filter(|s| s.eval_set.is_some()) {
-            return grade_gym_card(&airc, spec, &instance, owner, &bench).await;
+            return grade_gym_card(&airc, spec, &instance, owner, &bench, room_id).await;
         }
         return Ok(()); // catalogued-but-not-runnable, or a bench name we don't know
     };
@@ -211,9 +257,16 @@ async fn grade_card(registry: &PersonaAircRuntimeRegistry, card_id: &str) -> Res
         )
     };
 
-    // Post the verdict into the room as a participant (slice 2 posts to the authoring
-    // citizen's room; per-run bench-room targeting is #329/#346 slice 3).
-    airc.say(&msg)
+    // Post the verdict into the CARD'S room as a participant — the run room the
+    // citizens are standing in, not the grading citizen's current room.
+    crate::probe!(
+        class = "benchmark_grade.verdict",
+        card_id = %card_id,
+        room_id = %room_id,
+        resolved = verdict.resolved,
+        "SWE grade complete — posting verdict into the card's room"
+    );
+    crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg)
         .await
         .map_err(|e| format!("post verdict: {e}"))?;
     Ok(())
@@ -251,6 +304,7 @@ async fn grade_gym_card(
     task_id: &str,
     owner: Option<impl std::fmt::Display>,
     bench: &str,
+    room_id: uuid::Uuid,
 ) -> Result<(), String> {
     let owner = owner
         .ok_or_else(|| format!("bench card {task_id} has no owner — nobody worked it"))?
@@ -299,7 +353,14 @@ async fn grade_gym_card(
              The card is graded on the file her hands write (code/write); it was never written."
         ),
     };
-    airc.say(&msg)
+    crate::probe!(
+        class = "benchmark_grade.verdict",
+        card_id = %task_id,
+        room_id = %room_id,
+        resolved = msg.starts_with('✅'),
+        "gym grade complete — posting verdict into the card's room"
+    );
+    crate::persona::airc_citizen::publish_text_in_room(airc, room_id, &msg)
         .await
         .map_err(|e| format!("post verdict: {e}"))?;
     Ok(())
