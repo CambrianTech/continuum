@@ -124,7 +124,17 @@ pub struct ProbeQueryParams {
     /// bare and comma forms are what `CONTINUUM_PROBE_CLASSES` already uses, so the
     /// filter reads identically whether you are configuring the sink or querying it
     /// (#328 — the canonical form follows the standard that already exists).
-    #[serde(default, deserialize_with = "comma_or_seq")]
+    /// `classPrefix`/`class_prefix` are accepted aliases (#328: natural synonyms
+    /// resolve) — measured 2026-08-16: a caller passed `--classPrefix=serving`, serde
+    /// silently dropped the unknown key, and the "filtered" query returned all 9,093
+    /// events. On THE diagnostic command, a silently-vacuous filter is the worst
+    /// failure shape there is.
+    #[serde(
+        default,
+        deserialize_with = "comma_or_seq",
+        alias = "classPrefix",
+        alias = "class_prefix"
+    )]
     pub class: Option<Vec<String>>,
     /// Only events captured at or after this epoch-ms watermark.
     #[serde(default)]
