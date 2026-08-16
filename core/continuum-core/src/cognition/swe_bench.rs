@@ -287,10 +287,25 @@ pub(crate) async fn run(
     args: &[&str],
     cwd: Option<&Path>,
 ) -> Result<std::process::Output, String> {
+    run_env(program, args, cwd, &[]).await
+}
+
+/// `run` with extra environment variables — the seam era C-extension builds need
+/// (see `ERA_CFLAGS`). Everything else (process group, ceiling, kill semantics)
+/// is identical; `run` delegates here so there is exactly one subprocess path.
+pub(crate) async fn run_env(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    envs: &[(&str, &str)],
+) -> Result<std::process::Output, String> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
+    }
+    for (k, v) in envs {
+        cmd.env(k, v);
     }
     // #381: the child leads its own PROCESS GROUP so a kill reaches the whole
     // tree — pytest spawns grandchildren (sympy's own runner, plugins) that
@@ -524,6 +539,33 @@ fn build_requires(repo_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Era C code vs MODERN clang (#383 cause 2's second head, measured live 2026-08-16 on
+/// astropy__astropy-12907 right after the jinja2 fix moved the failure downstream):
+/// Xcode 15+ clang promotes `-Wincompatible-function-pointer-types`,
+/// `-Wimplicit-function-declaration`, and `-Wint-conversion` to hard ERRORS. astropy 2022's
+/// wcslib wrappers (`wcslib_wtbarr_wrap.c`: `tp_traverse` assigned an `int (PyWtbarr *, …)`
+/// where `traverseproc` wants `int (PyObject *, …)`) compiled as WARNINGS on the era's own
+/// compilers — the code under test genuinely ran this way. The compiler is HARNESS (it runs
+/// on this machine), the C is SUBJECT: demote exactly those three diagnostics back to the
+/// warnings they were. distutils APPENDS `CFLAGS` to its sysconfig baseline, so nothing else
+/// about the build changes, and modern code that doesn't trip them is untouched.
+const ERA_CFLAGS: &str = "-Wno-error=incompatible-function-pointer-types \
+     -Wno-error=implicit-function-declaration -Wno-error=int-conversion";
+
+/// Build deps that a repo's DEPENDENCY sdists import at build time but that nothing installs
+/// under `--no-build-isolation` (we honor the top repo's `[build-system].requires`; a
+/// dependency sdist's declaration is honored by nobody). Keyed by repo because which sdists
+/// get built is a property of the repo's dependency graph on this platform. DATA, not logic —
+/// grow it one measured failure at a time, never speculatively.
+fn era_sdist_build_deps(repo: &str) -> &'static [&'static str] {
+    match repo {
+        // pyerfa's sdist build runs `erfa_generator`, which imports jinja2
+        // (astropy__astropy-12907 live at dispatch, 2026-08-16).
+        "astropy/astropy" => &["jinja2"],
+        _ => &[],
+    }
+}
+
 pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathBuf, String> {
     let env_dir = swe_cache_dir().join("envs").join(&instance.instance_id);
     let py = env_dir.join("bin").join("python");
@@ -540,7 +582,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
         // instance so there is no cross-tree race.
         if let Some(uv) = which("uv") {
             let py_s = py.to_string_lossy().to_string();
-            let out = run(
+            let out = run_env(
                 &uv,
                 &[
                     "pip",
@@ -554,6 +596,7 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
                     ".",
                 ],
                 Some(repo_dir),
+                &[("CFLAGS", ERA_CFLAGS)],
             )
             .await?;
             if !out.status.success() {
@@ -678,6 +721,39 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     };
     let repo_s = repo_dir.to_string_lossy().to_string();
 
+    // DEPENDENCY-SDIST BUILD DEPS (#383 cause 2, reproduced live 2026-08-16): the
+    // `build_requires` step above honors the TOP repo's `[build-system].requires`, but
+    // `--no-build-isolation` extends to every DEPENDENCY built from sdist too — and their
+    // declared build deps are honored by NOBODY. astropy pulls `pyerfa`, whose sdist runs an
+    // `erfa_generator` step importing jinja2 at build time; with no wheel for this
+    // interpreter/arch the sdist build is mandatory, and the whole env died with
+    // `ModuleNotFoundError: No module named 'jinja2'` — every astropy instance ungradeable.
+    // The table is DATA (repo → the build deps its dependency sdists need), the same shape as
+    // the official harness's per-repo spec tables. Era-pinned with the instance's own cutoff
+    // so a build tool never smuggles a modern package into a date-pinned subject graph
+    // (jinja2 IS a runtime dep of some subjects, e.g. flask).
+    let sdist_deps = era_sdist_build_deps(&instance.repo);
+    if !sdist_deps.is_empty() {
+        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
+        if let Some(ref date) = as_of {
+            args.push("--exclude-newer");
+            args.push(date);
+        }
+        args.extend(sdist_deps.iter().copied());
+        let out = run(&uv, &args, None).await?;
+        if !out.status.success() {
+            // Fail LOUD and leave no half-built env behind — same doctrine as the `-e .` gate.
+            let _ = std::fs::remove_dir_all(&env_dir);
+            return Err(format!(
+                "could not pre-install {}'s dependency-sdist build deps {:?} — env removed \
+                 rather than cached broken: {}",
+                instance.instance_id,
+                sdist_deps,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    }
+
     // DELETED-HISTORY packages: `--exclude-newer <date>` assumes PyPI still carries the
     // uploads that existed at that date. It does not always — `atomicwrites` had its whole
     // pre-2022 history deleted by its author, so for any pre-2022 instance the date pin
@@ -701,7 +777,10 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
             args.push(pin);
         }
         args.extend(["--no-build-isolation", "-e", "."]);
-        let out = run(&uv, &args, Some(Path::new(&repo_s))).await?;
+        // ERA_CFLAGS rides on this one invocation because it is where every C build
+        // happens — the repo's own extensions AND its dependency sdists (pyerfa et al)
+        // compile inside this resolve.
+        let out = run_env(&uv, &args, Some(Path::new(&repo_s)), &[("CFLAGS", ERA_CFLAGS)]).await?;
         if out.status.success() || as_of.is_none() {
             break out;
         }
@@ -776,8 +855,15 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // latest-pytest installed above voids every such baseline. The era interpreter rungs
     // (#2253) removed the original reason pytest had to be modern, so downgrade it to the
     // instance's own date. Skipped when the repo IS pytest: the editable install already
-    // provides the (exactly-era) subject and a PyPI pytest would stomp it.
-    if as_of.is_some() && instance.repo != "pytest-dev/pytest" {
+    // provides the (exactly-era) subject and a PyPI pytest would stomp it. Skipped too when
+    // the repo's runner isn't pytest AT ALL (#383: django grades through its own
+    // runtests.py) — era-pinning a harness the grade never invokes is dead weight, and the
+    // pytest smoke gate below would DELETE a perfectly good env whenever the era pytest
+    // can't execute on this interpreter, voiding instances pytest has nothing to do with.
+    if as_of.is_some()
+        && instance.repo != "pytest-dev/pytest"
+        && runner_for_repo(&instance.repo) == TestRunner::Pytest
+    {
         let date = instance.created_at.clone();
         // --reinstall is load-bearing: the modern pytest above already satisfies the bare
         // requirement, so without it this resolve is a no-op (hand-verified: flask-5063
@@ -988,6 +1074,119 @@ pub fn patched_test_files(test_patch: &str) -> Vec<String> {
     files
 }
 
+/// Which harness executes an instance's tests — a property of the REPO, not a pytest
+/// version to search for (#383). django (114 of Lite's 300 instances) does not use pytest
+/// at all: its harness is `./tests/runtests.py <module directives>`, and running pytest
+/// against it grades every django instance UNGRADEABLE. The official SWE-bench per-repo
+/// spec tables are the reference semantics for each arm's command shape.
+///
+/// This is the seam the sympy-11400 refusal in `ensure_env` predicted: "the runner is a
+/// property of the repo era, not a pytest version to search for."
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestRunner {
+    /// The default: `python -m pytest <files> -v` and pytest's verbose report.
+    Pytest,
+    /// django's own runner: `python tests/runtests.py --verbosity 2 --settings=test_sqlite
+    /// --parallel 1 <module directives>` from the repo root, unittest-style report.
+    DjangoRuntests,
+}
+
+/// Select the runner from the instance's `repo` field. Unknown repos default to pytest —
+/// the wrong default fails LOUDLY (the pristine gates in `grade` void the tree) rather
+/// than silently, so a new repo class surfaces as a named gap, not a fake zero.
+pub fn runner_for_repo(repo: &str) -> TestRunner {
+    match repo {
+        "django/django" => TestRunner::DjangoRuntests,
+        _ => TestRunner::Pytest,
+    }
+}
+
+/// The exact argv (after the venv's `python`) that runs an instance's test scope.
+/// Pure so the per-repo command shape is table-testable without a venv.
+pub fn test_invocation(runner: TestRunner, test_files: &[String]) -> Vec<String> {
+    match runner {
+        TestRunner::Pytest => {
+            let mut args: Vec<String> = vec!["-m".into(), "pytest".into()];
+            args.extend(test_files.iter().cloned());
+            // Flags must be era-portable — see the comment at the call site (`run_tests`).
+            args.extend(["-v".into(), "-p".into(), "no:cacheprovider".into()]);
+            args
+        }
+        TestRunner::DjangoRuntests => {
+            // Mirrors the official harness: verbosity 2 prints one line per test (the
+            // report we parse), test_sqlite is the settings module django's own suite
+            // ships for exactly this, and --parallel 1 keeps the per-test lines from
+            // interleaving across workers.
+            let mut args: Vec<String> = vec![
+                "tests/runtests.py".into(),
+                "--verbosity".into(),
+                "2".into(),
+                "--settings=test_sqlite".into(),
+                "--parallel".into(),
+                "1".into(),
+            ];
+            args.extend(test_files.iter().map(|f| django_directive(f)));
+            args
+        }
+    }
+}
+
+/// A patched test FILE, as django's runner wants it: a dotted module directive.
+/// `tests/migrations/test_operations.py` → `migrations.test_operations` — the same
+/// transform the official harness applies for django/django.
+fn django_directive(file: &str) -> String {
+    let f = file.strip_suffix(".py").unwrap_or(file);
+    let f = f.strip_prefix("tests/").unwrap_or(f);
+    f.replace('/', ".")
+}
+
+/// Resolve django's `runtests.py --verbosity 2` (unittest) report into the same two maps
+/// the pytest parser produces, keyed in the DATASET's own id shape.
+///
+/// django FAIL_TO_PASS ids look like `test_combine (expressions.tests.CombinedExprTests)`.
+/// The report line is `test_combine (expressions.tests.CombinedExprTests) ... ok` on
+/// django ≤4.0, and on ≥4.1 the class path grows a trailing method repeat
+/// (`...CombinedExprTests.test_combine) ... ok`) — normalized back so dataset ids hit.
+pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<String, bool>) {
+    let mut by_node = HashMap::new();
+    let mut by_func: HashMap<String, bool> = HashMap::new();
+    for line in report.lines() {
+        let line = line.trim();
+        let Some((head, tail)) = line.split_once(" ... ") else {
+            continue;
+        };
+        let Some((func, class_part)) = head.split_once(" (") else {
+            continue;
+        };
+        let Some(class_path) = class_part.strip_suffix(')') else {
+            continue;
+        };
+        let outcome = tail.trim();
+        let ok = if outcome.starts_with("ok")
+            || outcome.starts_with("skipped")
+            || outcome.starts_with("expected failure")
+        {
+            true
+        } else if outcome.starts_with("FAIL")
+            || outcome.starts_with("ERROR")
+            || outcome.starts_with("unexpected success")
+        {
+            false
+        } else {
+            continue;
+        };
+        // django ≥4.1 prints `module.Class.test_name`; the dataset uses `module.Class`.
+        let class_norm = class_path
+            .strip_suffix(&format!(".{func}"))
+            .unwrap_or(class_path);
+        by_node.insert(format!("{func} ({class_norm})"), ok);
+        // Same bare name in two classes: passing only if every one passed (pytest rule).
+        let entry = by_func.entry(func.to_string()).or_insert(true);
+        *entry = *entry && ok;
+    }
+    (by_node, by_func)
+}
+
 /// Resolve pytest's `-v` report into a verdict per node id AND per bare function name.
 ///
 /// The dataset does not use one id shape. pytest and flask instances give node ids
@@ -1042,9 +1241,15 @@ pub fn verdict_for(
     if let Some(v) = by_node.get(id) {
         return Some(*v);
     }
-    let key = id.rsplit("::").next().unwrap_or(id);
-    let key = key.rsplit('.').next().unwrap_or(key);
-    let key = key.split('[').next().unwrap_or(key);
+    // django ids are `test_name (module.Class)` — the bare name is the LEADING token, and
+    // the rsplit('.') chain below would extract `Class)` instead. Must come first.
+    let key = if let Some((func, _)) = id.split_once(" (") {
+        func
+    } else {
+        let key = id.rsplit("::").next().unwrap_or(id);
+        let key = key.rsplit('.').next().unwrap_or(key);
+        key.split('[').next().unwrap_or(key)
+    };
     by_func.get(key).copied()
 }
 
@@ -1065,6 +1270,7 @@ pub async fn run_tests(
     venv_py: &Path,
     ids: &[String],
     test_files: &[String],
+    runner: TestRunner,
 ) -> (HashMap<String, bool>, String) {
     if test_files.is_empty() || ids.is_empty() {
         return (
@@ -1072,17 +1278,14 @@ pub async fn run_tests(
             String::new(),
         );
     }
-    let mut args: Vec<&str> = vec!["-m", "pytest"];
-    for f in test_files {
-        args.push(f);
-    }
-    // Flags must be era-portable: the interpreter under `-m pytest` can be the repo's OWN
-    // pytest (pytest-dev instances: the editable install IS the subject) or an era-pinned
+    // Pytest flags must be era-portable: the interpreter under `-m pytest` can be the repo's
+    // OWN pytest (pytest-dev instances: the editable install IS the subject) or an era-pinned
     // one. `--no-header` (6.1+) and `-rN` (5.1+) made pytest 4.4 exit 4 with "unrecognized
     // arguments" before running a single test — every id read as failed, and the whole
     // 2019-pytest class graded p2p 0/N (live: pytest-5221 retry, 2026-08-12). Cosmetic
     // flags are not worth a version gate; `-v` and no:cacheprovider go back to 2.x.
-    args.extend(["-v", "-p", "no:cacheprovider"]);
+    let owned_args = test_invocation(runner, test_files);
+    let args: Vec<&str> = owned_args.iter().map(String::as_str).collect();
     let Ok(out) = run(&venv_py.to_string_lossy(), &args, Some(repo_dir)).await else {
         return (
             ids.iter().map(|i| (i.clone(), false)).collect(),
@@ -1094,7 +1297,10 @@ pub async fn run_tests(
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    let (by_node, by_func) = parse_pytest_report(&report);
+    let (by_node, by_func) = match runner {
+        TestRunner::Pytest => parse_pytest_report(&report),
+        TestRunner::DjangoRuntests => parse_django_report(&report),
+    };
     let verdicts = ids
         .iter()
         .map(|id| {
@@ -1209,6 +1415,7 @@ pub async fn grade(
     verdict.f2p_total = f2p.len();
     verdict.p2p_total = p2p.len();
     let test_files = patched_test_files(&instance.test_patch);
+    let runner = runner_for_repo(&instance.repo);
 
     let venv_py = match ensure_env(instance, repo_dir).await {
         Ok(p) => p,
@@ -1225,7 +1432,7 @@ pub async fn grade(
         verdict.error = Some(e);
         return verdict;
     }
-    let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
+    let (pre, _) = run_tests(repo_dir, &venv_py, &f2p, &test_files, runner).await;
     let already: Vec<&String> = pre
         .iter()
         .filter(|(_, ok)| **ok)
@@ -1253,8 +1460,8 @@ pub async fn grade(
         return verdict;
     }
 
-    let (f2p_res, f2p_report) = run_tests(repo_dir, &venv_py, &f2p, &test_files).await;
-    let (p2p_res, p2p_report) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
+    let (f2p_res, f2p_report) = run_tests(repo_dir, &venv_py, &f2p, &test_files, runner).await;
+    let (p2p_res, p2p_report) = run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
     verdict.f2p_passed = f2p_res.values().filter(|ok| **ok).count();
     verdict.p2p_passed = p2p_res.values().filter(|ok| **ok).count();
 
@@ -1274,7 +1481,7 @@ pub async fn grade(
             verdict.error = Some(e);
             return verdict;
         }
-        let (pristine_p2p, _) = run_tests(repo_dir, &venv_py, &p2p, &test_files).await;
+        let (pristine_p2p, _) = run_tests(repo_dir, &venv_py, &p2p, &test_files, runner).await;
         if pristine_p2p.values().filter(|ok| **ok).count() == 0 {
             verdict.gate_ok = false;
             verdict.error = Some(format!(
@@ -1655,5 +1862,197 @@ diff --git a/sympy/solvers/tests/test_other.py b/sympy/solvers/tests/test_other.
         assert_eq!(inst.f2p(), vec!["test_a".to_string(), "test_b".to_string()]);
         assert!(inst.p2p().is_empty(), "a blank list must not panic the run");
         assert_eq!(inst.year(), 2021);
+    }
+
+    // what this catches: #383's headline — the grader ran pytest for EVERYTHING, so all
+    // 114 django instances of Lite-300 (38%) were structurally ungradeable. The runner is
+    // selected from the instance's repo field; django resolves to its own runtests.py with
+    // the official harness's directive transform (tests/x/y.py → x.y), every pytest repo
+    // keeps the exact pre-seam argv, and an UNKNOWN repo defaults to pytest so a new class
+    // fails loudly through the pristine gates instead of inventing a third path.
+    #[test]
+    fn the_runner_is_selected_by_repo_and_django_grades_through_runtests() {
+        assert_eq!(runner_for_repo("django/django"), TestRunner::DjangoRuntests);
+        for repo in ["sympy/sympy", "pytest-dev/pytest", "astropy/astropy", "never/heard-of-it"] {
+            assert_eq!(runner_for_repo(repo), TestRunner::Pytest, "{repo}");
+        }
+
+        let files = vec![
+            "tests/migrations/test_operations.py".to_string(),
+            "tests/expressions/tests.py".to_string(),
+        ];
+        assert_eq!(
+            test_invocation(TestRunner::DjangoRuntests, &files),
+            vec![
+                "tests/runtests.py",
+                "--verbosity",
+                "2",
+                "--settings=test_sqlite",
+                "--parallel",
+                "1",
+                "migrations.test_operations",
+                "expressions.tests",
+            ],
+            "django's command shape mirrors the official per-repo spec"
+        );
+        assert_eq!(
+            test_invocation(TestRunner::Pytest, &files[..1].to_vec()),
+            vec![
+                "-m",
+                "pytest",
+                "tests/migrations/test_operations.py",
+                "-v",
+                "-p",
+                "no:cacheprovider",
+            ],
+            "the pytest argv is byte-identical to the pre-seam grader"
+        );
+    }
+
+    // what this catches: django report ids never resolving. The dataset's FAIL_TO_PASS
+    // shape is `test_name (module.Class)`; django ≤4.0 prints exactly that, ≥4.1 appends
+    // the method to the class path — both must hit the same dataset id, and the bare-name
+    // fallback must extract the LEADING token (the rsplit('.') chain used for pytest ids
+    // would extract `Class)` and miss forever).
+    #[test]
+    fn a_django_report_resolves_dataset_shaped_ids_across_django_versions() {
+        let report = "\
+Testing against Django installed in '/x/django'
+test_combine (expressions.tests.CombinedExprTests) ... ok
+test_broken (expressions.tests.CombinedExprTests) ... FAIL
+test_new_form (migrations.test_operations.OperationTests.test_new_form) ... ok
+test_errored (migrations.test_operations.OperationTests.test_errored) ... ERROR
+test_skipped (expressions.tests.SkipTests) ... skipped 'no oracle'
+System check identified no issues (0 silenced).
+FAIL: test_broken (expressions.tests.CombinedExprTests)";
+        let (by_node, by_func) = parse_django_report(report);
+
+        assert_eq!(
+            verdict_for(
+                "test_combine (expressions.tests.CombinedExprTests)",
+                &by_node,
+                &by_func
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            verdict_for(
+                "test_broken (expressions.tests.CombinedExprTests)",
+                &by_node,
+                &by_func
+            ),
+            Some(false),
+            "the `FAIL:` detail header must not overwrite the per-test verdict"
+        );
+        // django ≥4.1 line shape normalizes back to the dataset id.
+        assert_eq!(
+            verdict_for(
+                "test_new_form (migrations.test_operations.OperationTests)",
+                &by_node,
+                &by_func
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            verdict_for(
+                "test_errored (migrations.test_operations.OperationTests)",
+                &by_node,
+                &by_func
+            ),
+            Some(false),
+            "ERROR is a failure, exactly as in the pytest parser"
+        );
+        assert_eq!(
+            verdict_for(
+                "test_skipped (expressions.tests.SkipTests)",
+                &by_node,
+                &by_func
+            ),
+            Some(true),
+            "skipped counts as not-failed, matching the pytest parser's SKIPPED rule"
+        );
+        // Bare-name fallback goes through the leading token, not rsplit('.').
+        assert_eq!(
+            verdict_for("test_combine (some.other.Class)", &by_node, &by_func),
+            Some(true)
+        );
+        assert_eq!(
+            verdict_for("test_never_ran (expressions.tests.X)", &by_node, &by_func),
+            None,
+            "an id nothing in the report matches is UNKNOWN, never a silent pass"
+        );
+    }
+
+    // Per-env-class POSITIVE CONTROLS (#380's gold gate): build the REAL env for one
+    // instance of a class that previously could not be graded and prove its own harness
+    // executes on the pristine tree. Network- and minutes-heavy, so compile-time gated
+    // like every other load test: `cargo test --features stress-tests`.
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+
+        async fn lite_instance(id: &str) -> SweInstance {
+            load_dataset("princeton-nlp/SWE-bench_Lite")
+                .await
+                .expect("dataset")
+                .into_iter()
+                .find(|i| i.instance_id == id)
+                .unwrap_or_else(|| panic!("{id} not in Lite"))
+        }
+
+        // what this catches: the astropy env class (#383 cause 2) — pyerfa's sdist build
+        // imports jinja2, which `--no-build-isolation` never installs, so every astropy
+        // instance died at env build (`ModuleNotFoundError: No module named 'jinja2'`,
+        // live 2026-08-16). Building the real env end-to-end is the only honest proof.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn positive_control_the_astropy_env_class_builds() {
+            let inst = lite_instance("astropy__astropy-12907").await;
+            let work = swe_cache_dir().join("work").join(&inst.instance_id);
+            clone_at(&inst, &work).await.expect("clone at base_commit");
+            let py = ensure_env(&inst, &work).await.expect("env build");
+            assert!(py.exists(), "venv python must exist: {}", py.display());
+        }
+
+        // what this catches: the django env+runner class (#383 cause 1) — on the pristine
+        // tree with the test_patch applied, django's OWN runner must produce the known
+        // profile: every FAIL_TO_PASS id resolves to a definite FAIL (the bug is present
+        // and the report parses). An id resolving to None means the runner/report seam is
+        // broken; resolving to true means the tree isn't at base.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn positive_control_a_django_instance_shows_the_known_fail_profile() {
+            let inst = lite_instance("django__django-16139").await;
+            assert_eq!(runner_for_repo(&inst.repo), TestRunner::DjangoRuntests);
+            let work = swe_cache_dir().join("work").join(&inst.instance_id);
+            clone_at(&inst, &work).await.expect("clone at base_commit");
+            let py = ensure_env(&inst, &work).await.expect("env build");
+            apply_patch(&work, &inst.test_patch, "gate-test")
+                .await
+                .expect("test patch applies");
+            let files = patched_test_files(&inst.test_patch);
+            let (_, report) = run_tests(
+                &work,
+                &py,
+                &inst.f2p(),
+                &files,
+                TestRunner::DjangoRuntests,
+            )
+            .await;
+            assert!(!report.is_empty(), "runtests.py produced no output at all");
+            // `run_tests` collapses UNKNOWN to false, which would let a broken seam
+            // masquerade as the known-fail profile — so require a DEFINITE fail: the
+            // report line was found, parsed, and says the bug is present.
+            let (by_node, by_func) = parse_django_report(&report);
+            for id in inst.f2p() {
+                assert_eq!(
+                    verdict_for(&id, &by_node, &by_func),
+                    Some(false),
+                    "{id} must resolve to a DEFINITE fail on the pristine tree; None \
+                     means the runner/report seam never saw it, true means the tree \
+                     is not at base. Report tail:\n{}",
+                    report_tail(&report)
+                );
+            }
+            reset_worktree(&work).await;
+        }
     }
 }
