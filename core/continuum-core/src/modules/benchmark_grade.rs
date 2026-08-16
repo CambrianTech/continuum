@@ -535,25 +535,47 @@ async fn sweep_lapsed_bench_cards(
                 instance = %instance,
                 "lapsed claim with a written artifact — auto-closing so the grade can run"
             );
-            // Provenance first, then the close: the room sees WHY the card moved before
-            // the verdict lands, and the verdict is attributable to the sweep, not to a
-            // citizen `done` that never happened.
-            let note = format!(
-                "⏱️ [bench {bench}] {instance} — the claim lapsed with a written artifact \
-                 and no `done`; auto-closing so the grade can run. (A live claim is never \
-                 preempted.)"
-            );
-            let _ = crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &note)
-                .await;
-            if airc
+            // Close FIRST, provenance note only on success: a persistently-failing close
+            // must not post a note into the room every tick (the first live tick failed
+            // ALL 21 closes silently — 21 probes in 0.6s straight past the 3-close cap,
+            // which only counts successes; without an error probe the whole failure mode
+            // was invisible). The note still lands before the verdict — grading takes
+            // seconds, the note posts immediately after the close.
+            match airc
                 .change_work_card_state(airc_lib::ChangeWorkCardState {
                     card_id: card.card_id,
                     state: CardState::Closed,
                 })
                 .await
-                .is_ok()
             {
-                closed += 1;
+                Ok(_) => {
+                    closed += 1;
+                    let note = format!(
+                        "⏱️ [bench {bench}] {instance} — the claim lapsed with a written \
+                         artifact and no `done`; auto-closed so the grade can run. (A live \
+                         claim is never preempted.)"
+                    );
+                    if let Err(e) =
+                        crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &note)
+                            .await
+                    {
+                        crate::probe!(
+                            class = "benchmark_grade.sweep_note_failed",
+                            card_id = %card.card_id.as_uuid(),
+                            error = %e,
+                            "card closed but the provenance note did not post"
+                        );
+                    }
+                }
+                Err(e) => {
+                    crate::probe!(
+                        class = "benchmark_grade.sweep_close_failed",
+                        card_id = %card.card_id.as_uuid(),
+                        room_id = %room_id,
+                        error = %e,
+                        "auto-close refused — card stays as-is, retried next tick"
+                    );
+                }
             }
         }
     }
