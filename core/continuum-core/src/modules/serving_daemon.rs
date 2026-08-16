@@ -1,4 +1,3 @@
-
 //! ServingDaemonModule — the ever-present ServiceModule that decides, and
 //! continuously re-decides, how THIS host serves persona inference.
 //!
@@ -398,6 +397,14 @@ pub struct ServingDaemonModule {
     /// flipped the PLAN to the 0.5B, and from then on hysteresis defended the
     /// WRONG incumbent. A brain flip must outlast jitter to be believed.
     downshift_streak: Arc<std::sync::atomic::AtomicU32>,
+    /// Fingerprint of the last `serving.plan` probe actually emitted. The plan
+    /// recomputes every tick, but the PROBE fires only when its content changes
+    /// (event-based law: emit on change, never per tick). Measured 2026-08-14:
+    /// per-tick emission put 1,585 identical rows into 600s of probe stream —
+    /// 51% of ALL rows — which rotated real history away in minutes and made
+    /// every incident archeological (#399). Steady state is now silence; the
+    /// live value stays queryable on demand via `serving/plan`.
+    last_plan_probe: Arc<std::sync::Mutex<Option<String>>>,
     /// Ticks remaining before another window re-home may fire. Charged to
     /// [`REHOME_COOLDOWN_TICKS`] when one fires, decremented every reconcile.
     /// Counted in ticks rather than wall-clock deliberately: the rate limit is on
@@ -545,6 +552,7 @@ impl ServingDaemonModule {
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             downshift_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            last_plan_probe: Arc::new(std::sync::Mutex::new(None)),
             working_set: crate::cognition::working_set::global(),
             moe_serving: std::sync::Mutex::new(None),
             active_artifact: std::sync::Mutex::new(None),
@@ -1407,7 +1415,10 @@ impl ServingDaemonModule {
         let Ok(mut guard) = self.division.lock() else {
             return None;
         };
-        let stale = guard.as_ref().map(|a| a.model_id() != active).unwrap_or(true);
+        let stale = guard
+            .as_ref()
+            .map(|a| a.model_id() != active)
+            .unwrap_or(true);
         if stale {
             // Live-anchored budget: the board's free-VRAM-after-fit (the #305 device
             // axis — already net of the resident serve and the placement margin) IS the
@@ -2387,39 +2398,98 @@ impl ServingDaemonModule {
                     .iter()
                     .find(|c| c.model_id == plan.base_model.model_id)
                     .map(|f| f.compute_buffer_per_lane());
-                crate::probe!(
-                    class = "serving.plan",
-                    base_model = plan.base_model.model_id.as_str(),
-                    lanes = plan.lanes,
-                    resident = plan.resident_models,
-                    fits_on_gpu = plan.fits_on_gpu,
-                    usable_gb = (budget.usable_bytes / 1_000_000_000),
-                    candidates = candidates.len(),
-                    // #415: the deadband's deciding input. Zero DISABLES the
-                    // deadband entirely (reconcile short-circuits), so a grant
-                    // that flaps while this reads 0 is a different defect from one
-                    // that flaps with a real spike — and they were indistinguishable.
-                    spike_bytes = spike_of_served.unwrap_or(0),
-                    spike_known = spike_of_served.is_some(),
-                    // WHICH bound decided the window. Without this the plan is
-                    // unfalsifiable: a window that does not grow after demand rises
-                    // looks identical whether the HOST could not fit more, the
-                    // measured DEMAND did not ask for more, or the reconcile held
-                    // within hysteresis — three different bugs with one appearance.
-                    // Read 2026-08-06 when 11 turns measured over_window ≥ 1.09 and
-                    // the served window sat unmoved at 16384; nothing on hand could
-                    // say why, which is a hole in the glass box
-                    // ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
-                    served_window = plan.served_context_window,
-                    demand_window = demand.window_tokens,
-                    demand_lanes = demand.lanes,
-                    bound_by = if plan.served_context_window >= demand.window_tokens {
-                        "demand"
-                    } else {
-                        "host-fit"
-                    },
-                    "serving plan recomputed",
+                // Emit-on-change gate (#399): the plan recomputes every tick but
+                // the probe fires only when what it would say DIFFERS from the
+                // last emission. Per-tick emission was 51% of the entire probe
+                // stream — identical rows rotating real history away in minutes.
+                // Every field the probe carries is in the fingerprint, so any
+                // real transition (model, lanes, window, budget-GB, spike,
+                // demand, bound) still lands in the stream the moment it happens.
+                // Windows are quantized to 1k-token buckets IN THE FINGERPRINT
+                // ONLY (the emitted probe keeps exact values): served_window is
+                // derived from live free memory and wobbles by tens of tokens
+                // per tick (measured 24762→24728→24706… post-deploy, still 146
+                // rows/3min) — token-level wobble is measurement noise, not a
+                // plan change; a real re-plan crosses a bucket.
+                let fingerprint = format!(
+                    "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                    plan.base_model.model_id,
+                    plan.lanes,
+                    plan.resident_models,
+                    plan.fits_on_gpu,
+                    budget.usable_bytes / 1_000_000_000,
+                    candidates.len(),
+                    spike_of_served.unwrap_or(0),
+                    plan.served_context_window / 1024,
+                    demand.window_tokens / 1024,
+                    demand.lanes,
                 );
+                let plan_probe_changed = {
+                    let mut last = self
+                        .last_plan_probe
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if last.as_deref() == Some(fingerprint.as_str()) {
+                        false
+                    } else {
+                        *last = Some(fingerprint);
+                        true
+                    }
+                };
+                if plan_probe_changed {
+                    crate::probe!(
+                        class = "serving.plan",
+                        base_model = plan.base_model.model_id.as_str(),
+                        lanes = plan.lanes,
+                        resident = plan.resident_models,
+                        fits_on_gpu = plan.fits_on_gpu,
+                        usable_gb = (budget.usable_bytes / 1_000_000_000),
+                        candidates = candidates.len(),
+                        // #415: the deadband's deciding input. Zero DISABLES the
+                        // deadband entirely (reconcile short-circuits), so a grant
+                        // that flaps while this reads 0 is a different defect from one
+                        // that flaps with a real spike — and they were indistinguishable.
+                        spike_bytes = spike_of_served.unwrap_or(0),
+                        spike_known = spike_of_served.is_some(),
+                        // WHICH bound decided the window. Without this the plan is
+                        // unfalsifiable: a window that does not grow after demand rises
+                        // looks identical whether the HOST could not fit more, the
+                        // measured DEMAND did not ask for more, or the reconcile held
+                        // within hysteresis — three different bugs with one appearance.
+                        // Read 2026-08-06 when 11 turns measured over_window ≥ 1.09 and
+                        // the served window sat unmoved at 16384; nothing on hand could
+                        // say why, which is a hole in the glass box
+                        // ([[a-probe-that-can-only-fail-is-worse-than-no-probe]]).
+                        served_window = plan.served_context_window,
+                        demand_window = demand.window_tokens,
+                        demand_lanes = demand.lanes,
+                        bound_by = if plan.served_context_window >= demand.window_tokens {
+                            "demand"
+                        } else {
+                            "host-fit"
+                        },
+                        "serving plan recomputed",
+                    );
+                    // Warm-slot oversubscription for the ADOPTED plan (#266) —
+                    // probed here (not in the pure planner, which runs twice per
+                    // tick on different budgets and floods) and only when the
+                    // plan-fingerprint changed, so a standing condition emits at
+                    // its transitions, not per tick (#399).
+                    if (plan.lanes as u32) < demand.lanes {
+                        crate::probe!(
+                            class = "serving.plan",
+                            decision = "warm-slot-oversubscribed",
+                            resident_personas = demand.lanes,
+                            warm_slots = plan.lanes,
+                            without_warm_slot = demand.lanes - plan.lanes as u32,
+                            per_slot_floor =
+                                crate::cognition::serving_plan::BOOTSTRAP_WORKING_SET,
+                            "adopted plan cannot warmly host all resident personas at the \
+                             full-turn window floor — unslotted minds re-prefill cold every \
+                             turn until tiered off or grid-placed (#266)",
+                        );
+                    }
+                }
                 // Publish the LIVE lane count to the admission gate so its directed-turn
                 // reservation semaphores size by what's actually served (`--parallel
                 // plan.lanes`), not the `MAX_LANES` ceiling — exact once the plan can serve
@@ -2437,7 +2507,7 @@ impl ServingDaemonModule {
                 // parse). Still publishes 0 so behaviour is unchanged pending the
                 // #415 decision on what a deadband means with no spike — but it can
                 // no longer happen invisibly.
-                if spike_of_served.is_none() {
+                if spike_of_served.is_none() && plan_probe_changed {
                     crate::probe!(
                         class = "serving.plan.spike_missing",
                         base_model = plan.base_model.model_id.as_str(),
@@ -2454,11 +2524,27 @@ impl ServingDaemonModule {
             None => {
                 // No servable model on disk. Publish None and say so loudly —
                 // the spawner gates on a model being present (no silent serve).
-                crate::probe!(
-                    class = "serving.plan",
-                    candidates = 0usize,
-                    "no servable model on disk — serving plan empty",
-                );
+                // Same emit-on-change gate as the Some arm: loud ONCE at the
+                // transition, silent while the condition persists (#399).
+                let entered_empty = {
+                    let mut last = self
+                        .last_plan_probe
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if last.as_deref() == Some("<no-servable-model>") {
+                        false
+                    } else {
+                        *last = Some("<no-servable-model>".to_string());
+                        true
+                    }
+                };
+                if entered_empty {
+                    crate::probe!(
+                        class = "serving.plan",
+                        candidates = 0usize,
+                        "no servable model on disk — serving plan empty",
+                    );
+                }
                 let _ = self.plan_tx.send_replace(None);
             }
         }
@@ -3668,11 +3754,27 @@ mod tests {
         // only when the lane actually runs quantized KV, and CONSERVATIVELY so the plan
         // never over-grows past the real KV and OOMs. f16/unset/unknown must never scale.
         assert_eq!(kv_divisor_for(None), 1, "unset never scales the window");
-        assert_eq!(kv_divisor_for(Some("f16")), 1, "explicit f16 is the no-op default");
+        assert_eq!(
+            kv_divisor_for(Some("f16")),
+            1,
+            "explicit f16 is the no-op default"
+        );
         assert_eq!(kv_divisor_for(Some("q8_0")), 2, "q8_0 ~ half of f16");
-        assert_eq!(kv_divisor_for(Some("  Q8_0 ")), 2, "trimmed + case-insensitive");
-        assert_eq!(kv_divisor_for(Some("q4_0")), 3, "q4_0 conservative, under the ideal ~3.5x");
-        assert_eq!(kv_divisor_for(Some("garbage")), 1, "unknown type → no grow, never a bogus OOM");
+        assert_eq!(
+            kv_divisor_for(Some("  Q8_0 ")),
+            2,
+            "trimmed + case-insensitive"
+        );
+        assert_eq!(
+            kv_divisor_for(Some("q4_0")),
+            3,
+            "q4_0 conservative, under the ideal ~3.5x"
+        );
+        assert_eq!(
+            kv_divisor_for(Some("garbage")),
+            1,
+            "unknown type → no grow, never a bogus OOM"
+        );
     }
 
     #[test]

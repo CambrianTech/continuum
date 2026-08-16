@@ -568,16 +568,17 @@ impl PersonaAircRuntime {
             let hb_airc = airc_arc.clone();
             let hb_persona = persona_id;
             let hb_name = agent_name.clone();
-            // Birth stamp: one full lease-length of renewal grace before her
-            // first turn (covers the post-boot deaf window, #412). After
-            // that, renewals must be EARNED by cognition — see the gate below.
-            crate::persona::cognition_pulse::touch(
-                persona_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or_default(),
-            );
+            // NO birth stamp — renewal is earned ONLY by cognition, never by
+            // booting. The grace stamp that used to sit here (one lease-length
+            // per spawn, meant to cover the post-boot deaf window #412) made
+            // convergence structurally impossible across restarts: every core
+            // restart re-armed 30 minutes of "earned" renewals, and the renewal
+            // loop below resurrected already-lapsed claims faster than the 180s
+            // lapsed-claim sweeper could observe them — an entire overnight round
+            // (2026-08-16) sat "actively held" with zero turns because of it.
+            // Never-stamped ⇒ `idle_ms` is None ⇒ renewal denied ⇒ holds lapse
+            // within one TTL of boot unless she actually thinks. A citizen who
+            // wakes later can re-claim; a finished artifact gets swept and graded.
             let handle = tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
                 let mut last: Option<airc_lib::AgentAvailabilityState> = None;
@@ -597,6 +598,15 @@ impl PersonaAircRuntime {
                     crate::modules::work::DEFAULT_CLAIM_TTL_MS / 3,
                 );
                 let mut last_clean_renewal: Option<std::time::Instant> = None;
+                // Emit-on-transition for the renewal-denied probe: denial is a
+                // STANDING condition (an idle citizen stays idle for hours) and
+                // this loop ticks every 60s, so an unguarded probe here is the
+                // same stream-flooding shape as the per-tick serving.plan probe
+                // (#399 — measured 110 identical denial rows in 5 min across
+                // the roster). One row when denial BEGINS, one implicit end
+                // when renewals resume; the standing state stays queryable via
+                // the work board's lease column.
+                let mut renewal_denied = false;
                 loop {
                     ticker.tick().await;
                     let serving = crate::inference::llama_server::current_serving();
@@ -665,8 +675,8 @@ impl PersonaAircRuntime {
                     //
                     // Renewal is per-card WARN-and-continue: a failed renewal degrades
                     // to exactly the old lapse, and never takes down presence.
-                    let renewal_due = last_clean_renewal
-                        .map_or(true, |t| t.elapsed() >= renewal_period);
+                    let renewal_due =
+                        last_clean_renewal.map_or(true, |t| t.elapsed() >= renewal_period);
                     if !renewal_due {
                         continue;
                     }
@@ -687,22 +697,34 @@ impl PersonaAircRuntime {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or_default();
-                        let idle =
-                            crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
+                        let idle = crate::persona::cognition_pulse::idle_ms(hb_persona, now_ms);
                         if !crate::persona::cognition_pulse::renewal_earned(
                             idle,
                             crate::modules::work::DEFAULT_CLAIM_TTL_MS,
                         ) {
+                            if !renewal_denied {
+                                renewal_denied = true;
+                                crate::probe!(
+                                    class = "persona.claim.renewal_skipped_idle",
+                                    persona_id = %hb_persona,
+                                    agent_name = %hb_name,
+                                    idle_ms = idle.unwrap_or(u64::MAX),
+                                    ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
+                                    "no cognition within one lease-length — renewals \
+                                     DENIED from here until she thinks again; holds \
+                                     lapse naturally so the work can be recovered"
+                                );
+                            }
+                            continue;
+                        }
+                        if renewal_denied {
+                            renewal_denied = false;
                             crate::probe!(
-                                class = "persona.claim.renewal_skipped_idle",
+                                class = "persona.claim.renewal_resumed",
                                 persona_id = %hb_persona,
                                 agent_name = %hb_name,
-                                idle_ms = idle.unwrap_or(u64::MAX),
-                                ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
-                                "no cognition within one lease-length — holds lapse \
-                                 naturally so the work can be recovered"
+                                "cognition resumed — claim renewals earned again"
                             );
-                            continue;
                         }
                     }
                     match hb_airc
