@@ -75,7 +75,33 @@ impl ServiceModule for BenchmarkGradeModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // THE live wiring. `config().event_subscriptions` installs a SYNCHRONOUS-tier
+        // subscription the registry marks `synchronous: false` — which `publish()`
+        // filters OUT, and runtime.rs:99 says so out loud: "event_subscriptions are
+        // dispatched only by the (currently unused) synchronous publish path — if
+        // this module expects live bus events, spawn a bus-receiver task from
+        // initialize() instead". Grade-on-done shipped on the dead tier and NEVER
+        // fired in production (proven live 2026-08-15: two bridged publishes, zero
+        // handle_event probes). This is the prescribed receiver task, same shape as
+        // chat::spawn_persist_listener.
+        let mut rx = ctx.bus.receiver();
+        let registry = self.registry.clone();
+        ctx.runtime.spawn(async move {
+            loop {
+                let event = match rx.recv().await {
+                    Ok(e) => e,
+                    // Lagged (slow consumer): a missed transition re-fires on the
+                    // next state change; the board is the durable truth, not the bus.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                };
+                if event.name != WORK_CARD_STATE_CHANGED {
+                    continue;
+                }
+                on_card_state_changed(&registry, &event.payload);
+            }
+        });
         Ok(())
     }
 
@@ -84,59 +110,65 @@ impl ServiceModule for BenchmarkGradeModule {
     }
 
     async fn handle_event(&self, event_name: &str, payload: Value) -> Result<(), String> {
-        if event_name != WORK_CARD_STATE_CHANGED {
-            return Ok(());
+        // Kept for the synchronous tier should it ever dispatch — the LIVE path is
+        // the bus-receiver task spawned in `initialize` (see the comment there).
+        if event_name == WORK_CARD_STATE_CHANGED {
+            on_card_state_changed(&self.registry, &payload);
         }
-        let state = payload
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !is_terminal(state) {
-            return Ok(());
-        }
-        let card_id = payload
-            .get("card_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        if card_id.is_empty() {
-            return Ok(());
-        }
-        // The card's room, from the wire event (bridge payload contract). Boards are
-        // per-room: without this the grade read whatever room the grading citizen
-        // happened to be in — the #345 wrong-room trap, hit live 2026-08-15.
-        let room_id = payload
-            .get("room_id")
-            .and_then(Value::as_str)
-            .and_then(|s| s.parse::<uuid::Uuid>().ok());
-
-        // Grading is minutes long (clone + venv + pytest). The bus calls handle_event
-        // INLINE during publish, so blocking here would hang the citizen's work/state
-        // verb. Spawn it — fire-and-observe, never block-on-client (the long-jobs rule).
-        let registry = self.registry.clone();
-        tokio::spawn(async move {
-            crate::probe!(
-                class = "benchmark_grade.start",
-                card_id = %card_id,
-                room_id = %room_id.map(|r| r.to_string()).unwrap_or_default(),
-                "grade-on-done fired — reading the card's own room board"
-            );
-            if let Err(e) = grade_card(&registry, &card_id, room_id).await {
-                crate::probe!(
-                    class = "benchmark_grade.error",
-                    card_id = %card_id,
-                    error = %e,
-                    "grade could not run"
-                );
-                tracing::warn!(card = %card_id, "benchmark_grade: {e}");
-            }
-        });
         Ok(())
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// React to one card-state transition: terminal state → spawn the grade against the
+/// card's OWN room. Non-terminal / malformed payloads are silently not-ours. Spawns
+/// because grading is minutes long (clone + venv + pytest) and the caller is a bus
+/// consumer loop that must keep draining.
+fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value) {
+    let state = payload
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !is_terminal(state) {
+        return;
+    }
+    let card_id = payload
+        .get("card_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if card_id.is_empty() {
+        return;
+    }
+    // The card's room, from the wire event (bridge payload contract). Boards are
+    // per-room: without this the grade read whatever room the grading citizen
+    // happened to be in — the #345 wrong-room trap, hit live 2026-08-15.
+    let room_id = payload
+        .get("room_id")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+
+    let registry = registry.clone();
+    tokio::spawn(async move {
+        crate::probe!(
+            class = "benchmark_grade.start",
+            card_id = %card_id,
+            room_id = %room_id.map(|r| r.to_string()).unwrap_or_default(),
+            "grade-on-done fired — reading the card's own room board"
+        );
+        if let Err(e) = grade_card(&registry, &card_id, room_id).await {
+            crate::probe!(
+                class = "benchmark_grade.error",
+                card_id = %card_id,
+                error = %e,
+                "grade could not run"
+            );
+            tracing::warn!(card = %card_id, "benchmark_grade: {e}");
+        }
+    });
 }
 
 /// Read the card, and — if it is a bench SWE card — grade her workspace against the
