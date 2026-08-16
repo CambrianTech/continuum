@@ -28,12 +28,11 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 
 /// States that mean "she's done — grade it". `work/state` maps done|closed → Closed and
 /// accepts merged; a bench card reaching any of these is ready for the oracle. An
-/// in_progress/review transition must NOT fire a grade.
+/// in_progress/review transition must NOT fire a grade. ONE definition of "terminal",
+/// shared with the round tracker (`cognition::bench_round`) — the grader and the round
+/// lifecycle must never disagree about doneness.
 fn is_terminal(state: &str) -> bool {
-    matches!(
-        state.to_ascii_lowercase().as_str(),
-        "closed" | "done" | "merged"
-    )
+    crate::cognition::bench_round::is_terminal_card_state(state)
 }
 
 /// Parse `[bench <name>] <instance>: <gist>` — the exact shape `dispatch_card_title`
@@ -111,6 +110,11 @@ impl ServiceModule for BenchmarkGradeModule {
                 if event.name != WORK_CARD_STATE_CHANGED {
                     continue;
                 }
+                // ONE subscription, two reactions (#371): advance the round lifecycle
+                // (bench.round.* transition probes), then grade the card. The round
+                // tracker is pure sync state — safe to call inline before the grade
+                // spawns.
+                crate::cognition::bench_round::observe_card_event(&event.payload);
                 on_card_state_changed(&registry, &event.payload);
             }
         });
@@ -125,6 +129,7 @@ impl ServiceModule for BenchmarkGradeModule {
         // Kept for the synchronous tier should it ever dispatch — the LIVE path is
         // the bus-receiver task spawned in `initialize` (see the comment there).
         if event_name == WORK_CARD_STATE_CHANGED {
+            crate::cognition::bench_round::observe_card_event(&payload);
             on_card_state_changed(&self.registry, &payload);
         }
         Ok(())

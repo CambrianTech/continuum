@@ -1240,6 +1240,10 @@ impl ActionCommand for BenchmarkDispatch {
         // Continuum home under which each citizen's workspace lives (for SWE staging).
         let stage_home = continuum_home().ok();
         let mut card_ids = Vec::new();
+        // FULL card uuids for the round tracker (#371) — the bus event carries the full
+        // hyphenated uuid, so the round's membership set must too (the 8-char `card_ids`
+        // shorts are the human/CLI handle, not the identity).
+        let mut card_uuids: Vec<uuid::Uuid> = Vec::new();
         let mut skipped_needs_setup = 0u32;
         let mut skipped_already_on_board = 0u32;
         let mut kickoffs = 0u32;
@@ -1443,8 +1447,21 @@ impl ActionCommand for BenchmarkDispatch {
                     solves_fired += 1;
                 }
             }
+            card_uuids.push(card_id.as_uuid());
             card_ids.push(short);
         }
+
+        // THE ROUND BECOMES AN ENTITY (#371): register the dispatched card set under the
+        // run room's own id (dispatch already mints one id per run — the room; never a
+        // second one). From here the round has a lifecycle somebody owns: the
+        // `work.card.state_changed` subscriber settles cards as they reach terminal
+        // states and announces the END — instead of the round's fate being probe
+        // archaeology ("random and directed by agent, not an ecosystem", Joel 8/16).
+        crate::cognition::bench_round::register_round(
+            room.room_id.as_uuid(),
+            spec.name,
+            &card_uuids,
+        );
 
         // PRUNE (opt-in): converge the board to one live card per task for THIS
         // benchmark. Scoped to the keys this dispatch planned, so pruning one
