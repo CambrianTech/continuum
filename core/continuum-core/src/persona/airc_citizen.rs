@@ -200,7 +200,31 @@ pub(crate) async fn subscribe_every_room(
     filter.headers_filter = airc_core::HeaderFilter::Not(Box::new(airc_core::HeaderFilter::Has {
         key: airc_lib::HEADER_HEARTBEAT_KIND.to_string(),
     }));
-    airc.subscribe_subscribed_filtered(filter).await
+    // #445 second cut (measured 2026-08-16, post daemon-heal): with delivery
+    // restored, EphemeralLatest projection re-publishes fanned to EVERY persona
+    // subscription (router counters: matched=68 per publish) and 100% were
+    // discarded as non_chat_schema — 1,196 decode-and-drop events in minutes.
+    // This pump's contract is PERCEPTUAL ROOM TURNS + work events (#146/#177/
+    // #450), and both of those are Durable-class by construction (a message or
+    // board mutation that didn't persist would be a worse bug than a missed
+    // fanout). So attach ROUTER-SIDE as a Durable-only consumer — the shape
+    // `subscribe_subscribed_delivery` was built for; its doc cites this exact
+    // persona measurement.
+    //
+    // FOR WHOEVER EXTENDS THIS (read before widening):
+    // - If a persona ever needs an ephemeral signal (peer stream chunks, live
+    //   presence), do NOT widen this delivery list — those belong to their own
+    //   consumer with its own narrow attach (positron/TTS taps StreamChunk,
+    //   roster taps presence). One subscription per consumer shape; widening
+    //   the perception pump re-creates the decode-everything flood this line
+    //   removes (#297 is what happens next: personas deaf under their own
+    //   fan-in).
+    // - If a NEW durable event class starts flooding, the fix is a class
+    //   header at ITS publisher + a `HeaderFilter::Not` arm here (the
+    //   heartbeat exclusion above is the template), never client-side
+    //   filtering after a paid decode.
+    airc.subscribe_subscribed_delivery(filter, Some(vec![airc_ipc::IpcDelivery::Durable]))
+        .await
 }
 
 /// Where a reply for `room_id` should be published — the ONE place
