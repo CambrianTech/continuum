@@ -541,11 +541,18 @@ async fn sweep_lapsed_bench_cards(
             // which only counts successes; without an error probe the whole failure mode
             // was invisible). The note still lands before the verdict — grading takes
             // seconds, the note posts immediately after the close.
+            // Room-SCOPED mutate (airc #1363): the close targets the room the card
+            // actually lives in. The current-room verb refused all 21 of the first
+            // tick's closes — every target card was in a room the authoring citizen
+            // wasn't standing in (the WRITE half of the #345 class).
             match airc
-                .change_work_card_state(airc_lib::ChangeWorkCardState {
-                    card_id: card.card_id,
-                    state: CardState::Closed,
-                })
+                .change_work_card_state_in(
+                    &room,
+                    airc_lib::ChangeWorkCardState {
+                        card_id: card.card_id,
+                        state: CardState::Closed,
+                    },
+                )
                 .await
             {
                 Ok(_) => {
