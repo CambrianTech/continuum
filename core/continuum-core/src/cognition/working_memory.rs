@@ -213,6 +213,17 @@ pub struct WorkingMemory {
     /// receipts) so the steps ledger can render this-room acts first — scope
     /// is the activity boundary (CAUSAL-MEMORY-GRAPH.md slice B).
     receipt_heads: Mutex<VecDeque<(Option<Uuid>, String)>>,
+    /// Recent act RESULT TAILS `(seq, room, tail)` — the feedback channel the
+    /// `last_action` slot cannot be. That slot keeps only the LATEST result and
+    /// any act overwrites it; the pinned block is settlement-gated. So a finding
+    /// survived exactly until the next trivial act or spoken turn (2026-08-16:
+    /// Anwen's compile error was overwritten by a `list_files` one act later —
+    /// her next three turns wandered discovery tools and she re-ran the same
+    /// unfixed code). Char-bounded by the window-derived
+    /// [`ContextBudget::recent_results_chars`] share; tails are the result's
+    /// FINAL chars (errors and conclusions live at the end; the head is already
+    /// in the receipt trail).
+    recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String)>>,
     /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
     /// still inside the act→observe loop that produced it and hasn't yet spoken. The
     /// full raw result exists to answer "what next" the moment the hands fetch it; once
@@ -307,6 +318,11 @@ pub struct VolatileSnapshot {
     /// (honest "unscoped", never a guessed room).
     #[serde(default)]
     pub receipt_head_rooms: Vec<Option<Uuid>>,
+    /// Recent act result TAILS `(seq, room, tail)` — the cross-turn feedback
+    /// channel (2026-08-16). Defaulted so pre-field snapshots deserialize;
+    /// restore then starts the buffer fresh.
+    #[serde(default)]
+    pub recent_results: Vec<(u64, Option<Uuid>, String)>,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -340,6 +356,7 @@ impl WorkingMemory {
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
             receipt_heads: Mutex::new(VecDeque::new()),
+            recent_results: Mutex::new(VecDeque::new()),
             active_from_seq: AtomicU64::new(0),
         }
     }
@@ -467,6 +484,28 @@ impl WorkingMemory {
         // file, read a screenshot description, scan a log). Overwrites the prior latest —
         // older acts survive only as heads in the trail below.
         *self.last_action.lock() = Some((seq, a.to_string()));
+        // Recent-results feedback channel: keep this result's TAIL past the next act
+        // and the next turn (the overwrite above and the settlement gate both destroy
+        // it exactly when a multi-turn task still needs it — the Anwen regression).
+        // Per-entry share is a third of the buffer so ~3 tails coexist; eviction by
+        // total chars keeps the whole buffer inside its window-derived bound.
+        {
+            let cap = self.budget().recent_results_chars();
+            let per_entry = (cap / 3).max(1);
+            let tail: String = {
+                let chars: Vec<char> = a.chars().collect();
+                let start = chars.len().saturating_sub(per_entry);
+                chars[start..].iter().collect()
+            };
+            let mut rr = self.recent_results.lock();
+            rr.push_back((seq, room, tail));
+            let mut total: usize = rr.iter().map(|(_, _, t)| t.chars().count() + 1).sum();
+            while total > cap && rr.len() > 1 {
+                if let Some((_, _, evicted)) = rr.pop_front() {
+                    total -= evicted.chars().count() + 1;
+                }
+            }
+        }
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
@@ -608,6 +647,7 @@ impl WorkingMemory {
             action_fps: self.action_fps.lock().iter().cloned().collect(),
             receipt_heads,
             receipt_head_rooms,
+            recent_results: self.recent_results.lock().iter().cloned().collect(),
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
             saved_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -656,6 +696,20 @@ impl WorkingMemory {
             }
         }
         *self.last_action.lock() = snap.last_action;
+        {
+            // Restore the feedback channel; bounded by the same eviction the live
+            // writer applies (re-clamp contract), so an oversized snapshot trims.
+            let cap = self.budget().recent_results_chars();
+            let mut rr = self.recent_results.lock();
+            rr.clear();
+            rr.extend(snap.recent_results);
+            let mut total: usize = rr.iter().map(|(_, _, t)| t.chars().count() + 1).sum();
+            while total > cap && rr.len() > 1 {
+                if let Some((_, _, evicted)) = rr.pop_front() {
+                    total -= evicted.chars().count() + 1;
+                }
+            }
+        }
         {
             let mut f = self.action_fps.lock();
             f.clear();
@@ -814,6 +868,31 @@ impl WorkingMemory {
         Some(format!(
             "Full result of your most recent action (#{seq}):\n{}",
             clip_action_full(&full, &budget)
+        ))
+    }
+
+    /// The RECENT-RESULTS feedback block: the last few acts' result tails, kept
+    /// across acts AND turn boundaries — the channel that lets a mind continue a
+    /// multi-turn task instead of re-deriving it (the pinned block above is
+    /// settlement-gated and the `last_action` slot is overwritten by any act, so
+    /// without this a compile error vanished the moment she glanced at a file
+    /// listing — Anwen, 2026-08-16, re-ran the same unfixed code three turns
+    /// running). Deliberately NOT gated on settlement: the tails are small and
+    /// append-only, so the KV prefix stays stable and the #139 full-dump prefill
+    /// objection does not apply. `None` before any act.
+    pub fn recent_results_block(&self) -> Option<String> {
+        let rr = self.recent_results.lock();
+        if rr.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = rr
+            .iter()
+            .map(|(seq, _, tail)| format!("[result #{seq}] {tail}"))
+            .collect();
+        Some(format!(
+            "Recent results of your own actions (oldest first; #n matches the \
+             action ledger):\n{}",
+            lines.join("\n")
         ))
     }
 
@@ -1201,6 +1280,40 @@ mod rebuilt_marker {
 mod tests {
     use super::*;
 
+    // what this catches: the Anwen regression (2026-08-16). Act results used to
+    // live only in the K=1 `last_action` slot (any act overwrites) and the
+    // settlement-gated pinned block — so a compile error vanished the moment she
+    // glanced at a file listing, and she re-ran the same unfixed code for three
+    // turns. The recent-results channel must keep a finding visible past
+    // subsequent trivial acts, and the buffer must stay inside its
+    // window-derived char bound.
+    #[test]
+    fn recent_results_survive_subsequent_acts_and_stay_bounded() {
+        let wm = WorkingMemory::new(8);
+        wm.record_receipt("[action] code/run(sol.rs) error[E0601]: `main` function not found");
+        wm.record_receipt("[action] code/list() sol.rs sol2.rs");
+        wm.record_receipt("[action] code/tree() workspace/");
+        let block = wm.recent_results_block().expect("results recorded");
+        assert!(
+            block.contains("E0601"),
+            "the compile error must survive later trivial acts: {block}"
+        );
+        // Bound: flooding with huge results evicts oldest, never grows unbounded.
+        let cap = wm.budget().recent_results_chars();
+        for _ in 0..8 {
+            wm.record_receipt(&"x".repeat(cap));
+        }
+        let total: usize = wm.recent_results_block().unwrap_or_default().chars().count();
+        assert!(
+            total <= cap + 256,
+            "buffer must respect its window-derived bound: {total} > {cap}"
+        );
+        assert!(
+            !wm.recent_results_block().unwrap_or_default().contains("E0601"),
+            "oldest tails evict when the bound is hit — bounded, not immortal"
+        );
+    }
+
     // what this catches: #264 fourth finding (glass-boxed 2026-08-01) — substrate
     // Facts ([resumed]…) rendered inside the "My own recent thoughts" block; the
     // model resolved the voice conflict by SPEAKING the notice — persona 2f50b223
@@ -1405,6 +1518,7 @@ mod tests {
             build_sha: String::new(), // pre-field snapshot: no rebuild guessed either
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
+            recent_results: Vec::new(),
         });
         let q = quiet.recent();
         assert_eq!(q.len(), 1);

@@ -1490,6 +1490,13 @@ impl LlmDeliberationFaculty {
         // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated inside
         // the accessor so it stops re-prefilling once the turn settles (#139/#165).
         if let Some(wm) = &self.working_memory {
+            // Recent-results feedback FIRST (older context), pinned full-latest
+            // LAST (trailing) — append-only ordering keeps the KV prefix stable.
+            // The recent block is what survives turn boundaries; the pinned block
+            // is the full body of the act she is inside right now.
+            if let Some(block) = wm.recent_results_block() {
+                messages.push(ChatMessage::text("user", block));
+            }
             if let Some(block) = wm.pinned_active_result_block() {
                 messages.push(ChatMessage::text("user", block));
             }
