@@ -105,6 +105,26 @@ where
     Ok(parsed)
 }
 
+/// Reject a FUTURE-dated `since_ms` watermark instead of answering it — a future
+/// watermark can only return an empty set, which is indistinguishable from a dead
+/// system. Live incident 2026-08-16: a hand-computed sinceMs 4 minutes ahead
+/// produced "0 events across ALL classes" and was reported as a stalled benchmark
+/// round before anyone checked the clock. Foolproof-over-instructions: the command
+/// refuses the impossible question. `now_ms == 0` (unreadable clock) disarms the
+/// check — never reject on a guess. The 60s allowance absorbs caller/core skew.
+/// Pure so the reject/allow/skew/disarmed rows are table-testable.
+fn future_watermark_error(since_ms: Option<u64>, now_ms: u64) -> Option<String> {
+    let since = since_ms?;
+    if now_ms == 0 || since <= now_ms.saturating_add(60_000) {
+        return None;
+    }
+    Some(format!(
+        "sinceMs {since} is in the FUTURE (now = {now_ms}) — that query can only return \
+         an empty set, which reads as a dead system. Use the previous response's \
+         watermark_ms, or compute from the current clock."
+    ))
+}
+
 // ─────────────────────────── debug/probes/query ──────────────────────────
 
 /// Query the historical probe ledger. Stateless — it holds no deps, so it
@@ -228,6 +248,14 @@ impl ActionCommand for ProbeQuery {
             ))
         })?;
         let dir = PathBuf::from(dir);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0); // unreadable clock → 0 disarms the check, never rejects on a guess
+        if let Some(msg) = future_watermark_error(p.since_ms, now_ms) {
+            return Err(CommandError::Invalid(msg));
+        }
 
         let limit = p.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let filter: HashSet<String> = p.class.clone().unwrap_or_default().into_iter().collect();
@@ -447,6 +475,28 @@ crate::register_stateless_command!(ProbeQuery);
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (live incident 2026-08-16): a future-dated sinceMs returns
+    // an honest-looking empty set that reads as a DEAD SYSTEM — it was reported as
+    // a stalled benchmark round before anyone checked the clock. The command must
+    // refuse the impossible question, allow ordinary skew, and disarm (never guess)
+    // when the clock itself is unreadable.
+    #[test]
+    fn a_future_watermark_is_refused_not_answered_emptily() {
+        use super::future_watermark_error;
+        let now = 1_786_905_000_000u64;
+        // 4 minutes in the future — the exact live shape. Refused, naming both clocks.
+        let err = future_watermark_error(Some(now + 240_000), now).expect("must refuse");
+        assert!(err.contains("FUTURE") && err.contains("watermark_ms"), "{err}");
+        // Within the 60s skew allowance — allowed.
+        assert!(future_watermark_error(Some(now + 30_000), now).is_none());
+        // Past watermark — the normal case, allowed.
+        assert!(future_watermark_error(Some(now - 600_000), now).is_none());
+        // No watermark at all — allowed.
+        assert!(future_watermark_error(None, now).is_none());
+        // Unreadable clock (0 sentinel) — check disarmed, never reject on a guess.
+        assert!(future_watermark_error(Some(now + 240_000), 0).is_none());
+    }
     use super::*;
     use std::io::Write;
 
