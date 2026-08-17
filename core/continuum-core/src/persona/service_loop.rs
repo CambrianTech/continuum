@@ -484,7 +484,9 @@ async fn serve_persona_loop_inner(
                 // #385-wedging it (glass-boxed 2026-08-10: resident_personas=4 vs
                 // warm_slots=1, every self-tick died on "no TOKEN progress for 90s").
                 // The permit is sized to the LIVE served lane count (LaneAdmission ←
-                // set_served_lane_count) and HELD across the whole self-cycle, so ambient
+                // set_served_lane_count — true since 2026-08-17; it was a hardcoded 1 for
+                // the whole time this comment claimed otherwise) and HELD across the whole
+                // self-cycle, so ambient
                 // concurrency is bounded to real capacity no matter when everyone woke —
                 // the surplus minds genuinely yield toward rest instead of stampeding.
                 // Directed turns still bypass entirely (they were named). Self-tick and
@@ -502,7 +504,7 @@ async fn serve_persona_loop_inner(
                             // she learned nothing, and there is nothing to rest ON.
                             //
                             // Compounding it built a STARVATION RATCHET, measured live
-                            // 2026-08-17 on this box: `AMBIENT_TURN_CONCURRENCY == 1` and 24
+                            // 2026-08-17 on this box: the ambient pool was a hardcoded 1 and 24
                             // hosted citizens, so ~23 yield on every beat. At 1.5× per yield
                             // a citizen crosses 15s → the 240s `rest_cap` in ~8 yields — 16×
                             // slower — and STAYS there, because the only two resets are a
@@ -1490,7 +1492,7 @@ pub enum BeatOutcome {
 ///
 /// The bug this encodes against (measured live 2026-08-17, 24 hosted citizens):
 /// `YieldedNoSlot` used to share `NothingNew`'s 1.5× backoff. With
-/// `AMBIENT_TURN_CONCURRENCY == 1`, ~23 citizens yield per beat, so each of them
+/// the ambient pool hardcoded at 1, ~23 citizens yield per beat, so each of them
 /// compounded 15s → the 240s cap in ~8 yields and STAYED pinned there — the only
 /// resets being a successful cycle (which the backoff itself denied them) or an
 /// inbound message. Transient contention became permanent slowness, and it got
@@ -4637,7 +4639,7 @@ mod tests {
     }
     // what this catches: the STARVATION RATCHET — a yield being charged the rest
     // backoff it did not earn. Regression for the live 2026-08-17 measurement (24
-    // hosted citizens, AMBIENT_TURN_CONCURRENCY=1, ONE self-tick in 40 minutes on a
+    // hosted citizens, ambient pool of 1, ONE self-tick in 40 minutes on a
     // healthy decoding lane). If `YieldedNoSlot` ever compounds again, contention
     // silently becomes permanent slowness and the whole roster degrades as it grows.
     #[test]

@@ -128,11 +128,30 @@ pub fn shared_model_saturated() -> bool {
 // ambient turn defers to a later beat with free capacity — the durable transcript is
 // unchanged, so nothing is lost. [[conversational-latency-is-a-misdirection-budget]]
 
-/// How many ambient turns may run at once. 1 = strongly prioritize directed work:
-/// under a burst, the addressed persona plus at most one ambient contribution run;
-/// the rest yield. Under light/staggered load ambient turns are naturally serial, so
-/// this never throttles a quiet room.
-const AMBIENT_TURN_CONCURRENCY: usize = 1;
+// How many ambient turns may run at once: [`LaneAdmission::nondirected_budget`] — the
+// SAME live (lanes − 1, floored at 1) budget the per-call lane reservation below uses.
+// One machine, one answer to "how much non-directed concurrency is there", derived from
+// live capacity instead of declared twice.
+//
+// This was `const AMBIENT_TURN_CONCURRENCY: usize = 1` until 2026-08-17, and the constant
+// was the roster's starvation CEILING. Two things made it invisible:
+//   1. `service_loop.rs`'s self-tick gate documents this permit as "sized to the LIVE
+//      served lane count (LaneAdmission ← set_served_lane_count)". It never was — it was
+//      a bare 1, and the comment described the design that was intended.
+//   2. A hard 1 is indistinguishable from a quiet room at n≈1 citizen, which is how it
+//      was reasoned about ("under light load ambient turns are naturally serial").
+// Measured on this box 2026-08-17: 4 served lanes, 20+ hosted citizens, so 3 non-directed
+// lanes sat permanently idle while every citizen but one yielded on a pool of 1.
+//
+// Why lowering the bound is still safe — the directed-turn guarantee never came from THIS
+// permit. It comes from the per-call reservation (`acquire_serving_lane`), which caps
+// non-directed calls at lanes−1 so a directed call always finds a lane. That is the layer
+// that owns lane priority, and it is untouched. This permit's own job (#171) is anti-
+// STAMPEDE: bound the fan-out when N peers wake on the same beat and all read inflight=0.
+// A bound of lanes−1 does that job exactly as well as a bound of 1 — it is still fixed,
+// still acquired non-blockingly, still held across the whole turn — while no longer
+// throttling below the hardware. On a 1- or 2-lane box the budget floors at 1, so weak
+// machines get byte-identical behaviour to before.
 
 /// Try to claim an ambient-turn slot. `Some(permit)` → run the ambient turn (hold the
 /// permit for the turn's lifetime; it releases on drop). `None` → all ambient slots
@@ -143,13 +162,21 @@ pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
 
 // ── Serving-lane reservation for directed turns (#139) ──────────────────────────
 //
-// The ambient PERMIT above bounds how many ambient TURNS run at once (1). But a single
-// ambient `drive_to_settle` makes many model calls over minutes, and an idle self-tick
-// is not ambient-permit-gated at all — so together they can occupy BOTH physical decode
-// lanes (`llama --parallel MAX_LANES`), and an addressed (directed) question then queues
-// INSIDE the serving process behind them. Glass-boxed 2026-07-15: a directed turn sat
+// The ambient PERMIT above bounds how many ambient TURNS run at once (1). But ONE
+// permitted turn is not one model call: a single `drive_to_settle` makes many calls over
+// minutes (act → observe → act), so the permit-holder alone can occupy several physical
+// decode lanes (`llama --parallel`), and an addressed (directed) question then queues
+// INSIDE the serving process behind it. Glass-boxed 2026-07-15: a directed turn sat
 // 8+ minutes behind one 197s idle self-tick + one 213s ambient turn on the two lanes;
 // its latency was lane-QUEUE, not decode (a free-lane turn is ~30-60s).
+//
+// (That glass-box predates the permit reaching the self-tick. Both non-directed paths are
+// permit-gated today — `service_loop.rs` acquires at the self-tick gate AND at the
+// message-ambient gate, and they share the one ambient pool. The reservation below is
+// still required, because the thing it bounds is CALLS-per-turn, which no turn-level
+// permit can see. Corrected 2026-08-17: this paragraph had claimed "an idle self-tick is
+// not ambient-permit-gated at all", contradicting the self-tick gate's own comment block
+// in the same tree — a stale premise sitting under a live design argument.)
 //
 // Neither the gauge nor the turn-level permit can fix this — the reservation must live
 // at the LANE the model call actually consumes. So every model call acquires a lane
@@ -202,6 +229,7 @@ pub struct LaneAdmission {
     /// double-count a grow.
     resize_lock: Mutex<()>,
     ambient: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+    ambient_installed: AtomicUsize,
 }
 
 /// The process-global admission gate — ONE INSTANCE of [`LaneAdmission`], not a separate
@@ -271,6 +299,7 @@ impl LaneAdmission {
             nondirected_installed: AtomicUsize::new(0),
             resize_lock: Mutex::new(()),
             ambient: std::sync::OnceLock::new(),
+            ambient_installed: AtomicUsize::new(0),
         }
     }
 
@@ -307,6 +336,12 @@ impl LaneAdmission {
                 lanes.saturating_sub(1).max(1),
             );
         }
+        // The ambient-turn pool rides the SAME budget, so it grows on the same signal.
+        // Missing this is how a pool installed at the boot floor would stay there for the
+        // process's life while serving grew underneath it.
+        if let Some(sem) = self.ambient.get() {
+            grow_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
+        }
     }
 
     fn serving_lanes(&self) -> &std::sync::Arc<tokio::sync::Semaphore> {
@@ -325,11 +360,15 @@ impl LaneAdmission {
         })
     }
 
-    /// See [`try_hold_ambient_turn`].
+    /// See [`try_hold_ambient_turn`]. Lazy like its siblings, and for the same load-bearing
+    /// reason: it must capture the budget at FIRST USE, once serving has published a real
+    /// lane count — never at construction, when only the boot ceiling is known.
     pub fn try_hold_ambient_turn(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.ambient
             .get_or_init(|| {
-                std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY))
+                let n = self.nondirected_budget();
+                self.ambient_installed.store(n, Ordering::Release);
+                std::sync::Arc::new(tokio::sync::Semaphore::new(n))
             })
             .clone()
             .try_acquire_owned()
@@ -656,10 +695,19 @@ mod tests {
     fn ambient_permit_bounds_concurrency_and_releases_on_drop() {
         // OUR OWN gate — no process-global, so no lock and no order dependence.
         let gate = LaneAdmission::new();
+        // PREMISE CHANGE 2026-08-17: the pool used to be a bare `AMBIENT_TURN_CONCURRENCY
+        // = 1`; it is now the live `nondirected_budget()` (lanes − 1, floored at 1), the
+        // same budget the per-call lane reservation uses. Pin a real multi-lane machine so
+        // the burst has something to bound — at the old hardcoded 1 this test could not
+        // distinguish "correctly bounded" from "throttled below the hardware", which is
+        // exactly how the starvation ceiling stayed invisible.
+        gate.set_served_lane_count(4);
+        let budget = gate.nondirected_budget();
+        assert_eq!(budget, 3, "4 served lanes → 3 non-directed, 1 reserved directed");
         // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
-        // Exactly AMBIENT_TURN_CONCURRENCY win; the rest get None and must yield.
+        // Exactly `budget` win; the rest get None and must yield.
         let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
-        for _ in 0..AMBIENT_TURN_CONCURRENCY {
+        for _ in 0..budget {
             held.push(
                 gate.try_hold_ambient_turn()
                     .expect("a free slot is grantable"),
@@ -683,6 +731,60 @@ mod tests {
             .expect("dropping a finished turn frees its slot for the next");
         drop(reclaimed);
         drop(held); // release the rest (nothing else can observe this gate anyway)
+    }
+
+    // what this catches: the WEAK-BOX floor of the same change. Deriving the ambient pool
+    // from lanes−1 must not regress a 1- or 2-lane machine below the behaviour it had
+    // under the old hardcoded 1 — a single-lane host has nothing to reserve, so its
+    // budget floors at 1 and it stays byte-identical. This is the half of the change that
+    // could silently hurt the smallest supported hardware, so it gets its own row.
+    #[test]
+    fn a_one_lane_box_keeps_exactly_one_ambient_slot() {
+        for lanes in [1usize, 2] {
+            let gate = LaneAdmission::new();
+            gate.set_served_lane_count(lanes);
+            assert_eq!(
+                gate.nondirected_budget(),
+                1,
+                "{lanes}-lane box floors the non-directed budget at 1"
+            );
+            let held = gate
+                .try_hold_ambient_turn()
+                .expect("the one slot is grantable");
+            assert!(
+                gate.try_hold_ambient_turn().is_none(),
+                "a {lanes}-lane box admits exactly ONE ambient turn — unchanged from the \
+                 pre-2026-08-17 hardcoded bound"
+            );
+            drop(held);
+        }
+    }
+
+    // what this catches: an ambient pool installed at the BOOT floor and then never grown.
+    // The pool is lazy on purpose (capture the real lane count at first use), but that
+    // makes "first use happened before serving published its count" a live possibility —
+    // and without the grow-on-resize wiring the whole roster would stay pinned at the boot
+    // budget for the life of the process while 3 lanes sat idle. Regression for the
+    // starvation ceiling this change removes.
+    #[test]
+    fn the_ambient_pool_grows_when_serving_publishes_more_lanes() {
+        let gate = LaneAdmission::new();
+        gate.set_served_lane_count(1); // cold boot: one lane
+        let first = gate.try_hold_ambient_turn().expect("the one slot");
+        assert!(gate.try_hold_ambient_turn().is_none(), "1 lane → 1 ambient slot");
+
+        gate.set_served_lane_count(4); // serving warms up and reports its real width
+        let second = gate
+            .try_hold_ambient_turn()
+            .expect("growing to 4 lanes must open a second ambient slot");
+        let third = gate
+            .try_hold_ambient_turn()
+            .expect("…and a third (budget = lanes - 1)");
+        assert!(
+            gate.try_hold_ambient_turn().is_none(),
+            "still bounded at lanes-1 — growth must not remove the directed reservation"
+        );
+        drop((first, second, third));
     }
 
     // what this catches (#139 lane starvation): a directed (addressed) turn must never
