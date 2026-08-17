@@ -788,13 +788,19 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // (jinja2 IS a runtime dep of some subjects, e.g. flask).
     let sdist_deps = era_sdist_build_deps(&instance.repo);
     if !sdist_deps.is_empty() {
-        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
-        if let Some(ref date) = as_of {
-            args.push("--exclude-newer");
-            args.push(date);
-        }
-        args.extend(sdist_deps.iter().copied());
-        let out = run(&uv, &args, None).await?;
+        // Shares `era_pinned_uv_install` with the `-e .` install below. It did NOT before,
+        // and that asymmetry is what made every astropy instance ungradeable: the pin caps
+        // setuptools at the 2017 cutoff while markupsafe's build requires >=40.8.0, and the
+        // heal that reads uv's own `exclude-newer-package` hint lived only at the other site.
+        let out = era_pinned_uv_install(
+            &uv,
+            &py_s,
+            as_of.as_deref(),
+            sdist_deps,
+            None,
+            &[("CFLAGS", ERA_CFLAGS)],
+        )
+        .await?;
         if !out.status.success() {
             // Fail LOUD and leave no half-built env behind — same doctrine as the `-e .` gate.
             let _ = std::fs::remove_dir_all(&env_dir);
@@ -819,77 +825,19 @@ pub async fn ensure_env(instance: &SweInstance, repo_dir: &Path) -> Result<PathB
     // the minimum needed for a resolvable graph, discovered from the resolver's own evidence
     // rather than a hand-maintained package list. Bounded: each round must surface a NEW
     // package or we stop, and history-holes per graph are few.
-    let mut overrides: Vec<String> = Vec::new();
-    let out = loop {
-        let mut args = vec!["pip", "install", "-q", "--python", &py_s];
-        if let Some(ref date) = as_of {
-            args.push("--exclude-newer");
-            args.push(date);
-        }
-        for pin in &overrides {
-            args.push("--exclude-newer-package");
-            args.push(pin);
-        }
-        args.extend(["--no-build-isolation", "-e", "."]);
-        // ERA_CFLAGS rides on this one invocation because it is where every C build
-        // happens — the repo's own extensions AND its dependency sdists (pyerfa et al)
-        // compile inside this resolve.
-        let out = run_env(&uv, &args, Some(Path::new(&repo_s)), &[("CFLAGS", ERA_CFLAGS)]).await?;
-        if out.status.success() || as_of.is_none() {
-            break out;
-        }
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        // Two heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
-        // candidates, uv's hint names the earliest surviving upload; (2) metadata-mismatch —
-        // an era sdist with no wheel for this platform builds as version 0.0.0
-        // (setuptools_scm without git metadata; live 2026-08-11: lazy-object-proxy 1.7.1 has
-        // no arm64 wheel, pulled by 2022 pylint→astroid), so the ONE unbuildable package's
-        // cutoff is lifted entirely — a modern wheel-shipping release of a shim library, in
-        // an otherwise era-pure graph, disclosed on the probe. Both parse uv's OWN evidence;
-        // no hand-maintained package list.
-        match deleted_history_override(&stderr)
-            .or_else(|| metadata_mismatch_override(&stderr))
-            .or_else(|| setuptools_importlib_clash_override(&stderr))
-        {
-            Some(pin) if !overrides.contains(&pin) && overrides.len() < 8 => {
-                tracing::warn!(
-                    instance = %instance.instance_id,
-                    r#override = %pin,
-                    "date-pinned resolution hit an unresolvable era package — retrying with \
-                     a per-package cutoff derived from uv's own error"
-                );
-                // The setuptools/importlib clash needs MORE than a lifted cutoff: the
-                // broken importlib-metadata 0.x is ALREADY INSTALLED in the venv (2019
-                // pluggy pulled it in the requirements step), and `-e .` won't touch an
-                // already-satisfied package — so the cutoff pin alone retries into the
-                // exact same crash (live: pytest-5413/5495 kickoff, 2026-08-12, the
-                // first run after this arm shipped). Apply the banner's own remedy
-                // directly: upgrade the installed copy, then retry the editable build.
-                if pin.starts_with("importlib-metadata=") {
-                    let up = run(
-                        &uv,
-                        &[
-                            "pip",
-                            "install",
-                            "-q",
-                            "--python",
-                            &py_s,
-                            "--upgrade",
-                            "importlib-metadata",
-                        ],
-                        None,
-                    )
-                    .await?;
-                    if !up.status.success() {
-                        // The heal itself failed — no point looping on the same wall.
-                        break out;
-                    }
-                }
-                overrides.push(pin);
-            }
-            _ => break out,
-        }
-    };
+    // ERA_CFLAGS rides on this invocation because it is where every C build happens — the
+    // repo's own extensions AND its dependency sdists (pyerfa et al) compile inside this
+    // resolve. The heal loop lives in `era_pinned_uv_install`, shared with the sdist
+    // build-dep pre-install above.
+    let out = era_pinned_uv_install(
+        &uv,
+        &py_s,
+        as_of.as_deref(),
+        &["--no-build-isolation", "-e", "."],
+        Some(Path::new(&repo_s)),
+        &[("CFLAGS", ERA_CFLAGS)],
+    )
+    .await?;
     if !out.status.success() {
         // DELETE the half-built env rather than cache it. Keying on "the directory exists"
         // made a failed install sticky: every later run reused a venv with no repo in it and
@@ -1102,6 +1050,111 @@ fn setuptools_importlib_clash_override(stderr: &str) -> Option<String> {
         Some("importlib-metadata=9999-01-01T00:00:00Z".to_string())
     } else {
         None
+    }
+}
+
+/// How many per-package cutoff overrides one install may discover before we stop.
+///
+/// Each round must surface a NEW package (see the loop), so this bounds a pathological
+/// graph rather than a healthy one — history-holes per graph are few, and the live maximum
+/// observed across Lite is two.
+const MAX_ERA_OVERRIDES: usize = 8;
+
+/// ONE era-pinned `uv pip install`, healing from uv's own evidence.
+///
+/// # Why this is a function and not two copies of a loop
+///
+/// "Install under the instance's date pin, and when the resolver hits a hole that the pin
+/// itself created, read uv's hint and retry with the minimum per-package override" is ONE
+/// decision. It had TWO call sites in `ensure_env` — the editable `-e .` install, which had
+/// the heal loop, and the dependency-sdist build-dep pre-install, which did not — so the
+/// same class of failure was survivable at one site and fatal at the other.
+///
+/// Measured 2026-08-17: every astropy instance in swe-bench-lite's head died at the
+/// unhealed site with `could not pre-install …'s dependency-sdist build deps ["jinja2"]`.
+/// The cause is the pin working exactly as designed: jinja2 2.10 needs markupsafe 1.0,
+/// whose `setup.py` build requires `setuptools>=40.8.0`, while the 2017 cutoff caps
+/// setuptools at 38.2.4 — unsatisfiable by construction. uv's stderr named the package and
+/// suggested `exclude-newer-package`, which is precisely what the loop 30 lines below knew
+/// how to parse. Extracting it heals both sites and makes a third site inherit the
+/// behaviour by construction.
+///
+/// `tail` is the call-site-specific argv after the shared pin flags (`["jinja2"]`, or
+/// `["--no-build-isolation", "-e", "."]`). `as_of: None` disables pinning AND healing —
+/// with no pin there is no pin-induced hole to heal.
+async fn era_pinned_uv_install(
+    uv: &str,
+    py: &str,
+    as_of: Option<&str>,
+    tail: &[&str],
+    cwd: Option<&Path>,
+    envs: &[(&str, &str)],
+) -> Result<std::process::Output, String> {
+    let mut overrides: Vec<String> = Vec::new();
+    loop {
+        let mut args = vec!["pip", "install", "-q", "--python", py];
+        if let Some(date) = as_of {
+            args.push("--exclude-newer");
+            args.push(date);
+        }
+        for pin in &overrides {
+            args.push("--exclude-newer-package");
+            args.push(pin);
+        }
+        args.extend(tail.iter().copied());
+        let out = run_env(uv, &args, cwd, envs).await?;
+        if out.status.success() || as_of.is_none() {
+            return Ok(out);
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        // Three heal arms, same bounded loop: (1) deleted-history — the date pin leaves zero
+        // candidates and uv's hint names the earliest surviving upload; (2) metadata-mismatch
+        // — an era sdist with no wheel for this platform builds as version 0.0.0
+        // (setuptools_scm without git metadata), so the ONE unbuildable package's cutoff is
+        // lifted entirely; (3) the setuptools/importlib-metadata clash. All three parse uv's
+        // OWN evidence; no hand-maintained package list.
+        match deleted_history_override(&stderr)
+            .or_else(|| metadata_mismatch_override(&stderr))
+            .or_else(|| setuptools_importlib_clash_override(&stderr))
+        {
+            Some(pin) if !overrides.contains(&pin) && overrides.len() < MAX_ERA_OVERRIDES => {
+                tracing::warn!(
+                    r#override = %pin,
+                    tail = ?tail,
+                    "date-pinned resolution hit an unresolvable era package — retrying with \
+                     a per-package cutoff derived from uv's own error"
+                );
+                // The setuptools/importlib clash needs MORE than a lifted cutoff: the broken
+                // importlib-metadata 0.x is ALREADY INSTALLED in the venv (2019 pluggy pulled
+                // it in the requirements step), and an install won't touch an already-satisfied
+                // package — so the cutoff pin alone retries into the exact same crash (live:
+                // pytest-5413/5495 kickoff, 2026-08-12, the first run after this arm shipped).
+                // Apply the banner's own remedy directly: upgrade the installed copy, then
+                // retry. General to any `--no-build-isolation` build, not just `-e .`.
+                if pin.starts_with("importlib-metadata=") {
+                    let up = run(
+                        uv,
+                        &[
+                            "pip",
+                            "install",
+                            "-q",
+                            "--python",
+                            py,
+                            "--upgrade",
+                            "importlib-metadata",
+                        ],
+                        None,
+                    )
+                    .await?;
+                    if !up.status.success() {
+                        // The heal itself failed — no point looping on the same wall.
+                        return Ok(out);
+                    }
+                }
+                overrides.push(pin);
+            }
+            _ => return Ok(out),
+        }
     }
 }
 
