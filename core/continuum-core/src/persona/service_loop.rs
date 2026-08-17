@@ -494,18 +494,52 @@ async fn serve_persona_loop_inner(
                     match crate::cognition::resource_admission::try_hold_ambient_turn() {
                         Some(permit) => permit,
                         None => {
-                            next_beat = (next_beat + next_beat / 2).min(rest_cap);
+                            // A YIELD IS NOT A REST — do NOT compound the beat here.
+                            //
+                            // The backoff below (after a real cycle) is earned: she THOUGHT,
+                            // the room had nothing new, so she rests deeper. A yield is the
+                            // opposite — she never ran. A peer held the single ambient slot,
+                            // she learned nothing, and there is nothing to rest ON.
+                            //
+                            // Compounding it built a STARVATION RATCHET, measured live
+                            // 2026-08-17 on this box: `AMBIENT_TURN_CONCURRENCY == 1` and 24
+                            // hosted citizens, so ~23 yield on every beat. At 1.5× per yield
+                            // a citizen crosses 15s → the 240s `rest_cap` in ~8 yields — 16×
+                            // slower — and STAYS there, because the only two resets are a
+                            // successful self-cycle (which the ratchet now denies her) and an
+                            // inbound Msg. Transient contention became permanent slowness, and
+                            // it deepened as the roster grew: measured ONE self-tick across 24
+                            // citizens in 40 minutes, on a lane that was healthy and decoding
+                            // the whole time.
+                            //
+                            // Leaving the beat UNCHANGED is the minimal correct rule: her
+                            // cadence stays whatever her own history earned, contention can no
+                            // longer slow her, and the identity-derived `phase` still keeps the
+                            // retries desynced so no herd forms. Yielding stays cheap — the
+                            // permit is a non-blocking try and perception work all happens
+                            // inside `run_self_cycle`, below this gate.
+                            next_beat = next_beat_after(
+                                BeatOutcome::YieldedNoSlot,
+                                next_beat,
+                                engaged_beat,
+                                rest_cap,
+                            );
                             continue;
                         }
                     };
                 let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
                 drop(_self_tick_permit);
-                next_beat = if last_burst_fp != before {
-                    engaged_beat
-                } else {
-                    (next_beat + next_beat / 2).min(rest_cap)
-                };
+                next_beat = next_beat_after(
+                    if last_burst_fp != before {
+                        BeatOutcome::Engaged
+                    } else {
+                        BeatOutcome::NothingNew
+                    },
+                    next_beat,
+                    engaged_beat,
+                    rest_cap,
+                );
                 continue;
             }
             // A message means life in the room — snap back to a quick beat so she's present
@@ -1433,6 +1467,47 @@ async fn serve_persona_loop_inner(
     }
 
     Ok(outcome)
+}
+
+/// What a self-tick beat DID, and therefore what the next interval should be.
+///
+/// Extracted as a pure decision (the `core_bind_guard::decide` shape) because the
+/// three outcomes are trivially confusable in an inline `match`, and confusing two
+/// of them cost a measured 16× slowdown across the whole roster — see
+/// [`next_beat_after`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeatOutcome {
+    /// She ran a cycle and the room had something new → stay engaged.
+    Engaged,
+    /// She ran a cycle and nothing had changed → rest deeper (earned backoff).
+    NothingNew,
+    /// She never ran: a peer held the single ambient slot. She learned NOTHING,
+    /// so there is nothing to rest on and the beat must NOT compound.
+    YieldedNoSlot,
+}
+
+/// The self-tick cadence rule. Pure so every row is table-testable without a runtime.
+///
+/// The bug this encodes against (measured live 2026-08-17, 24 hosted citizens):
+/// `YieldedNoSlot` used to share `NothingNew`'s 1.5× backoff. With
+/// `AMBIENT_TURN_CONCURRENCY == 1`, ~23 citizens yield per beat, so each of them
+/// compounded 15s → the 240s cap in ~8 yields and STAYED pinned there — the only
+/// resets being a successful cycle (which the backoff itself denied them) or an
+/// inbound message. Transient contention became permanent slowness, and it got
+/// worse as the roster grew. Measured symptom: ONE self-tick across 24 citizens in
+/// 40 minutes, on a lane that was healthy and decoding throughout.
+pub fn next_beat_after(
+    outcome: BeatOutcome,
+    current: std::time::Duration,
+    engaged: std::time::Duration,
+    rest_cap: std::time::Duration,
+) -> std::time::Duration {
+    match outcome {
+        BeatOutcome::Engaged => engaged,
+        BeatOutcome::NothingNew => (current + current / 2).min(rest_cap),
+        // Unchanged: contention must never cost her cadence.
+        BeatOutcome::YieldedNoSlot => current,
+    }
 }
 
 /// Engaged heartbeat period — how often a persona pursuing its OWN intentions
@@ -4559,5 +4634,43 @@ mod tests {
         assert_eq!(outcome.turns_errored, 1);
         assert_eq!(outcome.turns_skipped, 0);
         assert_eq!(conversation.said().len(), 1);
+    }
+    // what this catches: the STARVATION RATCHET — a yield being charged the rest
+    // backoff it did not earn. Regression for the live 2026-08-17 measurement (24
+    // hosted citizens, AMBIENT_TURN_CONCURRENCY=1, ONE self-tick in 40 minutes on a
+    // healthy decoding lane). If `YieldedNoSlot` ever compounds again, contention
+    // silently becomes permanent slowness and the whole roster degrades as it grows.
+    #[test]
+    fn a_yield_never_costs_her_cadence_but_a_fruitless_cycle_still_rests() {
+        use std::time::Duration;
+        let engaged = Duration::from_millis(SELF_TICK_MS);
+        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
+
+        // A yield leaves the beat EXACTLY where it was — she never ran.
+        let mut beat = engaged;
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::YieldedNoSlot, beat, engaged, cap);
+        }
+        assert_eq!(
+            beat, engaged,
+            "50 yields must not slow her by a single millisecond — she never ran, \
+             so there is nothing to rest on (the ratchet that pinned 24 citizens at the cap)"
+        );
+
+        // A cycle that found nothing DOES rest deeper, and saturates at the cap.
+        let mut beat = engaged;
+        let once = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        assert!(once > engaged, "an earned rest still backs off");
+        for _ in 0..50 {
+            beat = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
+        }
+        assert_eq!(beat, cap, "earned rest saturates at the cap, never beyond");
+
+        // Finding something new snaps her straight back to engaged from full rest.
+        assert_eq!(
+            next_beat_after(BeatOutcome::Engaged, cap, engaged, cap),
+            engaged,
+            "life in the room returns her to the engaged beat immediately"
+        );
     }
 }
